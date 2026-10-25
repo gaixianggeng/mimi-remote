@@ -178,6 +178,16 @@ export class ThreadRuntime {
     return this.query !== undefined;
   }
 
+  /** 已有 transcript（resume 打开，或已经起过进程）：移除后 resume 能按同一 ID 重建。 */
+  get persisted(): boolean {
+    return this.transcriptExists;
+  }
+
+  /** 没有进程、也没有进行中或预占的 turn：管理器可以移除它，之后 resume 会重建（#911）。 */
+  isReclaimable(): boolean {
+    return this.query === undefined && !this.isBusy();
+  }
+
   /**
    * 常驻进程的命令目录（含 MCP 命令与运行中发现的技能）。只在进程的设置来源与请求一致时可用：
    * 受限档位不加载本机设置，两种进程认识的命令不同。

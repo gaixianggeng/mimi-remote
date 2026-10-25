@@ -46,6 +46,8 @@ export interface ManagerOptions {
   readTitle?: (threadId: string) => Promise<string | null>;
   /** turn 收尾后检查标题的时间点（毫秒）。 */
   titleCheckDelaysMs?: number[];
+  /** 会话失去最后一个订阅者后，空闲运行时等多久从管理器移除（#911）。 */
+  reclaimDelayMs?: number;
   /**
    * 发给全部已附着连接的通知（持有方变化）。列表页不订阅任何会话，只有这样它才能知道终端里的
    * 会话开始 / 结束处理。`subscribers` 是该会话的订阅者：其中不在注册表里的匿名连接也要收到，
@@ -62,6 +64,9 @@ export interface ManagerOptions {
 /** Claude Code 在第一轮前后异步生成 AI 标题，通常几秒内写入；稍后再看几次。 */
 const TITLE_CHECK_DELAYS_MS = [0, 2_000, 8_000, 30_000];
 
+/** 断线重连通常在一分钟内完成，期间保留运行时，重连后不必重建。 */
+const RECLAIM_DELAY_MS = 60_000;
+
 export class ThreadManager {
   private readonly runtimes = new Map<string, ThreadRuntime>();
   private readonly subscribers = new Map<string, Set<Session>>();
@@ -71,6 +76,8 @@ export class ThreadManager {
   private counter = 0;
   /** 已经推送给客户端（或客户端从会话快照里拿到）的标题。 */
   private readonly titles = new Map<string, string | null>();
+  /** 没有订阅者的会话 → 回收检查的计时器；订阅时取消，到点时重新核对。 */
+  private readonly reclaimTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private lastRateLimits: RateLimitSnapshot | undefined;
   private terminal: ReadonlySet<string> = new Set();
   readonly ownPids = new Set<number>();
@@ -161,6 +168,7 @@ export class ThreadManager {
     const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, false);
     this.runtimes.set(runtime.threadId, runtime);
     this.titles.set(runtime.threadId, null);
+    this.scheduleReclaim(runtime.threadId);
     return runtime;
   }
 
@@ -176,6 +184,7 @@ export class ThreadManager {
     if (existing) return existing;
     const runtime = new ThreadRuntime(threadId, cwd, this.host, settings, true);
     this.runtimes.set(threadId, runtime);
+    this.scheduleReclaim(threadId);
     return runtime;
   }
 
@@ -186,6 +195,7 @@ export class ThreadManager {
 
   subscribe(threadId: string, session: Session): void {
     this.ownership.start();
+    this.cancelReclaim(threadId);
     if (!this.subscribers.get(threadId)?.has(session)) logger.debug("thread.subscribe", { thread: threadId, session: session.key });
     const sessions = this.subscribers.get(threadId) ?? new Set<Session>();
     sessions.add(session);
@@ -206,8 +216,48 @@ export class ThreadManager {
     for (const threadId of this.subscriptions.get(session) ?? []) {
       this.subscribers.get(threadId)?.delete(session);
       this.suggestionRecipients.get(threadId)?.sessions.delete(session);
+      if (!this.subscribers.get(threadId)?.size) this.scheduleReclaim(threadId);
     }
     this.subscriptions.delete(session);
+  }
+
+  /**
+   * 运行时、标题缓存和空订阅集合只在会话还有订阅者或还在工作时保留（#911）。最后一个订阅者离开后
+   * 稍等再核对：有进程（含后台任务）、进行中或预占的 turn、未答复的审批时不回收，稍后再看；
+   * 进程由空闲关闭负责结束。回收后再次 resume 会按 transcript 重建；还没有 transcript 的新会话
+   * （thread/start 之后尚未发出第一轮）只存在于运行时里，不回收，等它第一轮之后再退订时才重新安排。
+   * 计时器回调是宏任务，handler 在 open 与 subscribe 之间只隔微任务，不会被它插进来。
+   */
+  private scheduleReclaim(threadId: string): void {
+    if (this.reclaimTimers.has(threadId)) return;
+    const timer = setTimeout(() => {
+      this.reclaimTimers.delete(threadId);
+      this.reclaimIfIdle(threadId);
+    }, this.options.reclaimDelayMs ?? RECLAIM_DELAY_MS);
+    timer.unref?.();
+    this.reclaimTimers.set(threadId, timer);
+  }
+
+  private cancelReclaim(threadId: string): void {
+    const timer = this.reclaimTimers.get(threadId);
+    if (timer) clearTimeout(timer);
+    this.reclaimTimers.delete(threadId);
+  }
+
+  private reclaimIfIdle(threadId: string): void {
+    if (this.subscribers.get(threadId)?.size) return;
+    this.subscribers.delete(threadId);
+    const runtime = this.runtimes.get(threadId);
+    if (runtime && !runtime.persisted) return;
+    const hasPending = [...this.pending.values()].some((request) => request.threadId === threadId);
+    if ((runtime && !runtime.isReclaimable()) || hasPending) {
+      this.scheduleReclaim(threadId);
+      return;
+    }
+    this.runtimes.delete(threadId);
+    this.titles.delete(threadId);
+    this.suggestionRecipients.delete(threadId);
+    logger.debug("thread.reclaimed", { thread: threadId });
   }
 
   private *trackedThreads(): Iterable<string> {
@@ -265,7 +315,8 @@ export class ThreadManager {
   /** 标题变了（agentd 改名、CLI /rename 或 Claude Code 的 AI 标题）：推给订阅者。 */
   titleChanged(threadId: string, title: string): void {
     if (this.titles.get(threadId) === title) return;
-    this.titles.set(threadId, title);
+    // 没有运行时就没有订阅者，也就不必记住推过什么；下次 open 从 transcript 读标题。
+    if (this.runtimes.has(threadId)) this.titles.set(threadId, title);
     this.publish(threadId, "thread/name/updated", { threadId, threadName: title });
   }
 
@@ -373,6 +424,8 @@ export class ThreadManager {
 
   async closeAll(): Promise<void> {
     this.ownership.stop();
+    for (const timer of this.reclaimTimers.values()) clearTimeout(timer);
+    this.reclaimTimers.clear();
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.close()));
     this.suggestionRecipients.clear();
   }
