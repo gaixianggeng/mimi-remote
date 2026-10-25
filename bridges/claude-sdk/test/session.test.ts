@@ -97,6 +97,23 @@ describe("Session attach", () => {
     expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/started"]);
   });
 
+  test("responses bypass the ring so a large one cannot evict an unacknowledged notification", () => {
+    const session = new Session("ipad", new ReplayRing(20, 1024));
+    const delivered: OutboundFrame[] = [];
+    const outcome = session.attach(undefined, (frame) => delivered.push(frame), false);
+    session.publish({ jsonrpc: "2.0", method: "turn/completed", params: { turnId: "t1" } });
+    session.respond({ jsonrpc: "2.0", id: 1, result: { text: "x".repeat(2000) } }, outcome.generation);
+    expect(delivered.map((frame) => ("id" in frame ? frame.id : frame.method))).toEqual(["turn/completed", 1]);
+    expect(delivered[1]).not.toHaveProperty(SEQ_FIELD);
+    expect(session.ring.currentSeq).toBe(1);
+    expect(session.ring.floorSeq).toBe(1);
+
+    session.detach(outcome.generation);
+    const resumed = session.attach(0, () => {}, true);
+    expect(resumed.kind).toBe("resumed");
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/completed"]);
+  });
+
   test("a response for a replaced connection is dropped", () => {
     const session = new Session("ipad");
     const old = session.attach(undefined, () => {}, false);
