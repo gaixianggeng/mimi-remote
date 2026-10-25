@@ -232,7 +232,7 @@
           <li class="ov reveal"><a href="#connect">
             <svg class="ov__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="2.3"/><circle cx="18.5" cy="12" r="2.3"/><path d="M8 12h8M8.2 10.6c2.2-4 5.4-4 7.6 0"/></svg>
             <h3 data-i18n="ov.6.t">Same Wi-Fi or Tailscale</h3>
-            <p data-i18n="ov.6.n">Mac and Linux can also try Tailcat: experimental, off by default, first handshake through a third-party relay.</p>
+            <p data-i18n="ov.6.n">Mac, Windows and Linux can also try Tailcat: experimental, off by default, first handshake through a third-party relay.</p>
           </a></li>
         </ul>
       </div>
@@ -452,7 +452,7 @@
         <div class="feature__copy reveal">
           <p class="eyebrow" data-i18n="connect.eyebrow">Connection</p>
           <h2 class="h2" data-i18n="connect.title">Same Wi-Fi at home.<br />Tailscale on the go.</h2>
-          <p class="body" data-i18n="connect.body">Mimi talks only to the computer you paired, over a trusted local network or your own Tailscale network. There's no Mimi cloud account and no relay for your sessions. Pairing is a QR code on the computer, scanned once with your phone. Keep the computer service on a private network; don't expose it to the public Internet.</p>
+          <p class="body" data-i18n="connect.body">Mimi talks only to the computer you paired, over a trusted local network or your own Tailscale network. There's no Mimi cloud account, session hosting or application-level relay; the optional Tailcat route's transport relay is explained below. Pairing is a QR code on the computer, scanned once with your phone. Keep the computer service on a private network; don't expose it to the public Internet.</p>
           <ul class="routes" role="list">
             <li class="route">
               <h3 data-i18n="route.lan.t">Same Wi-Fi</h3>
@@ -464,7 +464,7 @@
             </li>
             <li class="route">
               <h3>Tailcat <span class="tag" data-i18n="tag.experimental">Experimental</span></h3>
-              <p data-i18n="route.tc">Mac and Linux only, off by default. Lets your phone reach the computer without the Tailscale app.</p>
+              <p data-i18n="route.tc">Mac, Windows and Linux, off by default. Lets your phone reach the computer without the Tailscale app.</p>
             </li>
           </ul>
           <p class="privacy">
@@ -608,7 +608,7 @@
           </details>
           <details class="qa">
             <summary data-i18n="faq.4.q">How do I connect when I'm not on the same network?</summary>
-            <p data-i18n="faq.4.a">Put your phone and computer on the same private network with Tailscale. Mac and Linux computers can also try the experimental Tailcat connection described under <a href="#connect">Connection</a>.</p>
+            <p data-i18n="faq.4.a">Put your phone and computer on the same private network with Tailscale. Mac, Windows and Linux computers can also try the experimental Tailcat connection described under <a href="#connect">Connection</a>.</p>
           </details>
           <details class="qa">
             <summary data-i18n="faq.5.q">Does it cost anything?</summary>
