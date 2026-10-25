@@ -27,7 +27,9 @@ extension SessionStore {
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil,
-        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
+        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil,
+        modelAlreadyResolved: Bool = false
     ) async -> Bool {
         let createIntent = expectedSelectionLease
             ?? suppliedSubmissionContext?.selectionLease
@@ -42,7 +44,7 @@ extension SessionStore {
         )
         // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
         // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
-        let payload = payload.isEmpty
+        let payload = payload.isEmpty || modelAlreadyResolved
             ? payload
             : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
         guard appStore.activeHostScope == hostScope else { return false }
@@ -189,11 +191,13 @@ extension SessionStore {
                 turnOptions: payload.options,
                 initialGoalObjective: initialGoalObjective,
                 resumeID: resume?.resumeID ?? nativeResumeID ?? "",
-                clientMessageID: clientMessageID
+                clientMessageID: clientMessageID,
+                mimiTaskProposal: mimiTaskProposal
             ))
             guard appStore.activeHostScope == hostScope else { return false }
             let responseSession = self.session(response.session, in: workspace)
             let queuesInitialInput = response.requiresQueuedInitialInput == true
+            let initialInputAlreadyStarted = response.initialInputAlreadyStarted == true
             if let clientMessageID {
                 migratePendingPermissionTurnBoundary(
                     clientMessageID: clientMessageID,
@@ -205,11 +209,15 @@ extension SessionStore {
                optimisticSessionID != responseSession.id {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
-                if let clientMessageID {
+                if let clientMessageID, !initialInputAlreadyStarted {
                     conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
                     moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
                     migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
                     migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                } else if initialInputAlreadyStarted {
+                    // Bridge 已有活动 turn 或 transcript 时，这次请求只负责重新打开 child。
+                    // 丢弃重试期间的占位回显，不能把原 prompt 再伪装成一条新消息。
+                    clearForegroundActivity(sessionID: optimisticSessionID)
                 } else {
                     moveSessionRecentActivityProjection(
                         from: optimisticSessionID,
@@ -293,7 +301,7 @@ extension SessionStore {
 
             // 非队列发送在 create/resume 响应中已经拿到 turn ACK，历史补拉不应延迟确认。
             // 原生队列响应只代表会话已准备好，仍须等待真正发送输入后的 ACK。
-            if !prompt.isEmpty, !queuesInitialInput {
+            if !prompt.isEmpty, !queuesInitialInput, !initialInputAlreadyStarted {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -320,6 +328,9 @@ extension SessionStore {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
             } else if resume != nil {
+                didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
+            } else if initialInputAlreadyStarted, !responseSession.isRunning {
+                // 已完成的首次任务有 transcript，重试只打开同一 child，并立即恢复其权威历史。
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
             } else if payload.isEmpty {
                 // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时
@@ -381,6 +392,9 @@ extension SessionStore {
                 recoveredSession.status = "running"
                 recoveredSession.activeTurnID = activeTurnID
                 recoveredSession = sessionPreservingActiveApproval(recoveredSession)
+                // 电脑端开始的新一轮要压过本机上一轮的完成标记，下一条消息才会排队；
+                // 等待期间这一轮已在本地完成时，冲突快照是旧的，仍按已完成写入（#805）。
+                let conflictIsCurrent = releaseLocalCompletionMark(forConflict: recoveredSession)
                 upsert(recoveredSession)
                 if let optimisticSessionID, let clientMessageID {
                     conversationStore.updateSendStatus(
@@ -400,7 +414,9 @@ extension SessionStore {
                 if let optimisticSelectionLease,
                    isSelectionLeaseCurrent(optimisticSelectionLease) {
                     connectWebSocket(recoveredSession, replayBufferedEvents: true)
-                    setStatusMessage(error.localizedDescription)
+                    setStatusMessage(conflictIsCurrent
+                        ? L10n.text("ui.a_reply_is_still_in_progress_this_message_was_not_sent")
+                        : L10n.text("ui.the_reply_just_finished_this_message_was_not_sent_please_retry"))
                     setErrorMessage(nil)
                 }
                 return false
@@ -451,6 +467,7 @@ extension SessionStore {
             return true
         }
         guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
         return await loadHistory(for: session)
@@ -502,6 +519,7 @@ extension SessionStore {
         let shouldShowSavingsNotice = !quiet
             && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
 
@@ -1077,7 +1095,6 @@ extension SessionStore {
     func historyPolicyFailure(from error: Error) -> HistoryPolicyFailure? {
         let underlying = (error as? HistoryFirstPageFetchFailure)?.underlying ?? error
         let message = underlying.localizedDescription
-        let lowerMessage = message.lowercased()
         let appServerError: CodexAppServerError?
         if case CodexAppServerConnectionError.appServer(let error) = underlying {
             appServerError = error
@@ -1086,22 +1103,21 @@ extension SessionStore {
         }
 
         let data = appServerError?.data?.objectValue
-        let reason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let isHistoryReason = reason?.hasPrefix("history_") == true
-        let isLegacyHistoryPolicyMessage =
-            lowerMessage.contains("-32080")
-            && (
-                lowerMessage.contains("thread/turns/list")
-                || lowerMessage.contains("thread/read")
-                || lowerMessage.contains("history response")
-                || lowerMessage.contains("limit/itemsview")
-                || message.contains("历史响应")
-                || message.contains("临时限流")
-                || message.contains("响应过大")
-                || message.contains("内容过大")
-            )
-        let isGatewayHistoryPolicy = appServerError?.code == -32080 && (isHistoryReason || isLegacyHistoryPolicyMessage)
-        guard isGatewayHistoryPolicy || isLegacyHistoryPolicyMessage else {
+        let structuredReason = data?["reason"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reason: String?
+        // 结构化 reason 是权威分类：网关的限流、同请求占用与体量阻断都带 history_* reason，
+        // 其他 reason（如 thread_read_scope_mismatch）与历史体量无关。
+        if let structuredReason, !structuredReason.isEmpty {
+            guard appServerError?.code == -32080, structuredReason.hasPrefix("history_") else {
+                return nil
+            }
+            reason = structuredReason
+        } else if message.contains("-32080"), message.contains("相同历史或列表请求仍在执行") {
+            // 丢了 data 的同请求占用与 history_request_in_flight 同义：按繁忙原地重试，不能走体量降级。
+            reason = "history_request_in_flight"
+        } else if Self.isLegacyHistoryPolicyMessage(message) {
+            reason = nil
+        } else {
             return nil
         }
 
@@ -1135,6 +1151,23 @@ extension SessionStore {
             maxResponseBytes: (maxResponseBytes.map { $0 > 0 } == true) ? maxResponseBytes : nil,
             itemsView: (itemsView?.isEmpty == false) ? itemsView : nil
         )
+    }
+
+    /// 旧版 agentd 的历史策略拒绝不带 reason，只能按措辞识别：限流与预算类都含「thread/method」（授权与参数
+    /// 校验文案不含），体量阻断写「history response 过大」。不能凭方法名判断——「thread/read.threadId 未由当前
+    /// gateway 连接授权」这类授权拒绝同样带方法名，误判后小会话会被降级成缩略历史并显示体量文案（#785）。
+    nonisolated static func isLegacyHistoryPolicyMessage(_ message: String) -> Bool {
+        guard message.contains("-32080") else {
+            return false
+        }
+        let lowerMessage = message.lowercased()
+        return lowerMessage.contains("history response")
+            || lowerMessage.contains("limit/itemsview")
+            || lowerMessage.contains("thread/method")
+            || message.contains("历史响应")
+            || message.contains("临时限流")
+            || message.contains("响应过大")
+            || message.contains("内容过大")
     }
 
     func boundedHistoryPolicyRetryNanoseconds(_ nanoseconds: UInt64) -> UInt64 {
@@ -2742,9 +2775,11 @@ extension SessionStore {
     /// App 回前台或网络恢复时，不能复用“签名没变化”的旧快照。Claude 自主 turn 可能在
     /// detached 期间完成，而 thread/list 的 revision 尚未及时更新；每个恢复代次必须绕过缓存
     /// 拉一次完整历史。成功后只需状态回放，失败时由调用方保留 full replay 兜底。
+    /// 与列表刷新并行的调用方传 `reconcilesSessionState: false`，等列表落地后再自行校准状态。
     func reconcileHistoryForRecovery(
         sessionID: SessionID,
-        generation: UInt64
+        generation: UInt64,
+        reconcilesSessionState: Bool = true
     ) async -> Bool {
         if reconciledRecoveryGenerationBySessionID[sessionID] == generation {
             // 必须返回本代请求结果，不能用旧 full snapshot 冒充本次成功。
@@ -2775,7 +2810,7 @@ extension SessionStore {
         let didLoadFullHistory = didLoad && historyLoadedQualityBySessionID[sessionID] == .full
         reconciledRecoveryGenerationBySessionID[sessionID] = generation
         recoveryHistorySucceededBySessionID[sessionID] = didLoadFullHistory
-        if didLoadFullHistory, let refreshed = sessionsByID[sessionID] {
+        if didLoadFullHistory, reconcilesSessionState, let refreshed = sessionsByID[sessionID] {
             // 历史内容和 thread 状态是两个权威面；随后再校准一次状态，清除陈旧 running。
             await reconcileSessionStateAfterHistoryRefresh(refreshed)
         }
@@ -3940,7 +3975,7 @@ extension SessionStore {
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
         let staleItemEnrichmentIDs = historyItemEnrichmentBySessionID.keys.filter { !validSessionIDs.contains($0) }
         for sessionID in staleItemEnrichmentIDs {
-            cancelHistoryItemEnrichment(sessionID: sessionID, markIncomplete: false)
+            cancelHistoryItemEnrichment(sessionID: sessionID)
         }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
@@ -3985,6 +4020,7 @@ extension SessionStore {
         if runtimeActivities != runtimeActivityBySessionID {
             runtimeActivityBySessionID = runtimeActivities
         }
+        pruneContextWindowState(validSessionIDs: validSessionIDs)
     }
 
     static func sortedSessions(_ items: [AgentSession]) -> [AgentSession] {

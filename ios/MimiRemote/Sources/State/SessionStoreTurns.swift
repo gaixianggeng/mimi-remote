@@ -163,13 +163,35 @@ extension SessionStore {
             // 只剩 claude），写死成"恒可用"会让选择器在一个 codex 通道不可用的主机上
             // 仍然提供 codex，而真正能用的 claude 不会顶上来。
             var availableRuntimeProviders: Set<String> = []
+            var unprobedProviders: Set<String> = []
+            var threadGoalRuntimeProviders: Set<String> = []
+            var unprobedGoalProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
-                if (try? await client.runtimeChannelAvailable(runtimeProvider: provider)) == true {
-                    availableRuntimeProviders.insert(provider)
+                do {
+                    if try await client.runtimeChannelAvailable(runtimeProvider: provider) {
+                        availableRuntimeProviders.insert(provider)
+                        do {
+                            if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) {
+                                threadGoalRuntimeProviders.insert(provider)
+                            }
+                        } catch {
+                            unprobedGoalProviders.insert(provider)
+                        }
+                    }
+                } catch {
+                    unprobedProviders.insert(provider)
                 }
             }
             guard appStore.activeHostScope == hostScope else { return }
+            // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
+            // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
+            availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
+            // 目标能力（#791）同一口径：没探成的 Runtime 沿用上一次的声明结论。
+            threadGoalRuntimeProviders.formUnion(
+                self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
+            )
             self.availableRuntimeProviders = availableRuntimeProviders
+            self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
                 // 这只观察上游，不拥有或停止 Harness 正在执行的任务。
@@ -189,12 +211,27 @@ extension SessionStore {
             let options = try await client.modelOptions()
             guard appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
+            // 聚合目录里某个 Runtime 缺席（次要通道这次没拉成）时，不能记成已刷新，也不能清掉
+            // 它上一份目录；否则菜单会落到内置兜底，直到强制刷新才变成真实目录（#778）。
+            let refreshedProviders = Set(options.map { Self.normalizedRuntimeProvider($0.runtimeProvider) })
             for provider in RuntimeFeatureSupport.runtimeProviders {
-                turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                if refreshedProviders.contains(provider) {
+                    turnModelRefreshByRuntime[provider] = (hostScope, Date())
+                } else {
+                    turnModelRefreshByRuntime.removeValue(forKey: provider)
+                }
             }
-            if !options.isEmpty || force {
-                appServerModelOptions = options
+            if !options.isEmpty {
+                appServerModelOptions = options + appServerModelOptions.filter {
+                    let provider = Self.normalizedRuntimeProvider($0.runtimeProvider)
+                    return !refreshedProviders.contains(provider) && availableRuntimeProviders.contains(provider)
+                }
+            } else if force {
+                appServerModelOptions = []
             }
+            // 聚合结果分不清「该 Runtime 成功返回空目录」与「这次没拉成」，沿用的旧条目要等定向补拉确认。
+            retainedModelCatalogProviders = Set(appServerModelOptions.map { Self.normalizedRuntimeProvider($0.runtimeProvider) })
+                .subtracting(refreshedProviders)
             if force {
                 setStatusMessage(options.isEmpty ? L10n.text("ui.model_list_empty_using_built_in_options") : L10n.text("ui.model_list_refreshed"))
             }
@@ -202,6 +239,7 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
+                threadGoalRuntimeProviders = ["codex"]
             }
             appServerModelOptionsLastRefresh = Date()
             for provider in RuntimeFeatureSupport.runtimeProviders {
@@ -213,11 +251,13 @@ extension SessionStore {
         }
     }
 
-    private func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
+    /// 发送解析与 Composer 共用：目录里还没有该 Runtime 时按 Runtime 定向补拉一次。
+    func prepareTurnModelOptions(runtimeProvider: String, hostScope: HostScope) async {
         guard appStore.activeHostScope == hostScope else { return }
         let provider = Self.normalizedRuntimeProvider(runtimeProvider)
         guard RuntimeFeatureSupport.runtimeProviders.contains(provider) else { return }
-        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }) {
+        if appServerModelOptions.contains(where: { Self.normalizedRuntimeProvider($0.runtimeProvider) == provider }),
+           !retainedModelCatalogProviders.contains(provider) {
             return
         }
         if let refresh = turnModelRefreshByRuntime[provider], refresh.hostScope == hostScope,
@@ -257,6 +297,7 @@ extension SessionStore {
             appServerModelOptions = appServerModelOptions.filter {
                 !refreshedProviders.contains(Self.normalizedRuntimeProvider($0.runtimeProvider))
             } + options
+            retainedModelCatalogProviders.subtract(refreshedProviders)
         }
     }
 
@@ -273,6 +314,10 @@ extension SessionStore {
             guard appStore.activeHostScope == hostScope else { return false }
             if available {
                 availableRuntimeProviders.insert(provider)
+                if (try? await clientFactory().runtimeSupportsThreadGoals(runtimeProvider: provider)) == true,
+                   appStore.activeHostScope == hostScope {
+                    threadGoalRuntimeProviders.insert(provider)
+                }
                 if provider == Self.nativeHarnessRuntimeProvider {
                     installNativeHarnessHostEvents()
                 }
@@ -611,7 +656,7 @@ extension SessionStore {
             reason: .invalidation
         )
         if let previousSession {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if let previousSession, previousSession.isLocalDraft {
             discardLocalDraft(previousSession)
@@ -621,10 +666,8 @@ extension SessionStore {
         }
         setErrorMessage(nil)
         disconnectWebSocket()
-        if let previousSession, supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
     }
 
@@ -839,17 +882,13 @@ extension SessionStore {
         HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if wasNoOpSelection {
             return true
         }
-        if let previousSession,
-           previousSession.id != session.id,
-           supportsCodexThreadManagement(previousSession) {
-            if queuedRunningTurnsBySessionID[previousSession.id]?.isEmpty == false {
-                ensureQueuedSessionMonitoring(sessionID: previousSession.id)
-            }
+        if let previousSession, previousSession.id != session.id {
+            continueQueuedMonitoringAfterLeaving(previousSession)
         }
         if let previousSession,
            previousSession.id != session.id,
@@ -1716,6 +1755,10 @@ extension SessionStore {
         isAppInBackground = true
         networkRecoveryTask?.cancel()
         networkRecoveryTask = nil
+        // 全局发现跨页沿用的 cursor 只在签发它的网关连接内有效，回后台随即丢弃 Runtime bundle。
+        // 旧遍历不能在回前台后用旧 bundle 重连续翻；下一轮从首页开始（#792）。
+        sessionLibraryIndexRefreshJob?.task.cancel()
+        sessionLibraryIndexRefreshJob = nil
         guard connectionTermination == nil, !appStore.requiresRePairing else {
             return
         }
@@ -1733,7 +1776,7 @@ extension SessionStore {
         }
 
         cancelWebSocketReconnect(resetAttempts: false)
-        stopAllQueuedSessionMonitoring()
+        stopAllQueuedSessionMonitoring(preservingReconnectBudget: true)
         webSocketConnectionGeneration += 1
         let socket = webSocket
         webSocket = nil
@@ -1786,6 +1829,7 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"), presentation: .silent)
             return
         }
+        var recoveryHistory: Task<Bool, Never>?
         if let reconnectSessionID, selectedSessionID == reconnectSessionID {
             // 后台挂起前收到最终回答时，turn/completed 可能落在断线窗口。先重启轻量
             // 最新 Turn 对账，与前台刷新并行；精确终态会保护后续陈旧 running 列表。
@@ -1793,17 +1837,41 @@ extension SessionStore {
                 sessionID: reconnectSessionID,
                 hostScope: foregroundSelectionLease.hostScope
             )
+            // 完整历史走会话所属 Runtime 的通道（路由跨 bundle 沿用），不依赖工作区列表结果。
+            // 与列表刷新并行发出，别的 Runtime 列表慢或失败时不再拖住它（#790）。
+            recoveryHistory = Task {
+                guard !Task.isCancelled else { return false }
+                return await reconcileHistoryForRecovery(
+                    sessionID: reconnectSessionID,
+                    generation: recoveryGeneration,
+                    reconcilesSessionState: false
+                )
+            }
         }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
         await refreshUntilLoaded(maxWait: 10, autoAttach: false)
-        guard !Task.isCancelled, !isAppInBackground else { return }
-        var didReconcileFullHistory = false
-        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
-            didReconcileFullHistory = await reconcileHistoryForRecovery(
-                sessionID: reconnectSessionID,
-                generation: recoveryGeneration
-            )
+        guard !Task.isCancelled, !isAppInBackground else {
+            // 并行的恢复历史不继承本任务的取消。撤掉本代 job，迟到响应才不会在后台落地。
+            recoveryHistory?.cancel()
+            if let reconnectSessionID,
+               let job = historyLoadJobsBySessionID[reconnectSessionID],
+               job.recoveryGeneration == recoveryGeneration {
+                cancelHistoryLoadJob(job, sessionID: reconnectSessionID)
+            }
+            return
+        }
+        let didReconcileFullHistory = await recoveryHistory?.value ?? false
+        if didReconcileFullHistory,
+           !Task.isCancelled,
+           !isAppInBackground,
+           recoveryGeneration == recoveryHistoryGeneration,
+           let reconnectSessionID,
+           selectedSessionID == reconnectSessionID,
+           let session = sessionsByID[reconnectSessionID],
+           !session.isLocalDraft {
+            // 状态点读必须在列表落地之后：列表请求发出更早，晚到的快照不能盖掉点读结果。
+            await reconcileSessionStateAfterHistoryRefresh(session)
         }
         guard !Task.isCancelled, !isAppInBackground else { return }
         ensureAllQueuedSessionMonitoring()
@@ -1864,104 +1932,4 @@ extension SessionStore {
         disconnectWebSocket()
         setStatusMessage(L10n.text("ui.session_stopped"))
     }
-
-    func refreshSelectedThreadGoal() async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer { isUpdatingThreadGoal = false }
-        do {
-            let goal = try await clientFactory().threadGoal(threadID: sessionID)
-            if let goal {
-                applyThreadGoal(goal, fallbackSessionID: sessionID)
-            } else {
-                clearThreadGoal(sessionID: sessionID)
-            }
-        } catch {
-            threadGoalErrorMessage = error.localizedDescription
-        }
-    }
-
-    @discardableResult
-    func setThreadGoal(
-        threadID: SessionID,
-        objective: String?,
-        status: ThreadGoalStatus?,
-        tokenBudget: Int64?,
-        expectedHostScope: HostScope? = nil
-    ) async -> Bool {
-        let hostScope = expectedHostScope ?? appStore.activeHostScope
-        guard appStore.activeHostScope == hostScope else { return false }
-        if let session = sessionsByID[threadID],
-           isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.read_only")
-            return false
-        }
-        let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let normalizedObjective, normalizedObjective.isEmpty {
-            threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
-            return false
-        }
-        if let tokenBudget, tokenBudget <= 0 {
-            threadGoalErrorMessage = L10n.text("ui.token_budget_must_be_greater_than_0")
-            return false
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer {
-            if appStore.activeHostScope == hostScope { isUpdatingThreadGoal = false }
-        }
-        do {
-            let goal = try await clientFactory().setThreadGoal(
-                threadID: threadID,
-                objective: normalizedObjective,
-                status: status,
-                tokenBudget: tokenBudget
-            )
-            guard appStore.activeHostScope == hostScope else { return false }
-            if let status, status != .complete {
-                clearLocalCompletedGoalMark(goal, sessionID: threadID)
-            }
-            applyThreadGoal(goal, fallbackSessionID: threadID, respectsLocalCompletion: false)
-            setStatusMessage(L10n.text("ui.goal_updated"))
-            return true
-        } catch {
-            guard appStore.activeHostScope == hostScope else { return false }
-            threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(for: error)
-            return false
-        }
-    }
-
-    func updateSelectedThreadGoalStatus(_ status: ThreadGoalStatus) async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        _ = await setThreadGoal(threadID: sessionID, objective: nil, status: status, tokenBudget: nil)
-    }
-
-    func clearSelectedThreadGoal() async {
-        guard let sessionID = selectedSessionID else {
-            return
-        }
-        if let session = sessionsByID[sessionID],
-           isProtocolReadOnlySession(session) {
-            threadGoalErrorMessage = L10n.text("ui.read_only")
-            return
-        }
-        isUpdatingThreadGoal = true
-        threadGoalErrorMessage = nil
-        defer { isUpdatingThreadGoal = false }
-        do {
-            try await clientFactory().clearThreadGoal(threadID: sessionID)
-            clearThreadGoal(sessionID: sessionID)
-            setStatusMessage(L10n.text("ui.target_cleared"))
-        } catch {
-            threadGoalErrorMessage = error.localizedDescription
-            setErrorMessage(for: error)
-        }
-    }
-
 }

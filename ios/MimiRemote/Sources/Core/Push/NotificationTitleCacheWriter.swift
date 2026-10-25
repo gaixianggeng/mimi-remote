@@ -185,7 +185,7 @@ final class NotificationTitleCacheWriter: ObservableObject {
             let entry = NotificationTitleCache.Entry(
                 title: title,
                 project: session.project,
-                runtime: session.runtimeProvider == "claude" ? "claude" : "codex",
+                runtime: Self.cacheRuntime(session.runtimeProvider),
                 hostName: hostName,
                 updatedAt: session.updatedAt ?? session.recencyAt ?? session.createdAt ?? .distantPast
             )
@@ -203,6 +203,15 @@ final class NotificationTitleCacheWriter: ObservableObject {
             }
         }
         return result
+    }
+
+    /// 缓存只记三种运行时；认不出的值按 Codex 兜底，与旧版只区分 Claude 的行为一致。
+    nonisolated static func cacheRuntime(_ provider: String?) -> String {
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) {
+        case "claude": return "claude"
+        case "deepseek": return "deepseek"
+        default: return "codex"
+        }
     }
 
     /// 当前档案的条目整体替换（消失的会话随之移除），其它 Mac 的条目原样保留，

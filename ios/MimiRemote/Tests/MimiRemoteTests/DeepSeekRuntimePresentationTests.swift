@@ -28,8 +28,10 @@ final class DeepSeekRuntimePresentationTests: XCTestCase {
     }
 
     func testDeepSeekDefaultPreferencesUseIndependentKeysWithoutGPTFallback() {
-        XCTAssertFalse(RuntimeFeatureSupport.supportsPlanningAndGoals(for: "deepseek"))
-        XCTAssertTrue(RuntimeFeatureSupport.supportsPlanningAndGoals(for: "codex"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPlanning(for: "deepseek"))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPlanning(for: "codex"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsGoals(for: "deepseek", declaredBy: ["codex", "deepseek"]))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsGoals(for: "codex", declaredBy: ["codex"]))
         XCTAssertEqual(DefaultModelRuntime.deepseek.payloadRuntimeProvider, "deepseek")
         XCTAssertEqual(
             DefaultModelPreferences.modelOptionIDKey(for: "deepseek"),

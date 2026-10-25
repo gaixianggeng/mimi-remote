@@ -97,6 +97,8 @@ struct ConversationTimelineView: View {
             hasHistorySavingsNotice: explicitSessionID == nil && sessionStore.selectedHistorySavingsNotice != nil,
             liveStatusReadiness: liveStatus?.readiness
         )
+        let tailStatus: ConversationLiveStatusRow.Content? = liveStatus.map { .live($0) }
+            ?? (shouldShowInlineHistoryLoading ? .historyLoading : nil)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottom) {
                 // 用 List 替代 ScrollView + LazyVStack：行高是真实测量值、
@@ -127,20 +129,14 @@ struct ConversationTimelineView: View {
                                     crossSessionOriginMessageID: crossSessionOriginMessageID
                                 )
                             }
-                            if let liveStatus {
+                            if let tailStatus {
                                 // 独立于 timelineItems 的尾部行：不参与条目 ID、历史锚点与分组投影，
                                 // 贴底跟随仍以下方哨兵为准，出现/消失只表现为内容高度变化。
-                                // 本轮所有步骤都在它上方，「进行中」只有这一个落点（#537）。
-                                ConversationLiveStatusRow(status: liveStatus, layout: layout)
+                                // 本轮所有步骤都在它上方，「进行中」只有这一个落点（#537）；
+                                // 历史加载也落在同一行，状态切换只换文字，不增减行（#782）。
+                                ConversationLiveStatusRow(content: tailStatus, layout: layout)
                                     .frame(minHeight: systemMinimumRowContentHeight(insets: layout.messageRowInsets))
                                     .id(Self.timelineLiveStatusRowID)
-                                    .listRowSeparator(.hidden)
-                                    .listRowInsets(layout.messageRowInsets)
-                                    .listRowBackground(Color.clear)
-                            }
-                            if shouldShowInlineHistoryLoading {
-                                historyLoadingRow
-                                    .frame(minHeight: systemMinimumRowContentHeight(insets: layout.messageRowInsets))
                                     .listRowSeparator(.hidden)
                                     .listRowInsets(layout.messageRowInsets)
                                     .listRowBackground(Color.clear)
@@ -302,6 +298,17 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
+        case .message(let message) where message.activityPayload?.turnHint != nil:
+            if let hint = message.activityPayload?.turnHint {
+                ConversationTurnHintCard(
+                    hint: hint,
+                    layout: layout,
+                    canAct: canActOnTurnHint(message),
+                    onAction: { action in
+                        startTurnHintAction(action, from: message)
+                    }
+                )
+            }
         case .message(let message), .processMessage(let message):
             MessageRow(
                 message: message,
@@ -355,6 +362,25 @@ struct ConversationTimelineView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("conversation.fileChanges.\(changes.id)")
+        }
+    }
+
+    private func canActOnTurnHint(_ message: ConversationMessage) -> Bool {
+        guard displayedSessionID == sessionStore.selectedSessionID else { return false }
+        return sessionStore.captureTurnHintActionTarget(for: message) != nil
+    }
+
+    /// target 在这个同步回调里捕获，不能移进 Task；否则页面切换可能先于目标绑定。
+    private func startTurnHintAction(
+        _ action: ConversationTurnHint.UserAction,
+        from message: ConversationMessage
+    ) -> Task<Bool, Never>? {
+        guard displayedSessionID == sessionStore.selectedSessionID,
+              let target = sessionStore.captureTurnHintActionTarget(for: message) else {
+            return nil
+        }
+        return Task { @MainActor in
+            await sessionStore.sendTurnHintAction(action, target: target)
         }
     }
 
@@ -437,6 +463,7 @@ struct ConversationTimelineView: View {
         return initialUserMessage.id
     }
 
+    /// `liveStatusReadiness` 为 nil 表示尾部没有实时状态行。
     static func shouldShowInlineHistoryLoading(
         timelineItemsAreEmpty: Bool,
         isHistoryLoading: Bool,
@@ -448,8 +475,9 @@ struct ConversationTimelineView: View {
             && isHistoryLoading
             && !isLoadingEarlierHistory
             && !hasHistorySavingsNotice
-            // 实时状态已表达同一段历史恢复，不再并排显示第二个等待提示。
-            && liveStatusReadiness != .loadingHistory
+            // 实时状态行已占据尾部：恢复历史时它显示「正在恢复会话…」，已连接后的后台刷新
+            // 不另起第二行，也不换掉时长、阶段或连接告警（#537、#782）。
+            && liveStatusReadiness == nil
     }
 
     private var loadEarlierRow: some View {
@@ -481,29 +509,6 @@ struct ConversationTimelineView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private var historyLoadingRow: some View {
-        HStack {
-            HStack(alignment: .center, spacing: 7) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(workbenchSecondaryText)
-                Text(L10n.text("ui.loading_session_records"))
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .foregroundStyle(workbenchSecondaryText)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(statusChipBackground, in: Capsule())
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("conversation.historyLoading")
-        .accessibilityLabel(L10n.text("ui.loading_session_records"))
-        .allowsHitTesting(false)
     }
 
     private func scrollMetrics(for geometry: ScrollGeometry) -> ConversationTimelineScrollMetrics {

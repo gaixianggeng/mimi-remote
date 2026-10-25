@@ -52,6 +52,9 @@ describe("执行策略", () => {
     expect(await decision(options, "WebFetch", { url: "https://example.com" })).toBe("deny");
     expect(await decision(options, "WebSearch", { query: "query" })).toBe("deny");
     expect(await decision(options, "mcp__server__write", {})).toBe("deny");
+    expect(await decision(options, "mcp__ccd_turn__wrap_up", {})).toBeUndefined();
+    expect(await decision(options, "mcp__ccd_session__start_session", {})).toBeUndefined();
+    expect(await decision(options, "mcp__ccd_session__start_session_extra", {})).toBe("deny");
     expect(await decision(options, "Agent", {})).toBe("deny");
     // 技能只供用户主动调用：模型看不到技能列表，Skill 工具被拒；技能与插件里的命令 hook 不执行。
     expect(options.skills).toEqual([]);

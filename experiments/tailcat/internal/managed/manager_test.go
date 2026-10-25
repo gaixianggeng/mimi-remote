@@ -2,6 +2,8 @@ package managed
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -387,5 +389,35 @@ func TestReplaceManagedClientsFailsClosedWhenRestartFails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(manager.managedClients, []string{oldManagedKey}) {
 		t.Fatal("失败的替换不应提交新的内存策略")
+	}
+}
+
+func TestShutdownHandlerAcknowledgesBeforeStopping(t *testing.T) {
+	manager := &Manager{shutdown: make(chan struct{})}
+	recorder := httptest.NewRecorder()
+	manager.shutdownHandler(recorder, httptest.NewRequest(http.MethodPost, "/shutdown", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("shutdown should be acknowledged, got HTTP %d", recorder.Code)
+	}
+	select {
+	case <-manager.shutdown:
+	default:
+		t.Fatal("shutdown request did not stop the managed host")
+	}
+	// agentd 可能在超时后重试；重复请求不能 panic。
+	manager.shutdownHandler(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/shutdown", nil))
+}
+
+func TestShutdownHandlerRejectsGet(t *testing.T) {
+	manager := &Manager{shutdown: make(chan struct{})}
+	recorder := httptest.NewRecorder()
+	manager.shutdownHandler(recorder, httptest.NewRequest(http.MethodGet, "/shutdown", nil))
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /shutdown must not stop the host, got HTTP %d", recorder.Code)
+	}
+	select {
+	case <-manager.shutdown:
+		t.Fatal("GET /shutdown stopped the managed host")
+	default:
 	}
 }

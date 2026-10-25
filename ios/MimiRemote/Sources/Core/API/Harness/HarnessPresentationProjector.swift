@@ -60,7 +60,11 @@ enum HarnessPresentationProjector {
         case HarnessWireEventType.turnStart:
             return [.turnStarted(metadata(event, sessionID: sessionID))]
         case HarnessWireEventType.turnEnd:
-            return [.turnCompleted(metadata(event, sessionID: sessionID))]
+            let turnMetadata = metadata(event, sessionID: sessionID)
+            guard let settlement = HarnessTurnEndReason.settlement(for: event) else {
+                return [.turnCompleted(turnMetadata)]
+            }
+            return [.turnCompleted(turnMetadata.withTurnLifecycle(settlement.lifecycle, error: settlement.error))]
         case HarnessWireEventType.userMessage:
             return projectUserMessage(event, sessionID: sessionID)
         case HarnessWireEventType.assistantMessage:
@@ -219,9 +223,13 @@ enum HarnessPresentationProjector {
     /// 投影一轮活动 attempt 的收尾。
     ///
     /// `producedAssistantMessage == false` 时**不产出 messageCompleted**：
-    /// 被用户取消的 attempt（`eventType == assistant/attempt`）没有完整正文，
+    /// 没有提交持久消息的 attempt（`eventType == assistant/attempt`）没有可回读的正文，
     /// 把它当成一条助手消息会让用户看到半截内容被标记为"完成"。
     /// 这是契约 §2.7 那条"committed 不等于有正文"在展示层的落点。
+    ///
+    /// 0.2.x 的取消会提交一条带 `interrupted: true` 的持久消息，结算帧与正常完成同形。
+    /// 这里照常定稿已输出的前缀（与 Codex/Claude 停止后保留内容一致）；中断标记由同 seq
+    /// 的持久记录投影补上，因此不依赖持久记录与 end 帧谁先到。
     static func project(
         attempt: HarnessJournalAttempt,
         sessionID: SessionID,
@@ -338,7 +346,7 @@ enum HarnessPresentationProjector {
         guard let id = messageID ?? stableMessageID(for: event, prefix: "assistant") else {
             return []
         }
-        return [.messageCompleted(
+        var events: [AgentEvent] = [.messageCompleted(
             AgentMessage(
                 id: id,
                 sessionID: sessionID,
@@ -354,6 +362,29 @@ enum HarnessPresentationProjector {
                 messageID: id
             )
         )]
+        if event.isInterruptedAssistantMessage {
+            let markerID = interruptionMarkerID(forAssistantMessageID: id)
+            // 走 messageCompleted 而不是 warning：按稳定 id 原位覆盖，snapshot 重放与
+            // 历史页重开都不会追加第二条。seq 留空，否则会被同 seq 的正文挡掉。
+            events.append(.messageCompleted(
+                AgentMessage(
+                    id: markerID,
+                    sessionID: sessionID,
+                    itemID: markerID,
+                    role: .system,
+                    kind: .warning,
+                    content: L10n.text("harness.reply_interrupted"),
+                    sendStatus: .confirmed
+                ),
+                metadata(seq: nil, sessionID: sessionID, itemID: markerID, messageID: markerID)
+            ))
+        }
+        return events
+    }
+
+    /// 被中断回复的标记身份。历史页与实时投影共用，派生自同一个助手消息 id。
+    static func interruptionMarkerID(forAssistantMessageID id: MessageID) -> MessageID {
+        "\(id)-interrupted"
     }
 
     private static func projectSystemMessage(_ event: HarnessDurableEvent, sessionID: SessionID) -> [AgentEvent] {

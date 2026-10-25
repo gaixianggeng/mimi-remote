@@ -7,58 +7,10 @@ import path from "node:path";
 import type { App } from "../src/app.ts";
 import type { OutboundFrame } from "../src/rpc/frames.ts";
 import { Session } from "../src/session/session.ts";
+import { notificationTurnId } from "../src/claude/itemIds.ts";
+import { ScriptedQuery } from "./support/scripted-query.ts";
 
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-adapter-attribution-")));
-
-/** 只实现运行时用到的 Query 接口；emit 的消息按顺序交给适配器。 */
-class ScriptedQuery {
-  readonly sent: Array<Record<string, any>> = [];
-  private readonly outbox: unknown[] = [];
-  private wake: (() => void) | undefined;
-  private closed = false;
-
-  attach(prompt: AsyncIterable<unknown>) {
-    void (async () => {
-      for await (const message of prompt) this.sent.push(message as Record<string, any>);
-    })();
-  }
-
-  emit(message: Record<string, unknown>) {
-    this.outbox.push(message);
-    this.wake?.();
-  }
-
-  async *[Symbol.asyncIterator]() {
-    while (true) {
-      if (this.outbox.length) {
-        yield this.outbox.shift();
-        continue;
-      }
-      if (this.closed) return;
-      await new Promise<void>((resolve) => (this.wake = resolve));
-    }
-  }
-
-  interrupts = 0;
-  /** 设置后切换模型会停在这里，模拟 turn/start 等待控制请求的窗口。 */
-  settingsGate: Promise<void> | undefined;
-
-  async initializationResult() {
-    return {};
-  }
-  async interrupt() {
-    this.interrupts += 1;
-  }
-  async setModel() {
-    await this.settingsGate;
-  }
-  async setPermissionMode() {}
-  async applyFlagSettings() {}
-  close() {
-    this.closed = true;
-    this.wake?.();
-  }
-}
 
 let app: App;
 let script: ScriptedQuery;
@@ -73,8 +25,9 @@ beforeAll(async () => {
     claudeExecutable: () => "unused",
     // 脚本化的 SDK 查询不启动真实 CLI，版本门槛直接放行。
     probeClaudeCode: async () => ({ status: "ok", version: "9.9.9" }),
-    startQuery: (({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    startQuery: (({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { canUseTool?: ScriptedQuery["canUseTool"] } }) => {
       script = new ScriptedQuery();
+      script.canUseTool = options.canUseTool;
       script.attach(prompt);
       return script;
     }) as never,
@@ -156,6 +109,92 @@ describe("output attribution", () => {
     script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
     await settle();
     expect(completedTurns()).toEqual([turn.id, next.turn.id]);
+  });
+
+  test("a steer sent before Claude answers the previous steer joins the same turn", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("also this"), clientUserMessageId: "gap-1" });
+    await settle();
+    const firstSteer = script.sent.at(-1)!;
+
+    // 引导打断了第一段输出，中间结果只吸收首条消息；引导那一轮还没开始输出。
+    for (const message of reply(turn.id, "msg_g1", "partial")) script.emit(message);
+    script.emit({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } });
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [turn.id] });
+    await settle();
+
+    // 这段空档里再补一句：并入同一个 turn，以 now 优先级送达 CLI。
+    const accepted = await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("and that"), clientUserMessageId: "gap-2" });
+    expect(accepted).toEqual({ turnId: turn.id });
+    await settle();
+    const secondSteer = script.sent.at(-1)!;
+    expect(secondSteer).toMatchObject({ priority: "now", origin: { kind: "human" } });
+    const echoed = frames.filter(
+      (frame: any) => frame.method === "item/completed" && frame.params.item.type === "userMessage" && frame.params.item.clientId === "gap-2",
+    ) as any[];
+    expect(echoed.map((frame) => [frame.params.turnId, frame.params.item.id])).toEqual([[turn.id, secondSteer.uuid]]);
+    // 期望的 turn 不符时仍按原规则拒绝，不发给 CLI。
+    const mismatch = await call("turn/steer", { threadId, expectedTurnId: "stale", input: text("x"), clientUserMessageId: null }).catch(
+      (error) => error,
+    );
+    expect(mismatch.data).toMatchObject({ reason: "turn_id_mismatch", activeTurnId: turn.id });
+
+    // Claude 先回应第一条引导；第二条还没回应，turn 继续。
+    for (const message of reply(firstSteer.uuid, "msg_g2", "answer to steer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [firstSteer.uuid] });
+    await settle();
+    expect(completedTurns()).not.toContain(turn.id);
+
+    // 回应第二条时的审批同样归属这个 turn。
+    script.emit({ type: "stream_event", event: { type: "message_start", message: { id: "msg_g3" } }, user_message_uuid: secondSteer.uuid });
+    await settle();
+    const cancel = new AbortController();
+    const decision = script.canUseTool!("Bash", { command: "ls" }, { signal: cancel.signal, toolUseID: "toolu_gap" });
+    const approval = frames.find((frame: any) => frame.method === "item/commandExecution/requestApproval") as any;
+    expect(approval.params).toMatchObject({ threadId, turnId: turn.id });
+    cancel.abort();
+    await decision;
+    script.emit({ type: "assistant", message: { id: "msg_g3", content: [{ type: "text", text: "answer to second steer" }] } });
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [secondSteer.uuid] });
+    await settle();
+
+    expect(completedTurns().filter((id) => id === turn.id)).toHaveLength(1);
+    const completed = frames.find((frame: any) => frame.method === "turn/completed" && frame.params.turn.id === turn.id) as any;
+    expect(completed.params.turn.status).toBe("completed");
+    expect(agentTexts().filter(([turnId]) => turnId === turn.id)).toEqual([
+      [turn.id, "partial"],
+      [turn.id, "answer to steer"],
+      [turn.id, "answer to second steer"],
+    ]);
+    // 每条消息只发给 CLI 一次。
+    expect(script.sent.map((message) => message.uuid)).toEqual([turn.id, firstSteer.uuid, secondSteer.uuid]);
+  });
+
+  test("Claude answering both gap steers in one round completes the turn once", async () => {
+    const started = await call("thread/start", { cwd: sandbox });
+    const threadId = started.thread.id;
+    const { turn } = await call("turn/start", { threadId, input: text("first") });
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("also this"), clientUserMessageId: null });
+    for (const message of reply(turn.id, "msg_m1", "partial")) script.emit(message);
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [turn.id] });
+    await settle();
+    await call("turn/steer", { threadId, expectedTurnId: turn.id, input: text("and that"), clientUserMessageId: null });
+    await settle();
+    const [, firstSteer, secondSteer] = script.sent;
+
+    for (const message of reply(firstSteer!.uuid, "msg_m2", "both answered")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [firstSteer!.uuid, secondSteer!.uuid] });
+    await settle();
+    expect(completedTurns().filter((id) => id === turn.id)).toHaveLength(1);
+    expect(agentTexts().filter(([turnId]) => turnId === turn.id).map(([, body]) => body)).toEqual(["partial", "both answered"]);
+    // 全部消息都已回应：可以开始新 turn。
+    const next = await call("turn/start", { threadId, input: text("next") });
+    for (const message of reply(next.turn.id, "msg_m3", "next answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [next.turn.id] });
+    await settle();
+    expect(completedTurns()).toContain(next.turn.id);
   });
 
   test("an explicit interrupt ends the turn even with a steer pending", async () => {
@@ -286,5 +325,157 @@ describe("output attribution", () => {
     expect(agentTexts().at(-1)).toEqual([turns.at(-1), "background task finished"]);
     const started = frames.filter((frame: any) => frame.method === "turn/started").at(-1) as any;
     expect(started.params.turn.id).toBe(turns.at(-1));
+  });
+});
+
+describe("continuation after a background task (#797)", () => {
+  const notification = (runId: string) => ({ type: "system", subtype: "task_notification", task_id: `task-${runId}`, run_id: runId, status: "completed", output_file: "", summary: "done" });
+  const round = (userMessageUuids: string[] = []) => ({ type: "system", subtype: "init", ...(userMessageUuids.length ? { user_message_uuids: userMessageUuids } : {}) });
+  const startedTurns = () => frames.filter((frame: any) => frame.method === "turn/started").map((frame: any) => frame.params.turn.id);
+
+  /** 一个跑完一轮、进程仍在的会话。 */
+  async function idleThread() {
+    const { thread } = await call("thread/start", { cwd: sandbox });
+    const { turn } = await call("turn/start", { threadId: thread.id, input: text("run it in the background") });
+    for (const message of reply(turn.id, `msg_${turn.id.slice(0, 6)}`, "started")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [turn.id] });
+    await settle();
+    return thread.id as string;
+  }
+
+  test("the continuation carries the id history gives it, so stop and steer reach it", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-a"));
+    script.emit(round());
+    for (const message of reply(undefined, "msg_cont_a", "background finished")) script.emit(message);
+    await settle();
+    const continuation = notificationTurnId(threadId, "run-a");
+    expect(startedTurns().at(-1)).toBe(continuation);
+    expect(app.manager.get(threadId)!.activeTurnId).toBe(continuation);
+
+    const steered = await call("turn/steer", { threadId, expectedTurnId: continuation, input: text("also check the log"), clientUserMessageId: null });
+    expect(steered).toEqual({ turnId: continuation });
+    const steer = script.sent.at(-1)!;
+    expect(steer).toMatchObject({ priority: "now", origin: { kind: "human" } });
+
+    const interruptsBefore = script.interrupts;
+    await call("turn/interrupt", { threadId, turnId: continuation });
+    expect(script.interrupts).toBe(interruptsBefore + 1);
+    script.emit({ type: "result", subtype: "error_during_execution", user_message_uuids: [steer.uuid], origin: { kind: "task-notification", runId: "run-a" } });
+    await settle();
+    const completed = frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any;
+    expect(completed.params.turn).toMatchObject({ id: continuation, status: "interrupted" });
+  });
+
+  test("the continuation is the active turn from the moment its round begins, before any output", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-w"));
+    script.emit(round());
+    await settle();
+    // 首帧输出前（模型排队、重试）：新的 turn/start 不能被接受，否则续写的输出会挂到它名下。
+    const continuation = notificationTurnId(threadId, "run-w");
+    expect(startedTurns().at(-1)).toBe(continuation);
+    expect(app.manager.get(threadId)!.activeTurnId).toBe(continuation);
+    const rejected = await call("turn/start", { threadId, input: text("something new") }).catch((error) => error);
+    expect(rejected.data).toMatchObject({ reason: "active_turn", activeTurnId: continuation });
+
+    const interruptsBefore = script.interrupts;
+    await call("turn/interrupt", { threadId, turnId: continuation });
+    expect(script.interrupts).toBe(interruptsBefore + 1);
+    script.emit({ type: "result", subtype: "error_during_execution", origin: { kind: "task-notification", runId: "run-w" } });
+    await settle();
+    const completed = frames.filter((frame: any) => frame.method === "turn/completed").at(-1) as any;
+    expect(completed.params.turn).toMatchObject({ id: continuation, status: "interrupted" });
+  });
+
+  test("a continuation left waiting for a later round is closed when the CLI goes idle without one", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-late"));
+    script.emit(round());
+    // 只有一轮属于更早的通知、没有输出，之后 CLI 直接回到 idle：续写不能一直挂着挡住新的 turn/start。
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-earlier" } });
+    script.emit({ type: "system", subtype: "session_state_changed", state: "idle" });
+    await settle();
+    const continuation = notificationTurnId(threadId, "run-late");
+    expect(completedTurns().at(-1)).toBe(continuation);
+    expect(app.manager.get(threadId)!.activeTurnId).toBeUndefined();
+  });
+
+  test("a steer that Claude answers after the continuation's own result still completes the continuation", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-s"));
+    script.emit(round());
+    for (const message of reply(undefined, "msg_cont_s", "background finished")) script.emit(message);
+    await settle();
+    const continuation = notificationTurnId(threadId, "run-s");
+    await call("turn/steer", { threadId, expectedTurnId: continuation, input: text("and then this"), clientUserMessageId: null });
+    const steer = script.sent.at(-1)!;
+    // 实测：CLI 先以续写自己的结果收尾（没有用户消息可吸收），再单独一轮回应引导。
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-s" } });
+    await settle();
+    expect(completedTurns()).not.toContain(continuation);
+    script.emit(round([steer.uuid]));
+    for (const message of reply(steer.uuid, "msg_steer_s", "answer to steer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [steer.uuid] });
+    await settle();
+    expect(startedTurns().at(-1)).toBe(continuation);
+    expect(completedTurns().at(-1)).toBe(continuation);
+    expect(agentTexts().slice(-2)).toEqual([
+      [continuation, "background finished"],
+      [continuation, "answer to steer"],
+    ]);
+  });
+
+  test("notifications arriving together continue under the last one; the empty round of the first does not take the id", async () => {
+    const threadId = await idleThread();
+    const startedBefore = startedTurns().length;
+    script.emit(notification("run-1"));
+    script.emit(notification("run-2"));
+    // CLI 为第一条通知跑了一轮空的，回复出现在最后一条通知的那一轮。
+    script.emit(round());
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-1" } });
+    script.emit(round());
+    for (const message of reply(undefined, "msg_both", "both finished")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-2" } });
+    await settle();
+    expect(startedTurns().slice(startedBefore)).toEqual([notificationTurnId(threadId, "run-2")]);
+    expect(completedTurns().at(-1)).toBe(notificationTurnId(threadId, "run-2"));
+  });
+
+  test("a notification arriving after a continuation began waits for its own round", async () => {
+    const threadId = await idleThread();
+    script.emit(notification("run-x"));
+    script.emit(round());
+    script.emit(notification("run-y"));
+    for (const message of reply(undefined, "msg_x", "x finished")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-x" } });
+    script.emit(round());
+    for (const message of reply(undefined, "msg_y", "y finished")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", origin: { kind: "task-notification", runId: "run-y" } });
+    await settle();
+    expect(startedTurns().slice(-2)).toEqual([notificationTurnId(threadId, "run-x"), notificationTurnId(threadId, "run-y")]);
+  });
+
+  test("a notification folded into a user's turn is not reused by a later continuation", async () => {
+    const { thread } = await call("thread/start", { cwd: sandbox });
+    const threadId = thread.id as string;
+    const first = await call("turn/start", { threadId, input: text("work") });
+    script.emit(round([first.turn.id]));
+    for (const message of reply(first.turn.id, "msg_w1", "working")) script.emit(message);
+    // 任务在这一轮进行中完成，CLI 把通知并进这一轮。
+    script.emit(notification("run-folded"));
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [first.turn.id] });
+    await settle();
+    const second = await call("turn/start", { threadId, input: text("next") });
+    script.emit(round([second.turn.id]));
+    for (const message of reply(second.turn.id, "msg_w2", "next answer")) script.emit(message);
+    script.emit({ type: "result", subtype: "success", user_message_uuids: [second.turn.id] });
+    // 之后一段不是由通知触发的输出（没有 user_message_uuid）照常开新回合，不借用那条通知的 ID。
+    script.emit(round());
+    for (const message of reply(undefined, "msg_other", "something else")) script.emit(message);
+    script.emit({ type: "result", subtype: "success" });
+    await settle();
+    expect(startedTurns().at(-1)).not.toBe(notificationTurnId(threadId, "run-folded"));
+    expect(startedTurns().slice(-3, -1)).toEqual([first.turn.id, second.turn.id]);
   });
 });

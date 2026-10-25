@@ -18,6 +18,11 @@ on:
         required: false
         default: "Nightly Internal TestFlight"
         type: string
+      enable_managed_connection:
+        description: "显示尚未开放的托管连接入口；仅限内部测试，带入口的构建不得提交 App Store 审核（#887）"
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -74,6 +79,11 @@ on:
         required: true
         default: "Internal TestFlight 正式候选：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
         type: string
+      enable_managed_connection:
+        description: "显示尚未开放的托管连接入口；仅限内部测试，带入口的构建不得提交 App Store 审核（#887）"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -87,6 +97,32 @@ concurrency:
     ${{ !(inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) }}
 
 jobs:
+  tailcat-integration:
+    name: Tailcat integration (Linux)
+    # Tailcat 集成测试只依赖 127.0.0.1 上的 DERP/STUN fixture。hosted macOS 偶尔
+    # 回连超时，所以完整运行放在 Linux，macOS job 只编译。发布路径上传的是已过
+    # PR Gate 的 main，这里不再重跑，避免托管网络抖动让签名发布显示失败。
+    if: >-
+      !inputs.publish_internal_testflight &&
+      !(github.event_name == 'workflow_dispatch' && inputs.publish_app_store)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Setup Go for Tailcat
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+
+      - name: Test Tailcat module
+        working-directory: experiments/tailcat
+        run: go test ./... -count=1
+
   conversation-regressions:
     # 使用稳定版 Xcode 26 / iOS 26 Simulator 运行回归；工程仍以 iOS 18 为 deployment target，
     # 因此编译阶段会检查所有 iOS 26+ API 是否具备有效 availability fallback。
@@ -163,8 +199,8 @@ jobs:
         run: bash ./scripts/test-tailcat-mobile-build.sh
 
       - name: Compile Tailcat module tests
-        # Hosted macOS 偶尔无法在本地 DERP fixture 启动后 10 秒内回连。
-        # 真实 Go→XCFramework→iOS 链接仍由后续 iOS 构建覆盖。
+        # Hosted macOS 偶尔无法在本地 DERP fixture 启动后 10 秒内回连；完整运行由
+        # tailcat-integration（Linux）负责。真实 Go→XCFramework→iOS 链接仍由后续 iOS 构建覆盖。
         run: cd experiments/tailcat && go test ./... -run '^$' -count=1
 
       - name: Check physical-device GUI handoff
@@ -235,6 +271,7 @@ jobs:
       # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
       IOS_ASC_BUILD_NUMBER_MODE: shadow
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
+      IOS_MANAGED_CONNECTION_ENTRY: ${{ inputs.enable_managed_connection && 'YES' || 'NO' }}
     steps:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

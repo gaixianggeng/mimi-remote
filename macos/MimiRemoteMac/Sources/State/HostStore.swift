@@ -20,7 +20,7 @@ final class HostStore {
     private(set) var isExportingDiagnostics = false
     private(set) var appliedFixes: [String] = []
     private var isPerformingAction = false
-    private(set) var isBusy: Bool {
+    var isBusy: Bool {
         get { isPerformingAction || codexRuntimeUpdate.isUpdating }
         set { isPerformingAction = newValue }
     }
@@ -30,8 +30,9 @@ final class HostStore {
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
     private(set) var claudeConfiguration: ClaudeConfigurationResult?
-    private(set) var isUpdatingClaude = false
-    private(set) var claudeError: String?
+    var claudeTurnHintsConfiguration: ClaudeTurnHintsConfigurationResult?
+    var isUpdatingClaude = false
+    var claudeError: String?
     private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
     private(set) var isUpdatingDeepSeek = false
     private(set) var deepSeekError: String?
@@ -72,31 +73,6 @@ final class HostStore {
         return status?.networkStatus?.allowLAN ?? false
     }
 
-    var tailcatEnabled: Bool {
-        tailcatStatus?.enabled ?? false
-    }
-
-    var canChangeTailcat: Bool {
-        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
-    }
-
-    var tailcatDERPMapURL: String {
-        tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    var tailcatStatusDetail: String {
-        if owner == .homebrew {
-            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
-        }
-        if let tailcatError { return tailcatError }
-        if let tailcatNotice { return tailcatNotice }
-        if let error = tailcatStatus?.error, !error.isEmpty { return error }
-        guard let tailcatStatus, tailcatStatus.enabled else {
-            return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
-        }
-        return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
-    }
-
     private var claudeRuntime: AgentRuntimeStatus? {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("claude") == .orderedSame }
     }
@@ -105,7 +81,7 @@ final class HostStore {
         status?.runtimeStatus?.runtimes.first { $0.id.caseInsensitiveCompare("codex") == .orderedSame }
     }
 
-    private let agent: AgentCommandClient
+    let agent: AgentCommandClient
     private let services: ServiceManagementClient
     private let configCheck: AgentdConfigCheckClient
     private let homebrew: HomebrewServiceClient
@@ -681,7 +657,7 @@ final class HostStore {
     /// 这里做一次有界核对：能读到可信的当前状态就交给常规状态落地；读不到就进入明确的
     /// 失败态并保留恢复入口。不得为了让开关可用而直接写成 `.ready` —— 退出启动中不等于
     /// 宣称服务健康。
-    private func settleModuleChangeFailure(_ detail: String) async {
+    func settleModuleChangeFailure(_ detail: String) async {
         guard lifecycle == .starting else { return }
         // 能读到可信状态时，apply() 已按真实 serviceOK/processOK 落地；服务明确不可用
         // 就沿用那份更严重的状态。配置可能已改变且恢复未完成，不能因为进程还活着就把
@@ -706,7 +682,7 @@ final class HostStore {
         throw AgentClientError.commandFailed("运行中的 agentd 尚未确认模块设置，请检查版本并重启服务。")
     }
 
-    private func invalidateModulePairing() {
+    func invalidateModulePairing() {
         pairingRefreshGeneration &+= 1
         statusRequestSequence &+= 1
         pairing = nil
@@ -897,6 +873,42 @@ final class HostStore {
             tailcatNotice = wasEnabled
                 ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
                 : "中继配置已保存，将在启用 Tailcat 后生效。"
+        } catch {
+            tailcatError = error.localizedDescription
+        }
+    }
+
+    /// 进入或退出 Mimi 托管连接（#896）。两个方向都会重建 Tailcat 身份并让旧二维码失效，
+    /// 所以与修改中继一样清掉当前 Tailcat 配对码。
+    func setTailcatManagedMode(_ managed: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingTailcat = true
+        tailcatStatusRequestSequence &+= 1
+        tailcatError = nil
+        invalidateModulePairing()
+        tailcatNotice = nil
+        let wasEnabled = tailcatEnabled
+        defer {
+            isUpdatingTailcat = false
+            isBusy = false
+        }
+        do {
+            tailcatStatus = try await agent.setTailcatManagedMode(managed)
+            if pairingNetwork == .tailcat {
+                pairing = nil
+                pairingNetwork = .tailscale
+            }
+            if managed {
+                tailcatNotice = wasEnabled
+                    ? "已改用 Mimi 托管连接。请在手机的「Mimi 托管连接」里扫码接入这台电脑。"
+                    : "已改用 Mimi 托管连接，开启 Tailcat 后生效。"
+            } else {
+                tailcatNotice = "已退出托管连接并恢复原中继。需要用 Tailcat 的设备请重新扫码。"
+            }
         } catch {
             tailcatError = error.localizedDescription
         }
@@ -1220,7 +1232,7 @@ final class HostStore {
         }
     }
 
-    private func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
+    func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
         try validateMacAgentConfiguration()
         lifecycle = .starting
         let endpoint: String?
@@ -1250,7 +1262,7 @@ final class HostStore {
         try await registerMacAgentAndWaitForReady()
     }
 
-    private func waitForClaudeRuntime(enabled: Bool) async throws {
+    func waitForClaudeRuntime(enabled: Bool) async throws {
         isAwaitingServiceStart = true
         defer { isAwaitingServiceStart = false }
         for attempt in 0..<12 {

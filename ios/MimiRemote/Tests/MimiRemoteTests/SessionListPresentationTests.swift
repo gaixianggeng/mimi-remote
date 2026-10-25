@@ -954,6 +954,56 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(sections[0].overflowCount, 0)
     }
 
+    func testSidebarDutyBoardCoversOnlyAttentionRunningAndJustCompleted() {
+        XCTAssertEqual(
+            SessionSidebarSectionKind.displayOrder.filter(\.isDutyBoard),
+            [.needYou, .running, .justCompleted]
+        )
+        XCTAssertEqual(
+            SessionSidebarSectionKind.displayOrder.filter { !$0.isDutyBoard },
+            [.pinned, .recent],
+            "置顶与最近属于跳转器，降权显示但条数不减（#547）"
+        )
+    }
+
+    func testSidebarShowsQuietStateOnlyWhenDutyBoardIsEmptyAndRecentHasSessions() {
+        let historyOnly = SessionListPresentation.sidebarSections((0..<3).map { makeSession(id: "recent-\($0)") })
+        XCTAssertTrue(
+            WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: historyOnly.map(\.kind)),
+            "值班表全空时显示「一切安静」，最近照常列出"
+        )
+        XCTAssertEqual(historyOnly.first?.sessions.count, 3, "静默态不占用最近的条数")
+
+        let withRunning = SessionListPresentation.sidebarSections([
+            makeSession(id: "running", status: SessionStatus.running.rawValue),
+            makeSession(id: "recent"),
+        ])
+        XCTAssertFalse(WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: withRunning.map(\.kind)))
+
+        XCTAssertFalse(
+            WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: []),
+            "一条会话都没有时多半还在加载或新配对，不能说「一切安静」"
+        )
+        XCTAssertFalse(WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: [.running]))
+    }
+
+    func testSidebarDividerSitsAboveFirstJumpListSection() {
+        XCTAssertEqual(
+            WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: [.needYou, .running, .pinned, .recent]),
+            .pinned
+        )
+        XCTAssertEqual(WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: [.justCompleted, .recent]), .recent)
+        XCTAssertEqual(
+            WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: [.recent]),
+            .recent,
+            "值班表全空时细线分开「一切安静」与最近"
+        )
+        XCTAssertNil(
+            WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: [.needYou, .running]),
+            "没有跳转器时不画多余的细线"
+        )
+    }
+
     func testSidebarUsesOneProjectAvatarForAdjacentSessions() {
         let first = makeSession(id: "project-a-first", projectID: "project-a")
         let adjacentSameProject = makeSession(id: "project-a-second", projectID: "project-a")

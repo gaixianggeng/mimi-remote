@@ -175,10 +175,11 @@ enum WorkspaceSessionGroup: String, CaseIterable {
         }
     }
 
-    static func of(_ session: AgentSession) -> WorkspaceSessionGroup {
+    static func of(_ session: AgentSession, now: Date = Date()) -> WorkspaceSessionGroup {
         let state = session.activityState
-        // 失败和等待用户都属于「待你处理」，即使会话仍在跑；草稿与进行中同组。
-        if state.needsAttention {
+        // 「待你处理」与侧栏同一判定（SessionAttentionPolicy）：等待你的会话，加上
+        // 12 小时内失败的会话；草稿与进行中同组。
+        if SessionAttentionPolicy.needsAttention(session, now: now) {
             return .needsAttention
         }
         if state.isRunning || state == .draft {

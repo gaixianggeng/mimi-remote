@@ -50,6 +50,16 @@ App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连
 
 关闭开关后，App 立即停止本地自动任务通知，并注销远程通知。远程注销失败时保留必要凭据以便重试，设置页显示“远程通知关闭未完成”。关闭不会影响会话内审批，也不会取消用户主动设置的定时会话提醒。
 
+#### 锁屏与灵动岛实时活动
+
+实时活动默认开启，并跟随消息通知：消息通知关闭时，实时活动不会启动或更新。也可以在 App 设置里单独关闭。开启后：
+
+- 发送给通知服务的只有：系统为实时活动分配的推送 Token（同样换成加密的推送凭据，由电脑保存）、状态枚举（运行中、待你处理、已完成、失败）、运行中与待你处理的会话数、本轮开始时间，以及电脑与会话的匿名短标签。
+- 会话标题、项目名和电脑名从设备上的本机缓存读取，只在本机显示，不发送给通知服务或 Apple。
+- 关闭开关、关闭消息通知或删除对应的电脑时，App 会结束锁屏上的实时活动，并撤销相关推送凭据。
+
+通知服务处理和保留这些请求的方式与消息通知相同。
+
 #### 系统权限
 
 - 相机：仅在用户打开配对扫码页，或在消息输入框中明确选择“相机”时使用。拍摄的照片会先在设备上重新编码并作为消息附件处理，不会自动保存到系统照片图库，也不会在后台使用相机。
@@ -121,6 +131,16 @@ The official notification service does not require an additional agreement dialo
 The reminder service is operated by the developer of Mimi Remote. It does not store device tokens or notification payloads. It keeps only revoked credential identifiers until they expire (at most 30 days), structured error logs without request bodies (7 days), and aggregate delivery and latency metrics (30 days). It briefly processes the source IP address required to deliver a request.
 
 Turning the switch off immediately stops automatic local task notifications and revokes remote registration. If revocation fails, the app retains the credentials needed to retry and reports that remote notifications have not been fully turned off. In-app approvals and manually scheduled session reminders remain available.
+
+#### Lock Screen and Dynamic Island Live Activities
+
+Live Activities are on by default and follow message notifications: when message notifications are off, Live Activities neither start nor update. You can also turn them off separately in the app. When enabled:
+
+- What the notification service receives: the push tokens the system assigns for Live Activities (also exchanged for encrypted push credentials that your computer stores), the status as a fixed enum (running, needs you, completed, or failed), the number of running sessions and of sessions waiting for you, the start time of the current round, and anonymous short tags for the computer and the session.
+- Session titles, project names, and computer names are read from a cache on your device and shown only there. They are not sent to the notification service or to Apple.
+- Turning the switch off, turning message notifications off, or removing the computer ends the Live Activity on your Lock Screen and revokes the related push credentials.
+
+The notification service handles and retains these requests in the same way as message notifications.
 
 #### System permissions
 

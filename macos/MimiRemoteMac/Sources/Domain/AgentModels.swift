@@ -87,6 +87,10 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     let derpMapURL: String?
     let pairedDeviceCount: Int
     let error: String?
+    /// 旧版 agentd 不返回 mode，按自建模式处理（#885、#896）。
+    var mode: String? = nil
+
+    var isManagedMode: Bool { mode == "managed" }
 
     enum CodingKeys: String, CodingKey {
         case enabled
@@ -95,6 +99,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case derpMapURL = "derp_map_url"
         case pairedDeviceCount = "paired_device_count"
         case error
+        case mode
     }
 }
 
@@ -127,6 +132,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
     let restartRequired: Bool
     let reason: String
     let message: String
+    let turnHintsEnabled: Bool?
     let previous: ClaudeModuleState?
     let applied: ClaudeModuleState?
 
@@ -140,6 +146,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         restartRequired: Bool,
         reason: String,
         message: String,
+        turnHintsEnabled: Bool? = nil,
         previous: ClaudeModuleState? = nil,
         applied: ClaudeModuleState? = nil
     ) {
@@ -152,6 +159,7 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         self.restartRequired = restartRequired
         self.reason = reason
         self.message = message
+        self.turnHintsEnabled = turnHintsEnabled
         self.previous = previous
         self.applied = applied
     }
@@ -165,6 +173,30 @@ struct ClaudeConfigurationResult: Codable, Equatable, Sendable {
         case changed
         case restartRequired = "restart_required"
         case reason
+        case message
+        case turnHintsEnabled = "turn_hints_enabled"
+        case previous, applied
+    }
+}
+
+struct ClaudeTurnHintsState: Codable, Equatable, Sendable {
+    let enabled: Bool?
+}
+
+struct ClaudeTurnHintsConfigurationResult: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let previousEnabled: Bool
+    let changed: Bool
+    let restartRequired: Bool
+    let message: String
+    let previous: ClaudeTurnHintsState
+    let applied: ClaudeTurnHintsState
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case previousEnabled = "previous_enabled"
+        case changed
+        case restartRequired = "restart_required"
         case message
         case previous, applied
     }

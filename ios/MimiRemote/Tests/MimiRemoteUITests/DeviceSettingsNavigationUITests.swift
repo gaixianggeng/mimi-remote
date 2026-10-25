@@ -215,7 +215,10 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     func testDefaultModelsShowEffectiveNameAndHonestUnknownState() throws {
+        // 模型目录来自当前连接的电脑，入口在设备页的「设备偏好」里，「我的」页不再重复（#871）。
         openMe()
+        XCTAssertFalse(element("settings.defaultModels").exists)
+        openDevices()
         let row = element("settings.defaultModels")
         scrollTo(row)
         row.tap()
@@ -223,6 +226,10 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let claude = element("settings.defaultModels.model.claude")
         XCTAssertTrue(codex.waitForExistence(timeout: 8))
         XCTAssertTrue(claude.waitForExistence(timeout: 8))
+        XCTAssertTrue(
+            element("settings.defaultModels.refresh").waitForExistence(timeout: 30),
+            "页内应有刷新入口（加载中显示转圈，结束后出现按钮）"
+        )
         XCTAssertEqual(codex.value as? String, "GPT-6 Astra（跟随默认）")
         let claudeValue = claude.value as? String ?? ""
         XCTAssertTrue(claudeValue.contains("型号未确认") || claudeValue.contains("正在加载模型…"))
@@ -235,7 +242,6 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         openMe()
         for (entry, title) in [
             ("settings.appearance", "个性化"),
-            ("settings.defaultModels", "默认模型"),
             ("settings.defaultPermissions", "默认权限"),
             ("settings.diagnostics", "诊断与支持"),
             ("settings.advancedDevelopment", "高级与开发"),
@@ -319,8 +325,16 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let managed = element("settings.connection.managedConnection")
         scrollTo(managed)
         managed.tap()
+        // 设备页只进线路与设备；未订阅时从这里跳到订阅页（#891）。
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
+        capture("managed-connection-devices")
+        let subscribe = element("settings.managedConnectionDevices.subscribe")
+        XCTAssertTrue(subscribe.waitForExistence(timeout: 12))
+        subscribe.tap()
         XCTAssertTrue(element("settings.managedSubscription.detail").waitForExistence(timeout: 12))
         capture("managed-connection")
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
     }

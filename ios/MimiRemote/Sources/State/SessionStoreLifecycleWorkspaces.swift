@@ -254,9 +254,19 @@ extension SessionStore {
 
         // TODO(工作区行样式评审): 只用于 A/B/C 三版对比截图，需要十行左右才能看出密度差别。
         // 定稿后连同 --debug-seed-dense-workspace-ui 一起删除。
-        let seededSessions: [AgentSession] = (appStore.shouldSeedDebugDenseWorkspaceUI
+        var seededSessions: [AgentSession] = (appStore.shouldSeedDebugDenseWorkspaceUI
             ? sessions + debugDenseWorkspaceSessions(workspace: mimiDemo, now: now)
             : sessions) + debugSpawnedSessions(parentID: claudeSessionID, workspace: mimiDemo, now: now)
+        if appStore.shouldSeedDebugQuietSidebarUI {
+            // 值班表全空的验收截图（#547）：没有运行、等待中的会话，「最近」照常有内容。
+            seededSessions = seededSessions.map { session in
+                var session = session
+                session.status = SessionStatus.completed.rawValue
+                session.activeTurnID = nil
+                session.pendingApproval = nil
+                return session
+            }
+        }
 
         isLoading = false
         setErrorMessage(nil)
@@ -304,6 +314,17 @@ extension SessionStore {
         )
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
+        if appStore.shouldSeedDebugQuietSidebarUI {
+            // 已读水位跨启动保留：上次启动看到运行中的种子会话，这次会被记成「刚完成」。
+            for session in seededSessions {
+                historyReadStateBySessionID[session.id]?.observedRunning = false
+                historyReadStateBySessionID[session.id]?.completionObservedAt = nil
+            }
+            sessionHistoryReadStateStore.save(
+                historyReadStateBySessionID,
+                profileID: appStore.notificationRoutingProfileID
+            )
+        }
         replaceSessionsIfChanged(with: seededSessions, projectID: nil)
         if appStore.shouldSeedDebugHistoryUnreadUI,
            var unreadCandidate = seededSessions.first(where: { $0.id == historySessionID }) {

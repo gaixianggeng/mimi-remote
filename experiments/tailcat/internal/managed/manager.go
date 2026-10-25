@@ -68,6 +68,8 @@ type Manager struct {
 	instanceID     string
 	server         *http.Server
 	listener       net.Listener
+	shutdown       chan struct{}
+	shutdownOnce   sync.Once
 }
 
 func Start(config Config) (*Manager, error) {
@@ -89,6 +91,7 @@ func Start(config Config) (*Manager, error) {
 		config:     config,
 		clients:    clients,
 		instanceID: instanceID,
+		shutdown:   make(chan struct{}),
 		startHost: func(config tunnel.HostConfig) (managedHost, error) {
 			return tunnel.StartHost(config)
 		},
@@ -380,6 +383,7 @@ func (m *Manager) startControl() error {
 	mux.HandleFunc("/allow", m.allowHandler)
 	mux.HandleFunc("/managed-clients", m.managedClientsHandler)
 	mux.HandleFunc("/reset", m.resetHandler)
+	mux.HandleFunc("/shutdown", m.shutdownHandler)
 	m.listener = listener
 	m.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = m.server.Serve(listener) }()
@@ -451,6 +455,26 @@ func (m *Manager) resetHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	status, err := m.Reset()
 	writeResult(w, status, err)
+}
+
+// shutdownHandler 让 agentd 在 Windows 上正常停止辅助程序：Windows 不能向子进程投递
+// SIGINT/SIGTERM，强杀会跳过关闭配对节点和清理控制 socket。先把响应写回，再触发退出，
+// 避免 Close 关闭连接时 agentd 收不到确认。
+func (m *Manager) shutdownHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"stopping": true})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	m.RequestShutdown()
+}
+
+// RequestShutdown 与收到中断信号等价，RunUntilCanceled 随后关闭全部节点并退出。
+func (m *Manager) RequestShutdown() {
+	m.shutdownOnce.Do(func() { close(m.shutdown) })
 }
 
 func writeResult(w http.ResponseWriter, status Status, err error) {
@@ -575,6 +599,9 @@ func RunUntilCanceled(ctx context.Context, config Config) error {
 		return err
 	}
 	defer manager.Close()
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-manager.shutdown:
+	}
 	return nil
 }

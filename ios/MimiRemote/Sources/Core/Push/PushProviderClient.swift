@@ -28,22 +28,34 @@ struct PushProviderClient {
         let expiresAt: Date
     }
 
+    /// Ticket 用途（#830）。通知 Ticket 不带 `kind`，请求与旧版推送服务完全一致；
+    /// Live Activity 的两类 Token 只有部署了阶段一的推送服务才认。
+    enum TicketKind: String, Sendable {
+        case notification
+        case activityUpdate = "activity_update"
+        case activityStart = "activity_start"
+    }
+
     func issueTicket(
         deviceToken: String,
         installation: String,
-        environment: PushEnvironment
+        environment: PushEnvironment,
+        kind: TicketKind = .notification
     ) async throws -> Ticket {
         struct Request: Encodable {
             let version = 1
             let environment: String
             let deviceToken: String
             let installation: String
+            /// nil 时整个键省略（合成的 Encodable 对 Optional 用 encodeIfPresent）。
+            let kind: String?
 
             enum CodingKeys: String, CodingKey {
                 case version
                 case environment
                 case deviceToken = "device_token"
                 case installation
+                case kind
             }
         }
         struct Response: Decodable {
@@ -60,7 +72,8 @@ struct PushProviderClient {
             body: Request(
                 environment: environment.rawValue,
                 deviceToken: deviceToken,
-                installation: installation
+                installation: installation,
+                kind: kind == .notification ? nil : kind.rawValue
             )
         )
         guard let response = try? JSONDecoder().decode(Response.self, from: data),

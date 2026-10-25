@@ -24,6 +24,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
     case gatewayUnavailable
     case threadSearchUnavailable
+    case threadGoalsUnavailable
     case projectNotFound(String)
     case projectRequired
     case sessionNotFound(SessionID)
@@ -44,6 +45,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.text("ui.agentd_does_not_enable_app_server_gateway_please")
         case .threadSearchUnavailable:
             return L10n.text("ui.currently_agentd_or_codex_app_server_does_not")
+        case .threadGoalsUnavailable:
+            return L10n.text("ui.the_current_running_channel_does_not_support_goals")
         case .projectNotFound(let projectID):
             return L10n.format("ui.the_project_does_not_exist_or_is_not", projectID)
         case .projectRequired:
@@ -53,7 +56,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
         case .missingActiveTurn(let sessionID):
             return L10n.format("ui.there_is_no_interruptible_active_turn_for_the", sessionID)
         case .activeTurnConflict:
-            return L10n.text("ui.please_wait_for_the_current_turn_to_complete")
+            return L10n.text("ui.a_reply_is_still_in_progress_try_again_after_it_finishes")
         case .approvalNotFound(let approvalID):
             return L10n.format("ui.approval_request_has_expired_value", approvalID)
         case .userInputRequestNotFound(let requestID):
@@ -266,6 +269,8 @@ actor CodexAppServerSessionRuntime {
     var globalListVerifiedMissingSessionIDs: Set<SessionID> = []
     // 游标属于生成它的查询模式；扫描回退后沿原链继续，不能把 opaque cursor 交给索引查询。
     var threadListScanCursors: Set<CodexAppServerScanCursor> = []
+    // 受控全局发现的 cursor 由签发它的网关连接独占；记下签发连接，换连接后不再重放（#792）。
+    var globalListCursorIssuers: [String: CodexAppServerGlobalListCursorIssuer] = [:]
     var recencySortUnavailable = false
     var turnStartTasksBySessionID: [
         SessionID: (token: UUID, task: Task<CodexAppServerTurnStartOutcome, Error>)
@@ -278,10 +283,16 @@ actor CodexAppServerSessionRuntime {
     // SessionStore 会一直保留旧 activeTurnID。按被中断的 turn 去重保存有界恢复任务，
     // 只在权威 turns 快照确认终态后补发完成事件。
     var turnInterruptRecoveryTasksBySessionID: [SessionID: CodexAppServerTurnInterruptRecoveryTask] = [:]
+    // turn/start ACK 之后、turn/started 之前的 turn/interrupt 会被 Codex 拒绝（#808）。
+    // 记下每个 thread 最近一次 turn/started，停止请求据此等回合开始后重发。
+    var lastStartedTurnIDBySessionID: [SessionID: TurnID] = [:]
+    var threadClosedActiveTurnIDBySessionID: [SessionID: TurnID] = [:]
+    var turnStartedWaitersByToken: [UUID: CodexAppServerTurnStartedWaiter] = [:]
     var pendingForkReconciliationsByToken: [UUID: CodexAppServerPendingForkReconciliation] = [:]
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
     let turnInterruptRecoveryDelaysNanoseconds: [UInt64]
+    let turnStartedSignalTimeoutNanoseconds: UInt64
     let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
@@ -304,6 +315,7 @@ actor CodexAppServerSessionRuntime {
         longRunningRequestTimeout: TimeInterval = 60,
         gatewayDefaults: UserDefaults = .standard,
         turnInterruptRecoveryDelaysNanoseconds: [UInt64] = [400_000_000, 1_000_000_000, 2_000_000_000],
+        turnStartedSignalTimeoutNanoseconds: UInt64 = 10_000_000_000,
         deprecationDiagnosticSink: @escaping (CodexAppServerDeprecationDiagnostic) -> Void = {
             CodexAppServerProtocolDiagnostics.recordDeprecation($0)
         },
@@ -318,6 +330,7 @@ actor CodexAppServerSessionRuntime {
         self.requestTimeout = requestTimeout
         self.longRunningRequestTimeout = longRunningRequestTimeout
         self.turnInterruptRecoveryDelaysNanoseconds = turnInterruptRecoveryDelaysNanoseconds
+        self.turnStartedSignalTimeoutNanoseconds = turnStartedSignalTimeoutNanoseconds
         self.gatewayDefaults = gatewayDefaults
         self.deprecationDiagnosticSink = deprecationDiagnosticSink
         self.config = initialConfig
@@ -418,9 +431,10 @@ actor CodexAppServerSessionRuntime {
 
     /// 候选主机只初始化共享 gateway，不 resume thread、不拉取任何业务数据。
     /// 提交后 SessionStore 会直接复用这条连接，避免 bootstrap 再次 initialize。
-    func prepareForHostActivation() async throws {
+    /// `handshakeTimeout` 只约束这次握手；提交后的请求仍用 Runtime 的常规超时（#801）。
+    func prepareForHostActivation(handshakeTimeout: TimeInterval? = nil) async throws {
         try await withTaskCancellationHandler {
-            _ = try await ensureConnection()
+            _ = try await ensureConnection(handshakeTimeout: handshakeTimeout)
         } onCancel: {
             Task {
                 await self.shutdownForHostSwitch()
@@ -443,6 +457,7 @@ actor CodexAppServerSessionRuntime {
         accountTokenUsageRefreshTask?.cancel()
         accountTokenUsageRefreshTask = nil
         cancelAllTurnInterruptRecoveryTasks()
+        cancelAllTurnStartedWaiters()
         guard let activeConnection = connection else {
             notificationPumpTask?.cancel()
             notificationPumpTask = nil
@@ -544,9 +559,9 @@ actor CodexAppServerSessionRuntime {
             && !threadListScanCursors.contains(.init(cwd: nil, cursor: cursor))
         var page: SessionsPage
         do {
-            let result = try await sendRecoveringFromStaleInitialization(
+            let result = try await sendControlledGlobalThreadList(
                 builder.controlledGlobalThreadList(limit: limit, cursor: cursor, useStateDBOnly: useIndex),
-                timeout: longRunningRequestTimeout
+                cursor: cursor
             )
             page = threadListPage(from: result, projects: projects, fallbackProject: nil)
             if !useIndex { rememberThreadListScanCursor(page, cwd: nil) }
@@ -560,9 +575,9 @@ actor CodexAppServerSessionRuntime {
             // 没有已知缺口的带游标空页直接续读；完整空首屏或已知缺口才确认历史。
             let needsEmptyPageVerification = cursor == nil && page.sessions.isEmpty && !page.hasMore
             if useIndex, needsEmptyPageVerification || !repairCandidates.isEmpty {
-                let scanned = try await sendRecoveringFromStaleInitialization(
+                let scanned = try await sendControlledGlobalThreadList(
                     builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
-                    timeout: longRunningRequestTimeout
+                    cursor: cursor
                 )
                 page = threadListPage(from: scanned, projects: projects, fallbackProject: nil)
                 rememberThreadListScanCursor(page, cwd: nil)
@@ -573,9 +588,9 @@ actor CodexAppServerSessionRuntime {
         } catch {
             guard useIndex, shouldFallbackFromStateDBOnlyList(error) else { throw error }
             stateDBOnlyListUnavailable = true
-            let result = try await sendRecoveringFromStaleInitialization(
+            let result = try await sendControlledGlobalThreadList(
                 builder.controlledGlobalThreadList(limit: limit, cursor: cursor),
-                timeout: longRunningRequestTimeout
+                cursor: cursor
             )
             page = threadListPage(from: result, projects: projects, fallbackProject: nil)
             rememberThreadListScanCursor(page, cwd: nil)
@@ -808,6 +823,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func threadGoal(threadID: SessionID) async throws -> ThreadGoal? {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let result = try await sendRecoveringFromStaleInitialization(builder.threadGoalGet(threadID: threadID))
         guard let goal = threadGoal(from: result) else {
@@ -827,6 +843,7 @@ actor CodexAppServerSessionRuntime {
         status: ThreadGoalStatus? = nil,
         tokenBudget: Int64? = nil
     ) async throws -> ThreadGoal {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
         let result = try await sendRecoveringFromStaleInitialization(builder.threadGoalSet(
@@ -844,6 +861,7 @@ actor CodexAppServerSessionRuntime {
     }
 
     func clearThreadGoal(threadID: SessionID) async throws {
+        try await requireThreadGoalSupport()
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: try await projects())
         _ = try await sendRecoveringFromStaleInitialization(builder.threadGoalClear(threadID: threadID))
         clearThreadGoalLocal(threadID: threadID)
@@ -889,6 +907,10 @@ actor CodexAppServerSessionRuntime {
         }
         threadOptions = runtimeScopedThreadOptions(threadOptions)
         let resumeID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if payload.mimiTaskProposal != nil,
+           (!resumeID.isEmpty || Self.normalizedRuntimeProvider(runtimeProvider) != "claude") {
+            throw AgentAPIError.invalidResponse
+        }
         // deepseek 的 app-server runtime 已删除。Codex/Claude 一直走标准 thread/resume，
         // 不因旧 config 的方法清单不完整而关闭这条链路。
         let supportsThreadResume = true
@@ -899,10 +921,22 @@ actor CodexAppServerSessionRuntime {
         let spec: CodexAppServerRequestSpec
         if resumeID.isEmpty {
             spec = usesSharedServerQueue
-                ? try builder.threadStartForSharedQueue(cwd: project.path, options: threadOptions)
+                ? try builder.threadStartForSharedQueue(
+                    cwd: project.path,
+                    options: threadOptions,
+                    mimiTaskProposal: payload.mimiTaskProposal
+                )
                 : (projectPath?.isEmpty == false
-                    ? try builder.threadStart(cwd: project.path, options: threadOptions)
-                    : try builder.threadStart(projectID: payload.projectID, options: threadOptions))
+                    ? try builder.threadStart(
+                        cwd: project.path,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    )
+                    : try builder.threadStart(
+                        projectID: payload.projectID,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    ))
         } else {
             spec = usesSharedServerQueue
                 ? try builder.threadResumePreservingSharedState(
@@ -940,7 +974,15 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
-        var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
+        let proposalInitialTurnStarted = payload.mimiTaskProposal != nil
+            && result?.objectValue?["mimiTaskProposal"]?
+                .objectValue?["initialTurnStarted"]?.boolValue == true
+        var session = try agentSession(
+            from: thread,
+            projects: projects,
+            fallbackProject: project,
+            forceRunning: !proposalInitialTurnStarted
+        )
         emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
@@ -961,6 +1003,7 @@ actor CodexAppServerSessionRuntime {
 
         if !usesSharedServerQueue,
            !turnPayload.isEmpty,
+           !proposalInitialTurnStarted,
            let activeTurnID = session.activeTurnID {
             // resume 已经证明旧 turn 仍活跃，此时绝不能再发第二个 turn/start。
             throw CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -979,7 +1022,7 @@ actor CodexAppServerSessionRuntime {
             }
         }
 
-        if !turnPayload.isEmpty, !usesSharedServerQueue {
+        if !turnPayload.isEmpty, !usesSharedServerQueue, !proposalInitialTurnStarted {
             _ = try await submitInitialTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
@@ -994,7 +1037,8 @@ actor CodexAppServerSessionRuntime {
         return CreateSessionResponse(
             session: session,
             wsURL: try Self.gatewayURL(endpoint: endpoint, sessionID: session.id, runtimeProvider: runtimeProvider).absoluteString,
-            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty
+            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty && !proposalInitialTurnStarted,
+            initialInputAlreadyStarted: proposalInitialTurnStarted ? true : nil
         )
     }
 
@@ -1006,7 +1050,7 @@ actor CodexAppServerSessionRuntime {
             return
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: id, turnID: activeTurnID)
-        _ = try await sendRecoveringFromStaleInitialization(spec)
+        _ = try await sendTurnInterruptAwaitingTurnStart(spec, sessionID: id, turnID: activeTurnID)
         _ = withUpdatedSession(id) { item in
             item.status = "closed"
             item.activeTurnID = nil
@@ -2119,7 +2163,8 @@ actor CodexAppServerSessionRuntime {
             return message.activityPayload?.isInProgress != true
         case .assistantDelta,
              .logDelta,
-             .diffUpdated:
+             .diffUpdated,
+             .promptSuggestion:
             return false
         }
     }
@@ -2204,6 +2249,10 @@ actor CodexAppServerSessionRuntime {
         )
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
+        }
+        // 通道没声明目标能力（如 Claude）时不发 thread/goal/get，否则每次打开都会被网关拒一次（#791）。
+        guard supportsThreadGoals(in: config) else {
+            return
         }
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
@@ -3041,7 +3090,9 @@ actor CodexAppServerSessionRuntime {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
         let spec = CodexAppServerRequestBuilder(allowlistedProjects: try await projects()).turnInterrupt(threadID: sessionID, turnID: turnID)
-        _ = try await sendRecoveringFromStaleInitialization(spec)
+        guard try await sendTurnInterruptAwaitingTurnStart(spec, sessionID: sessionID, turnID: turnID) else {
+            return
+        }
         scheduleTurnInterruptRecovery(sessionID: sessionID, turnID: turnID)
     }
 
@@ -3366,9 +3417,12 @@ actor CodexAppServerSessionRuntime {
 
     func sendRecoveringFromStaleInitialization(
         _ request: CodexAppServerRequestSpec,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        // 每次真正发出前交出所用连接；绑定连接的请求（全局列表 cursor，#792）在这里拒绝换连接重放。
+        beforeSend: (CodexAppServerConnection) throws -> Void = { _ in }
     ) async throws -> CodexAppServerJSONValue? {
         let firstConnection = try await ensureConnection()
+        try beforeSend(firstConnection)
         do {
             return try await firstConnection.send(request, timeout: timeout)
         } catch {
@@ -3376,6 +3430,7 @@ actor CodexAppServerSessionRuntime {
                await reauthorizeThread(threadID, on: firstConnection) {
                 // 授权在翻列表所用的当前连接上生效，重试也走当前连接；仍失败按常规错误处理（#718）。
                 let current = try await ensureConnection()
+                try beforeSend(current)
                 do {
                     return try await current.send(request, timeout: timeout)
                 } catch {
@@ -3385,6 +3440,7 @@ actor CodexAppServerSessionRuntime {
             }
             if await recoverConnectionAfterStaleInitialization(firstConnection, error: error) {
                 let secondConnection = try await ensureConnection()
+                try beforeSend(secondConnection)
                 do {
                     return try await secondConnection.send(request, timeout: timeout)
                 } catch {
@@ -3550,6 +3606,41 @@ actor CodexAppServerSessionRuntime {
         return config.policy.allowedMethods.contains(method)
     }
 
+    static let threadGoalMethods = ["thread/goal/get", "thread/goal/set", "thread/goal/clear"]
+
+    /// 目标任务按通道声明判断，不按 Runtime 名称写死（#791）。channel 显式声明 goals=false，
+    /// 或 methods 缺少任一 thread/goal/* 方法，就视为不支持；Claude 通道正是如此（#371）。
+    /// 旧 agentd 没有该 runtime 的 channel 或 methods 时，Codex 保持原先照常请求的行为。
+    static func supportsThreadGoals(runtimeProvider raw: String, in config: CodexAppServerConfigResponse) -> Bool {
+        let runtime = normalizedRuntimeProvider(raw)
+        let channel = config.channels.first { channel in
+            normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
+                normalizedRuntimeProvider(channel.provider) == runtime
+        }
+        if channel?.capabilities?["goals"] == false {
+            return false
+        }
+        guard let methods = channel?.methods else {
+            return runtime == "codex"
+        }
+        return threadGoalMethods.allSatisfy(methods.contains)
+    }
+
+    func supportsThreadGoals(in config: CodexAppServerConfigResponse) -> Bool {
+        Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: config)
+    }
+
+    func threadGoalsSupported(runtimeProvider: String) async throws -> Bool {
+        Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: try await ensureConfig())
+    }
+
+    /// 入口已按能力隐藏；这里兜住排队目标、旧草稿等残留路径，确保不支持的通道一条 goal 请求都不发。
+    func requireThreadGoalSupport() async throws {
+        guard supportsThreadGoals(in: try await ensureConfig()) else {
+            throw CodexAppServerSessionRuntimeError.threadGoalsUnavailable
+        }
+    }
+
     /// 上游在连接重建或线程卸载时可能发送 thread/closed 或 notLoaded。这里只清理当前
     /// 连接的 resume binding，让下一次发送重新建立监听；不修改会话历史或所有权。
     func invalidateThreadResumeBinding(from notification: CodexAppServerNotification) {
@@ -3572,6 +3663,11 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
+        if notification.method == "_mimi/turn/promptSuggestion" {
+            // Mimi 的 Claude 扩展，不作为 Codex 原生能力，也不改变已完成回合的活动状态。
+            if runtimeProvider == "claude", let event = projector.project(notification) { emit(event) }
+            return
+        }
         if notification.method == "_mimi/serverRequestResponse/rejected" {
             // 另一入口已抢先响应或拒绝时，不复活本地卡片；等待 resolved/terminal 收敛即可。
             return
@@ -3594,6 +3690,7 @@ actor CodexAppServerSessionRuntime {
         updateTerminalInteractionBarrier(from: notification)
         recordLiveSignal(from: notification)
         recordPendingTurnStartBoundary(from: notification)
+        recordTurnStartedSignal(from: notification)
         invalidateThreadResumeBinding(from: notification)
         if runtimeProvider == "claude",
            notification.method == "turn/completed" {
@@ -3692,7 +3789,7 @@ actor CodexAppServerSessionRuntime {
             }
             return
         }
-        if notification.method == "turn/completed" || notification.method == "thread/closed" {
+        if isReplayBoundaryNotification(notification) {
             event = event.withReplayBoundarySequence(
                 notification.replaySequence,
                 epoch: replayCursorEpoch

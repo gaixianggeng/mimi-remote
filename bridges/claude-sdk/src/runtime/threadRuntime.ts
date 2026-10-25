@@ -11,8 +11,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import { notificationTurnId } from "../claude/itemIds.ts";
 import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
 import { claudeConfigDir } from "../claude/transcripts.ts";
+import { promptSuggestionsAllowed } from "../claude/promptSuggestions.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { serverRequestFor } from "./approvals.ts";
 import { InputQueue } from "./inputQueue.ts";
@@ -23,11 +25,17 @@ import { type ExecutionPolicy, sandboxOptions } from "./sandboxPolicy.ts";
 import type { RunSettings } from "./settings.ts";
 import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "./userInput.ts";
 import { errorText, logEnabled, logger } from "../util/logging.ts";
+import {
+  MIMI_TURN_HINT_SYSTEM_PROMPT,
+  mimiTurnHintServers,
+  type MimiTaskProposalStore,
+} from "./turnHints.ts";
 
 export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
   request(threadId: string, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   claudeExecutable(): string;
+  promptSuggestionsSupported?(): boolean;
   log(message: string): void;
   ownPids: Set<number>;
   /** 自己的 Claude 进程拿到 pid：此前被当作"可能是自己"的登记需要重新判断。 */
@@ -37,6 +45,9 @@ export interface RuntimeHost {
   /** system/init 里 CLI 标为终端专用的命令名，命令目录据此隐藏。 */
   terminalCommands?(names: string[]): void;
   idleCloseMs: number;
+  turnHints?: {
+    store: MimiTaskProposalStore & { isTaskProposal(parentThreadId: string, proposalId: string): boolean };
+  };
   /** 测试可替换；默认用 SDK 的 query。 */
   startQuery?: typeof sdkQuery;
 }
@@ -48,6 +59,9 @@ export interface TurnRequest {
 }
 
 const INVALID_PARAMS = -32602;
+
+/** 主动结束进程的原因：空闲回收、让出给别处持有方、执行边界变化重启、适配器退出。 */
+type StopReason = "idle" | "yield" | "restart" | "close";
 
 function usageOf(raw: unknown): TurnUsage | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -97,6 +111,9 @@ export class ThreadRuntime {
   private applied: RunSettings | undefined;
   /** 正在接收 Claude 输出的 turn。 */
   private current: LiveTurn | undefined;
+  /** 原生建议不带 turn ID；只承接本进程最后一个成功结果，任何新输入或续写都会作废。 */
+  private suggestionTurnId: string | undefined;
+  private promptSuggestionsEnabled = false;
   /**
    * 已发给 Claude、尚未被某个结果吸收的用户消息（uuid → 所属 turn）。CLI 有自己的输入队列，
    * 输出与结果按消息 uuid 归属，而不是假设"一次 turn/start 对应下一个结果"。
@@ -106,6 +123,24 @@ export class ThreadRuntime {
   private reserved: string | undefined;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * 进程里仍在运行的后台任务（Bash run_in_background、后台子代理等），取自 background_tasks_changed，
+   * 不含 ambient 任务。任务属于这个进程：进程一关就随之结束，完成通知触发的续写也不会发生（#796）。
+   * 按进程计，进程起停时清空。
+   */
+  private backgroundTasks: ReadonlySet<string> = new Set();
+  /**
+   * CLI 自己报告的会话状态（session_state_changed）是否为执行中。完成通知触发的续写在第一帧输出前还没有
+   * turn，排队、重试时这段可能很长；CLI 报 running 期间同样不做空闲关闭。按进程计。
+   */
+  private cliActive = false;
+  /**
+   * 最近送达、还没有续写认领的后台任务完成通知的 run_id（#797）。续写的输出不带 user_message_uuid，
+   * 回合 ID 按 notificationTurnId 由它生成，与历史切分规则一致。按进程计。
+   */
+  private notificationRunId: string | undefined;
+  /** 由完成通知开出、还没收尾的续写回合，以及它认领的 run_id。 */
+  private continuation: { turn: LiveTurn; runId: string } | undefined;
   private pid: number | undefined;
   private queryStartedAt = 0;
   private settings: RunSettings;
@@ -174,7 +209,7 @@ export class ThreadRuntime {
         // 进程已经退出。
       }
     }
-    await this.stopQuery();
+    await this.stopQuery("yield");
   }
 
   async startTurn(request: TurnRequest): Promise<Turn> {
@@ -193,6 +228,7 @@ export class ThreadRuntime {
     const content = toClaudeContent(request.input, this.skillCheck(promoted));
     // 检查与预占之间没有 await：第一个异步操作之前就占住，后来的 turn/start 看到的是 active_turn。
     const turnId = randomUUID();
+    this.suggestionTurnId = undefined;
     this.reserved = turnId;
     const previousSettings = this.settings;
     try {
@@ -220,7 +256,7 @@ export class ThreadRuntime {
     }
     // 进程可能刚按新的执行边界重启，按它的档位与实际加载的技能改写命令。
     const message = this.commandFor(content, promoted);
-    const turn = new LiveTurn(turnId, this.threadId, this.emit);
+    const turn = this.makeLiveTurn(turnId);
     this.current = turn;
     this.commands.set(turnId, turn);
     logger.debug("turn.start", { thread: this.threadId, turn: turnId, model: this.settings.model ?? null });
@@ -237,7 +273,9 @@ export class ThreadRuntime {
    * 没有工具调用时会被推迟成下一轮，与"引导当前 turn"的语义不符。
    */
   steer(expectedTurnId: string, input: UserInput[], clientUserMessageId: string | null): { turnId: string } {
-    const turn = this.current;
+    // 引导打断输出后，结果只吸收了首条消息、引导还没开始输出：current 暂时为空，turn 仍挂在
+    // commands 名下，turn/start 也以它拒绝。这时的引导同样并入它（#798）。
+    const turn = this.current ?? [...this.commands.values()].find((owner) => !owner.finished);
     if (!turn || !this.input) throw new RpcError(INVALID_PARAMS, `thread \`${this.threadId}\` has no active turn`);
     if (turn.id !== expectedTurnId) {
       throw new RpcError(INVALID_PARAMS, `active turn is \`${turn.id}\`, not \`${expectedTurnId}\``, {
@@ -248,6 +286,7 @@ export class ThreadRuntime {
     const promoted = new Set<string>();
     const content = this.commandFor(toClaudeContent(input, this.skillCheck(promoted)), promoted);
     const id = randomUUID();
+    this.suggestionTurnId = undefined;
     logger.debug("turn.steer", { thread: this.threadId, turn: turn.id, message: id });
     turn.userMessage(id, clientUserMessageId, input);
     this.commands.set(id, turn);
@@ -285,6 +324,7 @@ export class ThreadRuntime {
   }
 
   async interrupt(turnId: string): Promise<void> {
+    this.suggestionTurnId = undefined;
     // 结果已吸收首条消息、引导还没开始输出时 current 暂时为空，turn 仍挂在 commands 名下。
     const turn =
       this.current?.id === turnId ? this.current : [...this.commands.values()].find((owner) => owner.id === turnId);
@@ -298,7 +338,7 @@ export class ThreadRuntime {
 
   async close(): Promise<void> {
     this.cancelIdleClose();
-    await this.stopQuery();
+    await this.stopQuery("close");
   }
 
   private readonly emit = (method: string, params: Record<string, unknown>) =>
@@ -310,7 +350,7 @@ export class ThreadRuntime {
     const fullAccessChanged =
       applied !== undefined && (applied.permissionMode === "bypassPermissions") !== (wanted.permissionMode === "bypassPermissions");
     const policyChanged = applied !== undefined && JSON.stringify(applied.executionPolicy) !== JSON.stringify(wanted.executionPolicy);
-    if (this.query && (fullAccessChanged || policyChanged)) await this.stopQuery();
+    if (this.query && (fullAccessChanged || policyChanged)) await this.stopQuery("restart");
     const query = this.query;
     if (!query) {
       await this.startQuery(wanted);
@@ -349,13 +389,25 @@ export class ThreadRuntime {
       throw error;
     }
     const input = new InputQueue();
+    const turnHintServers = this.host.turnHints
+      ? mimiTurnHintServers(this.threadId, this.cwd, this.host.turnHints.store)
+      : undefined;
+    const promptSuggestions = this.host.promptSuggestionsSupported?.()
+      && await promptSuggestionsAllowed(claudeConfigDir(), this.cwd);
     const options: Options = {
       ...policyOptions,
       cwd: this.cwd,
       includePartialMessages: true,
+      // 不覆盖用户/组织的关闭配置，也不设置强制启用建议的环境变量。
+      ...(promptSuggestions ? { promptSuggestions: true } : {}),
       pathToClaudeCodeExecutable: this.host.claudeExecutable(),
       // 与 CLI 相同的系统提示词；SDK 省略时发的是空的自定义提示词。
-      systemPrompt: { type: "preset", preset: "claude_code" },
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        ...(turnHintServers ? { append: MIMI_TURN_HINT_SYSTEM_PROMPT } : {}),
+      },
+      ...(turnHintServers ? { mcpServers: turnHintServers } : {}),
       permissionMode: settings.permissionMode,
       ...(settings.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
       ...(settings.model ? { model: settings.model } : {}),
@@ -375,9 +427,14 @@ export class ThreadRuntime {
     });
     const query = (this.host.startQuery ?? sdkQuery)({ prompt: input, options });
     this.query = query;
+    this.promptSuggestionsEnabled = promptSuggestions === true;
     this.input = input;
     this.skillPlugin = skillPlugin;
     this.queryStartedAt = Date.now();
+    this.backgroundTasks = new Set();
+    this.cliActive = false;
+    this.notificationRunId = undefined;
+    this.continuation = undefined;
     this.applied = { ...settings };
     this.transcriptExists = true;
     void query
@@ -411,14 +468,23 @@ export class ThreadRuntime {
 
   private async runPump(query: Query, skillPlugin: SkillPlugin | undefined): Promise<void> {
     try {
-      for await (const message of query) this.onMessage(message);
+      for await (const message of query) {
+        if (message.type === "prompt_suggestion" && this.query !== query) continue;
+        this.onMessage(message);
+      }
     } catch (error) {
       this.host.log(`thread ${this.threadId} query failed: ${error instanceof Error ? error.message : String(error)}`);
       logger.warn("claude.failed", { thread: this.threadId, pid: this.pid ?? null, error: errorText(error) });
     } finally {
       if (this.query === query) {
         logger.debug("claude.exit", { thread: this.threadId, pid: this.pid ?? null, openTurns: this.openTurns().length });
+        // 主动关闭时已按原因记过；剩下的是进程自己退出（崩溃或被结束）。
+        this.dropBackgroundTasks("exited");
+        this.cliActive = false;
+        this.continuation = undefined;
         this.query = undefined;
+        this.suggestionTurnId = undefined;
+        this.promptSuggestionsEnabled = false;
         this.input = undefined;
         this.applied = undefined;
         if (this.pid !== undefined) this.host.ownPids.delete(this.pid);
@@ -440,9 +506,12 @@ export class ThreadRuntime {
     }
   }
 
-  private async stopQuery(): Promise<void> {
+  private async stopQuery(reason: StopReason): Promise<void> {
+    this.suggestionTurnId = undefined;
+    this.promptSuggestionsEnabled = false;
     const query = this.query;
     if (!query) return;
+    this.dropBackgroundTasks(reason);
     this.input?.close();
     query.close();
     await this.pump;
@@ -450,7 +519,8 @@ export class ThreadRuntime {
 
   /**
    * 输出归属：每一轮输出的第一帧带 user_message_uuid，指明它回应的是哪条消息。
-   * 没有 uuid 的输出（后台任务完成后 Claude 自己继续）开一个没有用户消息的 turn。
+   * 没有 uuid 的输出（后台任务完成后 Claude 自己继续）开一个没有用户消息的 turn；由完成通知触发时，
+   * 回合 ID 与历史里这段续写的回合相同，客户端按任一来源都能停止它、向它补充消息。
    */
   private turnFor(record: Record<string, unknown>): LiveTurn {
     const uuid = typeof record.user_message_uuid === "string" ? record.user_message_uuid : undefined;
@@ -464,7 +534,32 @@ export class ThreadRuntime {
       }
       this.current = owner;
     }
-    return this.current ?? this.openTurn();
+    return this.current ?? (uuid ? this.openTurn() : this.openContinuation());
+  }
+
+  /**
+   * 开出续写回合：认领最近送达的通知（没有时与普通的无 uuid 输出一样用随机 ID）。几条通知连着送达时
+   * CLI 只给最后一条的那一轮输出，所以认领最近的一个；历史侧同样把回合归给最后一条通知。
+   */
+  private openContinuation(): LiveTurn {
+    const runId = this.notificationRunId;
+    this.notificationRunId = undefined;
+    const turn = this.openTurn(runId ? notificationTurnId(this.threadId, runId) : undefined);
+    this.continuation = runId ? { turn, runId } : undefined;
+    return turn;
+  }
+
+  /**
+   * 一轮开始（system/init）。回应用户消息的一轮开始时，之前送达的通知要么已并进前面的回合、要么已单独
+   * 回复过（CLI 按顺序处理排队的输入），不会再触发续写。由通知触发的一轮现在就开出续写回合：首帧输出前
+   * 模型可能排队、重试很久，这期间它就是活动回合，turn/start 被拒、turn/interrupt 与 turn/steer 能找到它，
+   * 输出也不会挂到期间新开的回合上。
+   */
+  private roundStarted(record: Record<string, unknown>): void {
+    this.suggestionTurnId = undefined;
+    const answersUser = Array.isArray(record.user_message_uuids) && record.user_message_uuids.length > 0;
+    if (answersUser) this.notificationRunId = undefined;
+    else if (this.notificationRunId && !this.current) this.openContinuation();
   }
 
   private openTurns(): LiveTurn[] {
@@ -473,12 +568,23 @@ export class ThreadRuntime {
     return [...turns].filter((turn) => !turn.finished);
   }
 
-  private openTurn(): LiveTurn {
-    const turn = new LiveTurn(randomUUID(), this.threadId, this.emit);
+  private openTurn(id: string = randomUUID()): LiveTurn {
+    this.suggestionTurnId = undefined;
+    const turn = this.makeLiveTurn(id);
     this.current = turn;
     this.cancelIdleClose();
     turn.begin();
     return turn;
+  }
+
+  private makeLiveTurn(id: string): LiveTurn {
+    const store = this.host.turnHints?.store;
+    return new LiveTurn(
+      id,
+      this.threadId,
+      this.emit,
+      store ? (proposalId) => store.isTaskProposal(this.threadId, proposalId) : undefined,
+    );
   }
 
   private onMessage(message: SDKMessage): void {
@@ -497,28 +603,43 @@ export class ThreadRuntime {
         if (!record.isReplay) this.current?.onUserMessage(record.message as Record<string, unknown>);
         return;
       case "result": {
+        this.suggestionTurnId = undefined;
         const consumed = Array.isArray(record.user_message_uuids)
           ? record.user_message_uuids.map(String)
           : typeof record.user_message_uuid === "string"
             ? [record.user_message_uuid]
             : [];
         for (const uuid of consumed) this.commands.delete(uuid);
+        const origin = record.origin as { kind?: unknown; runId?: unknown } | undefined;
+        const fromNotification = origin?.kind === "task-notification";
+        if (fromNotification && origin.runId === this.notificationRunId) this.notificationRunId = undefined;
         const turn = this.current;
-        this.current = undefined;
+        // 几条通知连着送达时，CLI 先为前几条各跑一轮（没有输出），结果带更早的 run_id，回复在最后一条那一轮：
+        // 续写回合在 init 时已为最后一条开出，留给那一轮收尾。
+        const earlierRound =
+          fromNotification &&
+          typeof origin.runId === "string" &&
+          turn !== undefined &&
+          this.continuation?.turn === turn &&
+          origin.runId !== this.continuation.runId &&
+          !turn.explicitlyInterrupted;
+        if (!earlierRound) this.current = undefined;
         logger.debug("claude.result", {
           thread: this.threadId,
           subtype: String(record.subtype),
           consumed: consumed.length,
           turn: turn?.id ?? null,
           pendingMessages: this.commands.size,
+          ...(earlierRound ? { earlierRound } : {}),
         });
-        if (!turn) return;
+        if (!turn || earlierRound) return;
         const usage = usageOf(record.usage);
         if (usage) this.totalUsage = addUsage(this.totalUsage, usage);
         // 这个 turn 名下还有没被回应的引导消息：Claude 会接着处理它们，turn 不收尾。
-        // 用户明确中断时例外，立即收尾。
+        // 用户明确中断时例外，立即收尾。续写那一轮的结果本来就没有用户消息可吸收，带着通知来源，
+        // 同样说明 CLI 会回报 uuid：引导排在它之后单独一轮，回应完再收尾（#797）。
         const pendingSteer = [...this.commands.values()].some((owner) => owner === turn);
-        if (consumed.length && pendingSteer && !turn.explicitlyInterrupted) {
+        if ((consumed.length || fromNotification) && pendingSteer && !turn.explicitlyInterrupted) {
           turn.continueAfterSteer();
           return;
         }
@@ -526,8 +647,24 @@ export class ThreadRuntime {
         for (const [uuid, owner] of this.commands) if (owner === turn) this.commands.delete(uuid);
         const errors = Array.isArray(record.errors) ? record.errors.map(String) : [];
         turn.finish({ subtype: String(record.subtype), errors, usage, contextWindow: contextWindowOf(record.modelUsage) }, this.totalUsage);
+        if (record.subtype === "success" && record.is_error !== true && !turn.explicitlyInterrupted && !this.isBusy() && !errors.length) {
+          this.suggestionTurnId = turn.id;
+        }
+        if (this.continuation?.turn === turn) this.continuation = undefined;
         this.host.turnFinished(this.threadId);
         this.scheduleIdleClose();
+        return;
+      }
+      case "prompt_suggestion": {
+        const turnId = this.suggestionTurnId;
+        if (!turnId || this.isBusy() || !this.promptSuggestionsEnabled
+          || record.session_id !== this.threadId || typeof record.uuid !== "string" || !record.uuid
+          || record.uuid.length > 128 || typeof record.suggestion !== "string") return;
+        const text = record.suggestion.trim();
+        if (!text || text.length > 4_096) return;
+        // CLI 在新命令到达时取消旧生成；这里再以本地轮次边界限制迟到和重复事件。
+        this.suggestionTurnId = undefined;
+        this.emit("_mimi/turn/promptSuggestion", { threadId: this.threadId, turnId, id: record.uuid, text });
         return;
       }
       case "system":
@@ -536,8 +673,15 @@ export class ThreadRuntime {
           // 字段只在有终端专用命令时出现，缺省即为空。
           const terminal = Array.isArray(record.terminal_slash_commands) ? record.terminal_slash_commands.map(String) : [];
           this.host.terminalCommands?.(terminal);
+          this.roundStarted(record);
+        }
+        else if (record.subtype === "background_tasks_changed") this.backgroundTasksChanged(record.tasks);
+        else if (record.subtype === "task_notification") {
+          // skip_transcript 的任务不写进 transcript，也不会触发续写。
+          if (typeof record.run_id === "string" && record.run_id && record.skip_transcript !== true) this.notificationRunId = record.run_id;
         }
         else if (record.subtype === "session_state_changed") {
+          this.cliStateChanged(record.state);
           const status = threadStatus(record.state);
           if (status) this.emit("thread/status/changed", { threadId: this.threadId, status });
         }
@@ -593,10 +737,62 @@ export class ThreadRuntime {
     }
   }
 
+  /**
+   * background_tasks_changed 是全量的电平信号：每次用新集合替换旧的。ambient 任务（内部监视等）
+   * 不算活动，与 SDK 的建议一致。全部结束且没有进行中的 turn 时重新计时空闲关闭；续写的 turn
+   * 收尾时会自己计时。
+   */
+  private backgroundTasksChanged(tasks: unknown): void {
+    const live = Array.isArray(tasks)
+      ? tasks.flatMap((task) => {
+          const entry = task as { task_id?: unknown; ambient?: unknown } | null;
+          return entry && typeof entry.task_id === "string" && entry.ambient !== true ? [entry.task_id] : [];
+        })
+      : [];
+    const hadTasks = this.backgroundTasks.size > 0;
+    this.backgroundTasks = new Set(live);
+    logger.debug("claude.background_tasks", { thread: this.threadId, count: live.length });
+    if (hadTasks && !live.length && this.query && !this.isBusy()) this.scheduleIdleClose();
+  }
+
+  /**
+   * CLI 从执行中回到 idle：这时才算真的空闲，重新计时。通知触发的一轮可能没有任何输出就结束（没有
+   * turn 可收尾，结果帧不会计时），只能靠这里。
+   */
+  private cliStateChanged(state: unknown): void {
+    const wasActive = this.cliActive;
+    this.cliActive = state === "running" || state === "requires_action";
+    if (state === "idle") this.finishAbandonedContinuation();
+    if (wasActive && state === "idle" && this.query && !this.isBusy() && !this.backgroundTasks.size) this.scheduleIdleClose();
+  }
+
+  /**
+   * 兜底：续写回合在等的那一轮没有来（只跑了更早通知的空轮），CLI 却已回到 idle。照常收尾，不让它一直
+   * 作为活动回合挡住新的 turn/start。名下还有引导没回应时不动，引导那一轮会收尾它。
+   */
+  private finishAbandonedContinuation(): void {
+    const turn = this.continuation?.turn;
+    if (!turn || turn.finished || this.current !== turn || [...this.commands.values()].includes(turn)) return;
+    logger.debug("claude.continuation_abandoned", { thread: this.threadId, turn: turn.id });
+    this.current = undefined;
+    this.continuation = undefined;
+    turn.finish({ subtype: "success", errors: [], usage: undefined, contextWindow: null }, this.totalUsage);
+    this.host.turnFinished(this.threadId);
+  }
+
+  /** 进程即将结束：仍在运行的后台任务会随之中止，记下原因，便于解释之后没有出现的续写。 */
+  private dropBackgroundTasks(reason: StopReason | "exited"): void {
+    if (this.backgroundTasks.size) {
+      logger.warn("claude.background_tasks_dropped", { thread: this.threadId, count: this.backgroundTasks.size, reason });
+    }
+    this.backgroundTasks = new Set();
+  }
+
+  /** 后台任务还在运行、CLI 仍在执行时不关闭：到点时跳过，任务全部结束或 CLI 回到 idle 后再重新计时。 */
   private scheduleIdleClose(): void {
     this.cancelIdleClose();
     this.idleTimer = setTimeout(() => {
-      if (!this.isBusy()) void this.stopQuery();
+      if (!this.isBusy() && !this.backgroundTasks.size && !this.cliActive) void this.stopQuery("idle");
     }, this.host.idleCloseMs);
     this.idleTimer.unref?.();
   }

@@ -74,6 +74,9 @@ struct ComposerView: View {
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
     @State var isSelectingVoiceDraftText = false
+    @State var clipboardImageState = ComposerClipboardImageState()
+    /// 上一次提交的宽度档位，只用于迟滞判断（#835）。
+    @State var composerLayoutBaseTier: ComposerLayoutTier?
 
     var availableWidth: CGFloat?
 
@@ -103,7 +106,7 @@ struct ComposerView: View {
             queuedTurnTray
             // iPhone 把会话状态并入唯一 Composer 外壳；iPad 继续使用独立托盘，
             // 保留宽屏上的信息密度与既有收起布局。
-            if !isPhoneComposer {
+            if !usesNarrowComposerLayout {
                 composerStatusTray
             }
             pendingApprovalAction
@@ -111,10 +114,13 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
+            contextWindowNoticeBox()
+            clipboardImageNotice
             FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
                 .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
+            nativePromptSuggestionNotice
             composerInputRow(tokens: tokens)
         }
         // 零尺寸键盘快捷键不能作为 VStack 的 arranged child：即使自身是 0×0，
@@ -139,7 +145,7 @@ struct ComposerView: View {
             }
         }
         .sheet(item: $previewingAttachment) { item in
-            AttachmentPreviewSheet(item: item)
+            AttachmentPreviewSheet(item: item, onAnnotate: annotationHandler(for: item))
                 .environmentObject(themeStore)
         }
         .sheet(item: $goalEditor) { draft in
@@ -239,6 +245,12 @@ struct ComposerView: View {
         }
 
         let scopeObservedContent = presentedContent
+        .onReceive(Self.clipboardRefreshPublisher) { _ in refreshClipboardImageAvailability() }
+        .onChange(of: activeComposerDraftScope, initial: true) { _, _ in refreshClipboardImageAvailability() }
+        .onChange(of: availableWidth, initial: true) { _, width in
+            guard let width else { return }
+            composerLayoutBaseTier = ComposerLayoutTier.baseTier(width: width, previous: composerLayoutBaseTier)
+        }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -266,6 +278,9 @@ struct ComposerView: View {
         .onChange(of: composerTurnSettingsPolicy) { _, _ in
             enforceComposerTurnSettingsPolicy()
         }
+        .onChange(of: supportsGoalMode) { _, _ in
+            enforceComposerTurnSettingsPolicy()
+        }
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
@@ -290,7 +305,11 @@ struct ComposerView: View {
             }
             composerState.addAttachment(.uploadedFile(completion.attachment))
         }
+        .onReceive(sessionStore.composerDraftAppends) { event in
+            applyExternalDraftAppend(event)
+        }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            sessionStore.invalidateNativePromptSuggestion()
             // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
             // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。
             guard activeComposerDraftScope == currentComposerDraftScope else {
@@ -375,6 +394,7 @@ struct ComposerView: View {
             await prepareComposer()
         }
         .onDisappear {
+            sessionStore.invalidateNativePromptSuggestion()
             if sessionStore.activeComposerInstanceID == composerInstanceID {
                 sessionStore.activeComposerInstanceID = nil
             }
@@ -400,7 +420,7 @@ struct ComposerView: View {
         clampModelSelectionToSelectedSessionRuntime()
         restoreComposerPermissionSelection(for: currentComposerDraftScope)
         voiceInput.prewarm()
-        await sessionStore.refreshAppServerModelOptions()
+        await refreshModelOptionsForComposerRuntime()
         await sessionStore.refreshCapabilities()
         await refreshPermissionProfilesForCurrentCWD()
         await refreshClaudeSlashCommandCatalog()
@@ -424,6 +444,10 @@ struct ComposerView: View {
         }
         guard !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope) else {
             attachmentErrorMessage = L10n.text("ui.wait_for_file_upload_to_complete")
+            return false
+        }
+        guard !clipboardImageState.isPreparing(activeComposerDraftScope) else {
+            attachmentErrorMessage = L10n.text("ui.wait_for_image_processing_to_complete")
             return false
         }
         let pendingPayload = CodexAppServerTurnPayload(
@@ -546,8 +570,10 @@ struct ComposerView: View {
     }
 
     func enforceComposerTurnSettingsPolicy() {
-        if !RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
-            // Harness 不消费 collaboration/goal 参数；恢复旧草稿时必须回到普通发送。
+        if !RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider)
+            || (composerState.isGoalModeSelected && !supportsGoalMode) {
+            // Harness 不消费 collaboration/goal 参数，未声明目标能力的通道也发不了 goal；
+            // 恢复旧草稿时必须回到普通发送。
             setSendMode(.standard)
         }
         guard !composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
@@ -759,6 +785,7 @@ struct ComposerView: View {
             && hasComposerContentForSubmit
             && !sessionStore.isLoading
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var canSubmitGoalDraft: Bool {
@@ -767,6 +794,7 @@ struct ComposerView: View {
             && !sessionStore.isLoading
             && !sessionStore.isUpdatingThreadGoal
             && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
+            && !clipboardImageState.isPreparing(activeComposerDraftScope)
     }
 
     var hasNonWhitespaceComposerTextForSubmit: Bool {
@@ -778,11 +806,17 @@ struct ComposerView: View {
         hasNonWhitespaceComposerTextForSubmit || !composerState.attachments.isEmpty
     }
 
-    var usesCompactComposerMetrics: Bool {
-        ConversationLayout.usesCompactComposerMetrics(
-            availableWidth: availableWidth,
-            horizontalSizeClass: horizontalSizeClass
+    var composerTier: ComposerLayoutTier {
+        ComposerLayoutTier.resolve(
+            width: availableWidth,
+            previousBase: composerLayoutBaseTier,
+            dynamicTypeSize: dynamicTypeSize,
+            fallsBackToNarrow: horizontalSizeClass == .compact
         )
+    }
+
+    var usesCompactComposerMetrics: Bool {
+        composerTier != .wide
     }
 
 
@@ -923,7 +957,7 @@ struct ComposerView: View {
                 quotaNotice: nil,
                 usage: usageNotice,
                 goal: visibleGoal,
-                placement: isPhoneComposer ? .embedded : .standalone,
+                placement: usesNarrowComposerLayout ? .embedded : .standalone,
                 isGoalExpanded: isGoalStatusExpanded,
                 isGoalUpdating: sessionStore.isUpdatingThreadGoal,
                 goalErrorMessage: sessionStore.threadGoalErrorMessage,
@@ -985,7 +1019,7 @@ struct ComposerView: View {
                 Text(notice.takeOverConfirmationMessage)
             }
             .transition(
-                reduceMotion || isPhoneComposer
+                reduceMotion || usesNarrowComposerLayout
                     ? .opacity
                     : .move(edge: .top).combined(with: .opacity)
             )
@@ -1072,12 +1106,12 @@ struct ComposerView: View {
 
     func composerInputRow(tokens: ThemeTokens) -> some View {
         Group {
-            if isPhoneComposer {
-                phoneComposerCard(tokens: tokens)
+            if usesNarrowComposerLayout {
+                phoneComposerCardBox(tokens: tokens)
             } else if usesCollapsedIPadComposer {
-                collapsedIPadComposerCard(tokens: tokens)
+                collapsedIPadComposerCardBox(tokens: tokens)
             } else {
-                composerCard(tokens: tokens)
+                composerCardBox(tokens: tokens)
             }
         }
         // 补全候选浮在输入卡上方，不改变卡片高度，聊天列表不会被挤动（#765）。
@@ -1129,7 +1163,7 @@ struct ComposerView: View {
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
             // iPad、iPad mini 与 Catalyst 有稳定的横向空间，直接展示发送上下文；
             // iPhone 则统一收进底部「+」，不再保留需要二次展开的“快捷”状态。
-            if !isPhoneComposer {
+            if !usesNarrowComposerLayout {
                 composerContextControlsRow
             }
             composerTextArea(tokens: tokens)
@@ -1181,7 +1215,7 @@ struct ComposerView: View {
                 focusRequestID: $composerTextFocusRequestID,
                 minHeight: composerMinHeight,
                 maxHeight: composerMaxHeight,
-                textContainerInset: isPhoneComposer
+                textContainerInset: usesNarrowComposerLayout
                     ? UIEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
                     : .zero,
                 onSubmit: { submitDraft() },
@@ -1217,7 +1251,8 @@ struct ComposerView: View {
                 },
                 onSkillAutocompleteDismiss: {
                     activeSkillQuery = nil
-                }
+                },
+                onPasteImages: composerPasteImagesHandler
             )
             .frame(height: composerTextHeight)
 
@@ -1226,7 +1261,7 @@ struct ComposerView: View {
                 Text(composerPlaceholderText)
                     .font(themeStore.uiFont(.body))
                     .foregroundStyle(tokens.conversationTertiaryText)
-                    .padding(.top, isPhoneComposer ? 8 : 0)
+                    .padding(.top, usesNarrowComposerLayout ? 8 : 0)
                     .allowsHitTesting(false)
             }
         }
@@ -1264,7 +1299,7 @@ struct ComposerView: View {
         }
         // 浅色使用中性黑低透明描边，既得到清晰轮廓，也不会把暖灰边缘误读成第三种表面色。
         if colorScheme == .light {
-            return Color.black.opacity(isPhoneComposer ? 0.09 : 0.06)
+            return Color.black.opacity(usesNarrowComposerLayout ? 0.09 : 0.06)
         }
         return tokens.border.opacity(0.58)
     }
@@ -1296,7 +1331,7 @@ struct ComposerView: View {
         if colorSchemeContrast == .increased {
             return 1.25
         }
-        return colorScheme == .light && !isPhoneComposer ? 1 : 0.75
+        return colorScheme == .light && !usesNarrowComposerLayout ? 1 : 0.75
     }
 
     @ViewBuilder
@@ -1304,31 +1339,30 @@ struct ComposerView: View {
         if usesCompactComposerMetrics {
             compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         } else {
+            // 宽档与紧凑档共用同一组擦除边界：两条分支都在 `primaryComposerToolbar`
+            // 的组合类型里，任一分支直接平铺复杂控件，都会让真机解析元数据时栈溢出（#852）。
             HStack(spacing: 10) {
-                addContentButton
-                if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
-                    modelPickerControl
-                }
-                followUpDeliveryMenu
+                addContentControlBox()
+                // 模型永不收起：不能改设置时也留锁定图标，与窄、中档一致（#835）。
+                modelControlBox(showsTitle: true)
+                deliveryControlBox()
                 Spacer(minLength: 0)
-                composerOptionsMenu
-                voiceMicControl
-                sendButton(showLabels: true)
+                contextWindowControlBox()
+                optionsControlBox()
+                microphoneControlBox()
+                submitControlBox()
             }
             .frame(maxWidth: .infinity)
         }
     }
 
     var compactToolbarShowsModelTitle: Bool {
-        isPhoneComposer
-            ? ConversationLayout.phoneComposerShowsModelTitle(availableWidth: availableWidth)
-            : ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
+        ConversationLayout.composerShowsModelTitle(tier: composerTier, availableWidth: availableWidth)
     }
 
     var compactToolbarShowsInlineDeliveryControl: Bool {
-        ConversationLayout.compactComposerShowsInlineDeliveryControl(
-            isPhone: isPhoneComposer,
-            availableWidth: availableWidth,
+        ConversationLayout.composerShowsInlineDeliveryControl(
+            tier: composerTier,
             canChooseDelivery: canChooseRunningFollowUpDelivery
         )
     }
@@ -1343,79 +1377,18 @@ struct ComposerView: View {
         CompactComposerToolbarShell(
             leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
             toolControls: compactToolControlsBox(),
-            submitControl: compactSubmitControlBox(),
-            spacing: isPhoneComposer ? 6 : 8
+            submitControl: submitControlBox(),
+            spacing: usesNarrowComposerLayout ? 6 : 10
         )
-    }
-
-    @inline(never)
-    func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
-        // iPhone 运行态把投递方式收进设置菜单，避免第六个控件挤破 320–390pt 工具栏。
-        // iPad 保留原有平铺入口。
-        let deliveryControl = compactToolbarShowsInlineDeliveryControl
-            ? compactDeliveryControlBox()
-            : nil
-        return AnyView(
-            CompactComposerLeadingControlsShell(
-                addControl: compactAddContentControlBox(),
-                modelControl: compactModelControlBox(showsTitle: showsModelTitle),
-                deliveryControl: deliveryControl
-            )
-        )
-    }
-
-    // 每个复杂控件单独进入一个不可内联的栈帧；返回后父层只保留小型 AnyView，
-    // 这是对真机泛型元数据栈溢出的边界修复，不用于普通组件的类型兼容。
-    @inline(never)
-    func compactAddContentControlBox() -> AnyView {
-        AnyView(addContentButton)
-    }
-
-    @inline(never)
-    func compactModelControlBox(showsTitle: Bool) -> AnyView {
-        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
-            return AnyView(unavailableModelControl)
-        }
-        return AnyView(modelPickerControl(showsTitle: showsTitle, usesCompactTitle: isPhoneComposer))
-    }
-
-    @inline(never)
-    func compactDeliveryControlBox() -> AnyView {
-        AnyView(followUpDeliveryMenu)
-    }
-
-    @inline(never)
-    func compactToolControlsBox() -> AnyView {
-        return AnyView(
-            CompactComposerToolControlsShell(
-                optionsControl: compactOptionsControlBox(),
-                microphoneControl: compactMicrophoneControlBox()
-            )
-        )
-    }
-
-    @inline(never)
-    func compactOptionsControlBox() -> AnyView {
-        AnyView(composerOptionsMenu)
-    }
-
-    @inline(never)
-    func compactMicrophoneControlBox() -> AnyView {
-        AnyView(voiceMicControl)
-    }
-
-    @inline(never)
-    func compactSubmitControlBox() -> AnyView {
-        AnyView(sendButton(showLabels: false))
     }
 
     var composerOptionsMenu: some View {
-        // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
-        // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
+        // 「选项」只管这条消息怎么跑：计划 / 目标，窄档再收进权限、投递方式和上下文（#835）。
+        // 模型固定在主工具栏；Skill 在中、宽档平铺，窄档进「+」。
         Menu {
             if composerTurnSettingsPolicy == .unavailable {
                 Section {
-                    if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                    if RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                         Button(action: {}) {
                             Label(L10n.text("ui.planning_mode"), systemImage: "list.clipboard")
                         }
@@ -1429,7 +1402,7 @@ struct ComposerView: View {
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing {
                 runSettingsMenu
 
-                if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+                if RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                     Divider()
 
                     Button {
@@ -1441,7 +1414,7 @@ struct ComposerView: View {
                 }
             }
 
-            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            if supportsGoalMode {
                 Button {
                     setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
                 } label: {
@@ -1450,13 +1423,20 @@ struct ComposerView: View {
                 .accessibilityIdentifier("composer.mode.goal")
             }
 
+            // 窄档没有上下文行，权限按「怎么跑」的语义收进这里（#835 D3）。
+            if usesNarrowComposerLayout && composerTurnSettingsPolicy.allowsTurnSettingsEditing {
+                Divider()
+                makePermissionMenu(presentsAsSubmenu: true)
+            }
             if foldsRunningFollowUpDeliveryIntoOptions {
                 Divider()
                 followUpDeliveryMenuItems
             }
+            contextWindowOptionsMenuFallbackBox()
         } label: {
             composerToolbarControlLabel(
-                title: usesCompactComposerMetrics ? nil : L10n.text("ui.options"),
+                // 动作一律用图标，文字只留给模型名、权限这类状态（#835 D2）。
+                title: nil,
                 systemImage: "slider.horizontal.3",
                 isSelected: (composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected)
                     || composerState.isGoalModeSelected,
@@ -1498,7 +1478,7 @@ struct ComposerView: View {
             onTap: {
                 toggleVoiceInput()
             },
-            usesPhoneStyle: isPhoneComposer
+            usesPhoneStyle: usesNarrowComposerLayout
         )
         .layoutPriority(0)
         .accessibilityIdentifier("composer.voice")
@@ -1526,13 +1506,13 @@ struct ComposerView: View {
             hiddenKeyboardShortcut(L10n.text("ui.open_the_references_panel"), key: "k", modifiers: [.command, .shift]) {
                 showsAddContentPanel = true
             }
-            if RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+            if supportsGoalMode {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_target_mission_mode"), key: "g", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
                 }
             }
             if composerTurnSettingsPolicy.allowsTurnSettingsEditing,
-               RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+               RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
                 hiddenKeyboardShortcut(L10n.text("ui.switch_planning_mode"), key: "p", modifiers: [.command, .shift]) {
                     setSendMode(composerState.isPlanModeSelected ? .standard : .plan)
                 }
@@ -1663,8 +1643,11 @@ struct ComposerView: View {
 
     func setSendMode(_ mode: ComposerSendMode) {
         guard mode == .standard
-            || RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider)
+            || RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider)
         else {
+            return
+        }
+        guard mode != .goal || supportsGoalMode else {
             return
         }
         guard mode != .plan || composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
@@ -1696,7 +1679,7 @@ struct ComposerView: View {
             tint: tint,
             titleMaxWidth: titleMaxWidth,
             accessibilityLabel: accessibilityLabel,
-            usesPhoneStyle: isPhoneComposer,
+            usesPhoneStyle: usesNarrowComposerLayout,
             usesCondensedTitle: usesCondensedTitle
         )
     }
@@ -1855,6 +1838,10 @@ struct ComposerView: View {
     }
 
     var permissionMenu: some View {
+        makePermissionMenu(presentsAsSubmenu: false)
+    }
+
+    func makePermissionMenu(presentsAsSubmenu: Bool) -> ComposerPermissionMenu {
         ComposerPermissionMenu(
             permissionModes: availablePermissionModes,
             permissionProfiles: availablePermissionProfiles,
@@ -1865,7 +1852,8 @@ struct ComposerView: View {
             permissionAccessibilityValue: permissionTitle,
             tint: permissionTint,
             reduceMotion: reduceMotion,
-            usesPhoneStyle: isPhoneComposer,
+            usesPhoneStyle: usesNarrowComposerLayout,
+            presentsAsSubmenu: presentsAsSubmenu,
             onSelectMode: { setPermissionMode($0) },
             onSelectProfile: { setPermissionProfile($0) }
         )

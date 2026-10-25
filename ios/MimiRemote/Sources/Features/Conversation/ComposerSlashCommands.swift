@@ -16,7 +16,7 @@ extension ComposerView {
                 suggestions: suggestions,
                 selectedIndex: min(selectedSkillSuggestionIndex, suggestions.count - 1),
                 // 约 4 行（iPhone）或 6 行（iPad），其余滚动，避免顶出可视区域。
-                maxListHeight: isPhoneComposer ? 184 : 276,
+                maxListHeight: usesNarrowComposerLayout ? 184 : 276,
                 onSelect: { suggestion in
                     selectAutocompleteSuggestion(suggestion)
                 }
@@ -88,7 +88,7 @@ extension ComposerView {
                 ))
             }
         }
-        if canEditTurnSettings, RuntimeFeatureSupport.supportsPlanningAndGoals(for: composerRuntimeProvider) {
+        if canEditTurnSettings, RuntimeFeatureSupport.supportsPlanning(for: composerRuntimeProvider) {
             commands.append(ComposerSlashCommand(
                 action: .plan,
                 name: "plan",

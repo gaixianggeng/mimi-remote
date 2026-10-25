@@ -113,7 +113,11 @@ final class SessionStore: ObservableObject {
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
-    @Published var selectedSessionID: String?
+    @Published var selectedSessionID: String? {
+        didSet {
+            if selectedSessionID != oldValue { invalidateNativePromptSuggestion() }
+        }
+    }
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
     @Published var sessionSearchQuery = "" {
@@ -130,7 +134,11 @@ final class SessionStore: ObservableObject {
     @Published var isLoading = false
     // 加载完成只属于当前主机代次，切换主机后不能沿用旧目录的空态判断。
     @Published var loadedWorkspaceCatalogScope: HostScope?
-    @Published var webSocketStatus: WebSocketStatus = .disconnected
+    @Published var webSocketStatus: WebSocketStatus = .disconnected {
+        didSet {
+            if webSocketStatus != .connected { invalidateNativePromptSuggestion() }
+        }
+    }
     @Published var connectionTermination: ConnectionTerminationStatus? {
         didSet {
             guard oldValue != connectionTermination else { return }
@@ -170,6 +178,8 @@ final class SessionStore: ObservableObject {
     /// 不再为每个 provider 各开一个 Bool。
     @Published var availableRuntimeProviders: Set<String> = ["codex"]
     var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
+    /// 通道声明了 thread/goal/* 的 Runtime，与可用性一起刷新；目标入口只对这些 Runtime 展示（#791）。
+    @Published var threadGoalRuntimeProviders: Set<String> = ["codex"]
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
     /// 账号维度的累计用量。与活动历史分开保存：服务端可以给出 lifetime 却不给日粒度历史。
     @Published var accountTokenUsage: AccountTokenUsageSnapshot?
@@ -214,6 +224,8 @@ final class SessionStore: ObservableObject {
     @Published var foregroundActivityBySessionID: [SessionID: SessionForegroundActivity] = [:]
     @Published var runtimeActivityBySessionID: [SessionID: RuntimeActivitySnapshot] = [:]
     @Published var turnOutputTokensBySessionID: [SessionID: TurnOutputTokenCounter] = [:]
+    @Published var contextWindowUsageBySessionID: [SessionID: ContextWindowUsage] = [:]
+    @Published var dismissedContextWindowNoticeSessionIDs: Set<SessionID> = []
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
     /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。
@@ -305,6 +317,9 @@ final class SessionStore: ObservableObject {
     var composerModelSelectionCache = ComposerModelSelectionCache()
     // 权限选择按会话保留；未显式选择的既有 Thread 使用“沿用服务端当前设置”。
     var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
+    // 外部追加草稿后通知 Composer。用订阅而不是 @Published：被遮住的输入框也能收到，且不刷新整个工作台。
+    let composerDraftAppends = PassthroughSubject<ComposerDraftAppendEvent, Never>()
+    @Published var nativePromptSuggestionState = NativePromptSuggestionState()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -409,6 +424,7 @@ final class SessionStore: ObservableObject {
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
+    var connectionSwitchSupersession = ConnectionSwitchSupersession()
     var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
@@ -421,6 +437,8 @@ final class SessionStore: ObservableObject {
 #endif
     var deliveredRuntimeNotificationIDs: Set<String> = []
     var locallyCompletedSessionIDs: Set<SessionID> = []
+    /// 本地完成的凭据：只让落后的 running 快照让路，不挡住电脑端随后开始的新一轮（#805）。
+    var locallyCompletedSessionMarks: [SessionID: SessionLocalCompletionMark] = [:]
     var locallyCompletedGoalThreadIDs: Set<SessionID> = []
     var historyReadStateBySessionID: [SessionID: SessionHistoryReadState] = [:]
     var sessionArchiveMutationToken: UInt64 = 0
@@ -434,6 +452,7 @@ final class SessionStore: ObservableObject {
     var queuedSessionCredentialFingerprintByID: [SessionID: String] = [:]
     var queuedSessionReadyIDs: Set<SessionID> = []
     var queuedSessionReconnectTasks: [SessionID: Task<Void, Never>] = [:]
+    var queuedSessionReconnectAttemptBySessionID: [SessionID: Int] = [:]
     var queuedTurnStartedIDBySessionID: [SessionID: TurnID] = [:]
     var queuedTurnAwaitingStartSessionIDs: Set<SessionID> = []
     // shared queue 的 started 事件可能早于 queue/add 回调。按 client ID 保留 RPC 门闩，
@@ -531,6 +550,8 @@ final class SessionStore: ObservableObject {
     var appServerModelOptionsLastRefresh: Date?
     // 只缓存目标目录的读取状态；模型数据仍统一存于 appServerModelOptions。
     var turnModelRefreshByRuntime: [String: (hostScope: HostScope, date: Date)] = [:]
+    // 聚合刷新没带回、沿用上一份目录的 Runtime；定向补拉确认前不算已有目录（#778）。
+    var retainedModelCatalogProviders: Set<String> = []
     var turnModelTasksByRuntime: [String: (hostScope: HostScope, id: UUID, refreshDate: Date?, task: Task<[CodexAppServerModelOption], Error>)] = [:]
     var permissionProfilesCWD: String?
     var permissionProfilesRefreshRequestedCWD: String?
@@ -892,18 +913,6 @@ final class SessionStore: ObservableObject {
         }
         sessionSearchLoadMoreTask = task
         await task.value
-    }
-
-    func saveComposerDraft(_ snapshot: ComposerDraftSnapshot, for scope: ComposerDraftScopeKey) {
-        composerDraftCache.save(snapshot, for: scope)
-    }
-
-    func composerDraft(for scope: ComposerDraftScopeKey) -> ComposerDraftSnapshot {
-        composerDraftCache.snapshot(for: scope)
-    }
-
-    func removeComposerDraft(for scope: ComposerDraftScopeKey) {
-        composerDraftCache.remove(scope: scope)
     }
 
     func saveComposerModelSelection(

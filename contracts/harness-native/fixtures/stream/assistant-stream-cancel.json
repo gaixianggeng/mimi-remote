@@ -1,0 +1,100 @@
+{
+  "provenance": {
+    "level": "upstream-source",
+    "harnessPackage": "@deepseek-ai/dsh",
+    "harnessVersion": "0.2.1-alpha.1",
+    "source": [
+      "dsh-session/lib/types/types.d.ts：SessionEventMap['assistant/message'] 新增 interrupted?: true；['assistant/attempt'] 是没有提交可见消息的 attempt",
+      "dsh-agent/lib/types/runtime-types.d.ts：AssistantStreamFrame 的 end.outcome 仍是 {kind:'committed', eventType:'assistant/message'|'assistant/attempt', seq} 或 {kind:'abandoned'}，不带中断标记",
+      "dsh-agent-loop/lib/index.js 取消分支：interruptedBlocks() 非空时 settle('assistant/message', {..., interrupted: true})，为空时 settle('assistant/attempt')；settle 先写持久记录再发 end 帧"
+    ],
+    "liveObserved": {
+      "issue": "gaixianggeng/mimi-remote#809",
+      "date": "2026-10-19",
+      "runs": "2/2：经 agentd 的 /api/harness/ws 与 /api/harness/rpc，deepseek-account/deepseek-flash，在首个 text-delta 到达后调用 session/cancel。",
+      "facts": [
+        "turn/end.data.reason 为 {kind:'aborted', reason:{kind:'user'}}，cancel 后 61–127 ms 到达。",
+        "同一 attempt 的 end.outcome 为 {kind:'committed', eventType:'assistant/message', seq}。",
+        "outcome.seq 处的持久记录是 assistant/message，data 的键恰为 interrupted,message,step,stream,turn，interrupted 为 true；正常结算的键是 message,step,stream,turn,usage。",
+        "message.content 只含取消前已下发的正文前缀。"
+      ],
+      "rawFramesRetained": false
+    },
+    "note": "验收会话的原始帧没有保留。各回放的帧序列按冻结夹具 stream/assistant-stream.json 的形状与上述实测事实重建；正文、id、时间、seq 都是虚构夹具值。"
+  },
+  "note": "用户取消一轮回复时，上游有两种持久落盘形态。只能按持久记录的字段特征判定是否被中断，不能按 Harness 版本号猜格式：同一个 0.2.x 安装在“无可见输出”时仍会落 assistant/attempt。",
+  "interruptionRule": [
+    "assistant/attempt：这次 attempt 没有提交可见消息（0.1.5 的用户取消；0.2.x 中没有可见输出的取消、失败或重试）。",
+    "assistant/message 且 data.interrupted === true：0.2.x 把取消前已下发的前缀定稿成一条消息，正文不完整。",
+    "end.outcome.eventType 为 assistant/message 不代表回复完整；end 帧本身不带中断标记，必须读 outcome.seq 处的持久记录。",
+    "同一轮的 turn/end.reason.kind === 'aborted' 表示这一轮被取消。"
+  ],
+  "replays": [
+    {
+      "label": "cancel.assistant-attempt",
+      "harnessVersion": "0.1.5-rc.2",
+      "provenanceNote": "结算形态取自 stream/assistant-stream.json 的 run.aborted-by-user 与 endOutcomeEvidence（0.1.5-rc.2 实测）。原采集的取消回合没有 chunk；这里在 start 与 end 之间补入文本前缀，覆盖“已经展示过部分正文后才取消”的现实场景。",
+      "frames": [
+        {"type": "start", "attemptId": "h09-attempt-0001", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 2, "index": 0, "time": 1792368000000, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 3, "index": 1, "time": 1792368000001, "chunk": {"type": "text-delta", "index": 0, "text": "H09 已输出的前缀，"}},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 4, "index": 2, "time": 1792368000002, "chunk": {"type": "text-delta", "index": 0, "text": "取消前最后一段"}},
+        {"type": "end", "attemptId": "h09-attempt-0001", "revision": 5, "index": 3, "outcome": {"kind": "committed", "eventType": "assistant/attempt", "seq": 16}}
+      ],
+      "durable": [
+        {"type": "assistant/attempt", "seq": 16, "time": 1792368000003, "data": {"turn": 1, "step": 1, "stream": [
+          {"type": "chunk", "time": 1792368000000, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}},
+          {"type": "text-chunks", "time0": 1792368000001, "index": 0, "dt": [1], "texts": ["H09 已输出的前缀，", "取消前最后一段"]}
+        ]}},
+        {"type": "turn/end", "seq": 17, "time": 1792368000004, "data": {"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}}}
+      ],
+      "expected": {"interrupted": true, "settlementCommitsMessage": false, "visiblePrefix": "H09 已输出的前缀，取消前最后一段"}
+    },
+    {
+      "label": "cancel.interrupted-message",
+      "harnessVersion": "0.2.1-alpha.1",
+      "provenanceNote": "#809 实测形态：end.outcome.eventType 为 assistant/message，持久记录带 interrupted: true 且没有 usage。中间是否还有 step/end 等记录未记录，回放只保留判定所需的两条。",
+      "frames": [
+        {"type": "start", "attemptId": "h09-attempt-0001", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 2, "index": 0, "time": 1792368000000, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 3, "index": 1, "time": 1792368000001, "chunk": {"type": "text-delta", "index": 0, "text": "H09 已输出的前缀，"}},
+        {"type": "chunk", "attemptId": "h09-attempt-0001", "revision": 4, "index": 2, "time": 1792368000002, "chunk": {"type": "text-delta", "index": 0, "text": "取消前最后一段"}},
+        {"type": "end", "attemptId": "h09-attempt-0001", "revision": 5, "index": 3, "outcome": {"kind": "committed", "eventType": "assistant/message", "seq": 16}}
+      ],
+      "durable": [
+        {"type": "assistant/message", "seq": 16, "time": 1792368000003, "data": {
+          "turn": 1,
+          "step": 1,
+          "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "H09 已输出的前缀，取消前最后一段"}],
+            "source": {"kind": "model", "provider": "deepseek-account", "model": "deepseek-flash"},
+            "id": "h09-id-0001"
+          },
+          "stream": [
+            {"type": "chunk", "time": 1792368000000, "chunk": {"type": "block-start", "index": 0, "blockType": "text"}},
+            {"type": "text-chunks", "time0": 1792368000001, "index": 0, "dt": [1], "texts": ["H09 已输出的前缀，", "取消前最后一段"]}
+          ],
+          "interrupted": true
+        }},
+        {"type": "turn/end", "seq": 17, "time": 1792368000004, "data": {"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}}}
+      ],
+      "expected": {"interrupted": true, "settlementCommitsMessage": true, "visiblePrefix": "H09 已输出的前缀，取消前最后一段"}
+    },
+    {
+      "label": "cancel.no-visible-output",
+      "harnessVersion": "0.2.1-alpha.1",
+      "provenanceNote": "源码级，未实测：取消时 interruptedBlocks() 为空，0.2.x 仍落 assistant/attempt。用于证明判定不依赖版本号。",
+      "sourceLevel": true,
+      "frames": [
+        {"type": "start", "attemptId": "h09-attempt-0002", "revision": 1, "turn": 1, "step": 1, "startedAfterSeq": 13},
+        {"type": "end", "attemptId": "h09-attempt-0002", "revision": 2, "index": 0, "outcome": {"kind": "committed", "eventType": "assistant/attempt", "seq": 16}}
+      ],
+      "durable": [
+        {"type": "assistant/attempt", "seq": 16, "time": 1792368000003, "data": {"turn": 1, "step": 1, "stream": []}},
+        {"type": "turn/end", "seq": 17, "time": 1792368000004, "data": {"turn": 1, "reason": {"kind": "aborted", "reason": {"kind": "user"}}}}
+      ],
+      "expected": {"interrupted": true, "settlementCommitsMessage": false, "visiblePrefix": ""}
+    }
+  ]
+}

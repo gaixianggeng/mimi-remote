@@ -22,6 +22,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 )
 
@@ -271,17 +272,26 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		})
 		return
 	}
-	if !r.acquireClaudeBridgeSlot() {
+	// The bridge outlives this connection, so a client that names a session
+	// resumes the one it had; an unnamed client gets an isolated session and
+	// today's semantics.
+	sessionKey := claudeGatewaySessionKey(req)
+	lease, ok := r.claimClaudeForeground(sessionKey, client)
+	if !ok {
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_LIMIT_EXCEEDED", "Claude bridge 并发数已达上限，请稍后重试")
 		return
 	}
-	defer r.releaseClaudeBridgeSlot()
+	defer r.releaseClaudeForeground(lease)
 
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Claude.BridgeBin))
 	start := time.Now()
-	if _, err := r.claudeBridge.ensure(bin, r.cfg.Claude.Args, r.cfg.Claude.Env); err != nil {
+	if _, err := r.claudeBridge.ensure(
+		bin,
+		r.cfg.Claude.Args,
+		claudeBridgeRuntimeEnv(r.cfg.Claude, probe.Adapter != nil),
+	); err != nil {
 		log.Printf("claude bridge ensure failed err=%v", err)
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
 		return
@@ -299,17 +309,23 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			upstream.Close()
 		}
 	}()
+	if !r.setClaudeForegroundUpstream(lease, upstream) {
+		return
+	}
 
-	// The bridge outlives this connection, so a client that names a session
-	// resumes the one it had; an unnamed client gets an isolated session and
-	// today's semantics.
-	sessionKey := claudeGatewaySessionKey(req)
-	// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
-	// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
-	observerEpoch := r.stopClaudeApprovalObserver(sessionKey)
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
+	var observerEpoch uint64
 	if sessionKey != "" {
+		lease.attachMu.Lock()
+		if r.claudeForegroundSuperseded(lease) {
+			// 同名会话的新连接已经接管。这里再 attach 会把 bridge 会话切回本连接。
+			lease.attachMu.Unlock()
+			return
+		}
+		// 新客户端自己 attach 同一个 bridge 会话并拿到 serverRequest/replay，
+		// 离线期间的观察连接必须先让位，避免两条连接同时读同一个会话。
+		observerEpoch = r.stopClaudeApprovalObserver(sessionKey)
 		clientCursor, hasClientCursor := claudeGatewayLastSeen(req)
 		attachResult, err := r.attachClaudeBridgeSession(
 			reader,
@@ -319,6 +335,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 			clientCursor,
 			hasClientCursor,
 		)
+		lease.attachMu.Unlock()
 		if err != nil {
 			log.Printf("claude bridge attach failed session=%s err=%v", sanitizeGatewayDiagnostic(sessionKey), err)
 			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 会话失败")
@@ -395,8 +412,9 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	}
 	_ = upstream.SetReadDeadline(time.Time{})
 	// 客户端走了不等于审批结束：把 bridge 连接交给只读观察者，它继续接住
-	// 离线期间到达的审批请求并触发提醒。
-	observerStarted := readerReleased && r.startClaudeApprovalObserver(
+	// 离线期间到达的审批请求并触发提醒。被同名新连接接管时客户端并没有离开，
+	// 不需要观察者，也不能为它补发离线提醒。
+	observerStarted := readerReleased && r.handOffClaudeForegroundUpstream(lease) && r.startClaudeApprovalObserver(
 		sessionKey,
 		upstream,
 		&upstreamWriteMu,
@@ -553,28 +571,6 @@ func (r *Router) attachClaudeBridgeSession(
 	return result, nil
 }
 
-func (r *Router) acquireClaudeBridgeSlot() bool {
-	limit := r.cfg.Claude.MaxConcurrentBridges
-	if limit <= 0 {
-		limit = 3
-	}
-	r.claudeMu.Lock()
-	defer r.claudeMu.Unlock()
-	if r.activeClaudeBridge >= limit {
-		return false
-	}
-	r.activeClaudeBridge++
-	return true
-}
-
-func (r *Router) releaseClaudeBridgeSlot() {
-	r.claudeMu.Lock()
-	if r.activeClaudeBridge > 0 {
-		r.activeClaudeBridge--
-	}
-	r.claudeMu.Unlock()
-}
-
 func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, clientWriteMu *sync.Mutex, stdinWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
 	for {
 		messageType, payload, err := client.ReadMessage()
@@ -590,6 +586,11 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 			}
 			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
 				return "client_policy_error_write_failed"
+			}
+			if policyErr.resetConnection {
+				// 新连接用新的 policy；bridge 不会把旧连接的响应交给新连接，
+				// 断线重放的旧响应也因没有在途请求认领而被丢弃。
+				return appServerGatewayTrackingExhaustedReason
 			}
 			continue
 		}
@@ -769,6 +770,18 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 // debug 行，由 captureClaudeBridgeStderr 决定是否落盘（只在详细记录窗口内）；用户在
 // claude.env 里显式设置的级别优先。旧 Rust bridge 不认这个变量，没有影响。
 const claudeAdapterLogLevelEnv = "MIMI_CLAUDE_ADAPTER_LOG"
+const claudeAdapterTurnHintsEnv = "MIMI_CLAUDE_TURN_HINTS_ENABLED"
+
+func claudeBridgeRuntimeEnv(cfg config.ClaudeConfig, isAdapter bool) map[string]string {
+	env := make(map[string]string, len(cfg.Env)+1)
+	for key, value := range cfg.Env {
+		env[key] = value
+	}
+	if isAdapter {
+		env[claudeAdapterTurnHintsEnv] = strconv.FormatBool(cfg.TurnHintsAreEnabled())
+	}
+	return env
+}
 
 func buildClaudeBridgeEnv(extra map[string]string) []string {
 	environment := claudeenv.Build(extra)

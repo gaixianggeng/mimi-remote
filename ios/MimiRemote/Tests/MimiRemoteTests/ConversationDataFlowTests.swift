@@ -589,29 +589,6 @@ final class ConversationDataFlowTests: XCTestCase {
         )
     }
 
-    func testHistoryRestorationDoesNotShowTwoWaitingIndicators() {
-        XCTAssertFalse(
-            ConversationTimelineView.shouldShowInlineHistoryLoading(
-                timelineItemsAreEmpty: false,
-                isHistoryLoading: true,
-                isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false,
-                liveStatusReadiness: .loadingHistory
-            ),
-            "实时状态已显示恢复历史时，不再增加同一请求的加载提示"
-        )
-        XCTAssertTrue(
-            ConversationTimelineView.shouldShowInlineHistoryLoading(
-                timelineItemsAreEmpty: false,
-                isHistoryLoading: true,
-                isLoadingEarlierHistory: false,
-                hasHistorySavingsNotice: false,
-                liveStatusReadiness: .live
-            ),
-            "已连接的运行状态不能遮掉独立的历史刷新反馈"
-        )
-    }
-
     func testConversationTimelineBatchedRuntimeUpdatesStayDetachedWhileReadingHistory() {
         let scope = ScopedSessionID(profileID: "timeline-controller", sessionID: "batched-updates")
         let controller = makeTimelineControllerReadingHistory(scope: scope)
@@ -1612,7 +1589,15 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(SessionLibraryStatusFilter.active.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.history.includes(sessions[2]))
-        XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2]))
+        let failedAt = SessionIndexStore.orderingDate(for: sessions[2])
+        XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2], now: failedAt.addingTimeInterval(60)))
+        XCTAssertFalse(
+            SessionLibraryStatusFilter.needsAttention.includes(
+                sessions[2],
+                now: failedAt.addingTimeInterval(SessionAttentionPolicy.failedAttentionWindow + 1)
+            ),
+            "会话页的「待你处理」筛选与侧栏、工作区页同一 12 小时窗口（#546）"
+        )
     }
 
     func testSessionListPresentationRequiresOpenedWorkspaceOnlyAfterConnectionSucceeds() {

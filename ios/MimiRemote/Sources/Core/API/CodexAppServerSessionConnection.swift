@@ -1,7 +1,8 @@
 import Foundation
 
 extension CodexAppServerSessionRuntime {
-    func ensureConnection() async throws -> CodexAppServerConnection {
+    /// `handshakeTimeout` 只用于这次新建连接的 initialize，不改变之后请求的超时（#801）。
+    func ensureConnection(handshakeTimeout: TimeInterval? = nil) async throws -> CodexAppServerConnection {
         if let connection {
             if await connection.isReadyForRequests() { return connection }
             await retireConnection(connection)
@@ -24,7 +25,7 @@ extension CodexAppServerSessionRuntime {
         let task = Task { [next, gatewayURL, token] in
             let notifications = await next.notifications()
             let serverRequests = await next.serverRequests()
-            try await next.connect(url: gatewayURL, token: token)
+            try await next.connect(url: gatewayURL, token: token, initializeTimeout: handshakeTimeout)
             return CodexAppServerPreparedConnection(
                 connection: next,
                 notifications: notifications,
@@ -160,13 +161,21 @@ extension CodexAppServerSessionRuntime {
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
         notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
-            for await notification in notifications { await self?.handle(notification) }
+            for await notification in notifications {
+                await self?.handle(notification, from: installedConnection)
+            }
             guard !Task.isCancelled else { return }
             await self?.handleNotificationStreamEnded(for: installedConnection)
         }
         serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
             for await request in serverRequests { await self?.handle(request) }
         }
+    }
+
+    func handle(_ notification: CodexAppServerNotification, from source: CodexAppServerConnection) {
+        // 取消旧 pump 后仍可能有已排队的尾包；建议不能跨连接代次进入当前草稿。
+        if notification.method == "_mimi/turn/promptSuggestion", connection !== source { return }
+        handle(notification)
     }
 
     func handleNotificationStreamEnded(for endedConnection: CodexAppServerConnection) async {
@@ -297,7 +306,7 @@ extension CodexAppServerSessionRuntime {
         var cursor: String?
         for _ in 0..<Self.threadReauthorizationMaxPages {
             let request = builder.controlledGlobalThreadList(limit: limit, cursor: cursor)
-            guard let object = (try? await sendRecoveringFromStaleInitialization(request, timeout: longRunningRequestTimeout))??.objectValue else {
+            guard let object = (try? await sendControlledGlobalThreadList(request, cursor: cursor))??.objectValue else {
                 break
             }
             seen.formUnion((object["data"]?.arrayValue ?? []).compactMap { $0.objectValue?["id"]?.stringValue })
@@ -306,5 +315,81 @@ extension CodexAppServerSessionRuntime {
             cursor = next
         }
         return seen
+    }
+}
+
+/// 受控全局发现 cursor 的签发连接（#792）。弱引用：连接退役释放后，cursor 自然判为失效。
+struct CodexAppServerGlobalListCursorIssuer {
+    weak var connection: CodexAppServerConnection?
+}
+
+/// 受控全局发现的 cursor 已不属于当前网关连接（#792）。调用方应从首页重走，不当作普通失败。
+struct ControlledGlobalListCursorExpiredError: Error {}
+
+extension CodexAppServerSessionRuntime {
+    static let globalListCursorIssuerLimit = 64
+
+    /// 无 cwd 的 thread/list 续页只能发给签发 cursor 的那条网关连接：gateway 按连接保存 cursor 表，
+    /// 换连接必然被拒（#792）。签发连接已退役时不为续页新建连接，换连接重试也不重放旧 cursor。
+    func sendControlledGlobalThreadList(
+        _ request: CodexAppServerRequestSpec,
+        cursor: String?
+    ) async throws -> CodexAppServerJSONValue? {
+        let issuer = cursor.flatMap { globalListCursorIssuers[$0] }
+        if let issuer, issuer.connection.map({ $0 !== connection }) ?? true {
+            throw ControlledGlobalListCursorExpiredError()
+        }
+        var servingConnection: CodexAppServerConnection?
+        do {
+            let result = try await sendRecoveringFromStaleInitialization(
+                request,
+                timeout: longRunningRequestTimeout
+            ) { candidate in
+                if let issuer, issuer.connection !== candidate {
+                    throw ControlledGlobalListCursorExpiredError()
+                }
+                servingConnection = candidate
+            }
+            rememberGlobalListCursor(result?.objectValue?["nextCursor"]?.stringValue, issuedBy: servingConnection)
+            return result
+        } catch let error where Self.isGatewayGlobalListCursorRejection(error) {
+            // gateway 的 cursor 表整体换代时同样拒绝；对调用方是同一种「从首页重来」。
+            throw ControlledGlobalListCursorExpiredError()
+        }
+    }
+
+    func rememberGlobalListCursor(_ cursor: String?, issuedBy connection: CodexAppServerConnection?) {
+        guard let cursor, !cursor.isEmpty, let connection else { return }
+        if globalListCursorIssuers.count >= Self.globalListCursorIssuerLimit {
+            // 与 gateway 一样整体换代；查不到签发者的 cursor 照常发出，由 gateway 裁决。
+            globalListCursorIssuers.removeAll(keepingCapacity: true)
+        }
+        globalListCursorIssuers[cursor] = CodexAppServerGlobalListCursorIssuer(connection: connection)
+    }
+
+    nonisolated static func isGatewayGlobalListCursorRejection(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else { return false }
+        return appError.code == -32080 && appError.message.contains("thread/list.cursor")
+    }
+}
+
+// MARK: - Claude 常驻会话的重连游标（#873）
+
+extension CodexAppServerSessionRuntime {
+    /// 投影落地后可以提交为 `last_seen` 的通知。重连时 bridge 只补发游标之后的帧。
+    ///
+    /// 回合与线程终态之外，Claude 的 `item/completed` 也算：完成的条目已写进会话历史，
+    /// 冷启动读历史即可拿回。以前只在回合结束时提交，长回合进行中每次重开都会把整轮重放
+    /// 一遍，其中已答复的补充信息请求会再弹出一次。流式增量不算，否则冷启动只能收到一条
+    /// 消息的后半段。
+    func isReplayBoundaryNotification(_ notification: CodexAppServerNotification) -> Bool {
+        switch notification.method {
+        case "turn/completed", "thread/closed":
+            return true
+        case "item/completed":
+            return runtimeProvider == "claude" && notification.replaySequence != nil
+        default:
+            return false
+        }
     }
 }

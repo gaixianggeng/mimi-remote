@@ -1286,6 +1286,93 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(store.lifecycle, .ready)
     }
 
+    func testClaudeTurnHintsToggleReloadsServiceIndependently() async {
+        let events = EventRecorder()
+        let enabledStatus = Self.statusWithClaude(enabled: true, state: .connected)
+        let store = makeStore(
+            configExists: true,
+            status: { enabledStatus },
+            registerAgent: { events.append("register-mac") },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    turnHintsEnabled: true
+                )
+            },
+            configureClaudeTurnHints: { enabled in
+                events.append("hints-\(enabled)")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: enabled,
+                    previousEnabled: !enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeTurnHintsEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "register-mac", "hints-false", "register-mac",
+        ])
+        XCTAssertFalse(store.claudeTurnHintsEnabled)
+        XCTAssertTrue(store.claudeEnabled)
+        XCTAssertNil(store.claudeError)
+    }
+
+    func testClaudeTurnHintsReloadFailureRestoresPreviousConfiguration() async {
+        let events = EventRecorder()
+        let registrations = CallCounter()
+        let enabledStatus = Self.statusWithClaude(enabled: true, state: .connected)
+        let store = makeStore(
+            configExists: true,
+            status: { enabledStatus },
+            registerAgent: {
+                let call = registrations.increment()
+                events.append("register-\(call)")
+                if call == 2 { throw TestError.expected }
+            },
+            configureClaude: { preference, _ in
+                events.append("configure-\(preference.rawValue)")
+                return Self.claudeConfiguration(
+                    enabled: true,
+                    preference: .enabled,
+                    turnHintsEnabled: true
+                )
+            },
+            configureClaudeTurnHints: { enabled in
+                events.append("hints-\(enabled)")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: enabled,
+                    previousEnabled: !enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            },
+            restoreClaudeTurnHints: { changed in
+                events.append("restore-hints")
+                return Self.claudeTurnHintsConfiguration(
+                    enabled: changed.previousEnabled,
+                    previousEnabled: changed.enabled,
+                    changed: true,
+                    restartRequired: true
+                )
+            }
+        )
+        await store.bootstrap()
+
+        await store.setClaudeTurnHintsEnabled(false)
+
+        XCTAssertEqual(events.values, [
+            "configure-auto", "register-1", "hints-false", "register-2", "restore-hints", "register-3",
+        ])
+        XCTAssertTrue(store.claudeTurnHintsEnabled)
+        XCTAssertTrue(store.claudeError?.contains("已恢复修改前") == true)
+    }
+
     func testBootstrapDetectsRunningHomebrewServiceWithoutChangingIt() async {
         let store = makeStore(configExists: true, homebrewLoaded: true)
 
@@ -1441,191 +1528,6 @@ final class HostStoreTests: XCTestCase {
 
         XCTAssertEqual(store.pairingNetwork, .tailcat)
         XCTAssertEqual(store.pairing, tailcatPairing)
-    }
-
-    func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing() async {
-        let events = EventRecorder()
-        let defaultStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: nil,
-            pairedDeviceCount: 1,
-            error: nil
-        )
-        let customStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: nil
-        )
-        let tailcatPairing = PairingInfo(
-            endpoint: "http://127.0.0.1:8787",
-            network: .tailcat,
-            pairURL: "mimiremote://pair?transport=tailcat",
-            expiresAt: "2026-09-02T02:00:00Z",
-            warnings: []
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            pair: { _ in tailcatPairing },
-            tailcatStatus: { defaultStatus },
-            configureTailcatDERPMap: { url in
-                events.append(url)
-                return customStatus
-            }
-        )
-
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-        await store.refreshPairing(network: .tailcat)
-        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
-
-        XCTAssertEqual(events.values, ["https://relay.example/derpmap/default"])
-        XCTAssertEqual(store.tailcatDERPMapURL, "https://relay.example/derpmap/default")
-        XCTAssertEqual(store.tailcatStatus?.pairedDeviceCount, 0)
-        XCTAssertNil(store.pairing)
-        XCTAssertEqual(store.pairingNetwork, .tailscale)
-        XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
-    }
-
-    func testRefreshingTailcatStatusClearsRelayNoticeAndShowsRuntimeError() async {
-        let customStatus = TailcatStatus(
-            enabled: true,
-            running: true,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: nil
-        )
-        let failedStatus = TailcatStatus(
-            enabled: true,
-            running: false,
-            version: "v0.3.0",
-            derpMapURL: "https://relay.example/derpmap/default",
-            pairedDeviceCount: 0,
-            error: "Tailcat sidecar 已退出"
-        )
-        let statusCalls = CallCounter()
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                statusCalls.increment() == 1 ? customStatus : failedStatus
-            },
-            configureTailcatDERPMap: { _ in customStatus }
-        )
-
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-        await store.configureTailcatDERPMap("https://relay.example/derpmap/default")
-        XCTAssertNotNil(store.tailcatNotice)
-
-        await store.refreshTailcatStatus()
-
-        XCTAssertNil(store.tailcatNotice)
-        XCTAssertEqual(store.tailcatStatusDetail, "Tailcat sidecar 已退出")
-    }
-
-    func testTailcatRefreshCannotStartWhileToggleIsInFlight() async {
-        let mutationGate = SuspendedStatusGate()
-        let statusCalls = CallCounter()
-        let enabledStatus = TailcatStatus(
-            enabled: true, running: true, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let disabledStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                _ = statusCalls.increment()
-                return enabledStatus
-            },
-            setTailcatEnabled: { _ in
-                await mutationGate.suspendReturning(disabledStatus)
-            }
-        )
-        await store.bootstrap()
-        await store.refreshTailcatStatus()
-
-        let toggle = Task { await store.setTailcatEnabled(false) }
-        await mutationGate.waitUntilSuspended()
-        await store.refreshTailcatStatus()
-        XCTAssertEqual(statusCalls.current, 1, "修改期间不得启动会覆盖结果的状态读取")
-        mutationGate.resume()
-        await toggle.value
-
-        XCTAssertFalse(store.tailcatEnabled)
-        XCTAssertEqual(store.tailcatStatus?.running, false)
-    }
-
-    func testTailcatMutationRejectsOlderRefreshResult() async {
-        let staleRefreshGate = SuspendedStatusGate()
-        let enabledStatus = TailcatStatus(
-            enabled: true, running: true, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let disabledStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: { await staleRefreshGate.suspendReturning(enabledStatus) },
-            setTailcatEnabled: { _ in disabledStatus }
-        )
-        await store.bootstrap()
-
-        let staleRefresh = Task { await store.refreshTailcatStatus() }
-        await staleRefreshGate.waitUntilSuspended()
-        await store.setTailcatEnabled(false)
-        staleRefreshGate.resume()
-        await staleRefresh.value
-
-        XCTAssertFalse(store.tailcatEnabled)
-        XCTAssertFalse(store.availablePairingNetworks.contains(.tailcat))
-    }
-
-    func testLatestTailcatRefreshWinsWhenOlderFailureFinishesLast() async {
-        let staleRefreshGate = SuspendedStatusGate()
-        let latestRefreshGate = SuspendedStatusGate()
-        let calls = CallCounter()
-        let latestStatus = TailcatStatus(
-            enabled: false, running: false, version: "v0.3.0",
-            derpMapURL: nil, pairedDeviceCount: 1, error: nil
-        )
-        let store = makeStore(
-            configExists: true,
-            agentStatus: { .enabled },
-            tailcatStatus: {
-                if calls.increment() == 1 {
-                    _ = await staleRefreshGate.suspendReturning(false)
-                    throw TestError.expected
-                }
-                return await latestRefreshGate.suspendReturning(latestStatus)
-            }
-        )
-        await store.bootstrap()
-
-        let staleRefresh = Task { await store.refreshTailcatStatus() }
-        await staleRefreshGate.waitUntilSuspended()
-        let latestRefresh = Task { await store.refreshTailcatStatus() }
-        await latestRefreshGate.waitUntilSuspended()
-        latestRefreshGate.resume()
-        await latestRefresh.value
-        staleRefreshGate.resume()
-        await staleRefresh.value
-
-        XCTAssertEqual(store.tailcatStatus, latestStatus)
-        XCTAssertNil(store.tailcatError)
     }
 
     func testDoctorKeepsHomebrewMigrationState() async {
@@ -2188,6 +2090,17 @@ final class HostStoreTests: XCTestCase {
         restoreClaude: @escaping @Sendable (ClaudeConfigurationResult) async throws -> ClaudeConfigurationResult = { _ in
             throw TestError.expected
         },
+        configureClaudeTurnHints: @escaping @Sendable (Bool) async throws -> ClaudeTurnHintsConfigurationResult = { enabled in
+            HostStoreTests.claudeTurnHintsConfiguration(
+                enabled: enabled,
+                previousEnabled: !enabled,
+                changed: true,
+                restartRequired: true
+            )
+        },
+        restoreClaudeTurnHints: @escaping @Sendable (ClaudeTurnHintsConfigurationResult) async throws -> ClaudeTurnHintsConfigurationResult = { _ in
+            throw TestError.expected
+        },
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
@@ -2215,6 +2128,9 @@ final class HostStoreTests: XCTestCase {
                 error: nil
             )
         },
+        setTailcatManagedMode: @escaping @Sendable (Bool) async throws -> TailcatStatus = { _ in
+            throw TestError.expected
+        },
         configureDeepSeek: @escaping @Sendable (
             DeepSeekConfigurationAction, String?
         ) async throws -> DeepSeekConfigurationResult = { _, _ in
@@ -2238,11 +2154,14 @@ final class HostStoreTests: XCTestCase {
             uninstallCodexFrontDoor: uninstallCodexFrontDoor,
             configureClaude: configureClaude,
             restoreClaude: restoreClaude,
+            configureClaudeTurnHints: configureClaudeTurnHints,
+            restoreClaudeTurnHints: restoreClaudeTurnHints,
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
             tailcatStatus: tailcatStatus,
             setTailcatEnabled: setTailcatEnabled,
             configureTailcatDERPMap: configureTailcatDERPMap,
+            setTailcatManagedMode: setTailcatManagedMode,
             configureDeepSeek: configureDeepSeek,
             version: { readyStatus.version }
         )
@@ -2365,7 +2284,8 @@ final class HostStoreTests: XCTestCase {
         previousPreference: ClaudeActivationPreference = .automatic,
         changed: Bool = false,
         restartRequired: Bool = false,
-        reason: String? = nil
+        reason: String? = nil,
+        turnHintsEnabled: Bool? = nil
     ) -> ClaudeConfigurationResult {
         ClaudeConfigurationResult(
             enabled: enabled,
@@ -2378,7 +2298,25 @@ final class HostStoreTests: XCTestCase {
             reason: reason ?? (enabled ? "ready" : "disabled_by_user"),
             message: enabled
                 ? "已检测到 Claude Code 和兼容的 Claude bridge。"
-                : "Claude 实验通道已关闭。"
+                : "Claude 实验通道已关闭。",
+            turnHintsEnabled: turnHintsEnabled
+        )
+    }
+
+    private nonisolated static func claudeTurnHintsConfiguration(
+        enabled: Bool,
+        previousEnabled: Bool,
+        changed: Bool,
+        restartRequired: Bool
+    ) -> ClaudeTurnHintsConfigurationResult {
+        ClaudeTurnHintsConfigurationResult(
+            enabled: enabled,
+            previousEnabled: previousEnabled,
+            changed: changed,
+            restartRequired: restartRequired,
+            message: enabled ? "Claude 回合提示卡已开启。" : "Claude 回合提示卡已关闭。",
+            previous: ClaudeTurnHintsState(enabled: previousEnabled),
+            applied: ClaudeTurnHintsState(enabled: enabled)
         )
     }
 }
@@ -2417,7 +2355,7 @@ final class EventRecorder: @unchecked Sendable {
     }
 }
 
-private final class CallCounter: @unchecked Sendable {
+final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
 
@@ -2435,7 +2373,7 @@ private final class CallCounter: @unchecked Sendable {
     }
 }
 
-private final class SuspendedStatusGate: @unchecked Sendable {
+final class SuspendedStatusGate: @unchecked Sendable {
     private let condition = NSCondition()
     private var suspended = false
     private var released = false

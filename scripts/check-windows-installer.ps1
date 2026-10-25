@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$InstallerPath, [switch]$RequireSignature)
+param([Parameter(Mandatory = $true)][string]$InstallerPath, [switch]$RequireSignature, [string]$ExpectedVersion)
 $ErrorActionPreference = 'Stop'
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 if ([IO.Path]::GetExtension($installer) -ne '.exe') { throw 'Installer must be a .exe file.' }
@@ -7,11 +7,15 @@ $metadataPath = "$installer.metadata.json"
 if (-not (Test-Path -LiteralPath $metadataPath)) { throw "Missing metadata: $metadataPath" }
 $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if ($metadata.installer -ne [IO.Path]::GetFileName($installer)) { throw 'Metadata installer name does not match artifact.' }
-foreach ($binary in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe')) {
+if ($ExpectedVersion -and $metadata.version -ne $ExpectedVersion.TrimStart('v')) { throw "Metadata version $($metadata.version) does not match the expected release $ExpectedVersion." }
+foreach ($binary in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe')) {
     if ($metadata.binaries -notcontains $binary) { throw "Metadata does not declare embedded binary: $binary" }
 }
+# 安装包只发布由同一提交构建、版本一致的 agentd 与 Tailcat 辅助程序。
+if ($metadata.tailcat_version -ne $metadata.version) { throw "Embedded Tailcat helper version '$($metadata.tailcat_version)' does not match installer version $($metadata.version)." }
 if ($metadata.assets -notcontains 'mimi-remote.ico') { throw 'Metadata does not declare the Windows application icon.' }
-foreach ($payload in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-remote.ico')) {
+if ($metadata.assets -notcontains 'THIRD_PARTY_NOTICES.md') { throw 'Metadata does not declare the bundled third-party notices.' }
+foreach ($payload in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
     $payloadHash = $metadata.payload_sha256.$payload
     if ($payloadHash -notmatch '^[0-9a-f]{64}$') { throw "Metadata is missing a valid payload SHA-256: $payload" }
 }

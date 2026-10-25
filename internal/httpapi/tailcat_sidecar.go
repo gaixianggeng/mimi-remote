@@ -15,20 +15,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatsidecar"
 )
 
 const (
 	// TailcatLocalControlHeader 携带只存在本机 0600 文件中的随机值。
 	TailcatLocalControlHeader = "X-Mimi-Tailcat-Local-Control"
-	tailcatSidecarBinary      = "mimi-tailcat-experiment"
 	defaultTailcatPort        = 8787
 	// 普通控制调用只读内存状态或改白名单，5 秒足够。
 	tailcatControlCallTimeout = 5 * time.Second
@@ -39,10 +37,13 @@ const (
 	// 取回超时后建好的配对节点时，剩余有效期（辅助程序给 10 分钟）至少要这么长；
 	// 再短的话用户扫码前可能就过期了，宁可重新生成。
 	tailcatPairReuseMinRemaining = 5 * time.Minute
+	// 停止请求送达后，辅助程序关闭配对节点和稳定节点的宽限期，超时强制结束。
+	tailcatSidecarStopGrace = 3 * time.Second
 )
 
 type tailcatStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
 	Running           bool   `json:"running"`
 	Version           string `json:"version,omitempty"`
 	InstanceID        string `json:"instance_id,omitempty"`
@@ -66,6 +67,7 @@ type tailcatSidecar interface {
 	ReplaceManagedClients(context.Context, []string) (tailcatStatus, error)
 	Reset(context.Context) (tailcatStatus, error)
 	ConfigureDERPMap(context.Context, string) (tailcatStatus, error)
+	ConfigureMode(context.Context, bool, func() error) (tailcatStatus, error)
 	Close()
 }
 
@@ -168,6 +170,10 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 		s.mu.Unlock()
 		return errors.New("Tailcat 管理器正在关闭")
 	}
+	if err := s.config.Validate(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.config.Enabled = true
 	if s.cmd != nil {
 		s.mu.Unlock()
@@ -185,7 +191,7 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	s.lastError = ""
 	s.mu.Unlock()
 
-	bin, err := resolveTailcatSidecarBinary(s.config.SidecarBin)
+	bin, err := tailcatsidecar.Resolve(s.config.SidecarBin)
 	if err != nil {
 		s.finishStart(nil, err)
 		return err
@@ -209,7 +215,8 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &tailcatSidecarLogWriter{}
-	if err := cmd.Start(); err != nil {
+	prepareTailcatSidecarProcess(cmd)
+	if err := startTailcatSidecarProcess(cmd); err != nil {
 		err = fmt.Errorf("启动 Tailcat sidecar：%w", err)
 		s.finishStart(nil, err)
 		return err
@@ -247,6 +254,7 @@ func (s *tailcatSidecarSupervisor) finishStart(cmd *exec.Cmd, err error) {
 
 func (s *tailcatSidecarSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	releaseTailcatSidecarProcess(cmd)
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.cmd = nil
@@ -293,16 +301,21 @@ func (s *tailcatSidecarSupervisor) stopProcess(ctx context.Context, cmd *exec.Cm
 	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
-	_ = cmd.Process.Signal(os.Interrupt)
-	timer := time.NewTimer(3 * time.Second)
+	// 停止请求没有送达（进程已退出、尚未建好控制通道，或旧辅助程序不认识
+	// /shutdown）时不再空等宽限期，直接结束进程。
+	grace := tailcatSidecarStopGrace
+	if !s.requestSidecarExit(cmd) {
+		grace = 0
+	}
+	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case <-done:
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
+		killTailcatSidecarProcess(cmd)
 		return ctx.Err()
 	case <-timer.C:
-		_ = cmd.Process.Kill()
+		killTailcatSidecarProcess(cmd)
 		<-done
 	}
 	_ = os.Remove(s.controlPath)
@@ -316,11 +329,12 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 	s.mu.Lock()
 	enabled := s.config.Enabled
 	derpMapURL := s.config.DERPMapURL
+	mode := s.config.ConnectionMode()
 	running := s.cmd != nil
 	starting := s.starting
 	lastError := s.lastError
 	s.mu.Unlock()
-	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL}
+	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL, Mode: mode}
 	if !enabled {
 		return status
 	}
@@ -328,6 +342,7 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 		if err := s.call(ctx, s.controlCallTimeout(), http.MethodGet, "/status", nil, &status); err == nil {
 			status.Enabled = true
 			status.DERPMapURL = derpMapURL
+			status.Mode = mode
 			return status
 		} else if lastError == "" && !starting {
 			lastError = err.Error()
@@ -424,10 +439,6 @@ func (s *tailcatSidecarSupervisor) callControlWithStatus(
 	return status, err
 }
 
-func (s *tailcatSidecarSupervisor) AllowClient(ctx context.Context, publicKey string) (tailcatStatus, error) {
-	return s.callControlWithStatus(ctx, http.MethodPost, "/allow", map[string]string{"public_key": publicKey})
-}
-
 func (s *tailcatSidecarSupervisor) ReplaceManagedClients(
 	ctx context.Context,
 	publicKeys []string,
@@ -449,66 +460,7 @@ func (s *tailcatSidecarSupervisor) applyConfigurationToStatus(status *tailcatSta
 	defer s.mu.Unlock()
 	status.Enabled = s.config.Enabled
 	status.DERPMapURL = s.config.DERPMapURL
-}
-
-// ConfigureDERPMap 原子切换用户选择的 DERP Map。Tailcat 连接地址内嵌中继
-// 区域，因此成功切换必须重建主机身份并清空配对；启动或写配置失败时恢复
-// 原状态，不能让一次设置操作破坏现有远程入口。
-func (s *tailcatSidecarSupervisor) ConfigureDERPMap(ctx context.Context, rawURL string) (tailcatStatus, error) {
-	if s == nil {
-		return tailcatStatus{}, errors.New("Tailcat 管理器未初始化")
-	}
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-	normalized, err := config.NormalizeTailcatDERPMapURL(rawURL)
-	if err != nil {
-		return s.Status(ctx), err
-	}
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return tailcatStatus{}, errors.New("Tailcat 管理器正在关闭")
-	}
-	if s.starting {
-		s.mu.Unlock()
-		return tailcatStatus{}, errors.New("Tailcat 正在启动")
-	}
-	previousConfig := s.config
-	wasRunning := s.cmd != nil
-	stateDir := s.stateDir
-	s.mu.Unlock()
-	if stateDir == "" {
-		return tailcatStatus{}, errors.New("Tailcat 缺少配置文件路径")
-	}
-	previousURL, _ := config.NormalizeTailcatDERPMapURL(previousConfig.DERPMapURL)
-	if normalized == previousURL {
-		return s.Status(ctx), nil
-	}
-
-	snapshot, err := snapshotTailcatIdentityState(stateDir)
-	if err != nil {
-		return s.Status(ctx), err
-	}
-	if err := s.stopForReconfiguration(ctx); err != nil {
-		// 请求可能在旧 sidecar 已停止后被取消。此时仍要用独立上下文
-		// 恢复原身份和进程，避免一次取消破坏现有远程入口。
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	s.mu.Lock()
-	s.config.DERPMapURL = normalized
-	s.mu.Unlock()
-	if err := clearTailcatIdentityState(stateDir); err != nil {
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	if previousConfig.Enabled {
-		if err := s.start(ctx); err != nil {
-			return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-		}
-	}
-	if _, err := agentsetup.ConfigureTailcatDERPMap(s.configPath, normalized); err != nil {
-		return s.rollbackDERPMap(ctx, previousConfig, wasRunning, snapshot, err)
-	}
-	return s.Status(ctx), nil
+	status.Mode = s.config.ConnectionMode()
 }
 
 func (s *tailcatSidecarSupervisor) stopForReconfiguration(ctx context.Context) error {
@@ -694,38 +646,6 @@ func (s *tailcatSidecarSupervisor) call(
 		return fmt.Errorf("解析 Tailcat 状态：%w", err)
 	}
 	return nil
-}
-
-func resolveTailcatSidecarBinary(configured string) (string, error) {
-	if value := strings.TrimSpace(configured); value != "" {
-		if path, err := exec.LookPath(value); err == nil {
-			return path, nil
-		}
-		return "", fmt.Errorf("找不到 Tailcat sidecar：%s", value)
-	}
-	if value := strings.TrimSpace(os.Getenv("AGENTD_TAILCAT_BIN")); value != "" {
-		if path, err := exec.LookPath(value); err == nil {
-			return path, nil
-		}
-		return "", fmt.Errorf("AGENTD_TAILCAT_BIN 不可执行：%s", value)
-	}
-	name := tailcatSidecarBinary
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if executable, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(executable), name)
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	if path, err := exec.LookPath(name); err == nil {
-		return path, nil
-	}
-	if runtime.GOOS == "linux" {
-		return "", fmt.Errorf("未安装 %s；请下载完整 Linux Release 包，在解压目录执行 bash ./scripts/install-linux.sh upgrade 后重试；Tailcat 保持关闭", name)
-	}
-	return "", fmt.Errorf("未安装 %s；Tailcat 实验保持关闭", name)
 }
 
 func tailcatLoopbackTarget(listen string) string {

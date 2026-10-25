@@ -47,6 +47,8 @@ struct UnifiedWorkbenchShell: View {
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
     @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
+    @State private var sessionHistory = WorkbenchSessionHistory()
+    @State private var isSessionJumpPanelPresented = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -73,20 +75,21 @@ struct UnifiedWorkbenchShell: View {
             } ?? proposedLayout
 
             Group {
+                // 三种布局各自擦除类型，见 WorkbenchShellErasedLayouts.swift（#865）。
                 if layout.usesCompactNavigation {
-                    compactLayout(
+                    compactLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else if layout.usesFloatingSidebarSurface {
-                    floatingLayout(
+                    floatingLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
                     )
                 } else {
-                    splitLayout(
+                    splitLayoutBox(
                         layout: layout,
                         tokens: tokens,
                         bottomSafeAreaInset: proxy.safeAreaInsets.bottom
@@ -110,6 +113,15 @@ struct UnifiedWorkbenchShell: View {
                     )
                 }
             }
+            .focusedSceneValue(\.workbenchCommands, keyboardCommandActions(layout: layout))
+            .sheet(isPresented: $isSessionJumpPanelPresented) {
+                SessionJumpPanel(
+                    sections: sidebarMonitorSections(now: Date()),
+                    allSessions: SessionStore.sortedSessions(sessionStore.openedWorkspaceSessionLibrarySessions),
+                    onOpen: { openSession($0, source: .sessions, layout: layout) }
+                )
+                .environmentObject(themeStore)
+            }
             .onAppear {
                 lastCompactNavigation = layout.usesCompactNavigation
                 restoreFloatingSidebarVisibilityIfNeeded()
@@ -124,6 +136,8 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeSidebarLifecycle()
                 workspaceRuntimeSelection.reset()
                 workspaceBrowseSelection.reset()
+                // 会话 ID 只在同一台电脑内唯一，换电脑后旧历史不能再用于 ⌘[ / ⌘]。
+                sessionHistory = WorkbenchSessionHistory()
             }
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
@@ -264,7 +278,7 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func splitLayout(
+    func splitLayout(
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
@@ -278,7 +292,7 @@ struct UnifiedWorkbenchShell: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    private func floatingLayout(
+    func floatingLayout(
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
         bottomSafeAreaInset: CGFloat
@@ -698,6 +712,9 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         let familySections = SessionHierarchy.sectionedFamilies(sections.map { (key: $0.kind, sessions: $0.sessions) })
+        // 值班表与跳转器的分层规则见 WorkbenchSidebarDutyBoard.swift（#547）。
+        let renderedKinds = familySections.map(\.key)
+        let dividerKind = WorkbenchSidebarDutyBoardLayout.dividerKind(sectionKinds: renderedKinds)
 
         return List(selection: selectionBinding(layout: layout)) {
             Section {
@@ -715,6 +732,12 @@ struct UnifiedWorkbenchShell: View {
                     tokens: tokens,
                     layout: layout
                 )
+            }
+
+            if WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: renderedKinds) {
+                Section {
+                    WorkbenchSidebarQuietRow()
+                }
             }
 
             ForEach(familySections) { familySection in
@@ -756,8 +779,12 @@ struct UnifiedWorkbenchShell: View {
                 } header: {
                     let ownCount = familySection.families.flatMap(\.members)
                         .filter { kindBySessionID[$0.id] == familySection.key }.count
-                    Text("\(sidebarSectionTitle(section.kind)) \(ownCount + section.overflowCount)")
-                        .pageSectionHeaderStyle()
+                    WorkbenchSidebarSectionHeader(
+                        title: sidebarSectionTitle(section.kind),
+                        count: ownCount + section.overflowCount,
+                        kind: section.kind,
+                        showsDivider: familySection.key == dividerKind
+                    )
                 }
             }
         }
@@ -917,18 +944,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sidebarSectionTitle(_ kind: SessionSidebarSectionKind) -> String {
-        switch kind {
-        case .needYou:
-            return L10n.text("ui.needs_you")
-        case .running:
-            return L10n.text("ui.in_progress")
-        case .justCompleted:
-            return L10n.text("ui.just_completed")
-        case .pinned:
-            return L10n.text("ui.pinned")
-        case .recent:
-            return L10n.text("ui.recently")
-        }
+        kind.localizedTitle
     }
 
     private func sidebarFooter(
@@ -994,7 +1010,7 @@ struct UnifiedWorkbenchShell: View {
         case .me, .devices:
             settingsPage(tab: destination == .devices ? .devices : .me, layout: layout)
         case .session(let sessionID):
-            sessionDetail(
+            sessionDetailBox(
                 destinationSessionID: sessionID,
                 layout: layout,
                 tokens: tokens,
@@ -1036,10 +1052,10 @@ struct UnifiedWorkbenchShell: View {
             if layout.usesFloatingSidebarSurface {
                 // 浮层路径不再由 NavigationSplitView 提供 detail 导航上下文，父会话与子会话路由都显式使用原生导航栈。
                 NavigationStack {
-                    sessionDetail(layout: layout, tokens: tokens)
+                    sessionDetailBox(layout: layout, tokens: tokens)
                 }
             } else {
-                sessionDetail(layout: layout, tokens: tokens)
+                sessionDetailBox(layout: layout, tokens: tokens)
             }
         }
     }
@@ -1105,7 +1121,7 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("conversation.detailedTranscript")
     }
 
-    private func sessionDetail(
+    func sessionDetail(
         destinationSessionID: SessionID? = nil,
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
@@ -1597,7 +1613,56 @@ struct UnifiedWorkbenchShell: View {
         _ commit: SessionSelectionCommit,
         layout: WorkbenchLayout
     ) {
+        recordSessionHistory(commit)
         applyNavigation(.selectionCommitted(commit), layout: layout)
+    }
+
+    private func recordSessionHistory(_ commit: SessionSelectionCommit) {
+        guard let sessionID = commit.sessionID else { return }
+        switch commit.reason {
+        case .identityReplacement(let previousID):
+            sessionHistory.replace(previousID, with: sessionID)
+        case .userOpen, .notification, .restoration:
+            sessionHistory.visit(sessionID)
+        case .invalidation:
+            break
+        }
+    }
+
+    /// 外接键盘快捷键（#828）：⌘O / ⌘F 跳转，⌘1～9 侧栏前 9 条，⌘N 新建，⌘. 停止，⌘[ / ⌘] 前后会话。
+    private func keyboardCommandActions(layout: WorkbenchLayout) -> WorkbenchCommandActions {
+        let sidebarShortcuts = sidebarMonitorSections(now: Date())
+            .flatMap(\.sessions)
+            .prefix(9)
+            .map { WorkbenchCommandActions.SidebarShortcut(id: $0.id, title: $0.title) }
+        let visibleID = navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation)
+        let canStop = sessionStore.selectedSession.map { session in
+            session.id == visibleID && session.isRunning && session.activeTurnID != nil
+                && sessionStore.canControlSession(session)
+        } ?? false
+        let stopCurrentReply: (() -> Void)? = canStop ? { sessionStore.interruptSelectedTurn() } : nil
+        return WorkbenchCommandActions(
+            sidebarShortcuts: Array(sidebarShortcuts),
+            openJumpPanel: { isSessionJumpPanelPresented = true },
+            openSession: { open(.session($0), source: .sessions, layout: layout) },
+            newSession: { presentSheet(.newSession) },
+            stopCurrentReply: stopCurrentReply,
+            goBack: sessionHistory.canGoBack ? { stepSessionHistory(back: true, layout: layout) } : nil,
+            goForward: sessionHistory.canGoForward ? { stepSessionHistory(back: false, layout: layout) } : nil
+        )
+    }
+
+    private func stepSessionHistory(back: Bool, layout: WorkbenchLayout) {
+        var history = sessionHistory
+        // 已归档的会话仍留在 sessions 里，只是从列表投影中隐藏；前后切换要一起跳过。
+        let isAvailable: (SessionID) -> Bool = { id in
+            !sessionStore.archivedSessionIDs.contains(id) && sessionStore.sessions.contains { $0.id == id }
+        }
+        let target = back ? history.goBack(isAvailable: isAvailable) : history.goForward(isAvailable: isAvailable)
+        sessionHistory = history
+        if let target {
+            open(.session(target), source: .sessions, layout: layout)
+        }
     }
 
     private func applyNavigation(

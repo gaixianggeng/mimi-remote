@@ -195,10 +195,16 @@ extension SessionStore {
                 return
             }
             HostSwitchSignpost.event("runtime_event_app_received")
-            if let metadata = self.metadata(for: event) {
-                self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+            let scopedEvent = event.bindingPromptSuggestion(to: connectionGeneration)
+            switch scopedEvent {
+            case .promptSuggestion:
+                break
+            default:
+                if let metadata = self.metadata(for: scopedEvent) {
+                    self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+                }
             }
-            let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            let shouldFlushImmediately = terminalStreamStore.append(scopedEvent, lease: eventLease)
             HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
@@ -1068,6 +1074,10 @@ extension SessionStore {
 
     func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease, sendsNotification: Bool = true) async {
         guard appStore.activeHostScope == lease.hostScope else { return }
+        if case .promptSuggestion = event {
+            observeNativePromptSuggestion(event, lease: lease)
+            return
+        }
         let sessionID = lease.sessionID
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
         defer {
@@ -1087,6 +1097,7 @@ extension SessionStore {
             // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
             return
         }
+        observeNativePromptSuggestion(event, lease: lease)
         if case .turnCompleted(let metadata) = event {
             cancelTurnCompletionReconciliation(
                 sessionID: metadata.sessionID ?? sessionID
@@ -1413,9 +1424,14 @@ extension SessionStore {
                 item.status = status
             }
             if status == SessionStatus.completed.rawValue {
-                locallyCompletedSessionIDs.insert(id)
+                // 完成时间由运行时随终态 session 快照带来；这里的 Store 时间可能是本地预览投影。
+                markSessionLocallyCompleted(
+                    id,
+                    completedTurnIDs: [sessionsByID[id]?.activeTurnID, Self.clearedTurnID(in: output, sessionID: id)],
+                    updatedAt: nil
+                )
             } else if Self.isRunningStatus(status) {
-                locallyCompletedSessionIDs.remove(id)
+                clearLocalCompletionMark(id)
             }
             if !Self.isRunningStatus(status) {
                 clearRuntimeActivity(sessionID: id)
@@ -1592,6 +1608,7 @@ extension SessionStore {
              .collaborationModeUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
+             .promptSuggestion(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
@@ -1654,7 +1671,9 @@ extension SessionStore {
                 body: sessionDisplayTitle(sessionID: sessionID),
                 kind: notification.kind
             )
-        case .sessionStatus(let status, let metadata) where status == "failed":
+        // 带轮次终态的失败状态是从持久记录恢复的旧结局（Harness 冷开会话），这一轮的提醒
+        // 已由实时 turnCompleted 负责；重开会话时再弹一次「会话失败」是误报（#861）。
+        case .sessionStatus(let status, let metadata) where status == "failed" && metadata.turnLifecycle == nil:
             let sessionID = metadata.sessionID ?? fallbackSessionID
             let token = metadata.turnID ?? metadata.seq.map(String.init) ?? "latest"
             return SessionRuntimeNotification(
@@ -1755,6 +1774,7 @@ extension SessionStore {
                 return
             }
             let sessionID = metadata.sessionID ?? fallbackSessionID
+            recordContextWindowUsage(sample, sessionID: sessionID)
             let next = TurnOutputTokenCounter.applying(
                 sample,
                 turnID: metadata.turnID,
@@ -1764,7 +1784,7 @@ extension SessionStore {
                 turnOutputTokensBySessionID[sessionID] = next
             }
         case .permissionProfileUpdated, .collaborationModeUpdated,
-             .goalUpdated, .goalCleared, .unknown:
+             .goalUpdated, .goalCleared, .promptSuggestion, .unknown:
             return
         }
     }
@@ -2861,6 +2881,7 @@ extension SessionStore {
         // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
+        invalidateNativePromptSuggestion()
         composerModelSelectionCache.removeAll()
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()
@@ -3000,6 +3021,7 @@ extension SessionStore {
         turnModelTasksByRuntime.values.forEach { $0.task.cancel() }
         turnModelTasksByRuntime = [:]
         turnModelRefreshByRuntime = [:]
+        retainedModelCatalogProviders = []
         appServerPermissionProfiles = []
         activePermissionProfileBySessionID = [:]
         clearActiveCollaborationModes()
@@ -3008,6 +3030,7 @@ extension SessionStore {
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
         availableRuntimeProviders = ["codex"]
+        threadGoalRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil
         accountTokenActivity = .idle
@@ -3025,7 +3048,10 @@ extension SessionStore {
         foregroundActivityBySessionID = [:]
         runtimeActivityBySessionID = [:]
         turnOutputTokensBySessionID = [:]
+        contextWindowUsageBySessionID = [:]
+        dismissedContextWindowNoticeSessionIDs = []
         locallyCompletedSessionIDs = []
+        locallyCompletedSessionMarks = [:]
         locallyCompletedGoalThreadIDs = []
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
         runtimeEventFlushTasks = [:]
@@ -3143,25 +3169,6 @@ extension SessionStore {
             item.goal = nil
         }
         contextStore.clearGoal(sessionID: sessionID)
-    }
-
-    func sessionPreservingLocalCompletedStatus(_ incoming: AgentSession) -> AgentSession {
-        var next = incoming
-        if next.status == SessionStatus.completed.rawValue {
-            locallyCompletedSessionIDs.insert(next.id)
-            return next
-        }
-        guard Self.isRunningStatus(next.status),
-              locallyCompletedSessionIDs.contains(next.id)
-        else {
-            return next
-        }
-        // 列表刷新可能落后于实时 turn/completed；这时不要让旧 running 快照把 UI 拉回运行态。
-        next.status = SessionStatus.completed.rawValue
-        next.activeTurnID = nil
-        next.pendingApproval = nil
-        next.pendingUserInput = nil
-        return next
     }
 
     func sessionPreservingLocalCompletedGoal(_ incoming: AgentSession) -> AgentSession {
