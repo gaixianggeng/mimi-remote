@@ -254,29 +254,34 @@ final class DataURLImageDecoderTests: XCTestCase {
         XCTAssertEqual(previewFiles(in: root).count, 2)
     }
 
-    /// #918：超过一天没再打开的副本（含异常退出留下的）在之后的预览里回收；复用会刷新时间。
-    func testMediaWorkerSweepsStalePreviewsAndKeepsReusedOnes() async throws {
+    /// #918：上一次运行留下的副本在本次第一次预览时清理；本次运行里的副本再久也不回收，
+    /// 以免删掉仍被图片视图引用的文件。
+    func testMediaWorkerSweepsOnlyPreviousRunPreviews() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("mimi-media-worker-sweep-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let clock = PreviewClock(Date())
-        let worker = MediaWorker(previewRootDirectory: root, now: { clock.now })
-        let kept = previewPayload("kept.txt", Data("kept".utf8))
-        let stale = previewPayload("stale.txt", Data("stale".utf8))
-
-        let keptURL = try await worker.previewURL(from: kept, profileID: "profile-a")
-        let staleURL = try await worker.previewURL(from: stale, profileID: "profile-b")
-        clock.advance(by: 23 * 60 * 60)
-        _ = try await worker.previewURL(from: kept, profileID: "profile-a")
-        clock.advance(by: 2 * 60 * 60)
-        let freshURL = try await worker.previewURL(
-            from: previewPayload("fresh.txt", Data("fresh".utf8)),
-            profileID: "profile-a"
+        let previousRun = MediaWorker(previewRootDirectory: root, now: { clock.now })
+        let leftoverURL = try await previousRun.previewURL(
+            from: previewPayload("leftover.txt", Data("leftover".utf8)),
+            profileID: "profile-b"
         )
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: keptURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: staleURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: freshURL.path))
+        clock.advance(by: 60)
+        let worker = MediaWorker(previewRootDirectory: root, now: { clock.now })
+        let liveURL = try await worker.previewURL(
+            from: previewPayload("live.txt", Data("live".utf8)),
+            profileID: "profile-a"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leftoverURL.path))
+
+        clock.advance(by: 48 * 60 * 60)
+        let laterURL = try await worker.previewURL(
+            from: previewPayload("later.txt", Data("later".utf8)),
+            profileID: "profile-a"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: laterURL.path))
     }
 
     /// #918：删除档案只清掉该档案的预览副本。
