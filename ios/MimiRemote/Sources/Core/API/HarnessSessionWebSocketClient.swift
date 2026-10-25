@@ -693,6 +693,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
     @discardableResult
     func apply(assistantStream frame: HarnessAssistantStreamFrame) -> HarnessJournalStreamRejection? {
         guard var current = journal else { return .beforeSnapshot }
+        // 同理先取走：属性里的旧值还持有 chunks 时，追加会复制整个已收前缀（#917）。
+        // 下面到写回之间只读 current，不经过 self.journal。
+        journal = nil
         // 这里只需要在 start 时识别被替换的身份。保留整个 attempt 会额外持有 chunks
         // 数组，使后续 append 触发写时复制，重新引入随正文长度增长的主线程成本。
         let previousAttemptID = frame.type == HarnessWireAssistantFrame.start
