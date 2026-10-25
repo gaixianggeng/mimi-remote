@@ -1158,6 +1158,7 @@ extension SessionStore {
         }
         applyEventReducerOutput(output)
         HostSwitchSignpost.event("runtime_event_store_committed")
+        noteAppReviewSignals(for: event, fallbackSessionID: sessionID)
         if let id = computerHolderWorkingSessionID,
            let updated = sessionsByID[id],
            !updated.isRunningOnComputer,

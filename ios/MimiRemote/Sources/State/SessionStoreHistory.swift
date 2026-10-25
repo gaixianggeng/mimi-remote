@@ -3248,8 +3248,14 @@ extension SessionStore {
         sessionID: SessionID,
         preview rawPreview: String,
         source: SessionListProjection.Source,
-        clientMessageID: ClientMessageID?
+        clientMessageID: ClientMessageID?,
+        isDispatching: Bool = true
     ) {
+        // 所有从 App 发出的消息（新建、直发、引导、队列派发）都经过这里；纯图片消息的预览为空，
+        // 所以要在下面的空预览判断之前登记，评分邀请才只统计用户在 App 里发起的回合（#842）。
+        // 只入本地队列、尚未派发的消息不登记：下一个完成事件属于正在运行的那一轮，
+        // 等队列真正派发时这里会再被调用一次。
+        if source == .localUser, isDispatching { appReviewPrompt?.recordTurnSubmitted(sessionID: sessionID) }
         let preview = rawPreview
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isNewline)
@@ -3290,6 +3296,8 @@ extension SessionStore {
             return
         }
         listProjectionBySessionID.removeValue(forKey: sessionID)
+        // 回滚只发生在发送失败时；这条消息没有发出，它的登记也要撤销（#842）。
+        if projection.source == .localUser { appReviewPrompt?.discardTurnSubmitted(sessionID: sessionID) }
         updateSession(sessionID) { item in
             item.preview = projection.basePreview
             item.updatedAt = projection.baseRemoteUpdatedAt ?? item.updatedAt
@@ -3297,6 +3305,9 @@ extension SessionStore {
     }
 
     func moveSessionListProjection(from sourceSessionID: SessionID, to targetSessionID: SessionID, clientMessageID: ClientMessageID?) {
+        if sourceSessionID != targetSessionID {
+            appReviewPrompt?.moveSubmittedSession(from: sourceSessionID, to: targetSessionID)
+        }
         guard sourceSessionID != targetSessionID,
               let projection = listProjectionBySessionID[sourceSessionID]
         else {
