@@ -107,67 +107,6 @@ begin
   end;
 end;
 
-procedure StopManagedService;
-var
-  ResultCode: Integer;
-  Attempt: Integer;
-  AgentPath: String;
-  ProbePath: String;
-begin
-  AgentPath := ExpandConstant('{app}\agentd.exe');
-  if not FileExists(AgentPath) then
-    Exit;
-  Exec(AgentPath, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-  // schtasks /end returns before Windows has necessarily released the running
-  // image. Probe with an atomic rename so upgrade/uninstall never continues
-  // while agentd.exe is still locked.
-  ProbePath := AgentPath + '.stop-check';
-  for Attempt := 1 to 100 do begin
-    if RenameFile(AgentPath, ProbePath) then begin
-      if not RenameFile(ProbePath, AgentPath) then
-        RaiseException('Mimi Remote stopped, but agentd.exe could not be restored after the shutdown check.');
-      Exit;
-    end;
-    Sleep(100);
-  end;
-  RaiseException('Mimi Remote backend did not stop within 10 seconds.');
-end;
-
-procedure StopTrayApp;
-var
-  ResultCode: Integer;
-  Attempt: Integer;
-  TrayPath: String;
-  ProbePath: String;
-begin
-  TrayPath := ExpandConstant('{app}\mimi-remote-tray.exe');
-  if not FileExists(TrayPath) then
-    Exit;
-
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  ProbePath := TrayPath + '.stop-check';
-  for Attempt := 1 to 30 do begin
-    if RenameFile(TrayPath, ProbePath) then begin
-      if not RenameFile(ProbePath, TrayPath) then
-        RaiseException('Mimi Remote tray stopped, but its executable could not be restored after the shutdown check.');
-      Exit;
-    end;
-    Sleep(100);
-  end;
-
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  for Attempt := 1 to 50 do begin
-    if RenameFile(TrayPath, ProbePath) then begin
-      if not RenameFile(ProbePath, TrayPath) then
-        RaiseException('Mimi Remote tray stopped, but its executable could not be restored after the forced shutdown check.');
-      Exit;
-    end;
-    Sleep(100);
-  end;
-  RaiseException('Mimi Remote tray did not stop within 8 seconds.');
-end;
-
 function ExecutableIsReleased(const Path: String): Boolean;
 var
   Stream: TFileStream;
@@ -182,6 +121,54 @@ begin
   except
     Result := False;
   end;
+end;
+
+procedure StopManagedService;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+  AgentPath: String;
+begin
+  AgentPath := ExpandConstant('{app}\agentd.exe');
+  if not FileExists(AgentPath) then
+    Exit;
+  Exec(AgentPath, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // schtasks /end returns before Windows has necessarily released the running
+  // image, and a rename succeeds even while it is still mapped. Wait until the
+  // image can be opened exclusively so upgrade/uninstall never replaces it early.
+  for Attempt := 1 to 100 do begin
+    if ExecutableIsReleased(AgentPath) then
+      Exit;
+    Sleep(100);
+  end;
+  RaiseException('Mimi Remote backend did not stop within 10 seconds.');
+end;
+
+procedure StopTrayApp;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+  TrayPath: String;
+begin
+  TrayPath := ExpandConstant('{app}\mimi-remote-tray.exe');
+  if not FileExists(TrayPath) then
+    Exit;
+
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for Attempt := 1 to 30 do begin
+    if ExecutableIsReleased(TrayPath) then
+      Exit;
+    Sleep(100);
+  end;
+
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for Attempt := 1 to 50 do begin
+    if ExecutableIsReleased(TrayPath) then
+      Exit;
+    Sleep(100);
+  end;
+  RaiseException('Mimi Remote tray did not stop within 8 seconds.');
 end;
 
 procedure StopTailcatHelper;
