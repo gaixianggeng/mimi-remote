@@ -4,7 +4,7 @@
 
 <p align="center"><strong>用手机，遥控电脑上的 Codex 和 Claude Code。</strong></p>
 
-<p align="center">Agent 继续在你的 Mac、Windows 或 Linux 电脑上干活，你在 iPhone、iPad 上看进度、回消息、批权限。开源免费，没有云账号。</p>
+<p align="center">Agent 继续在你的 Mac、Windows 或 Linux 电脑上干活，你在 iPhone、iPad 上看进度、回消息、批权限。App 免费开源，可选付费的 Mimi 托管连接，无需 Mimi 账号。</p>
 
 <p align="center"><a href="README.md">English</a> · <a href="https://remote.code89757.com/?lang=zh">官网</a> · <a href="https://apps.apple.com/us/app/mimi-remote/id6778076511">App Store</a> · <a href="https://testflight.apple.com/join/jhGPbSk6">TestFlight</a> · <a href="https://github.com/gaixianggeng/mimi-remote/releases/latest">电脑端安装包</a></p>
 
@@ -70,9 +70,9 @@ flowchart LR
 
 Windows 上的 Codex App Server 只监听本机 loopback WebSocket，不向局域网直接开放。电脑通过不需要认证的 Windows 系统代理（例如本机代理软件）上网时，Mimi Remote 启动的 Codex 与 Claude 会自动使用它；代理软件开关后也随之生效。本机中转不支持需要 407 认证挑战的上游代理，包括 NTLM 和 Negotiate；这类环境应在 `codex.env` 或 `claude.env` 中配置可直接使用的代理。
 
-电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。没有云账号、会话托管或应用层中转。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、随机编号与电脑和会话的匿名短标签、运行时与事件类型（如待审批、任务完成）和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
+电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。无需 Mimi 账号，不托管会话。可选的 Mimi 托管连接使用开发者运营的订阅与设备授权服务，必要时经中继转发端到端加密数据包，开发者无法读取工作内容。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、随机编号与电脑和会话的匿名短标签、运行时与事件类型（如待审批、任务完成）和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
 
-Mac、Windows 与 Linux 宿主还提供实验性 Tailcat 连接（默认关闭），开启后手机无需安装 Tailscale 也能连到宿主。Windows 上也不需要开启局域网，不新增防火墙规则：在任务栏托盘的控制面板中开启 Tailcat，配对时选择 Tailcat 即可。每次连接都会先通过 DERP 中继发现对端并完成初始握手，随后在网络允许时将端到端加密的流量切换为直连；无法直连时继续经中继转发。即使随后直连，中继也会处理建立连接所需的网络元数据。默认中继由 Tailscale 运营，不由 Mimi Remote 运营，也可以在宿主上改为自建中继。
+Mac、Windows 与 Linux 宿主还提供实验性自建 Tailcat 连接（默认关闭），开启后手机无需安装 Tailscale 也能连到宿主。Windows 上也不需要开启局域网，不新增防火墙规则：在任务栏托盘的控制面板中开启 Tailcat，配对时选择 Tailcat 即可。每次连接都会先通过 DERP 中继发现对端并完成初始握手，随后在网络允许时将端到端加密的流量切换为直连；无法直连时继续经中继转发。即使随后直连，中继也会处理建立连接所需的网络元数据。自建 Tailcat 默认使用 Tailscale 运营的中继，也可以在宿主上改为自建中继；Mimi 托管连接使用 Mimi 运营的中继。
 
 新会话默认使用「完全文件访问」权限档位，Agent 执行命令和修改文件时不会逐条询问。需要逐条确认时，在 App 设置的「默认权限」中改为「请求审批」。风险说明见 [SECURITY.md](SECURITY.md)。
 
@@ -93,7 +93,7 @@ Mimi Remote 是会话客户端，不是远程 Shell，也不在 iOS 上运行 Ag
 用 Tailscale 让手机和电脑处在同一个私有网络。Mac、Windows 与 Linux 电脑也可以试用实验性的 Tailcat 连接，说明见[工作原理](#工作原理)。
 
 **收费吗？**\
-App 和电脑端都免费、开源，没有内购和订阅。模型用量算在你电脑上 Codex 或 Claude Code 使用的账号上。
+App 与电脑端免费开源，局域网、Tailscale 和自建 Tailcat 连接继续免费。可选付费的 Mimi 托管连接让你不在同一 Wi-Fi 也能连上自己的电脑，无需安装其他联网工具。月付 ¥9.9 / US$1.99，年付 ¥68 / US$9.99，其余地区由 Apple 换算。两个方案均有 7 天免费试用，每个 Apple ID 在订阅组内仅一次。每个订阅最多支持 3 台电脑、5 台手机或平板。同一 Apple ID 可恢复权益，但新手机或平板需重新接入每台电脑，地址和凭据不会同步。详见[订阅条款](docs/terms-of-use.md)。模型用量算在你电脑上 Codex 或 Claude Code 使用的账号上。
 
 **和 OpenAI、Anthropic 官方的手机远程功能有什么不同？**\
 官方功能各自服务自家的 Agent。Mimi Remote 在一个 App 里同时连接 Codex 和 Claude Code（以及 DeepSeek Harness），电脑可以是 Mac、Windows 或 Linux，能在多台之间切换，iPad 上是多栏工作台，代码全部开源。官方功能更新很快，按你使用的工具和账号选择即可。
