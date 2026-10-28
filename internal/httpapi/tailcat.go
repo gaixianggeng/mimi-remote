@@ -40,21 +40,13 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 	if !decodeJSONRequest(w, req, &payload) {
 		return
 	}
+	r.tailcatControlMu.Lock()
+	defer r.tailcatControlMu.Unlock()
 	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
 	case "enable":
-		if _, err := agentsetup.ConfigureTailcat(r.configPath, true); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+		if failure := r.enableTailcat(req.Context()); failure != nil {
+			writeError(w, failure.status, failure.err.Error())
 			return
-		}
-		if err := r.tailcat.Start(req.Context()); err != nil {
-			_, _ = agentsetup.ConfigureTailcat(r.configPath, false)
-			_ = r.tailcat.Stop(req.Context())
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		if r.managedPairing != nil {
-			r.managedPairing.Start()
-			_ = r.managedPairing.Sync(req.Context())
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "disable":
@@ -68,16 +60,12 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "pair":
-		if !r.cfg.HasEnabledAgent() {
-			writeError(w, http.StatusServiceUnavailable, "全部 AI 编程助手已关闭，请先启用助手")
+		status, failure := r.pairTailcat(req.Context())
+		if failure != nil {
+			writeError(w, failure.status, failure.err.Error())
 			return
 		}
-		status, err := r.tailcat.Pair(req.Context())
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
+		writeJSON(w, http.StatusOK, status)
 	case "reset":
 		var managedResetErr error
 		if r.managedPairing != nil {

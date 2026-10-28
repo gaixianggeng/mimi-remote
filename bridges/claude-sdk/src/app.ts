@@ -82,6 +82,8 @@ export interface AppOptions {
   probeClaudeCode?: (executable: string) => Promise<ClaudeCodeProbe>;
   /** 发给全部已附着连接的通知；常驻模式由 main 接到会话注册表。 */
   broadcast?: ManagerOptions["broadcast"];
+  /** 缺省开启；agentd 的 Mac 配置关闭时用环境变量显式传 false。 */
+  turnHintsEnabled?: boolean;
 }
 
 export interface App {
@@ -102,10 +104,12 @@ export function createApp(options: AppOptions): App {
   const overlay = new Overlay(path.join(stateDir, "overlay.json"), legacyIndex);
   const desktopSpawns = new DesktopSpawnIndex();
   const catalog = new Catalog({ sessions, transcripts, activity, directories, overlay, desktopSpawns });
-  const history = new HistoryStore({ sessions, transcripts });
+  const history = new HistoryStore({ sessions, transcripts, overlay });
   const claudeExecutable = options.claudeExecutable ?? defaultClaudeExecutable;
+  const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
   const manager = new ThreadManager({
     claudeExecutable,
+    promptSuggestionsSupported: () => claudeCode.supportsPromptSuggestions,
     log: options.log,
     ...(options.startQuery ? { startQuery: options.startQuery } : {}),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
@@ -113,11 +117,14 @@ export function createApp(options: AppOptions): App {
     readTitle: async (threadId) => (await sessions.info(threadId))?.customTitle?.trim() || null,
     ...(options.titleCheckDelaysMs ? { titleCheckDelaysMs: options.titleCheckDelaysMs } : {}),
     ...(options.broadcast ? { broadcast: options.broadcast } : {}),
-    // 与 thread/list 的 updatedAt 同源：最后一条对话消息的时间（秒）。持有方变化不频繁，
-    // 每次都强制重扫：索引最多缓存 1 秒，活动时间又按文件大小缓存，一轮很短的回合在这个窗口里
-    // 结束时，沿用旧索引会把回合前的时间当成最新，列表就认不出这次完成。
-    readActivity: async (threadId) => {
-      await transcripts.refresh(true);
+    ...(options.turnHintsEnabled ?? turnHintsEnabledFromEnvironment()
+      ? { turnHints: { store: overlay } }
+      : {}),
+    // 与 thread/list 的 updatedAt 同源：最后一条对话消息的时间（秒）。不能沿用 1 秒缓存：一轮很短的
+    // 回合在这个窗口里结束时，旧索引会把回合前的时间当成最新，列表就认不出这次完成。只复用这一轮
+    // 持有方扫描开始之后才发起的索引扫描，同批多个变化共用一次（#912）。
+    readActivity: async (threadId, freshSince) => {
+      await transcripts.refreshSince(freshSince);
       const file = transcripts.get(threadId);
       const ms = file ? await activity.lastActivityMs(file) : undefined;
       return ms === undefined ? undefined : Math.floor(ms / 1000);
@@ -136,8 +143,7 @@ export function createApp(options: AppOptions): App {
     (threadId) => activeTurnId(threadId) !== undefined,
     async (threadId) => isHolderWorking((await holders()).get(threadId)),
   );
-  const claudeCode = new ClaudeCodeVersionGate(claudeExecutable, options.probeClaudeCode);
-  const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode });
+  const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode, overlay });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
   const account = createAccountHandlers(models, () => manager.observedRateLimits ?? unavailableRateLimits());
   const commands = createCommandHandlers(
@@ -198,6 +204,13 @@ export function createApp(options: AppOptions): App {
   }
 
   return { router: new Router(handlers, options.log), manager, models, migrateLegacyNames: migrateNames };
+}
+
+export function turnHintsEnabledFromEnvironment(
+  value = process.env.MIMI_CLAUDE_TURN_HINTS_ENABLED,
+): boolean {
+  if (value === undefined || value.trim() === "") return true;
+  return !["0", "false", "off", "disabled"].includes(value.trim().toLowerCase());
 }
 
 /** 只需要方法分发的场景（只读测试等）。 */

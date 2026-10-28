@@ -1082,6 +1082,7 @@ struct UnifiedWorkbenchShell: View {
             manageConnections: manageConnections,
             prefersTableDensity: layout.prefersSessionTableDensity,
             usesCompactNavigation: layout.usesCompactNavigation,
+            visibleSessionID: navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation),
             bottomContentMargin: bottomContentMargin
                 ?? (layout.usesCompactNavigation
                     ? WorkbenchPageLayout.defaultCompactBottomChromeClearance

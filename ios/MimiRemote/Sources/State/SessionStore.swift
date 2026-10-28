@@ -113,7 +113,11 @@ final class SessionStore: ObservableObject {
     @Published var sessionWorkspaceIDs: Set<String>? = nil
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
-    @Published var selectedSessionID: String?
+    @Published var selectedSessionID: String? {
+        didSet {
+            if selectedSessionID != oldValue { invalidateNativePromptSuggestion() }
+        }
+    }
     /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
     @Published var lastSelectionCommit: SessionSelectionCommit?
     @Published var sessionSearchQuery = "" {
@@ -130,7 +134,11 @@ final class SessionStore: ObservableObject {
     @Published var isLoading = false
     // 加载完成只属于当前主机代次，切换主机后不能沿用旧目录的空态判断。
     @Published var loadedWorkspaceCatalogScope: HostScope?
-    @Published var webSocketStatus: WebSocketStatus = .disconnected
+    @Published var webSocketStatus: WebSocketStatus = .disconnected {
+        didSet {
+            if webSocketStatus != .connected { invalidateNativePromptSuggestion() }
+        }
+    }
     @Published var connectionTermination: ConnectionTerminationStatus? {
         didSet {
             guard oldValue != connectionTermination else { return }
@@ -311,6 +319,7 @@ final class SessionStore: ObservableObject {
     var composerPermissionSelectionCache = ComposerPermissionSelectionCache()
     // 外部追加草稿后通知 Composer。用订阅而不是 @Published：被遮住的输入框也能收到，且不刷新整个工作台。
     let composerDraftAppends = PassthroughSubject<ComposerDraftAppendEvent, Never>()
+    @Published var nativePromptSuggestionState = NativePromptSuggestionState()
 
     func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
         guard scope != .none else {
@@ -386,6 +395,8 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
+    // 评分邀请（#842）只在 App 进程里装配；测试和预览中的 Store 保持 nil，不产生任何请求。
+    var appReviewPrompt: AppReviewPromptCoordinator?
     // 旧 agentd 不接受 Codex 无 cwd thread/list 时，本 Host 生命周期只探测一次；
     // 这只缓存 Codex 的能力，不得关闭 Claude / Harness 各自的全局目录。
     var controlledGlobalDiscoveryUnavailable = false
@@ -904,18 +915,6 @@ final class SessionStore: ObservableObject {
         }
         sessionSearchLoadMoreTask = task
         await task.value
-    }
-
-    func saveComposerDraft(_ snapshot: ComposerDraftSnapshot, for scope: ComposerDraftScopeKey) {
-        composerDraftCache.save(snapshot, for: scope)
-    }
-
-    func composerDraft(for scope: ComposerDraftScopeKey) -> ComposerDraftSnapshot {
-        composerDraftCache.snapshot(for: scope)
-    }
-
-    func removeComposerDraft(for scope: ComposerDraftScopeKey) {
-        composerDraftCache.remove(scope: scope)
     }
 
     func saveComposerModelSelection(

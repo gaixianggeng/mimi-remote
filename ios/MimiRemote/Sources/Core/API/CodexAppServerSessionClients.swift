@@ -1677,6 +1677,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
              .collaborationModeUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
+             .promptSuggestion(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),

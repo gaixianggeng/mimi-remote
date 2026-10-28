@@ -14,6 +14,9 @@ struct ManagedConnectionDevicesView: View {
     @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
     @State private var isConnectingMac = false
+    @State private var upgradeTask: Task<Void, Never>?
+    @State private var activeUpgradeID: UUID?
+    @State private var pendingSelfHostedReset: (context: ManagedConnectionUpgradeContext, count: Int)?
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
 
@@ -46,6 +49,8 @@ struct ManagedConnectionDevicesView: View {
             await deviceStore.refreshDevices()
         }
         .onAppear(perform: configureManagedScanner)
+        .onChange(of: appStore.activeConnectionProfileID) { _, _ in cancelCurrentComputerUpgrade() }
+        .onDisappear(perform: cancelCurrentComputerUpgrade)
         // 扫码请求由本页发起，它是栈顶页面，Cover 必须挂在这里才会真正呈现。
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .managedConnection),
@@ -148,6 +153,25 @@ struct ManagedConnectionDevicesView: View {
 
     private var connectionSection: some View {
         Section {
+            if canUpgradeCurrentComputer {
+                Button {
+                    startCurrentComputerUpgrade()
+                } label: {
+                    Label(L10n.text("ui.managed_devices_upgrade_current"), systemImage: "arrow.up.circle")
+                        .settingsRow()
+                }
+                .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
+                .accessibilityIdentifier("settings.managedConnectionDevices.upgradeCurrent")
+
+                if isUpgradingCurrentComputer {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text(L10n.text("ui.managed_devices_upgrading"))
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+
             Button {
                 localError = nil
                 qrScannerPresentation.request(
@@ -160,7 +184,7 @@ struct ManagedConnectionDevicesView: View {
                 Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")
                     .settingsRow()
             }
-            .disabled(isConnectingMac || entitlementStore.isBusy)
+            .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
             .accessibilityIdentifier("settings.managedSubscription.connectMac")
 
             if isConnectingMac {
@@ -182,6 +206,140 @@ struct ManagedConnectionDevicesView: View {
                 .settingsSectionFooterStyle()
         }
         .settingsGroupRowStyle()
+        .confirmationDialog(
+            L10n.text("ui.managed_devices_upgrade_reset_title"),
+            isPresented: Binding(
+                get: { pendingSelfHostedReset != nil },
+                set: { if !$0 { pendingSelfHostedReset = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L10n.text("ui.managed_devices_upgrade_continue"), role: .destructive) {
+                guard let pending = pendingSelfHostedReset else { return }
+                pendingSelfHostedReset = nil
+                upgradeCurrentComputer(pending.context, confirmResetSelfHosted: true)
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                pendingSelfHostedReset = nil
+            }
+        } message: {
+            Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedReset?.count ?? 0)))
+        }
+    }
+
+    /// 已连上的电脑可以一键接入托管连接（#897）：手机已持有这台电脑的 agentd Token，
+    /// 由它请求电脑发起托管配对不扩大权限。只在当前线路不是 Tailcat 时提供——电脑进入
+    /// 托管模式会重建 Tailcat 身份，经自建 Tailcat 发起会切断这条请求自己。
+    private var canUpgradeCurrentComputer: Bool {
+        let connected: Bool
+        if case .connected = appStore.connectionStatus {
+            connected = true
+        } else {
+            connected = false
+        }
+        return Self.canUpgradeCurrentComputer(
+            route: appStore.activeConnectionProfile?.connectionRoute,
+            connected: connected
+        )
+    }
+
+    static func canUpgradeCurrentComputer(route: ConnectionProfileRoute?, connected: Bool) -> Bool {
+        guard connected, let route else { return false }
+        switch route {
+        case .lan, .tailscale, .https:
+            return true
+        case .managedTailcat, .customTailcat:
+            return false
+        }
+    }
+
+    private var isUpgradingCurrentComputer: Bool { upgradeTask != nil }
+
+    /// 发起一键接入（含确认后重发）时的订阅判断：界面状态是已订阅，或凭证刷新途中
+    /// 手里的权益仍在有效期内。检查中的瞬态不能把已订阅用户挡在外面。
+    static func hasEntitlementForUpgrade(
+        status: ManagedConnectionEntitlementStore.Status,
+        grant: ManagedConnectionEntitlementGrant?,
+        now: Date
+    ) -> Bool {
+        if case .entitled = status { return true }
+        guard let grant else { return false }
+        return grant.entitlement.expiresAt > now
+    }
+
+    private func startCurrentComputerUpgrade() {
+        guard canUpgradeCurrentComputer else { return }
+        do {
+            let context = try ManagedConnectionUpgradeContext(appStore: appStore, client: appStore.client())
+            upgradeCurrentComputer(context, confirmResetSelfHosted: false)
+        } catch is CancellationError {
+            return
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    private func cancelCurrentComputerUpgrade() {
+        if upgradeTask != nil {
+            upgradeTask?.cancel()
+            isConnectingMac = false
+        }
+        upgradeTask = nil
+        activeUpgradeID = nil
+        pendingSelfHostedReset = nil
+    }
+
+    private func upgradeCurrentComputer(
+        _ context: ManagedConnectionUpgradeContext,
+        confirmResetSelfHosted: Bool
+    ) {
+        guard !isUpgradingCurrentComputer, context.isCurrent(in: appStore) else { return }
+        guard Self.hasEntitlementForUpgrade(
+            status: entitlementStore.status,
+            grant: entitlementStore.currentGrant,
+            now: Date()
+        ) else {
+            localError = ManagedConnectionDeviceStoreError.subscriptionRequired.localizedDescription
+            return
+        }
+        activeUpgradeID = context.id
+        localError = nil
+        upgradeTask = Task { @MainActor in
+            defer {
+                // 被取消的旧任务不能清掉用户后来发起的新任务状态。
+                if activeUpgradeID == context.id {
+                    upgradeTask = nil
+                    activeUpgradeID = nil
+                    isConnectingMac = false
+                }
+            }
+            do {
+                let link = try await context.requestPairingLink(
+                    confirmResetSelfHosted: confirmResetSelfHosted,
+                    appStore: appStore
+                )
+                // 这次请求最长 90 秒，期间订阅凭证可能按计划刷新，界面状态会短暂离开「已订阅」。
+                // 电脑此时已进入托管模式，不能据此中断；订阅由托管配对的授权方按凭证有效期校验。
+                guard let url = URL(string: link.pairURL) else {
+                    throw AgentAPIError.invalidResponse
+                }
+                isConnectingMac = true
+                _ = try await sessionStore.applyManagedPairingURL(url, upgrading: context)
+                Task { @MainActor in
+                    _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
+                }
+            } catch let error as ManagedPairingLinkAPIError {
+                if case .selfHostedClientsPresent(let count) = error {
+                    pendingSelfHostedReset = (context, count)
+                } else {
+                    localError = error.localizedDescription
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                if activeUpgradeID == context.id { localError = error.localizedDescription }
+            }
+        }
     }
 
     private var managedRouteSection: some View {

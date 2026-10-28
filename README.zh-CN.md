@@ -68,7 +68,7 @@ flowchart LR
     Host <--> DeepSeek["DeepSeek Harness<br/>可选"]
 ```
 
-Windows 上的 Codex App Server 只监听本机 loopback WebSocket，不向局域网直接开放。
+Windows 上的 Codex App Server 只监听本机 loopback WebSocket，不向局域网直接开放。电脑通过不需要认证的 Windows 系统代理（例如本机代理软件）上网时，Mimi Remote 启动的 Codex 与 Claude 会自动使用它；代理软件开关后也随之生效。本机中转不支持需要 407 认证挑战的上游代理，包括 NTLM 和 Negotiate；这类环境应在 `codex.env` 或 `claude.env` 中配置可直接使用的代理。
 
 电脑上的 `agentd` 负责验证 App 的连接，并转到所选运行时。没有云账号、会话托管或应用层中转。消息通知默认开启，经由一个小型推送服务发送；它只接收 APNs 设备 Token、随机编号与电脑和会话的匿名短标签、运行时与事件类型（如待审批、任务完成）和过期时间，不接收提示词、代码或会话内容，详见[隐私政策](docs/privacy-policy.md)。`agentd` 只应在私有网络中访问，不要把它的明文 HTTP 端口暴露到公网。
 

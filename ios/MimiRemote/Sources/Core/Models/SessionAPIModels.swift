@@ -122,6 +122,7 @@ struct CreateSessionResponse: Codable {
     let wsURL: String
     let firstMessage: AgentMessage?
     let requiresQueuedInitialInput: Bool?
+    let initialInputAlreadyStarted: Bool?
 
     enum CodingKeys: String, CodingKey {
         case session
@@ -129,6 +130,7 @@ struct CreateSessionResponse: Codable {
         case wsURL = "ws_url"
         case firstMessage = "first_message"
         case requiresQueuedInitialInput = "requires_queued_initial_input"
+        case initialInputAlreadyStarted = "initial_input_already_started"
     }
 
     init(
@@ -136,13 +138,15 @@ struct CreateSessionResponse: Codable {
         row: DataFlowSessionRow? = nil,
         wsURL: String,
         firstMessage: AgentMessage? = nil,
-        requiresQueuedInitialInput: Bool? = nil
+        requiresQueuedInitialInput: Bool? = nil,
+        initialInputAlreadyStarted: Bool? = nil
     ) {
         self.session = session
         self.row = row
         self.wsURL = wsURL
         self.firstMessage = firstMessage
         self.requiresQueuedInitialInput = requiresQueuedInitialInput
+        self.initialInputAlreadyStarted = initialInputAlreadyStarted
     }
 
     init(from decoder: Decoder) throws {
@@ -164,6 +168,10 @@ struct CreateSessionResponse: Codable {
         self.requiresQueuedInitialInput = try container.decodeIfPresent(
             Bool.self,
             forKey: .requiresQueuedInitialInput
+        )
+        self.initialInputAlreadyStarted = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .initialInputAlreadyStarted
         )
     }
 }
@@ -366,6 +374,16 @@ struct HistoryMessagesPage: Equatable {
     }
 }
 
+struct MimiTaskProposalRequest: Codable, Hashable {
+    let id: String
+    let parentThreadID: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case parentThreadID = "parentThreadId"
+    }
+}
+
 struct CreateSessionRequest: Encodable {
     let projectID: String
     let projectPath: String?
@@ -377,6 +395,7 @@ struct CreateSessionRequest: Encodable {
     let initialGoalObjective: String?
     let resumeID: String
     let clientMessageID: ClientMessageID?
+    let mimiTaskProposal: MimiTaskProposalRequest?
 
     enum CodingKeys: String, CodingKey {
         case projectID = "project_id"
@@ -389,6 +408,7 @@ struct CreateSessionRequest: Encodable {
         case initialGoalObjective = "initial_goal_objective"
         case resumeID = "resume_id"
         case clientMessageID = "client_message_id"
+        case mimiTaskProposal = "mimi_task_proposal"
     }
 
     init(
@@ -401,7 +421,8 @@ struct CreateSessionRequest: Encodable {
         turnOptions: CodexAppServerTurnOptions = .default,
         initialGoalObjective: String? = nil,
         resumeID: String,
-        clientMessageID: ClientMessageID? = nil
+        clientMessageID: ClientMessageID? = nil,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
     ) {
         self.projectID = projectID
         self.projectPath = projectPath
@@ -413,6 +434,7 @@ struct CreateSessionRequest: Encodable {
         self.initialGoalObjective = initialGoalObjective
         self.resumeID = resumeID
         self.clientMessageID = clientMessageID
+        self.mimiTaskProposal = mimiTaskProposal
     }
 }
 

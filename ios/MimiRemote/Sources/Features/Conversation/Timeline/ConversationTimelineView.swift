@@ -298,6 +298,17 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
+        case .message(let message) where message.activityPayload?.turnHint != nil:
+            if let hint = message.activityPayload?.turnHint {
+                ConversationTurnHintCard(
+                    hint: hint,
+                    layout: layout,
+                    canAct: canActOnTurnHint(message),
+                    onAction: { action in
+                        startTurnHintAction(action, from: message)
+                    }
+                )
+            }
         case .message(let message), .processMessage(let message):
             MessageRow(
                 message: message,
@@ -351,6 +362,25 @@ struct ConversationTimelineView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("conversation.fileChanges.\(changes.id)")
+        }
+    }
+
+    private func canActOnTurnHint(_ message: ConversationMessage) -> Bool {
+        guard displayedSessionID == sessionStore.selectedSessionID else { return false }
+        return sessionStore.captureTurnHintActionTarget(for: message) != nil
+    }
+
+    /// target 在这个同步回调里捕获，不能移进 Task；否则页面切换可能先于目标绑定。
+    private func startTurnHintAction(
+        _ action: ConversationTurnHint.UserAction,
+        from message: ConversationMessage
+    ) -> Task<Bool, Never>? {
+        guard displayedSessionID == sessionStore.selectedSessionID,
+              let target = sessionStore.captureTurnHintActionTarget(for: message) else {
+            return nil
+        }
+        return Task { @MainActor in
+            await sessionStore.sendTurnHintAction(action, target: target)
         }
     }
 

@@ -49,15 +49,28 @@ enum SessionLifecyclePhase: Equatable {
 struct SessionLifecycleObservation: Equatable {
     let id: SessionID
     let phase: SessionLifecyclePhase
+    /// 会话正被电脑上的其他 Claude 进程（终端 / 桌面端）持有，这一轮在电脑上执行（#905）。
+    let isHeldOnComputer: Bool
+    /// 用户此刻正停在该会话详情。电脑端的一轮在眼前结束时照常震动。
+    let isVisible: Bool
 
-    init(id: SessionID, phase: SessionLifecyclePhase) {
+    init(
+        id: SessionID,
+        phase: SessionLifecyclePhase,
+        isHeldOnComputer: Bool = false,
+        isVisible: Bool = false
+    ) {
         self.id = id
         self.phase = phase
+        self.isHeldOnComputer = isHeldOnComputer
+        self.isVisible = isVisible
     }
 
-    init(session: AgentSession, foregroundActivity: SessionForegroundActivity?) {
+    init(session: AgentSession, foregroundActivity: SessionForegroundActivity?, isVisible: Bool = false) {
         id = session.id
         phase = Self.resolvePhase(session: session, foregroundActivity: foregroundActivity)
+        isHeldOnComputer = session.isHeldOnComputer
+        self.isVisible = isVisible
     }
 
     private static func resolvePhase(
@@ -101,9 +114,21 @@ struct SessionListLifecycleInput: Equatable {
 
 /// 每个会话只有在本次页面生命周期里确实见过运行/等待态后才允许发终态反馈。
 /// 记录只保留当前输入中的 ID，列表重建或首次载入历史不会补发陈旧 Haptic。
+/// 电脑端持有方执行的一轮照常上报终态 ID（侧栏高亮），但只有用户正看着该会话时才震动（#905）。
 struct SessionLifecycleFeedbackTracker {
     private struct Memory {
         var armedByWaiting: Bool
+        /// 这一轮的等待态里出现过电脑端持有方。持有方可能与终态同时退出，所以在武装时记下。
+        var armedOnComputer: Bool
+
+        init(arming observation: SessionLifecycleObservation) {
+            armedByWaiting = observation.phase == .waiting
+            armedOnComputer = armedByWaiting && observation.isHeldOnComputer
+        }
+
+        func isAudible(at terminal: SessionLifecycleObservation) -> Bool {
+            !armedOnComputer || terminal.isVisible
+        }
     }
 
     private var memoryByID: [SessionID: Memory] = [:]
@@ -111,9 +136,7 @@ struct SessionLifecycleFeedbackTracker {
     mutating func reset(with observations: [SessionLifecycleObservation]) {
         memoryByID.removeAll(keepingCapacity: true)
         for observation in observations {
-            memoryByID[observation.id] = Memory(
-                armedByWaiting: observation.phase == .waiting
-            )
+            memoryByID[observation.id] = Memory(arming: observation)
         }
     }
 
@@ -131,28 +154,38 @@ struct SessionLifecycleFeedbackTracker {
 
         var completedIDs: [SessionID] = []
         var failedIDs: [SessionID] = []
+        var hasAudibleCompletion = false
+        var hasAudibleFailure = false
 
         for observation in observations {
             guard var memory = memoryByID[observation.id] else {
                 // 新出现的终态只建立基线；新出现的等待态静默武装下一次结束。
-                memoryByID[observation.id] = Memory(
-                    armedByWaiting: observation.phase == .waiting
-                )
+                memoryByID[observation.id] = Memory(arming: observation)
                 continue
             }
 
             switch observation.phase {
             case .waiting:
+                if !memory.armedByWaiting {
+                    memory.armedOnComputer = false
+                }
                 memory.armedByWaiting = true
+                if observation.isHeldOnComputer {
+                    memory.armedOnComputer = true
+                }
             case .completion:
                 if memory.armedByWaiting {
                     completedIDs.append(observation.id)
+                    hasAudibleCompletion = hasAudibleCompletion || memory.isAudible(at: observation)
                     memory.armedByWaiting = false
+                    memory.armedOnComputer = false
                 }
             case .failure:
                 if memory.armedByWaiting {
                     failedIDs.append(observation.id)
+                    hasAudibleFailure = hasAudibleFailure || memory.isAudible(at: observation)
                     memory.armedByWaiting = false
+                    memory.armedOnComputer = false
                 }
             case .neutral:
                 // 短暂未知状态不解除武装，避免 running → unknown → completed 漏掉反馈。
@@ -162,9 +195,9 @@ struct SessionLifecycleFeedbackTracker {
         }
 
         let feedback: MimiHapticEvent?
-        if !failedIDs.isEmpty {
+        if hasAudibleFailure {
             feedback = .failure
-        } else if !completedIDs.isEmpty {
+        } else if hasAudibleCompletion {
             feedback = .completion
         } else {
             feedback = nil

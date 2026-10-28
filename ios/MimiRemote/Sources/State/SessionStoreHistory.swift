@@ -27,7 +27,9 @@ extension SessionStore {
         initialGoalObjective: String? = nil,
         replacingLocalDraft localDraft: AgentSession? = nil,
         submissionContext suppliedSubmissionContext: TurnSubmissionContext? = nil,
-        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
+        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil,
+        modelAlreadyResolved: Bool = false
     ) async -> Bool {
         let createIntent = expectedSelectionLease
             ?? suppliedSubmissionContext?.selectionLease
@@ -42,7 +44,7 @@ extension SessionStore {
         )
         // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
         // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
-        let payload = payload.isEmpty
+        let payload = payload.isEmpty || modelAlreadyResolved
             ? payload
             : await payloadResolvingRequiredModel(payload, submissionContext: submissionContext)
         guard appStore.activeHostScope == hostScope else { return false }
@@ -189,11 +191,13 @@ extension SessionStore {
                 turnOptions: payload.options,
                 initialGoalObjective: initialGoalObjective,
                 resumeID: resume?.resumeID ?? nativeResumeID ?? "",
-                clientMessageID: clientMessageID
+                clientMessageID: clientMessageID,
+                mimiTaskProposal: mimiTaskProposal
             ))
             guard appStore.activeHostScope == hostScope else { return false }
             let responseSession = self.session(response.session, in: workspace)
             let queuesInitialInput = response.requiresQueuedInitialInput == true
+            let initialInputAlreadyStarted = response.initialInputAlreadyStarted == true
             if let clientMessageID {
                 migratePendingPermissionTurnBoundary(
                     clientMessageID: clientMessageID,
@@ -205,11 +209,15 @@ extension SessionStore {
                optimisticSessionID != responseSession.id {
                 // 新建会话会从 local:<project>:<client_message_id> 切换到后端 session_id，
                 // 这里迁移前台活动和本地气泡，保持列表/对话 store 解耦。
-                if let clientMessageID {
+                if let clientMessageID, !initialInputAlreadyStarted {
                     conversationStore.moveLocalEcho(clientMessageID: clientMessageID, from: optimisticSessionID, to: responseSession.id)
                     moveSessionListProjection(from: optimisticSessionID, to: responseSession.id, clientMessageID: clientMessageID)
                     migrateForegroundActivity(from: optimisticSessionID, to: responseSession.id)
                     migrateRuntimeActivity(from: optimisticSessionID, to: responseSession.id)
+                } else if initialInputAlreadyStarted {
+                    // Bridge 已有活动 turn 或 transcript 时，这次请求只负责重新打开 child。
+                    // 丢弃重试期间的占位回显，不能把原 prompt 再伪装成一条新消息。
+                    clearForegroundActivity(sessionID: optimisticSessionID)
                 } else {
                     moveSessionRecentActivityProjection(
                         from: optimisticSessionID,
@@ -293,7 +301,7 @@ extension SessionStore {
 
             // 非队列发送在 create/resume 响应中已经拿到 turn ACK，历史补拉不应延迟确认。
             // 原生队列响应只代表会话已准备好，仍须等待真正发送输入后的 ACK。
-            if !prompt.isEmpty, !queuesInitialInput {
+            if !prompt.isEmpty, !queuesInitialInput, !initialInputAlreadyStarted {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: responseSession.id, status: .sent)
                     conversationStore.compactTurnPayloadAfterSendAccepted(clientMessageID: clientMessageID, sessionID: responseSession.id)
@@ -320,6 +328,9 @@ extension SessionStore {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
             } else if resume != nil {
+                didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
+            } else if initialInputAlreadyStarted, !responseSession.isRunning {
+                // 已完成的首次任务有 transcript，重试只打开同一 child，并立即恢复其权威历史。
                 didLoadInitialHistory = await loadHistoryIfNeeded(for: responseSession)
             } else if payload.isEmpty {
                 // 新建空 thread 在首个 turn 前没有 rollout。把当前空快照标成已加载，前台恢复时
@@ -456,6 +467,7 @@ extension SessionStore {
             return true
         }
         guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
         return await loadHistory(for: session)
@@ -507,6 +519,7 @@ extension SessionStore {
         let shouldShowSavingsNotice = !quiet
             && (noticeMessageOverride != nil || reason == .summaryChoice || reason == .manualFull)
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
+            resumeHistoryItemEnrichmentIfNeeded(sessionID: session.id)
             return true
         }
 
@@ -3235,8 +3248,14 @@ extension SessionStore {
         sessionID: SessionID,
         preview rawPreview: String,
         source: SessionListProjection.Source,
-        clientMessageID: ClientMessageID?
+        clientMessageID: ClientMessageID?,
+        isDispatching: Bool = true
     ) {
+        // 所有从 App 发出的消息（新建、直发、引导、队列派发）都经过这里；纯图片消息的预览为空，
+        // 所以要在下面的空预览判断之前登记，评分邀请才只统计用户在 App 里发起的回合（#842）。
+        // 只入本地队列、尚未派发的消息不登记：下一个完成事件属于正在运行的那一轮，
+        // 等队列真正派发时这里会再被调用一次。
+        if source == .localUser, isDispatching { appReviewPrompt?.recordTurnSubmitted(sessionID: sessionID) }
         let preview = rawPreview
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isNewline)
@@ -3277,6 +3296,8 @@ extension SessionStore {
             return
         }
         listProjectionBySessionID.removeValue(forKey: sessionID)
+        // 回滚只发生在发送失败时；这条消息没有发出，它的登记也要撤销（#842）。
+        if projection.source == .localUser { appReviewPrompt?.discardTurnSubmitted(sessionID: sessionID) }
         updateSession(sessionID) { item in
             item.preview = projection.basePreview
             item.updatedAt = projection.baseRemoteUpdatedAt ?? item.updatedAt
@@ -3284,6 +3305,9 @@ extension SessionStore {
     }
 
     func moveSessionListProjection(from sourceSessionID: SessionID, to targetSessionID: SessionID, clientMessageID: ClientMessageID?) {
+        if sourceSessionID != targetSessionID {
+            appReviewPrompt?.moveSubmittedSession(from: sourceSessionID, to: targetSessionID)
+        }
         guard sourceSessionID != targetSessionID,
               let projection = listProjectionBySessionID[sourceSessionID]
         else {
@@ -3962,7 +3986,7 @@ extension SessionStore {
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
         let staleItemEnrichmentIDs = historyItemEnrichmentBySessionID.keys.filter { !validSessionIDs.contains($0) }
         for sessionID in staleItemEnrichmentIDs {
-            cancelHistoryItemEnrichment(sessionID: sessionID, markIncomplete: false)
+            cancelHistoryItemEnrichment(sessionID: sessionID)
         }
         deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }

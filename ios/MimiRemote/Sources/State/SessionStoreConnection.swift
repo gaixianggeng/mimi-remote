@@ -195,10 +195,16 @@ extension SessionStore {
                 return
             }
             HostSwitchSignpost.event("runtime_event_app_received")
-            if let metadata = self.metadata(for: event) {
-                self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+            let scopedEvent = event.bindingPromptSuggestion(to: connectionGeneration)
+            switch scopedEvent {
+            case .promptSuggestion:
+                break
+            default:
+                if let metadata = self.metadata(for: scopedEvent) {
+                    self.recordEventWatermark(metadata, fallbackSessionID: session.id)
+                }
             }
-            let shouldFlushImmediately = terminalStreamStore.append(event, lease: eventLease)
+            let shouldFlushImmediately = terminalStreamStore.append(scopedEvent, lease: eventLease)
             HostSwitchSignpost.event("runtime_event_mailbox_enqueued")
             self.scheduleRuntimeEventFlush(lease: eventLease, immediately: shouldFlushImmediately)
         }
@@ -1068,6 +1074,10 @@ extension SessionStore {
 
     func applyRuntimeEvent(_ event: AgentEvent, lease: HostSessionLease, sendsNotification: Bool = true) async {
         guard appStore.activeHostScope == lease.hostScope else { return }
+        if case .promptSuggestion = event {
+            observeNativePromptSuggestion(event, lease: lease)
+            return
+        }
         let sessionID = lease.sessionID
         let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
         defer {
@@ -1087,6 +1097,7 @@ extension SessionStore {
             // 不能再把 completed 会话写回 running；新 turn 会先由 turnStarted 建立 activeTurnID。
             return
         }
+        observeNativePromptSuggestion(event, lease: lease)
         if case .turnCompleted(let metadata) = event {
             cancelTurnCompletionReconciliation(
                 sessionID: metadata.sessionID ?? sessionID
@@ -1147,6 +1158,7 @@ extension SessionStore {
         }
         applyEventReducerOutput(output)
         HostSwitchSignpost.event("runtime_event_store_committed")
+        noteAppReviewSignals(for: event, fallbackSessionID: sessionID)
         if let id = computerHolderWorkingSessionID,
            let updated = sessionsByID[id],
            !updated.isRunningOnComputer,
@@ -1597,6 +1609,7 @@ extension SessionStore {
              .collaborationModeUpdated(_, let metadata),
              .goalUpdated(_, let metadata),
              .goalCleared(let metadata),
+             .promptSuggestion(_, let metadata),
              .turnStarted(let metadata),
              .assistantDelta(_, let metadata),
              .messageCompleted(_, let metadata),
@@ -1772,7 +1785,7 @@ extension SessionStore {
                 turnOutputTokensBySessionID[sessionID] = next
             }
         case .permissionProfileUpdated, .collaborationModeUpdated,
-             .goalUpdated, .goalCleared, .unknown:
+             .goalUpdated, .goalCleared, .promptSuggestion, .unknown:
             return
         }
     }
@@ -2869,6 +2882,7 @@ extension SessionStore {
         // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
         clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
+        invalidateNativePromptSuggestion()
         composerModelSelectionCache.removeAll()
         composerPermissionSelectionCache.removeAll()
         composerSendModeCache.removeAll()

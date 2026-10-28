@@ -918,6 +918,10 @@ actor CodexAppServerSessionRuntime {
         }
         threadOptions = runtimeScopedThreadOptions(threadOptions)
         let resumeID = payload.resumeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if payload.mimiTaskProposal != nil,
+           (!resumeID.isEmpty || Self.normalizedRuntimeProvider(runtimeProvider) != "claude") {
+            throw AgentAPIError.invalidResponse
+        }
         // deepseek 的 app-server runtime 已删除。Codex/Claude 一直走标准 thread/resume，
         // 不因旧 config 的方法清单不完整而关闭这条链路。
         let supportsThreadResume = true
@@ -928,10 +932,22 @@ actor CodexAppServerSessionRuntime {
         let spec: CodexAppServerRequestSpec
         if resumeID.isEmpty {
             spec = usesSharedServerQueue
-                ? try builder.threadStartForSharedQueue(cwd: project.path, options: threadOptions)
+                ? try builder.threadStartForSharedQueue(
+                    cwd: project.path,
+                    options: threadOptions,
+                    mimiTaskProposal: payload.mimiTaskProposal
+                )
                 : (projectPath?.isEmpty == false
-                    ? try builder.threadStart(cwd: project.path, options: threadOptions)
-                    : try builder.threadStart(projectID: payload.projectID, options: threadOptions))
+                    ? try builder.threadStart(
+                        cwd: project.path,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    )
+                    : try builder.threadStart(
+                        projectID: payload.projectID,
+                        options: threadOptions,
+                        mimiTaskProposal: payload.mimiTaskProposal
+                    ))
         } else {
             spec = usesSharedServerQueue
                 ? try builder.threadResumePreservingSharedState(
@@ -969,7 +985,15 @@ actor CodexAppServerSessionRuntime {
         guard let thread = threadObject(from: result) else {
             throw AgentAPIError.invalidResponse
         }
-        var session = try agentSession(from: thread, projects: projects, fallbackProject: project, forceRunning: true)
+        let proposalInitialTurnStarted = payload.mimiTaskProposal != nil
+            && result?.objectValue?["mimiTaskProposal"]?
+                .objectValue?["initialTurnStarted"]?.boolValue == true
+        var session = try agentSession(
+            from: thread,
+            projects: projects,
+            fallbackProject: project,
+            forceRunning: !proposalInitialTurnStarted
+        )
         emitActivePermissionProfile(from: result, threadID: session.id)
         let cwd = session.dir
         contextsBySessionID[session.id] = CodexAppServerSessionContext(session: session, cwd: cwd, activeTurnID: session.activeTurnID)
@@ -990,6 +1014,7 @@ actor CodexAppServerSessionRuntime {
 
         if !usesSharedServerQueue,
            !turnPayload.isEmpty,
+           !proposalInitialTurnStarted,
            let activeTurnID = session.activeTurnID {
             // resume 已经证明旧 turn 仍活跃，此时绝不能再发第二个 turn/start。
             throw CodexAppServerSessionRuntimeError.activeTurnConflict(
@@ -1008,7 +1033,7 @@ actor CodexAppServerSessionRuntime {
             }
         }
 
-        if !turnPayload.isEmpty, !usesSharedServerQueue {
+        if !turnPayload.isEmpty, !usesSharedServerQueue, !proposalInitialTurnStarted {
             _ = try await submitInitialTurnOutcome(
                 sessionID: session.id,
                 payload: turnPayload,
@@ -1023,7 +1048,8 @@ actor CodexAppServerSessionRuntime {
         return CreateSessionResponse(
             session: session,
             wsURL: try Self.gatewayURL(endpoint: endpoint, sessionID: session.id, runtimeProvider: runtimeProvider).absoluteString,
-            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty
+            requiresQueuedInitialInput: usesSharedServerQueue && !turnPayload.isEmpty && !proposalInitialTurnStarted,
+            initialInputAlreadyStarted: proposalInitialTurnStarted ? true : nil
         )
     }
 
@@ -2276,7 +2302,8 @@ actor CodexAppServerSessionRuntime {
         case .assistantDelta,
              .logDelta,
              .sessionContext,
-             .diffUpdated:
+             .diffUpdated,
+             .promptSuggestion:
             return false
         }
     }
@@ -3788,6 +3815,11 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
+        if notification.method == "_mimi/turn/promptSuggestion" {
+            // Mimi 的 Claude 扩展，不作为 Codex 原生能力，也不改变已完成回合的活动状态。
+            if runtimeProvider == "claude", let event = projector.project(notification) { emit(event) }
+            return
+        }
         if notification.method == "_mimi/serverRequestResponse/rejected" {
             // 另一入口已抢先响应或拒绝时，不复活本地卡片；等待 resolved/terminal 收敛即可。
             return

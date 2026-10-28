@@ -67,6 +67,15 @@ export class Session {
     return generation === this.generation && this.sink !== undefined;
   }
 
+  get connectedGeneration(): number | undefined {
+    return this.sink ? this.generation : undefined;
+  }
+
+  /** 建议只属于看到本轮完成的连接，不入重放环，也不补给重连或新订阅者。 */
+  publishTransient(frame: OutboundFrame, generation: number): void {
+    if (this.isCurrent(generation)) this.sink?.(frame);
+  }
+
   detach(generation: number): void {
     if (generation !== this.generation) return;
     this.sink = undefined;
@@ -80,10 +89,13 @@ export class Session {
     return entry.seq;
   }
 
-  /** 请求的响应：发起请求的连接已被替换时直接丢弃，不占重放容量。 */
+  /**
+   * 请求的响应只发给发起请求的当前连接，不入环也不打序号：重连从不补发响应，
+   * 入环只会让大历史响应挤掉尚未确认的通知（#910）。连接已被替换时直接丢弃。
+   */
   respond(frame: OutboundFrame, generation: number): void {
     if (generation !== this.generation || !this.sink) return;
-    this.deliver(this.ring.push(frame));
+    this.sink(frame);
   }
 
   /** attach 应答写出之后再补发积压帧，保证客户端先看到应答。 */

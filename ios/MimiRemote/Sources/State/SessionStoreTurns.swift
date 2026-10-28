@@ -656,7 +656,7 @@ extension SessionStore {
             reason: .invalidation
         )
         if let previousSession {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if let previousSession, previousSession.isLocalDraft {
             discardLocalDraft(previousSession)
@@ -882,7 +882,7 @@ extension SessionStore {
         HostSwitchSignpost.event("conversation_open")
         markHistorySessionRead(session.id)
         if let previousSession, previousSession.id != session.id {
-            cancelHistoryItemEnrichment(sessionID: previousSession.id, markIncomplete: true)
+            pauseHistoryItemEnrichment(sessionID: previousSession.id)
         }
         if wasNoOpSelection {
             return true
@@ -1429,6 +1429,7 @@ extension SessionStore {
             result: .started,
             correlation: diagnosticCorrelation(sessionID: session.id)
         )
+        if isAccepting { noteAppReviewApprovalAccepted(session: session) }
         if normalizedDecision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame {
             setStatusMessage(L10n.text("ui.sent_decision_to_approve_and_remember_rules_awaiting"))
         } else {
@@ -1591,7 +1592,8 @@ extension SessionStore {
                     sessionID: session.id,
                     preview: prompt,
                     source: .localUser,
-                    clientMessageID: clientMessageID
+                    clientMessageID: clientMessageID,
+                    isDispatching: false
                 )
                 ensureQueuedSessionMonitoring(sessionID: session.id)
                 setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))

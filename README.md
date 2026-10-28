@@ -68,7 +68,7 @@ flowchart LR
     Host <--> DeepSeek["DeepSeek Harness<br/>optional"]
 ```
 
-On Windows, the Codex App Server listens on a loopback WebSocket and is not exposed directly to the LAN.
+On Windows, the Codex App Server listens on a loopback WebSocket and is not exposed directly to the LAN. If the PC reaches the internet through an unauthenticated Windows system proxy (for example a local proxy app), Codex and Claude started by Mimi Remote use it automatically, including after the proxy app is turned on or off. Upstream proxies that require a 407 authentication challenge, including NTLM or Negotiate, are not supported by this relay; configure a directly usable proxy in `codex.env` or `claude.env` instead.
 
 `agentd` on your computer authenticates the app and routes it to the selected runtime. There is no cloud account, session hosting, or application-level relay. Message notifications are on by default; they go through a small push service that receives only the APNs device token, random identifiers and anonymous short tags for the computer and session, the runtime and event type (such as an approval request or a finished task), and an expiry, never prompts, code, or session content. See the [privacy policy](docs/privacy-policy.md). Keep `agentd` on a private network; do not expose its plain HTTP port to the public Internet.
 

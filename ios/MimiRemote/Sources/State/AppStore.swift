@@ -976,6 +976,8 @@ final class AppStore: ObservableObject {
         try await credentialVault.delete(profileID: id)
         persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
+        // 档案删了，它的预览副本也不会再被用到（#918）。
+        await MediaWorker.shared.discardPreviews(profileID: id)
     }
 
     /// 只修改非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。

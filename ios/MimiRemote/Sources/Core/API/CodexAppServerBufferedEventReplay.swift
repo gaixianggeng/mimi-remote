@@ -212,7 +212,7 @@ enum CodexAppServerBufferedEventReplay {
 
     private static func metadata(for event: AgentEvent) -> AgentEventMetadata? {
         switch event {
-        case .session, .unknown:
+        case .session, .unknown, .promptSuggestion:
             return nil
         case .sessionRow(_, let metadata),
              .sessionStatus(_, let metadata),

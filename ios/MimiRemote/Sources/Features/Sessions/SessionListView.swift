@@ -184,6 +184,8 @@ struct SessionListView: View {
     var manageConnections: (() -> Void)?
     var prefersTableDensity = false
     var usesCompactNavigation = false
+    /// 用户此刻停在详情里的会话。紧凑布局下列表仍在 Tab 里常驻，电脑端的一轮在这个会话结束时照常震动（#905）。
+    var visibleSessionID: SessionID?
     var bottomContentMargin: CGFloat = 16
     var newSessionPresentationNamespace: Namespace.ID?
 
@@ -649,7 +651,8 @@ struct SessionListView: View {
             feedbackObservations: sessionStore.sessions.map { session in
                 SessionLifecycleObservation(
                     session: session,
-                    foregroundActivity: sessionStore.foregroundActivity(for: session.id)
+                    foregroundActivity: sessionStore.foregroundActivity(for: session.id),
+                    isVisible: session.id == visibleSessionID
                 )
             },
             context: SessionListLifecycleContext(

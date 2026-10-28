@@ -31,6 +31,41 @@ describe("ReplayRing", () => {
     const replay = ring.replayFrom(2);
     expect(replay.ok && replay.frames.map((entry) => entry.seq)).toEqual([3, 4]);
   });
+
+  test.each(["hello", "中文", "🙂🚀"])("enforces exact UTF-8 byte boundaries for %s", (text) => {
+    const frame: OutboundFrame = { jsonrpc: "2.0", method: "test", params: { text } };
+    const wireBytes = new TextEncoder().encode(JSON.stringify({ ...frame, [SEQ_FIELD]: 1 })).byteLength;
+    const exact = new ReplayRing(10, wireBytes);
+    expect(exact.push(frame).bytes).toBe(wireBytes);
+    const retained = exact.replayFrom(0);
+    expect(retained.ok && retained.frames.map((entry) => entry.seq)).toEqual([1]);
+    expect(exact.floorSeq).toBe(1);
+
+    const tooSmall = new ReplayRing(10, wireBytes - 1);
+    tooSmall.push(frame);
+    expect(tooSmall.currentSeq).toBe(1);
+    expect(tooSmall.floorSeq).toBe(2);
+    expect(tooSmall.replayFrom(0)).toEqual({ ok: false, drift: true });
+    expect(tooSmall.replayFrom(1)).toEqual({ ok: true, frames: [] });
+  });
+
+  test("evicts by cumulative UTF-8 bytes and releases the evicted byte budget", () => {
+    const frame: OutboundFrame = { jsonrpc: "2.0", method: "test", params: { text: "中文🙂".repeat(24) } };
+    const wireBytes = new TextEncoder().encode(JSON.stringify({ ...frame, [SEQ_FIELD]: 1 })).byteLength;
+    // 序号 1–4 的编码长度相同，预算恰好容纳两帧，第三帧必须逐出最旧帧。
+    const ring = new ReplayRing(10, wireBytes * 2);
+    ring.push(frame);
+    ring.push(frame);
+    expect(ring.floorSeq).toBe(1);
+    for (let seq = 3; seq <= 4; seq += 1) {
+      ring.push(frame);
+      expect(ring.currentSeq).toBe(seq);
+      expect(ring.floorSeq).toBe(seq - 1);
+      expect(ring.replayFrom(seq - 3)).toEqual({ ok: false, drift: true });
+      const replay = ring.replayFrom(seq - 2);
+      expect(replay.ok && replay.frames.map((entry) => entry.seq)).toEqual([seq - 1, seq]);
+    }
+  });
 });
 
 describe("Session attach", () => {
@@ -60,6 +95,23 @@ describe("Session attach", () => {
     session.detach(outcome.generation);
     const resumed = session.attach(0, () => {}, true);
     expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/started"]);
+  });
+
+  test("responses bypass the ring so a large one cannot evict an unacknowledged notification", () => {
+    const session = new Session("ipad", new ReplayRing(20, 1024));
+    const delivered: OutboundFrame[] = [];
+    const outcome = session.attach(undefined, (frame) => delivered.push(frame), false);
+    session.publish({ jsonrpc: "2.0", method: "turn/completed", params: { turnId: "t1" } });
+    session.respond({ jsonrpc: "2.0", id: 1, result: { text: "x".repeat(2000) } }, outcome.generation);
+    expect(delivered.map((frame) => ("id" in frame ? frame.id : frame.method))).toEqual(["turn/completed", 1]);
+    expect(delivered[1]).not.toHaveProperty(SEQ_FIELD);
+    expect(session.ring.currentSeq).toBe(1);
+    expect(session.ring.floorSeq).toBe(1);
+
+    session.detach(outcome.generation);
+    const resumed = session.attach(0, () => {}, true);
+    expect(resumed.kind).toBe("resumed");
+    expect(resumed.backlog.map((entry) => entry.frame.method)).toEqual(["turn/completed"]);
   });
 
   test("a response for a replaced connection is dropped", () => {

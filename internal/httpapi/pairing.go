@@ -119,6 +119,11 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
 	}
+	if strings.TrimSpace(payload.TailcatClientKey) != "" {
+		// 自建白名单写入不能越过远程升级的设备数检查。
+		r.tailcatControlMu.Lock()
+		defer r.tailcatControlMu.Unlock()
+	}
 	if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
 		if r.tailcat == nil || r.tailcat.Status(req.Context()).Mode != config.TailcatModeManaged {
 			writeManagedModeRequired(w)

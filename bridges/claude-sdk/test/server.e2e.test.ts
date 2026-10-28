@@ -104,7 +104,7 @@ describe("socket server", () => {
     expect(declared.methods).not.toContain("review/start");
   });
 
-  test("attach acknowledges, stamps sequence numbers and resumes by key", async () => {
+  test("attach acknowledges, leaves responses unsequenced and resumes by key", async () => {
     const client = await Client.connect();
     client.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "ipad-1", lastSeen: 0 } });
     const ack = await client.next();
@@ -113,12 +113,12 @@ describe("socket server", () => {
     client.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "t", version: "0" } } });
     const init = await client.next();
     expect(init.result.userAgent).toMatch(/^mimi-claude-adapter\//);
-    expect(init._alleycat_seq).toBe(1);
+    expect(init._alleycat_seq).toBeUndefined();
 
     client.send({ jsonrpc: "2.0", id: 2, method: "thread/list", params: {} });
     const list = await client.next();
     expect(list.result.data.map((thread: any) => thread.preview)).toEqual(["hello from fixture"]);
-    expect(list._alleycat_seq).toBe(2);
+    expect(list._alleycat_seq).toBeUndefined();
 
     client.send({ jsonrpc: "2.0", id: 3, method: "review/start", params: {} });
     const unsupported = await client.next();
@@ -126,9 +126,10 @@ describe("socket server", () => {
     client.close();
 
     const again = await Client.connect();
-    again.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "ipad-1", lastSeen: 1 } });
+    again.send({ jsonrpc: "2.0", method: "_alleycat/attach", params: { sessionKey: "ipad-1", lastSeen: 0 } });
     const resumed = await again.next();
-    expect(resumed.params).toMatchObject({ kind: "resumed", currentSeq: 3 });
+    // 响应不入重放环，三次请求之后序号仍为 0（#910）。
+    expect(resumed.params).toMatchObject({ kind: "resumed", currentSeq: 0 });
     // 响应不重放：下一帧应该是新请求的应答。
     again.send({ jsonrpc: "2.0", id: 9, method: "thread/loaded/list", params: {} });
     const loaded = await again.next();
