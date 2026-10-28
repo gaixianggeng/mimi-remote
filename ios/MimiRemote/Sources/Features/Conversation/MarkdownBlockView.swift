@@ -553,7 +553,7 @@ private struct ConversationImagePreviewContent: View {
                     .truncationMode(.middle)
             }
         }
-        .frame(maxWidth: .infinity, alignment: contentAlignment)
+        .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: contentAlignment)
         .quickLookPreview($quickLookURL)
         .task(id: mediaRequestIdentity) {
             await loadSourceIfNeeded()
@@ -779,7 +779,7 @@ private struct ConversationImagePreviewContent: View {
                 .font(style.captionFont)
         }
         .foregroundStyle(resolvedStatusStyle.secondaryColor)
-        .frame(maxWidth: .infinity, minHeight: 120)
+        .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, minHeight: 120)
         .background(resolvedStatusStyle.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -800,7 +800,7 @@ private struct ConversationImagePreviewContent: View {
                 .truncationMode(.middle)
         }
         .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: .leading)
         .background(resolvedStatusStyle.tableBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)

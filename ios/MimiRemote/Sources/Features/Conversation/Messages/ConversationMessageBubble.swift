@@ -203,7 +203,7 @@ struct ConversationMessageContent: View {
             structuredUserContent(style: style)
         } else if shouldRenderMarkdownMessage {
             let plan = MessageRenderPlanCache.shared.plan(for: message, rendering: presentationContent)
-            let references = fileReferences
+            let references = fileReferences(renderedBlocks: plan.blocks)
             if references.isEmpty {
                 markdownContent(plan: plan, style: style)
             } else {
@@ -547,11 +547,11 @@ struct ConversationMessageContent: View {
         } ?? []
     }
 
-    private var fileReferences: [ConversationFileReference] {
+    private func fileReferences(renderedBlocks: [MarkdownBlock]) -> [ConversationFileReference] {
         guard isAssistantDocument, message.sendStatus != .sending else {
             return []
         }
-        return ConversationFileReferenceDetector.references(in: message.content)
+        return ConversationFileReferencePresentation.references(in: message.content, renderedBlocks: renderedBlocks)
     }
 
     private func preview(_ reference: ConversationFileReference) async {
@@ -611,5 +611,37 @@ struct ConversationMessageContent: View {
 
     private var userBubbleForeground: Color {
         themeStore.tokens(for: colorScheme).userBubbleForeground
+    }
+}
+
+enum ConversationFileReferencePresentation {
+    static func references(in text: String, renderedBlocks: [MarkdownBlock]) -> [ConversationFileReference] {
+        var imagePaths = Set<String>()
+        func collectImages(_ blocks: [MarkdownBlock]) {
+            for block in blocks {
+                switch block.kind {
+                case .image(let reference):
+                    if case .localPath = ConversationImageSource.markdown(reference.source) {
+                        imagePaths.formUnion(ConversationFileReferenceDetector.imageReferences(in: reference.source, limit: 1).map(\.path))
+                    }
+                case .blockquote(let children), .proposedPlan(let children, _):
+                    collectImages(children)
+                case .bulletList(let items, _), .orderedList(_, let items, _):
+                    items.forEach { collectImages($0.blocks) }
+                case .taskList(let items):
+                    items.forEach { collectImages($0.blocks) }
+                default:
+                    break
+                }
+            }
+        }
+        collectImages(renderedBlocks)
+        // 图片卡已有预览入口；只在展示层去重，不改变与 agentd 共用的识别/授权规则。
+        // 先排除图片再应用原有 5 项上限，避免多张图片挤掉后面的 PDF/CSV。
+        // 不展示超出 agentd 单段正文 64 项授权扫描窗口的引用。
+        let scanLimit = min(64, 5 + imagePaths.count)
+        return Array(ConversationFileReferenceDetector.references(in: text, limit: scanLimit)
+            .filter { !imagePaths.contains($0.path) }
+            .prefix(5))
     }
 }
