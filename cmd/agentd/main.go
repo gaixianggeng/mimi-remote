@@ -24,7 +24,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
-	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/skip2/go-qrcode"
@@ -1085,26 +1084,16 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listenAddresses := moduleListenAddresses(cfg)
-	listeners := make([]net.Listener, 0, len(listenAddresses))
-	for _, address := range listenAddresses {
-		listener, err := listenModuleAddress(cfg, address)
-		if err != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
-			_ = shutdownServeResources(apiRouter, appServerRuntime)
-			return fmt.Errorf("监听 %s 失败：%w", address, err)
-		}
-		if listener == nil {
-			continue
-		}
-		if cfg.HasNetworkModuleControls() {
-			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))
-		}
-		listeners = append(listeners, listener)
+	listeners, localOnly, err := bindServeListeners(cfg, moduleListenAddresses(cfg), listenModuleAddress)
+	if err != nil {
+		_ = shutdownServeResources(apiRouter, appServerRuntime)
+		return err
 	}
-	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	if localOnly {
+		log.Print(staleTailscaleListenWarning)
+	} else {
+		maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	}
 
 	errCh := make(chan error, len(listeners)+1)
 	for _, listener := range listeners {
