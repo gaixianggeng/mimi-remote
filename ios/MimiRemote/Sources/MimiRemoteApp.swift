@@ -605,9 +605,22 @@ struct MimiRemoteApp: App {
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
     }
 
+    @ViewBuilder
+    private var applicationRoot: some View {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--debug-image-recovery-fixture") {
+            DebugImageRecoveryFixture(appStore: appStore)
+        } else {
+            RootView()
+        }
+#else
+        RootView()
+#endif
+    }
+
     var body: some Scene {
         WindowGroup {
-            RootView()
+            applicationRoot
                 // locale 变化会让整个 SwiftUI 视图树重新求值，现有 L10n 调用即可即时换语言。
                 .environment(\.locale, selectedAppLanguage.locale)
                 .environmentObject(appStore)

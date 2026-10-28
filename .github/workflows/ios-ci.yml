@@ -238,6 +238,34 @@ jobs:
         # 根模块 Go 与共享契约由独立 Go CI 覆盖；这里已单独验证 Tailcat module。
         run: bash ./scripts/test-conversation-regressions.sh --ios-only
 
+      - name: Run image recovery UI regressions
+        # 普通 XCTest 宿主没有可操作的 SwiftUI 元素树；这两项必须真实点击图片卡。
+        # 仍通过统一入口持有固定 M5 租约，不连接真实 agentd 或读取用户文件。
+        env:
+          SCHEME: MimiRemotePhysicalUITests
+        run: |
+          bash ./scripts/ios-dev.sh test -quiet \
+            -resultBundlePath "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            -collect-test-diagnostics never -testLanguage zh-Hans -testRegion CN \
+            -only-testing:MimiRemoteUITests/ConversationImageRecoveryUITests
+          xcrun xcresulttool get test-results summary \
+            --path "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            > "$RUNNER_TEMP/conversation-image-recovery.json"
+          python3 - "$RUNNER_TEMP/conversation-image-recovery.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          assert result["totalTestCount"] == result["passedTests"] == 2, result
+          PY
+
+      - name: Preserve image recovery UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conversation-image-recovery
+          path: ${{ runner.temp }}/conversation-image-recovery.*
+          if-no-files-found: ignore
+          retention-days: 7
+
       # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时
       # 才额外启动一次英文系统环境，避免每个 PR/main 都承担第二次 Simulator 启动。
       - name: Run English localization smoke

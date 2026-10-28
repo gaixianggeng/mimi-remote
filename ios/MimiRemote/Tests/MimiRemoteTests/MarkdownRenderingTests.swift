@@ -1,8 +1,87 @@
 import XCTest
+import SwiftUI
 @testable import MimiRemote
 
 @MainActor
 final class MarkdownRenderingTests: XCTestCase {
+    func testRenderedImageDoesNotAlsoProduceFileChipButDocumentsRemain() {
+        let text = "![截图](file:///tmp/qr.png)\n\n/tmp/report.pdf\n/tmp/table.csv"
+        let blocks = MarkdownParser.shared.parse(text).blocks
+        XCTAssertTrue(blocks.contains { if case .image = $0.kind { return true }; return false })
+        XCTAssertEqual(ConversationFileReferencePresentation.references(in: text, renderedBlocks: blocks).map(\.path),
+                       ["/tmp/report.pdf", "/tmp/table.csv"])
+    }
+
+    func testImagePresentationTraversesListsAndQuotesButKeepsLiteralPaths() {
+        let text = """
+        > ![引用图](file:///tmp/a%20b.PNG)
+
+        - ![列表图](file:///tmp/list.png)
+
+        ```markdown
+        ![代码中的示例](file:///tmp/literal.png)
+        ```
+
+        /tmp/report.pdf
+        /tmp/standalone.png
+        """
+        let blocks = MarkdownParser.shared.parse(text).blocks
+        XCTAssertEqual(ConversationFileReferencePresentation.references(in: text, renderedBlocks: blocks).map(\.path),
+                       ["/tmp/literal.png", "/tmp/report.pdf", "/tmp/standalone.png"])
+    }
+
+    func testRenderedImagesDoNotConsumeDocumentPreviewLimit() {
+        let images = (0..<7).map { "![图](file:///tmp/image-\($0).png)" }
+        let documents = (0..<7).map { "/tmp/document-\($0).pdf" }
+        let text = (images + documents).joined(separator: "\n\n")
+        let blocks = MarkdownParser.shared.parse(text).blocks
+        XCTAssertEqual(ConversationFileReferencePresentation.references(in: text, renderedBlocks: blocks).map(\.path),
+                       Array(documents.prefix(5)))
+    }
+
+    func testImageDeduplicationDoesNotExposeReferencesBeyondAgentdGrantWindow() {
+        let images = (0..<64).map { "![图](file:///tmp/image-\($0).png)" }
+        let text = (images + ["/tmp/outside-grant-window.pdf"]).joined(separator: "\n\n")
+        let blocks = MarkdownParser.shared.parse(text).blocks
+        XCTAssertTrue(ConversationFileReferencePresentation.references(in: text, renderedBlocks: blocks).isEmpty)
+    }
+
+    func testSingleImageFallbackUsesContentWidthWhileGridStillFillsCell() {
+        let store = SessionStore(appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(),
+                                 logStore: LogStore(), clientFactory: { MockSessionStoreClient(projects: [], sessions: []) })
+        for fillsWidth in [false, true] {
+            let view = ConversationImagePreview(source: .unsupported("fixture"), title: nil,
+                                                style: .make(role: .assistant, colorScheme: .light),
+                                                showsCaption: false, fillsAvailableWidth: fillsWidth)
+                .environmentObject(store)
+            let host = UIHostingController(rootView: view)
+            let size = host.sizeThatFits(in: CGSize(width: 600, height: 400))
+            if fillsWidth {
+                XCTAssertEqual(size.width, 600, accuracy: 1)
+            } else {
+                XCTAssertLessThan(size.width, 400, "单图占位卡应按内容收缩")
+            }
+        }
+    }
+
+    func testSingleImageLoadingPlaceholderUsesContentWidthWhileGridStillFillsCell() {
+        let store = SessionStore(appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(),
+                                 logStore: LogStore(), clientFactory: { MockSessionStoreClient(projects: [], sessions: []) })
+        for fillsWidth in [false, true] {
+            let view = ConversationImagePreview(source: .dataURL(value: "data:image/png;base64,AA==", digest: "layout-fixture"),
+                                                title: nil, style: .make(role: .assistant, colorScheme: .light),
+                                                showsCaption: false, fillsAvailableWidth: fillsWidth)
+                .environmentObject(store)
+            let host = UIHostingController(rootView: view)
+            let size = host.sizeThatFits(in: CGSize(width: 600, height: 400))
+            if fillsWidth {
+                XCTAssertEqual(size.width, 600, accuracy: 1)
+            } else {
+                XCTAssertLessThan(size.width, 400, "单图加载占位应按内容收缩")
+            }
+        }
+    }
+
     func testMarkdownParserBuildsGFMBlocks() {
         let result = MarkdownParser.shared.parse("""
         # 标题
