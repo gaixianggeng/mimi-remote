@@ -117,6 +117,7 @@ protocol SessionWebSocketClient: AnyObject {
     func connect(sessionID: SessionID)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?)
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?)
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
@@ -140,6 +141,10 @@ extension SessionWebSocketClient {
     }
 
     func acknowledgeAppliedEvent(_ event: AgentEvent) {}
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents, afterSequence: afterSequence)
+    }
 }
 
 enum WebSocketMessageLimits {

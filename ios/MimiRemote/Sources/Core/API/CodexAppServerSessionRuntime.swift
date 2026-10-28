@@ -236,7 +236,14 @@ actor CodexAppServerSessionRuntime {
     // 最后一个观察者离开时，unsubscribe 可能超时或暂时失败。失败状态必须绑定原连接保留并重试；
     // 新观察者、归档或连接退役会取消任务，且清理任务绝不为退订单独建立新连接。
     var threadUnsubscribeRetryTasksBySessionID: [SessionID: CodexAppServerThreadUnsubscribeRetryTask] = [:]
-    var bufferedEventsBySessionID: [SessionID: [AgentEvent]] = [:]
+    struct BufferedEvent {
+        var event: AgentEvent
+        let generation: Int
+    }
+    let historyReplayRuntimeID = UUID()
+    // 代次不随清空缓冲或连接重建归零，已采用的历史页可能仍持有旧检查点。
+    var bufferedEventGenerationBySessionID: [SessionID: Int] = [:]
+    var bufferedEventsBySessionID: [SessionID: [BufferedEvent]] = [:]
     var eventMailboxesBySessionID: [
         SessionID: [UUID: CodexAppServerEventMailbox]
     ] = [:]
@@ -1487,7 +1494,7 @@ actor CodexAppServerSessionRuntime {
         let hasUnhydratableTurnItems = loadMode == .full
             && !canHydrateTurnItems
             && chronologicalTurns.contains(where: Self.historyTurnNeedsItemHydration)
-        return HistoryMessagesPage(
+        var page = HistoryMessagesPage(
             messages: messages,
             previousCursor: nextCursor.map(Self.encodeThreadTurnsCursor),
             hasMoreBefore: nextCursor != nil,
@@ -1515,6 +1522,14 @@ actor CodexAppServerSessionRuntime {
                 )
             }
         )
+        if cursor == nil {
+            page.replayBoundary = HistoryReplayBoundary(
+                runtimeID: historyReplayRuntimeID,
+                sessionID: sessionID,
+                generation: advanceBufferedEventGeneration(sessionID: sessionID)
+            )
+        }
+        return page
     }
 
     func historyTurnItemsPage(
@@ -2102,19 +2117,22 @@ actor CodexAppServerSessionRuntime {
     }
 
     func attachEventsDeferringStateReplay(
-        sessionID: SessionID
+        sessionID: SessionID,
+        historyReplayBoundary: HistoryReplayBoundary? = nil
     ) -> CodexAppServerDeferredEventAttachment {
         attachEventMailbox(
             sessionID: sessionID,
             replayPolicy: .stateOnly,
-            defersStateReplay: true
+            defersStateReplay: true,
+            historyReplayBoundary: historyReplayBoundary
         )
     }
 
     private func attachEventMailbox(
         sessionID: SessionID,
         replayPolicy: CodexAppServerBufferedEventReplayPolicy,
-        defersStateReplay: Bool
+        defersStateReplay: Bool,
+        historyReplayBoundary: HistoryReplayBoundary? = nil
     ) -> CodexAppServerDeferredEventAttachment {
         // 这里承接的是已经投影好的 thread 事件；正常连接完整保序交付，切回会话的 backlog
         // 可降级为状态级回放，避免历史输出在消息区重新直播一遍。每个订阅者使用独立合并邮箱：
@@ -2130,8 +2148,18 @@ actor CodexAppServerSessionRuntime {
         if defersStateReplay {
             // 初始 backlog 在门打开前保持共享。旧订阅取消与新订阅 attach 可能交错；若这里
             // 提前搬进旧 token 的私有数组，新订阅会看到“已有订阅者”并永久丢掉 backlog。
-            let initialEventCount = bufferedEventsBySessionID[sessionID]?.count ?? 0
-            deferredStateReplayEventsBySessionID[sessionID, default: [:]][token] = initialEventCount
+            let currentGeneration = bufferedEventGenerationBySessionID[sessionID, default: 0]
+            let attachGeneration = advanceBufferedEventGeneration(sessionID: sessionID)
+            let boundary: Int
+            if let historyReplayBoundary,
+               historyReplayBoundary.runtimeID == historyReplayRuntimeID,
+               historyReplayBoundary.sessionID == sessionID,
+               historyReplayBoundary.generation <= currentGeneration {
+                boundary = historyReplayBoundary.generation
+            } else {
+                boundary = attachGeneration
+            }
+            deferredStateReplayEventsBySessionID[sessionID, default: [:]][token] = boundary
             return CodexAppServerDeferredEventAttachment(
                 events: CodexAppServerEventStream(mailbox: mailbox),
                 token: token
@@ -2169,7 +2197,7 @@ actor CodexAppServerSessionRuntime {
         token: UUID
     ) {
         guard let mailbox = eventMailboxesBySessionID[sessionID]?[token],
-              let initialEventCount = deferredStateReplayEventsBySessionID[sessionID]?.removeValue(forKey: token)
+              let generation = deferredStateReplayEventsBySessionID[sessionID]?.removeValue(forKey: token)
         else {
             return
         }
@@ -2188,7 +2216,7 @@ actor CodexAppServerSessionRuntime {
         for event in stateOnlyBufferedEvents(
             captured,
             sessionID: sessionID,
-            activeIncrementalPayloadFromIndex: initialEventCount
+            activeIncrementalPayloadFromGeneration: generation
         ) {
             if let interactionID = pendingInteractionReplayID(for: event) {
                 replayedInteractionIDs.insert(interactionID)
@@ -2214,11 +2242,17 @@ actor CodexAppServerSessionRuntime {
 
     /// 恢复门内的新事件与初始 backlog 共用一份缓冲，任一仍有效的新订阅都能接管它。
     func bufferEventDuringDeferredStateReplay(_ event: AgentEvent, sessionID: SessionID) {
+        // 建议只属于当前可见页面；恢复被取消后也不能把它留给下一次打开。
+        if case .promptSuggestion = event { return }
         var events = bufferedEventsBySessionID[sessionID] ?? []
-        // 每个 deferred 订阅的 attach 序号不同。门内事件保持独立，才能按各自边界排除
-        // 已被 thread/read 覆盖的初始 delta，避免旧前缀与新分片合并后重复追加。
-        events.append(event)
+        // 每个订阅独立使用已采用页面的代次；中途读取、移除审批不会改变其他订阅的边界。
+        events.append(BufferedEvent(event: event, generation: bufferedEventGenerationBySessionID[sessionID, default: 0]))
         bufferedEventsBySessionID[sessionID] = events
+    }
+
+    private func advanceBufferedEventGeneration(sessionID: SessionID) -> Int {
+        bufferedEventGenerationBySessionID[sessionID, default: 0] += 1
+        return bufferedEventGenerationBySessionID[sessionID, default: 0]
     }
 
     func bufferedEvents(
@@ -2228,27 +2262,28 @@ actor CodexAppServerSessionRuntime {
         let events = bufferedEventsBySessionID.removeValue(forKey: sessionID) ?? []
         switch replayPolicy {
         case .all:
-            return events
+            return events.map(\.event)
         case .stateOnly:
             return stateOnlyBufferedEvents(events, sessionID: sessionID)
         }
     }
 
     private func stateOnlyBufferedEvents(
-        _ events: [AgentEvent],
+        _ events: [BufferedEvent],
         sessionID: SessionID,
-        activeIncrementalPayloadFromIndex: Int? = nil
+        activeIncrementalPayloadFromGeneration: Int? = nil
     ) -> [AgentEvent] {
         let pendingInteractionIDs = Set(
             pendingInteractionEvents(sessionID: sessionID)
                 .compactMap(pendingInteractionReplayID)
         )
-        let replayCandidates = events.enumerated().compactMap { index, event -> AgentEvent? in
+        let replayCandidates = events.compactMap { entry -> AgentEvent? in
+            let event = entry.event
             if shouldReplayBufferedStateEvent(event) {
                 return event
             }
-            guard let activeIncrementalPayloadFromIndex,
-                  index >= activeIncrementalPayloadFromIndex,
+            guard let activeIncrementalPayloadFromGeneration,
+                  entry.generation >= activeIncrementalPayloadFromGeneration,
                   isIncrementalPayloadForDeferredReplay(event) else {
                 return nil
             }

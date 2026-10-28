@@ -198,6 +198,195 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
         XCTAssertTrue(recorder.feedback.isEmpty)
     }
 
+    func testHistoryReadThenAttachKeepsWindowTextWithoutRepeatingSnapshotPrefix() async throws {
+        for prefix in ["", "已有"] {
+            let fixture = makeFixture()
+            defer { fixture.store.disconnectWebSocket() }
+            let turnID = "history-attach-text"
+            let (runtime, page, _) = try await readActiveHistorySnapshot(turnID: turnID, prefix: prefix)
+            fixture.store.applyHistoryFirstPage(page, sessionID: sessionID)
+
+            // The real history RPC has completed. These deltas cannot be in its snapshot.
+            await emitDelta(turnID, text: "窗口内", into: runtime)
+            let attachment = await runtime.attachEventsDeferringStateReplay(
+                sessionID: sessionID,
+                historyReplayBoundary: fixture.store.historyReplayBoundaryBySessionID[sessionID]
+            )
+            await emitDelta(turnID, text: "门内", into: runtime)
+            await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+            await runtime.finishAttachedEventStreams(sessionID: sessionID)
+            var replayedText = ""
+            for await event in attachment.events {
+                if case .assistantDelta(let delta, _) = event { replayedText += delta.text }
+                await fixture.store.applyRuntimeEvent(event, lease: fixture.lease, sendsNotification: false)
+            }
+            XCTAssertEqual(replayedText, "窗口内门内", "历史前缀不能重放，读取后的增量不能丢失")
+            await emitDelta(turnID, text: "后续", into: runtime)
+            await applyBufferedEvents(from: runtime, policy: .all, fixture: fixture,
+                                      recorder: FeedbackRecorder(store: fixture.store, sessionID: sessionID))
+            fixture.conversationStore.resetLiveTranscript(sessionID: sessionID)
+            // 与 #903 的活动历史投影组合后，已有前缀和两个交接窗口的增量应保留在同一气泡。
+            XCTAssertEqual(fixture.conversationStore.messages(for: sessionID).map(\.content),
+                           [prefix + "窗口内门内后续"])
+        }
+    }
+
+    func testHistoryReadThenAttachKeepsWindowToolAndOutput() async throws {
+        let fixture = makeFixture()
+        defer { fixture.store.disconnectWebSocket() }
+        let turnID = "history-attach-tool"
+        let (runtime, page, _) = try await readActiveHistorySnapshot(turnID: turnID, prefix: "")
+        fixture.store.applyHistoryFirstPage(page, sessionID: sessionID)
+        await emitCommand(turnID, status: "inProgress", into: runtime)
+        await emitToolOutput(turnID, text: "窗口日志\n", into: runtime)
+        let attachment = await runtime.attachEventsDeferringStateReplay(
+            sessionID: sessionID,
+            historyReplayBoundary: fixture.store.historyReplayBoundaryBySessionID[sessionID]
+        )
+        await emitToolOutput(turnID, text: "门内日志\n", into: runtime)
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+        for await event in attachment.events {
+            await fixture.store.applyRuntimeEvent(event, lease: fixture.lease, sendsNotification: false)
+        }
+        for _ in 0..<300 where !fixture.logStore.log(for: sessionID).contains("门内日志") {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(fixture.logStore.log(for: sessionID), "窗口日志\n门内日志\n")
+        XCTAssertTrue(fixture.conversationStore.messages(for: sessionID).contains {
+            $0.itemID == "command-\(turnID)" && $0.activityPayload?.isInProgress == true
+        })
+    }
+
+    func testMainConnectionForwardsOnlyAdoptedHistoryBoundary() async throws {
+        let socket = MockWebSocketClient()
+        let fixture = makeFixture(socket: socket)
+        defer { fixture.store.disconnectWebSocket() }
+        let (_, page, _) = try await readActiveHistorySnapshot(turnID: "history-store-wiring", prefix: "")
+        let session = try XCTUnwrap(fixture.store.selectedSession)
+        fixture.store.applyHistoryFirstPage(page, sessionID: sessionID)
+        fixture.store.connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
+        XCTAssertEqual(socket.connectedSessionIDs, [sessionID])
+        XCTAssertEqual(socket.historyReplayBoundariesByConnect, [page.replayBoundary])
+        XCTAssertEqual(socket.replayBufferedEventsByConnect, [false])
+        fixture.store.disconnectWebSocket()
+        fixture.store.applyHistoryFirstPage(HistoryMessagesPage(messages: [], snapshotSeq: 42), sessionID: sessionID)
+        fixture.store.historySnapshotSeqBySessionID[sessionID] = 42
+        fixture.store.connectWebSocket(session, replayBufferedEvents: false, allowNonRunning: true)
+        XCTAssertEqual(socket.historyReplayBoundariesByConnect, [page.replayBoundary, nil])
+        XCTAssertEqual(socket.afterSequencesByConnect, [nil, 42])
+    }
+
+    func testUnadoptedReadDoesNotReplaceEachSubscribersHistoryBoundary() async throws {
+        for newestFirst in [false, true] {
+            let turnID = "history-two-readers"
+            let (runtime, pageA, transport) = try await readActiveHistorySnapshot(turnID: turnID, prefix: "")
+            let fixture = makeFixture()
+            defer { fixture.store.disconnectWebSocket() }
+            fixture.store.applyHistoryFirstPage(pageA, sessionID: sessionID)
+            await emitDelta(turnID, text: "A", into: runtime)
+            let requestCount = await transport.sentMessages().count
+            let readB = Task { try await runtime.messagesPage(sessionID: sessionID, before: nil, limit: 120) }
+            let requestB = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list", after: requestCount)
+            transportResponse(transport, id: requestB.id,
+                              result: #"{"data":[{"id":"\#(turnID)","status":"inProgress","itemsView":"full","items":[{"id":"message-\#(turnID)","type":"agentMessage","text":"A"}]}],"nextCursor":null}"#)
+            let pageB = try await readB.value
+            XCTAssertEqual(fixture.store.historyReplayBoundaryBySessionID[sessionID], pageA.replayBoundary)
+            await emitDelta(turnID, text: "B", into: runtime)
+            let first = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID, historyReplayBoundary: pageA.replayBoundary)
+            let second = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID, historyReplayBoundary: pageB.replayBoundary)
+            await emitDelta(turnID, text: "C", into: runtime)
+            for token in newestFirst ? [second.token, first.token] : [first.token, second.token] {
+                await runtime.completeDeferredStateReplay(sessionID: sessionID, token: token)
+            }
+            await runtime.finishAttachedEventStreams(sessionID: sessionID)
+            let firstText = await collectAssistantText(first.events)
+            let secondText = await collectAssistantText(second.events)
+            XCTAssertEqual(firstText, "ABC")
+            XCTAssertEqual(secondText, "BC")
+            fixture.store.applyHistoryFirstPage(HistoryMessagesPage(messages: []), sessionID: sessionID)
+            XCTAssertNil(fixture.store.historyReplayBoundaryBySessionID[sessionID])
+        }
+    }
+
+    func testHistoryBoundarySurvivesConsumedBufferAndResolvedApproval() async throws {
+        let turnID = "history-buffer-reset"
+        let (runtime, page, _) = try await readActiveHistorySnapshot(turnID: turnID, prefix: "")
+        _ = await runtime.bufferedEvents(sessionID: sessionID, replayPolicy: .all)
+        await runtime.handle(CodexAppServerServerRequest(
+            id: .string("window-approval"), method: "item/commandExecution/requestApproval",
+            params: .object(["threadId": .string(sessionID), "turnId": .string(turnID),
+                             "itemId": .string("window-command"), "command": .string("echo test")])
+        ))
+        let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID, historyReplayBoundary: page.replayBoundary)
+        await emitDelta(turnID, text: "仍应保留", into: runtime)
+        await runtime.handle(CodexAppServerNotification(method: "serverRequest/resolved", params: .object([
+            "threadId": .string(sessionID), "turnId": .string(turnID), "requestId": .string("window-approval")
+        ])))
+        await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+        await runtime.finishAttachedEventStreams(sessionID: sessionID)
+        let text = await collectAssistantText(attachment.events)
+        XCTAssertEqual(text, "仍应保留")
+    }
+
+    func testUnrelatedHistoryBoundaryUsesOriginalAttachBoundary() async throws {
+        let turnID = "history-invalid-boundary"
+        let (runtime, page, _) = try await readActiveHistorySnapshot(turnID: turnID, prefix: "")
+        let boundary = try XCTUnwrap(page.replayBoundary)
+        let invalid = [
+            HistoryReplayBoundary(runtimeID: UUID(), sessionID: sessionID, generation: boundary.generation),
+            HistoryReplayBoundary(runtimeID: boundary.runtimeID, sessionID: "other-thread", generation: boundary.generation),
+            HistoryReplayBoundary(runtimeID: boundary.runtimeID, sessionID: sessionID, generation: Int.max)
+        ]
+        for checkpoint in invalid {
+            await emitDelta(turnID, text: "已有", into: runtime)
+            let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: sessionID, historyReplayBoundary: checkpoint)
+            await emitDelta(turnID, text: "新增", into: runtime)
+            await runtime.completeDeferredStateReplay(sessionID: sessionID, token: attachment.token)
+            await runtime.finishAttachedEventStreams(sessionID: sessionID)
+            let text = await collectAssistantText(attachment.events)
+            XCTAssertEqual(text, "新增")
+        }
+    }
+
+    private func collectAssistantText(_ events: CodexAppServerEventStream) async -> String {
+        var text = ""
+        for await event in events {
+            if case .assistantDelta(let delta, _) = event { text += delta.text }
+        }
+        return text
+    }
+
+    private func readActiveHistorySnapshot(
+        turnID: String,
+        prefix: String
+    ) async throws -> (CodexAppServerSessionRuntime, HistoryMessagesPage, FakeCodexAppServerTransport) {
+        let transport = FakeCodexAppServerTransport()
+        let project = AgentProject(id: "history-feedback", name: "History", path: "/tmp/history-feedback")
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test-token",
+            runtimeProvider: "claude",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(project: project,
+                                          allowedMethods: ["initialize", "initialized", "thread/turns/list"],
+                                          channels: [makeClaudeChannelMetadata()])
+            }
+        )
+        await seedThread(in: runtime)
+        await runtime.handle(turnStarted(turnID))
+        if !prefix.isEmpty { await emitDelta(turnID, text: prefix, into: runtime) }
+        let read = Task { try await runtime.messagesPage(sessionID: sessionID, before: nil, limit: 120) }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(transport, id: initialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        let request = try await waitForFakeAppServerRequest(transport, method: "thread/turns/list")
+        let items = prefix.isEmpty ? "[]" : #"[{"id":"message-\#(turnID)","type":"agentMessage","text":"\#(prefix)"}]"#
+        transportResponse(transport, id: request.id,
+                          result: #"{"data":[{"id":"\#(turnID)","status":"inProgress","itemsView":"full","items":\#(items)}],"nextCursor":null}"#)
+        return (runtime, try await read.value, transport)
+    }
+
     private struct Fixture {
         let store: SessionStore
         let conversationStore: ConversationStore
@@ -205,15 +394,17 @@ final class CodexAppServerHistoryFeedbackTests: XCTestCase {
         let lease: HostSessionLease
     }
 
-    private func makeFixture() -> Fixture {
+    private func makeFixture(socket: MockWebSocketClient? = nil) -> Fixture {
         let appStore = makeIsolatedAppStore()
+        if socket != nil { appStore.token = "test-token" }
         let conversationStore = ConversationStore()
         let logStore = LogStore()
         let store = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
-            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) },
+            webSocketFactory: { socket ?? MockWebSocketClient() }
         )
         store.sessions = [makeSession(
             id: sessionID,

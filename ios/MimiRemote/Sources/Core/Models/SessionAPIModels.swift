@@ -310,6 +310,13 @@ struct HistoryTurnState: Equatable {
     let lifecycle: ConversationTurnLifecycle
 }
 
+/// 仅用于本进程的历史/事件交接，不与服务端事件序号混用。
+struct HistoryReplayBoundary: Equatable {
+    let runtimeID: UUID
+    let sessionID: SessionID
+    let generation: Int
+}
+
 struct HistoryMessagesPage: Equatable {
     enum LoadMode: String, Equatable, Hashable {
         case full
@@ -321,6 +328,7 @@ struct HistoryMessagesPage: Equatable {
     let hasMoreBefore: Bool
     let context: SessionContextSnapshot?
     let snapshotSeq: EventSequence?
+    var replayBoundary: HistoryReplayBoundary? = nil
     let loadMode: LoadMode
     let notice: String?
     let authoritativeCompletedTurnItems: [TurnID: Set<AgentItemID>]

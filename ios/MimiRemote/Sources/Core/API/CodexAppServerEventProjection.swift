@@ -70,13 +70,15 @@ extension CodexAppServerSessionRuntime {
             // 没有页面订阅的会话：状态变化仍要让列表看到，缓冲区照旧保留，供随后打开详情时回放。
             notifySessionIndex(for: event, sessionID: sessionID)
             var events = bufferedEventsBySessionID[sessionID] ?? []
+            let generation = bufferedEventGenerationBySessionID[sessionID, default: 0]
             if let previous = events.last,
+               previous.generation == generation,
                event.contiguousPayloadByteCount == nil,
-               let merged = previous.mergingContiguous(with: event) {
+               let merged = previous.event.mergingContiguous(with: event) {
                 // reasoning/plan 是累计快照，后台只需要保留最新内容。
-                events[events.index(before: events.endIndex)] = merged
+                events[events.index(before: events.endIndex)].event = merged
             } else {
-                events.append(event)
+                events.append(BufferedEvent(event: event, generation: generation))
                 compactTrailingBufferedDeltas(&events)
             }
             // 页面不订阅时用分层 chunk 压缩 delta，既避免 token 事件无限增长，
@@ -196,21 +198,22 @@ extension CodexAppServerSessionRuntime {
         }
     }
 
-    func compactTrailingBufferedDeltas(_ events: inout [AgentEvent]) {
+    func compactTrailingBufferedDeltas(_ events: inout [BufferedEvent]) {
         while events.count >= 2 {
             let previousIndex = events.index(events.endIndex, offsetBy: -2)
             let nextIndex = events.index(before: events.endIndex)
             let previous = events[previousIndex]
             let next = events[nextIndex]
-            guard let previousBytes = previous.contiguousPayloadByteCount,
-                  let nextBytes = next.contiguousPayloadByteCount,
+            guard previous.generation == next.generation,
+                  let previousBytes = previous.event.contiguousPayloadByteCount,
+                  let nextBytes = next.event.contiguousPayloadByteCount,
                   previousBytes <= max(1, nextBytes) * 2,
-                  let merged = previous.mergingContiguous(with: next)
+                  let merged = previous.event.mergingContiguous(with: next.event)
             else {
                 return
             }
             events.removeLast(2)
-            events.append(merged)
+            events.append(BufferedEvent(event: merged, generation: next.generation))
         }
     }
 

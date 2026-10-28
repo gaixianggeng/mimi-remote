@@ -77,6 +77,8 @@ final class MockWebSocketClient: SessionWebSocketClient {
 
     private(set) var connectedSessionIDs: [SessionID] = []
     private(set) var replayBufferedEventsByConnect: [Bool] = []
+    private(set) var historyReplayBoundariesByConnect: [HistoryReplayBoundary?] = []
+    private(set) var afterSequencesByConnect: [EventSequence?] = []
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
@@ -100,6 +102,12 @@ final class MockWebSocketClient: SessionWebSocketClient {
         connectedSessionIDs.append(sessionID)
         replayBufferedEventsByConnect.append(replayBufferedEvents)
         onStatus?(.connecting)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
+        afterSequencesByConnect.append(afterSequence)
+        historyReplayBoundariesByConnect.append(historyReplayBoundary)
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
     }
 
     func disconnect() {

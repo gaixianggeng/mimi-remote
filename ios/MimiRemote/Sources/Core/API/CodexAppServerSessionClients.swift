@@ -1314,6 +1314,10 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?) {
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents, afterSequence: afterSequence, historyReplayBoundary: nil)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
         // 先让旧观察失效，再断开它。disconnect 与已排队的读回调都不能改写新页面。
         observationGeneration &+= 1
         let generation = observationGeneration
@@ -1341,7 +1345,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         client.connect(
             sessionID: sessionID,
             replayBufferedEvents: replayBufferedEvents,
-            afterSequence: afterSequence
+            afterSequence: afterSequence,
+            historyReplayBoundary: historyReplayBoundary
         )
     }
 
@@ -1480,6 +1485,10 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID threadID: SessionID, replayBufferedEvents: Bool) {
+        connect(sessionID: threadID, replayBufferedEvents: replayBufferedEvents, afterSequence: nil, historyReplayBoundary: nil)
+    }
+
+    func connect(sessionID threadID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
         sessionID = threadID
         onStatus?(.connecting)
         eventPumpTask?.cancel()
@@ -1491,7 +1500,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             let deferredAttachment: CodexAppServerDeferredEventAttachment?
             let events: CodexAppServerEventStream
             if replayPolicy == .stateOnly {
-                let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: threadID)
+                let attachment = await runtime.attachEventsDeferringStateReplay(sessionID: threadID, historyReplayBoundary: historyReplayBoundary)
                 deferredAttachment = attachment
                 events = attachment.events
             } else {
