@@ -7,19 +7,28 @@ cd "$ROOT_DIR"
 usage() {
   cat <<'EOF'
 用法：
-  bash ./scripts/test-conversation-regressions.sh [--ios-only]
+  bash ./scripts/test-conversation-regressions.sh [--ios-only] [--result-dir <目录>]
 
 默认执行 Go 与 iOS 关键链路回归。--ios-only 供已经由独立 Go 验证覆盖的
 iOS CI / full 验证使用，只跳过 Go 阶段，不改变任何 XCTest selector。
+
+默认成功后仅清理本次自动创建的临时结果目录；失败或取消时保留并输出位置。
+--result-dir 将 core.xcresult 保存到指定目录，无论结果如何都保留，不覆盖已有结果包。
 EOF
 }
 
 ios_only=false
+result_dir=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --ios-only)
       ios_only=true
       shift
+      ;;
+    --result-dir)
+      [[ "$#" -ge 2 && -n "$2" ]] || { echo "--result-dir 缺少目录。" >&2; exit 2; }
+      result_dir="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -108,7 +117,37 @@ while IFS= read -r skip_arg; do
     quarantine_skip_args+=("$skip_arg")
   fi
 done <<<"$quarantine_output"
-test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
+owns_result_dir=false
+if [[ -z "$result_dir" ]]; then
+  result_dir="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")"
+  owns_result_dir=true
+else
+  mkdir -p -- "$result_dir"
+fi
+test_result_bundle="$result_dir/core.xcresult"
+[[ ! -e "$test_result_bundle" && ! -L "$test_result_bundle" ]] || {
+  echo "结果目录里已有 ${test_result_bundle}，请换一个空目录。" >&2
+  exit 2
+}
+
+finish_results() {
+  local exit_status=$?
+  trap - EXIT
+  if [[ "$owns_result_dir" == true && "$exit_status" -eq 0 ]]; then
+    # 只删除本次 mktemp 返回的目录，绝不扫描旧结果或回收调用方指定的目录。
+    if rm -rf -- "$result_dir"; then
+      echo "成功结果已清理：$result_dir"
+    else
+      echo "结果目录清理失败，请检查：$result_dir" >&2
+    fi
+  else
+    echo "结果目录已保留：$result_dir"
+  fi
+  exit "$exit_status"
+}
+trap finish_results EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \

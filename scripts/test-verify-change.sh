@@ -283,8 +283,13 @@ assert_contains "$asc_control_output" "test-ios-asc-cli.sh"
 
 critical_control_output="$(assert_plan critical_control scripts/test-conversation-regressions.sh)"
 assert_contains "$critical_control_output" "check-critical-regressions.sh"
+assert_contains "$critical_control_output" "python3 ./scripts/test-conversation-results.py"
 assert_contains "$critical_control_output" "check-ios-test-selectors.sh"
 assert_not_contains "$critical_control_output" "ios-dev.sh build-for-testing"
+
+result_policy_output="$(assert_plan result_policy scripts/test-conversation-results.py)"
+assert_contains "$result_policy_output" "python3 ./scripts/test-conversation-results.py"
+assert_not_contains "$result_policy_output" "ios-dev.sh build"
 
 test_inventory_output="$(assert_plan test_inventory config/ios-tests/nightly-classes.txt)"
 assert_contains "$test_inventory_output" "bash ./scripts/test-ios-test-inventory.sh && bash ./scripts/check-ios-test-selectors.sh"
