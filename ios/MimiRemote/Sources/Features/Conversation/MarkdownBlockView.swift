@@ -468,6 +468,7 @@ private struct ConversationImagePreviewContent: View {
     @State private var isLoadingLocalImage = false
     @State private var loadError: String?
     @State private var pendingResult: ImageLoadResult?
+    @State private var retryGeneration = 0
 
     private struct ImageLoadResult {
         let image: UIImage?
@@ -555,7 +556,7 @@ private struct ConversationImagePreviewContent: View {
         }
         .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: contentAlignment)
         .quickLookPreview($quickLookURL)
-        .task(id: mediaRequestIdentity) {
+        .task(id: ImageLoadAttempt(media: mediaRequestIdentity, retry: retryGeneration)) {
             await loadSourceIfNeeded()
         }
         .onChange(of: isTimelineScrolling) { _, scrolling in
@@ -565,6 +566,11 @@ private struct ConversationImagePreviewContent: View {
 
     private var mediaRequestIdentity: MediaRequestIdentity {
         MediaRequestIdentity(profileID: profileID, resourceID: source.id)
+    }
+
+    private struct ImageLoadAttempt: Hashable {
+        let media: MediaRequestIdentity
+        let retry: Int
     }
 
     @ViewBuilder
@@ -677,7 +683,17 @@ private struct ConversationImagePreviewContent: View {
             } else if isLoadingLocalImage {
                 loadingPlaceholder
             } else {
-                fallback(loadError ?? L10n.text("ui.image_not_loaded_yet"), detail: URL(fileURLWithPath: path).lastPathComponent)
+                Button {
+                    // 重用 SwiftUI 管理的任务：离开页面或切换主机会取消旧请求。
+                    retryGeneration += 1
+                } label: {
+                    fallback(loadError ?? L10n.text("ui.image_not_loaded_yet"),
+                             detail: URL(fileURLWithPath: path).lastPathComponent,
+                             actionTitle: L10n.text("ui.retry"))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.text("ui.retry"))
+                .accessibilityHint(loadError ?? L10n.text("ui.image_not_loaded_yet"))
             }
         }
     }
@@ -787,7 +803,7 @@ private struct ConversationImagePreviewContent: View {
         }
     }
 
-    private func fallback(_ title: String, detail: String) -> some View {
+    private func fallback(_ title: String, detail: String, actionTitle: String? = nil) -> some View {
         let resolvedStatusStyle = statusStyle ?? style
         return VStack(alignment: .leading, spacing: 6) {
             Label(title, systemImage: "photo")
@@ -798,6 +814,11 @@ private struct ConversationImagePreviewContent: View {
                 .foregroundStyle(resolvedStatusStyle.secondaryColor)
                 .lineLimit(2)
                 .truncationMode(.middle)
+            if let actionTitle {
+                Text(actionTitle)
+                    .font(style.captionFont.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
         }
         .padding(10)
         .frame(maxWidth: fillsAvailableWidth ? .infinity : nil, alignment: .leading)
