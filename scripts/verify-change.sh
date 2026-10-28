@@ -437,7 +437,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    scripts/check-critical-regressions.sh|scripts/test-conversation-regressions.sh)
+    scripts/check-critical-regressions.sh|scripts/test-conversation-regressions.sh|scripts/test-conversation-results.py)
       has_critical_mapping_control=true
       ;;
   esac
@@ -611,7 +611,7 @@ if [[ "$has_ios_asc_control" == true ]]; then
   add_check "App Store Connect CLI 封装变化使用本地 fake ASC 自测" "bash ./scripts/test-ios-asc-cli.sh"
 fi
 if [[ "$has_critical_mapping_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
-  add_check "关键用户链路 selector 变化执行静态映射自检" "bash ./scripts/check-critical-regressions.sh"
+  add_check "关键用户链路 selector 与结果保留策略执行无设备自检" "bash ./scripts/check-critical-regressions.sh && python3 ./scripts/test-conversation-results.py"
 fi
 if [[ "$has_ios_test_inventory_control" == true && "$has_gate_control" == false && "$mode" != "full" && "$has_repository_security_control" == false ]]; then
   add_check "iOS 测试类、selector、每晚集合与隔离清单保持一致" "bash ./scripts/test-ios-test-inventory.sh && bash ./scripts/check-ios-test-selectors.sh"
