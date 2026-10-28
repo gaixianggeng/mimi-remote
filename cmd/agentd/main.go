@@ -1089,8 +1089,11 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		_ = shutdownServeResources(apiRouter, appServerRuntime)
 		return err
 	}
-	_ = localOnly // The recovery behavior is added after the regression is reproduced.
-	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	if localOnly {
+		log.Print(staleTailscaleListenWarning)
+	} else {
+		maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	}
 
 	errCh := make(chan error, len(listeners)+1)
 	for _, listener := range listeners {
