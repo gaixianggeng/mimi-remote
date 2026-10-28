@@ -22,7 +22,8 @@ struct DebugImageRecoveryFixture: View {
             ConversationImagePreview(source: .localPath(ImageRecoveryFixtureProtocol.path), title: nil,
                                      style: .make(role: .assistant, colorScheme: .light), showsCaption: false)
                 .environmentObject(store)
-            Text("Reads: \(reads)").accessibilityIdentifier("image.fixture.reads")
+            Text(reads, format: .number.grouping(.never))
+                .accessibilityIdentifier("image.fixture.reads")
         }
         .padding()
         .task {

@@ -52,7 +52,7 @@ final class ConversationImageRecoveryUITests: XCTestCase {
 
     private func waitForReadCount(_ count: Int) {
         let label = app.staticTexts["image.fixture.reads"]
-        let predicate = NSPredicate(format: "label == %@", "Reads: \(count)")
+        let predicate = NSPredicate(format: "label == %@", String(count))
         expectation(for: predicate, evaluatedWith: label)
         waitForExpectations(timeout: 10)
     }
