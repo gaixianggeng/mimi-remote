@@ -16,7 +16,7 @@
 
 - GitHub Issues 唯一账本是 `gaixianggeng/mimi-remote`，不创建或同步 Linear 问题。迁移对照见 `docs/operations/github-issues-migration.md`。
 - 用户报告可操作问题即授权查重归档，默认不改代码；明确要求处理后持续完成范围内实现与验证。收集模式结束前只按 B1、B2 编号记录。
-- 一项独立用户结果对应一张 Issue、一个主要任务和一个主要 Worktree。最多 2 张独立 Issue 为 In Progress，启动更多前由用户决定。
+- 一项独立用户结果对应一张 Issue、一个主要任务和一个主要 Worktree；同一 Worktree 同时只允许一个执行者写入。最多 5 张独立 Issue 为 In Progress，仅汇总子任务的父 Issue 不重复计数，启动更多前由用户决定。
 - 仓库公开。写入前脱敏 Token、账号、用户数据、本机路径、真实 IP、设备和会话标识、私有链接。GitHub 写入后必须告知用户。
 - 新分支使用 `codex/gh-<编号>-<英文描述>`；迁移问题复用旧分支。PR 用 `Refs #<编号>` 关联，不默认自动关闭 Issue。
 - 开始实现用 In Progress；PR、测试或合并待完成用 Verify。只有改动进入并推送 main、必要验证或发布完成且临时 Worktree 清理后才关闭 Issue。
