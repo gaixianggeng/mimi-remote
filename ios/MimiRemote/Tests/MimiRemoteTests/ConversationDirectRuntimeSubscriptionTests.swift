@@ -494,6 +494,44 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(requests.filter { $0.method == "thread/resume" }.count, 3)
     }
 
+    func testNewerObserverDuringHydrationDoesNotFailEarlierConnect() async throws {
+        let fixture = try await makeOverlappingObserverFixture(listsThread: false)
+        let first = fixture.connect()
+        _ = try await waitForFakeAppServerRequest(
+            fixture.transport,
+            method: "thread/read",
+            after: fixture.messagesBeforeConnect
+        )
+        // 可见页面与后台队列可能交错观察同一 thread；后到者接管租约不代表先到者被取消。
+        let second = fixture.connect()
+        try await fixture.waitForLeaseGeneration(2)
+        let results = try await fixture.answerUntilFinished([first, second])
+
+        XCTAssertNil(results[0], "先到的观察者被同会话新订阅接替时不能报连接失败")
+        XCTAssertNil(results[1])
+        let requests = await fixture.requests()
+        XCTAssertEqual(requests.filter { $0.method == "thread/resume" }.count, 1)
+    }
+
+    func testNewerObserverDuringResumeDoesNotFailEarlierConnect() async throws {
+        let fixture = try await makeOverlappingObserverFixture(listsThread: true)
+        let first = fixture.connect()
+        _ = try await waitForFakeAppServerRequest(
+            fixture.transport,
+            method: "thread/resume",
+            after: fixture.messagesBeforeConnect
+        )
+        // 后到者复用同一个 in-flight resume；完成后先到者的租约已过期，但订阅仍然有效。
+        let second = fixture.connect()
+        try await fixture.waitForLeaseGeneration(2)
+        let results = try await fixture.answerUntilFinished([first, second])
+
+        XCTAssertNil(results[0], "先到的观察者被同会话新订阅接替时不能报连接失败")
+        XCTAssertNil(results[1])
+        let requests = await fixture.requests()
+        XCTAssertEqual(requests.filter { $0.method == "thread/resume" }.count, 1)
+    }
+
     func testLastEventObserverUnsubscribesThreadOnlyOnce() async throws {
         let project = AgentProject(id: "proj_last_observer", name: "Last Observer", path: "/tmp/last-observer")
         let transport = FakeCodexAppServerTransport()
@@ -1158,5 +1196,141 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(runtimeContext?.session.isRunning, false)
 
         socket.disconnect()
+    }
+}
+
+@MainActor
+private final class OverlappingObserverFixture {
+    let runtime: CodexAppServerSessionRuntime
+    let transport: FakeCodexAppServerTransport
+    let threadID: SessionID
+    let thread: String
+    let messagesBeforeConnect: Int
+    private var results: [Error?]?
+
+    init(
+        runtime: CodexAppServerSessionRuntime,
+        transport: FakeCodexAppServerTransport,
+        threadID: SessionID,
+        thread: String,
+        messagesBeforeConnect: Int
+    ) {
+        self.runtime = runtime
+        self.transport = transport
+        self.threadID = threadID
+        self.thread = thread
+        self.messagesBeforeConnect = messagesBeforeConnect
+    }
+
+    func connect() -> Task<Error?, Never> {
+        Task { [runtime, threadID] in
+            do {
+                try await runtime.connectForEvents(sessionID: threadID)
+                return nil
+            } catch {
+                return error
+            }
+        }
+    }
+
+    func waitForLeaseGeneration(_ generation: UInt64) async throws {
+        for _ in 0..<400 {
+            if await runtime.threadSubscriptionLeaseBySessionID[threadID]?.generation == generation {
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for subscription lease generation \(generation)")
+        throw MockError.unimplemented
+    }
+
+    /// 两个 connect 的 thread/read 与 thread/resume 可能复用同一请求，也可能各发一次；全部应答直到都结束。
+    func answerUntilFinished(_ connects: [Task<Error?, Never>]) async throws -> [Error?] {
+        results = nil
+        let collector = Task {
+            var collected: [Error?] = []
+            for connect in connects {
+                collected.append(await connect.value)
+            }
+            results = collected
+        }
+        var answered = Set<String>()
+        for _ in 0..<400 {
+            if let results {
+                return results
+            }
+            for request in await requests() where ["thread/read", "thread/resume"].contains(request.method) {
+                guard answered.insert("\(request.id)").inserted else { continue }
+                transportResponse(transport, id: request.id, result: #"{"thread":\#(thread)}"#)
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        collector.cancel()
+        XCTFail("Timed out waiting for overlapping connects")
+        throw MockError.unimplemented
+    }
+
+    func requests() async -> [CodexAppServerRequest] {
+        let messages = await transport.sentMessages()
+        guard messagesBeforeConnect < messages.count else { return [] }
+        return messages[messagesBeforeConnect...].compactMap { try? decodeAppServerRequest($0) }
+    }
+}
+
+@MainActor
+private extension ConversationDataFlowTests {
+    func makeOverlappingObserverFixture(listsThread: Bool) async throws -> OverlappingObserverFixture {
+        let project = AgentProject(
+            id: "proj_overlapping_observers",
+            name: "Overlapping Observers",
+            path: "/tmp/overlapping-observers"
+        )
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: [
+                        "initialize",
+                        "initialized",
+                        "thread/list",
+                        "thread/read",
+                        "thread/resume",
+                        "thread/unsubscribe"
+                    ]
+                )
+            }
+        )
+        let threadID = "thr_overlapping_observers"
+        let thread = #"{"id":"thr_overlapping_observers","sessionId":"thr_overlapping_observers","preview":"并发观察","ephemeral":false,"modelProvider":"openai","createdAt":1780490900,"updatedAt":1780490901,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/overlapping-observers","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"并发观察","turns":[]}"#
+
+        // 先建好连接；listsThread 为 false 时 runtime 没有该 thread 的上下文，connect 需要先 thread/read。
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(
+            transport,
+            id: list.id,
+            result: listsThread ? #"{"data":[\#(thread)],"nextCursor":null}"# : #"{"data":[],"nextCursor":null}"#
+        )
+        _ = try await pageTask.value
+
+        return OverlappingObserverFixture(
+            runtime: runtime,
+            transport: transport,
+            threadID: threadID,
+            thread: thread,
+            messagesBeforeConnect: await transport.sentMessages().count
+        )
     }
 }

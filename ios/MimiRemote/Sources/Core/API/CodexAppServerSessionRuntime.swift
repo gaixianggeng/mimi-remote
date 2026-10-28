@@ -2384,7 +2384,7 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            throw CancellationError()
+            return
         }
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -2392,7 +2392,7 @@ actor CodexAppServerSessionRuntime {
         let connection = try await ensureConnection()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            throw CancellationError()
+            return
         }
         let config = try await ensureConfig()
         try Task.checkCancellation()
@@ -2404,7 +2404,7 @@ actor CodexAppServerSessionRuntime {
         let projects = try await projects()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            throw CancellationError()
+            return
         }
         let builder = CodexAppServerRequestBuilder(
             allowlistedProjects: projectsIncludingSessionContext(projects, context: context)
@@ -2417,7 +2417,7 @@ actor CodexAppServerSessionRuntime {
             threadsResumedOnConnection.remove(sessionID)
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            throw CancellationError()
+            return
         }
         // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
         try await ensureThreadResumedOnConnection(
@@ -2427,6 +2427,11 @@ actor CodexAppServerSessionRuntime {
             connection: connection
         )
         try Task.checkCancellation()
+        if let current = threadSubscriptionLeaseBySessionID[sessionID], current != lease, current.wantsEvents {
+            // 同会话的后到订阅接替了租约并复用这次 resume；当前观察者照常接收实时事件，
+            // 不能当成取消报连接失败。只有退订（false lease）才表示观察意图已撤销。
+            return
+        }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
         }
