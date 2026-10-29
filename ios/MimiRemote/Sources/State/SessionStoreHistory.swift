@@ -1478,6 +1478,8 @@ extension SessionStore {
     }
 
     func applyHistoryFirstPage(_ page: HistoryMessagesPage, sessionID: SessionID) {
+        // 只记录真正被页面采用的读取；取消、过期及仅校准状态的读取不能推进回放边界。
+        historyReplayBoundaryBySessionID[sessionID] = page.replayBoundary
         ingestHistoryContext(page.context, fallbackSessionID: sessionID)
         conversationStore.replaceHistorySnapshot(
             page.messages,
@@ -3974,6 +3976,7 @@ extension SessionStore {
         historySeenPreviousCursorsBySessionID = historySeenPreviousCursorsBySessionID.filter { validSessionIDs.contains($0.key) }
         historySessionsWithAdditionalPages.formIntersection(validSessionIDs)
         historySnapshotSeqBySessionID = historySnapshotSeqBySessionID.filter { validSessionIDs.contains($0.key) }
+        historyReplayBoundaryBySessionID = historyReplayBoundaryBySessionID.filter { validSessionIDs.contains($0.key) }
         historyPageRequestTokenBySessionID = historyPageRequestTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         visibleHistoryLoadingSessionIDs.formIntersection(validSessionIDs)
         let staleHistoryLoadJobIDs = historyLoadJobsBySessionID.keys.filter { !validSessionIDs.contains($0) }

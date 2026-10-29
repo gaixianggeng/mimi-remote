@@ -179,6 +179,29 @@ final class NativePromptSuggestionTests: XCTestCase {
         guard case .assistantDelta = textEvent else { return XCTFail("正文仍应是正文") }
     }
 
+    func testSuggestionDuringDeferredRecoveryReachesLivePageWithoutSurvivingDisconnect() async {
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: "claude"
+        )
+        let live = await runtime.attachEvents(sessionID: "thread-1", replayPolicy: .all)
+        let recovering = await runtime.attachEventsDeferringStateReplay(sessionID: "thread-1")
+        await runtime.handle(notification())
+        // Disconnect before recovery completes, then inspect what the next opener can replay.
+        await runtime.finishAttachedEventStreams(sessionID: "thread-1")
+        var liveCount = 0
+        for await event in live {
+            if case .promptSuggestion = event { liveCount += 1 }
+        }
+        XCTAssertEqual(liveCount, 1, "已可见的页面仍能立即收到建议")
+        var recoveryCount = 0
+        for await event in recovering.events {
+            if case .promptSuggestion = event { recoveryCount += 1 }
+        }
+        XCTAssertEqual(recoveryCount, 0)
+        let backlog = await runtime.bufferedEvents(sessionID: "thread-1", replayPolicy: .all)
+        XCTAssertTrue(backlog.isEmpty, "恢复门不能把一次性建议保留到下次打开")
+    }
+
     func testRuntimeNeverBuffersOrRevivesTurnAndRejectsOldConnectionAndCodex() async {
         for runtimeProvider in ["claude", "codex"] {
             let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: runtimeProvider)

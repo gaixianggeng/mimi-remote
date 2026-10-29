@@ -98,7 +98,8 @@ extension SessionStore {
         socket.connect(
             sessionID: session.id,
             replayBufferedEvents: false,
-            afterSequence: historySnapshotSeqBySessionID[session.id]
+            afterSequence: historySnapshotSeqBySessionID[session.id],
+            historyReplayBoundary: historyReplayBoundaryBySessionID[session.id]
         )
     }
 
@@ -429,7 +430,8 @@ extension SessionStore {
         socket.connect(
             sessionID: session.id,
             replayBufferedEvents: replayBufferedEvents,
-            afterSequence: historySnapshotSeqBySessionID[session.id]
+            afterSequence: historySnapshotSeqBySessionID[session.id],
+            historyReplayBoundary: historyReplayBoundaryBySessionID[session.id]
         )
     }
 
@@ -2991,6 +2993,7 @@ extension SessionStore {
         historySeenPreviousCursorsBySessionID = [:]
         historySessionsWithAdditionalPages = []
         historySnapshotSeqBySessionID = [:]
+        historyReplayBoundaryBySessionID = [:]
         historyPageRequestTokenBySessionID = [:]
         historyFirstPageInFlightByKey.values.forEach { $0.task.cancel() }
         historyFirstPageInFlightByKey = [:]

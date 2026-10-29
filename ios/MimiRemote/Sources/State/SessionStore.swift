@@ -430,6 +430,7 @@ final class SessionStore: ObservableObject {
     var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
+    var historyReplayBoundaryBySessionID: [SessionID: HistoryReplayBoundary] = [:]
     var runtimeEventFlushTasks: [HostSessionLease: Task<Void, Never>] = [:]
     // flush 跨 await 时 MainActor 可以重入；单独记录真正持有消费权的 lease，避免后续批次并发落地。
     var runtimeEventDrainingLeases: Set<HostSessionLease> = []
