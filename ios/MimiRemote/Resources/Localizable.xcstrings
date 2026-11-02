@@ -44958,6 +44958,125 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求失败" } }
       }
     },
+    "ui.tailcat_recent_failures_title": {
+      "comment": "Section title for recorded Tailcat connection failures.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recent connection failures" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最近连接失败" } }
+      }
+    },
+    "ui.tailcat_failure_stage_tunnel_start": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Starting tunnel" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "建立隧道" } }
+      }
+    },
+    "ui.tailcat_failure_stage_route_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Route check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "线路探测" } }
+      }
+    },
+    "ui.tailcat_failure_stage_request_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP request" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求" } }
+      }
+    },
+    "ui.tailcat_failure_stage_foreground_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Check on return" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回到前台检查" } }
+      }
+    },
+    "ui.tailcat_failure_stage_preflight": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connection check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接检查" } }
+      }
+    },
+    "ui.tailcat_failure_reason_network": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network error" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络错误" } }
+      }
+    },
+    "ui.tailcat_failure_reason_timeout": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Timed out" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "超时" } }
+      }
+    },
+    "ui.tailcat_failure_reason_authentication": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Authentication failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "认证失败" } }
+      }
+    },
+    "ui.tailcat_failure_reason_policy": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Blocked by policy" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "被策略拒绝" } }
+      }
+    },
+    "ui.tailcat_failure_reason_unknown": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unknown error" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未知错误" } }
+      }
+    },
+    "ui.tailcat_failure_network_wifi": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wi-Fi" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Wi-Fi" } }
+      }
+    },
+    "ui.tailcat_failure_network_cellular": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cellular" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "蜂窝网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_wired": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wired" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "有线网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_other": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Other network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_none": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_unknown": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络未知" } }
+      }
+    },
     "ui.tailcat_address_placeholder": {
       "comment": "Placeholder for a Tailcat connection address.",
       "localizations": {
