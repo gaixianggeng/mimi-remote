@@ -191,6 +191,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         defer { activeTransactionOperations -= 1 }
         let generation = beginOperation()
         let previousGrant = usableCurrentGrant
+        let previousStatus = status
         status = .resolving
         do {
             let grant = try await resolve(evidence)
@@ -205,6 +206,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             restore(previousGrant, otherwise: .available)
         } catch {
             guard isLatest(generation) else { return }
+            if await fallBackToRedemption(
+                after: error,
+                evidence: evidence,
+                generation: generation,
+                previousGrant: previousGrant,
+                previousStatus: previousStatus
+            ) {
+                return
+            }
             applyFailure(error, fallbackGrant: previousGrant)
             if isTerminalServerDecision(error) {
                 await storeKit.finish(transactionID: evidence.transactionID)
@@ -245,6 +255,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     return
                 } catch {
                     guard isLatest(generation) else { return }
+                    if await fallBackToRedemption(
+                        after: error,
+                        evidence: nil,
+                        generation: generation,
+                        previousGrant: previousGrant,
+                        previousStatus: previousStatus
+                    ) {
+                        return
+                    }
                     applyRefreshFailure(error)
                     return
                 }
@@ -261,6 +280,29 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         currentEvidence = nil
         authoritativeGeneration = generation
         status = .available
+    }
+
+    /// Apple 交易被判定失效只说明这笔交易不可用，不代表兑换码失效：结束交易后重新核对保存的码。
+    /// 没有保存的码或不是明确的失效决定时返回 false，由调用方走原有失败处理。
+    private func fallBackToRedemption(
+        after error: Error,
+        evidence: ManagedConnectionTransactionEvidence?,
+        generation: Int,
+        previousGrant: ManagedConnectionEntitlementGrant?,
+        previousStatus: Status
+    ) async -> Bool {
+        guard isTerminalServerDecision(error), let code = savedRedemptionCode else { return false }
+        if let evidence {
+            await storeKit.finish(transactionID: evidence.transactionID)
+        }
+        guard isLatest(generation) else { return true }
+        await refreshRedemption(
+            code: code,
+            generation: generation,
+            previousGrant: previousGrant,
+            previousStatus: previousStatus
+        )
+        return true
     }
 
     private func refreshRedemption(
@@ -434,6 +476,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
                     restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
                 } catch {
                     guard isLatest(generation) else { return }
+                    if await fallBackToRedemption(
+                        after: error,
+                        evidence: evidence,
+                        generation: generation,
+                        previousGrant: previousGrant,
+                        previousStatus: previousStatus
+                    ) {
+                        return
+                    }
                     applyFailure(error, fallbackGrant: previousGrant)
                     if isTerminalServerDecision(error) {
                         // 旧交易已被服务端确认失效，必须结束，否则后续购买仍可能重放它。

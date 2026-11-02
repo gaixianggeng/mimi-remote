@@ -227,6 +227,47 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertEqual(fixture.codes.load(), "MIMI-OLD")
     }
 
+    func testRevokedSubscriptionUpdateKeepsValidRedemption() async {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.store.redeem(code: "MIMI-CODE")
+        await fixture.api.setResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "revoked")))
+        let observer = Task { await fixture.store.observeTransactionUpdates() }
+
+        await fixture.kit.sendTransactionUpdate(.verified(Self.evidence))
+        await waitUntil { await fixture.kit.finishedTransactionIDs.count == 1 }
+        await waitUntil { await fixture.api.redeemedCodes.count == 2 }
+        await waitUntil { @MainActor in fixture.store.isRedemptionEntitlement }
+
+        XCTAssertEqual(fixture.store.currentGrant?.token, "beta-token")
+        observer.cancel()
+    }
+
+    func testRevokedSubscriptionDuringRefreshFallsBackToRedemption() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-CODE")
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.api.setResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "expired")))
+        await fixture.kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+
+        await fixture.store.load()
+
+        XCTAssertTrue(fixture.store.isRedemptionEntitlement)
+        XCTAssertEqual(fixture.store.currentGrant?.token, "beta-token")
+    }
+
+    func testTransientSubscriptionFailureDoesNotUseRedemption() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-CODE")
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.api.setResult(.failure(TestError.serverUnavailable))
+        await fixture.kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+
+        await fixture.store.load()
+
+        XCTAssertFalse(fixture.store.isRedemptionEntitlement)
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertTrue(redeemed.isEmpty)
+    }
+
     func testRevocationDuringRefreshEndsRedemptionGrant() async {
         let fixture = makeRedemptionStore()
         await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
