@@ -236,3 +236,19 @@ extension UnifiedWorkbenchShell {
     }
 
 }
+
+extension UnifiedWorkbenchShell {
+    /// 兑换链接可能在首次连接时打开，那时工作台还不存在；工作台出现后再把用户带到下一步（#949）。
+    func applyPendingManagedConnectionRoute(layout: WorkbenchLayout) {
+        guard let route = managedConnectionEntitlementStore.consumePendingRoute() else { return }
+        let destination: SettingsDestination = route == .connectComputer
+            ? .managedConnectionDevices
+            : .managedConnection
+        openConnectionSettings(layout: layout)
+        if layout.usesCompactNavigation {
+            settingsNavigation.devicePath = [destination]
+        } else {
+            settingsNavigation.mePath = [destination]
+        }
+    }
+}

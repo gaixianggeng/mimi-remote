@@ -708,6 +708,18 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertFalse(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: nil, connected: true))
     }
 
+    func testConnectStepOnlyOffersThePathThatCanWork() {
+        typealias Step = ManagedConnectionDevicesView.ConnectStep
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https] {
+            XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: route, connected: true), Step.oneTap)
+            XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: route, connected: false), Step.backToSameNetwork)
+        }
+        XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: .customTailcat, connected: true), Step.fromComputer)
+        XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: nil, connected: false), Step.fromComputer)
+        XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: .managedTailcat, connected: true), Step.connected)
+        XCTAssertEqual(ManagedConnectionDevicesView.connectStep(route: .managedTailcat, connected: false), Step.reconnecting)
+    }
+
     func testOneTapUpgradeKeepsValidGrantDuringEntitlementRefresh() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         func grant(expiresIn interval: TimeInterval) -> ManagedConnectionEntitlementGrant {
@@ -751,6 +763,21 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(
             decode(503, #"{"code":"tailcat_pair_failed","error":"生成失败"}"#),
             .failed(code: "tailcat_pair_failed", message: "生成失败")
+        )
+        // v1.1.8 及更早没有这个接口，返回普通 404。
+        XCTAssertEqual(decode(404, #"{"error":"not found"}"#), .hostTooOld)
+        XCTAssertEqual(decode(404, "not found"), .hostTooOld)
+        XCTAssertEqual(
+            ManagedPairingLinkAPIError.hostTooOld.errorDescription,
+            L10n.text("ui.managed_devices_host_too_old")
+        )
+        // 内部原因不把 Tailcat 等术语露给用户，只留错误代码。
+        let failure = ManagedPairingLinkAPIError.failed(code: "tailcat_pair_failed", message: "Tailcat 节点未就绪")
+        XCTAssertFalse(failure.errorDescription?.contains("节点未就绪") ?? true)
+        XCTAssertTrue(failure.errorDescription?.contains("tailcat_pair_failed") ?? false)
+        XCTAssertEqual(
+            ManagedPairingLinkAPIError.failed(code: "tailcat_agents_disabled", message: "全部助手已关闭").errorDescription,
+            "全部助手已关闭"
         )
         // 鉴权失败与没有 code 的旧响应交回通用处理，凭据失效逻辑不变。
         XCTAssertNil(decode(401, #"{"code":"unauthorized","error":"x"}"#))
