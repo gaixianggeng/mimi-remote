@@ -662,6 +662,18 @@ extension ConversationDataFlowTests {
 
     func testTerminalTurnClearsMcpFormAndReattachDoesNotReplayIt() async {
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test")
+        // 生产路径在 connectForEvents 成功后才回放，此时必有权威快照；没有快照时 stateOnly
+        // 不从旧事件推断生命周期，也就不会补终态。
+        await runtime.handle(CodexAppServerNotification(
+            method: "thread/started",
+            params: .object(["thread": .object([
+                "id": .string("thr_terminal_form"),
+                "cwd": .string("/tmp/terminal-form"),
+                "name": .string("Terminal form"),
+                "status": .object(["type": .string("idle")]),
+                "source": .string("appServer")
+            ])])
+        ))
         let request = CodexAppServerServerRequest(
             id: .string("mcp-terminal-form"),
             method: "mcpServer/elicitation/request",
