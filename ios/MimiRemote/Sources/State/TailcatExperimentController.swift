@@ -310,9 +310,7 @@ final class TailcatExperimentController: ObservableObject {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
                 ?? "unknown"
         },
-        networkKind: @escaping () -> TailcatConnectionFailure.NetworkKind = {
-            TailcatNetworkKindReader.shared.current
-        }
+        networkKind: (() -> TailcatConnectionFailure.NetworkKind)? = nil
     ) {
         let available = bridge.isAvailable
         let savedEnabled = defaults.bool(forKey: Self.enabledKey)
@@ -368,7 +366,13 @@ final class TailcatExperimentController: ObservableObject {
         self.managedConnectionEventReporter = managedConnectionEventReporter
         self.now = now
         self.appVersion = appVersion
-        self.networkKind = networkKind
+        if let networkKind {
+            self.networkKind = networkKind
+        } else {
+            // 在这里就启动监听：路径回调是异步的，等到第一次失败才启动，那条记录只能是 unknown。
+            let reader = TailcatNetworkKindReader.shared
+            self.networkKind = { reader.current }
+        }
         address = savedAddress
         diagnostics = Self.loadDiagnostics(defaults: defaults)
         connectionFailures = TailcatConnectionFailureLog.load(defaults: defaults)
