@@ -297,6 +297,9 @@ struct ManagedConnectionSubscriptionView: View {
             if !entitlementStore.isRedemptionEntitlement {
                 manageSubscriptionButton
             }
+        } header: {
+            // 统一表单把默认组间距设为零，无标题的操作卡片也要显式保留留白。
+            SettingsGroupHeader()
         }
         .settingsGroupRowStyle()
     }
