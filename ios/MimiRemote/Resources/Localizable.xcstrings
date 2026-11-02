@@ -45361,6 +45361,62 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅已过期，请重新选择方案订阅。" } }
       }
     },
+    "ui.managed_redemption_title": {
+      "comment": "Title of the section where TestFlight testers enter a beta redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Redemption Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码" } }
+      }
+    },
+    "ui.managed_redemption_placeholder": {
+      "comment": "Placeholder of the beta redemption code field.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "MIMI-XXXX-XXXX-XXXX-XXXX" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "MIMI-XXXX-XXXX-XXXX-XXXX" } }
+      }
+    },
+    "ui.managed_redemption_submit": {
+      "comment": "Button that redeems a beta redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Redeem" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换" } }
+      }
+    },
+    "ui.managed_redemption_hint": {
+      "comment": "Explains what a beta redemption code does and how to reuse it.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "For TestFlight testers. A code turns on the Mimi relay. Enter the same code to restore access on another device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "供 TestFlight 内测使用，兑换后可使用 Mimi 中转节点。换设备时输入同一个码即可恢复。" } }
+      }
+    },
+    "ui.managed_redemption_active": {
+      "comment": "Status when access comes from a beta redemption code instead of a subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Beta access active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "内测已开通" } }
+      }
+    },
+    "ui.managed_redemption_invalid": {
+      "comment": "Error when a beta redemption code does not exist or is malformed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This code isn’t valid. Check it and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码无效，请检查后重试。" } }
+      }
+    },
+    "ui.managed_redemption_expired": {
+      "comment": "Error when a beta redemption code has expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This code has expired." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码已过期。" } }
+      }
+    },
+    "ui.managed_redemption_revoked": {
+      "comment": "Error when a beta redemption code has been revoked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This code is no longer active." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码已停用。" } }
+      }
+    },
     "ui.managed_subscription_restored": {
       "comment": "Confirmation after a manual restore receives an active server entitlement.",
       "localizations": {

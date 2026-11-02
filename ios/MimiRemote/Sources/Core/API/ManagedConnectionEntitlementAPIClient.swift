@@ -26,6 +26,8 @@ protocol ManagedConnectionEntitlementAPIClient: Sendable {
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionEntitlementGrant
+
+    func redeem(code: String) async throws -> ManagedConnectionEntitlementGrant
 }
 
 struct LiveManagedConnectionEntitlementAPIClient: ManagedConnectionEntitlementAPIClient {
@@ -44,18 +46,30 @@ struct LiveManagedConnectionEntitlementAPIClient: ManagedConnectionEntitlementAP
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionEntitlementGrant {
-        let url = baseURL.appending(path: "v1/entitlements/resolve")
+        try await grant(
+            path: "v1/entitlements/resolve",
+            body: ResolveRequest(
+                signedAppTransaction: signedAppTransaction,
+                signedTransaction: signedTransaction
+            )
+        )
+    }
+
+    func redeem(code: String) async throws -> ManagedConnectionEntitlementGrant {
+        try await grant(path: "v1/redemptions/resolve", body: RedeemRequest(code: code))
+    }
+
+    private func grant(
+        path: String,
+        body: some Encodable
+    ) async throws -> ManagedConnectionEntitlementGrant {
+        let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 20
-        request.httpBody = try JSONEncoder().encode(
-            ResolveRequest(
-                signedAppTransaction: signedAppTransaction,
-                signedTransaction: signedTransaction
-            )
-        )
+        request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -112,6 +126,10 @@ struct LiveManagedConnectionEntitlementAPIClient: ManagedConnectionEntitlementAP
     }()
 }
 
+private struct RedeemRequest: Encodable {
+    let code: String
+}
+
 private struct ResolveRequest: Encodable {
     let signedAppTransaction: String
     let signedTransaction: String
@@ -153,6 +171,8 @@ enum ManagedConnectionEntitlementAPIError: LocalizedError, Equatable {
                 return L10n.text("ui.managed_subscription_revoked")
             case "unverified_transaction":
                 return L10n.text("ui.managed_subscription_unverified")
+            case "invalid_redemption_code":
+                return L10n.text("ui.managed_redemption_invalid")
             default:
                 return L10n.text("ui.managed_subscription_server_rejected")
             }

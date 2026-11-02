@@ -5,6 +5,8 @@ enum ManagedConnectionProductID {
     static let monthly = "com.gaixianggeng.mimi.managed.monthly"
     static let annual = "com.gaixianggeng.mimi.managed.annual"
     static let all = [monthly, annual]
+    /// 内测兑换码的权益标识，不是 App Store 商品，不参与购买和商品加载（#949）。
+    static let betaRedemption = "com.gaixianggeng.mimi.managed.beta"
 }
 
 struct ManagedConnectionProduct: Identifiable, Equatable, Sendable {

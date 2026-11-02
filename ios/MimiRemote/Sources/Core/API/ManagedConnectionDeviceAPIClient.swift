@@ -55,6 +55,8 @@ protocol ManagedConnectionDeviceAPIClient: Sendable {
         signedTransaction: String
     ) async throws -> ManagedConnectionManagementSession
 
+    func createManagementSession(redemptionCode: String) async throws -> ManagedConnectionManagementSession
+
     func listDevices(managementToken: String) async throws -> [ManagedConnectionDevice]
     func removeDevice(id: String, managementToken: String) async throws
 }
@@ -133,13 +135,21 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionManagementSession {
-        var request = jsonRequest(path: "v1/device-management-sessions", method: "POST")
-        request.httpBody = try JSONEncoder().encode(
-            ManagementSessionRequest(
+        try await managementSession(
+            body: ManagementSessionRequest(
                 signedAppTransaction: signedAppTransaction,
                 signedTransaction: signedTransaction
             )
         )
+    }
+
+    func createManagementSession(redemptionCode: String) async throws -> ManagedConnectionManagementSession {
+        try await managementSession(body: RedemptionManagementSessionRequest(redemptionCode: redemptionCode))
+    }
+
+    private func managementSession(body: some Encodable) async throws -> ManagedConnectionManagementSession {
+        var request = jsonRequest(path: "v1/device-management-sessions", method: "POST")
+        request.httpBody = try JSONEncoder().encode(body)
         let payload: ManagementSessionResponse = try await decodedResponse(for: request)
         guard payload.scope == "device:manage" else {
             throw ManagedConnectionDeviceAPIError.invalidResponse
@@ -296,6 +306,10 @@ private struct AuthorizePairingResponse: Decodable {
 
     let pairingSession: PairingSession
     let created: Bool
+}
+
+private struct RedemptionManagementSessionRequest: Encodable {
+    let redemptionCode: String
 }
 
 private struct ManagementSessionRequest: Encodable {
