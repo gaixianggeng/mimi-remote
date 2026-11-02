@@ -211,6 +211,17 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     }
 
     private func validManagementToken() async throws -> String {
+        if let redemptionCode = entitlementStore.managementRedemptionCode {
+            let productID = ManagedConnectionProductID.betaRedemption
+            if let managementSession, managementSession.productID == productID,
+               managementSession.session.expiresAt.timeIntervalSince(now()) > 5
+            {
+                return managementSession.session.token
+            }
+            let session = try await api.createManagementSession(redemptionCode: redemptionCode)
+            managementSession = CachedManagementSession(session: session, transactionID: 0, productID: productID)
+            return session.token
+        }
         let evidence = try await entitlementStore.managementPurchaseEvidence()
         if let managementSession,
            managementSession.transactionID == evidence.transactionID,

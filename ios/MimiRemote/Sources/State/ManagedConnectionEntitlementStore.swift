@@ -30,10 +30,14 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         didSet { stateRevision &+= 1 }
     }
     @Published private(set) var currentGrant: ManagedConnectionEntitlementGrant?
+    @Published private(set) var redemptionErrorMessage: String?
     private(set) var currentEvidence: ManagedConnectionTransactionEvidence?
 
     private let storeKit: any ManagedConnectionStoreKitClient
     private let entitlementAPI: any ManagedConnectionEntitlementAPIClient
+    private let redemptionCodes: any ManagedConnectionRedemptionCodeStoring
+    // Keychain 写入失败时兜底：服务端已接受这个码，本次运行仍要能续签和管理设备。
+    private var unsavedRedemptionCode: String?
     private let now: () -> Date
     private let sleepUntil: @Sendable (Date) async throws -> Void
     private var operationGeneration = 0
@@ -48,6 +52,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     init(
         storeKit: any ManagedConnectionStoreKitClient,
         entitlementAPI: any ManagedConnectionEntitlementAPIClient,
+        redemptionCodes: any ManagedConnectionRedemptionCodeStoring = InMemoryManagedConnectionRedemptionCodeStore(),
         now: @escaping () -> Date = Date.init,
         sleepUntil: @escaping @Sendable (Date) async throws -> Void = { date in
             let delay = max(0, date.timeIntervalSinceNow)
@@ -58,6 +63,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     ) {
         self.storeKit = storeKit
         self.entitlementAPI = entitlementAPI
+        self.redemptionCodes = redemptionCodes
         self.now = now
         self.sleepUntil = sleepUntil
     }
@@ -245,10 +251,144 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
             }
         }
 
+        // 真实订阅优先；没有订阅时才用保存的内测兑换码续签（#949）。
+        if let code = savedRedemptionCode {
+            await refreshRedemption(code: code, generation: generation, previousGrant: previousGrant, previousStatus: previousStatus)
+            return
+        }
+
         currentGrant = nil
         currentEvidence = nil
         authoritativeGeneration = generation
         status = .available
+    }
+
+    private func refreshRedemption(
+        code: String,
+        generation: Int,
+        previousGrant: ManagedConnectionEntitlementGrant?,
+        previousStatus: Status
+    ) async {
+        do {
+            let grant = try await redeemedGrant(code: code)
+            guard isLatest(generation) else { return }
+            acceptRedemption(grant, generation: generation)
+        } catch is CancellationError {
+            guard isLatest(generation) else { return }
+            restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
+        } catch {
+            guard isLatest(generation) else { return }
+            if Self.isInvalidRedemptionCode(error) {
+                // 服务端已不认这个码，继续保存只会让每次刷新都失败。
+                redemptionCodes.delete()
+                unsavedRedemptionCode = nil
+                currentGrant = nil
+                currentEvidence = nil
+                authoritativeGeneration = generation
+                status = .available
+            } else {
+                applyRefreshFailure(error)
+            }
+        }
+    }
+
+    /// 输入兑换码开通内测权益。失败只显示错误，不改变已有状态；过期或撤销的提示也不会覆盖原有订阅。
+    func redeem(code: String) async {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard activeTransactionOperations == 0, !trimmed.isEmpty else { return }
+        await performRedemption(code: trimmed)
+        await refreshDeferredEntitlement()
+    }
+
+    private func performRedemption(code: String) async {
+        activeTransactionOperations += 1
+        defer { activeTransactionOperations -= 1 }
+        let generation = beginOperation()
+        let previousGrant = usableCurrentGrant
+        let previousStatus = status
+        redemptionErrorMessage = nil
+        status = .resolving
+        do {
+            let grant = try await redeemedGrant(code: code)
+            guard isLatest(generation) else { return }
+            do {
+                try redemptionCodes.save(code)
+                unsavedRedemptionCode = nil
+            } catch {
+                // 保存失败只影响下次启动是否要重新输入，不能把服务端已接受的兑换判为失败。
+                unsavedRedemptionCode = code
+            }
+            acceptRedemption(grant, generation: generation)
+        } catch is CancellationError {
+            guard isLatest(generation) else { return }
+            restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
+        } catch {
+            guard isLatest(generation) else { return }
+            redemptionErrorMessage = redemptionMessage(for: error)
+            restoreAfterCancellation(previousGrant, previousStatus: previousStatus)
+        }
+    }
+
+    private func redeemedGrant(code: String) async throws -> ManagedConnectionEntitlementGrant {
+        let grant = try await entitlementAPI.redeem(code: code)
+        guard grant.entitlement.productID == ManagedConnectionProductID.betaRedemption,
+              grant.entitlement.expiresAt > now(),
+              grant.tokenExpiresAt > now()
+        else {
+            throw ManagedConnectionEntitlementAPIError.invalidResponse
+        }
+        return grant
+    }
+
+    private func acceptRedemption(_ grant: ManagedConnectionEntitlementGrant, generation: Int) {
+        currentGrant = grant
+        currentEvidence = nil
+        redemptionErrorMessage = nil
+        authoritativeGeneration = generation
+        status = .entitled(grant.entitlement)
+    }
+
+    private static func isInvalidRedemptionCode(_ error: Error) -> Bool {
+        guard let apiError = error as? ManagedConnectionEntitlementAPIError,
+              case .rejected(let code) = apiError
+        else {
+            return false
+        }
+        return code == "invalid_redemption_code"
+    }
+
+    private func redemptionMessage(for error: Error) -> String {
+        if let apiError = error as? ManagedConnectionEntitlementAPIError,
+           case .rejected(let code) = apiError
+        {
+            switch code {
+            case "expired":
+                return L10n.text("ui.managed_redemption_expired")
+            case "revoked":
+                return L10n.text("ui.managed_redemption_revoked")
+            default:
+                break
+            }
+        }
+        return userFacingMessage(for: error)
+    }
+
+    /// 当前权益来自兑换码时返回这个码，设备管理用它换取管理凭证。
+    var managementRedemptionCode: String? {
+        guard usableCurrentGrant?.entitlement.productID == ManagedConnectionProductID.betaRedemption else {
+            return nil
+        }
+        return savedRedemptionCode
+    }
+
+    private var savedRedemptionCode: String? {
+        unsavedRedemptionCode ?? redemptionCodes.load()
+    }
+
+    /// 权益来自内测兑换码时，订阅管理和购买入口没有意义。
+    var isRedemptionEntitlement: Bool {
+        guard case .entitled(let entitlement) = status else { return false }
+        return entitlement.productID == ManagedConnectionProductID.betaRedemption
     }
 
     func purchase(productID: String) async {

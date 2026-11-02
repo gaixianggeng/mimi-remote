@@ -479,7 +479,8 @@ struct MimiRemoteApp: App {
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
         let managedConnectionEntitlementStore = ManagedConnectionEntitlementStore(
             storeKit: LiveManagedConnectionStoreKitClient(),
-            entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
+            entitlementAPI: LiveManagedConnectionEntitlementAPIClient(),
+            redemptionCodes: KeychainManagedConnectionRedemptionCodeStore()
         )
         let managedConnectionIdentityStore = ManagedConnectionMobileIdentityStore()
         let managedConnectionDeviceStore = ManagedConnectionDeviceStore(

@@ -55,6 +55,253 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         )
     }
 
+    // MARK: - 内测兑换码（#949）
+
+    private static var redemptionGrant: ManagedConnectionEntitlementGrant {
+        ManagedConnectionEntitlementGrant(
+            entitlement: ManagedConnectionEntitlement(
+                id: "entitlement-beta",
+                productID: ManagedConnectionProductID.betaRedemption,
+                status: .active,
+                expiresAt: Date().addingTimeInterval(86_400 * 30)
+            ),
+            token: "beta-token",
+            tokenExpiresAt: Date().addingTimeInterval(900)
+        )
+    }
+
+    private func makeRedemptionStore(
+        savedCode: String? = nil
+    ) -> (
+        store: ManagedConnectionEntitlementStore,
+        kit: StoreKitFake,
+        api: EntitlementAPIFake,
+        codes: InMemoryManagedConnectionRedemptionCodeStore
+    ) {
+        let kit = StoreKitFake()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        let codes = InMemoryManagedConnectionRedemptionCodeStore(code: savedCode)
+        let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api, redemptionCodes: codes)
+        return (store, kit, api, codes)
+    }
+
+    func testRedeemGrantsEntitlementAndSavesTrimmedCode() async {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+
+        await fixture.store.redeem(code: "  MIMI-AAAA-BBBB-CCCC-DDDD\n")
+
+        XCTAssertEqual(fixture.store.currentGrant?.token, "beta-token")
+        XCTAssertTrue(fixture.store.isRedemptionEntitlement)
+        XCTAssertEqual(fixture.codes.load(), "MIMI-AAAA-BBBB-CCCC-DDDD")
+        XCTAssertEqual(fixture.store.managementRedemptionCode, "MIMI-AAAA-BBBB-CCCC-DDDD")
+        XCTAssertNil(fixture.store.redemptionErrorMessage)
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertEqual(redeemed, ["MIMI-AAAA-BBBB-CCCC-DDDD"])
+    }
+
+    func testKeychainFailureStillGrantsForThisRun() async {
+        final class FailingCodeStore: ManagedConnectionRedemptionCodeStoring {
+            func load() -> String? { nil }
+            func save(_ code: String) throws { throw TokenStoreError.saveFailed(-34018) }
+            func delete() {}
+        }
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        await api.setRedeemResult(.success(Self.redemptionGrant))
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: StoreKitFake(),
+            entitlementAPI: api,
+            redemptionCodes: FailingCodeStore()
+        )
+
+        await store.redeem(code: "MIMI-CODE")
+
+        XCTAssertTrue(store.isRedemptionEntitlement)
+        XCTAssertNil(store.redemptionErrorMessage)
+        XCTAssertEqual(store.managementRedemptionCode, "MIMI-CODE")
+
+        // 续签也必须用到内存里的码，否则 15 分钟后 Token 到期就掉线。
+        await store.refreshEntitlement()
+        XCTAssertTrue(store.isRedemptionEntitlement)
+        let redeemed = await api.redeemedCodes
+        XCTAssertEqual(redeemed, ["MIMI-CODE", "MIMI-CODE"])
+    }
+
+    func testRedeemIgnoresBlankInput() async {
+        let fixture = makeRedemptionStore()
+
+        await fixture.store.redeem(code: "   ")
+
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertTrue(redeemed.isEmpty)
+    }
+
+    func testRejectedCodeShowsErrorAndIsNotSaved() async {
+        let fixture = makeRedemptionStore()
+        await fixture.store.load()
+        await fixture.api.setRedeemResult(
+            .failure(ManagedConnectionEntitlementAPIError.rejected(code: "invalid_redemption_code"))
+        )
+
+        await fixture.store.redeem(code: "MIMI-BAD")
+
+        XCTAssertEqual(fixture.store.status, .available)
+        XCTAssertNil(fixture.codes.load())
+        XCTAssertEqual(fixture.store.redemptionErrorMessage, L10n.text("ui.managed_redemption_invalid"))
+    }
+
+    func testExpiredAndRevokedCodesUseRedemptionWording() async {
+        for (code, key) in [
+            ("expired", "ui.managed_redemption_expired"),
+            ("revoked", "ui.managed_redemption_revoked")
+        ] {
+            let fixture = makeRedemptionStore()
+            await fixture.store.load()
+            await fixture.api.setRedeemResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: code)))
+
+            await fixture.store.redeem(code: "MIMI-OLD")
+
+            XCTAssertEqual(fixture.store.redemptionErrorMessage, L10n.text(key))
+            XCTAssertEqual(fixture.store.status, .available)
+            XCTAssertNil(fixture.codes.load())
+        }
+    }
+
+    func testSubscriptionKeepsWorkingWhenRedemptionFails() async {
+        let fixture = makeRedemptionStore()
+        await fixture.kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        await fixture.store.load()
+        XCTAssertEqual(fixture.store.currentGrant, Self.grant)
+
+        await fixture.store.redeem(code: "MIMI-BAD")
+
+        XCTAssertEqual(fixture.store.currentGrant, Self.grant)
+        XCTAssertFalse(fixture.store.isRedemptionEntitlement)
+        XCTAssertNil(fixture.store.managementRedemptionCode)
+    }
+
+    func testColdStartRenewsFromSavedCode() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-SAVED")
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+
+        await fixture.store.load()
+
+        XCTAssertTrue(fixture.store.isRedemptionEntitlement)
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertEqual(redeemed, ["MIMI-SAVED"])
+    }
+
+    func testSubscriptionWinsOverSavedCode() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-SAVED")
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+
+        await fixture.store.load()
+
+        XCTAssertEqual(fixture.store.currentGrant, Self.grant)
+        XCTAssertFalse(fixture.store.isRedemptionEntitlement)
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertTrue(redeemed.isEmpty)
+    }
+
+    func testRefreshForgetsCodeTheServerNoLongerKnows() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-GONE")
+        await fixture.api.setRedeemResult(
+            .failure(ManagedConnectionEntitlementAPIError.rejected(code: "invalid_redemption_code"))
+        )
+
+        await fixture.store.load()
+
+        XCTAssertEqual(fixture.store.status, .available)
+        XCTAssertNil(fixture.codes.load())
+    }
+
+    func testRefreshReportsExpiredCodeAndKeepsItForLaterExtension() async {
+        let fixture = makeRedemptionStore(savedCode: "MIMI-OLD")
+        await fixture.api.setRedeemResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "expired")))
+
+        await fixture.store.load()
+
+        XCTAssertEqual(fixture.store.status, .expired)
+        XCTAssertNil(fixture.store.currentGrant)
+        XCTAssertEqual(fixture.codes.load(), "MIMI-OLD")
+    }
+
+    func testRevocationDuringRefreshEndsRedemptionGrant() async {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.store.redeem(code: "MIMI-CODE")
+        await fixture.api.setRedeemResult(.failure(ManagedConnectionEntitlementAPIError.rejected(code: "revoked")))
+
+        await fixture.store.refreshEntitlement()
+
+        XCTAssertEqual(fixture.store.status, .revoked)
+        XCTAssertNil(fixture.store.currentGrant)
+        XCTAssertNil(fixture.store.managementRedemptionCode)
+    }
+
+    func testNetworkFailureKeepsRedemptionGrant() async {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.store.redeem(code: "MIMI-CODE")
+        await fixture.api.setRedeemResult(.failure(TestError.serverUnavailable))
+
+        await fixture.store.refreshEntitlement()
+
+        XCTAssertTrue(fixture.store.isRedemptionEntitlement)
+        XCTAssertEqual(fixture.store.currentGrant?.token, "beta-token")
+        XCTAssertEqual(fixture.codes.load(), "MIMI-CODE")
+    }
+
+    func testRestorePurchasesKeepsRedemptionEntitlement() async {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        await fixture.store.redeem(code: "MIMI-CODE")
+
+        let result = await fixture.store.restorePurchases()
+
+        XCTAssertEqual(result, .restored)
+        XCTAssertTrue(fixture.store.isRedemptionEntitlement)
+    }
+
+    func testRedemptionRejectsGrantForAnotherProduct() async {
+        let fixture = makeRedemptionStore()
+        await fixture.store.load()
+        await fixture.api.setRedeemResult(.success(Self.grant))
+
+        await fixture.store.redeem(code: "MIMI-CODE")
+
+        XCTAssertNil(fixture.store.currentGrant)
+        XCTAssertNil(fixture.codes.load())
+        XCTAssertNotNil(fixture.store.redemptionErrorMessage)
+    }
+
+    func testLiveClientPostsRedemptionCodeAsJSON() async throws {
+        let expires = "2027-02-01T00:00:00.000Z"
+        let body = #"{"entitlement":{"id":"e","productId":"com.gaixianggeng.mimi.managed.beta","status":"active","expiresAt":"\#(expires)"},"entitlementToken":"token","tokenExpiresAt":"\#(expires)"}"#
+        let (client, recorder) = RedemptionURLProtocol.makeClient(status: 200, body: body)
+
+        let grant = try await client.redeem(code: "MIMI-CODE")
+
+        XCTAssertEqual(grant.entitlement.productID, ManagedConnectionProductID.betaRedemption)
+        XCTAssertEqual(recorder.path, "/v1/redemptions/resolve")
+        XCTAssertEqual(recorder.body, #"{"code":"MIMI-CODE"}"#)
+    }
+
+    func testLiveClientSurfacesRedemptionRejectionCode() async {
+        let (client, _) = RedemptionURLProtocol.makeClient(
+            status: 403,
+            body: #"{"code":"invalid_redemption_code","message":"x"}"#
+        )
+
+        do {
+            _ = try await client.redeem(code: "MIMI-BAD")
+            XCTFail("应当被拒绝")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, L10n.text("ui.managed_redemption_invalid"))
+        }
+    }
+
     func testPurchaseFinishesOnlyTerminalServerDecisions() async {
         for code in ["expired", "revoked", "no_current_entitlement", "unverified_transaction"] {
             let kit = StoreKitFake()
@@ -1263,6 +1510,19 @@ private actor EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
         }
         return try result.get()
     }
+
+    private var redeemResult: Result<ManagedConnectionEntitlementGrant, Error> =
+        .failure(ManagedConnectionEntitlementAPIError.rejected(code: "invalid_redemption_code"))
+    private(set) var redeemedCodes: [String] = []
+
+    func setRedeemResult(_ result: Result<ManagedConnectionEntitlementGrant, Error>) {
+        redeemResult = result
+    }
+
+    func redeem(code: String) async throws -> ManagedConnectionEntitlementGrant {
+        redeemedCodes.append(code)
+        return try redeemResult.get()
+    }
 }
 
 private actor DelayedEntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
@@ -1282,6 +1542,10 @@ private actor DelayedEntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
             }
         }
         throw ManagedConnectionEntitlementAPIError.rejected(code: "revoked")
+    }
+
+    func redeem(code: String) async throws -> ManagedConnectionEntitlementGrant {
+        throw ManagedConnectionEntitlementAPIError.rejected(code: "invalid_redemption_code")
     }
 
     func completeFirstRequest(with grant: ManagedConnectionEntitlementGrant) {
@@ -1385,4 +1649,60 @@ private final class ManagedConnectionEntitlementURLProtocol: URLProtocol {
         }
         return data
     }
+}
+
+private final class RedemptionRequestRecorder: @unchecked Sendable {
+    var path: String?
+    var body: String?
+}
+
+private final class RedemptionURLProtocol: URLProtocol {
+    nonisolated(unsafe) private static var respond: ((URLRequest) -> (Int, String))?
+
+    static func makeClient(
+        status: Int,
+        body: String
+    ) -> (LiveManagedConnectionEntitlementAPIClient, RedemptionRequestRecorder) {
+        let recorder = RedemptionRequestRecorder()
+        respond = { request in
+            recorder.path = request.url?.path
+            recorder.body = Self.bodyString(of: request)
+            return (status, body)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RedemptionURLProtocol.self]
+        let client = LiveManagedConnectionEntitlementAPIClient(
+            baseURL: URL(string: "https://example.invalid")!,
+            session: URLSession(configuration: configuration)
+        )
+        return (client, recorder)
+    }
+
+    private static func bodyString(of request: URLRequest) -> String? {
+        if let data = request.httpBody { return String(data: data, encoding: .utf8) }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let (status, body) = Self.respond?(request) ?? (500, "")
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

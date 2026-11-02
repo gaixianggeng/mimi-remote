@@ -37,6 +37,7 @@ struct ManagedConnectionSubscriptionView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isManagingSubscription = false
+    @State private var redemptionCode = ""
 
     /// 「我的」里的订阅页：只管买与订阅。线路、接入电脑与设备名额在「设备」里的
     /// 托管线路与设备页（#891），这里只放一行跳转，不复制那边的控件。
@@ -53,7 +54,12 @@ struct ManagedConnectionSubscriptionView: View {
             if isEntitled {
                 subscribedActionsSection
             }
-            productsSection
+            if !isEntitled {
+                redemptionSection
+            }
+            if !entitlementStore.isRedemptionEntitlement {
+                productsSection
+            }
             subscriptionInformationSection
         }
         .themedSettingsForm(tokens: tokens)
@@ -172,7 +178,9 @@ struct ManagedConnectionSubscriptionView: View {
             case .entitled(let entitlement):
                 VStack(alignment: .leading, spacing: 6) {
                     Label(
-                        entitlementStatusText(entitlement.status),
+                        entitlement.productID == ManagedConnectionProductID.betaRedemption
+                            ? L10n.text("ui.managed_redemption_active")
+                            : entitlementStatusText(entitlement.status),
                         systemImage: "checkmark.circle.fill"
                     )
                     .foregroundStyle(tokens.success)
@@ -267,7 +275,9 @@ struct ManagedConnectionSubscriptionView: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.managedSubscription.devices")
 
-            manageSubscriptionButton
+            if !entitlementStore.isRedemptionEntitlement {
+                manageSubscriptionButton
+            }
         }
         .settingsGroupRowStyle()
     }
@@ -295,6 +305,49 @@ struct ManagedConnectionSubscriptionView: View {
         .settingsStandardListRow()
         .accessibilityIdentifier("settings.managedSubscription.manage")
 #endif
+    }
+
+    /// TestFlight 内测用。整页只在带入口的构建显示，App Store 构建看不到（#887、#949）。
+    private var redemptionSection: some View {
+        Section {
+            TextField(L10n.text("ui.managed_redemption_placeholder"), text: $redemptionCode)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                .onSubmit(submitRedemption)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("settings.managedSubscription.redemptionCode")
+
+            Button(L10n.text("ui.managed_redemption_submit"), action: submitRedemption)
+                .frame(minHeight: 44)
+                .disabled(canSubmitRedemption == false)
+                .accessibilityIdentifier("settings.managedSubscription.redeem")
+        } header: {
+            SettingsGroupHeader(title: L10n.text("ui.managed_redemption_title"))
+        } footer: {
+            if let message = entitlementStore.redemptionErrorMessage {
+                Text(message)
+                    .foregroundStyle(tokens.warning)
+                    .settingsSectionFooterStyle()
+            } else {
+                Text(L10n.text("ui.managed_redemption_hint"))
+                    .settingsSectionFooterStyle()
+            }
+        }
+        .settingsGroupRowStyle()
+    }
+
+    private var canSubmitRedemption: Bool {
+        !entitlementStore.isBusy
+            && !redemptionCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func submitRedemption() {
+        guard canSubmitRedemption else { return }
+        Task {
+            await entitlementStore.redeem(code: redemptionCode)
+            if isEntitled { redemptionCode = "" }
+        }
     }
 
     @ViewBuilder

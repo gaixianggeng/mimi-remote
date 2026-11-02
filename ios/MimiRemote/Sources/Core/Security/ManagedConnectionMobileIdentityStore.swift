@@ -168,3 +168,43 @@ final class ManagedConnectionMobileIdentityStore: ManagedConnectionMobileIdentit
             .replacingOccurrences(of: "=", with: "") == value
     }
 }
+
+/// 内测兑换码是续签凭证的来源，和设备 Token 一样放在 Keychain（#949）。
+protocol ManagedConnectionRedemptionCodeStoring: AnyObject {
+    func load() -> String?
+    func save(_ code: String) throws
+    func delete()
+}
+
+final class KeychainManagedConnectionRedemptionCodeStore: ManagedConnectionRedemptionCodeStoring {
+    private let tokenStore: TokenStore
+
+    init(tokenStore: TokenStore = TokenStore()) {
+        self.tokenStore = tokenStore
+    }
+
+    func load() -> String? {
+        guard let code = try? tokenStore.loadManagedRedemptionCode(), !code.isEmpty else { return nil }
+        return code
+    }
+
+    func save(_ code: String) throws {
+        try tokenStore.saveManagedRedemptionCode(code)
+    }
+
+    func delete() {
+        try? tokenStore.deleteManagedRedemptionCode()
+    }
+}
+
+final class InMemoryManagedConnectionRedemptionCodeStore: ManagedConnectionRedemptionCodeStoring {
+    private var code: String?
+
+    init(code: String? = nil) {
+        self.code = code
+    }
+
+    func load() -> String? { code }
+    func save(_ code: String) throws { self.code = code }
+    func delete() { code = nil }
+}

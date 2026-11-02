@@ -59,6 +59,7 @@ struct TokenStore {
     private let tailcatProfileAddressAccountPrefix = "tailcat-profile-address.v1."
     private let managedMobileInstallationIDAccount = "managed-mobile-installation-id.v1"
     private let managedMobileRegisteredDeviceIDAccount = "managed-mobile-registered-device-id.v1"
+    private let managedRedemptionCodeAccount = "managed-redemption-code.v1"
     private let managedMobileDeviceTokenAccountPrefix = "managed-mobile-device-token.v1."
     private let keychain: any KeychainOperating
 
@@ -135,6 +136,18 @@ struct TokenStore {
 
     func saveTailcatAddress(_ address: String, profileID: String) throws {
         try save(address, account: tailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func loadManagedRedemptionCode() throws -> String {
+        try load(account: managedRedemptionCodeAccount)
+    }
+
+    func saveManagedRedemptionCode(_ code: String) throws {
+        try save(code, account: managedRedemptionCodeAccount)
+    }
+
+    func deleteManagedRedemptionCode() throws {
+        try delete(account: managedRedemptionCodeAccount, allowMissing: true)
     }
 
     func saveManagedMobileDeviceToken(_ token: String, installationID: String) throws {
