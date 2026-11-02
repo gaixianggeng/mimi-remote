@@ -250,7 +250,8 @@ struct ManagedConnectionDevicesView: View {
             .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
             .accessibilityIdentifier("settings.managedSubscription.connectMac")
 
-            if isConnectingMac {
+            // 一键接入已经显示进度；扫码接入才需要这里的独立提示。
+            if isConnectingMac && !isUpgradingCurrentComputer {
                 HStack(spacing: 12) {
                     ProgressView()
                     Text(L10n.text("ui.managed_devices_connecting"))
@@ -305,6 +306,8 @@ struct ManagedConnectionDevicesView: View {
             Image(systemName: systemImage)
                 .foregroundStyle(tokens.settingsIconTint)
         }
+        // 引导文字常有三行，上下留白才不会贴着卡片边和分隔线。
+        .padding(.vertical, 8)
         .settingsRow(.descriptive)
     }
 
@@ -420,9 +423,17 @@ struct ManagedConnectionDevicesView: View {
             } catch is CancellationError {
                 return
             } catch {
-                if activeUpgradeID == context.id { localError = error.localizedDescription }
+                if activeUpgradeID == context.id { localError = Self.pairingErrorMessage(error) }
             }
         }
+    }
+
+    static func pairingErrorMessage(_ error: Error) -> String {
+        // 系统的「网络连接已中断」无法告诉用户下一步，两种接入入口统一给出恢复办法。
+        if error is URLError {
+            return L10n.text("ui.managed_devices_pairing_network_error")
+        }
+        return error.localizedDescription
     }
 
     private var managedRouteSection: some View {
@@ -743,7 +754,7 @@ struct ManagedConnectionDevicesView: View {
         } catch is CancellationError {
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
         } catch {
-            let message = error.localizedDescription
+            let message = Self.pairingErrorMessage(error)
             localError = message
             return .rejected(message)
         }

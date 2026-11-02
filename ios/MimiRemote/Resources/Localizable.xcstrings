@@ -45242,6 +45242,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法更新设备，请检查网络后重试。" } }
       }
     },
+    "ui.managed_devices_pairing_network_error": {
+      "comment": "Recovery guidance when the network fails during managed pairing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't connect to your computer. Keep Mimi Remote running on it, check that both devices can access the internet, then try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未能连上电脑。请保持电脑上的 Mimi Remote 运行，确认两端能上网后再试。" } }
+      }
+    },
     "ui.managed_devices_not_found": {
       "comment": "Shown when a managed device was already removed.",
       "localizations": {
@@ -45266,8 +45273,8 @@
     "ui.managed_devices_qr_required": {
       "comment": "Shown when managed pairing receives a QR code without managed host metadata.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "This QR code can’t be used here. On your computer, open Mimi Remote settings and choose Switch to Mimi Managed Connection. Then open Pair Device, choose Tailcat, and scan again." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这个二维码不能用于托管连接。请在电脑上打开 Mimi Remote 的「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat 后重新扫码。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This QR code can’t be used here. Update Mimi Remote on your computer to v1.1.9 or later and open its settings. Choose Switch to Mimi Managed Connection, then open Pair Device, choose Tailcat, and scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这个二维码不能用于托管连接。请先把电脑上的 Mimi Remote 升级到 v1.1.9 或更新版本，打开「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat 后重新扫码。" } }
       }
     },
     "ui.managed_devices_remove_action": {
@@ -45308,8 +45315,8 @@
     "ui.managed_devices_server_rejected": {
       "comment": "Generic managed device service rejection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The managed device request was rejected." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备请求被拒绝。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "The request couldn't be completed. Try again. If it still fails, contact the developer through the user group." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作未完成，请重试。如果仍然失败，请在用户群联系开发者。" } }
       }
     },
     "ui.managed_devices_subscription_required": {
@@ -45350,8 +45357,8 @@
     "ui.managed_subscription_checking": {
       "comment": "Status shown while StoreKit and the entitlement service are checked.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Checking subscription…" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在检查订阅…" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Checking access…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在检查开通状态…" } }
       }
     },
     "ui.managed_subscription_expired": {
@@ -45490,15 +45497,15 @@
     "ui.managed_devices_from_computer": {
       "comment": "Guidance when connecting must start from the Mac.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "On your computer, open Mimi Remote settings and choose Switch to Mimi Managed Connection. Then open Pair Device, choose Tailcat, and scan below." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在电脑上打开 Mimi Remote 的「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat，然后在下面扫码。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Update Mimi Remote on your computer to v1.1.9 or later and open its settings. Choose Switch to Mimi Managed Connection, then open Pair Device, choose Tailcat, and scan below." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先把电脑上的 Mimi Remote 升级到 v1.1.9 或更新版本，打开「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat，然后在下面扫码。" } }
       }
     },
     "ui.managed_devices_connected_hint": {
       "comment": "Shown after this computer is connected through Managed Connection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "All set. Turn off Wi-Fi and try it. You can reach your computer on cellular too." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入完成。现在断开 Wi-Fi 试试，用流量也能连上电脑。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "All set. You can now connect to this computer from another Wi-Fi network, a phone hotspot, or cellular." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入完成。现在可以用其他 Wi-Fi、手机热点或流量连接这台电脑。" } }
       }
     },
     "ui.managed_devices_connect_another": {
@@ -45588,8 +45595,8 @@
     "ui.managed_subscription_not_active": {
       "comment": "Inactive Mimi Managed Connection subscription status.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Not subscribed" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未订阅" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Not activated" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未开通" } }
       }
     },
     "ui.managed_subscription_pending": {
