@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/managed"
@@ -70,7 +73,26 @@ func runManagedHost(arguments []string) error {
 		StateDir:    *stateDir,
 		ControlPath: *controlPath,
 		DERPMapURL:  *derpMapURL,
+		Events:      newHostEventWriter(os.Stderr),
 	})
+}
+
+// hostEventLinePrefix 标记 stderr 上的结构化事件，由 agentd 按白名单解析后落盘。
+// 改动时同步 internal/tailcatevents。
+const hostEventLinePrefix = "mimi-tailcat-event "
+
+// newHostEventWriter 串行写入，避免并发事件交错成一行。写失败只丢事件，不影响连接。
+func newHostEventWriter(output io.Writer) func(tunnel.HostEvent) {
+	var mu sync.Mutex
+	return func(event tunnel.HostEvent) {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = io.WriteString(output, hostEventLinePrefix+string(encoded)+"\n")
+	}
 }
 
 func runClientKey(arguments []string) error {

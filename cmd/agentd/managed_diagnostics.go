@@ -9,10 +9,18 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatevents"
 )
 
 // debugLogFileName 是与安全诊断日志同目录的本机调试日志。
 const debugLogFileName = "agentd-debug.log"
+
+// tailcatEventLogFileName 是常开的连接事件时间线，同样只留在本机。事件频率很低，
+// 2 MB 加一份 previous 足够覆盖数周，排查偶发断连时不会已被轮转掉。
+const (
+	tailcatEventLogFileName       = "tailcat-events.log"
+	tailcatEventLogMaxBytes int64 = 2 * 1024 * 1024
+)
 
 type managedDiagnosticLogs struct {
 	writer   *rotatingLogWriter
@@ -20,10 +28,17 @@ type managedDiagnosticLogs struct {
 	// 调试日志跟随同一个详细记录窗口；只按大小轮转，不参与安全日志的保留与导出。
 	debugWriter *rotatingLogWriter
 	debug       *debuglog.Sink
+	// 连接事件不跟随详细记录窗口，也不参与安全日志的保留与导出；「清除」时一并清空。
+	tailcatWriter *rotatingLogWriter
+	tailcatSink   *debuglog.Sink
 }
 
 func debugLogPath(diagnosticPath string) string {
 	return filepath.Join(filepath.Dir(diagnosticPath), debugLogFileName)
+}
+
+func tailcatEventLogPath(diagnosticPath string) string {
+	return filepath.Join(filepath.Dir(diagnosticPath), tailcatEventLogFileName)
 }
 
 // 配置或运行环境在 HTTP 启动前失败时也留固定故障码；不能把原始错误写进报告。
@@ -66,10 +81,20 @@ func configureServeFileLogging(path string) (*managedDiagnosticLogs, func(), err
 		_ = writer.Close()
 		return nil, nil, err
 	}
+	tailcatWriter, err := newRotatingLogWriter(tailcatEventLogPath(writer.path), tailcatEventLogMaxBytes)
+	if err != nil {
+		recorder.Close()
+		_ = debugWriter.Close()
+		_ = writer.Close()
+		return nil, nil, err
+	}
 	removeRecorder := diagnosticlog.Install(recorder)
 	debug := debuglog.New(debugWriter, func() bool { return recorder.ExpiresAt() != nil })
 	removeDebug := debuglog.Install(debug)
-	logs := &managedDiagnosticLogs{writer: writer, recorder: recorder, debugWriter: debugWriter, debug: debug}
+	tailcatSink := debuglog.New(tailcatWriter, func() bool { return true })
+	removeTailcat := tailcatevents.Install(tailcatSink)
+	logs := &managedDiagnosticLogs{writer: writer, recorder: recorder, debugWriter: debugWriter, debug: debug,
+		tailcatWriter: tailcatWriter, tailcatSink: tailcatSink}
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -86,12 +111,15 @@ func configureServeFileLogging(path string) (*managedDiagnosticLogs, func(), err
 		}
 	}()
 	return logs, func() {
+		removeTailcat()
 		removeDebug()
 		removeRecorder()
 		close(stop)
 		<-done
+		tailcatSink.Close()
 		debug.Close()
 		recorder.Close()
+		_ = tailcatWriter.Close()
 		_ = debugWriter.Close()
 		_ = writer.Close()
 	}, nil
@@ -151,6 +179,11 @@ func (l *managedDiagnosticLogs) Clear() (httpapi.DiagnosticLogStatus, error) {
 		if l.debugWriter != nil {
 			// 先让调试日志队列里已有的行写完，再截断；否则清除前排队的记录会在清除后被写回。
 			if err := l.debug.Sync(l.debugWriter.clear); err != nil {
+				return err
+			}
+		}
+		if l.tailcatWriter != nil {
+			if err := l.tailcatSink.Sync(l.tailcatWriter.clear); err != nil {
 				return err
 			}
 		}

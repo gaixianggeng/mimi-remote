@@ -32,6 +32,8 @@ type Config struct {
 	StateDir    string
 	ControlPath string
 	DERPMapURL  string
+	// Events 接收稳定节点的连接事件。短期配对节点不接：它们 10 分钟就过期，且每次换身份。
+	Events func(tunnel.HostEvent)
 }
 
 type managedHost interface {
@@ -309,6 +311,7 @@ func (m *Manager) startStableHostLocked(managedClients []string) (managedHost, e
 		AddressPath:       filepath.Join(m.config.StateDir, "host.address"),
 		AllowedClientKeys: allowedClients,
 		DERPMapURL:        m.config.DERPMapURL,
+		Events:            m.config.Events,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("启动稳定 Tailcat 服务：%w", err)

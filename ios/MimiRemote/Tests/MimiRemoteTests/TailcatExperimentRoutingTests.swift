@@ -2052,6 +2052,104 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(try tokenStore.loadTailcatAddress(profileID: "mac-b"), "tailcat:mac-b")
     }
 
+    func testTunnelStartFailureIsRecordedAndSurvivesRestart() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+
+        XCTAssertFalse(prepared)
+        XCTAssertEqual(fixture.controller.connectionFailures.map(\.stage), [.tunnelStart])
+        XCTAssertEqual(fixture.controller.connectionFailures.first?.network, .cellular)
+        XCTAssertEqual(
+            TailcatConnectionFailureLog.load(defaults: fixture.defaults),
+            fixture.controller.connectionFailures
+        )
+    }
+
+    func testForegroundProbeFailureIsRecordedEvenWhenRebuildSucceeds() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        await fixture.runtime.setHealthy(false)
+        let recovered = await fixture.controller.recoverRouteFromForeground(
+            appStore: fixture.store,
+            refreshPathDiagnosticAfterPreparation: false
+        )
+
+        XCTAssertTrue(prepared)
+        XCTAssertTrue(recovered)
+        // 建好线路后的异步路径探测可能赶上不健康状态，再多记一条 route_probe，这也是真实失败。
+        XCTAssertTrue(fixture.controller.connectionFailures.map(\.stage).contains(.foregroundProbe))
+    }
+
+    func testPreflightFailureOnTailcatRouteIsRecorded() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            managedProfile: true,
+            routeProbe: { _, _, _ in throw URLError(.timedOut) }
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        let prepared = await fixture.controller.prepareRoute(appStore: fixture.store)
+        let connected = await fixture.store.preflightConnection(force: true)
+
+        XCTAssertTrue(prepared)
+        XCTAssertFalse(connected)
+        let failure = try XCTUnwrap(fixture.controller.connectionFailures.first { $0.stage == .preflight })
+        XCTAssertEqual(failure.reason, .timeout)
+    }
+
+    func testConnectionFailureLogKeepsNewestAndSkipsCancellation() async throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+
+        fixture.controller.recordConnectionFailure(stage: .routeProbe, error: CancellationError())
+        fixture.controller.recordConnectionFailure(stage: .routeProbe, error: URLError(.cancelled))
+        XCTAssertTrue(fixture.controller.connectionFailures.isEmpty)
+
+        for _ in 0..<(TailcatConnectionFailureLog.capacity + 5) {
+            fixture.controller.recordConnectionFailure(stage: .routeProbe, error: URLError(.timedOut))
+        }
+        fixture.controller.recordConnectionFailure(stage: .preflight, error: URLError(.notConnectedToInternet))
+
+        XCTAssertEqual(fixture.controller.connectionFailures.count, TailcatConnectionFailureLog.capacity)
+        XCTAssertEqual(fixture.controller.connectionFailures.first?.stage, .preflight)
+        XCTAssertEqual(fixture.controller.connectionFailures.first?.reason, .network)
+    }
+
+    func testConnectionFailureTextNeverContainsErrorDetails() {
+        struct BridgedError: LocalizedError {
+            let errorDescription: String?
+        }
+        let error = BridgedError(errorDescription: "dial tcp 203.0.113.9:8443: i/o timeout nodekey:abc")
+        let failure = TailcatConnectionFailure(
+            id: UUID(),
+            occurredAt: Date(timeIntervalSince1970: 1_793_000_000),
+            stage: .tunnelStart,
+            reason: TailcatConnectionFailure.Reason(error: error),
+            network: .wifi
+        )
+
+        XCTAssertEqual(failure.reason, .timeout)
+        XCTAssertTrue(failure.redactedLine.contains("stage=tunnel_start reason=timeout network=wifi"))
+        XCTAssertFalse(failure.redactedLine.contains("203.0.113.9"))
+        XCTAssertFalse(failure.redactedLine.contains("nodekey"))
+        let noRoute = BridgedError(errorDescription: "connect: no route to host")
+        XCTAssertEqual(TailcatConnectionFailure.Reason(error: noRoute), .network)
+        XCTAssertEqual(TailcatConnectionFailure.Reason(error: BridgedError(errorDescription: "boom")), .unknown)
+    }
+
     private func makeControllerFixture(
         startResults: [Result<String, TailcatRuntimeStubError>],
         blockedStartCall: Int? = nil,
@@ -2060,7 +2158,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         managedProfile: Bool = false,
         managedAddress: String? = "tailcat:managed-mac",
         bridgeAvailable: Bool = true,
-        managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil
+        managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil,
+        routeProbe: ConnectionRouteProbe? = nil
     ) throws -> (
         controller: TailcatExperimentController,
         runtime: TailcatExperimentRuntimeStub,
@@ -2101,7 +2200,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             defaults: defaults,
             tokenStore: tokenStore,
             prefersLocalConnection: false,
-            routeProbe: { _, _, _ in }
+            routeProbe: routeProbe ?? { _, _, _ in }
         )
         let controller = TailcatExperimentController(
             appStore: store,
@@ -2111,7 +2210,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             localEndpointProbe: localEndpointProbe,
             bridge: bridge,
             managedPairingAuthorizer: managedPairingAuthorizer,
-            managedConnectionEventReporter: managedConnectionEventReporter
+            managedConnectionEventReporter: managedConnectionEventReporter,
+            networkKind: { .cellular }
         )
         return (controller, runtime, store, defaults, suiteName)
     }

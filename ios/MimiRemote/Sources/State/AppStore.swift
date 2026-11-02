@@ -55,6 +55,8 @@ final class AppStore: ObservableObject {
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
+    /// Tailcat 隧道已建好但请求仍失败时通知连接诊断；不参与连接决策。
+    var onTailcatPreflightFailure: ((Error) -> Void)?
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
     var activeRouteEndpoint: String?
@@ -1374,6 +1376,9 @@ final class AppStore: ObservableObject {
         if !usesTailcatExperiment, acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
+        }
+        if usesTailcatExperiment {
+            onTailcatPreflightFailure?(finalError)
         }
         connectionStatus = .failed(finalError.localizedDescription)
         lastError = finalError.localizedDescription

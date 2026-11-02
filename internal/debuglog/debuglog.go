@@ -99,6 +99,14 @@ func Printf(component, format string, args ...any) {
 	s.enqueue(component, fmt.Sprintf(format, args...))
 }
 
+// Printf 写入这个 Sink，供不走进程级 current 的独立日志使用；同样受 enabled 约束。
+func (s *Sink) Printf(component, format string, args ...any) {
+	if s == nil || !s.enabled() {
+		return
+	}
+	s.enqueue(component, fmt.Sprintf(format, args...))
+}
+
 func (s *Sink) enqueue(component, message string) {
 	line := s.now().UTC().Format(time.RFC3339Nano) + " " + component + " " + Sanitize(message, s.home)
 	if len(line) > maxLineBytes {

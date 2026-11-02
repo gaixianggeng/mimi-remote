@@ -259,6 +259,7 @@ final class TailcatExperimentController: ObservableObject {
     @Published private(set) var publicKey = ""
     @Published private(set) var state: TailcatExperimentState
     @Published private(set) var diagnostics: [TailcatPathDiagnostic]
+    @Published private(set) var connectionFailures: [TailcatConnectionFailure]
 
     private struct PendingPairing {
         let generation: UInt64
@@ -288,6 +289,7 @@ final class TailcatExperimentController: ObservableObject {
     private let managedConnectionEventReporter: (any ManagedConnectionEventReporting)?
     private let now: () -> Date
     private let appVersion: () -> String
+    private let networkKind: () -> TailcatConnectionFailure.NetworkKind
     private var generation: UInt64 = 0
     private var preparationTask: RoutePreparation?
     private var pendingPairing: PendingPairing?
@@ -307,6 +309,9 @@ final class TailcatExperimentController: ObservableObject {
         appVersion: @escaping () -> String = {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
                 ?? "unknown"
+        },
+        networkKind: @escaping () -> TailcatConnectionFailure.NetworkKind = {
+            TailcatNetworkKindReader.shared.current
         }
     ) {
         let available = bridge.isAvailable
@@ -363,8 +368,10 @@ final class TailcatExperimentController: ObservableObject {
         self.managedConnectionEventReporter = managedConnectionEventReporter
         self.now = now
         self.appVersion = appVersion
+        self.networkKind = networkKind
         address = savedAddress
         diagnostics = Self.loadDiagnostics(defaults: defaults)
+        connectionFailures = TailcatConnectionFailureLog.load(defaults: defaults)
         isEnabled = initialEnabled
         if savedEnabled && !available {
             defaults.set(false, forKey: Self.enabledKey)
@@ -377,6 +384,9 @@ final class TailcatExperimentController: ObservableObject {
             state = .needsAddress
         } else {
             state = .starting
+        }
+        appStore.onTailcatPreflightFailure = { [weak self] error in
+            self?.recordConnectionFailure(stage: .preflight, error: error)
         }
     }
 
@@ -566,6 +576,7 @@ final class TailcatExperimentController: ObservableObject {
                       isEnabled else {
                     return false
                 }
+                recordConnectionFailure(stage: .foregroundProbe, error: error)
             }
         }
         generation &+= 1
@@ -663,6 +674,7 @@ final class TailcatExperimentController: ObservableObject {
             appStore.setTailcatExperimentEndpoint(nil)
             state = .failed(message: error.localizedDescription)
             if ownsPreparation {
+                recordConnectionFailure(stage: .tunnelStart, error: error)
                 enqueueManagedConnectionAttempt(
                     enabled: reportsManagedConnection,
                     path: .unknown,
@@ -1070,6 +1082,7 @@ final class TailcatExperimentController: ObservableObject {
             pathSucceeded = true
         } catch {
             connectionError = error
+            recordConnectionFailure(stage: .routeProbe, error: error)
         }
 
         var requestLatencyMillis: Int?
@@ -1086,6 +1099,7 @@ final class TailcatExperimentController: ObservableObject {
             } catch {
                 requestSucceeded = false
                 connectionError = error
+                recordConnectionFailure(stage: .requestProbe, error: error)
             }
         }
         let diagnostic = TailcatPathDiagnostic(
@@ -1119,10 +1133,25 @@ final class TailcatExperimentController: ObservableObject {
     }
 
     var redactedDiagnosticsText: String {
-        diagnostics.map { item in
+        let probes = diagnostics.map { item in
             let request = item.requestSummary.map { " · \($0)" } ?? ""
             return "\(item.checkedAt.formatted(date: .numeric, time: .standard)) · \(item.summary)\(request)"
-        }.joined(separator: "\n")
+        }
+        return (connectionFailures.map(\.redactedLine) + probes).joined(separator: "\n")
+    }
+
+    /// 失败记录是旁路诊断：不改变连接状态，也不上报到任何服务。
+    func recordConnectionFailure(stage: TailcatConnectionFailure.Stage, error: Error?) {
+        guard !Task.isCancelled, TailcatConnectionFailure.shouldRecord(error) else { return }
+        let failure = TailcatConnectionFailure(
+            id: UUID(),
+            occurredAt: now(),
+            stage: stage,
+            reason: TailcatConnectionFailure.Reason(error: error),
+            network: networkKind()
+        )
+        connectionFailures = Array(([failure] + connectionFailures).prefix(TailcatConnectionFailureLog.capacity))
+        TailcatConnectionFailureLog.save(connectionFailures, defaults: defaults)
     }
 
     private func restoreAfterPairingFailure(
