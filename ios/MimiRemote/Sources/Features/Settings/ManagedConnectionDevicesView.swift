@@ -226,30 +226,29 @@ struct ManagedConnectionDevicesView: View {
                 EmptyView()
             }
 
-            if connectStep != .backToSameNetwork {
-                Button {
-                    localError = nil
-                    showsHostUpdateLink = false
-                    qrScannerPresentation.request(
-                        appStore.activeConnectionProfile == nil
-                            ? .initialConnection
-                            : .addConnectionProfile,
-                        from: .managedConnection
-                    )
-                } label: {
-                    Label(
-                        L10n.text(
-                            connectStep == .fromComputer
-                                ? "ui.managed_devices_connect_mac"
-                                : "ui.managed_devices_connect_another"
-                        ),
-                        systemImage: "qrcode.viewfinder"
-                    )
-                    .settingsRow()
-                }
-                .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
-                .accessibilityIdentifier("settings.managedSubscription.connectMac")
+            // 扫码不依赖当前线路：旧连接回不去、或换了一台电脑时，这是唯一走得通的路。
+            Button {
+                localError = nil
+                showsHostUpdateLink = false
+                qrScannerPresentation.request(
+                    appStore.activeConnectionProfile == nil
+                        ? .initialConnection
+                        : .addConnectionProfile,
+                    from: .managedConnection
+                )
+            } label: {
+                Label(
+                    L10n.text(
+                        connectStep == .oneTap || connectStep == .connected
+                            ? "ui.managed_devices_connect_another"
+                            : "ui.managed_devices_connect_mac"
+                    ),
+                    systemImage: "qrcode.viewfinder"
+                )
+                .settingsRow()
             }
+            .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
+            .accessibilityIdentifier("settings.managedSubscription.connectMac")
 
             if isConnectingMac {
                 HStack(spacing: 12) {
