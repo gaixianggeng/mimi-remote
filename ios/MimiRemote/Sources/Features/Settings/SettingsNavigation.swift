@@ -202,7 +202,7 @@ struct SettingsDestinationView: View {
         case .thirdPartyNotices:
             ThirdPartyNoticesView()
         case .managedConnection:
-            ManagedConnectionSubscriptionView()
+            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
         case .managedConnectionDevices:
             ManagedConnectionDevicesView(qrScannerPresentation: qrScannerPresentation)
         case .addComputer:

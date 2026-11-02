@@ -38,6 +38,12 @@ struct ManagedConnectionSubscriptionView: View {
     @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isManagingSubscription = false
     @State private var redemptionCode = ""
+    @State private var showsConnectStep = false
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+
+    /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
+    /// 正式开放时改回 true（#949）。
+    static let showsPurchaseOptions = false
 
     /// 「我的」里的订阅页：只管买与订阅。线路、接入电脑与设备名额在「设备」里的
     /// 托管线路与设备页（#891），这里只放一行跳转，不复制那边的控件。
@@ -57,9 +63,10 @@ struct ManagedConnectionSubscriptionView: View {
             if !isEntitled {
                 redemptionSection
             }
-            if !entitlementStore.isRedemptionEntitlement {
+            if Self.showsPurchaseOptions, !entitlementStore.isRedemptionEntitlement {
                 productsSection
             }
+            privacySection
             subscriptionInformationSection
         }
         .themedSettingsForm(tokens: tokens)
@@ -67,6 +74,10 @@ struct ManagedConnectionSubscriptionView: View {
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
+        // 开通只是第一步，线路要接入电脑后才切换：直接带用户去做，不让他以为已经完成。
+        .navigationDestination(isPresented: $showsConnectStep) {
+            ManagedConnectionDevicesView(qrScannerPresentation: qrScannerPresentation)
+        }
         .task {
             if entitlementStore.products.isEmpty {
                 await entitlementStore.load()
@@ -165,13 +176,21 @@ struct ManagedConnectionSubscriptionView: View {
                 )
             case .expired:
                 Label(
-                    L10n.text("ui.managed_subscription_expired"),
+                    L10n.text(
+                        entitlementStore.hasSavedRedemptionCode
+                            ? "ui.managed_redemption_expired_status"
+                            : "ui.managed_subscription_expired"
+                    ),
                     systemImage: "calendar.badge.exclamationmark"
                 )
                 .foregroundStyle(tokens.warning)
             case .revoked:
                 Label(
-                    L10n.text("ui.managed_subscription_revoked"),
+                    L10n.text(
+                        entitlementStore.hasSavedRedemptionCode
+                            ? "ui.managed_redemption_revoked_status"
+                            : "ui.managed_subscription_revoked"
+                    ),
                     systemImage: "xmark.shield.fill"
                 )
                 .foregroundStyle(tokens.warning)
@@ -318,10 +337,33 @@ struct ManagedConnectionSubscriptionView: View {
                 .frame(minHeight: 44)
                 .accessibilityIdentifier("settings.managedSubscription.redemptionCode")
 
-            Button(L10n.text("ui.managed_redemption_submit"), action: submitRedemption)
-                .frame(minHeight: 44)
-                .disabled(canSubmitRedemption == false)
-                .accessibilityIdentifier("settings.managedSubscription.redeem")
+            HStack(spacing: 12) {
+                Button(L10n.text("ui.managed_redemption_submit"), action: submitRedemption)
+                    .disabled(canSubmitRedemption == false)
+                    .accessibilityIdentifier("settings.managedSubscription.redeem")
+                Spacer(minLength: 12)
+                // 系统粘贴按钮不会弹「允许粘贴」；整段聊天消息也能认出里面的码。
+                PasteButton(payloadType: String.self) { strings in
+                    Task { @MainActor in applyPastedRedemption(strings) }
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonBorderShape(.capsule)
+                .disabled(entitlementStore.isBusy)
+                .accessibilityIdentifier("settings.managedSubscription.pasteCode")
+            }
+            .frame(minHeight: 44)
+            .buttonStyle(.borderless)
+
+            if CommunityContact.bundled != nil {
+                NavigationLink(value: SettingsDestination.community) {
+                    SettingsValueLabel(
+                        title: L10n.text("ui.managed_redemption_get_code"),
+                        systemImage: "person.2"
+                    )
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.managedSubscription.getCode")
+            }
         } header: {
             SettingsGroupHeader(title: L10n.text("ui.managed_redemption_title"))
         } footer: {
@@ -346,8 +388,50 @@ struct ManagedConnectionSubscriptionView: View {
         guard canSubmitRedemption else { return }
         Task {
             await entitlementStore.redeem(code: redemptionCode)
-            if isEntitled { redemptionCode = "" }
+            if isEntitled {
+                redemptionCode = ""
+                showsConnectStep = true
+            }
         }
+    }
+
+    private func applyPastedRedemption(_ strings: [String]) {
+        guard let code = strings.lazy.compactMap(ManagedRedemptionCode.extract(from:)).first else {
+            entitlementStore.setRedemptionError(L10n.text("ui.managed_redemption_paste_empty"))
+            return
+        }
+        redemptionCode = code
+        submitRedemption()
+    }
+
+    /// 用大白话说清三件事：内容谁能看、服务器知道什么、我们存什么。必须和隐私政策一致。
+    private var privacySection: some View {
+        Section {
+            ForEach(Self.privacyPoints, id: \.text) { point in
+                Label {
+                    Text(point.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: point.systemImage)
+                        .foregroundStyle(tokens.settingsIconTint)
+                }
+                .settingsRow(.descriptive)
+            }
+        } header: {
+            SettingsGroupHeader(title: L10n.text("ui.managed_privacy_title"))
+        }
+        .settingsGroupRowStyle()
+        .accessibilityIdentifier("settings.managedSubscription.privacy")
+    }
+
+    private static var privacyPoints: [(text: String, systemImage: String)] {
+        [
+            (L10n.text("ui.managed_privacy_content"), "lock"),
+            (L10n.text("ui.managed_privacy_relay"), "arrow.left.arrow.right"),
+            (L10n.text("ui.managed_privacy_stored"), "person.crop.circle.badge.xmark"),
+            (L10n.text("ui.managed_privacy_location"), "mappin.and.ellipse"),
+            (L10n.text("ui.managed_privacy_leave"), "hand.raised")
+        ]
     }
 
     @ViewBuilder
@@ -400,12 +484,14 @@ struct ManagedConnectionSubscriptionView: View {
 
     private var subscriptionInformationSection: some View {
         Section {
-            Button(L10n.text("ui.restore_purchases")) {
-                Task { restoreResult = await entitlementStore.restorePurchases() }
+            if Self.showsPurchaseOptions {
+                Button(L10n.text("ui.restore_purchases")) {
+                    Task { restoreResult = await entitlementStore.restorePurchases() }
+                }
+                .frame(minHeight: 44)
+                .disabled(entitlementStore.isBusy)
+                .accessibilityIdentifier("settings.managedSubscription.restore")
             }
-            .frame(minHeight: 44)
-            .disabled(entitlementStore.isBusy)
-            .accessibilityIdentifier("settings.managedSubscription.restore")
 
             Link(destination: AppExternalLinks.termsOfUse) {
                 Label(L10n.text("ui.terms_of_use"), systemImage: "doc.text")

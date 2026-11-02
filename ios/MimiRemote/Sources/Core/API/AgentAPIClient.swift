@@ -147,6 +147,8 @@ struct ManagedPairingLinkResponse: Decodable, Equatable {
 enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
     case selfHostedClientsPresent(count: Int)
     case busy
+    /// 电脑端版本早于 v1.1.9，没有这个接口。
+    case hostTooOld
     case failed(code: String, message: String)
 
     var errorDescription: String? {
@@ -155,8 +157,13 @@ enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
             return L10n.format("ui.managed_devices_upgrade_reset_message", String(count))
         case .busy:
             return L10n.text("ui.managed_devices_upgrade_busy")
-        case .failed(_, let message):
-            return L10n.format("ui.managed_devices_upgrade_failed", message)
+        case .hostTooOld:
+            return L10n.text("ui.managed_devices_host_too_old")
+        case .failed(let code, let message):
+            // 全部助手都关着时用户能自己处理；其余是电脑端内部原因，只给下一步和错误代码。
+            return code == "tailcat_agents_disabled"
+                ? message
+                : L10n.format("ui.managed_devices_upgrade_failed", code)
         }
     }
 
@@ -171,6 +178,10 @@ enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
                 case error
                 case pairedDeviceCount = "paired_device_count"
             }
+        }
+        // 接口路径固定，404 只可能是旧版电脑端还没有它。
+        if status == 404 {
+            return .hostTooOld
         }
         guard status != 401, status != 403,
               let payload = try? JSONDecoder().decode(Payload.self, from: data),

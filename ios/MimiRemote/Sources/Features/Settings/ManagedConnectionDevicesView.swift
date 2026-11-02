@@ -17,6 +17,7 @@ struct ManagedConnectionDevicesView: View {
     @State private var upgradeTask: Task<Void, Never>?
     @State private var activeUpgradeID: UUID?
     @State private var pendingSelfHostedReset: (context: ManagedConnectionUpgradeContext, count: Int)?
+    @State private var showsHostUpdateLink = false
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
 
@@ -151,9 +152,44 @@ struct ManagedConnectionDevicesView: View {
         .settingsGroupRowStyle()
     }
 
+    /// 这一屏只回答一件事：下一步该做什么。不同状态只给能走通的那条路（#949）。
+    enum ConnectStep: Equatable {
+        /// 手机正连着这台电脑，点一下就能接入。
+        case oneTap
+        /// 现在连不上这台电脑，要回到同一个 Wi-Fi。
+        case backToSameNetwork
+        /// 只能在电脑上操作后扫码：用的是自建 Tailcat，或还没有连过电脑。
+        case fromComputer
+        case connected
+        /// 已接入但现在连不上，由线路状态分组给出恢复办法。
+        case reconnecting
+    }
+
+    static func connectStep(route: ConnectionProfileRoute?, connected: Bool) -> ConnectStep {
+        switch route {
+        case .lan, .tailscale, .https:
+            return connected ? .oneTap : .backToSameNetwork
+        case .customTailcat, nil:
+            return .fromComputer
+        case .managedTailcat:
+            return connected ? .connected : .reconnecting
+        }
+    }
+
+    private var connectStep: ConnectStep {
+        let connected: Bool
+        if case .connected = appStore.connectionStatus {
+            connected = true
+        } else {
+            connected = false
+        }
+        return Self.connectStep(route: appStore.activeConnectionProfile?.connectionRoute, connected: connected)
+    }
+
     private var connectionSection: some View {
         Section {
-            if canUpgradeCurrentComputer {
+            switch connectStep {
+            case .oneTap:
                 Button {
                     startCurrentComputerUpgrade()
                 } label: {
@@ -170,22 +206,50 @@ struct ManagedConnectionDevicesView: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
+            case .backToSameNetwork:
+                connectGuidanceRow("ui.managed_devices_back_to_network", systemImage: "wifi")
+                    .accessibilityIdentifier("settings.managedConnectionDevices.backToNetwork")
+            case .fromComputer:
+                connectGuidanceRow("ui.managed_devices_from_computer", systemImage: "laptopcomputer")
+                    .accessibilityIdentifier("settings.managedConnectionDevices.fromComputer")
+            case .connected:
+                Label {
+                    Text(L10n.text("ui.managed_devices_connected_hint"))
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(tokens.success)
+                }
+                .settingsRow(.descriptive)
+                .accessibilityIdentifier("settings.managedConnectionDevices.connectedHint")
+            case .reconnecting:
+                EmptyView()
             }
 
-            Button {
-                localError = nil
-                qrScannerPresentation.request(
-                    appStore.activeConnectionProfile == nil
-                        ? .initialConnection
-                        : .addConnectionProfile,
-                    from: .managedConnection
-                )
-            } label: {
-                Label(L10n.text("ui.managed_devices_connect_mac"), systemImage: "qrcode.viewfinder")
+            if connectStep != .backToSameNetwork {
+                Button {
+                    localError = nil
+                    showsHostUpdateLink = false
+                    qrScannerPresentation.request(
+                        appStore.activeConnectionProfile == nil
+                            ? .initialConnection
+                            : .addConnectionProfile,
+                        from: .managedConnection
+                    )
+                } label: {
+                    Label(
+                        L10n.text(
+                            connectStep == .fromComputer
+                                ? "ui.managed_devices_connect_mac"
+                                : "ui.managed_devices_connect_another"
+                        ),
+                        systemImage: "qrcode.viewfinder"
+                    )
                     .settingsRow()
+                }
+                .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
+                .accessibilityIdentifier("settings.managedSubscription.connectMac")
             }
-            .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
-            .accessibilityIdentifier("settings.managedSubscription.connectMac")
 
             if isConnectingMac {
                 HStack(spacing: 12) {
@@ -198,6 +262,13 @@ struct ManagedConnectionDevicesView: View {
             if let localError {
                 Label(localError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(tokens.warning)
+                if showsHostUpdateLink {
+                    Link(destination: AppExternalLinks.macRelease) {
+                        Label(L10n.text("ui.managed_devices_download_host"), systemImage: "arrow.down.circle")
+                            .settingsRow()
+                    }
+                    .accessibilityIdentifier("settings.managedConnectionDevices.downloadHost")
+                }
             }
         } header: {
             SettingsGroupHeader(title: L10n.text("ui.managed_devices_connection"))
@@ -225,6 +296,17 @@ struct ManagedConnectionDevicesView: View {
         } message: {
             Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedReset?.count ?? 0)))
         }
+    }
+
+    private func connectGuidanceRow(_ key: String, systemImage: String) -> some View {
+        Label {
+            Text(L10n.text(key))
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(tokens.settingsIconTint)
+        }
+        .settingsRow(.descriptive)
     }
 
     /// 已连上的电脑可以一键接入托管连接（#897）：手机已持有这台电脑的 agentd Token，
@@ -304,6 +386,7 @@ struct ManagedConnectionDevicesView: View {
         }
         activeUpgradeID = context.id
         localError = nil
+        showsHostUpdateLink = false
         upgradeTask = Task { @MainActor in
             defer {
                 // 被取消的旧任务不能清掉用户后来发起的新任务状态。
@@ -333,6 +416,7 @@ struct ManagedConnectionDevicesView: View {
                     pendingSelfHostedReset = (context, count)
                 } else {
                     localError = error.localizedDescription
+                    showsHostUpdateLink = error == .hostTooOld
                 }
             } catch is CancellationError {
                 return
@@ -436,7 +520,7 @@ struct ManagedConnectionDevicesView: View {
     private var managedRouteStatusText: String {
         switch tailcatController.state {
         case .disabled, .needsAddress:
-            return L10n.text("ui.tailcat_needs_address")
+            return L10n.text("ui.managed_route_needs_connect")
         case .starting:
             return L10n.text("ui.connecting")
         case .connected:

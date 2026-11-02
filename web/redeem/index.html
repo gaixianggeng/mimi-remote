@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>兑换 Mimi 托管连接</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f5f5f3; --card: #fff; --text: #1c1c1a; --muted: #6b6b66; --accent: #2c6246; --line: #e3e3df; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #161616; --card: #1f1f1f; --text: #f2f2ef; --muted: #a3a39d; --accent: #6fbf95; --line: #333; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    main { max-width: 440px; margin: 0 auto; padding: 40px 20px 56px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    p { margin: 0 0 16px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 20px; margin-bottom: 16px; }
+    .code { font: 600 18px/1.4 ui-monospace, Menlo, monospace; text-align: center; overflow-wrap: anywhere; margin-bottom: 16px; }
+    a.primary, button { display: block; width: 100%; min-height: 48px; padding: 12px; border-radius: 14px; font: 600 17px/24px inherit; text-align: center; text-decoration: none; cursor: pointer; }
+    a.primary { background: var(--accent); color: #fff; margin-bottom: 10px; }
+    button { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+    ol { margin: 0; padding-left: 20px; color: var(--muted); }
+    li { margin-bottom: 8px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>兑换 Mimi 托管连接</h1>
+    <p>开通后，不在同一个 Wi-Fi 也能用手机连上你的电脑。</p>
+    <section class="card" id="has-code" hidden>
+      <div class="code" id="code"></div>
+      <a class="primary" id="open">打开 App 兑换</a>
+      <button id="copy" type="button">复制兑换码</button>
+    </section>
+    <section class="card" id="no-code" hidden>
+      <p style="margin:0">这个链接里没有兑换码。请回到发给你的消息，重新点一次完整的链接。</p>
+    </section>
+    <section class="card" id="in-app-browser" hidden>
+      <p style="margin:0">微信里打不开 App。请点右上角「…」，选「在 Safari 中打开」；或者复制兑换码，到 App 的「我的 → Mimi 托管连接」里粘贴。</p>
+    </section>
+    <section class="card">
+      <ol>
+        <li>还没有 App？先通过 <a href="https://testflight.apple.com/join/jhGPbSk6">TestFlight</a> 安装 Mimi Remote。</li>
+        <li>回到这里点「打开 App 兑换」。</li>
+        <li>和电脑连在同一个 Wi-Fi 时，按 App 提示接入电脑。</li>
+      </ol>
+    </section>
+  </main>
+  <script>
+    // 兑换码放在 # 后面，不会发给服务器，也不会出现在访问日志里。
+    (function () {
+      var raw = decodeURIComponent(location.hash.slice(1)).toUpperCase();
+      var match = raw.match(/MIMI(?:[-\s]*[0-9A-Z]){16}/);
+      if (!match) { document.getElementById('no-code').hidden = false; return; }
+      var body = match[0].replace(/[^0-9A-Z]/g, '').slice(4);
+      var code = 'MIMI-' + body.match(/.{4}/g).join('-');
+      document.getElementById('has-code').hidden = false;
+      document.getElementById('code').textContent = code;
+      document.getElementById('open').href = 'mimi://redeem?code=' + encodeURIComponent(code);
+      if (/MicroMessenger|QQ\//i.test(navigator.userAgent)) { document.getElementById('in-app-browser').hidden = false; }
+      var copy = document.getElementById('copy');
+      copy.addEventListener('click', function () {
+        var done = function () { copy.textContent = '已复制'; };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).then(done, function () { window.prompt('长按复制', code); });
+        } else {
+          window.prompt('长按复制', code);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

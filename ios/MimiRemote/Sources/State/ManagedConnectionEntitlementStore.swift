@@ -7,8 +7,52 @@ struct ManagedConnectionPurchaseEvidence: Equatable, Sendable {
     let signedTransaction: String
 }
 
+/// 兑换码的文本解析：用户可能粘贴整段消息，也可能点链接打开 App（#949）。
+enum ManagedRedemptionCode {
+    /// 从任意文本里取出第一个兑换码，统一成 MIMI-XXXX-XXXX-XXXX-XXXX。
+    static func extract(from text: String) -> String? {
+        let pattern = "MIMI[-\\s]*((?:[0-9A-Z][-\\s]*){16})"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+        let body = text[range].uppercased().filter { $0.isLetter || $0.isNumber }
+        var groups: [String] = []
+        var rest = Substring(body)
+        while !rest.isEmpty {
+            groups.append(String(rest.prefix(4)))
+            rest = rest.dropFirst(4)
+        }
+        return "MIMI-" + groups.joined(separator: "-")
+    }
+}
+
+/// `mimi://redeem?code=...`：网页上的「打开 App 兑换」按钮跳到这里。
+struct ManagedRedemptionLink: Equatable {
+    let code: String?
+
+    init?(url: URL) {
+        guard let scheme = url.scheme?.lowercased(), scheme == "mimi" || scheme == "mimiremote",
+              url.host?.lowercased() == "redeem"
+        else {
+            return nil
+        }
+        let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "code" }?.value
+        code = value.flatMap(ManagedRedemptionCode.extract(from:))
+    }
+}
+
 @MainActor
 final class ManagedConnectionEntitlementStore: ObservableObject {
+    /// 从兑换链接进来后，工作台该带用户去哪一页。首次连接时工作台还不存在，所以先记下来。
+    enum PendingRoute: Equatable {
+        case connectComputer
+        case redemption
+    }
+
     enum RestoreResult: Equatable {
         case restored
         case noActiveSubscription
@@ -31,6 +75,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
     @Published private(set) var currentGrant: ManagedConnectionEntitlementGrant?
     @Published private(set) var redemptionErrorMessage: String?
+    @Published private(set) var pendingRoute: PendingRoute?
     private(set) var currentEvidence: ManagedConnectionTransactionEvidence?
 
     private let storeKit: any ManagedConnectionStoreKitClient
@@ -342,6 +387,26 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         await refreshDeferredEntitlement()
     }
 
+    /// 点兑换链接：结果要带用户到对应页面，否则开通了也不知道下一步。
+    func redeemFromLink(_ link: ManagedRedemptionLink) async {
+        guard let code = link.code else {
+            redemptionErrorMessage = L10n.text("ui.managed_redemption_invalid")
+            pendingRoute = .redemption
+            return
+        }
+        await redeem(code: code)
+        pendingRoute = isRedemptionEntitlement ? .connectComputer : .redemption
+    }
+
+    func consumePendingRoute() -> PendingRoute? {
+        defer { pendingRoute = nil }
+        return pendingRoute
+    }
+
+    func setRedemptionError(_ message: String) {
+        redemptionErrorMessage = message
+    }
+
     private func performRedemption(code: String) async {
         activeTransactionOperations += 1
         defer { activeTransactionOperations -= 1 }
@@ -425,6 +490,11 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
     private var savedRedemptionCode: String? {
         unsavedRedemptionCode ?? redemptionCodes.load()
+    }
+
+    /// 过期或撤销时用兑换码的说法：内测用户没有买过订阅。
+    var hasSavedRedemptionCode: Bool {
+        savedRedemptionCode != nil
     }
 
     /// 权益来自内测兑换码时，订阅管理和购买入口没有意义。
