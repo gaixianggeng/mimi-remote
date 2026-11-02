@@ -18,7 +18,7 @@ Mimi Remote 是连接用户自有或获授权电脑（macOS、Windows 或 Linux�
 
 #### Mimi 托管连接订阅
 
-- 名称为「Mimi 托管连接」（Mimi Managed Connection），通过 App 内购买提供自动续期订阅。月付期限为 1 个月，中国大陆 ¥9.9、美国 US$1.99；年付期限为 1 年，中国大陆 ¥68、美国 US$9.99。所有 App Store 地区均提供，其余地区由 Apple 换算。实际价格、币种、税费及扣款以 Apple 购买确认页为准。不提供终身买断，不支持家人共享。
+- 名称为「Mimi 托管连接」（Mimi Managed Connection），通过 App 内购买提供自动续期订阅。月付期限为 1 个月，中国大陆 ¥18、美国 US$2.99；年付期限为 1 年，中国大陆 ¥128、美国 US$19.99。所有 App Store 地区均提供，其余地区由 Apple 换算。实际价格、币种、税费及扣款以 Apple 购买确认页为准。不提供终身买断，不支持家人共享。
 - 两个方案均提供 7 天免费试用。每个 Apple ID 在本订阅组内只能享受一次试用，资格由 Apple 判断。试用结束后按所选方案自动转为付费订阅，除非提前取消。为避免扣款，请至少在试用结束前 24 小时取消。
 - Apple 通过你的 Apple 账户处理付款。订阅自动续期，除非在当前周期结束前至少 24 小时关闭自动续费；续期费用会在当前周期结束前 24 小时内扣取。可在系统「设置 → Apple 账户 → 订阅」中管理或取消。卸载 App 或移除设备不会取消订阅；取消续费后，已付费权益通常持续至当前周期结束，以 Apple 显示的到期时间为准。
 - 退款申请由 Apple 按其[退款政策和流程](https://support.apple.com/zh-cn/118223)处理，并受适用的消费者保护法律约束。开发者无法代替 Apple 扣款或批准退款。
@@ -59,7 +59,7 @@ Mimi Remote is a native client for a development environment on a computer (macO
 
 #### Mimi Managed Connection subscription
 
-- Mimi Managed Connection is an auto-renewable in-app subscription. The monthly plan lasts 1 month and costs ¥9.9 in mainland China or US$1.99 in the United States. The annual plan lasts 1 year and costs ¥68 in mainland China or US$9.99 in the United States. It is offered in all App Store regions, with prices converted by Apple elsewhere. The actual price, currency, taxes, and charge are shown on Apple's purchase confirmation screen. There is no lifetime purchase or Family Sharing.
+- Mimi Managed Connection is an auto-renewable in-app subscription. The monthly plan lasts 1 month and costs ¥18 in mainland China or US$2.99 in the United States. The annual plan lasts 1 year and costs ¥128 in mainland China or US$19.99 in the United States. It is offered in all App Store regions, with prices converted by Apple elsewhere. The actual price, currency, taxes, and charge are shown on Apple's purchase confirmation screen. There is no lifetime purchase or Family Sharing.
 - Both plans offer a 7-day free trial. Each Apple ID may use a trial only once within this subscription group; Apple determines eligibility. Unless canceled in advance, the trial converts to a paid subscription at the selected plan's price. Cancel at least 24 hours before the trial ends to avoid being charged.
 - Apple handles payment through your Apple Account. Subscriptions renew automatically unless auto-renewal is turned off at least 24 hours before the current period ends. Renewal is charged within 24 hours before that period ends. Manage or cancel in system Settings → Apple Account → Subscriptions. Uninstalling the app or removing a device does not cancel a subscription. After canceling renewal, paid access normally continues until the current period ends, subject to the expiry shown by Apple.
 - Apple handles refund requests under its [refund policies and process](https://support.apple.com/en-us/118223), subject to applicable consumer-protection law. The developer cannot charge you or approve refunds on Apple's behalf.

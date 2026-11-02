@@ -33,7 +33,7 @@ iPhone / iPad SwiftUI App
 
 自建 Tailcat 是实验连接，Mac、Windows 与 Linux 宿主随包提供 sidecar，iPhone / iPad 不需要安装 Tailscale 客户端。扫码配对后 App 只走 Tailcat 路由，不回退到 Tailscale 或局域网地址；能直连时点对点，否则经 DERP 中继：默认是 Tailcat 上游提供、由 Tailscale 运营的公共中继（`https://tailcat.dev/derpmap.json`，免费且限速），也可在 Mac App 中改为用户自定义的 DERP Map。中继只转发端到端加密的数据包，但能看到双方 IP、公钥、连接时间和流量大小；Mimi Remote 开发者不运营该默认中继。二维码只含 10 分钟有效的配对信息，不含长期 Agent Token。Mimi 托管连接已作为可选的 App 内自动续期订阅提供，正式版可从设置进入购买、恢复购买与设备管理。它使用 Mimi 运营的订阅与设备授权服务及 DERP 中继，能直连时点对点传输，否则转发 WireGuard 端到端加密数据；开发者无法读取代码、对话或文件内容。细节见 [Tailcat 远程连接实验](operations/tailcat-experiment.md)。
 
-Mimi 托管连接月付 ¥9.9 / US$1.99、年付 ¥68 / US$9.99，其余地区由 Apple 换算，向所有地区提供。两个方案均有 7 天免费试用，每个 Apple ID 在订阅组内仅一次；不提供终身买断，关闭家人共享。每个订阅最多登记 3 台电脑和 5 台手机或平板，可在 App 内移除设备。无需 Mimi 账号，同一 Apple ID 可恢复权益；恢复不会同步地址、私钥或 `agentd` Token，新手机或平板需重新接入每台电脑。App、电脑端和局域网、Tailscale、自建 Tailcat 连接继续免费开源。数据处理与保留边界见[隐私政策](privacy-policy.md)，自动续费与取消见[使用条款](terms-of-use.md)。
+Mimi 托管连接月付 ¥18 / US$2.99、年付 ¥128 / US$19.99，其余地区由 Apple 换算，向所有地区提供。两个方案均有 7 天免费试用，每个 Apple ID 在订阅组内仅一次；不提供终身买断，关闭家人共享。每个订阅最多登记 3 台电脑和 5 台手机或平板，可在 App 内移除设备。无需 Mimi 账号，同一 Apple ID 可恢复权益；恢复不会同步地址、私钥或 `agentd` Token，新手机或平板需重新接入每台电脑。App、电脑端和局域网、Tailscale、自建 Tailcat 连接继续免费开源。数据处理与保留边界见[隐私政策](privacy-policy.md)，自动续费与取消见[使用条款](terms-of-use.md)。
 
 ### 已确定的边界
 

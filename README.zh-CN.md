@@ -93,7 +93,7 @@ Mimi Remote 是会话客户端，不是远程 Shell，也不在 iOS 上运行 Ag
 用 Tailscale 让手机和电脑处在同一个私有网络。Mac、Windows 与 Linux 电脑也可以试用实验性的 Tailcat 连接，说明见[工作原理](#工作原理)。
 
 **收费吗？**\
-App 与电脑端免费开源，局域网、Tailscale 和自建 Tailcat 连接继续免费。可选付费的 Mimi 托管连接让你不在同一 Wi-Fi 也能连上自己的电脑，无需安装其他联网工具。月付 ¥9.9 / US$1.99，年付 ¥68 / US$9.99，其余地区由 Apple 换算。两个方案均有 7 天免费试用，每个 Apple ID 在订阅组内仅一次。每个订阅最多支持 3 台电脑、5 台手机或平板。同一 Apple ID 可恢复权益，但新手机或平板需重新接入每台电脑，地址和凭据不会同步。详见[订阅条款](docs/terms-of-use.md)。模型用量算在你电脑上 Codex 或 Claude Code 使用的账号上。
+App 与电脑端免费开源，局域网、Tailscale 和自建 Tailcat 连接继续免费。可选付费的 Mimi 托管连接让你不在同一 Wi-Fi 也能连上自己的电脑，无需安装其他联网工具。月付 ¥18 / US$2.99，年付 ¥128 / US$19.99，其余地区由 Apple 换算。两个方案均有 7 天免费试用，每个 Apple ID 在订阅组内仅一次。每个订阅最多支持 3 台电脑、5 台手机或平板。同一 Apple ID 可恢复权益，但新手机或平板需重新接入每台电脑，地址和凭据不会同步。详见[订阅条款](docs/terms-of-use.md)。模型用量算在你电脑上 Codex 或 Claude Code 使用的账号上。
 
 **和 OpenAI、Anthropic 官方的手机远程功能有什么不同？**\
 官方功能各自服务自家的 Agent。Mimi Remote 在一个 App 里同时连接 Codex 和 Claude Code（以及 DeepSeek Harness），电脑可以是 Mac、Windows 或 Linux，能在多台之间切换，iPad 上是多栏工作台，代码全部开源。官方功能更新很快，按你使用的工具和账号选择即可。
