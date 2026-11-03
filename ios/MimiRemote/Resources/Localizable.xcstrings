@@ -6517,13 +6517,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Close the session in the other app before continuing here."
+            "value": "To continue here, quit Codex on your computer (make sure nothing is running there), then tap Retry. Switching to another chat won’t release it."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请先在那边关闭会话，才能在这里继续。"
+            "value": "要在这里继续，请先退出电脑上的 Codex（确认那边没有任务在运行），再点“重试”。只切到别的会话不会释放。"
           }
         }
       }
@@ -6534,13 +6534,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open in another app"
+            "value": "Open in Codex on your computer"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已在另一个应用中打开"
+            "value": "已在电脑上的 Codex 中打开"
           }
         }
       }
@@ -7197,13 +7197,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Copy this session to continue here; the original stays unchanged."
+            "value": "Copy this session to continue here. To continue the original, quit Codex on your computer, then tap Retry."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "复制为新会话后，可在这里继续；原会话保持不变。"
+            "value": "可复制为新会话继续。要继续原会话，请先退出电脑上的 Codex，再点“重试”。"
           }
         }
       }
@@ -29564,6 +29564,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "会话名称已清除"
+          }
+        }
+      }
+    },
+    "ui.session_open_on_computer": {
+      "comment": "Session list status: another Codex process on the computer holds this session's writer. Says nothing about whether a turn is running.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上已打开"
           }
         }
       }

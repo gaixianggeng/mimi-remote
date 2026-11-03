@@ -312,6 +312,7 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(store.errorMessage?.contains("-32600") == true)
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
         XCTAssertFalse(store.canSendInSelectedSession)
+        XCTAssertEqual(store.sessionsByID[running.id]?.writerHeldElsewhere, true, "明确的拒绝要立刻反映到会话行")
 
         // writer 结论必须保持到下一次 thread/resume 成功。显式退役旧 socket 或随后出现
         // 普通连接错误，都不能让 Composer 在尚未取得 writer 时重新出现。
@@ -331,6 +332,7 @@ extension ConversationDataFlowTests {
         try await waitForWebSocketStatus(.connected, store: store)
         XCTAssertFalse(store.selectedSessionHasActiveWriterConflict)
         XCTAssertTrue(store.canSendInSelectedSession)
+        XCTAssertEqual(store.sessionsByID[running.id]?.writerHeldElsewhere, false, "取得 writer 后不能继续显示占用")
     }
 
     func testActiveWriterSendFailureShowsDesktopSyncGuidance() async throws {

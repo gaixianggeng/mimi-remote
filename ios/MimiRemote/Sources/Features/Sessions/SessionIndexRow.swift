@@ -597,7 +597,7 @@ struct SessionIndexRow: View {
         case .complete:
             return false
         case .neutral:
-            return sessionStatus != SessionStatus.history.rawValue
+            return status.staysVisibleInList || sessionStatus != SessionStatus.history.rawValue
         }
     }
 

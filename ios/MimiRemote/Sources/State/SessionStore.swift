@@ -1907,6 +1907,7 @@ final class SessionStore: ObservableObject {
     }
 
     func setActiveWriterConflict(_ hasConflict: Bool, sessionID: SessionID) {
+        syncWriterHeldElsewhere(hasConflict, sessionID: sessionID)
         let lease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
         if hasConflict {
             activeWriterConflictLeases.insert(lease)

@@ -646,6 +646,16 @@ extension SessionStore {
         }
     }
 
+    /// 明确的 writer 拒绝和成功连接都是权威结论，先于下一次列表刷新反映到会话行；
+    /// 没有锁目录可查的主机（Windows、SSH）也靠这里得到提示。
+    func syncWriterHeldElsewhere(_ isHeld: Bool, sessionID: SessionID) {
+        // 连接成功对每条会话都会走一遍，从未被标记的不必产生一次发布。
+        guard isHeld || sessionsByID[sessionID]?.writerHeldElsewhere == true else {
+            return
+        }
+        updateSession(sessionID) { $0.writerHeldElsewhere = isHeld }
+    }
+
     /// 只识别 app-server 已知的单 writer 拒绝；其他 -32600（例如 no rollout found、
     /// 参数不兼容）仍沿原有错误与恢复路径处理，不能被这个 UX 映射吞掉。
     nonisolated static func isCodexActiveWriterConflict(_ message: String) -> Bool {

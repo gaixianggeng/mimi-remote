@@ -686,6 +686,40 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(session.context?.subagents.first?.id, "child-thread")
     }
 
+    /// 网关的 thread/list 标注 writer 被电脑上别的 Codex 进程占用。其余响应没有这个字段：
+    /// 仍是 notLoaded 时不能猜，已加载（例如恢复成功）说明 writer 已经在共享实例这边。
+    func testWriterHeldElsewhereProjectionFollowsGatewayAndLoadedStatus() async throws {
+        let project = AgentProject(id: "proj-writer", name: "Repo", path: "/Users/me/repo")
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test"
+        )
+        func session(_ fields: [String: CodexAppServerJSONValue]) async throws -> AgentSession {
+            var thread: [String: CodexAppServerJSONValue] = [
+                "id": .string("thread-writer"),
+                "cwd": .string(project.path),
+                "name": .string("Desktop"),
+            ]
+            thread.merge(fields) { _, new in new }
+            return try await runtime.agentSession(from: thread, projects: [project], fallbackProject: nil)
+        }
+
+        let notLoaded = CodexAppServerJSONValue.object(["type": .string("notLoaded")])
+        let held = try await session(["status": notLoaded, "writerHeldElsewhere": .bool(true)])
+        XCTAssertEqual(held.writerHeldElsewhere, true)
+        XCTAssertEqual(held.status, SessionStatus.history.rawValue, "占用不等于运行中")
+        XCTAssertFalse(held.isRunning)
+
+        let free = try await session(["status": notLoaded, "writerHeldElsewhere": .bool(false)])
+        XCTAssertEqual(free.writerHeldElsewhere, false)
+
+        let unknown = try await session(["status": notLoaded])
+        XCTAssertNil(unknown.writerHeldElsewhere, "旧 agentd 或无法确认时不下结论")
+
+        let loaded = try await session(["status": .object(["type": .string("idle")])])
+        XCTAssertEqual(loaded.writerHeldElsewhere, false)
+    }
+
     /// bridge 在会话被 Mac 上其他 Claude 进程持有时回 `canAcceptDirectInput=false` + `claudeOwner`；
     /// App 端要把它投影成只读会话和"正在 Mac 上运行"提示，缺字段时保持原有可写行为。
     func testClaudeThreadHeldElsewhereProjectsOwnerAndReadOnly() async throws {
