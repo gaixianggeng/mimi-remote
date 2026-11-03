@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -29,6 +30,9 @@ import (
 )
 
 type Router struct {
+	// codexWriterLocks 只在本机共享 App Server 上存在：SSH 与 Windows 受管模式没有可读的锁目录。
+	codexWriterLocks gatewayWriterLockInspector
+
 	cfg            config.Config
 	configPath     string
 	projects       *projects.Registry
@@ -250,6 +254,11 @@ func NewRouterWithInstallationIDAndOptions(
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
+	if cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "local") {
+		if home, ok := cfg.EffectiveLocalCodexHome(); ok {
+			r.codexWriterLocks = appserver.NewWriterLockInspector(home)
+		}
+	}
 	if cfg.Codex.IsEnabled() && cfg.AppServer.AutoTitle {
 		r.autoThreadTitles = newAutoThreadTitleCoordinator(
 			newCodexAutoThreadTitleGenerator(r),

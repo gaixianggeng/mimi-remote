@@ -226,7 +226,9 @@ struct SessionContextSidebarView: View {
                 ContextValueRow(
                     symbolName: symbolName(forStatus: status),
                     title: L10n.text("ui.status"),
-                    value: statusText(status)
+                    value: session?.writerHeldElsewhere == true
+                        ? L10n.text("ui.session_open_on_computer")
+                        : statusText(status)
                 )
             }
             if let environment = context.environment {

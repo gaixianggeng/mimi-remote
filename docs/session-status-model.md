@@ -57,9 +57,9 @@ iPhone / iPad 上的会话列表、侧栏和工作区页对同一个会话回答
 
 ### Codex
 
+- 普通 Desktop “This Mac” 是另一个 App Server，共享实例看不到它的回合，对它持有的会话只回 `notLoaded`。网关在 `thread/list` 上附加 `writerHeldElsewhere`（规则见[占用标记](shared-ssh-app-server.md#占用标记)），`displayStatus` 据此显示「电脑上已打开」，分类仍是 `.idle`：能确认占用，不能确认在跑。
 - 共享 App Server（本机 control socket、Desktop SSH 模式）的会话在 `thread/list` 里已带 `active` / `idle`，
   列表刷新即正确；非订阅会话的实时通知受 Codex app-server 订阅模型限制，不在本模型里承诺。
-- Codex Desktop "This Mac" 普通模式运行在另一个 App Server，公开协议读不到状态，仍显示为历史；见 #365 / #366。
 
 ## 验证
 

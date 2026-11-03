@@ -1868,6 +1868,12 @@ extension SessionStore {
     }
 
     func sessionPreparedForStorage(_ incoming: AgentSession) -> AgentSession {
+        // SSH 与 Windows 主机的列表不带占用字段（nil 表示不知道），未解除的 writer 拒绝不能被它冲掉。
+        // 网关明确回 false 时以网关为准。
+        var incoming = incoming
+        if incoming.writerHeldElsewhere == nil, hasActiveWriterConflict(sessionID: incoming.id) {
+            incoming.writerHeldElsewhere = true
+        }
         let ownershipPreserved = sessionPreservingSubagentOwnership(incoming)
         let preserved = sessionPreservingLocalCompletedGoal(
             sessionPreservingLocalCompletedStatus(sessionPreservingActiveApproval(ownershipPreserved))

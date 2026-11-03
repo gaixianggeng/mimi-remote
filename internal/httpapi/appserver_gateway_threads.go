@@ -429,12 +429,12 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 			}
 		}
 		p.completePendingThreadResponse(key, pending, threads)
-		return rewritten, true, nil
+		return p.annotateWriterHolders(rewritten), true, nil
 	}
 	if pending.method == "thread/list" {
 		threads := p.threadsFromResult(frame.Result, pending)
 		p.completePendingThreadResponse(key, pending, threads)
-		return dropUnauthorizedScopedThreads(payload, threads), true, nil
+		return p.annotateWriterHolders(dropUnauthorizedScopedThreads(payload, threads)), true, nil
 	}
 	if pending.method == "thread/turns/list" {
 		p.completePendingThreadResponse(key, pending, p.relatedThreadsFromResult(frame.Result, pending))

@@ -760,12 +760,27 @@ extension CodexAppServerSessionRuntime {
             agentRole: nonEmpty(thread["agentRole"]?.stringValue),
             canAcceptDirectInput: thread["canAcceptDirectInput"]?.boolValue,
             claudeOwner: claudeSessionOwner(from: thread["claudeOwner"]),
+            writerHeldElsewhere: writerHeldElsewhere(from: thread, cached: cached?.writerHeldElsewhere),
             // 派生来源只在 thread/list 上出现；状态推送与历史分页的 thread 不带它，沿用已知值。
             spawnedFromThreadID: nonEmpty(thread["spawnedFromThreadId"]?.stringValue) ?? cached?.spawnedFromThreadID,
             context: context
         )
         if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }
         return session
+    }
+
+    /// 只有网关的 thread/list 带这个字段。其余响应没有结论：会话仍是 notLoaded 就沿用已知值；
+    /// 已被共享实例加载（例如 thread/resume 成功）说明 writer 已在这边，旧结论作废。
+    private func writerHeldElsewhere(
+        from thread: [String: CodexAppServerJSONValue],
+        cached: Bool?
+    ) -> Bool? {
+        if let reported = thread["writerHeldElsewhere"]?.boolValue {
+            return reported
+        }
+        let status = thread["status"]
+        let rawStatus = status?.stringValue ?? status?.objectValue?["type"]?.stringValue
+        return rawStatus == nil || rawStatus == "notLoaded" ? cached : false
     }
 
     /// bridge 只在会话被 Mac 上其他 Claude 进程持有时附带 `claudeOwner`。
