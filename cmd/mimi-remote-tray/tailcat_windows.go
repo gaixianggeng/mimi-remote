@@ -14,9 +14,16 @@ import (
 // tailcatTrayStatus 只读取 agentd tailcat status 的公开字段，不读取配置、连接地址或私钥。
 type tailcatTrayStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
 	Running           bool   `json:"running"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error"`
+	// RelayRequiresManaged 由 agentd 判断：自建模式连着官方中继，二维码一定扫不通。
+	RelayRequiresManaged bool `json:"relay_requires_managed"`
+}
+
+func (s tailcatTrayStatus) managed() bool {
+	return s.Mode == "managed"
 }
 
 func (s tailcatTrayStatus) ready() bool {
@@ -29,8 +36,12 @@ func (s tailcatTrayStatus) title() string {
 		return "未开启"
 	case !s.Running:
 		return "需要处理"
+	case s.RelayRequiresManaged:
+		return "需要改用托管连接"
+	case s.managed():
+		return fmt.Sprintf("运行中 · 托管 · %d 台设备", s.PairedDeviceCount)
 	default:
-		return fmt.Sprintf("运行中 · %d 台设备", s.PairedDeviceCount)
+		return fmt.Sprintf("运行中 · 自建 · %d 台设备", s.PairedDeviceCount)
 	}
 }
 
@@ -52,6 +63,14 @@ func tailcatToggleArguments(enable bool) []string {
 	action := "disable"
 	if enable {
 		action = "enable"
+	}
+	return []string{"tailcat", action, "--json"}
+}
+
+func tailcatManagedArguments(managed bool) []string {
+	action := "exit-managed"
+	if managed {
+		action = "enter-managed"
 	}
 	return []string{"tailcat", action, "--json"}
 }
@@ -98,6 +117,21 @@ func confirmTailcatState(status tailcatTrayStatus, enable bool) error {
 	return nil
 }
 
+// setTailcatManaged 同样以回读为准：命令成功但模式没有变化时，不能告诉用户已切换。
+func (c *agentController) setTailcatManaged(ctx context.Context, managed bool) (tailcatTrayStatus, error) {
+	if _, err := c.runCommand(ctx, tailcatManagedArguments(managed)...); err != nil {
+		return tailcatTrayStatus{}, err
+	}
+	status, err := c.tailcatStatus(ctx)
+	if err != nil {
+		return tailcatTrayStatus{}, fmt.Errorf("无法回读 Tailcat 状态：%w", err)
+	}
+	if status.managed() != managed {
+		return status, errors.New("agentd 回读显示连接模式没有变化，请刷新状态后重试")
+	}
+	return status, nil
+}
+
 func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, error) {
 	payload, err := c.runCommand(ctx, tailcatPairingArguments()...)
 	if err != nil {
@@ -113,6 +147,29 @@ func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, erro
 		return pairingInfo{}, errors.New("Tailcat 配对信息缺少内置连接地址，请重新生成")
 	}
 	return result, nil
+}
+
+func tailcatManagedConfirmation(managed bool) (string, string, uint32) {
+	if managed {
+		return "改用 Mimi 托管连接？",
+			"手机经 Mimi 官方中继连接这台电脑，手机需要先在「我的 → Mimi 托管连接」里开通。\r\n\r\n" +
+				"Tailcat 身份会重建，之前用 Tailcat 连接的设备需要重新扫码。Tailscale 和局域网连接不受影响。",
+			mbYesNo | mbIconInfo
+	}
+	return "退出 Mimi 托管连接？",
+		"这台电脑会恢复原来的中继，通过托管连接接入的手机和平板需要重新扫码。\r\n\r\nTailscale 和局域网连接不受影响。",
+		mbYesNo | mbIconWarning
+}
+
+func tailcatManagedMenuLabel(status tailcatTrayStatus) string {
+	if status.managed() {
+		return "退出 Mimi 托管连接"
+	}
+	return "改用 Mimi 托管连接"
+}
+
+func tailcatManagedMenuEnabled(service agentStatus, hasTailcat bool, tailcatErr error, busy bool) bool {
+	return !busy && service.ServiceOK && hasTailcat && tailcatErr == nil
 }
 
 func tailcatToggleConfirmation(enable bool) (string, string, uint32) {
@@ -199,10 +256,57 @@ func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr
 	}()
 }
 
+func (a *trayApplication) toggleTailcatManaged() {
+	status, has, err := a.tailcatSnapshot()
+	if !has || err != nil {
+		a.showError(errors.New("Tailcat 状态暂不可用，请刷新状态后重试"))
+		return
+	}
+	a.confirmAndSetTailcatManaged(!status.managed(), nil)
+}
+
+// confirmAndSetTailcatManaged 在用户确认后切换连接模式。两个方向都会重建 Tailcat 身份，
+// 旧二维码随之失效。onSuccess 在切换成功后调用，用来继续生成二维码。
+func (a *trayApplication) confirmAndSetTailcatManaged(managed bool, onSuccess func()) {
+	title, text, flags := tailcatManagedConfirmation(managed)
+	if showMessage(a.window, title, text, flags) != idYes || !a.beginBusy() {
+		return
+	}
+	go func() {
+		defer a.endBusy()
+		ctx, cancel := actionContext()
+		status, err := a.controller.setTailcatManaged(ctx, managed)
+		cancel()
+		if err == nil {
+			a.storeTailcat(status, nil)
+		}
+		a.refreshStatus()
+		if err != nil {
+			trayLogf("tailcat managed=%v failed: %v", managed, err)
+			a.showError(fmt.Errorf("切换 Mimi 托管连接失败：%w", err))
+			return
+		}
+		if managed {
+			a.showBalloon("Mimi Remote", "已改用 Mimi 托管连接，请重新生成二维码并扫码", niifInfo)
+		} else {
+			a.showBalloon("Mimi Remote", "已退出托管连接并恢复原中继", niifInfo)
+		}
+		if onSuccess != nil {
+			onSuccess()
+		}
+	}()
+}
+
 func (a *trayApplication) requestTailcatPairing() {
 	status, has, err := a.tailcatSnapshot()
 	if !has || err != nil || !status.ready() {
 		a.showError(errors.New("Tailcat 尚未运行，请先在控制面板或托盘菜单中开启 Tailcat"))
+		return
+	}
+	if status.RelayRequiresManaged {
+		a.confirmAndSetTailcatManaged(true, func() {
+			procPostMessageW.Call(a.window, wmTrayPair, pairRequestTailcat, 0)
+		})
 		return
 	}
 	a.mu.RLock()

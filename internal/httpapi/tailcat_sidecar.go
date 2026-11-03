@@ -57,6 +57,8 @@ type tailcatStatus struct {
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error,omitempty"`
+	// RelayRequiresManaged：自建模式却连着只接受托管节点的官方中继，这样的二维码一定扫不通。
+	RelayRequiresManaged bool `json:"relay_requires_managed,omitempty"`
 }
 
 type tailcatSidecar interface {

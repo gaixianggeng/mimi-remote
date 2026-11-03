@@ -11,8 +11,8 @@ import (
 )
 
 func TestTailcatMenuCommandIDsAppendAfterExistingCommands(t *testing.T) {
-	if menuTailcatPair != 111 || menuTailcatToggle != 112 || menuTailcatStatus != 113 {
-		t.Fatalf("Tailcat menu IDs = %d/%d/%d, want 111/112/113", menuTailcatPair, menuTailcatToggle, menuTailcatStatus)
+	if menuTailcatPair != 111 || menuTailcatToggle != 112 || menuTailcatStatus != 113 || menuTailcatManaged != 114 {
+		t.Fatalf("Tailcat menu IDs = %d/%d/%d/%d, want 111/112/113/114", menuTailcatPair, menuTailcatToggle, menuTailcatStatus, menuTailcatManaged)
 	}
 }
 
@@ -37,7 +37,7 @@ func TestParseTailcatTrayStatusRequiresEnabledAndRunningFields(t *testing.T) {
 		t.Fatal("status without enabled/running must be rejected as an old agentd")
 	}
 	status, err := parseTailcatTrayStatus([]byte(`{"enabled":true,"running":true,"paired_device_count":2,"address":"private"}`))
-	if err != nil || !status.ready() || status.PairedDeviceCount != 2 || status.title() != "运行中 · 2 台设备" {
+	if err != nil || !status.ready() || status.PairedDeviceCount != 2 || status.title() != "运行中 · 自建 · 2 台设备" {
 		t.Fatalf("parsed status = %+v, %v", status, err)
 	}
 }
@@ -115,7 +115,7 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 		t.Fatalf("busy tray must not offer the Tailcat toggle: %+v", p)
 	}
 	running := tailcatTrayStatus{Enabled: true, Running: true, PairedDeviceCount: 1}
-	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 1 台设备" {
+	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 自建 · 1 台设备" {
 		t.Fatalf("running Tailcat presentation = %+v", p)
 	}
 	stopped := agentStatus{Version: "1.0.0"}
@@ -143,5 +143,48 @@ func TestDefaultPairingUsesTailcatOnlyWithoutReachableNetwork(t *testing.T) {
 	}
 	if defaultPairingUsesTailcat(agentStatus{}, running, true) {
 		t.Fatal("unknown module status must keep the default pairing code")
+	}
+}
+
+func TestTailcatManagedArgumentsAndTitle(t *testing.T) {
+	if got := tailcatManagedArguments(true); !reflect.DeepEqual(got, []string{"tailcat", "enter-managed", "--json"}) {
+		t.Fatalf("enter arguments = %v", got)
+	}
+	if got := tailcatManagedArguments(false); !reflect.DeepEqual(got, []string{"tailcat", "exit-managed", "--json"}) {
+		t.Fatalf("exit arguments = %v", got)
+	}
+	managed := tailcatTrayStatus{Enabled: true, Running: true, Mode: "managed", PairedDeviceCount: 1}
+	if managed.title() != "运行中 · 托管 · 1 台设备" || tailcatManagedMenuLabel(managed) != "退出 Mimi 托管连接" {
+		t.Fatalf("managed presentation = %q / %q", managed.title(), tailcatManagedMenuLabel(managed))
+	}
+	blocked := tailcatTrayStatus{Enabled: true, Running: true, Mode: "self_hosted", RelayRequiresManaged: true}
+	if blocked.title() != "需要改用托管连接" || tailcatManagedMenuLabel(blocked) != "改用 Mimi 托管连接" {
+		t.Fatalf("blocked presentation = %q / %q", blocked.title(), tailcatManagedMenuLabel(blocked))
+	}
+}
+
+func TestSetTailcatManagedRequiresModeReadback(t *testing.T) {
+	var calls []string
+	controller := fakeTailcatController(map[string]string{
+		"tailcat enter-managed --json": `{}`,
+		"tailcat status --json":        `{"enabled":true,"running":true,"mode":"self_hosted"}`,
+	}, &calls)
+	if _, err := controller.setTailcatManaged(context.Background(), true); err == nil {
+		t.Fatal("unchanged mode must not be reported as switched")
+	}
+	controller = fakeTailcatController(map[string]string{
+		"tailcat enter-managed --json": `{}`,
+		"tailcat status --json":        `{"enabled":true,"running":true,"mode":"managed"}`,
+	}, &calls)
+	if status, err := controller.setTailcatManaged(context.Background(), true); err != nil || !status.managed() {
+		t.Fatalf("switch to managed = %+v, %v", status, err)
+	}
+}
+
+func TestDefaultPairingSkipsTailcatWhenRelayRequiresManaged(t *testing.T) {
+	offline := agentStatus{ModuleStatus: &moduleStatus{}}
+	blocked := tailcatTrayStatus{Enabled: true, Running: true, RelayRequiresManaged: true}
+	if defaultPairingUsesTailcat(offline, blocked, true) {
+		t.Fatal("a Tailcat code the relay will reject must not be opened automatically")
 	}
 }

@@ -202,3 +202,21 @@ func TestLinuxMenuSubmenuAndSymbolicStates(t *testing.T) {
 		t.Fatal("fallback icon has an opaque square")
 	}
 }
+
+func TestLinuxTerminalTailcatAsksForManagedWhenRelayRequiresIt(t *testing.T) {
+	s, calls := linuxTerminalFixture(t)
+	s.app.update(func(state *linuxTraySnapshot) {
+		state.HasTailcat = true
+		state.Tailcat = linuxTailcatStatus{Enabled: true, Running: true, Mode: "self_hosted", RelayRequiresManaged: true}
+	})
+	s.selectAction("pair-tailcat")
+	if s.pending != "tailcat-enter-managed" || s.next != "pair-tailcat" || len(*calls) != 0 {
+		t.Fatal("managed switch must wait for confirmation", s.pending, s.next, *calls)
+	}
+	if word := linuxConfirmationWord("tailcat-enter-managed"); word != "managed" {
+		t.Fatal(word)
+	}
+	if !validLinuxTerminalAction("tailcat-enter-managed") || !validLinuxTerminalAction("tailcat-exit-managed") {
+		t.Fatal("menu actions must be accepted by the terminal launcher")
+	}
+}
