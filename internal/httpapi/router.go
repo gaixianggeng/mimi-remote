@@ -194,6 +194,14 @@ func NewRouterWithInstallationIDAndOptions(
 	if managedPairing == nil {
 		managedPairing = newDefaultManagedPairingController(options.ConfigPath, installationID, tailcat)
 	}
+	if supervisor, ok := tailcat.(*tailcatSidecarSupervisor); ok && managedPairing != nil {
+		// 托管白名单只在辅助程序内存中，重启后立即重放，不等 5 分钟轮询。
+		supervisor.setRestartHandler(func(ctx context.Context) {
+			if err := managedPairing.Sync(ctx); err != nil {
+				log.Printf("tailcat sidecar: 重启后同步托管策略失败，等待下次轮询")
+			}
+		})
+	}
 	tailcatLocalToken := strings.TrimSpace(options.tailcatLocalToken)
 	if tailcatLocalToken == "" {
 		tailcatLocalToken, _ = ReadTailcatLocalControlToken(options.ConfigPath)

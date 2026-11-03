@@ -89,6 +89,17 @@ type tailcatSidecarSupervisor struct {
 	pairTimeout    time.Duration
 	// 上一次 /pair 超时、辅助程序可能还在把那个节点建完。受 operationMu 保护。
 	pairTimedOut bool
+	// 以下字段受 mu 保护，自动重启逻辑见 tailcat_sidecar_restart.go。
+	// stoppingCmd 是正在被主动停止的进程，它的退出不算意外。
+	stoppingCmd     *exec.Cmd
+	readyAt         time.Time
+	restartFailures int
+	restartCancel   context.CancelFunc
+	onRestarted     func(context.Context)
+	// 零值表示使用默认值；测试用短间隔驱动。
+	restartBaseDelay    time.Duration
+	restartMaxDelay     time.Duration
+	restartStableUptime time.Duration
 }
 
 func (s *tailcatSidecarSupervisor) controlCallTimeout() time.Duration {
@@ -188,6 +199,7 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 		return errors.New("Tailcat 缺少配置文件路径")
 	}
 	s.starting = true
+	s.readyAt = time.Time{}
 	s.lastError = ""
 	s.mu.Unlock()
 
@@ -249,6 +261,12 @@ func (s *tailcatSidecarSupervisor) finishStart(cmd *exec.Cmd, err error) {
 			s.cmd = nil
 			s.done = nil
 		}
+		return
+	}
+	s.readyAt = time.Now()
+	// 就绪后、这里之前就退出时，reap 看到的还是启动中，这次退出要在这里补上。
+	if s.cmd != cmd {
+		s.scheduleRestartLocked(cmd)
 	}
 }
 
@@ -266,6 +284,10 @@ func (s *tailcatSidecarSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 				s.lastError = "Tailcat sidecar 已退出"
 			}
 		}
+		s.scheduleRestartLocked(cmd)
+	}
+	if s.stoppingCmd == cmd {
+		s.stoppingCmd = nil
 	}
 	s.mu.Unlock()
 	close(done)
@@ -275,6 +297,9 @@ func (s *tailcatSidecarSupervisor) Stop(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	s.cancelRestartLocked()
+	s.mu.Unlock()
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	return s.stop(ctx)
@@ -286,6 +311,8 @@ func (s *tailcatSidecarSupervisor) stop(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.config.Enabled = false
+	s.cancelRestartLocked()
+	s.restartFailures = 0
 	cmd := s.cmd
 	done := s.done
 	s.lastError = ""
@@ -301,6 +328,11 @@ func (s *tailcatSidecarSupervisor) stopProcess(ctx context.Context, cmd *exec.Cm
 	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.stoppingCmd = cmd
+	}
+	s.mu.Unlock()
 	// 停止请求没有送达（进程已退出、尚未建好控制通道，或旧辅助程序不认识
 	// /shutdown）时不再空等宽限期，直接结束进程。
 	grace := tailcatSidecarStopGrace
@@ -550,10 +582,14 @@ func (s *tailcatSidecarSupervisor) Close() {
 	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	s.cancelRestartLocked()
+	s.mu.Unlock()
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	s.closing = true
+	s.cancelRestartLocked()
 	cmd := s.cmd
 	done := s.done
 	s.mu.Unlock()
