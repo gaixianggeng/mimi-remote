@@ -564,6 +564,8 @@ func TestTailcatLocalPairRejectsSelfHostedOnOfficialRelay(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server := newTestServer(t)
+			// 托管地址被覆盖时，判断依据仍是内置官方地址，不随覆盖值变化。
+			server.router.cfg.Tailcat.ManagedDERPMapURL = "https://relay.example/derpmap"
 			fake := &fakeTailcatSidecar{status: test.status}
 			server.router.tailcat = fake
 			request := httptest.NewRequest(http.MethodPost, "/api/local/tailcat", strings.NewReader(`{"action":"pair"}`))

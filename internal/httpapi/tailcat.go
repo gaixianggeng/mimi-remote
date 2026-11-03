@@ -125,7 +125,7 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) decorateTailcatStatus(status tailcatStatus) tailcatStatus {
 	status.MacInstallationID = strings.TrimSpace(r.installationID)
-	status.RelayRequiresManaged = r.relayRequiresManaged(status)
+	status.RelayRequiresManaged = relayRequiresManaged(status)
 	return status
 }
 

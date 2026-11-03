@@ -18,16 +18,13 @@ var (
 )
 
 // relayRequiresManaged 判断是否为「自建模式 + 官方中继」。这个组合的节点一定被中继准入拒绝。
-func (r *Router) relayRequiresManaged(status tailcatStatus) bool {
+// 只比较内置官方地址：managed_derp_map_url 可被测试或自建控制面覆盖，覆盖后的地址不一定开启准入。
+func relayRequiresManaged(status tailcatStatus) bool {
 	if status.Mode == config.TailcatModeManaged {
 		return false
 	}
-	official, err := r.cfg.Tailcat.ManagedRelayURL()
-	if err != nil {
-		return false
-	}
 	current, err := config.NormalizeTailcatDERPMapURL(status.DERPMapURL)
-	return err == nil && current == official
+	return err == nil && current == config.DefaultManagedTailcatDERPMapURL
 }
 
 // ConfigureDERPMap 与模式切换共用同一个事务，只有自建模式允许手动改中继。
