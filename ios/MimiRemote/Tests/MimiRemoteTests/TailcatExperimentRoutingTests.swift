@@ -2012,6 +2012,50 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(try tokenStore.loadTailcatExperimentAddress(), "")
     }
 
+    func testLegacyEnabledFlagPreservesManagedRouteWithMultipleProfiles() throws {
+        for available in [true, false] {
+            let suiteName = "TailcatExperimentRoutingTests.ManagedLegacyFlag.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let profiles = [
+                ConnectionProfile(
+                    id: "managed-mac", displayName: "Managed Mac", endpoint: "http://100.64.0.10:8787",
+                    lastSuccessfulAt: nil, connectionRoute: .managedTailcat
+                ),
+                ConnectionProfile(
+                    id: "other-mac", displayName: "Other Mac", endpoint: "http://100.64.0.20:8787",
+                    lastSuccessfulAt: nil
+                ),
+            ]
+            defaults.set(try JSONEncoder().encode(profiles), forKey: "agentd.connectionProfiles.v2")
+            defaults.set("managed-mac", forKey: "agentd.activeConnectionProfileID.v1")
+            defaults.set(true, forKey: TailcatExperimentController.enabledKey)
+            let tokenStore = TokenStore(keychain: TestKeychainOperations())
+            try tokenStore.save("managed-token", profileID: "managed-mac")
+            try tokenStore.save("other-token", profileID: "other-mac")
+            try tokenStore.saveTailcatAddress("tailcat:managed-mac", profileID: "managed-mac")
+            let store = AppStore(defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false)
+
+            let controller = TailcatExperimentController(
+                appStore: store,
+                defaults: defaults,
+                tokenStore: tokenStore,
+                runtime: TailcatExperimentRuntimeStub(startResults: []),
+                bridge: .init(
+                    isAvailable: available,
+                    generatePrivateKey: { "private-key" },
+                    publicKey: { _ in "nodekey:public-key" }
+                )
+            )
+
+            XCTAssertTrue(controller.isEnabled, "托管线路在桥接不可用时也不能退回普通 HTTP")
+            XCTAssertEqual(controller.address, "tailcat:managed-mac")
+            XCTAssertEqual(store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+            let restoredStore = AppStore(defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false)
+            XCTAssertEqual(restoredStore.activeConnectionProfile?.connectionRoute, .managedTailcat)
+        }
+    }
+
     func testLegacyGlobalAddressRemainsWhenMultipleProfilesAreAmbiguous() throws {
         let suiteName = "TailcatExperimentRoutingTests.AmbiguousLegacyMigration.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
