@@ -341,7 +341,8 @@ final class TailcatExperimentController: ObservableObject {
                     }
                 } catch {}
             }
-            if savedEnabled, profileAddressReady, !savedAddress.isEmpty {
+            // 旧全局开关只迁移自建线路，不能覆盖已保存的托管选择及其鉴权边界。
+            if savedEnabled, profileAddressReady, !savedAddress.isEmpty, !profileRoute.isManaged {
                 try? appStore.setActiveConnectionProfileRoute(.customTailcat)
                 profileRoute = .customTailcat
             }
