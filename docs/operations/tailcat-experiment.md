@@ -75,6 +75,10 @@ agentd tailcat pair
 `tailcat.managed_derp_map_url` 可以覆盖该地址，只允许完整 HTTPS URL，供测试或自建控制面使用。
 不配置时使用统一的官方默认值。`tailcat.mode`、当前 `tailcat.derp_map_url` 和
 `tailcat.previous_derp_map_url` 在一次配置提交中保存；原地址为空表示 Tailcat 默认中继。
+
+官方中继只接受托管节点。自建模式连着官方中继时，`agentd tailcat pair` 返回 `tailcat_relay_requires_managed`，
+不生成二维码；状态里的 `relay_requires_managed` 为 true。Windows 和 Linux 托盘提供「改用 Mimi 托管连接」入口，
+命令行用 `agentd tailcat enter-managed`。
 旧配置没有 `mode` 时按自建处理，不自动迁移已有配对。
 
 进入和退出模式都会重建 Tailcat 身份并清空自建配对；同一台电脑同一时间只使用一种模式。

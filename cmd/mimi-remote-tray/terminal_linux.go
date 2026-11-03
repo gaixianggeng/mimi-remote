@@ -139,6 +139,10 @@ func linuxConfirmationWord(action string) string {
 		return "enable"
 	case "tailcat-disable":
 		return "disable"
+	case "tailcat-enter-managed":
+		return "managed"
+	case "tailcat-exit-managed":
+		return "exit"
 	}
 	return ""
 }
@@ -161,6 +165,11 @@ func (s *linuxTerminalScreen) selectAction(action string) {
 		}
 		if !state.Tailcat.Running {
 			s.output = "Tailcat 已启用但未就绪。\n" + state.Tailcat.Error
+			return
+		}
+		// 自建模式连着官方中继时二维码一定扫不通，先引导切换，确认后继续配对。
+		if state.Tailcat.RelayRequiresManaged {
+			s.pending, s.next = "tailcat-enter-managed", "pair-tailcat"
 			return
 		}
 	}

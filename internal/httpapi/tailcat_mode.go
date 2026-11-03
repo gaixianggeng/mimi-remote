@@ -14,7 +14,21 @@ var (
 	errTailcatManagedModeRequired  = errors.New("请先在电脑上进入托管模式，再重新生成二维码并扫码")
 	errTailcatManagedRelayLocked   = errors.New("托管模式下不能手动修改中继，请先退出托管模式")
 	errTailcatManagedGrantRequired = errors.New("这台电脑已开启托管连接，请在 App 的「Mimi 托管连接」里扫码配对")
+	errTailcatRelayRequiresManaged = errors.New("这台电脑连的是 Mimi 官方中继，它只接受托管连接。请先改用 Mimi 托管连接（命令：agentd tailcat enter-managed），再重新生成二维码")
 )
+
+// relayRequiresManaged 判断是否为「自建模式 + 官方中继」。这个组合的节点一定被中继准入拒绝。
+func (r *Router) relayRequiresManaged(status tailcatStatus) bool {
+	if status.Mode == config.TailcatModeManaged {
+		return false
+	}
+	official, err := r.cfg.Tailcat.ManagedRelayURL()
+	if err != nil {
+		return false
+	}
+	current, err := config.NormalizeTailcatDERPMapURL(status.DERPMapURL)
+	return err == nil && current == official
+}
 
 // ConfigureDERPMap 与模式切换共用同一个事务，只有自建模式允许手动改中继。
 func (s *tailcatSidecarSupervisor) ConfigureDERPMap(ctx context.Context, rawURL string) (tailcatStatus, error) {

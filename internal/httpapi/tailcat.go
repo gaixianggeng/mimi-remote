@@ -60,6 +60,12 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "pair":
+		// 官方中继开启准入后不接受自建节点，这里拦下，避免生成注定连不上的二维码。
+		// 助手全关的提示优先，由 pairTailcat 返回。
+		if r.cfg.HasEnabledAgent() && r.decorateTailcatStatus(r.tailcat.Status(req.Context())).RelayRequiresManaged {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_relay_requires_managed", "error": errTailcatRelayRequiresManaged.Error()})
+			return
+		}
 		status, failure := r.pairTailcat(req.Context())
 		if failure != nil {
 			writeError(w, failure.status, failure.err.Error())
@@ -119,6 +125,7 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) decorateTailcatStatus(status tailcatStatus) tailcatStatus {
 	status.MacInstallationID = strings.TrimSpace(r.installationID)
+	status.RelayRequiresManaged = r.relayRequiresManaged(status)
 	return status
 }
 

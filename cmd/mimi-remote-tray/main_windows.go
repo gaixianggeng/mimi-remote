@@ -88,6 +88,7 @@ const (
 	menuTailcatPair
 	menuTailcatToggle
 	menuTailcatStatus
+	menuTailcatManaged
 )
 
 // wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
@@ -659,6 +660,7 @@ func (a *trayApplication) showMenu() {
 	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
 	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "Tailcat："+tailcatPresentation.Value)
 	appendMenu(menu, menuFlags(!tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
+	appendMenu(menu, menuFlags(!tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, menuFlags(busy), menuExitAndStop, "退出并停止服务…")
 
@@ -714,6 +716,8 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 		a.requestTailcatPairing()
 	case menuTailcatToggle:
 		a.toggleTailcat()
+	case menuTailcatManaged:
+		a.toggleTailcatManaged()
 	case menuDoctor:
 		a.runDoctor(false)
 	case menuDoctorFix:

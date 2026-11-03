@@ -548,3 +548,40 @@ func TestManagedModeSidecarRefusesFreeAllowlistAndReconcilesChangedRelay(t *test
 		t.Fatalf("地址一致时再次进入不能轮换身份：%+v %v", again, err)
 	}
 }
+
+func TestTailcatLocalPairRejectsSelfHostedOnOfficialRelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  tailcatStatus
+		blocked bool
+	}{
+		{"自建连官方中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, true},
+		{"旧配置空模式连官方中继", tailcatStatus{Running: true, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, true},
+		{"自建默认中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted}, false},
+		{"自建自定义中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted, DERPMapURL: "https://relay.example/derpmap"}, false},
+		{"托管官方中继", tailcatStatus{Running: true, Mode: config.TailcatModeManaged, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := newTestServer(t)
+			fake := &fakeTailcatSidecar{status: test.status}
+			server.router.tailcat = fake
+			request := httptest.NewRequest(http.MethodPost, "/api/local/tailcat", strings.NewReader(`{"action":"pair"}`))
+			response := httptest.NewRecorder()
+			server.router.tailcatLocalAction(response, request)
+			if test.blocked {
+				if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"tailcat_relay_requires_managed"`) {
+					t.Fatalf("应返回明确冲突：%d %s", response.Code, response.Body.String())
+				}
+				if fake.pairCalls != 0 {
+					t.Fatal("不应为注定被拒绝的中继生成配对节点")
+				}
+			} else if response.Code != http.StatusOK || fake.pairCalls != 1 {
+				t.Fatalf("不受影响的配置应正常配对：%d %s", response.Code, response.Body.String())
+			}
+			if got := server.router.decorateTailcatStatus(test.status).RelayRequiresManaged; got != test.blocked {
+				t.Fatalf("RelayRequiresManaged = %v, want %v", got, test.blocked)
+			}
+		})
+	}
+}

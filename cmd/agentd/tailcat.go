@@ -19,19 +19,20 @@ import (
 )
 
 type tailcatCommandStatus struct {
-	Enabled           bool   `json:"enabled"`
-	Mode              string `json:"mode"`
-	Running           bool   `json:"running"`
-	Version           string `json:"version,omitempty"`
-	DERPMapURL        string `json:"derp_map_url,omitempty"`
-	Address           string `json:"address,omitempty"`
-	PublicKey         string `json:"public_key,omitempty"`
-	MacInstallationID string `json:"mac_installation_id,omitempty"`
-	PairAddress       string `json:"pair_address,omitempty"`
-	PairPublicKey     string `json:"pair_public_key,omitempty"`
-	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
-	PairedDeviceCount int    `json:"paired_device_count"`
-	Error             string `json:"error,omitempty"`
+	Enabled              bool   `json:"enabled"`
+	Mode                 string `json:"mode"`
+	Running              bool   `json:"running"`
+	Version              string `json:"version,omitempty"`
+	DERPMapURL           string `json:"derp_map_url,omitempty"`
+	Address              string `json:"address,omitempty"`
+	PublicKey            string `json:"public_key,omitempty"`
+	MacInstallationID    string `json:"mac_installation_id,omitempty"`
+	PairAddress          string `json:"pair_address,omitempty"`
+	PairPublicKey        string `json:"pair_public_key,omitempty"`
+	PairExpiresAt        string `json:"pair_expires_at,omitempty"`
+	PairedDeviceCount    int    `json:"paired_device_count"`
+	Error                string `json:"error,omitempty"`
+	RelayRequiresManaged bool   `json:"relay_requires_managed,omitempty"`
 }
 
 func runTailcat(args []string) error {
@@ -207,5 +208,8 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 	fmt.Fprintf(w, "已配对设备：%d\n", status.PairedDeviceCount)
 	if status.Error != "" {
 		fmt.Fprintf(w, "问题：%s\n", status.Error)
+	}
+	if status.RelayRequiresManaged {
+		fmt.Fprintln(w, "问题：官方中继只接受托管连接，请运行 agentd tailcat enter-managed 后重新生成二维码")
 	}
 }

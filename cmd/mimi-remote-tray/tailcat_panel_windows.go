@@ -37,7 +37,7 @@ func makeTailcatPresentation(status agentStatus, tailcat tailcatTrayStatus, hasT
 	presentation.ToggleLabel = "关闭 Tailcat"
 	presentation.ToggleEnabled = !busy && status.ProcessOK
 	presentation.Color = rgbColor(35, 126, 58)
-	if !tailcat.Running {
+	if !tailcat.Running || tailcat.RelayRequiresManaged {
 		presentation.Color = rgbColor(154, 91, 0)
 	}
 	return presentation
@@ -48,7 +48,7 @@ func makeTailcatPresentation(status agentStatus, tailcat tailcatTrayStatus, hasT
 // 地址并不说明这一点，agentd 可能另外监听 Tailscale 地址，所以只看运行中 agentd 的模块状态。
 func defaultPairingUsesTailcat(status agentStatus, tailcat tailcatTrayStatus, hasTailcat bool) bool {
 	modules := status.ModuleStatus
-	if !hasTailcat || !tailcat.ready() || modules == nil {
+	if !hasTailcat || !tailcat.ready() || tailcat.RelayRequiresManaged || modules == nil {
 		return false
 	}
 	return !(modules.TailscaleEnabled && modules.TailscaleAvailable) && !(modules.LANEnabled && modules.LANAvailable)
@@ -105,6 +105,11 @@ func (p *controlPanel) switchPairingNetwork() {
 		p.app.confirmAndSetTailcat(true, p.window)
 	case !tailcat.Running:
 		p.app.showError(errors.New("Tailcat 已开启但没有运行：" + fallbackText(tailcat.Error, "请运行诊断查看原因")))
+	case tailcat.RelayRequiresManaged:
+		window := p.window
+		p.app.confirmAndSetTailcatManaged(true, func() {
+			procPostMessageW.Call(window, wmPanelTailcatEnabled, 0, 0)
+		})
 	default:
 		p.pairingTailcat = true
 		p.refreshPairing()
