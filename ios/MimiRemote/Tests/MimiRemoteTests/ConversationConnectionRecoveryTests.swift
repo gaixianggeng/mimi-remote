@@ -313,6 +313,15 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(store.selectedSessionHasActiveWriterConflict)
         XCTAssertFalse(store.canSendInSelectedSession)
         XCTAssertEqual(store.sessionsByID[running.id]?.writerHeldElsewhere, true, "明确的拒绝要立刻反映到会话行")
+        // SSH 与 Windows 主机的列表不带占用字段，刷新不能冲掉未解除的拒绝；网关明确回 false 时以网关为准。
+        var listedWithoutMarker = try XCTUnwrap(store.sessionsByID[running.id])
+        listedWithoutMarker.writerHeldElsewhere = nil
+        store.mergeSessionPage([listedWithoutMarker])
+        XCTAssertEqual(store.sessionsByID[running.id]?.writerHeldElsewhere, true)
+        listedWithoutMarker.writerHeldElsewhere = false
+        store.mergeSessionPage([listedWithoutMarker])
+        XCTAssertEqual(store.sessionsByID[running.id]?.writerHeldElsewhere, false)
+        store.syncWriterHeldElsewhere(true, sessionID: running.id)
 
         // writer 结论必须保持到下一次 thread/resume 成功。显式退役旧 socket 或随后出现
         // 普通连接错误，都不能让 Composer 在尚未取得 writer 时重新出现。
