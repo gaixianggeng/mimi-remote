@@ -23,6 +23,8 @@ func main() {
 	flags.String("target", "", "")
 	flags.String("port", "", "")
 	_ = flags.Parse(os.Args[2:])
+	// 每次启动追加一行时间，供测试核对重启次数和间隔。
+	recordStart(filepath.Join(*stateDir, "starts.log"))
 	identityPath := filepath.Join(*stateDir, "host.private.json")
 	identity, err := os.ReadFile(identityPath)
 	if os.IsNotExist(err) {
@@ -63,7 +65,7 @@ func main() {
 			status["paired_device_count"] = len(clients) + len(body.PublicKeys)
 		case "/shutdown":
 			time.AfterFunc(10*time.Millisecond, func() { os.Exit(0) })
-		case "/status":
+		case "/status", "/reset":
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -73,6 +75,14 @@ func main() {
 	listener, err := net.Listen("unix", *control)
 	must(err)
 	must(http.Serve(listener, handler))
+}
+
+func recordStart(path string) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	must(err)
+	defer file.Close()
+	_, err = file.WriteString(time.Now().UTC().Format(time.RFC3339Nano) + "\n")
+	must(err)
 }
 
 func newKey() string {
