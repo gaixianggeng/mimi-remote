@@ -67,6 +67,8 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     @Published var intent: ConnectionQRCodeScanIntent?
     @Published private(set) var isRequestingCameraAuthorization = false
     @Published private(set) var host: ConnectionQRCodeScannerHost = .connectionSettings
+    @Published private(set) var managedConnectionHost: ConnectionQRCodeScannerHost?
+    private var pendingManagedConnectionHost: ConnectionQRCodeScannerHost?
 
     private var submissionHandler: SubmissionHandler?
     private var manualConnectionHandler: ((ConnectionQRCodeScanIntent) -> Void)?
@@ -144,6 +146,23 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
         intent = nil
     }
 
+    /// 扫码失败页的「开通托管连接」：关掉扫码页，由发起扫码的那一页推出开通页。
+    func openManagedConnection() {
+        pendingManagedConnectionHost = host
+        intent = nil
+    }
+
+    /// 与扫码 Cover 同理，只让发起扫码的宿主页推出开通页。
+    func managedConnectionBinding(for host: ConnectionQRCodeScannerHost) -> Binding<Bool> {
+        Binding(
+            get: { [weak self] in self?.managedConnectionHost == host },
+            set: { [weak self] isPresented in
+                guard let self, !isPresented, self.managedConnectionHost == host else { return }
+                self.managedConnectionHost = nil
+            }
+        )
+    }
+
     func chooseManualConnection(for intent: ConnectionQRCodeScanIntent) {
         manualConnectionHandler?(intent)
     }
@@ -160,6 +179,11 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 
     func didDismiss() {
         dismissalHandler?()
+        // 关闭动画结束后才推出开通页；Cover 还在退场时推送，导航栈不会接受。
+        if let pendingManagedConnectionHost {
+            self.pendingManagedConnectionHost = nil
+            managedConnectionHost = pendingManagedConnectionHost
+        }
     }
 }
 
@@ -379,6 +403,13 @@ struct InitialConnectionSettingsSections: View {
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
+            // 没有当前电脑卡片可挂错误行，外部链接配对失败等本页反馈单独成组显示（#959）。
+            if let message = localError.map({ friendlyConnectionMessage($0, honorsActiveConnectionTermination: false) }) {
+                Section {
+                    connectionErrorMessageRow(message, tokens: tokens)
+                }
+                .settingsGroupRowStyle()
+            }
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
             firstConnectionGuideSections(tokens: tokens)
@@ -1411,7 +1442,8 @@ struct InitialConnectionSettingsSections: View {
             return termination.message
         }
         if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") ||
-            HostPlatform.isPairingQRCodeExpiredGuidance(raw) {
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
+            TailcatPairingError.isUserFacingMessage(raw) {
             return raw
         }
         let lowercased = raw.lowercased()
@@ -1747,6 +1779,9 @@ struct InitialConnectionSettingsSections: View {
             appStore.lastError = message
             setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
             // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
+            if (error as? TailcatPairingError) == .managedConnectionRequired {
+                return .requiresManagedConnection(message)
+            }
             return .rejected(message)
         }
     }

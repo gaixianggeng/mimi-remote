@@ -116,6 +116,10 @@ struct ConnectionSettingsView: View {
         // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
         // 紧凑布局把连接页 push 进导航栈后，根层已不在被呈现的层级里，点击扫码不会有任何反应。
         // 这一层是整页而不是 Form.Section，权限弹窗引起的 Section 重建不会销毁它。
+        // 扫码失败页点了「开通托管连接」后从这里推出开通页，不依赖所在的是哪条导航栈。
+        .navigationDestination(isPresented: qrScannerPresentation.managedConnectionBinding(for: .connectionSettings)) {
+            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+        }
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .connectionSettings),
             onDismiss: qrScannerPresentation.didDismiss
@@ -125,6 +129,9 @@ struct ConnectionSettingsView: View {
                 onChooseManualConnection: {
                     qrScannerPresentation.chooseManualConnection(for: intent)
                 },
+                onOpenManagedConnection: ManagedConnectionSubscriptionView.isEntryVisible
+                    ? { qrScannerPresentation.openManagedConnection() }
+                    : nil,
                 onCode: { rawValue in
                     await qrScannerPresentation.submit(rawValue, intent: intent)
                 }
@@ -212,6 +219,10 @@ struct AddComputerView: View {
         .accessibilityIdentifier("settings.addComputer.page")
         // 扫码 Cover 必须由当前真正显示的页面持有。这一页 push 在设备页之上，
         // 设备页已经不在被呈现的层级里，仍挂在那里的 presenter 不会呈现。
+        // 扫码失败页点了「开通托管连接」后从这里推出开通页，不依赖所在的是哪条导航栈。
+        .navigationDestination(isPresented: qrScannerPresentation.managedConnectionBinding(for: .addComputer)) {
+            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+        }
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .addComputer),
             onDismiss: qrScannerPresentation.didDismiss
@@ -221,6 +232,9 @@ struct AddComputerView: View {
                 onChooseManualConnection: {
                     qrScannerPresentation.chooseManualConnection(for: intent)
                 },
+                onOpenManagedConnection: ManagedConnectionSubscriptionView.isEntryVisible
+                    ? { qrScannerPresentation.openManagedConnection() }
+                    : nil,
                 onCode: { rawValue in
                     await qrScannerPresentation.submit(rawValue, intent: intent)
                 }

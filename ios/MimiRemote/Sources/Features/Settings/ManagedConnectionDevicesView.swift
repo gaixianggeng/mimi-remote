@@ -53,6 +53,10 @@ struct ManagedConnectionDevicesView: View {
         .onChange(of: appStore.activeConnectionProfileID) { _, _ in cancelCurrentComputerUpgrade() }
         .onDisappear(perform: cancelCurrentComputerUpgrade)
         // 扫码请求由本页发起，它是栈顶页面，Cover 必须挂在这里才会真正呈现。
+        // 扫码失败页点了「开通托管连接」后从这里推出开通页，不依赖所在的是哪条导航栈。
+        .navigationDestination(isPresented: qrScannerPresentation.managedConnectionBinding(for: .managedConnection)) {
+            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+        }
         .fullScreenCover(
             item: qrScannerPresentation.presentationBinding(for: .managedConnection),
             onDismiss: qrScannerPresentation.didDismiss
@@ -62,6 +66,9 @@ struct ManagedConnectionDevicesView: View {
                 onChooseManualConnection: {
                     qrScannerPresentation.chooseManualConnection(for: intent)
                 },
+                onOpenManagedConnection: ManagedConnectionSubscriptionView.isEntryVisible
+                    ? { qrScannerPresentation.openManagedConnection() }
+                    : nil,
                 onCode: { rawValue in
                     await qrScannerPresentation.submit(rawValue, intent: intent)
                 }
@@ -753,6 +760,11 @@ struct ManagedConnectionDevicesView: View {
             )
         } catch is CancellationError {
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
+        } catch ManagedConnectionDeviceStoreError.subscriptionRequired,
+                TailcatPairingError.managedConnectionRequired {
+            let message = TailcatPairingError.managedConnectionRequired.localizedDescription
+            localError = message
+            return .requiresManagedConnection(message)
         } catch {
             let message = Self.pairingErrorMessage(error)
             localError = message

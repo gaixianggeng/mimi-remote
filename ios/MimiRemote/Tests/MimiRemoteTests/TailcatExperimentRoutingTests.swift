@@ -337,6 +337,7 @@ private final class TailcatProxyStub: TailcatProxyProtocol, @unchecked Sendable 
 private final class ManagedPairingAuthorizerStub: ManagedConnectionPairingAuthorizing {
     private(set) var requests: [(macInstallationID: String, macKey: String, pairingMacKey: String, mobileKey: String)] = []
     private(set) var completions: [ManagedConnectionPairingAuthorization] = []
+    var error: Error?
 
     func authorizeManagedPairing(
         macInstallationID: String,
@@ -345,6 +346,7 @@ private final class ManagedPairingAuthorizerStub: ManagedConnectionPairingAuthor
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization {
         requests.append((macInstallationID, macTailcatPublicKey, pairingMacTailcatPublicKey, mobileTailcatPublicKey))
+        if let error { throw error }
         return ManagedConnectionPairingAuthorization(sessionID: "managed-session", grant: "managed-grant")
     }
 
@@ -1213,7 +1215,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             managedPairingAuthorizer: authorizer
         )
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+        let url = try XCTUnwrap(URL(string: Self.freeTailcatPairingURL))
 
         await XCTAssertThrowsErrorAsync(
             try await fixture.controller.preparePairingURL(
@@ -1226,6 +1228,98 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         let startCallCount = await fixture.runtime.startCallCount()
         XCTAssertTrue(authorizer.requests.isEmpty)
         XCTAssertEqual(startCallCount, 1)
+    }
+
+    /// 「添加电脑」等通用入口扫到托管二维码，也要走托管授权（#959）。按自建流程去连，
+    /// 中继准入会拒绝未登记的身份，用户只能等到超时。
+    func testManagedQRCodeFromGenericEntryRequestsManagedAuthorization() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [.failure(.startFailed)],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+        )
+
+        XCTAssertEqual(authorizer.requests.count, 1)
+        XCTAssertEqual(authorizer.requests.first?.pairingMacKey, "nodekey:pair-public")
+    }
+
+    func testManagedQRCodeWithoutSubscriptionExplainsWhatToDo() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        authorizer.error = ManagedConnectionDeviceStoreError.subscriptionRequired
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+        ) { error in
+            XCTAssertEqual(error as? TailcatPairingError, .managedConnectionRequired)
+        }
+
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertEqual(startCallCount, 0, "没有开通时不应去连配对节点")
+    }
+
+    func testManagedConnectionRequiredOffersSubscriptionBeforeRetry() {
+        let failure = QRCodeScannerFailure.managedConnectionRequired("需要开通")
+
+        XCTAssertEqual(failure.message, "需要开通")
+        XCTAssertEqual(failure.recoveryActions, [.openManagedConnection, .retryScanning])
+    }
+
+    func testPairingErrorMessagesAreRecognizedAsUserFacing() {
+        XCTAssertTrue(TailcatPairingError.isUserFacingMessage(
+            TailcatPairingError.managedConnectionRequired.localizedDescription
+        ))
+        XCTAssertTrue(TailcatPairingError.isUserFacingMessage(
+            TailcatPairingError.pairNodeUnreachable(managed: false).localizedDescription
+        ))
+        let conflict = ManagedConnectionDeviceAPIError.rejected(
+            code: "node_public_key_conflict", deviceType: nil, limit: nil
+        )
+        XCTAssertEqual(conflict.localizedDescription, L10n.text("ui.managed_devices_node_owned_by_other_subscription"))
+        XCTAssertTrue(TailcatPairingError.isUserFacingMessage(conflict.localizedDescription))
+        XCTAssertFalse(TailcatPairingError.isUserFacingMessage("context deadline exceeded"))
+    }
+
+    func testUnreachablePairNodeShowsReadableErrorAndRecordsFailure() async throws {
+        let fixture = try makeControllerFixture(startResults: [.failure(.startFailed)])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.freeTailcatPairingURL))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+        ) { error in
+            XCTAssertEqual(error as? TailcatPairingError, .pairNodeUnreachable(managed: false))
+            XCTAssertEqual(
+                error.localizedDescription,
+                L10n.text("ui.tailcat_pairing_node_unreachable"),
+                "不能把 Tailcat 的底层错误原文给用户看"
+            )
+        }
+
+        XCTAssertEqual(fixture.controller.connectionFailures.first?.stage, .tunnelStart)
     }
 
     func testCancelledPairingPreparationDiscardsPairEndpointAndRestoresRoute() async throws {

@@ -61,6 +61,28 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertEqual(appStore.lastError, PairingLinkError.expired.localizedDescription)
     }
 
+    /// 忘记当前电脑后只剩其它电脑时，设备页没有当前电脑卡片显示全局错误，
+    /// 外部链接配对失败只能经 `pairingLinkAttempt` 交给页面，否则用户看不到任何反馈（#959）。
+    func testFailureWithoutCurrentComputerIsPublishedEvenWhenOtherComputersAreSaved() async throws {
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in })
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.30:8787",
+            token: "other-token"
+        ))
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.31:8787",
+            token: "current-token",
+            profileTarget: .newProfile(id: UUID().uuidString, displayName: "Current")
+        ))
+        try await store.clearCurrentConnectionProfile()
+        XCTAssertNil(appStore.activeConnectionProfile)
+        XCTAssertFalse(appStore.connectionProfiles.isEmpty)
+
+        await store.openPairingLink(Self.expiredTicketLink)
+
+        XCTAssertEqual(store.pairingLinkAttempt, .failed(PairingLinkError.expired.localizedDescription))
+    }
+
     private func makeStores(routeProbe: @escaping ConnectionRouteProbe) -> (SessionStore, AppStore) {
         let suiteName = "ExternalPairingLinkTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

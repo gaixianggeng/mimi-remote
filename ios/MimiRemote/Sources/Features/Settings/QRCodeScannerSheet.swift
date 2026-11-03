@@ -9,6 +9,8 @@ enum QRCodeScannerRecoveryAction: Equatable {
     /// 扫不了码的 DMG 用户只能走这一条，所以它排在手动输入地址前面（#554）。
     case pasteLink
     case manualConnection
+    /// 电脑已改用托管连接、这台设备还没开通时，直接去开通页。
+    case openManagedConnection
 }
 enum QRCodeScannerFailure: Equatable {
     case permissionDenied
@@ -16,6 +18,7 @@ enum QRCodeScannerFailure: Equatable {
     case cameraUnavailable
     case configurationFailed(String)
     case rejectedCode(String)
+    case managedConnectionRequired(String)
 
     var message: String {
         switch self {
@@ -29,6 +32,8 @@ enum QRCodeScannerFailure: Equatable {
             return reason
         case .rejectedCode(let reason):
             return reason
+        case .managedConnectionRequired(let reason):
+            return reason
         }
     }
 
@@ -40,6 +45,9 @@ enum QRCodeScannerFailure: Equatable {
             return [.pasteLink, .manualConnection]
         case .rejectedCode:
             return [.retryScanning, .pasteLink, .manualConnection]
+        case .managedConnectionRequired:
+            // 换入口或手动输入都绕不过准入，只给开通和重新扫码。
+            return [.openManagedConnection, .retryScanning]
         }
     }
 }
@@ -47,6 +55,7 @@ enum QRCodeScannerFailure: Equatable {
 enum QRCodeScannerSubmissionResult: Equatable {
     case accepted(String)
     case rejected(String)
+    case requiresManagedConnection(String)
 }
 
 struct QRCodeScannerSheet: View {
@@ -67,6 +76,8 @@ struct QRCodeScannerSheet: View {
 
     let onDismiss: () -> Void
     let onChooseManualConnection: () -> Void
+    /// 宿主页能打开托管连接开通页时才传入；没有时失败页不显示这个按钮。
+    var onOpenManagedConnection: (() -> Void)? = nil
     let onCode: (String) async -> QRCodeScannerSubmissionResult
 
     var body: some View {
@@ -277,7 +288,7 @@ struct QRCodeScannerSheet: View {
 
                 VStack(spacing: 10) {
                     // 第一个恢复动作是主按钮，其余是次按钮，顺序即推荐顺序。
-                    ForEach(Array(failure.recoveryActions.enumerated()), id: \.offset) { index, action in
+                    ForEach(Array(visibleRecoveryActions(failure).enumerated()), id: \.offset) { index, action in
                         recoveryButton(action, isPrimary: index == 0)
                     }
                 }
@@ -309,6 +320,8 @@ struct QRCodeScannerSheet: View {
                 pastePairingLink()
             case .manualConnection:
                 chooseManualConnection()
+            case .openManagedConnection:
+                onOpenManagedConnection?()
             }
         } label: {
             Text(recoveryTitle(action))
@@ -341,7 +354,13 @@ struct QRCodeScannerSheet: View {
             L10n.text("ui.paste_pairing_link")
         case .manualConnection:
             L10n.text("ui.use_manual_connection_instead")
+        case .openManagedConnection:
+            L10n.text("ui.managed_devices_subscribe_action")
         }
+    }
+
+    private func visibleRecoveryActions(_ failure: QRCodeScannerFailure) -> [QRCodeScannerRecoveryAction] {
+        failure.recoveryActions.filter { $0 != .openManagedConnection || onOpenManagedConnection != nil }
     }
 
     /// 粘贴的链接与扫到的二维码走同一条提交流程：同样的「已识别 / 正在验证」反馈，
@@ -416,6 +435,9 @@ struct QRCodeScannerSheet: View {
             case .rejected(let message):
                 isSubmittingCode = false
                 scannerFailure = .rejectedCode(message)
+            case .requiresManagedConnection(let message):
+                isSubmittingCode = false
+                scannerFailure = .managedConnectionRequired(message)
             }
             submissionTask = nil
         }

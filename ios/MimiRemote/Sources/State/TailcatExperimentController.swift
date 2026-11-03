@@ -1,5 +1,36 @@
 import Foundation
 
+/// 扫码配对时给用户看的失败原因。Tailcat 的 Go 错误（如 `context deadline exceeded`）
+/// 只进连接失败记录，不直接显示。
+enum TailcatPairingError: LocalizedError, Equatable {
+    /// 电脑已改用托管连接，这台设备还没开通。
+    case managedConnectionRequired
+    /// 临时配对节点在超时前没有应答。
+    case pairNodeUnreachable(managed: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case .managedConnectionRequired:
+            return L10n.text("ui.tailcat_pairing_managed_connection_required")
+        case .pairNodeUnreachable(managed: true):
+            return L10n.text("ui.tailcat_pairing_node_unreachable_managed")
+        case .pairNodeUnreachable(managed: false):
+            return L10n.text("ui.tailcat_pairing_node_unreachable")
+        }
+    }
+
+    /// 这些文案已经写明原因和下一步，设备页不能再把它们换成通用的「连接没有完成」。
+    @MainActor
+    static func isUserFacingMessage(_ message: String) -> Bool {
+        let pairingMessages = [Self.managedConnectionRequired, .pairNodeUnreachable(managed: true),
+                               .pairNodeUnreachable(managed: false)].compactMap(\.errorDescription)
+        let deviceStoreMessages = [ManagedConnectionDeviceStoreError.subscriptionRequired, .managedQRCodeRequired]
+            .compactMap(\.errorDescription)
+        return (pairingMessages + deviceStoreMessages + ManagedConnectionDeviceAPIError.userFacingMessages)
+            .contains(message)
+    }
+}
+
 enum TailcatExperimentState: Equatable {
     case disabled
     case needsAddress
@@ -707,6 +738,8 @@ final class TailcatExperimentController: ObservableObject {
         guard isAvailable else {
             throw PairingLinkError.unsupportedURL
         }
+        // 任何入口扫到托管二维码都走托管授权，结果与托管连接页的专用扫码一致。
+        let usesManagedAuthorization = requiresManagedAuthorization || link.isManagedPairing
         let resolvedProfileTarget: PreparedConnectionProfileTarget
         if case .currentOrNew(let displayName) = profileTarget,
            appStore.activeConnectionProfileID == nil {
@@ -727,7 +760,7 @@ final class TailcatExperimentController: ObservableObject {
             let clientKey = try bridge.publicKey(privateKey)
             publicKey = clientKey
             let managedAuthorization: ManagedConnectionPairingAuthorization?
-            if requiresManagedAuthorization {
+            if usesManagedAuthorization {
                 guard let macInstallationID = link.managedMacInstallationID,
                       let macTailcatPublicKey = link.managedMacTailcatPublicKey,
                       let pairingMacTailcatPublicKey = link.managedPairTailcatPublicKey,
@@ -735,22 +768,35 @@ final class TailcatExperimentController: ObservableObject {
                 else {
                     throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
                 }
-                managedAuthorization = try await managedPairingAuthorizer.authorizeManagedPairing(
-                    macInstallationID: macInstallationID,
-                    macTailcatPublicKey: macTailcatPublicKey,
-                    pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
-                    mobileTailcatPublicKey: clientKey
-                )
+                do {
+                    managedAuthorization = try await managedPairingAuthorizer.authorizeManagedPairing(
+                        macInstallationID: macInstallationID,
+                        macTailcatPublicKey: macTailcatPublicKey,
+                        pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
+                        mobileTailcatPublicKey: clientKey
+                    )
+                } catch ManagedConnectionDeviceStoreError.subscriptionRequired {
+                    throw TailcatPairingError.managedConnectionRequired
+                }
             } else {
                 managedAuthorization = nil
             }
             try ensureCurrent(operationGeneration)
             // 授权失败尚未触碰健康引擎；只有即将顺序替换时才先关闭旧 endpoint。
             appStore.setTailcatExperimentEndpoint(nil)
-            let pairingEndpoint = try await runtime.prepare(
-                address: link.pairAddress,
-                privateKey: privateKey
-            )
+            let pairingEndpoint: String
+            do {
+                pairingEndpoint = try await runtime.prepare(
+                    address: link.pairAddress,
+                    privateKey: privateKey
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // 原始错误留在失败记录里，排查时能和电脑、中继日志对照。
+                recordConnectionFailure(stage: .tunnelStart, error: error)
+                throw TailcatPairingError.pairNodeUnreachable(managed: usesManagedAuthorization)
+            }
             candidateEndpoint = pairingEndpoint
             try ensureCurrent(operationGeneration)
             let claimRequest: PairingClaimRequest
@@ -792,7 +838,7 @@ final class TailcatExperimentController: ObservableObject {
                 endpoint: canonicalEndpoint,
                 activeEndpoint: stableEndpoint,
                 tailcatAddress: stableAddress,
-                managed: requiresManagedAuthorization,
+                managed: usesManagedAuthorization,
                 token: response.token,
                 profileTarget: resolvedProfileTarget
             )
@@ -824,7 +870,7 @@ final class TailcatExperimentController: ObservableObject {
                 appStore: appStore
             )
             enqueueManagedConnectionAttempt(
-                enabled: requiresManagedAuthorization,
+                enabled: usesManagedAuthorization,
                 path: .unknown,
                 succeeded: false,
                 startedAt: connectionStartedAt,
