@@ -241,15 +241,11 @@ func NewRouterWithInstallationIDAndOptions(
 		diagnosticLogs:              options.DiagnosticLogs,
 	}
 	if cfg.Tailcat.Enabled {
-		go func() {
-			if err := r.tailcat.Start(context.Background()); err != nil {
-				log.Printf("tailcat sidecar start failed: %v", err)
-				return
-			}
+		go r.tailcat.StartAtBoot(func() {
 			if r.managedPairing != nil {
 				r.managedPairing.Start()
 			}
-		}()
+		})
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)

@@ -44,7 +44,7 @@ func (s *tailcatSidecarSupervisor) scheduleRestartLocked(cmd *exec.Cmd) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.restartCancel = cancel
-	go s.restartLoop(ctx, cancel)
+	go s.restartLoop(ctx, cancel, nil)
 }
 
 // cancelRestartLocked 让等待中的循环退出，也让正在等待就绪的重启立刻放弃，
@@ -56,26 +56,63 @@ func (s *tailcatSidecarSupervisor) cancelRestartLocked() {
 	}
 }
 
-func (s *tailcatSidecarSupervisor) restartLoop(ctx context.Context, cancel context.CancelFunc) {
-	defer cancel()
-	for {
-		s.mu.Lock()
-		delay := s.nextRestartDelayLocked()
+// StartAtBoot 是 agentd 启动时的拉起入口，阻塞到循环结束，由调用方放进 goroutine。
+// 与 Start 的区别：配置本来就是开启的，没有可回滚的东西，所以失败（刚开机没网、中继暂时
+// 不可达）直接转入退避重试。onReady 在进程就绪后调用一次；用户关闭或 agentd 退出则不调用。
+func (s *tailcatSidecarSupervisor) StartAtBoot(onReady func()) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.closing || !s.config.Enabled || s.restartCancel != nil {
 		s.mu.Unlock()
-		log.Printf("tailcat sidecar: %s 后自动重启", delay)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.restartCancel = cancel
+	s.mu.Unlock()
+	s.restartLoop(ctx, cancel, onReady)
+}
+
+// restartLoop 的 onBootReady 非空表示启动时拉起：第一次不等退避，就绪后调用它而不是
+// onRestarted（托管同步循环的首次同步就是重放）。
+func (s *tailcatSidecarSupervisor) restartLoop(ctx context.Context, cancel context.CancelFunc, onBootReady func()) {
+	defer cancel()
+	wait := onBootReady == nil
+	for {
+		if wait && !s.waitRestartDelay(ctx) {
 			return
-		case <-timer.C:
 		}
-		if s.attemptRestart(ctx) {
+		wait = true
+		restarted := s.attemptRestart(ctx)
+		running, finished := s.settleRestartLoop(ctx)
+		if !finished {
+			continue
+		}
+		switch {
+		case !running:
+		case onBootReady != nil:
+			// 进程也可能是重试期间改配置拉起的，不要求是这一轮拉起的。
+			onBootReady()
+		case restarted:
 			s.notifyRestarted(ctx)
 		}
-		if s.finishRestartLoop(ctx) {
-			return
-		}
+		return
+	}
+}
+
+func (s *tailcatSidecarSupervisor) waitRestartDelay(ctx context.Context) bool {
+	s.mu.Lock()
+	delay := s.nextRestartDelayLocked()
+	s.mu.Unlock()
+	log.Printf("tailcat sidecar: %s 后自动重启", delay)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -109,11 +146,11 @@ func (s *tailcatSidecarSupervisor) attemptRestart(ctx context.Context) bool {
 	if err := s.start(ctx); err != nil {
 		// 取消来自用户关闭或 agentd 退出，不是失败。
 		if ctx.Err() == nil {
-			log.Printf("tailcat sidecar: 自动重启失败：%v", err)
+			log.Printf("tailcat sidecar: 拉起失败：%v", err)
 		}
 		return false
 	}
-	log.Printf("tailcat sidecar: 自动重启成功")
+	log.Printf("tailcat sidecar: 已拉起")
 	return true
 }
 
@@ -135,18 +172,21 @@ func (s *tailcatSidecarSupervisor) notifyRestarted(ctx context.Context) {
 	handler(syncContext)
 }
 
-// finishRestartLoop 与 scheduleRestartLocked 用同一把锁交接：循环还登记着时新进程退出，
+// settleRestartLoop 与 scheduleRestartLocked 用同一把锁交接：循环还登记着时新进程退出，
 // reap 不会新开循环，这里必须看到进程又没了并继续重试，否则这次退出就丢了。
-func (s *tailcatSidecarSupervisor) finishRestartLoop(ctx context.Context) bool {
+// 经 operationMu 观察：别的入口正在启动时要等出结果，否则它随后失败就没有循环接手了。
+func (s *tailcatSidecarSupervisor) settleRestartLoop(ctx context.Context) (running, finished bool) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// 已取消的循环在 cancelRestartLocked 时就注销了，字段可能属于新循环。
 	if ctx.Err() != nil {
-		return true
+		return false, true
 	}
 	if !s.closing && s.config.Enabled && s.cmd == nil {
-		return false
+		return false, false
 	}
 	s.restartCancel = nil
-	return true
+	return s.cmd != nil, true
 }

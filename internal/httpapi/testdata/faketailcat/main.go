@@ -38,6 +38,10 @@ func main() {
 	if string(failure) == *relay && len(failure) > 0 {
 		os.Exit(1)
 	}
+	// 模拟控制接口迟迟不就绪，验证等待就绪期间可以被取消。
+	if _, err := os.Stat(filepath.Join(*stateDir, "hang-before-ready")); err == nil {
+		select {}
+	}
 	address := "tailcat:test?relay=" + url.QueryEscape(*relay)
 	must(os.WriteFile(filepath.Join(*stateDir, "host.address"), []byte(address), 0o600))
 	var clients []string

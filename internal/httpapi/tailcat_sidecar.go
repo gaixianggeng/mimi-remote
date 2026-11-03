@@ -62,6 +62,7 @@ type tailcatStatus struct {
 type tailcatSidecar interface {
 	Status(context.Context) tailcatStatus
 	Start(context.Context) error
+	StartAtBoot(onReady func())
 	Stop(context.Context) error
 	Pair(context.Context) (tailcatStatus, error)
 	AllowClient(context.Context, string) (tailcatStatus, error)

@@ -16,7 +16,7 @@ iPad App 内嵌 Tailcat Go 客户端。客户端在本机打开一个随机 loop
 
 托管授权列表只增加设备时原地追加，不中断现有连接；撤销设备时仍重建服务，确保旧授权失效。直连与 DERP 路径切换不代表辅助进程重启。
 
-sidecar 意外退出时，`agentd` 按 1 秒起步、最长 5 分钟的退避自动重启，持续重试直到恢复；连续稳定运行 2 分钟后退避清零。主机身份和地址不变，已配对设备无需重新扫码，托管授权在重启后立即重放。用户关闭 Tailcat、切换模式或中继、重置以及 `agentd` 退出都不会触发重启。
+sidecar 意外退出时，`agentd` 按 1 秒起步、最长 5 分钟的退避自动重启，持续重试直到恢复；连续稳定运行 2 分钟后退避清零。主机身份和地址不变，已配对设备无需重新扫码，托管授权在重启后立即重放。`agentd` 启动时第一次拉起失败（例如刚开机没网、中继暂时不可达）按同样的退避重试，就绪后才启动托管策略同步。用户关闭 Tailcat、切换模式或中继、重置以及 `agentd` 退出都不会触发重启，也会取消进行中的重试。用户手动开启失败仍回滚为关闭状态，不进入重试。
 
 Mac 和 iPad 设置页都提供显式实验开关。开关打开后，App 只使用 Tailcat 路由，不回退到 Tailscale 地址或本机直连。开关关闭后，App 立即恢复原连接档案，且不会改写档案地址或 Agent Token。
 
@@ -215,7 +215,7 @@ iPhone 或 iPad 上，“连接诊断”页显示最近的连接失败，“复�
 - 设备有失败记录，同一时刻 Mac 没有 `peer_contact`：设备的握手没有到达 Mac，先看设备网络和中继。
 - Mac 同时有 `derp_lost` 或 `network_down`：断在 Mac 到中继这一段。
 - Mac 有 `peer_contact` 和 `conn_opened`，设备仍报请求失败：隧道已通，继续看 agentd 的 `/api/diagnostics/relay`。
-- Mac 有 `sidecar_exited` 且之后没有 `sidecar_started`：辅助程序已退出，需要重启服务。
+- Mac 有 `sidecar_exited` 或 `sidecar_start_failed` 且之后没有 `sidecar_started`：辅助程序没有起来，`agentd` 在按退避重试；`sidecar_start_failed` 持续出现时，看同一时段的 stderr 行判断原因。
 
 以下结果同时成立才算本轮通过：
 
