@@ -44958,6 +44958,34 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求失败" } }
       }
     },
+    "ui.managed_devices_node_owned_by_other_subscription": {
+      "comment": "Managed pairing rejected: the computer or device node key belongs to another subscription.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This computer is registered under a different Mimi Managed Connection subscription than this device, so they can’t pair directly. Scan with a device turned on with the same code, or contact us to move it." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑已登记在另一份 Mimi 托管连接下，和这台设备开通的不是同一份，不能直接配对。请用同一份兑换码开通的设备扫码，或联系我们迁移。" } }
+      }
+    },
+    "ui.tailcat_pairing_managed_connection_required": {
+      "comment": "Scan failure: the computer uses managed connection and this device has no entitlement.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This computer now uses Mimi Managed Connection, which isn’t turned on for this device yet. Turn it on, then scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑已改用 Mimi 托管连接，这台设备还没开通。开通后再扫码即可。" } }
+      }
+    },
+    "ui.tailcat_pairing_node_unreachable_managed": {
+      "comment": "Scan failure: the temporary pairing node did not answer (managed pairing).",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t reach the pairing service on your computer. Make sure Mimi is running there and the QR code is new, then scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑上的配对服务。请确认电脑上的 Mimi 正在运行、二维码是刚生成的，然后重新扫码。" } }
+      }
+    },
+    "ui.tailcat_pairing_node_unreachable": {
+      "comment": "Scan failure: the temporary pairing node did not answer (self-hosted pairing).",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t reach the pairing service on your computer. Make sure Mimi is running there and the QR code is new, then scan again. If your computer switched to Mimi Managed Connection, turn it on for this device first." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑上的配对服务。请确认电脑上的 Mimi 正在运行、二维码是刚生成的，然后重新扫码。如果电脑改用了 Mimi 托管连接，这台设备需要先开通。" } }
+      }
+    },
     "ui.tailcat_recent_failures_title": {
       "comment": "Section title for recorded Tailcat connection failures.",
       "localizations": {

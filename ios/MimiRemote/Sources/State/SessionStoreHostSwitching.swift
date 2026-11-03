@@ -240,9 +240,10 @@ extension SessionStore {
     /// 系统相机扫码或其它 App 打开的配对链接。配对仍在 App 层执行，停在哪一页都能连上；
     /// 但首次配对页按 #557 只显示本页操作的反馈、不读全局 `lastError`，所以还没有任何电脑时
     /// 要把进度和失败原因经 `pairingLinkAttempt` 交给它，否则失败时页面毫无变化（#728）。
+    /// 只存了其它电脑、没有当前电脑时同理：设备页没有当前电脑卡片，全局错误也无处显示（#959）。
     func openPairingLink(_ url: URL) async {
         let wasConfigured = appStore.isConfigured
-        let reportsToFirstConnectionPage = appStore.connectionProfiles.isEmpty
+        let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
         }

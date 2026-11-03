@@ -99,6 +99,12 @@ struct TailcatPairingLink: Equatable {
     let managedMacTailcatPublicKey: String?
     let managedPairTailcatPublicKey: String?
 
+    /// 电脑只在托管模式下才写入这三个字段（agentd `tailcat pair`）。带齐了就必须走托管授权：
+    /// 中继开启准入后，未登记的身份连不上临时配对节点，按自建流程只会等到超时。
+    var isManagedPairing: Bool {
+        managedMacInstallationID != nil && managedMacTailcatPublicKey != nil && managedPairTailcatPublicKey != nil
+    }
+
     @MainActor
     static func parse(_ url: URL) throws -> TailcatPairingLink? {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
