@@ -379,9 +379,16 @@ func TestTailcatSidecarEventsSeparateCrashFromIntentionalStop(t *testing.T) {
 	waitForRestartTestStatus(t, s, func(status tailcatStatus) bool {
 		return status.Running && status.InstanceID != before.InstanceID
 	})
-	events := flushed()
-	exited := strings.Index(events, "event=sidecar_exited")
-	if exited < 0 || !strings.Contains(events[exited:], "event=sidecar_started") {
-		t.Fatalf("意外退出应记 sidecar_exited，重启后再记 sidecar_started：%s", events)
+	// 控制接口一就绪 Status 就报告运行中，finishStart 随后才记 sidecar_started。
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		events := flushed()
+		exited := strings.Index(events, "event=sidecar_exited")
+		if exited >= 0 && strings.Contains(events[exited:], "event=sidecar_started") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("意外退出应记 sidecar_exited，重启后再记 sidecar_started：%s", events)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
