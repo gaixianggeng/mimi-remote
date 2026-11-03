@@ -402,6 +402,25 @@ struct RouteStatusRow: View {
     }
 }
 
+/// 诊断页的一条连接失败：标题是失败阶段，值是原因、当时网络和时间。完整时间在复制内容里。
+struct TailcatConnectionFailureRow: View {
+    let failure: TailcatConnectionFailure
+    let warningTint: Color
+
+    var body: some View {
+        ConnectionRowLabel(
+            title: failure.stage.title,
+            value: [
+                failure.reason.title,
+                failure.network.title,
+                ConnectionRouteFormatting.timeText(failure.occurredAt)
+            ].joined(separator: " · "),
+            systemImage: "exclamationmark.triangle",
+            valueTint: warningTint
+        )
+    }
+}
+
 /// 线路相关文案只在这里拼：路径短标签、HTTP 耗时、探测时间，首页和连接方式页口径一致。
 enum ConnectionRouteFormatting {
     static func timeText(_ date: Date) -> String {

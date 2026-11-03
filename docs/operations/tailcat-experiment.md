@@ -195,6 +195,28 @@ bash ./scripts/ios-dev.sh run
 
 完成后可在“设置 → 实验功能 → 连接诊断”查看当前路径延迟和一次真实 HTTP 请求耗时。诊断区分直连、Peer Relay 和 DERP 中转。本机只保留最近 10 条脱敏结果。
 
+### 偶发连不上时对照两侧记录
+
+Mac 侧的 `~/Library/Logs/mimi-remote/tailcat-events.log` 常开记录连接事件，时间为 UTC，2 MB 轮转并保留一份 `.previous`。只在本机保存，不进入“导出安全日志”；“清除日志”时一并清空。内容只有固定事件名和白名单字段，不含 IP、端点和完整公钥，`peer=[xxxxx]` 是公钥短前缀，写法与中继日志一致。
+
+| 事件 | 含义 |
+| --- | --- |
+| `peer_contact` / `peer_rejected` | 设备的握手已经到达 Mac；被拒绝说明它不在授权列表内 |
+| `path_direct` | 与该设备改走直连 |
+| `derp_connected` / `derp_lost` / `derp_closed` | Mac 与中继的连接状态，`reason` 为固定类别 |
+| `network_changed` / `network_down` | Mac 的网络发生变化或全部断开 |
+| `conn_opened` / `conn_closed` / `backend_dial_failed` | 隧道内的 TCP 连接，以及转发到 agentd 失败 |
+| `sidecar_started` / `sidecar_exited` / `sidecar_stopped` / `sidecar_start_failed` | 辅助程序生命周期 |
+
+iPhone 或 iPad 上，“连接诊断”页显示最近的连接失败，“复制脱敏诊断结果”会带上最多 20 条 `failure stage=… reason=… network=…`，时间含时区。
+
+判读方法：
+
+- 设备有失败记录，同一时刻 Mac 没有 `peer_contact`：设备的握手没有到达 Mac，先看设备网络和中继。
+- Mac 同时有 `derp_lost` 或 `network_down`：断在 Mac 到中继这一段。
+- Mac 有 `peer_contact` 和 `conn_opened`，设备仍报请求失败：隧道已通，继续看 agentd 的 `/api/diagnostics/relay`。
+- Mac 有 `sidecar_exited` 且之后没有 `sidecar_started`：辅助程序已退出，需要重启服务。
+
 以下结果同时成立才算本轮通过：
 
 - iPad 未运行 Tailscale 客户端。

@@ -127,6 +127,66 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertEqual(redeemed, ["MIMI-CODE", "MIMI-CODE"])
     }
 
+    func testExtractsCodeFromPastedMessage() {
+        let cases: [(String, String?)] = [
+            ("MIMI-AB12-CD34-EF56-GH78", "MIMI-AB12-CD34-EF56-GH78"),
+            ("mimi ab12 cd34 ef56 gh78", "MIMI-AB12-CD34-EF56-GH78"),
+            ("你的内测兑换码是：MIMI-AB12-CD34-EF56-GH78，有效期 90 天。", "MIMI-AB12-CD34-EF56-GH78"),
+            ("MIMIAB12CD34EF56GH78", "MIMI-AB12-CD34-EF56-GH78"),
+            ("MIMI-AB12", nil),
+            ("今天天气不错", nil)
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(ManagedRedemptionCode.extract(from: text), expected, text)
+        }
+    }
+
+    func testRedemptionLinkParsing() throws {
+        func link(_ raw: String) throws -> ManagedRedemptionLink? {
+            ManagedRedemptionLink(url: try XCTUnwrap(URL(string: raw)))
+        }
+        XCTAssertEqual(try link("mimi://redeem?code=MIMI-AB12-CD34-EF56-GH78")?.code, "MIMI-AB12-CD34-EF56-GH78")
+        XCTAssertEqual(try link("mimiremote://redeem?code=mimi-ab12-cd34-ef56-gh78")?.code, "MIMI-AB12-CD34-EF56-GH78")
+        XCTAssertNotNil(try link("mimi://redeem?code=bad"))
+        XCTAssertNil(try link("mimi://redeem?code=bad")?.code)
+        // 配对等其他链接不能被当成兑换链接拦下。
+        XCTAssertNil(try link("mimi://pair?endpoint=x"))
+        XCTAssertNil(try link("https://redeem/?code=MIMI-AB12-CD34-EF56-GH78"))
+    }
+
+    func testRedeemLinkRoutesToConnectStepOnSuccess() async throws {
+        let fixture = makeRedemptionStore()
+        await fixture.api.setRedeemResult(.success(Self.redemptionGrant))
+        let link = try XCTUnwrap(ManagedRedemptionLink(url: XCTUnwrap(URL(string: "mimi://redeem?code=MIMI-AB12-CD34-EF56-GH78"))))
+
+        await fixture.store.redeemFromLink(link)
+
+        XCTAssertEqual(fixture.store.pendingRoute, .connectComputer)
+        XCTAssertEqual(fixture.store.consumePendingRoute(), .connectComputer)
+        XCTAssertNil(fixture.store.pendingRoute)
+        XCTAssertEqual(fixture.codes.load(), "MIMI-AB12-CD34-EF56-GH78")
+    }
+
+    func testRedeemLinkFailureRoutesToErrorPage() async throws {
+        let fixture = makeRedemptionStore()
+        await fixture.store.load()
+        let invalid = try XCTUnwrap(ManagedRedemptionLink(url: XCTUnwrap(URL(string: "mimi://redeem?code=bad"))))
+        await fixture.store.redeemFromLink(invalid)
+        XCTAssertEqual(fixture.store.pendingRoute, .redemption)
+        XCTAssertEqual(fixture.store.redemptionErrorMessage, L10n.text("ui.managed_redemption_invalid"))
+        let redeemed = await fixture.api.redeemedCodes
+        XCTAssertTrue(redeemed.isEmpty, "格式错误的码不发到服务端")
+
+        _ = fixture.store.consumePendingRoute()
+        let rejected = try XCTUnwrap(ManagedRedemptionLink(url: XCTUnwrap(URL(string: "mimi://redeem?code=MIMI-AB12-CD34-EF56-GH78"))))
+        await fixture.store.redeemFromLink(rejected)
+        XCTAssertEqual(fixture.store.pendingRoute, .redemption)
+    }
+
+    func testPurchaseOptionsStayHiddenDuringBeta() {
+        XCTAssertFalse(ManagedConnectionSubscriptionView.showsPurchaseOptions)
+    }
+
     func testRedeemIgnoresBlankInput() async {
         let fixture = makeRedemptionStore()
 

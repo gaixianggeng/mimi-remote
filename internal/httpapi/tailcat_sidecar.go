@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatevents"
 	"github.com/gaixianggeng/mimi-remote/internal/tailcatsidecar"
 )
 
@@ -116,7 +117,7 @@ func (s *tailcatSidecarSupervisor) pairCallTimeout() time.Duration {
 	return tailcatPairCallTimeout
 }
 
-// tailcatSidecarLogWriter 把辅助程序的 stderr 按行转进 agentd 日志。辅助程序只在
+// tailcatSidecarLogWriter 把辅助程序的 stderr 按行转进事件日志与 agentd 日志。辅助程序只在
 // 失败退出和配对计时时写 stderr；此前一律丢弃，进程为何退出、配对慢在哪一步都看不到。
 type tailcatSidecarLogWriter struct {
 	mu      sync.Mutex
@@ -134,12 +135,13 @@ func (w *tailcatSidecarLogWriter) Write(p []byte) (int, error) {
 		}
 		line := strings.TrimRight(string(w.pending[:index]), "\r")
 		w.pending = append([]byte(nil), w.pending[index+1:]...)
-		if strings.TrimSpace(line) != "" {
+		if strings.TrimSpace(line) != "" && !tailcatevents.RecordSidecarLine(line) {
 			log.Printf("tailcat sidecar: %s", line)
 		}
 	}
 	// 没有换行的超长输出不无限积压，直接整段落盘。
 	if len(w.pending) > 8<<10 {
+		tailcatevents.RecordSidecarLine(string(w.pending))
 		log.Printf("tailcat sidecar: %s", strings.TrimSpace(string(w.pending)))
 		w.pending = nil
 	}
@@ -256,6 +258,7 @@ func (s *tailcatSidecarSupervisor) finishStart(cmd *exec.Cmd, err error) {
 	defer s.mu.Unlock()
 	s.starting = false
 	if err != nil {
+		tailcatevents.Record(tailcatevents.EventSidecarStartFailed, err.Error())
 		s.lastError = err.Error()
 		if cmd != nil && s.cmd == cmd {
 			s.cmd = nil
@@ -263,6 +266,7 @@ func (s *tailcatSidecarSupervisor) finishStart(cmd *exec.Cmd, err error) {
 		}
 		return
 	}
+	tailcatevents.Record(tailcatevents.EventSidecarStarted, "")
 	s.readyAt = time.Now()
 	// 就绪后、这里之前就退出时，reap 看到的还是启动中，这次退出要在这里补上。
 	if s.cmd != cmd {
@@ -277,12 +281,17 @@ func (s *tailcatSidecarSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	if s.cmd == cmd {
 		s.cmd = nil
 		s.done = nil
-		if !s.closing {
+		// 主动停止不算退出，sidecar_exited 只留给需要排查的意外退出。
+		if !s.closing && s.stoppingCmd != cmd {
 			if err != nil {
 				s.lastError = "Tailcat sidecar 已退出：" + err.Error()
+				tailcatevents.Record(tailcatevents.EventSidecarExited, err.Error())
 			} else {
 				s.lastError = "Tailcat sidecar 已退出"
+				tailcatevents.Record(tailcatevents.EventSidecarExited, "")
 			}
+		} else {
+			tailcatevents.Record(tailcatevents.EventSidecarStopped, "")
 		}
 		s.scheduleRestartLocked(cmd)
 	}

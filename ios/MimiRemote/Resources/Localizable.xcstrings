@@ -30,8 +30,8 @@
     "ui.managed_devices_upgrade_busy": {
       "comment": "Shown when the computer is busy with another Tailcat operation.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The computer is busy with another Tailcat operation. Try again in a moment." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑正在处理其他 Tailcat 操作，请稍后再试。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "The computer is busy with another connection change. Try again shortly." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑正在处理其他连接操作，请稍后再试。" } }
       }
     },
     "ui.managed_devices_upgrade_continue": {
@@ -44,36 +44,36 @@
     "ui.managed_devices_upgrade_current": {
       "comment": "Button that switches the currently connected computer to Managed Connection without scanning a QR code.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Use Managed Connection on This Computer" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "把这台电脑接入托管连接" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Connect This Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一键接入这台电脑" } }
       }
     },
     "ui.managed_devices_upgrade_failed": {
       "comment": "Shown when switching the computer to Managed Connection fails. The value is the computer's error message.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Couldn't switch this computer to Managed Connection: %@" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法把这台电脑接入托管连接：%@" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t connect this computer. Make sure Mimi Remote is running on it, then try again. (Error: %@)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入没有成功。请确认电脑上的 Mimi Remote 正在运行，然后重试。（错误代码：%@）" } }
       }
     },
     "ui.managed_devices_upgrade_reset_message": {
       "comment": "Confirmation message. The value is the number of devices using self-hosted Tailcat on this computer.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "%@ devices use self-hosted Tailcat on this computer. They'll need to pair again after switching. Local network and Tailscale aren't affected." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上有 %@ 台设备在用自建 Tailcat，接入托管连接后它们需要重新配对。局域网和 Tailscale 不受影响。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "%@ device(s) use a different connection on this computer and will need to scan again. Same-Wi-Fi and Tailscale connections aren’t affected." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上有 %@ 台设备用的是另一种连接方式，接入后它们需要重新扫码。同一 Wi-Fi 和 Tailscale 连接不受影响。" } }
       }
     },
     "ui.managed_devices_upgrade_reset_title": {
       "comment": "Confirmation title before switching a computer that has self-hosted Tailcat devices.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Disconnect self-hosted Tailcat devices?" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "断开这台电脑上的自建 Tailcat 设备？" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Other devices will need to reconnect" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他设备需要重新连接" } }
       }
     },
     "ui.managed_devices_upgrading": {
       "comment": "Progress text while the current computer switches to Managed Connection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Switching this computer to Managed Connection…" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在把这台电脑接入托管连接…" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Connecting this computer…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在接入，大约需要一分钟…" } }
       }
     },
     "ui.managed_lan_hint_action": {
@@ -121,8 +121,8 @@
     "ui.managed_plan_benefit_relay": {
       "comment": "Managed Connection benefit: Mimi relays, with automatic direct connections on the same network.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Connects through Mimi relays, and directly when you're on the same network" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "经 Mimi 中继连接；在同一网络时自动直连" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Connects through a Mimi relay server, and directly when you’re on the same network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "经 Mimi 中转服务器连接；在同一网络时自动直连" } }
       }
     },
     "ui.managed_plan_benefits": {
@@ -156,8 +156,8 @@
     "ui.managed_route_and_devices_title": {
       "comment": "Title of the Devices-tab page that shows the managed connection route, computer pairing, and registered devices.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Managed Route & Devices" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管线路与设备" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Connection & Devices" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接与设备" } }
       }
     },
     "ui.managed_subscription_short_active": {
@@ -44958,6 +44958,125 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求失败" } }
       }
     },
+    "ui.tailcat_recent_failures_title": {
+      "comment": "Section title for recorded Tailcat connection failures.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Recent connection failures" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "最近连接失败" } }
+      }
+    },
+    "ui.tailcat_failure_stage_tunnel_start": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Starting tunnel" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "建立隧道" } }
+      }
+    },
+    "ui.tailcat_failure_stage_route_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Route check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "线路探测" } }
+      }
+    },
+    "ui.tailcat_failure_stage_request_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HTTP request" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "HTTP 请求" } }
+      }
+    },
+    "ui.tailcat_failure_stage_foreground_probe": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Check on return" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "回到前台检查" } }
+      }
+    },
+    "ui.tailcat_failure_stage_preflight": {
+      "comment": "Connection failure stage.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connection check" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接检查" } }
+      }
+    },
+    "ui.tailcat_failure_reason_network": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network error" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络错误" } }
+      }
+    },
+    "ui.tailcat_failure_reason_timeout": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Timed out" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "超时" } }
+      }
+    },
+    "ui.tailcat_failure_reason_authentication": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Authentication failed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "认证失败" } }
+      }
+    },
+    "ui.tailcat_failure_reason_policy": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Blocked by policy" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "被策略拒绝" } }
+      }
+    },
+    "ui.tailcat_failure_reason_unknown": {
+      "comment": "Connection failure reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unknown error" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未知错误" } }
+      }
+    },
+    "ui.tailcat_failure_network_wifi": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wi-Fi" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Wi-Fi" } }
+      }
+    },
+    "ui.tailcat_failure_network_cellular": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cellular" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "蜂窝网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_wired": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wired" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "有线网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_other": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Other network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "其他网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_none": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No network" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无网络" } }
+      }
+    },
+    "ui.tailcat_failure_network_unknown": {
+      "comment": "Device network type when the connection failed.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Network unknown" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "网络未知" } }
+      }
+    },
     "ui.tailcat_address_placeholder": {
       "comment": "Placeholder for a Tailcat connection address.",
       "localizations": {
@@ -45168,15 +45287,15 @@
     "ui.managed_devices_authorization_expired": {
       "comment": "Shown when a managed connection device credential expired or was revoked.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Device authorization expired. Check the subscription and try again." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "设备授权已失效，请检查订阅后重试。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Access has expired. Check your status and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "授权已失效，请检查开通状态后重试。" } }
       }
     },
     "ui.managed_devices_connect_mac": {
       "comment": "Action to scan a Mac QR code and create a managed connection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Scan a Computer QR Code" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描电脑二维码" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Scan the QR Code on Your Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描电脑上的二维码" } }
       }
     },
     "ui.managed_devices_connecting": {
@@ -45189,8 +45308,8 @@
     "ui.managed_devices_connection": {
       "comment": "Section title for adding a Mac through Mimi Managed Connection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Connect a Computer" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连接电脑" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Connect This Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入这台电脑" } }
       }
     },
     "ui.managed_devices_credential_conflict": {
@@ -45203,8 +45322,8 @@
     "ui.managed_devices_empty": {
       "comment": "Empty state for the managed device list.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No devices are using this subscription yet." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "此订阅尚未登记设备。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "No devices connected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "还没有接入任何设备。" } }
       }
     },
     "ui.managed_devices_limit_reached": {
@@ -45242,6 +45361,13 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "无法更新设备，请检查网络后重试。" } }
       }
     },
+    "ui.managed_devices_pairing_network_error": {
+      "comment": "Recovery guidance when the network fails during managed pairing.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't connect to your computer. Keep Mimi Remote running on it, check that both devices can access the internet, then try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未能连上电脑。请保持电脑上的 Mimi Remote 运行，确认两端能上网后再试。" } }
+      }
+    },
     "ui.managed_devices_not_found": {
       "comment": "Shown when a managed device was already removed.",
       "localizations": {
@@ -45259,15 +45385,15 @@
     "ui.managed_devices_privacy_notice": {
       "comment": "Privacy disclosure below managed devices.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Mimi stores only random installation identifiers and credential hashes. It doesn't upload device names, Tailcat addresses, agentd tokens, or private keys." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 只保存随机安装标识和凭证哈希，不上传设备名称、Tailcat 地址、agentd Token 或私钥。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi only keeps randomly generated device identifiers. Device names, computer addresses, and access keys are not uploaded." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 只保存随机生成的设备标识，不上传设备名称、电脑地址和访问密钥。" } }
       }
     },
     "ui.managed_devices_qr_required": {
       "comment": "Shown when managed pairing receives a QR code without managed host metadata.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Use the current Mimi Remote (or agentd) on your computer to generate a Tailcat pairing QR code." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "请用电脑上当前版本的 Mimi Remote（或 agentd）生成 Tailcat 配对二维码。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This QR code can’t be used here. Update Mimi Remote on your computer to v1.1.9 or later and open its settings. Choose Switch to Mimi Managed Connection, then open Pair Device, choose Tailcat, and scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这个二维码不能用于托管连接。请先把电脑上的 Mimi Remote 升级到 v1.1.9 或更新版本，打开「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat 后重新扫码。" } }
       }
     },
     "ui.managed_devices_remove_action": {
@@ -45280,8 +45406,8 @@
     "ui.managed_devices_remove_message": {
       "comment": "Confirmation message before revoking a managed device.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The device will immediately lose managed access. To use it again, register it and rescan each computer." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去托管访问权限。再次使用时，需要重新登记并扫描每台电脑。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This device will lose access right away. To use it again, connect each computer again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去托管连接。再次使用时，需要重新接入每台电脑。" } }
       }
     },
     "ui.managed_devices_remove_title": {
@@ -45294,8 +45420,8 @@
     "ui.managed_devices_rescan_notice": {
       "comment": "Explains that restored purchases don't copy host credentials.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Restoring a subscription doesn't copy computer credentials. On a new iPhone or iPad, scan every computer you want to use." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "恢复订阅不会同步电脑凭证。更换 iPhone 或 iPad 后，需要重新扫描每台要访问的电脑。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "After changing phones or tablets, connect each computer again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "换手机或平板后，需要重新接入每台电脑。" } }
       }
     },
     "ui.managed_devices_server_invalid": {
@@ -45308,15 +45434,15 @@
     "ui.managed_devices_server_rejected": {
       "comment": "Generic managed device service rejection.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The managed device request was rejected." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管设备请求被拒绝。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "The request couldn't be completed. Try again. If it still fails, contact the developer through the user group." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "操作未完成，请重试。如果仍然失败，请在用户群联系开发者。" } }
       }
     },
     "ui.managed_devices_subscription_required": {
       "comment": "Shown when managed pairing is attempted without an active verified subscription.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "An active Mimi Managed Connection subscription is required." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要有效的 Mimi 托管连接订阅。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Turn on Mimi Managed Connection first." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要先开通 Mimi 托管连接。" } }
       }
     },
     "ui.managed_devices_this_device": {
@@ -45350,8 +45476,8 @@
     "ui.managed_subscription_checking": {
       "comment": "Status shown while StoreKit and the entitlement service are checked.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Checking subscription…" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在检查订阅…" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Checking access…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在检查开通状态…" } }
       }
     },
     "ui.managed_subscription_expired": {
@@ -45385,8 +45511,8 @@
     "ui.managed_redemption_hint": {
       "comment": "Explains what a beta redemption code does and how to reuse it.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "For TestFlight testers. A code turns on the Mimi relay. Enter the same code to restore access on another device." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "供 TestFlight 内测使用，兑换后可使用 Mimi 中转节点。换设备时输入同一个码即可恢复。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Enter a code to turn this on. Use the same code to restore access on a new phone." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "输入兑换码即可开通。换手机时输入同一个码就能恢复。" } }
       }
     },
     "ui.managed_redemption_active": {
@@ -45415,6 +45541,139 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "This code is no longer active." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码已停用。" } }
+      }
+    },
+    "ui.managed_redemption_paste_empty": {
+      "comment": "Shown when the clipboard has no redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No code found on the clipboard. Copy the code and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "剪贴板里没有兑换码，复制后再试一次。" } }
+      }
+    },
+    "ui.managed_redemption_get_code": {
+      "comment": "Row that opens the user group page where testers can ask for a redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Get a Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "没有兑换码？加入用户群领取" } }
+      }
+    },
+    "ui.managed_redemption_expired_status": {
+      "comment": "Status when a saved beta redemption code has expired.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your code has expired. Ask in the user group for a new one." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码已过期，可以在用户群里领取新的。" } }
+      }
+    },
+    "ui.managed_redemption_revoked_status": {
+      "comment": "Status when a saved beta redemption code has been revoked.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your code is no longer active. Ask in the user group for a new one." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换码已停用，可以在用户群里领取新的。" } }
+      }
+    },
+    "ui.managed_redemption_first_connection": {
+      "comment": "Shown on the first connection page after a code was redeemed from a link.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Managed Connection is on. Follow the steps below to connect your computer, and we’ll take you through the last step." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "托管连接已开通。按下面的步骤连上电脑，然后会带你完成最后一步。" } }
+      }
+    },
+    "ui.managed_connection_pending_connect": {
+      "comment": "Value of the Managed Connection row when access is on but this computer isn’t connected yet.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "One step left" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "还差一步" } }
+      }
+    },
+    "ui.managed_route_needs_connect": {
+      "comment": "Managed route status when the connection has no address yet.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Not connected yet. Connect this computer again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "还没有连上，请重新接入这台电脑。" } }
+      }
+    },
+    "ui.managed_devices_host_too_old": {
+      "comment": "Shown when the computer app is too old to join Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Remote on your computer is out of date. Update it to v1.1.9 or later, then try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "电脑上的 Mimi Remote 版本太旧。请先升级到 v1.1.9 或更新版本，再回来接入。" } }
+      }
+    },
+    "ui.managed_devices_download_host": {
+      "comment": "Link to download the latest computer app.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Download the Computer App" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "下载电脑端新版本" } }
+      }
+    },
+    "ui.managed_devices_back_to_network": {
+      "comment": "Guidance when the phone can’t reach the computer to connect it.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Almost there. Go back to the same Wi-Fi as your computer and keep Mimi Remote running on it. The connect button will appear here." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "还差最后一步。回到和电脑同一个 Wi-Fi，并让电脑上的 Mimi Remote 保持运行，这里就会出现接入按钮。" } }
+      }
+    },
+    "ui.managed_devices_from_computer": {
+      "comment": "Guidance when connecting must start from the Mac.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Update Mimi Remote on your computer to v1.1.9 or later and open its settings. Choose Switch to Mimi Managed Connection, then open Pair Device, choose Tailcat, and scan below." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "先把电脑上的 Mimi Remote 升级到 v1.1.9 或更新版本，打开「设置…」，点「改用 Mimi 托管连接」；再打开「配对设备…」，选 Tailcat，然后在下面扫码。" } }
+      }
+    },
+    "ui.managed_devices_connected_hint": {
+      "comment": "Shown after this computer is connected through Managed Connection.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "All set. You can now connect to this computer from another Wi-Fi network, a phone hotspot, or cellular." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入完成。现在可以用其他 Wi-Fi、手机热点或流量连接这台电脑。" } }
+      }
+    },
+    "ui.managed_devices_connect_another": {
+      "comment": "Button to connect another computer by scanning its QR code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connect Another Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "接入另一台电脑" } }
+      }
+    },
+    "ui.managed_privacy_title": {
+      "comment": "Title of the privacy and security section.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Privacy & Security" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "隐私与安全" } }
+      }
+    },
+    "ui.managed_privacy_content": {
+      "comment": "Privacy point: end-to-end encryption.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Your code and conversations are end-to-end encrypted. The relay server and the developer can’t read them." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "代码和对话全程端到端加密，中转服务器和开发者都看不到内容。" } }
+      }
+    },
+    "ui.managed_privacy_relay": {
+      "comment": "Privacy point: what the relay handles.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The relay only forwards encrypted data. To deliver it, it handles both devices’ IP addresses, connection times, and traffic amounts." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "中转服务器只负责转发加密数据。为了送达，它会处理双方的 IP 地址、连接时间和流量大小。" } }
+      }
+    },
+    "ui.managed_privacy_stored": {
+      "comment": "Privacy point: what the service stores.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No account needed. We keep your access status, randomly generated device identifiers, and connection public keys, not your name, email, device names, or computer addresses." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不需要账号。我们只保存开通状态、随机生成的设备标识和连接公钥，不保存姓名、邮箱、设备名称和电脑地址。" } }
+      }
+    },
+    "ui.managed_privacy_location": {
+      "comment": "Privacy point: where the service runs.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The service runs on cloud servers in mainland China." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "服务部署在中国大陆的云服务器上。" } }
+      }
+    },
+    "ui.managed_privacy_leave": {
+      "comment": "Privacy point: leaving and deleting records.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Removing a device ends its access. Records aren’t deleted automatically, so contact the developer if you want them deleted." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移除设备后授权随即失效。相关记录不会自动删除，如需删除可以联系开发者。" } }
       }
     },
     "ui.managed_subscription_restored": {
@@ -45455,8 +45714,8 @@
     "ui.managed_subscription_not_active": {
       "comment": "Inactive Mimi Managed Connection subscription status.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Not subscribed" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未订阅" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Not activated" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未开通" } }
       }
     },
     "ui.managed_subscription_pending": {
@@ -45526,7 +45785,7 @@
       "comment": "Subscription status section title.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Status" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅状态" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通状态" } }
       }
     },
     "ui.managed_subscription_title": {
@@ -45609,8 +45868,8 @@
     "ui.managed_connection_recommended_value": {
       "comment": "Short value for the managed connection setup entry.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No relay setup" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "免配置中转" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Works away from home" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "出门也能连" } }
       }
     },
     "ui.managed_connection_recommended_summary": {
@@ -45644,8 +45903,8 @@
     "ui.managed_connection_use_lan_once": {
       "comment": "Action to use a saved LAN route without changing the default.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Use Local Network This Time" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次使用局域网" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Use Same Wi-Fi This Time" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本次改用同一 Wi-Fi" } }
       }
     },
     "ui.managed_connection_using_temporary_route": {
@@ -45672,8 +45931,8 @@
     "ui.subscription_information": {
       "comment": "Section title for subscription disclosures and legal links.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Subscription information" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅信息" } }
+        "en": { "stringUnit": { "state": "translated", "value": "More" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "更多信息" } }
       }
     },
     "ui.add_computer_scan_hint": {

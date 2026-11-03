@@ -8,6 +8,7 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
@@ -128,6 +129,9 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
                 synchronizeSidebarLifecycle()
+            }
+            .task(id: managedConnectionEntitlementStore.pendingRoute) {
+                applyPendingManagedConnectionRoute(layout: layout)
             }
             .onChange(of: sidebarLifecycleObservations) { _, _ in
                 synchronizeSidebarLifecycle()

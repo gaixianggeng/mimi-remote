@@ -10,7 +10,6 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
-	"tailscale.com/types/logger"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -24,6 +23,8 @@ type HostConfig struct {
 	AllowAllClients   bool
 	DERPMapURL        string
 	Region            *tailcfg.DERPRegion
+	// Events 接收脱敏后的连接事件，可为空。回调可能在 Tailcat 内部持锁时触发，不能阻塞。
+	Events func(HostEvent)
 }
 
 type Host struct {
@@ -63,7 +64,7 @@ func StartHost(config HostConfig) (*Host, error) {
 
 	server := &tailcat.Server{
 		Key:            privateKey,
-		Logf:           logger.Discard,
+		Logf:           hostEventLogf(config.Events),
 		AllowedClients: allowedClients,
 		ServedTCPPorts: []filter.PortRange{{First: config.RemotePort, Last: config.RemotePort}},
 		// Tailcat v0.6.0 起 Start 默认给地址生成随机 PSK，每次重启都会换新地址。
@@ -85,10 +86,14 @@ func StartHost(config HostConfig) (*Host, error) {
 		return func(tunnelConn net.Conn) {
 			backendConn, err := net.DialTimeout("tcp", config.TargetAddr, 5*time.Second)
 			if err != nil {
+				emitHostEvent(config.Events, HostEvent{Name: HostEventBackendFailed})
 				tunnelConn.Close()
 				return
 			}
+			openedAt := time.Now()
+			emitHostEvent(config.Events, HostEvent{Name: HostEventConnOpened})
 			tailcat.ProxyConns(tunnelConn, backendConn)
+			emitHostEvent(config.Events, HostEvent{Name: HostEventConnClosed, DurationMillis: time.Since(openedAt).Milliseconds()})
 		}
 	}
 
@@ -107,6 +112,12 @@ func StartHost(config HostConfig) (*Host, error) {
 		return nil, fmt.Errorf("写入 Tailcat 地址：%w", err)
 	}
 	return &Host{server: server, address: address, public: privateKey.Public().String()}, nil
+}
+
+func emitHostEvent(emit func(HostEvent), event HostEvent) {
+	if emit != nil {
+		emit(event)
+	}
 }
 
 func (h *Host) AddAllowedClient(rawKey string) error {

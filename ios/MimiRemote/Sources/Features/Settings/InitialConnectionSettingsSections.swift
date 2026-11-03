@@ -791,7 +791,9 @@ struct InitialConnectionSettingsSections: View {
                     title: L10n.text("ui.managed_subscription_title"),
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
                         ? tailcatController.state.connectionMethodSummary
-                        : L10n.text("ui.managed_connection_recommended_value"),
+                        : managedConnectionEntitlementStore.currentGrant != nil
+                            ? L10n.text("ui.managed_connection_pending_connect")
+                            : L10n.text("ui.managed_connection_recommended_value"),
                     systemImage: "network"
                 )
             }
@@ -939,6 +941,23 @@ struct InitialConnectionSettingsSections: View {
     /// 所以粘贴在这里是写明文字的次按钮，而不是只有图标；地址 + 访问码收在最后一行。
     @ViewBuilder
     private func firstConnectionGuideSections(tokens: ThemeTokens) -> some View {
+        // 新用户可能先点了兑换链接：告诉他结果和下一步，配对后工作台会接着带他走完。
+        if ManagedConnectionSubscriptionView.isEntryVisible {
+            if managedConnectionEntitlementStore.isRedemptionEntitlement {
+                Section {
+                    Label(L10n.text("ui.managed_redemption_first_connection"), systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(tokens.success)
+                        .accessibilityIdentifier("settings.firstConnection.redeemed")
+                }
+                .settingsGroupRowStyle()
+            } else if let message = managedConnectionEntitlementStore.redemptionErrorMessage {
+                Section {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(tokens.warning)
+                }
+                .settingsGroupRowStyle()
+            }
+        }
         Section {
             SettingsExternalLinkRow(
                 title: L10n.text("ui.first_connection_install_codex"),

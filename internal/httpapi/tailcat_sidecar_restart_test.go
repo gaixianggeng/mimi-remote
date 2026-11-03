@@ -1,17 +1,21 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatevents"
 )
 
 const restartTestRelay = "https://custom.example.invalid/map"
@@ -325,4 +329,59 @@ type syncCountingManagedPairing struct {
 func (f *syncCountingManagedPairing) Sync(context.Context) error {
 	f.syncs.Add(1)
 	return nil
+}
+
+type restartTestEventLog struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (l *restartTestEventLog) Write(data []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buffer.Write(data)
+}
+
+func (l *restartTestEventLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buffer.String()
+}
+
+func TestTailcatSidecarEventsSeparateCrashFromIntentionalStop(t *testing.T) {
+	output := &restartTestEventLog{}
+	sink := debuglog.New(output, func() bool { return true })
+	remove := tailcatevents.Install(sink)
+	t.Cleanup(func() {
+		remove()
+		sink.Close()
+	})
+	flushed := func() string {
+		if err := sink.Sync(func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return output.String()
+	}
+
+	s, _ := newRestartTestHost(t, 10*time.Millisecond, time.Second)
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if events := flushed(); !strings.Contains(events, "event=sidecar_stopped") || strings.Contains(events, "event=sidecar_exited") {
+		t.Fatalf("主动停止只应记 sidecar_stopped：%s", events)
+	}
+
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Status(context.Background())
+	killRestartTestSidecar(t, s)
+	waitForRestartTestStatus(t, s, func(status tailcatStatus) bool {
+		return status.Running && status.InstanceID != before.InstanceID
+	})
+	events := flushed()
+	exited := strings.Index(events, "event=sidecar_exited")
+	if exited < 0 || !strings.Contains(events[exited:], "event=sidecar_started") {
+		t.Fatalf("意外退出应记 sidecar_exited，重启后再记 sidecar_started：%s", events)
+	}
 }
