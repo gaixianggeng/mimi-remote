@@ -70,6 +70,7 @@ type managedPairingController struct {
 	operationMu sync.Mutex
 	startOnce   sync.Once
 	closeOnce   sync.Once
+	lifecycleMu sync.Mutex
 	wait        sync.WaitGroup
 	loopContext context.Context
 	cancel      context.CancelFunc
@@ -227,6 +228,12 @@ func (c *managedPairingController) Start() {
 	if c == nil {
 		return
 	}
+	// 辅助程序的启动重试可能在 Close 之后才成功：关闭后不再启动，也不能与 Wait 并发 Add。
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.loopContext.Err() != nil {
+		return
+	}
 	c.startOnce.Do(func() {
 		c.wait.Add(1)
 		go c.syncLoop(c.loopContext)
@@ -259,7 +266,9 @@ func (c *managedPairingController) Close() {
 		return
 	}
 	c.closeOnce.Do(func() {
+		c.lifecycleMu.Lock()
 		c.cancel()
+		c.lifecycleMu.Unlock()
 		c.wait.Wait()
 	})
 }

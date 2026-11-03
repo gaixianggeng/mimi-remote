@@ -76,6 +76,12 @@ func (f *fakeTailcatSidecar) Start(context.Context) error {
 	f.startCalls++
 	return f.operationErr
 }
+func (f *fakeTailcatSidecar) StartAtBoot(onReady func()) {
+	f.startCalls++
+	if f.operationErr == nil {
+		onReady()
+	}
+}
 func (f *fakeTailcatSidecar) Stop(context.Context) error {
 	f.stopCalls++
 	return f.operationErr
