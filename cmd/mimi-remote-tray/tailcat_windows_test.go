@@ -108,14 +108,14 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, errors.New("old agentd"), false); p.ToggleEnabled || p.Value != "状态不可用" {
 		t.Fatalf("unreadable Tailcat state offered a toggle: %+v", p)
 	}
-	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启 Tailcat" || p.Value != "未开启" {
+	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启内置连接" || p.Value != "未开启" {
 		t.Fatalf("disabled Tailcat presentation = %+v", p)
 	}
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, true); p.ToggleEnabled {
 		t.Fatalf("busy tray must not offer the Tailcat toggle: %+v", p)
 	}
 	running := tailcatTrayStatus{Enabled: true, Running: true, PairedDeviceCount: 1}
-	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 1 台设备" {
+	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭内置连接" || p.Value != "运行中 · 1 台设备" {
 		t.Fatalf("running Tailcat presentation = %+v", p)
 	}
 	stopped := agentStatus{Version: "1.0.0"}
