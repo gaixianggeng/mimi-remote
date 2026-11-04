@@ -26,7 +26,7 @@ struct ManagedConnectionDevicesView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(choice.title)
-                                    Text(L10n.text("ui.relay_choice_" + choice.rawValue + "_detail"))
+                                    Text(choice.detail)
                                         .font(.footnote).foregroundStyle(tokens.secondaryText)
                                 }
                                 Spacer()

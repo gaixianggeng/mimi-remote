@@ -99,7 +99,21 @@ enum RelayServiceChoice: String, CaseIterable, Identifiable {
     case mimi
 
     var id: String { rawValue }
-    var title: String { L10n.text("ui.relay_choice_" + rawValue) }
+    var title: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default")
+        case .custom: L10n.text("ui.relay_choice_custom")
+        case .mimi: L10n.text("ui.relay_choice_mimi")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default_detail")
+        case .custom: L10n.text("ui.relay_choice_custom_detail")
+        case .mimi: L10n.text("ui.relay_choice_mimi_detail")
+        }
+    }
 
     static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
