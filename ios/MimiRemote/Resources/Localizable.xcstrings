@@ -44985,8 +44985,8 @@
     "ui.tailcat_pairing_managed_connection_required": {
       "comment": "Scan failure: the computer uses managed connection and this device has no entitlement.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "This computer now uses Mimi Managed Connection, which isn’t turned on for this device yet. Turn it on, then scan again." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑已改用 Mimi 托管连接，这台设备还没开通。开通后再扫码即可。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This computer's QR code only supports Mimi Managed Connection. Update Mimi on your computer to connect for free, or turn on Managed Connection now." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑的二维码只支持 Mimi 托管连接。把电脑上的 Mimi 更新到最新版就能免费连接，也可以现在开通托管连接。" } }
       }
     },
     "ui.tailcat_pairing_node_unreachable_managed": {
@@ -44999,8 +44999,8 @@
     "ui.tailcat_pairing_node_unreachable": {
       "comment": "Scan failure: the temporary pairing node did not answer (self-hosted pairing).",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t reach the pairing service on your computer. Make sure Mimi is running there and the QR code is new, then scan again. If your computer switched to Mimi Managed Connection, turn it on for this device first." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑上的配对服务。请确认电脑上的 Mimi 正在运行、二维码是刚生成的，然后重新扫码。如果电脑改用了 Mimi 托管连接，这台设备需要先开通。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t reach the pairing service on your computer. Make sure Mimi is running there and the QR code is new, then scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "连不上电脑上的配对服务。请确认电脑上的 Mimi 正在运行、二维码是刚生成的，然后重新扫码。" } }
       }
     },
     "ui.tailcat_recent_failures_title": {
@@ -45871,15 +45871,15 @@
     "ui.custom_tailcat": {
       "comment": "Name of the free user-managed Tailcat connection type.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Self-hosted Tailcat" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "自建 Tailcat" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Free Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "免费 Tailcat" } }
       }
     },
     "ui.enable_custom_tailcat": {
       "comment": "Toggle label for the free user-managed Tailcat route.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Use self-hosted Tailcat" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用自建 Tailcat" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Use free Tailcat" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用免费 Tailcat" } }
       }
     },
     "ui.custom_tailcat_summary": {
@@ -45920,8 +45920,8 @@
     "ui.managed_connection_recommended_summary": {
       "comment": "First-setup explanation for the managed connection product.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Subscribe with your Apple Account and scan each Mac. LAN, Tailscale, and self-hosted Tailcat remain free below." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 Apple 账户订阅后扫描每台 Mac。局域网、Tailscale 和自建 Tailcat 仍可在下方免费使用。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Subscribe with your Apple Account for a faster, more reliable connection. LAN, Tailscale, and free Tailcat keep working without a subscription." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "使用 Apple 账户订阅，连接更快更稳。不订阅也能用局域网、Tailscale 和免费 Tailcat。" } }
       }
     },
     "ui.managed_connection_route_status": {

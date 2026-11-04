@@ -55,6 +55,7 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
     private var currentEndpointContinuation: CheckedContinuation<Void, Never>?
     private var currentEndpointWaiters: [CheckedContinuation<Void, Never>] = []
     private var blocksHasPrepared = false
+    private var preparedAddressLog: [String] = []
     private var hasPreparedContinuation: CheckedContinuation<Void, Never>?
     private var hasPreparedWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -73,7 +74,12 @@ private actor TailcatExperimentRuntimeStub: TailcatExperimentRuntimeProtocol {
         return endpoint
     }
 
+    func preparedAddresses() -> [String] {
+        preparedAddressLog
+    }
+
     func prepare(address: String, privateKey: String) async throws -> String {
+        preparedAddressLog.append(address)
         if let preparedEndpoint {
             _ = try await discardPrepared(endpoint: preparedEndpoint)
         }
@@ -1251,6 +1257,95 @@ final class TailcatExperimentRoutingTests: XCTestCase {
 
         XCTAssertEqual(authorizer.requests.count, 1)
         XCTAssertEqual(authorizer.requests.first?.pairingMacKey, "nodekey:pair-public")
+    }
+
+    /// 产品规则：托管是升级，不是门槛。没开通、名额已满或授权冲突时，通用入口扫码走免费节点（#966）。
+    func testManagedQRCodeFallsBackToFreeNodeWhenManagedIsUnavailable() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        for failure: Error in [
+            ManagedConnectionDeviceStoreError.subscriptionRequired,
+            ManagedConnectionDeviceAPIError.rejected(code: "device_limit_reached", deviceType: .mac, limit: 3),
+            ManagedConnectionDeviceAPIError.rejected(code: "node_public_key_conflict", deviceType: nil, limit: nil),
+            URLError(.notConnectedToInternet)
+        ] {
+            ManagedUpgradeURLProtocol.configure { request in
+                request.respond(body: #"{"endpoint":"http://127.0.0.1:8787","token":"free-token","tailcat_address":"tailcat:free-stable"}"#)
+            }
+            let authorizer = ManagedPairingAuthorizerStub()
+            authorizer.error = failure
+            let fixture = try makeControllerFixture(
+                startResults: [.success("http://127.0.0.1:49152"), .success("http://127.0.0.1:49153")],
+                managedPairingAuthorizer: authorizer
+            )
+            defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+            let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL + "&tailcat_free_pair_address=tailcat%3Afree-pair"))
+
+            let prepared = try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil)
+            )
+
+            XCTAssertEqual(authorizer.requests.count, 1)
+            XCTAssertTrue(authorizer.completions.isEmpty)
+            XCTAssertFalse(prepared.route.profileRoute.isManaged, "走免费节点的设备不能记成托管线路")
+            let claim = try XCTUnwrap(ManagedUpgradeURLProtocol.requests.last?.httpBody)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: claim) as? [String: Any])
+            XCTAssertNil(payload["managed_pairing_grant"], "免费节点的 claim 不能带托管授权")
+            let addresses = await fixture.runtime.preparedAddresses()
+            XCTAssertEqual(addresses, ["tailcat:free-pair", "tailcat:free-stable"], "没开通时不能去连托管配对节点")
+        }
+    }
+
+    func testEntitledDeviceStaysManagedWhenFreeNodeIsAlsoOffered() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(body: #"{"endpoint":"http://127.0.0.1:8787","token":"managed-token","tailcat_address":"tailcat:managed-stable"}"#)
+        }
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152"), .success("http://127.0.0.1:49153")],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL + "&tailcat_free_pair_address=tailcat%3Afree-pair"))
+
+        let prepared = try await fixture.controller.preparePairingURL(
+            url,
+            appStore: fixture.store,
+            profileTarget: .currentOrNew(displayName: nil)
+        )
+
+        XCTAssertTrue(prepared.route.profileRoute.isManaged)
+        XCTAssertEqual(authorizer.completions.count, 1)
+        let addresses = await fixture.runtime.preparedAddresses()
+        XCTAssertFalse(addresses.contains("tailcat:free-pair"), "开通过的设备不该走免费节点")
+    }
+
+    func testManagedPageScanDoesNotFallBackToFreeNode() async throws {
+        let authorizer = ManagedPairingAuthorizerStub()
+        authorizer.error = ManagedConnectionDeviceAPIError.rejected(code: "device_limit_reached", deviceType: .mac, limit: 3)
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL + "&tailcat_free_pair_address=tailcat%3Afree-pair"))
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.controller.preparePairingURL(
+                url,
+                appStore: fixture.store,
+                profileTarget: .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true
+            )
+        ) { error in
+            XCTAssertEqual(error.localizedDescription, authorizer.error?.localizedDescription, "用户明确要托管时要说明原因")
+        }
+        let startCallCount = await fixture.runtime.startCallCount()
+        XCTAssertEqual(startCallCount, 0)
     }
 
     func testManagedQRCodeWithoutSubscriptionExplainsWhatToDo() async throws {

@@ -132,39 +132,17 @@ func TestTailcatManagedPairingLinkRequiresBearer(t *testing.T) {
 	}
 }
 
-func TestTailcatManagedPairingLinkConfirmsAllSelfHostedClients(t *testing.T) {
-	// Tailcat 转发和本机调用的来源都可能为 loopback。伪造的转发头不能绕过确认。
-	for _, remote := range []string{"127.0.0.1:54321", "[::1]:54321", "192.0.2.1:54321"} {
-		server, s, c := newLinkTestServer(t)
-		s.status.PairedDeviceCount = 2
-		req := authedRequest(t, http.MethodPost, managedPairingLinkPath, map[string]bool{})
-		req.RemoteAddr, req.Host = remote, "localhost:8787"
-		req.Header.Set("Forwarded", "for=192.0.2.2")
-		req.Header.Set("X-Forwarded-For", "192.0.2.2")
-		response := httptest.NewRecorder()
-		server.handler.ServeHTTP(response, req)
-		assertLinkFailure(t, response, http.StatusConflict, "tailcat_self_hosted_clients_present")
-		body := decodeJSON(t, response)
-		if body["paired_device_count"] != float64(2) || s.status.Mode != config.TailcatModeSelfHosted ||
-			s.status.PublicKey != testManagedMacKey || s.pairCalls != 0 || c.state.HostID != "" {
-			t.Fatal("未确认请求修改了模式、身份或配对")
-		}
-	}
-}
-
 func TestTailcatManagedPairingLinkEnablesAndSwitchesRealSidecar(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	for _, tc := range []struct {
 		name    string
 		enabled bool
 		clients bool
-		confirm bool
 	}{
 		{name: "disabled"},
 		{name: "enabled", enabled: true},
 		{name: "disabled-with-clients", clients: true},
 		{name: "enabled-with-clients", enabled: true, clients: true},
-		{name: "confirmed", enabled: true, clients: true, confirm: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", false)
@@ -184,21 +162,15 @@ func TestTailcatManagedPairingLinkEnablesAndSwitchesRealSidecar(t *testing.T) {
 			server := newTestServer(t)
 			r := server.router
 			r.tailcat, r.managedPairing, r.configPath, r.installationID = s, c, s.configPath, testManagedInstallationID
-			response := requestManagedPairingLink(t, server, tc.confirm)
-			if tc.clients && !tc.confirm {
-				assertLinkFailure(t, response, http.StatusConflict, "tailcat_self_hosted_clients_present")
-				if s.Status(context.Background()).Mode != config.TailcatModeSelfHosted {
-					t.Fatal("未确认就切换了模式")
-				}
-				return
-			}
+			// 免费设备不受影响，所以不再需要确认。
+			response := requestManagedPairingLink(t, server, false)
 			assertManagedPairingLink(t, response, s.configPath, r.decorateTailcatStatus(s.Status(context.Background())))
 			if persisted := readModeTestConfig(t, s.configPath); !persisted.Tailcat.Enabled || persisted.Tailcat.Mode != config.TailcatModeManaged {
 				t.Fatal("未开启并持久化托管模式")
 			}
 			if tc.clients {
-				if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); !os.IsNotExist(err) {
-					t.Fatalf("确认后未清空自建配对：%v", err)
+				if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); err != nil {
+					t.Fatalf("开启托管不能清掉免费设备：%v", err)
 				}
 			}
 			seedModeTestPolicy(t, c, s)
@@ -227,7 +199,7 @@ func assertManagedPairingLink(t *testing.T, response *httptest.ResponseRecorder,
 		t.Fatal(err)
 	}
 	// CLI 使用相同构造器。仅签发时间不同；逐项比较其余字段，再独立验证真实签名。
-	cli, err := agentsetup.TailcatPairWithManagedHost(configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey)
+	cli, err := agentsetup.TailcatPairWithManagedHost(configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress)
 	if err != nil {
 		t.Fatal(err)
 	}

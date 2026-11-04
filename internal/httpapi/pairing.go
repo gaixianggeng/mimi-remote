@@ -129,12 +129,13 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			writeManagedModeRequired(w)
 			return
 		}
-	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil &&
-		r.tailcat.Status(req.Context()).Mode == config.TailcatModeManaged {
-		// 签名票据不覆盖托管字段，去掉它们的托管二维码 claim 不能落进免费白名单。
-		// 这里先给稳定错误码；AllowClient 在 operationMu 内还会再拦一次。
-		writeManagedGrantRequired(w)
-		return
+	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil {
+		// 不带托管授权的设备走免费节点，托管节点不会放行它。免费节点还没就绪时不能写白名单，
+		// 否则设备拿不到能用的地址。
+		if status := r.tailcat.Status(req.Context()); status.Mode == config.TailcatModeManaged && status.FreeAddress == "" {
+			writeManagedGrantRequired(w)
+			return
+		}
 	}
 	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
 		if r.tailcat == nil {
@@ -180,6 +181,13 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		response.TailcatAddress = status.Address
+		if managedSessionID == "" && status.Mode == config.TailcatModeManaged {
+			response.TailcatAddress = status.FreeAddress
+		}
+		if strings.TrimSpace(response.TailcatAddress) == "" {
+			writeManagedGrantRequired(w)
+			return
+		}
 	} else if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
 		writeError(w, http.StatusBadRequest, "托管配对必须提供 Tailcat 客户端公钥")
 		return

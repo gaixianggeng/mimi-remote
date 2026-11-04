@@ -25,10 +25,9 @@ type tailcatManagedPairingLinkResponse struct {
 }
 
 type tailcatActionFailure struct {
-	status            int
-	code              string
-	err               error
-	pairedDeviceCount *int
+	status int
+	code   string
+	err    error
 }
 
 func (r *Router) tailcatManagedPairingLinkHandler(w http.ResponseWriter, req *http.Request) {
@@ -57,9 +56,6 @@ func (r *Router) tailcatManagedPairingLinkHandler(w http.ResponseWriter, req *ht
 	if failure != nil {
 		result = failure.code
 		body := map[string]any{"code": failure.code, "error": failure.err.Error()}
-		if failure.pairedDeviceCount != nil {
-			body["paired_device_count"] = *failure.pairedDeviceCount
-		}
 		writeJSON(w, failure.status, body)
 		return
 	}
@@ -96,13 +92,6 @@ func (r *Router) createTailcatManagedPairingLink(
 	if !status.Running || status.Error != "" || status.PairedDeviceCount < 0 {
 		return fail(http.StatusServiceUnavailable, "tailcat_status_unavailable", "无法读取 Tailcat 设备状态，请稍后重试")
 	}
-	// sidecar 的 tunnel.StartHost 使用普通 TCP 转发到 loopback，没有可信来源标记。
-	// RemoteAddr/Host/Forwarded 均无法区分 Tailcat 和本机调用，因此所有自建设备都需确认。
-	if status.Mode != config.TailcatModeManaged && status.PairedDeviceCount > 0 && !payload.ConfirmResetSelfHosted {
-		_, failure := fail(http.StatusConflict, "tailcat_self_hosted_clients_present", "已有自建 Tailcat 设备，进入托管模式会断开这些设备，请确认后重试")
-		failure.pairedDeviceCount = &status.PairedDeviceCount
-		return tailcatManagedPairingLinkResponse{}, failure
-	}
 	if _, err := r.managedPairing.ConfigureMode(ctx, true); err != nil {
 		return fail(http.StatusServiceUnavailable, "tailcat_managed_mode_failed", "进入托管模式失败，已尝试恢复原状态，请在电脑上检查")
 	}
@@ -122,6 +111,7 @@ func (r *Router) createTailcatManagedPairingLink(
 	// 与 agentd tailcat pair 共用二维码构造函数，字段及签名语义保持一致。
 	pair, err := agentsetup.TailcatPairWithManagedHost(
 		r.configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey,
+		status.FreePairAddress,
 	)
 	if err != nil {
 		return fail(http.StatusInternalServerError, "tailcat_pair_link_failed", "生成 Tailcat 配对链接失败，请在电脑上检查配置")

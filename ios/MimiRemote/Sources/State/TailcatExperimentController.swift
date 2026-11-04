@@ -752,6 +752,7 @@ final class TailcatExperimentController: ObservableObject {
         let previousActiveProfileID = appStore.activeConnectionProfileID
         let previousLegacyAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
         var candidateEndpoint: String?
+        var claimedManaged = false
         state = .starting
         generation &+= 1
         let operationGeneration = generation
@@ -759,64 +760,46 @@ final class TailcatExperimentController: ObservableObject {
             let privateKey = try loadOrCreatePrivateKey()
             let clientKey = try bridge.publicKey(privateKey)
             publicKey = clientKey
-            let managedAuthorization: ManagedConnectionPairingAuthorization?
-            if usesManagedAuthorization {
-                guard let macInstallationID = link.managedMacInstallationID,
-                      let macTailcatPublicKey = link.managedMacTailcatPublicKey,
-                      let pairingMacTailcatPublicKey = link.managedPairTailcatPublicKey,
-                      let managedPairingAuthorizer
-                else {
-                    throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
-                }
-                do {
-                    managedAuthorization = try await managedPairingAuthorizer.authorizeManagedPairing(
-                        macInstallationID: macInstallationID,
-                        macTailcatPublicKey: macTailcatPublicKey,
-                        pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
-                        mobileTailcatPublicKey: clientKey
-                    )
-                } catch ManagedConnectionDeviceStoreError.subscriptionRequired {
-                    throw TailcatPairingError.managedConnectionRequired
-                }
-            } else {
-                managedAuthorization = nil
-            }
-            try ensureCurrent(operationGeneration)
             // 授权失败尚未触碰健康引擎；只有即将顺序替换时才先关闭旧 endpoint。
-            appStore.setTailcatExperimentEndpoint(nil)
-            let pairingEndpoint: String
-            do {
-                pairingEndpoint = try await runtime.prepare(
-                    address: link.pairAddress,
-                    privateKey: privateKey
-                )
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // 原始错误留在失败记录里，排查时能和电脑、中继日志对照。
-                recordConnectionFailure(stage: .tunnelStart, error: error)
-                throw TailcatPairingError.pairNodeUnreachable(managed: usesManagedAuthorization)
-            }
-            candidateEndpoint = pairingEndpoint
-            try ensureCurrent(operationGeneration)
-            let claimRequest: PairingClaimRequest
-            if let managedAuthorization {
-                claimRequest = link.ticket.managedClaimRequest(
-                    tailcatClientKey: clientKey,
-                    pairingSessionID: managedAuthorization.sessionID,
-                    managedPairingGrant: managedAuthorization.grant
-                )
+            let response: PairingClaimResponse
+            if usesManagedAuthorization {
+                do {
+                    response = try await claimManagedPairing(
+                        link,
+                        clientKey: clientKey,
+                        privateKey: privateKey,
+                        appStore: appStore,
+                        generation: operationGeneration
+                    )
+                    claimedManaged = true
+                } catch {
+                    // 托管只是更快更稳的线路，走不通（没开通、名额已满、授权冲突、控制面不可达）
+                    // 就走免费节点。只有用户明确在托管连接页扫码时才把原因告诉他。
+                    guard !requiresManagedAuthorization,
+                          TailcatConnectionFailure.shouldRecord(error),
+                          let freePairAddress = link.freePairAddress else {
+                        throw error
+                    }
+                    try ensureCurrent(operationGeneration)
+                    response = try await claimThroughPairNode(
+                        address: freePairAddress,
+                        claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
+                        privateKey: privateKey,
+                        managed: false,
+                        appStore: appStore,
+                        generation: operationGeneration
+                    )
+                }
             } else {
-                claimRequest = link.ticket.claimRequest(tailcatClientKey: clientKey)
+                response = try await claimThroughPairNode(
+                    address: link.pairAddress,
+                    claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
+                    privateKey: privateKey,
+                    managed: false,
+                    appStore: appStore,
+                    generation: operationGeneration
+                )
             }
-            let response = try await AgentAPIClient(endpoint: pairingEndpoint, token: "")
-                .claimPairing(claimRequest)
-            try ensureCurrent(operationGeneration)
-            if let managedAuthorization {
-                managedPairingAuthorizer?.didCompleteManagedPairing(managedAuthorization)
-            }
-            _ = try await runtime.discardPrepared(endpoint: pairingEndpoint)
-            candidateEndpoint = nil
             try ensureCurrent(operationGeneration)
             let stableAddress = response.tailcatAddress?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -838,7 +821,7 @@ final class TailcatExperimentController: ObservableObject {
                 endpoint: canonicalEndpoint,
                 activeEndpoint: stableEndpoint,
                 tailcatAddress: stableAddress,
-                managed: usesManagedAuthorization,
+                managed: claimedManaged,
                 token: response.token,
                 profileTarget: resolvedProfileTarget
             )
@@ -877,6 +860,83 @@ final class TailcatExperimentController: ObservableObject {
                 error: error,
                 regionCode: nil
             )
+            throw error
+        }
+    }
+
+    private func claimManagedPairing(
+        _ link: TailcatPairingLink,
+        clientKey: String,
+        privateKey: String,
+        appStore: AppStore,
+        generation operationGeneration: UInt64
+    ) async throws -> PairingClaimResponse {
+        guard let macInstallationID = link.managedMacInstallationID,
+              let macTailcatPublicKey = link.managedMacTailcatPublicKey,
+              let pairingMacTailcatPublicKey = link.managedPairTailcatPublicKey,
+              let managedPairingAuthorizer
+        else {
+            throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
+        }
+        let authorization: ManagedConnectionPairingAuthorization
+        do {
+            authorization = try await managedPairingAuthorizer.authorizeManagedPairing(
+                macInstallationID: macInstallationID,
+                macTailcatPublicKey: macTailcatPublicKey,
+                pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
+                mobileTailcatPublicKey: clientKey
+            )
+        } catch ManagedConnectionDeviceStoreError.subscriptionRequired {
+            throw TailcatPairingError.managedConnectionRequired
+        }
+        try ensureCurrent(operationGeneration)
+        return try await claimThroughPairNode(
+            address: link.pairAddress,
+            claim: link.ticket.managedClaimRequest(
+                tailcatClientKey: clientKey,
+                pairingSessionID: authorization.sessionID,
+                managedPairingGrant: authorization.grant
+            ),
+            privateKey: privateKey,
+            managed: true,
+            appStore: appStore,
+            generation: operationGeneration
+        ) {
+            managedPairingAuthorizer.didCompleteManagedPairing(authorization)
+        }
+    }
+
+    /// 连上临时配对节点并领取连接信息。无论成败都关掉这个节点的隧道，调用方接着要连稳定节点，
+    /// 或者换另一个配对节点重试。
+    private func claimThroughPairNode(
+        address: String,
+        claim: PairingClaimRequest,
+        privateKey: String,
+        managed: Bool,
+        appStore: AppStore,
+        generation operationGeneration: UInt64,
+        onClaimed: () -> Void = {}
+    ) async throws -> PairingClaimResponse {
+        appStore.setTailcatExperimentEndpoint(nil)
+        let endpoint: String
+        do {
+            endpoint = try await runtime.prepare(address: address, privateKey: privateKey)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // 原始错误留在失败记录里，排查时能和电脑、中继日志对照。
+            recordConnectionFailure(stage: .tunnelStart, error: error)
+            throw TailcatPairingError.pairNodeUnreachable(managed: managed)
+        }
+        do {
+            try ensureCurrent(operationGeneration)
+            let response = try await AgentAPIClient(endpoint: endpoint, token: "").claimPairing(claim)
+            try ensureCurrent(operationGeneration)
+            onClaimed()
+            _ = try await runtime.discardPrepared(endpoint: endpoint)
+            return response
+        } catch {
+            try? await runtime.discardPrepared(endpoint: endpoint)
             throw error
         }
     }

@@ -56,6 +56,8 @@ func runManagedHost(arguments []string) error {
 	stateDir := flags.String("state-dir", "", "Tailcat 私有状态目录")
 	controlPath := flags.String("control", "", "agentd 控制 socket")
 	derpMapURL := flags.String("derpmap-url", "", "可选 DERP Map URL")
+	freeNode := flags.Bool("free-node", false, "稳定节点走托管中继时，另起免费节点供没开通的设备使用")
+	freeDERPMapURL := flags.String("free-derpmap-url", "", "免费节点的 DERP Map URL；空值使用 Tailcat 默认中继")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -68,12 +70,14 @@ func runManagedHost(arguments []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return managed.RunUntilCanceled(ctx, managed.Config{
-		TargetAddr:  *target,
-		RemotePort:  uint16(*port),
-		StateDir:    *stateDir,
-		ControlPath: *controlPath,
-		DERPMapURL:  *derpMapURL,
-		Events:      newHostEventWriter(os.Stderr),
+		TargetAddr:     *target,
+		RemotePort:     uint16(*port),
+		StateDir:       *stateDir,
+		ControlPath:    *controlPath,
+		DERPMapURL:     *derpMapURL,
+		FreeNode:       *freeNode,
+		FreeDERPMapURL: *freeDERPMapURL,
+		Events:         newHostEventWriter(os.Stderr),
 	})
 }
 

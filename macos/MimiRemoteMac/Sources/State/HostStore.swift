@@ -904,10 +904,10 @@ final class HostStore {
             }
             if managed {
                 tailcatNotice = wasEnabled
-                    ? "已改用 Mimi 托管连接。请在手机的「Mimi 托管连接」里扫码接入这台电脑。"
+                    ? "已开启 Mimi 托管连接。开通过的手机重新扫码后走托管中继，其他设备不受影响。"
                     : "已改用 Mimi 托管连接，开启 Tailcat 后生效。"
             } else {
-                tailcatNotice = "已退出托管连接并恢复原中继。需要用 Tailcat 的设备请重新扫码。"
+                tailcatNotice = "已退出托管连接。托管接入的设备请重新扫码，其他设备不受影响。"
             }
         } catch {
             tailcatError = error.localizedDescription

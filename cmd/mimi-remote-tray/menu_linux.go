@@ -114,14 +114,10 @@ func (s linuxTraySnapshot) tailcatTitle() string {
 	if !s.Tailcat.Running {
 		return "需要处理"
 	}
-	if s.Tailcat.RelayRequiresManaged {
-		return "需要改用托管连接"
-	}
-	mode := "自建"
 	if s.Tailcat.Mode == "managed" {
-		mode = "托管"
+		return fmt.Sprintf("运行中 · 托管 · %d 台已配对", s.Tailcat.PairedDeviceCount)
 	}
-	return fmt.Sprintf("运行中 · %s · %d 台已配对", mode, s.Tailcat.PairedDeviceCount)
+	return fmt.Sprintf("运行中 · %d 台已配对", s.Tailcat.PairedDeviceCount)
 }
 
 func linuxRuntimeLabel(state string) string {

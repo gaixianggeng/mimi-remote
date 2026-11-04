@@ -19,20 +19,20 @@ import (
 )
 
 type tailcatCommandStatus struct {
-	Enabled              bool   `json:"enabled"`
-	Mode                 string `json:"mode"`
-	Running              bool   `json:"running"`
-	Version              string `json:"version,omitempty"`
-	DERPMapURL           string `json:"derp_map_url,omitempty"`
-	Address              string `json:"address,omitempty"`
-	PublicKey            string `json:"public_key,omitempty"`
-	MacInstallationID    string `json:"mac_installation_id,omitempty"`
-	PairAddress          string `json:"pair_address,omitempty"`
-	PairPublicKey        string `json:"pair_public_key,omitempty"`
-	PairExpiresAt        string `json:"pair_expires_at,omitempty"`
-	PairedDeviceCount    int    `json:"paired_device_count"`
-	Error                string `json:"error,omitempty"`
-	RelayRequiresManaged bool   `json:"relay_requires_managed,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
+	Running           bool   `json:"running"`
+	Version           string `json:"version,omitempty"`
+	DERPMapURL        string `json:"derp_map_url,omitempty"`
+	Address           string `json:"address,omitempty"`
+	PublicKey         string `json:"public_key,omitempty"`
+	MacInstallationID string `json:"mac_installation_id,omitempty"`
+	PairAddress       string `json:"pair_address,omitempty"`
+	PairPublicKey     string `json:"pair_public_key,omitempty"`
+	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
+	PairedDeviceCount int    `json:"paired_device_count"`
+	Error             string `json:"error,omitempty"`
+	FreePairAddress   string `json:"free_pair_address,omitempty"`
 }
 
 func runTailcat(args []string) error {
@@ -88,9 +88,10 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	if action == "pair" {
 		// 只有托管模式的二维码才带托管字段。自建模式带上它们，iOS 会先向云端
 		// 预留电脑名额，到 claim 时才被拒绝。
-		macInstallationID, macPublicKey, pairPublicKey := "", "", ""
+		macInstallationID, macPublicKey, pairPublicKey, freePairAddress := "", "", "", ""
 		if status.Mode == config.TailcatModeManaged {
 			macInstallationID, macPublicKey, pairPublicKey = status.MacInstallationID, status.PublicKey, status.PairPublicKey
+			freePairAddress = status.FreePairAddress
 		}
 		result, err := agentsetup.TailcatPairWithManagedHost(
 			*configPath,
@@ -98,6 +99,7 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 			macInstallationID,
 			macPublicKey,
 			pairPublicKey,
+			freePairAddress,
 		)
 		if err != nil {
 			return err
@@ -192,11 +194,11 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 		state = "需要处理"
 	}
 	fmt.Fprintf(w, "Tailcat 实验：%s\n", state)
-	mode := "自建"
+	mode := "免费线路"
 	if status.Mode == config.TailcatModeManaged {
-		mode = "托管"
+		mode = "托管 + 免费线路"
 	}
-	fmt.Fprintf(w, "模式：%s\n", mode)
+	fmt.Fprintf(w, "线路：%s\n", mode)
 	if status.Version != "" {
 		fmt.Fprintf(w, "版本：%s\n", status.Version)
 	}
@@ -208,8 +210,5 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 	fmt.Fprintf(w, "已配对设备：%d\n", status.PairedDeviceCount)
 	if status.Error != "" {
 		fmt.Fprintf(w, "问题：%s\n", status.Error)
-	}
-	if status.RelayRequiresManaged {
-		fmt.Fprintln(w, "问题：官方中继只接受托管连接，请运行 agentd tailcat enter-managed 后重新生成二维码")
 	}
 }

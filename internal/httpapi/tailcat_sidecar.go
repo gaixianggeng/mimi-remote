@@ -57,8 +57,9 @@ type tailcatStatus struct {
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error,omitempty"`
-	// RelayRequiresManaged：自建模式却连着只接受托管节点的官方中继，这样的二维码一定扫不通。
-	RelayRequiresManaged bool `json:"relay_requires_managed,omitempty"`
+	// 托管模式下给没开通设备用的免费节点。还没就绪时为空，二维码就只带托管节点。
+	FreeAddress     string `json:"free_address,omitempty"`
+	FreePairAddress string `json:"free_pair_address,omitempty"`
 }
 
 type tailcatSidecar interface {
@@ -213,6 +214,10 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 		s.finishStart(nil, err)
 		return err
 	}
+	if err := s.leaveOfficialRelayWhenSelfHosted(); err != nil {
+		s.finishStart(nil, err)
+		return err
+	}
 	if err := os.MkdirAll(s.stateDir, 0o700); err != nil {
 		err = fmt.Errorf("创建 Tailcat 状态目录：%w", err)
 		s.finishStart(nil, err)
@@ -228,6 +233,12 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	}
 	if value := strings.TrimSpace(s.config.DERPMapURL); value != "" {
 		args = append(args, "--derpmap-url", value)
+	}
+	if s.config.ConnectionMode() == config.TailcatModeManaged {
+		args = append(args, "--free-node")
+		if value := s.config.FreeRelayURL(); value != "" {
+			args = append(args, "--free-derpmap-url", value)
+		}
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = io.Discard
@@ -546,6 +557,10 @@ var tailcatIdentityFiles = []string{
 	"clients.json",
 	"pair.private.json",
 	"pair.address",
+	"free.private.json",
+	"free.address",
+	"free-pair.private.json",
+	"free-pair.address",
 }
 
 type tailcatIdentitySnapshot map[string][]byte

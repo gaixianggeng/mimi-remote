@@ -98,9 +98,11 @@ struct TailcatPairingLink: Equatable {
     let managedMacInstallationID: String?
     let managedMacTailcatPublicKey: String?
     let managedPairTailcatPublicKey: String?
+    /// 托管二维码附带的免费配对节点。没开通的设备走它，旧版电脑的二维码没有这个字段。
+    let freePairAddress: String?
 
-    /// 电脑只在托管模式下才写入这三个字段（agentd `tailcat pair`）。带齐了就必须走托管授权：
-    /// 中继开启准入后，未登记的身份连不上临时配对节点，按自建流程只会等到超时。
+    /// 电脑只在托管模式下才写入这三个字段（agentd `tailcat pair`）。带齐了就先走托管授权：
+    /// 中继开启准入后，未登记的身份连不上托管的临时配对节点，直接去连只会等到超时。
     var isManagedPairing: Bool {
         managedMacInstallationID != nil && managedMacTailcatPublicKey != nil && managedPairTailcatPublicKey != nil
     }
@@ -136,12 +138,16 @@ struct TailcatPairingLink: Equatable {
               !hasManagedPairPublicKey || hasManagedInstallationID else {
             throw PairingLinkError.unsupportedURL
         }
+        let freePairAddress = components?.queryItems?
+            .first(where: { $0.name == "tailcat_free_pair_address" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return TailcatPairingLink(
             ticket: ticket,
             pairAddress: pairAddress,
             managedMacInstallationID: hasManagedInstallationID ? managedMacInstallationID : nil,
             managedMacTailcatPublicKey: hasManagedPublicKey ? managedMacTailcatPublicKey : nil,
-            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil
+            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil,
+            freePairAddress: (freePairAddress ?? "").isEmpty ? nil : freePairAddress
         )
     }
 }

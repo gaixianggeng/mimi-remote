@@ -55,8 +55,25 @@ agentd tailcat pair
 
 `agentd tailcat pair` 只输出短期配对链接。它不会输出或修改长期 Agent Token。
 
-购买托管连接后，必须先在电脑上进入托管模式，再生成二维码。不能扫码后才切换，
-因为切换中继会重建稳定主机公钥，扫码授权绑定的是二维码中的原公钥。
+托管连接只是更快更稳的升级，不是使用门槛：没开通的设备走局域网、Tailscale 或 Tailcat 默认中继，
+不限设备数；开通的设备走 Mimi 托管中继，设备数按订阅限制（3 台电脑、5 台手机）。
+
+要用托管中继，电脑要先进入托管模式，再生成二维码。不能扫码后才切换，
+因为进入托管模式会为托管中继生成新的稳定公钥，扫码授权绑定的是二维码中的公钥。
+
+进入托管模式后，电脑同时运行两个稳定节点：
+
+| 节点 | 中继 | 放行名单 | 状态文件 |
+| --- | --- | --- | --- |
+| 托管节点 | 官方中继 | 只来自控制面策略 | `host.private.json`、`host.address` |
+| 免费节点 | 进入托管前的中继；若那是官方中继，则用 Tailcat 默认中继 | `clients.json` | `free.private.json`、`free.address` |
+
+免费白名单不进托管节点，托管策略也不进免费节点，所以不带授权的设备绕不过订阅。
+托管二维码的 `tailcat_pair_address` 是托管配对节点，`tailcat_free_pair_address` 是免费配对节点。
+iOS 从通用入口（添加电脑、粘贴链接、系统相机）扫码时先走托管授权；没开通、设备数已满、
+授权冲突或控制面不可达时，改走免费配对节点。从托管连接页扫码时不改走，直接说明原因。
+免费节点在后台启动，启动失败不影响托管节点，按 5 秒起步、最长 5 分钟退避重试；
+还没就绪时二维码只带托管配对节点。
 
 ```bash
 agentd tailcat enable
@@ -67,7 +84,8 @@ agentd tailcat pair
 
 本机控制接口 `POST /api/local/tailcat` 对应的 `action` 是 `enter-managed` 和
 `exit-managed`，沿用现有本机 Token、loopback 和禁止 Origin 的控制边界。
-状态 JSON 的 `mode` 为 `managed`（托管）或 `self_hosted`（自建）；命令状态会显示中文模式。
+状态 JSON 的 `mode` 为 `managed`（托管）或 `self_hosted`（只有免费线路）；命令状态会显示中文线路。
+托管模式下，状态里的 `free_address`、`free_pair_address` 是免费节点的地址。
 电脑端界面的进入、退出入口及各端模式展示另行实现。
 
 托管模式使用 Mimi 官方 DERP Map：
@@ -76,15 +94,17 @@ agentd tailcat pair
 不配置时使用统一的官方默认值。`tailcat.mode`、当前 `tailcat.derp_map_url` 和
 `tailcat.previous_derp_map_url` 在一次配置提交中保存；原地址为空表示 Tailcat 默认中继。
 
-官方中继只接受托管节点。自建模式连着官方中继时，`agentd tailcat pair` 返回 `tailcat_relay_requires_managed`，
-不生成二维码；状态里的 `relay_requires_managed` 为 true。Windows 和 Linux 托盘提供「改用 Mimi 托管连接」入口，
-命令行用 `agentd tailcat enter-managed`。
-旧配置没有 `mode` 时按自建处理，不自动迁移已有配对。
+官方中继只接受托管节点。不在托管模式却连着官方中继的旧配置，`agentd` 启动 sidecar 时自动切回
+Tailcat 默认中继并换新身份（这些设备本来就被准入拒绝）；手动 `configure` 官方中继会被拒绝。
+旧配置没有 `mode` 时按免费线路处理，不自动迁移已有配对。
 
-进入和退出模式都会重建 Tailcat 身份并清空自建配对；同一台电脑同一时间只使用一种模式。
-切换失败时恢复切换前的中继、身份和自建配对，退出失败时也恢复仍有效的托管授权。
-成功退出会清空托管注册，并恢复进入前的默认或自定义中继；它不会找回进入前已清空的配对。
-重复进入或退出不改变身份或已记录的原值。`agentd` 重启后继续保留模式及原中继记录。
+进入托管模式时，原稳定节点改名成免费节点，身份、地址和 `clients.json` 都不变，已配对的免费设备
+不用重新扫码；托管节点使用新身份。退出托管时把免费节点换回稳定节点，中继恢复为免费节点的中继，
+托管接入的设备需要重新扫码。原节点连的是官方中继时例外：它当免费节点也会被拒绝，所以清掉重建。
+切换失败时恢复切换前的中继、身份和免费配对，退出失败时也恢复仍有效的托管授权。
+成功退出会清空托管注册。重复进入或退出不改变身份或已记录的原值。
+`agentd` 重启后继续保留模式及原中继记录。已在托管模式的旧版电脑升级后自动补上免费节点，
+托管设备不用重新扫码。显式 `reset` 同时清空两个节点。
 
 ```bash
 agentd tailcat exit-managed
@@ -105,8 +125,8 @@ Mimi 托管连接会在移动端取得订阅权益和 10 分钟配对授权后�
 托管策略保存在 Tailcat 状态目录的 `managed-policy.json`，文件权限固定为 `0600`，
 写入采用临时文件替换。`agentd` 启动后立即同步，此后每 5 分钟同步一次。在线撤销
 最迟在 10 分钟内生效。控制面临时不可达时可以继续使用最后一次有效策略，但最多
-保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费自建
-白名单与托管白名单分开保存，应用策略时才合并，托管撤销不会删除免费配对。
+保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费白名单与
+托管白名单分开保存，分属两个节点，托管撤销不会删除免费配对。
 云端撤销、主机身份变化及显式 `reset` 都保持托管模式，只清空对应授权或注册并等待重新配对。
 只有显式 `exit-managed` 才恢复原中继，避免一次云端异常让电脑悄悄换回公共中继。
 
@@ -125,17 +145,10 @@ agentd tailcat configure --derp-map-url=
 `Authorization: Bearer …`，开发免鉴权及查询参数 Token 都不能代替 Bearer。
 `/api/local/tailcat` 的本机控制限制保持不变。iOS 入口由客户端另行实现。
 
-请求 JSON 为 `{"confirm_reset_self_hosted":false}`，字段可省略，默认为 `false`。
-接口先开启 Tailcat，再检查自建设备数；自建模式存在已配对设备时返回 HTTP 409，
-响应包含 `code: "tailcat_self_hosted_clients_present"`、中文 `error` 和
-`paired_device_count`。客户端展示设备将被断开的提示，用户确认后以
-`{"confirm_reset_self_hosted":true}` 重试。状态读取失败时不会把设备数当作零。
+接口先开启 Tailcat，再进入托管模式并生成链接。已配对的免费设备转到免费节点，不受影响，所以不需要确认。
+请求 JSON 中旧版客户端发送的 `confirm_reset_self_hosted` 字段继续接受，但不再起作用。
 
-sidecar 在 `experiments/tailcat/internal/tunnel/host.go` 中通过普通 TCP 连接转发到
-agentd 的回环地址，不写入可信 HTTP 标记。agentd 无法从 `RemoteAddr`、`Host` 或
-转发头可靠区分 Tailcat 与本机请求，因此采用所有自建设备均需确认的替代方案，
-不会返回 `tailcat_upgrade_over_tailcat`。确认后的模式切换仍可能切断当前 Tailcat
-请求；客户端应通过已有局域网或 Tailscale 线路调用，避免在自建 Tailcat 线路上确认切换。
+切换模式会重启 sidecar，可能切断当前 Tailcat 请求，所以客户端应通过已有局域网或 Tailscale 线路调用。
 
 以下命令通过已有连接调用接口。`AGENT_URL` 设置为当前电脑的 HTTP 服务地址，
 `AGENT_TOKEN` 设置为现有 Agent Token；不要把两者或返回链接写入日志。
@@ -165,7 +178,6 @@ curl --fail-with-body --request POST \
 
 | HTTP | `code` | 含义与处理 |
 | --- | --- | --- |
-| 409 | `tailcat_self_hosted_clients_present` | 有自建设备，展示 `paired_device_count`，用户确认断开后重试 |
 | 409 | `tailcat_operation_in_progress` | Tailcat 正忙，稍后重试 |
 | 503 | `tailcat_managed_pairing_unavailable` | Tailcat、托管控制器或安装身份未就绪，在电脑上检查服务 |
 | 503 | `tailcat_agents_disabled` | 全部 AI 编程助手已关闭，先启用助手 |
@@ -181,8 +193,7 @@ curl --fail-with-body --request POST \
 426 `protocol_incompatible`。客户端先按 HTTP 状态兜底，再使用业务 `code` 提示。
 
 启用失败时关闭配置并停止 sidecar，取消请求不取消这一步恢复；模式切换失败沿用身份、
-白名单及托管注册回滚。模式切换成功后的配对或链接生成失败保持托管模式，重试不会恢复
-已清空的自建配对。已托管且官方中继未变化时保留稳定身份与已有授权；中继配置变化时
+白名单及托管注册回滚。模式切换成功后的配对或链接生成失败保持托管模式。已托管且官方中继未变化时保留稳定身份与已有授权；中继配置变化时
 仍按现有收敛逻辑重建身份。生成链接本身不完成云端授权，后续订阅校验与 claim 流程保持不变。
 
 ### 3. 在 iPad 扫码

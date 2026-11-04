@@ -167,11 +167,6 @@ func (s *linuxTerminalScreen) selectAction(action string) {
 			s.output = "Tailcat 已启用但未就绪。\n" + state.Tailcat.Error
 			return
 		}
-		// 自建模式连着官方中继时二维码一定扫不通，先引导切换，确认后继续配对。
-		if state.Tailcat.RelayRequiresManaged {
-			s.pending, s.next = "tailcat-enter-managed", "pair-tailcat"
-			return
-		}
 	}
 	if linuxConfirmationWord(action) != "" {
 		s.pending = action
