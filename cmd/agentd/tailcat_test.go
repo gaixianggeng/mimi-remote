@@ -50,10 +50,10 @@ func TestPrintTailcatStatusIncludesRelayMode(t *testing.T) {
 }
 
 func TestPrintTailcatStatusIncludesManagedAndSelfHostedMode(t *testing.T) {
-	for mode, label := range map[string]string{"": "自建", "self_hosted": "自建", "managed": "托管"} {
+	for mode, label := range map[string]string{"": "免费线路", "self_hosted": "免费线路", "managed": "托管 + 免费线路"} {
 		var output bytes.Buffer
 		printTailcatStatus(&output, tailcatCommandStatus{Mode: mode})
-		if !strings.Contains(output.String(), "模式："+label) {
+		if !strings.Contains(output.String(), "线路："+label) {
 			t.Fatalf("未显示模式：%s", output.String())
 		}
 	}
@@ -108,11 +108,11 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 		if err := runTailcatWithWriters([]string{"tailcat", action, "--config", path}, &stdout, &stderr); err != nil {
 			t.Fatal(err)
 		}
-		label := "托管"
+		label := "托管 + 免费线路"
 		if action == "exit-managed" {
-			label = "自建"
+			label = "免费线路"
 		}
-		if receivedAction != action || !strings.Contains(stdout.String(), "模式："+label) {
+		if receivedAction != action || !strings.Contains(stdout.String(), "线路："+label) {
 			t.Fatalf("命令或模式输出异常：%s %s", receivedAction, stdout.String())
 		}
 	}

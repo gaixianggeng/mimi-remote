@@ -180,12 +180,11 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 
 // Read only the public status fields, never configuration or private keys.
 type linuxTailcatStatus struct {
-	Enabled              bool   `json:"enabled"`
-	Mode                 string `json:"mode"`
-	Running              bool   `json:"running"`
-	PairedDeviceCount    int    `json:"paired_device_count"`
-	Error                string `json:"error"`
-	RelayRequiresManaged bool   `json:"relay_requires_managed"`
+	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
+	Running           bool   `json:"running"`
+	PairedDeviceCount int    `json:"paired_device_count"`
+	Error             string `json:"error"`
 }
 
 func (c *linuxController) tailcatStatus(ctx context.Context) (linuxTailcatStatus, error) {

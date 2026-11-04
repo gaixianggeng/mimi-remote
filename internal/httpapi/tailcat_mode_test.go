@@ -118,12 +118,26 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 				if status.Mode != config.TailcatModeManaged || status.DERPMapURL != testOfficialRelayURL || status.Enabled != enabled {
 					t.Fatalf("进入托管模式失败：%+v", status)
 				}
-				if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); !os.IsNotExist(err) {
-					t.Fatalf("模式切换必须清空免费配对：%v", err)
+				// 免费设备不受影响：白名单和节点身份都留给免费节点。原节点连的就是官方中继时除外，
+				// 它当免费节点也会被准入拒绝。
+				wasOnOfficial := original == testOfficialRelayURL
+				if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); wasOnOfficial != os.IsNotExist(err) {
+					t.Fatalf("免费白名单处理错误：original=%q err=%v", original, err)
 				}
 				if enabled {
 					if status.PublicKey == old.PublicKey {
-						t.Fatal("切换模式必须重建稳定身份")
+						t.Fatal("托管节点必须用新身份，免费授权不能带进托管模式")
+					}
+					freeIdentity, err := os.ReadFile(filepath.Join(s.stateDir, "free.private.json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (string(freeIdentity) == old.PublicKey) == wasOnOfficial {
+						t.Fatalf("免费节点身份错误：original=%q same=%t", original, string(freeIdentity) == old.PublicKey)
+					}
+					if wantRelay := url.QueryEscape(original); !wasOnOfficial &&
+						!strings.HasSuffix(status.FreeAddress, "?relay="+wantRelay) {
+						t.Fatalf("免费节点应沿用进入托管前的中继：%s", status.FreeAddress)
 					}
 					assertManagedModePairQR(t, s)
 					seedModeTestPolicy(t, c, s)
@@ -157,7 +171,12 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 					if err := restoredController.Sync(context.Background()); err == nil {
 						t.Fatal("测试控制面应被禁止访问")
 					}
-					if restarted.Status(context.Background()).PairedDeviceCount != 1 {
+					// 一台托管设备，加上留在免费节点的设备（原节点连官方中继时已清掉）。
+					wantCount := 2
+					if original == testOfficialRelayURL {
+						wantCount = 1
+					}
+					if restarted.Status(context.Background()).PairedDeviceCount != wantCount {
 						t.Fatal("重启后未恢复托管授权")
 					}
 				}
@@ -165,8 +184,16 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if status.Mode != config.TailcatModeSelfHosted || status.DERPMapURL != original || status.Enabled != enabled {
+				wantRelay := original
+				if original == testOfficialRelayURL {
+					// 官方中继只接受开通的节点，退出托管不能回到它，否则会一直被拒绝。
+					wantRelay = ""
+				}
+				if status.Mode != config.TailcatModeSelfHosted || status.DERPMapURL != wantRelay || status.Enabled != enabled {
 					t.Fatalf("退出未恢复原中继：%+v", status)
+				}
+				if enabled && original != testOfficialRelayURL && status.PublicKey != old.PublicKey {
+					t.Fatal("退出托管后免费设备手里的地址必须继续有效")
 				}
 				persisted = readModeTestConfig(t, s.configPath)
 				if persisted.Tailcat.PreviousDERPMapURL != "" {
@@ -179,7 +206,7 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 				restarted.Close()
 				afterExit := newTailcatSidecarSupervisor(persisted, s.configPath)
 				t.Cleanup(afterExit.Close)
-				if got := afterExit.Status(context.Background()); got.Mode != config.TailcatModeSelfHosted || got.DERPMapURL != original {
+				if got := afterExit.Status(context.Background()); got.Mode != config.TailcatModeSelfHosted || got.DERPMapURL != wantRelay {
 					t.Fatal("退出后的重启丢失模式")
 				}
 
@@ -203,7 +230,7 @@ func assertManagedModePairQR(t *testing.T, s *tailcatSidecarSupervisor) {
 			t.Fatalf("地址未使用托管中继：%q %v", address, err)
 		}
 	}
-	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey)
+	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +240,9 @@ func assertManagedModePairQR(t *testing.T, s *tailcatSidecarSupervisor) {
 	}
 	if link.Query().Get("tailcat_pair_address") != status.PairAddress || link.Query().Get("managed_mac_tailcat_public_key") != status.PublicKey {
 		t.Fatal("二维码未绑定托管临时地址与稳定公钥")
+	}
+	if status.FreePairAddress == "" || link.Query().Get("tailcat_free_pair_address") != status.FreePairAddress {
+		t.Fatalf("二维码缺少免费配对节点：%+v", status)
 	}
 }
 
@@ -474,7 +504,7 @@ func TestTailcatLocalConfigureRejectsManagedRelayWithStableCode(t *testing.T) {
 	}
 }
 
-func TestManagedModeRejectsTailcatClaimWithoutManagedGrant(t *testing.T) {
+func TestManagedModeRejectsClaimWithoutGrantUntilFreeNodeIsReady(t *testing.T) {
 	server := newTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: config.TailcatModeManaged, Address: "managed-address"}}
 	managed := &fakeManagedPairingService{}
@@ -482,7 +512,7 @@ func TestManagedModeRejectsTailcatClaimWithoutManagedGrant(t *testing.T) {
 	server.router.managedPairing = managed
 	now := time.Now().UTC()
 	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
-	// 签名票据不覆盖托管字段：去掉它们的托管二维码 claim 不能落进免费白名单。
+	// 免费节点还没就绪时不能写白名单，否则设备拿不到能用的地址。
 	response := performPairingClaim(t, server.handler, pairingClaimRequest{
 		Endpoint: ticket.Endpoint, IssuedAt: ticket.IssuedAt, ExpiresAt: ticket.ExpiresAt, Signature: ticket.Signature,
 		TailcatClientKey: testManagedMobileKey,
@@ -495,24 +525,81 @@ func TestManagedModeRejectsTailcatClaimWithoutManagedGrant(t *testing.T) {
 	}
 }
 
-func TestManagedModeSidecarRefusesFreeAllowlistAndReconcilesChangedRelay(t *testing.T) {
+func TestManagedModeClaimWithoutGrantUsesFreeNode(t *testing.T) {
+	server := newTestServer(t)
+	fake := &fakeTailcatSidecar{status: tailcatStatus{
+		Enabled: true, Running: true, Mode: config.TailcatModeManaged,
+		Address: "tailcat:managed", FreeAddress: "tailcat:free",
+	}}
+	server.router.tailcat = fake
+	now := time.Now().UTC()
+	ticket := auth.NewPairingTicket("http://127.0.0.1:8787", testToken, now.Add(-time.Minute), now.Add(time.Minute))
+	response := performPairingClaim(t, server.handler, pairingClaimRequest{
+		Endpoint: ticket.Endpoint, IssuedAt: ticket.IssuedAt, ExpiresAt: ticket.ExpiresAt, Signature: ticket.Signature,
+		TailcatClientKey: testManagedMobileKey,
+	})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"tailcat_address":"tailcat:free"`) {
+		t.Fatalf("没开通的设备应拿到免费节点地址：%d %s", response.Code, response.Body.String())
+	}
+	if fake.allowCalls != 1 {
+		t.Fatalf("应写入免费白名单：%d", fake.allowCalls)
+	}
+}
+
+func TestSelfHostedOnOfficialRelayReturnsToDefaultRelayAtStart(t *testing.T) {
+	binary := buildModeTestSidecar(t)
+	s, _ := newModeTestHost(t, binary, config.DefaultManagedTailcatDERPMapURL, false)
+	for _, name := range []string{"host.private.json", "clients.json"} {
+		if err := os.WriteFile(filepath.Join(s.stateDir, name), []byte(`["stale"]`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := agentsetup.ConfigureTailcat(s.configPath, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := s.Status(context.Background())
+	if !status.Running || status.DERPMapURL != "" {
+		t.Fatalf("应回到默认中继：%+v", status)
+	}
+	if persisted := readModeTestConfig(t, s.configPath); persisted.Tailcat.DERPMapURL != "" {
+		t.Fatalf("修复没有持久化：%q", persisted.Tailcat.DERPMapURL)
+	}
+	if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); !os.IsNotExist(err) {
+		t.Fatalf("官方中继上的旧设备连不上，白名单不应保留：%v", err)
+	}
+	if status.PublicKey == `["stale"]` {
+		t.Fatal("地址内嵌中继，必须换新身份才能真正离开官方中继")
+	}
+	if _, err := s.ConfigureDERPMap(context.Background(), config.DefaultManagedTailcatDERPMapURL); !errors.Is(err, errTailcatOfficialRelayManaged) {
+		t.Fatalf("不能手动把免费线路配到官方中继：%v", err)
+	}
+}
+
+func TestManagedModeSidecarFreeAllowlistStaysOutOfPolicyAndReconcilesChangedRelay(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", true)
 	entered, err := c.ConfigureMode(context.Background(), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 绕过路由直接调用也不能写免费白名单：检查与写入都在 operationMu 内。
-	if _, err := s.AllowClient(context.Background(), testManagedMobileKey); !errors.Is(err, errTailcatManagedGrantRequired) {
-		t.Fatalf("托管模式下 AllowClient 必须拒绝：%v", err)
+	// 托管模式下免费设备只进 clients.json（属于免费节点），不进托管策略。
+	if _, err := s.AllowClient(context.Background(), testManagedMobileKey); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(s.stateDir, "clients.json")); !os.IsNotExist(err) {
-		t.Fatalf("托管模式不能留下免费白名单：%v", err)
+	raw, err := os.ReadFile(filepath.Join(s.stateDir, "clients.json"))
+	if err != nil || !strings.Contains(string(raw), testManagedMobileKey) {
+		t.Fatalf("免费设备应写入免费白名单：%s %v", raw, err)
+	}
+	if len(c.state.AllowedMobileKeys) != 0 {
+		t.Fatalf("免费设备不能进托管策略：%v", c.state.AllowedMobileKeys)
 	}
 
 	// 以后的版本或配置覆盖换了托管地址：启动容忍不一致，再次进入托管模式时收敛到新地址。
 	const changedRelay = "https://official-next.example.invalid/derp-map.json"
-	raw, err := os.ReadFile(s.configPath)
+	raw, err = os.ReadFile(s.configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,44 +633,5 @@ func TestManagedModeSidecarRefusesFreeAllowlistAndReconcilesChangedRelay(t *test
 	again, err := c.ConfigureMode(context.Background(), true)
 	if err != nil || again.PublicKey != reconciled.PublicKey {
 		t.Fatalf("地址一致时再次进入不能轮换身份：%+v %v", again, err)
-	}
-}
-
-func TestTailcatLocalPairRejectsSelfHostedOnOfficialRelay(t *testing.T) {
-	tests := []struct {
-		name    string
-		status  tailcatStatus
-		blocked bool
-	}{
-		{"自建连官方中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, true},
-		{"旧配置空模式连官方中继", tailcatStatus{Running: true, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, true},
-		{"自建默认中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted}, false},
-		{"自建自定义中继", tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted, DERPMapURL: "https://relay.example/derpmap"}, false},
-		{"托管官方中继", tailcatStatus{Running: true, Mode: config.TailcatModeManaged, DERPMapURL: config.DefaultManagedTailcatDERPMapURL}, false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			server := newTestServer(t)
-			// 托管地址被覆盖时，判断依据仍是内置官方地址，不随覆盖值变化。
-			server.router.cfg.Tailcat.ManagedDERPMapURL = "https://relay.example/derpmap"
-			fake := &fakeTailcatSidecar{status: test.status}
-			server.router.tailcat = fake
-			request := httptest.NewRequest(http.MethodPost, "/api/local/tailcat", strings.NewReader(`{"action":"pair"}`))
-			response := httptest.NewRecorder()
-			server.router.tailcatLocalAction(response, request)
-			if test.blocked {
-				if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"tailcat_relay_requires_managed"`) {
-					t.Fatalf("应返回明确冲突：%d %s", response.Code, response.Body.String())
-				}
-				if fake.pairCalls != 0 {
-					t.Fatal("不应为注定被拒绝的中继生成配对节点")
-				}
-			} else if response.Code != http.StatusOK || fake.pairCalls != 1 {
-				t.Fatalf("不受影响的配置应正常配对：%d %s", response.Code, response.Body.String())
-			}
-			if got := server.router.decorateTailcatStatus(test.status).RelayRequiresManaged; got != test.blocked {
-				t.Fatalf("RelayRequiresManaged = %v, want %v", got, test.blocked)
-			}
-		})
 	}
 }

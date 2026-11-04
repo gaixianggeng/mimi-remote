@@ -18,8 +18,6 @@ type tailcatTrayStatus struct {
 	Running           bool   `json:"running"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error"`
-	// RelayRequiresManaged 由 agentd 判断：自建模式连着官方中继，二维码一定扫不通。
-	RelayRequiresManaged bool `json:"relay_requires_managed"`
 }
 
 func (s tailcatTrayStatus) managed() bool {
@@ -36,12 +34,10 @@ func (s tailcatTrayStatus) title() string {
 		return "未开启"
 	case !s.Running:
 		return "需要处理"
-	case s.RelayRequiresManaged:
-		return "需要改用托管连接"
 	case s.managed():
 		return fmt.Sprintf("运行中 · 托管 · %d 台设备", s.PairedDeviceCount)
 	default:
-		return fmt.Sprintf("运行中 · 自建 · %d 台设备", s.PairedDeviceCount)
+		return fmt.Sprintf("运行中 · %d 台设备", s.PairedDeviceCount)
 	}
 }
 
@@ -152,12 +148,12 @@ func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, erro
 func tailcatManagedConfirmation(managed bool) (string, string, uint32) {
 	if managed {
 		return "改用 Mimi 托管连接？",
-			"手机经 Mimi 官方中继连接这台电脑，手机需要先在「我的 → Mimi 托管连接」里开通。\r\n\r\n" +
-				"Tailcat 身份会重建，之前用 Tailcat 连接的设备需要重新扫码。Tailscale 和局域网连接不受影响。",
+			"开通过的手机经 Mimi 官方中继连接这台电脑，更快更稳，设备数按订阅限制。\r\n\r\n" +
+				"没开通的设备不受影响，继续走免费线路；已配对的设备不用重新扫码。",
 			mbYesNo | mbIconInfo
 	}
 	return "退出 Mimi 托管连接？",
-		"这台电脑会恢复原来的中继，通过托管连接接入的手机和平板需要重新扫码。\r\n\r\nTailscale 和局域网连接不受影响。",
+		"通过托管连接接入的手机和平板需要重新扫码，之后走免费线路。\r\n\r\n走免费线路、Tailscale 和局域网的设备不受影响。",
 		mbYesNo | mbIconWarning
 }
 
@@ -301,12 +297,6 @@ func (a *trayApplication) requestTailcatPairing() {
 	status, has, err := a.tailcatSnapshot()
 	if !has || err != nil || !status.ready() {
 		a.showError(errors.New("Tailcat 尚未运行，请先在控制面板或托盘菜单中开启 Tailcat"))
-		return
-	}
-	if status.RelayRequiresManaged {
-		a.confirmAndSetTailcatManaged(true, func() {
-			procPostMessageW.Call(a.window, wmTrayPair, pairRequestTailcat, 0)
-		})
 		return
 	}
 	a.mu.RLock()

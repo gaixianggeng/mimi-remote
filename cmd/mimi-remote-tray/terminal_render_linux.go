@@ -104,9 +104,9 @@ func (s *linuxTerminalScreen) content() string {
 		case "tailcat-disable":
 			return "关闭 Tailcat 会断开正在使用 Tailcat 的设备。\n\nagentd 和外部 Tailscale 服务继续运行。"
 		case "tailcat-enter-managed":
-			return "改用 Mimi 托管连接：手机经 Mimi 官方中继连接这台电脑，需要先在手机的「我的 → Mimi 托管连接」里开通。\n\nTailcat 身份会重建，之前用 Tailcat 连接的设备需要重新扫码。Tailscale 和局域网连接不受影响。"
+			return "改用 Mimi 托管连接：开通过的手机经 Mimi 官方中继连接这台电脑，更快更稳，设备数按订阅限制。\n\n没开通的设备不受影响，继续走免费线路；已配对的设备不用重新扫码。"
 		case "tailcat-exit-managed":
-			return "退出 Mimi 托管连接：这台电脑会恢复原来的中继，通过托管连接接入的设备需要重新扫码。\n\nTailscale 和局域网连接不受影响。"
+			return "退出 Mimi 托管连接：通过托管连接接入的设备需要重新扫码，之后走免费线路。\n\n走免费线路、Tailscale 和局域网的设备不受影响。"
 		case "stop":
 			return "停止 Mimi Remote 服务会断开当前连接。\n\n之后可从托盘重新启动。"
 		case "restart":

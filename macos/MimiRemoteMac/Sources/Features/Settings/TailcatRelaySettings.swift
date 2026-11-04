@@ -106,7 +106,7 @@ struct TailcatRelaySettings: View {
                 Task { await store.setTailcatManagedMode(false) }
             }
         } message: {
-            Text("这台电脑会恢复原来的中继，通过托管连接接入的手机和平板需要重新扫码。Tailscale 和局域网连接不受影响。")
+            Text("通过托管连接接入的手机和平板需要重新扫码，之后走免费线路。走免费线路、Tailscale 和局域网的设备不受影响。")
         }
         .confirmationDialog(
             "重置 Tailcat？",
@@ -136,18 +136,17 @@ struct TailcatRelaySettings: View {
         }
     }
 
-    /// 当前是托管还是自建，以及进入、退出入口（#896）。两个方向都会重建 Tailcat 身份，
-    /// 所以都要先确认。
+    /// 当前线路，以及开启、退出托管的入口（#896）。托管是额外的付费线路，免费线路一直可用（#966）。
     private var managedConnectionSection: some View {
         Section("Mimi 托管连接") {
             LabeledContent("连接方式") {
-                Text(store.tailcatIsManaged ? "Mimi 托管连接" : "自建")
+                Text(store.tailcatIsManaged ? "Mimi 托管连接 + 免费线路" : "免费线路")
             }
 
             Text(
                 store.tailcatIsManaged
-                    ? "手机通过 Mimi 中继连接这台电脑，需要在手机的「Mimi 托管连接」里订阅后接入。"
-                    : "改用托管连接后，不在同一网络的手机也能通过 Mimi 中继连上这台电脑，需要在手机上订阅「Mimi 托管连接」。"
+                    ? "开通过的手机走 Mimi 中继，更快更稳；没开通的设备走免费线路，同样能连。"
+                    : "不开通也能连。想要更快更稳，可以改用托管连接，手机需要在「Mimi 托管连接」里订阅。"
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -176,11 +175,7 @@ struct TailcatRelaySettings: View {
     }
 
     private var enterManagedMessage: String {
-        let count = store.tailcatStatus?.pairedDeviceCount ?? 0
-        let paired = count > 0
-            ? "已用自建 Tailcat 配对的 \(count) 台设备需要重新配对。"
-            : ""
-        return "这台电脑的 Tailcat 身份会重建，中继改为 Mimi 托管中继。\(paired)之后请在手机的「Mimi 托管连接」里扫码接入。Tailscale 和局域网连接不受影响。"
+        "开通过的手机经 Mimi 官方中继连接这台电脑，更快更稳，设备数按订阅限制。没开通的设备不受影响，继续走免费线路，已配对的设备不用重新扫码。"
     }
 
     @ViewBuilder

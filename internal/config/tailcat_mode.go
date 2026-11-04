@@ -31,6 +31,30 @@ func (c TailcatConfig) ManagedRelayURL() (string, error) {
 	return normalized, nil
 }
 
+// FreeRelayURL 是托管模式下免费节点使用的中继：进入托管前用户自己的中继。官方中继只接受
+// 开通过的节点，不能给免费节点用，这时退回 Tailcat 默认中继。退出托管也恢复到这里。
+func (c TailcatConfig) FreeRelayURL() string {
+	previous, err := NormalizeTailcatDERPMapURL(c.PreviousDERPMapURL)
+	if err != nil || c.IsManagedRelay(previous) {
+		return ""
+	}
+	return previous
+}
+
+// IsManagedRelay 判断地址是否为官方中继。managed_derp_map_url 可被测试或自建控制面覆盖，
+// 两个地址都算。
+func (c TailcatConfig) IsManagedRelay(rawURL string) bool {
+	normalized, err := NormalizeTailcatDERPMapURL(rawURL)
+	if err != nil || normalized == "" {
+		return false
+	}
+	if normalized == DefaultManagedTailcatDERPMapURL {
+		return true
+	}
+	managed, err := c.ManagedRelayURL()
+	return err == nil && normalized == managed
+}
+
 func (c TailcatConfig) Validate() error {
 	if _, err := NormalizeTailcatDERPMapURL(c.DERPMapURL); err != nil {
 		return err

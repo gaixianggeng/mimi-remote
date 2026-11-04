@@ -203,16 +203,7 @@ func TestLinuxMenuSubmenuAndSymbolicStates(t *testing.T) {
 	}
 }
 
-func TestLinuxTerminalTailcatAsksForManagedWhenRelayRequiresIt(t *testing.T) {
-	s, calls := linuxTerminalFixture(t)
-	s.app.update(func(state *linuxTraySnapshot) {
-		state.HasTailcat = true
-		state.Tailcat = linuxTailcatStatus{Enabled: true, Running: true, Mode: "self_hosted", RelayRequiresManaged: true}
-	})
-	s.selectAction("pair-tailcat")
-	if s.pending != "tailcat-enter-managed" || s.next != "pair-tailcat" || len(*calls) != 0 {
-		t.Fatal("managed switch must wait for confirmation", s.pending, s.next, *calls)
-	}
+func TestLinuxTerminalManagedActionsRequireConfirmation(t *testing.T) {
 	if word := linuxConfirmationWord("tailcat-enter-managed"); word != "managed" {
 		t.Fatal(word)
 	}

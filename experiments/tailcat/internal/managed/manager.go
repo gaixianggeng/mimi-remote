@@ -24,7 +24,13 @@ import (
 const (
 	Version             = "0.1"
 	pairCloseRetryDelay = time.Second
+	// 配对节点沿用已知中继，通常很快。免费配对节点只是多一条路，不能拖垮 /pair 的预算。
+	freePairStartTimeout = 8 * time.Second
+	freeNodeRetryBase    = 5 * time.Second
+	freeNodeRetryMax     = 5 * time.Minute
 )
+
+var errFreeNodeNotReady = errors.New("免费线路尚未就绪，请稍后重试")
 
 type Config struct {
 	TargetAddr  string
@@ -32,6 +38,10 @@ type Config struct {
 	StateDir    string
 	ControlPath string
 	DERPMapURL  string
+	// FreeNode 表示稳定节点走托管中继，另起一个免费节点。托管中继只放行开通过的设备，
+	// 没开通的设备走免费节点。clients.json 属于免费节点，托管白名单只来自控制面，两边不混用。
+	FreeNode       bool
+	FreeDERPMapURL string
 	// Events 接收稳定节点的连接事件。短期配对节点不接：它们 10 分钟就过期，且每次换身份。
 	Events func(tunnel.HostEvent)
 }
@@ -55,6 +65,8 @@ type Status struct {
 	PairPublicKey     string `json:"pair_public_key,omitempty"`
 	PairExpiresAt     string `json:"pair_expires_at,omitempty"`
 	PairedDeviceCount int    `json:"paired_device_count"`
+	FreeAddress       string `json:"free_address,omitempty"`
+	FreePairAddress   string `json:"free_pair_address,omitempty"`
 }
 
 type Manager struct {
@@ -62,6 +74,13 @@ type Manager struct {
 	config         Config
 	host           managedHost
 	pairHost       managedHost
+	freeHost       managedHost
+	freePairHost   managedHost
+	freeGeneration uint64
+	// freeStartMu 串行免费节点启动与重置，加锁顺序固定为先它后 mu。
+	freeStartMu    sync.Mutex
+	closing        chan struct{}
+	closeOnce      sync.Once
 	pairExpiresAt  time.Time
 	pairGeneration uint64
 	clients        []string
@@ -94,6 +113,7 @@ func Start(config Config) (*Manager, error) {
 		clients:    clients,
 		instanceID: instanceID,
 		shutdown:   make(chan struct{}),
+		closing:    make(chan struct{}),
 		startHost: func(config tunnel.HostConfig) (managedHost, error) {
 			return tunnel.StartHost(config)
 		},
@@ -105,7 +125,79 @@ func Start(config Config) (*Manager, error) {
 		_ = m.host.Close()
 		return nil, err
 	}
+	m.startFreeNodeLoopLocked()
 	return m, nil
+}
+
+// startFreeNodeLoopLocked 在后台拉起免费节点。默认中继要先拉取节点表，首次可能很慢或暂时
+// 不可达，这些都不能影响托管节点就绪，所以失败时只退避重试，二维码暂时不带免费节点。
+func (m *Manager) startFreeNodeLoopLocked() {
+	if !m.config.FreeNode {
+		return
+	}
+	m.freeGeneration++
+	go m.runFreeNode(m.freeGeneration)
+}
+
+func (m *Manager) runFreeNode(generation uint64) {
+	delay := freeNodeRetryBase
+	for {
+		if m.startFreeNode(generation) {
+			return
+		}
+		select {
+		case <-m.closing:
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, freeNodeRetryMax)
+	}
+}
+
+// startFreeNode 全程持有 freeStartMu：启动时会写身份文件并按白名单放行，重置必须等它结束再清理，
+// 否则晚到的启动会写回旧身份，或者短暂放行已撤销的设备。返回 false 表示要稍后重试。
+func (m *Manager) startFreeNode(generation uint64) bool {
+	m.freeStartMu.Lock()
+	defer m.freeStartMu.Unlock()
+	m.mu.Lock()
+	current := m.freeGeneration == generation && !m.closingLocked()
+	clients := append([]string(nil), m.clients...)
+	m.mu.Unlock()
+	if !current {
+		return true
+	}
+	host, err := m.startHost(tunnel.HostConfig{
+		TargetAddr:        m.config.TargetAddr,
+		RemotePort:        m.config.RemotePort,
+		IdentityPath:      filepath.Join(m.config.StateDir, "free.private.json"),
+		AddressPath:       filepath.Join(m.config.StateDir, "free.address"),
+		AllowedClientKeys: clients,
+		DERPMapURL:        m.config.FreeDERPMapURL,
+		Events:            m.config.Events,
+	})
+	if err != nil {
+		log.Printf("免费节点启动失败，稍后重试：%v", err)
+		return false
+	}
+	m.mu.Lock()
+	closing := m.closingLocked()
+	if !closing {
+		m.freeHost = host
+	}
+	m.mu.Unlock()
+	if closing {
+		_ = host.Close()
+	}
+	return true
+}
+
+func (m *Manager) closingLocked() bool {
+	select {
+	case <-m.closing:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) Status() Status {
@@ -134,12 +226,13 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 		AddressPath:     pairAddress,
 		AllowAllClients: true,
 		DERPMapURL:      m.config.DERPMapURL,
-		Region:          m.pairRegionLocked(),
+		Region:          hostRegion(m.host),
 	})
 	if err != nil {
 		return Status{}, fmt.Errorf("启动短期 Tailcat 配对服务：%w", err)
 	}
 	m.pairHost = host
+	m.startFreePairLocked()
 	m.pairExpiresAt = time.Now().UTC().Add(ttl)
 	m.pairGeneration++
 	generation := m.pairGeneration
@@ -147,14 +240,59 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	return m.statusLocked(), nil
 }
 
+// startFreePairLocked 给没开通的设备准备免费配对节点。失败或超时只是二维码少一条路，
+// 不影响托管配对；超时后晚到的节点没人会用，直接关掉，不能留下放行任意客户端的入口。
+func (m *Manager) startFreePairLocked() {
+	if !m.config.FreeNode || m.freeHost == nil {
+		return
+	}
+	type startResult struct {
+		host managedHost
+		err  error
+	}
+	config := tunnel.HostConfig{
+		TargetAddr:      m.config.TargetAddr,
+		RemotePort:      m.config.RemotePort,
+		IdentityPath:    filepath.Join(m.config.StateDir, "free-pair.private.json"),
+		AddressPath:     filepath.Join(m.config.StateDir, "free-pair.address"),
+		AllowAllClients: true,
+		DERPMapURL:      m.config.FreeDERPMapURL,
+		Region:          hostRegion(m.freeHost),
+	}
+	_ = os.Remove(config.IdentityPath)
+	_ = os.Remove(config.AddressPath)
+	started := make(chan startResult, 1)
+	go func() {
+		host, err := m.startHost(config)
+		started <- startResult{host: host, err: err}
+	}()
+	timer := time.NewTimer(freePairStartTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-started:
+		if result.err != nil {
+			log.Printf("免费配对节点启动失败：%v", result.err)
+			return
+		}
+		m.freePairHost = result.host
+	case <-timer.C:
+		log.Printf("免费配对节点 %s 内未就绪，本次二维码只带托管节点", freePairStartTimeout)
+		go func() {
+			if result := <-started; result.err == nil {
+				_ = result.host.Close()
+			}
+		}()
+	}
+}
+
 // 配对节点与稳定节点使用同一个引导中继，避免每次生成二维码都重新运行
 // DERP 延迟探测。只复用公开路由信息；临时身份仍在每次 StartPairing 时轮换。
 // 地址未内嵌中继时返回 nil，让 StartHost 沿用配置的中继发现路径。
-func (m *Manager) pairRegionLocked() *tailcfg.DERPRegion {
-	if m.host == nil {
+func hostRegion(host managedHost) *tailcfg.DERPRegion {
+	if host == nil {
 		return nil
 	}
-	info, err := tailcat.ParseAddr(tailcat.Addr(m.host.Address()))
+	info, err := tailcat.ParseAddr(tailcat.Addr(host.Address()))
 	if err != nil || len(info.Region) != 1 || len(info.Region[0].Nodes) == 0 {
 		return nil
 	}
@@ -173,10 +311,16 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 			return m.statusLocked(), nil
 		}
 	}
-	if m.host == nil {
+	target := m.host
+	if m.config.FreeNode {
+		target = m.freeHost
+		if target == nil {
+			return Status{}, errFreeNodeNotReady
+		}
+	} else if target == nil {
 		return Status{}, errors.New("Tailcat 稳定服务未运行")
 	}
-	if err := m.host.AddAllowedClient(rawKey); err != nil {
+	if err := target.AddAllowedClient(rawKey); err != nil {
 		return Status{}, err
 	}
 	next := append(append([]string(nil), m.clients...), rawKey)
@@ -202,7 +346,7 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 	if m.host != nil && clientKeysContainAll(next, m.managedClients) {
 		// 纯新增不会扩大到控制面集合之外，可以在现有引擎上逐项授权。
 		// 与免费白名单重叠的键已经生效，无需重复追加。
-		active := mergeClientKeys(m.clients, m.managedClients)
+		active := m.stableClientsLocked(m.managedClients)
 		applied := append([]string(nil), m.managedClients...)
 		for _, rawKey := range next {
 			if clientKeysContainAll(m.managedClients, []string{rawKey}) {
@@ -241,6 +385,8 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 }
 
 func (m *Manager) Reset() (Status, error) {
+	m.freeStartMu.Lock()
+	defer m.freeStartMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pairErr := m.closePairLocked()
@@ -253,12 +399,19 @@ func (m *Manager) Reset() (Status, error) {
 		}
 		m.host = nil
 	}
+	m.freeGeneration++
+	if m.freeHost != nil {
+		if err := m.freeHost.Close(); err != nil {
+			return Status{}, errors.Join(pairErr, fmt.Errorf("关闭待重置免费节点：%w", err))
+		}
+		m.freeHost = nil
+	}
 	// 稳定主机已经关闭后，先提交内存中的撤销结果并优先删除持久白名单。
 	// 后续身份文件清理失败时，后台协调也只能用空集合重启。
 	m.clients = nil
 	m.managedClients = nil
 	var cleanupErr error
-	for _, name := range []string{"clients.json", "host.private.json", "host.address"} {
+	for _, name := range []string{"clients.json", "host.private.json", "host.address", "free.private.json", "free.address"} {
 		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("重置 Tailcat %s：%w", name, err))
 		}
@@ -269,10 +422,16 @@ func (m *Manager) Reset() (Status, error) {
 	if err := m.startStableLocked(); err != nil {
 		return Status{}, errors.Join(pairErr, err)
 	}
+	m.startFreeNodeLoopLocked()
 	return m.statusLocked(), pairErr
 }
 
 func (m *Manager) Close() error {
+	m.closeOnce.Do(func() {
+		if m.closing != nil {
+			close(m.closing)
+		}
+	})
 	m.mu.Lock()
 	if m.server != nil {
 		_ = m.server.Close()
@@ -281,16 +440,22 @@ func (m *Manager) Close() error {
 		_ = m.listener.Close()
 	}
 	pairErr := m.closePairLocked()
-	var hostErr error
+	var hostErr, freeErr error
 	if m.host != nil {
 		hostErr = m.host.Close()
 		if hostErr == nil {
 			m.host = nil
 		}
 	}
+	if m.freeHost != nil {
+		freeErr = m.freeHost.Close()
+		if freeErr == nil {
+			m.freeHost = nil
+		}
+	}
 	m.mu.Unlock()
 	_ = os.Remove(m.config.ControlPath)
-	return errors.Join(pairErr, hostErr)
+	return errors.Join(pairErr, hostErr, freeErr)
 }
 
 func (m *Manager) startStableLocked() error {
@@ -302,8 +467,17 @@ func (m *Manager) startStableLocked() error {
 	return nil
 }
 
+// stableClientsLocked 是稳定节点的放行名单。有免费节点时 clients.json 只属于免费节点，
+// 不进托管节点：托管中继上的放行名单必须完全来自控制面，免费白名单不能绕过订阅。
+func (m *Manager) stableClientsLocked(managedClients []string) []string {
+	if m.config.FreeNode {
+		return mergeClientKeys(managedClients)
+	}
+	return mergeClientKeys(m.clients, managedClients)
+}
+
 func (m *Manager) startStableHostLocked(managedClients []string) (managedHost, error) {
-	allowedClients := mergeClientKeys(m.clients, managedClients)
+	allowedClients := m.stableClientsLocked(managedClients)
 	host, err := m.startHost(tunnel.HostConfig{
 		TargetAddr:        m.config.TargetAddr,
 		RemotePort:        m.config.RemotePort,
@@ -341,9 +515,15 @@ func (m *Manager) closePairLocked() error {
 		}
 		m.pairHost = nil
 	}
+	if m.freePairHost != nil {
+		if err := m.freePairHost.Close(); err != nil {
+			return err
+		}
+		m.freePairHost = nil
+	}
 	m.pairExpiresAt = time.Time{}
 	var cleanupErr error
-	for _, name := range []string{"pair.private.json", "pair.address"} {
+	for _, name := range []string{"pair.private.json", "pair.address", "free-pair.private.json", "free-pair.address"} {
 		if err := os.Remove(filepath.Join(m.config.StateDir, name)); err != nil && !os.IsNotExist(err) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("删除 Tailcat 配对状态 %s：%w", name, err))
 		}
@@ -366,6 +546,12 @@ func (m *Manager) statusLocked() Status {
 		status.PairAddress = m.pairHost.Address()
 		status.PairPublicKey = m.pairHost.PublicKey()
 		status.PairExpiresAt = m.pairExpiresAt.Format(time.RFC3339Nano)
+		if m.freePairHost != nil {
+			status.FreePairAddress = m.freePairHost.Address()
+		}
+	}
+	if m.freeHost != nil {
+		status.FreeAddress = m.freeHost.Address()
 	}
 	return status
 }

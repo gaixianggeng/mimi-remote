@@ -20,6 +20,8 @@ func main() {
 	stateDir := flags.String("state-dir", "", "")
 	control := flags.String("control", "", "")
 	relay := flags.String("derpmap-url", "", "")
+	freeNode := flags.Bool("free-node", false, "")
+	freeRelay := flags.String("free-derpmap-url", "", "")
 	flags.String("target", "", "")
 	flags.String("port", "", "")
 	_ = flags.Parse(os.Args[2:])
@@ -52,6 +54,22 @@ func main() {
 		"running": true, "address": address, "public_key": string(identity),
 		"instance_id": newKey(), "paired_device_count": len(clients),
 	}
+	freeReady := *freeNode
+	if _, err := os.Stat(filepath.Join(*stateDir, "free-node-unavailable")); err == nil {
+		freeReady = false
+	}
+	if freeReady {
+		// 免费节点的地址随身份变化，测试靠它核对切换模式后身份是否保留。
+		freeIdentityPath := filepath.Join(*stateDir, "free.private.json")
+		freeIdentity, err := os.ReadFile(freeIdentityPath)
+		if os.IsNotExist(err) {
+			freeIdentity = []byte(newKey())
+			must(os.WriteFile(freeIdentityPath, freeIdentity, 0o600))
+		} else {
+			must(err)
+		}
+		status["free_address"] = "tailcat:free-" + string(freeIdentity) + "?relay=" + url.QueryEscape(*freeRelay)
+	}
 	var mu sync.Mutex
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -61,12 +79,25 @@ func main() {
 			status["pair_address"] = "tailcat:pair?relay=" + url.QueryEscape(*relay)
 			status["pair_public_key"] = newKey()
 			status["pair_expires_at"] = time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339Nano)
+			if freeReady {
+				status["free_pair_address"] = "tailcat:free-pair?relay=" + url.QueryEscape(*freeRelay)
+			}
 		case "/managed-clients":
 			var body struct {
 				PublicKeys []string `json:"public_keys"`
 			}
 			must(json.NewDecoder(r.Body).Decode(&body))
 			status["paired_device_count"] = len(clients) + len(body.PublicKeys)
+		case "/allow":
+			var body struct {
+				PublicKey string `json:"public_key"`
+			}
+			must(json.NewDecoder(r.Body).Decode(&body))
+			clients = append(clients, body.PublicKey)
+			encoded, err := json.Marshal(clients)
+			must(err)
+			must(os.WriteFile(filepath.Join(*stateDir, "clients.json"), encoded, 0o600))
+			status["paired_device_count"] = len(clients)
 		case "/shutdown":
 			time.AfterFunc(10*time.Millisecond, func() { os.Exit(0) })
 		case "/status", "/reset":

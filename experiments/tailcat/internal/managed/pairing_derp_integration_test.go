@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"tailscale.com/derp/derpserver"
 	"tailscale.com/net/stun/stuntest"
 	"tailscale.com/tailcfg"
+	"tailscale.com/tstest/integration"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
@@ -313,4 +315,104 @@ func derpCounters(t *testing.T, server *derpserver.Server) trafficCounters {
 
 func (c trafficCounters) String() string {
 	return fmt.Sprintf("recv=%.0f sent=%.0f forwarded-in=%.0f forwarded-out=%.0f", c.BytesReceived, c.BytesSent, c.ForwardedIn, c.ForwardedOut)
+}
+
+// 产品规则：没开通的设备不能走托管中继，但要能经免费中继连上同一台电脑（#966）。
+func TestUnentitledClientPairsThroughFreeRelayWhileManagedRelayRejectsIt(t *testing.T) {
+	tailcattest.ForceDERP(t)
+	admission := newAdmissionFixture(t)
+	_, managedRegion := startStrictDERP(t, admission.server.URL)
+	freeMap := integration.RunDERPAndSTUN(t, t.Logf, "127.0.0.1")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "agentd")
+	}))
+	t.Cleanup(backend.Close)
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	startHost := func(config tunnel.HostConfig) (managedHost, error) {
+		if strings.HasPrefix(filepath.Base(config.IdentityPath), "free") {
+			config.Region = freeMap.Regions[1]
+		} else {
+			config.Region = managedRegion
+		}
+		return tunnel.StartHost(config)
+	}
+	manager := &Manager{
+		config: Config{
+			TargetAddr: backendURL.Host, RemotePort: 8787, StateDir: stateDir, FreeNode: true,
+		},
+		startHost:  startHost,
+		instanceID: "free-node-test",
+		closing:    make(chan struct{}),
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := manager.startStableLocked(); err != nil {
+		t.Fatal(err)
+	}
+	startFreeNodeAndWait(t, manager)
+	admission.authorize(manager.Status().PublicKey)
+
+	status, err := manager.StartPairing(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.FreePairAddress == "" {
+		t.Fatalf("二维码缺少免费配对节点：%+v", status)
+	}
+	mobilePrivate, err := tunnel.NewClientPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mobilePublic, err := tunnel.ClientPublicKey(mobilePrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connect := func(address string, budget time.Duration) (*tunnel.Forwarder, error) {
+		return startForwarderUntil(t, budget, tunnel.ForwarderConfig{
+			Address: address, RemotePort: 8787, ListenAddr: "127.0.0.1:0", PrivateKey: mobilePrivate,
+		})
+	}
+
+	if forwarder, err := connect(status.PairAddress, 8*time.Second); err == nil {
+		_ = forwarder.Close()
+		t.Fatal("没开通的设备不能经托管中继连上")
+	}
+	if !admission.observedDenied(mobilePublic) {
+		t.Fatalf("托管中继应拒绝没开通的设备：%v", admission.deniedSnapshot())
+	}
+
+	pair, err := connect(status.FreePairAddress, 45*time.Second)
+	if err != nil {
+		t.Fatalf("没开通的设备应能连上免费配对节点：%v", err)
+	}
+	assertForwarderReachesBackend(t, pair)
+	_ = pair.Close()
+
+	allowed, err := manager.AllowClient(mobilePublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := connect(allowed.FreeAddress, 45*time.Second)
+	if err != nil {
+		t.Fatalf("配对后应能连上免费稳定节点：%v", err)
+	}
+	defer stable.Close()
+	assertForwarderReachesBackend(t, stable)
+}
+
+func assertForwarderReachesBackend(t *testing.T, forwarder *tunnel.Forwarder) {
+	t.Helper()
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	response, err := client.Get(forwarder.Endpoint() + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || string(body) != "agentd" {
+		t.Fatalf("隧道没有到达 agentd：status=%d body=%q err=%v", response.StatusCode, body, err)
+	}
 }
