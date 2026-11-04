@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 设备页是中转服务的唯一入口，三种选择在这里并列。
+/// 已配对电脑先展示实际连接；只有 Tailcat 需要在这里管理中转服务。
 struct ManagedConnectionDevicesView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
@@ -14,48 +14,59 @@ struct ManagedConnectionDevicesView: View {
         let tokens = themeStore.tokens(for: colorScheme)
         Form {
             Section {
-                ForEach(RelayServiceChoice.allCases) { choice in
-                    if choice != .mimi || ManagedConnectionSubscriptionView.isEntryVisible {
-                        NavigationLink {
-                            if choice == .mimi {
-                                ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
-                            } else {
-                                FreeRelaySetupView(choice: choice, qrScannerPresentation: qrScannerPresentation)
-                            }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(choice.title)
-                                    Text(choice.detail)
-                                        .font(.footnote).foregroundStyle(tokens.secondaryText)
-                                }
-                                Spacer()
-                                if currentChoice == choice {
-                                    Image(systemName: "checkmark").foregroundStyle(tokens.accent)
-                                        .accessibilityLabel(L10n.text("ui.relay_current_choice"))
-                                }
-                            }
-                            .settingsRow(.descriptive)
-                        }
-                        .accessibilityIdentifier("settings.relay." + choice.rawValue)
-                    }
-                }
+                ConnectionRowLabel(
+                    title: L10n.text("ui.connection_method"), value: connectionMethodTitle,
+                    systemImage: "point.3.connected.trianglepath.dotted"
+                )
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.relay.connectionMethod")
+                ConnectionRowLabel(
+                    title: L10n.text("ui.connection_status"), value: appStore.connectionStatus.title,
+                    systemImage: "link"
+                )
+                .settingsStandardListRow()
+            } header: {
+                Text(L10n.text("ui.current_connection")).settingsSectionHeaderStyle()
             } footer: {
-                Text(L10n.text("ui.relay_choice_footer")).settingsSectionFooterStyle()
+                Text(L10n.text("ui.relay_tailcat_scope")).settingsSectionFooterStyle()
             }
             .settingsGroupRowStyle()
 
-            if let profile = appStore.activeConnectionProfile {
+            if currentRoute?.usesTailcat == true {
                 Section {
-                    LabeledContent(L10n.text("ui.connection_status"), value: appStore.connectionStatus.title)
+                    ConnectionRowLabel(
+                        title: L10n.text("ui.relay_configuration"),
+                        value: currentChoice?.title ?? L10n.text("ui.relay_configured_on_computer"),
+                        systemImage: "network"
+                    )
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.relay.currentService")
+                    if ManagedConnectionSubscriptionView.isEntryVisible {
+                        NavigationLink {
+                            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+                        } label: {
+                            ConnectionRowLabel(
+                                title: L10n.text(currentRoute?.isManaged == true
+                                    ? "ui.relay_manage_mimi" : "ui.relay_use_mimi"),
+                                systemImage: "network.badge.shield.half.filled"
+                            )
+                        }
+                        .settingsStandardListRow()
+                        .accessibilityIdentifier("settings.relay.mimi")
+                    }
+                } footer: {
+                    Text(L10n.text("ui.relay_change_on_computer")).settingsSectionFooterStyle()
+                }
+                .settingsGroupRowStyle()
+            }
+
+            if let profile = appStore.activeConnectionProfile,
+               sessionStore.mimiRelayNotice != nil || showsRecoveryActions {
+                Section {
                     if let notice = sessionStore.mimiRelayNotice {
                         Text(notice).fixedSize(horizontal: false, vertical: true)
                     }
-                    if profile.connectionRoute.isManaged,
-                       Self.showsManagedRecoveryActions(
-                        tailcatState: tailcatController.state,
-                        connectionFailed: !appStore.connectionStatus.isConnected
-                       ) {
+                    if showsRecoveryActions {
                         Button(L10n.text("ui.managed_connection_retry")) {
                             changeRoute { await sessionStore.retryManagedConnection() }
                         }
@@ -78,12 +89,52 @@ struct ManagedConnectionDevicesView: View {
         .accessibilityIdentifier("settings.managedConnectionDevices.detail")
     }
 
+    private var showsRecoveryActions: Bool {
+        appStore.activeConnectionProfile?.connectionRoute.isManaged == true && Self.showsManagedRecoveryActions(
+            tailcatState: tailcatController.state, connectionFailed: !appStore.connectionStatus.isConnected
+        )
+    }
+
+    private var currentRoute: ConnectionProfileRoute? {
+        Self.currentRoute(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            tailcatEnabled: tailcatController.isEnabled, tailcatState: tailcatController.state,
+            fallbackRoute: appStore.savedFallbackConnectionRoute
+        )
+    }
+
+    private var connectionMethodTitle: String {
+        Self.connectionMethodTitle(route: currentRoute)
+    }
+
     private var currentChoice: RelayServiceChoice? {
-        guard let profile = appStore.activeConnectionProfile else { return nil }
-        if profile.connectionRoute.isManaged { return .mimi }
-        guard profile.connectionRoute == .customTailcat else { return nil }
-        let choice = tailcatController.relayServiceChoice(profileID: profile.id)
-        return choice == .mimi ? nil : choice
+        Self.currentChoice(
+            route: currentRoute,
+            savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")
+        )
+    }
+
+    static func currentRoute(
+        profileRoute: ConnectionProfileRoute?, tailcatEnabled: Bool,
+        tailcatState: TailcatExperimentState, fallbackRoute: ConnectionProfileRoute?
+    ) -> ConnectionProfileRoute? {
+        guard let profileRoute else { return nil }
+        // 临时回退没有改写档案，状态页必须以实际线路为准，不能继续显示 Mimi 正在使用。
+        if case .usingTemporaryRoute(let route) = tailcatState { return route }
+        if tailcatEnabled { return profileRoute.usesTailcat ? profileRoute : .customTailcat }
+        return fallbackRoute ?? profileRoute
+    }
+
+    static func connectionMethodTitle(route: ConnectionProfileRoute?) -> String {
+        guard let route else { return L10n.text("ui.not_connected") }
+        return route.usesTailcat ? "Tailcat" : route.title
+    }
+
+    static func currentChoice(route: ConnectionProfileRoute?, savedChoice: RelayServiceChoice?) -> RelayServiceChoice? {
+        guard let route, route.usesTailcat else { return nil }
+        if route.isManaged { return .mimi }
+        // 选择 Mimi 不等于开通成功；旧二维码没带中转信息时也不猜测默认/自有配置。
+        return savedChoice == .mimi ? nil : savedChoice
     }
 
     private func changeRoute(_ operation: @escaping @MainActor () async -> Bool) {
@@ -159,82 +210,4 @@ struct ManagedConnectionDevicesView: View {
         }
     }
 
-}
-
-/// 自建中转会更换电脑的配对地址。先在电脑保存，再扫码，避免远程改地址切断当前请求。
-private struct FreeRelaySetupView: View {
-    let choice: RelayServiceChoice
-    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var appStore: AppStore
-    @EnvironmentObject private var sessionStore: SessionStore
-    @EnvironmentObject private var themeStore: ThemeStore
-    @State private var isConnecting = false
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        Form {
-            Section {
-                Text(L10n.text(choice == .custom ? "ui.relay_custom_setup" : "ui.relay_default_setup"))
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    qrScannerPresentation.request(
-                        appStore.activeConnectionProfileID.map { .repairCurrentProfile(expectedProfileID: $0) }
-                            ?? .initialConnection,
-                        from: .managedConnection
-                    )
-                } label: {
-                    Label(L10n.text("ui.relay_scan_computer"), systemImage: "qrcode.viewfinder")
-                }
-                .disabled(isConnecting)
-                .accessibilityIdentifier("settings.relay.scan")
-            }
-            .settingsGroupRowStyle()
-        }
-        .themedSettingsForm(tokens: tokens)
-        .settingsDetailPage(tokens: tokens)
-        .navigationTitle(choice.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            qrScannerPresentation.configure(
-                onSubmit: submit,
-                onChooseManualConnection: { _ in qrScannerPresentation.dismiss() },
-                onDismiss: {}
-            )
-        }
-        .navigationDestination(isPresented: qrScannerPresentation.managedConnectionBinding(for: .managedConnection)) {
-            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
-        }
-        .fullScreenCover(
-            item: qrScannerPresentation.presentationBinding(for: .managedConnection),
-            onDismiss: qrScannerPresentation.didDismiss
-        ) { intent in
-            QRCodeScannerSheet(
-                onDismiss: qrScannerPresentation.dismiss,
-                onChooseManualConnection: { qrScannerPresentation.dismiss() },
-                onOpenManagedConnection: nil,
-                onCode: { await submit($0, intent: intent) }
-            )
-        }
-    }
-
-    private func submit(_ raw: String, intent: ConnectionQRCodeScanIntent) async -> QRCodeScannerSubmissionResult {
-        guard !isConnecting, intent.isValid(activeProfileID: appStore.activeConnectionProfileID),
-              let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            return .rejected(L10n.text("ui.the_current_mac_has_changed_please_try_again"))
-        }
-        // 扫错了另一种中转时保持现有连接，不能把未应用的选项标为成功。
-        guard RelayServiceChoice.fromPairingURL(url) == choice else {
-            return .rejected(L10n.text("ui.relay_scan_matching_choice"))
-        }
-        isConnecting = true
-        defer { isConnecting = false }
-        do {
-            _ = try await sessionStore.applyPairingURL(url)
-            Task { @MainActor in _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10) }
-            return .accepted(L10n.text("ui.this_mac_is_connected"))
-        } catch {
-            return .rejected(ManagedConnectionDevicesView.pairingErrorMessage(error))
-        }
-    }
 }

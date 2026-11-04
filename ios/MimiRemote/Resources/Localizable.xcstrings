@@ -1,6 +1,134 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.relay_reconnect_to_configure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Return to Devices and reconnect to this computer. Mimi Relay will be configured automatically once connected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请返回「设备」并恢复与这台电脑的连接。连接成功后会自动配置 Mimi 中转。"
+          }
+        }
+      }
+    },
+    "ui.relay_not_needed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not needed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无需配置"
+          }
+        }
+      }
+    },
+    "ui.relay_change_on_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To use the Tailcat default or your own relay, change the setting in Tailcat on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如需切换到 Tailcat 默认中转或自有中转，请在电脑端的 Tailcat 设置中修改。"
+          }
+        }
+      }
+    },
+    "ui.relay_use_mimi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Mimi Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 Mimi 中转"
+          }
+        }
+      }
+    },
+    "ui.relay_manage_mimi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage Mimi Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "管理 Mimi 中转"
+          }
+        }
+      }
+    },
+    "ui.relay_configured_on_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configured on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由电脑配置"
+          }
+        }
+      }
+    },
+    "ui.relay_configuration": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay configuration"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中转配置"
+          }
+        }
+      }
+    },
+    "ui.relay_tailcat_scope": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These relay settings apply only to Tailcat. Tailscale and local network connections do not need them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这里的中转服务仅用于 Tailcat。使用 Tailscale 或局域网连接时，无需配置此项。"
+          }
+        }
+      }
+    },
     "ui.relay_free_status": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Free connection" } },
@@ -47008,7 +47136,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "默认 Tailcat 自带"
+            "value": "Tailcat 默认中转"
           }
         }
       }
@@ -47024,7 +47152,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "使用自己的"
+            "value": "自有中转"
           }
         }
       }

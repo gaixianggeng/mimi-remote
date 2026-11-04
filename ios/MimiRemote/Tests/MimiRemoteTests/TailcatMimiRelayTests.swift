@@ -3,6 +3,37 @@ import XCTest
 
 @MainActor
 extension TailcatExperimentRoutingTests {
+    func testRelayStatusUsesActualRouteDuringTemporaryFallback() {
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https, .customTailcat] {
+            XCTAssertEqual(ManagedConnectionDevicesView.currentRoute(
+                profileRoute: .managedTailcat, tailcatEnabled: route.usesTailcat,
+                tailcatState: .usingTemporaryRoute(route), fallbackRoute: .lan
+            ), route)
+        }
+        XCTAssertEqual(ManagedConnectionDevicesView.currentRoute(
+            profileRoute: .managedTailcat, tailcatEnabled: false,
+            tailcatState: .disabled, fallbackRoute: .tailscale
+        ), .tailscale)
+        XCTAssertEqual(ManagedConnectionDevicesView.currentRoute(
+            profileRoute: .managedTailcat, tailcatEnabled: true,
+            tailcatState: .connected(endpoint: "http://127.0.0.1:49152"), fallbackRoute: .lan
+        ), .managedTailcat)
+        XCTAssertNil(ManagedConnectionDevicesView.currentRoute(
+            profileRoute: nil, tailcatEnabled: false, tailcatState: .disabled, fallbackRoute: nil
+        ))
+    }
+
+    func testRelayStatusDoesNotClaimPendingOrUnknownServiceIsActive() {
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https] {
+            XCTAssertNil(ManagedConnectionDevicesView.currentChoice(route: route, savedChoice: .mimi))
+        }
+        XCTAssertEqual(ManagedConnectionDevicesView.currentChoice(route: .managedTailcat, savedChoice: .custom), .mimi)
+        XCTAssertEqual(ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: .tailcatDefault), .tailcatDefault)
+        XCTAssertEqual(ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: .custom), .custom)
+        XCTAssertNil(ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: .mimi))
+        XCTAssertNil(ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: nil))
+    }
+
     func testRelayActivationRequiresExplicitSelectionAndPreservesFreeChoice() {
         for route in [ConnectionProfileRoute.lan, .tailscale, .https, .customTailcat] {
             XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: true, entitled: true))

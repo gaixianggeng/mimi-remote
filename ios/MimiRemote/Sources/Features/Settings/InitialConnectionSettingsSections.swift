@@ -818,9 +818,12 @@ struct InitialConnectionSettingsSections: View {
         NavigationLink(value: SettingsDestination.managedConnectionDevices) {
             ConnectionRowLabel(
                 title: L10n.text("ui.relay_service_title"),
-                value: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")?.title
-                    ?? (appStore.activeConnectionProfile?.connectionRoute.isManaged == true
-                        ? RelayServiceChoice.mimi.title : nil),
+                value: currentConnectionRoute?.usesTailcat == true
+                    ? ManagedConnectionDevicesView.currentChoice(
+                        route: currentConnectionRoute,
+                        savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")
+                    )?.title
+                    : L10n.text("ui.relay_not_needed"),
                 systemImage: "network"
             )
         }
@@ -840,10 +843,16 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
-    /// 展示生效中的方式：启用 Tailcat 时是档案上的 Tailcat 线路，关闭时回到已保存的直连线路。
+    private var currentConnectionRoute: ConnectionProfileRoute? {
+        ManagedConnectionDevicesView.currentRoute(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            tailcatEnabled: tailcatController.isEnabled, tailcatState: tailcatController.state,
+            fallbackRoute: appStore.savedFallbackConnectionRoute
+        )
+    }
+
     private var currentConnectionMethodTitle: String {
-        if tailcatController.isEnabled { return L10n.text("ui.relay_builtin") }
-        return appStore.savedFallbackConnectionRoute?.title ?? appStore.activeConnectionProfile?.connectionRoute.title ?? ""
+        ManagedConnectionDevicesView.connectionMethodTitle(route: currentConnectionRoute)
     }
 
     /// 设备首页的添加入口：一行推进添加电脑页，那一页再给扫码主按钮和粘贴。

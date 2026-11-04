@@ -78,8 +78,7 @@ struct ManagedConnectionSubscriptionView: View {
                         } else if sessionStore.isActivatingMimiRelay {
                             ProgressView(L10n.text("ui.relay_activating"))
                         } else if !appStore.connectionStatus.isConnected {
-                            Text(L10n.text("ui.relay_connect_to_configure"))
-                            scanComputerButton
+                            Text(L10n.text("ui.relay_reconnect_to_configure"))
                         } else {
                             Button(L10n.text("ui.retry")) {
                                 sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
