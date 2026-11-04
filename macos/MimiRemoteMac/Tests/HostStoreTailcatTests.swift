@@ -92,11 +92,11 @@ extension HostStoreTests {
         // 进入托管模式会重建身份，旧的 Tailcat 二维码不能继续展示。
         XCTAssertNil(store.pairing)
         XCTAssertEqual(store.pairingNetwork, .tailscale)
-        XCTAssertEqual(store.tailcatNotice, "已开启 Mimi 托管连接。开通过的手机重新扫码后走托管中继，其他设备不受影响。")
+        XCTAssertEqual(store.tailcatNotice, "本机已启用 Mimi 中转。已开通的手机可使用中转，免费连接继续可用。")
 
         await store.setTailcatManagedMode(false)
         XCTAssertFalse(store.tailcatIsManaged)
-        XCTAssertEqual(store.tailcatNotice, "已退出托管连接。托管接入的设备请重新扫码，其他设备不受影响。")
+        XCTAssertEqual(store.tailcatNotice, "本机已停用 Mimi 中转。手机会尝试免费备用线路；旧设备可能需要重新扫码。")
         XCTAssertEqual(events.values, ["enter", "exit"])
         XCTAssertFalse(store.isBusy)
     }

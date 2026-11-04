@@ -1,22 +1,16 @@
 import SwiftUI
 
-/// 「设备」里的托管线路与设备页：当前电脑走托管线路的状态、接入电脑、
-/// 已登记的电脑与手机或平板。购买与订阅在「我的」里的订阅页（#891）。
+/// 当前电脑的连接事实与恢复动作。服务资格及所有设备的名额在服务管理页。
 struct ManagedConnectionDevicesView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
-    @EnvironmentObject private var deviceStore: ManagedConnectionDeviceStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var pendingRemoval: ManagedConnectionDevice?
     @State private var localError: String?
     @State private var isConnectingMac = false
-    @State private var upgradeTask: Task<Void, Never>?
-    @State private var activeUpgradeID: UUID?
-    @State private var pendingSelfHostedReset: (context: ManagedConnectionUpgradeContext, count: Int)?
     @State private var showsHostUpdateLink = false
     @State private var isChangingRoute = false
     @State private var managedRouteError: String?
@@ -25,14 +19,28 @@ struct ManagedConnectionDevicesView: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
+            if let profile = appStore.activeConnectionProfile {
+                Section {
+                    LabeledContent(L10n.text("ui.connection_status"), value: appStore.connectionStatus.title)
+                    LabeledContent(L10n.text("ui.connection_method"), value: tailcatController.isEnabled
+                        ? L10n.text("ui.relay_builtin") : (appStore.savedFallbackConnectionRoute?.title ?? profile.connectionRoute.title))
+                    if profile.connectionRoute == .customTailcat {
+                        Text(L10n.text(sessionStore.isActivatingMimiRelay ? "ui.relay_activating" : "ui.relay_free_status"))
+                    }
+                }
+                .settingsGroupRowStyle()
+            }
             // 订阅过期后线路状态与临时改用已保存线路仍然有用，所以只看当前档案是否走托管。
             if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
                 managedRouteSection
             }
+            if let notice = sessionStore.mimiRelayNotice {
+                Section { Text(notice).fixedSize(horizontal: false, vertical: true) }
+                    .settingsGroupRowStyle()
+            }
             switch entitlementStore.status {
             case .entitled:
                 connectionSection
-                devicesSection
             case .loading, .resolving, .failed:
                 // 冷启动刷新或查询失败时还不知道是否订阅，不能把已订阅用户当成未订阅。
                 entitlementCheckSection
@@ -45,13 +53,7 @@ struct ManagedConnectionDevicesView: View {
         .navigationTitle(L10n.text("ui.managed_route_and_devices_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
-        .task(id: entitlementStore.currentGrant?.entitlement.id) {
-            guard isEntitled else { return }
-            await deviceStore.refreshDevices()
-        }
         .onAppear(perform: configureManagedScanner)
-        .onChange(of: appStore.activeConnectionProfileID) { _, _ in cancelCurrentComputerUpgrade() }
-        .onDisappear(perform: cancelCurrentComputerUpgrade)
         // 扫码请求由本页发起，它是栈顶页面，Cover 必须挂在这里才会真正呈现。
         // 扫码失败页点了「开通托管连接」后从这里推出开通页，不依赖所在的是哪条导航栈。
         .navigationDestination(isPresented: qrScannerPresentation.managedConnectionBinding(for: .managedConnection)) {
@@ -75,28 +77,8 @@ struct ManagedConnectionDevicesView: View {
             )
         }
         .refreshable {
-            if isEntitled {
-                await deviceStore.refreshDevices()
-            }
-        }
-        .confirmationDialog(
-            L10n.text("ui.managed_devices_remove_title"),
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(L10n.text("ui.managed_devices_remove_action"), role: .destructive) {
-                guard let device = pendingRemoval else { return }
-                pendingRemoval = nil
-                Task { await deviceStore.removeDevice(device) }
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingRemoval = nil
-            }
-        } message: {
-            Text(L10n.text("ui.managed_devices_remove_message"))
+            await entitlementStore.refreshEntitlement()
+            sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
         }
         .accessibilityIdentifier("settings.managedConnectionDevices.detail")
     }
@@ -176,7 +158,9 @@ struct ManagedConnectionDevicesView: View {
         switch route {
         case .lan, .tailscale, .https:
             return connected ? .oneTap : .backToSameNetwork
-        case .customTailcat, nil:
+        case .customTailcat:
+            return connected ? .oneTap : .reconnecting
+        case nil:
             return .fromComputer
         case .managedTailcat:
             return connected ? .connected : .reconnecting
@@ -198,9 +182,10 @@ struct ManagedConnectionDevicesView: View {
             switch connectStep {
             case .oneTap:
                 Button {
-                    startCurrentComputerUpgrade()
+                    sessionStore.activateMimiRelay()
                 } label: {
-                    Label(L10n.text("ui.managed_devices_upgrade_current"), systemImage: "arrow.up.circle")
+                    Label(L10n.text(appStore.activeConnectionProfile?.connectionRoute == .customTailcat
+                        ? "ui.relay_enable_current" : "ui.managed_devices_upgrade_current"), systemImage: "arrow.up.circle")
                         .settingsRow()
                 }
                 .disabled(isUpgradingCurrentComputer || isConnectingMac || entitlementStore.isBusy)
@@ -280,29 +265,10 @@ struct ManagedConnectionDevicesView: View {
         } header: {
             SettingsGroupHeader(title: L10n.text("ui.managed_devices_connection"))
         } footer: {
-            Text(L10n.text("ui.managed_devices_rescan_notice"))
+            Text(L10n.text("ui.relay_connection_scope"))
                 .settingsSectionFooterStyle()
         }
         .settingsGroupRowStyle()
-        .confirmationDialog(
-            L10n.text("ui.managed_devices_upgrade_reset_title"),
-            isPresented: Binding(
-                get: { pendingSelfHostedReset != nil },
-                set: { if !$0 { pendingSelfHostedReset = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(L10n.text("ui.managed_devices_upgrade_continue"), role: .destructive) {
-                guard let pending = pendingSelfHostedReset else { return }
-                pendingSelfHostedReset = nil
-                upgradeCurrentComputer(pending.context, confirmResetSelfHosted: true)
-            }
-            Button(L10n.text("ui.cancel"), role: .cancel) {
-                pendingSelfHostedReset = nil
-            }
-        } message: {
-            Text(L10n.format("ui.managed_devices_upgrade_reset_message", String(pendingSelfHostedReset?.count ?? 0)))
-        }
     }
 
     private func connectGuidanceRow(_ key: String, systemImage: String) -> some View {
@@ -337,14 +303,14 @@ struct ManagedConnectionDevicesView: View {
     static func canUpgradeCurrentComputer(route: ConnectionProfileRoute?, connected: Bool) -> Bool {
         guard connected, let route else { return false }
         switch route {
-        case .lan, .tailscale, .https:
+        case .lan, .tailscale, .https, .customTailcat:
             return true
-        case .managedTailcat, .customTailcat:
+        case .managedTailcat:
             return false
         }
     }
 
-    private var isUpgradingCurrentComputer: Bool { upgradeTask != nil }
+    private var isUpgradingCurrentComputer: Bool { sessionStore.isActivatingMimiRelay }
 
     /// 发起一键接入（含确认后重发）时的订阅判断：界面状态是已订阅，或凭证刷新途中
     /// 手里的权益仍在有效期内。检查中的瞬态不能把已订阅用户挡在外面。
@@ -356,83 +322,6 @@ struct ManagedConnectionDevicesView: View {
         if case .entitled = status { return true }
         guard let grant else { return false }
         return grant.entitlement.expiresAt > now
-    }
-
-    private func startCurrentComputerUpgrade() {
-        guard canUpgradeCurrentComputer else { return }
-        do {
-            let context = try ManagedConnectionUpgradeContext(appStore: appStore, client: appStore.client())
-            upgradeCurrentComputer(context, confirmResetSelfHosted: false)
-        } catch is CancellationError {
-            return
-        } catch {
-            localError = error.localizedDescription
-        }
-    }
-
-    private func cancelCurrentComputerUpgrade() {
-        if upgradeTask != nil {
-            upgradeTask?.cancel()
-            isConnectingMac = false
-        }
-        upgradeTask = nil
-        activeUpgradeID = nil
-        pendingSelfHostedReset = nil
-    }
-
-    private func upgradeCurrentComputer(
-        _ context: ManagedConnectionUpgradeContext,
-        confirmResetSelfHosted: Bool
-    ) {
-        guard !isUpgradingCurrentComputer, context.isCurrent(in: appStore) else { return }
-        guard Self.hasEntitlementForUpgrade(
-            status: entitlementStore.status,
-            grant: entitlementStore.currentGrant,
-            now: Date()
-        ) else {
-            localError = ManagedConnectionDeviceStoreError.subscriptionRequired.localizedDescription
-            return
-        }
-        activeUpgradeID = context.id
-        localError = nil
-        showsHostUpdateLink = false
-        upgradeTask = Task { @MainActor in
-            defer {
-                // 被取消的旧任务不能清掉用户后来发起的新任务状态。
-                if activeUpgradeID == context.id {
-                    upgradeTask = nil
-                    activeUpgradeID = nil
-                    isConnectingMac = false
-                }
-            }
-            do {
-                let link = try await context.requestPairingLink(
-                    confirmResetSelfHosted: confirmResetSelfHosted,
-                    appStore: appStore
-                )
-                // 这次请求最长 90 秒，期间订阅凭证可能按计划刷新，界面状态会短暂离开「已订阅」。
-                // 电脑此时已进入托管模式，不能据此中断；订阅由托管配对的授权方按凭证有效期校验。
-                guard let url = URL(string: link.pairURL) else {
-                    throw AgentAPIError.invalidResponse
-                }
-                isConnectingMac = true
-                _ = try await sessionStore.applyManagedPairingURL(url, upgrading: context)
-                Task { @MainActor in
-                    _ = await sessionStore.refreshAfterConnectionCommit(maxWait: 10)
-                }
-            } catch let error as ManagedPairingLinkAPIError {
-                if case .selfHostedClientsPresent(let count) = error {
-                    pendingSelfHostedReset = (context, count)
-                } else {
-                    localError = error.localizedDescription
-                    showsHostUpdateLink = error == .hostTooOld
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                if activeUpgradeID == context.id { localError = Self.pairingErrorMessage(error) }
-            }
-        }
     }
 
     static func pairingErrorMessage(_ error: Error) -> String {
@@ -457,12 +346,20 @@ struct ManagedConnectionDevicesView: View {
 
             if showsManagedRecoveryActions {
                 Button {
+                    performRouteChange { await sessionStore.useSavedConnectionRouteOnce(.customTailcat) }
+                } label: {
+                    Label(L10n.text("ui.relay_use_free"), systemImage: "arrow.triangle.branch")
+                        .frame(minHeight: 44)
+                }
+                .disabled(isChangingRoute || appStore.requiresRePairing ||
+                          !tailcatController.hasFreeRoute(profileID: appStore.activeConnectionProfileID ?? ""))
+                Button {
                     performRouteChange { await sessionStore.retryManagedConnection() }
                 } label: {
                     Label(L10n.text("ui.managed_connection_retry"), systemImage: "arrow.clockwise")
                         .frame(minHeight: 44)
                 }
-                .disabled(isChangingRoute)
+                .disabled(isChangingRoute || sessionStore.isActivatingMimiRelay || appStore.requiresRePairing)
                 .accessibilityIdentifier("settings.managedConnection.retry")
 
                 Button {
@@ -541,7 +438,8 @@ struct ManagedConnectionDevicesView: View {
         case .starting:
             return L10n.text("ui.connecting")
         case .connected:
-            return L10n.text("ui.connected")
+            return appStore.connectionStatus.isConnected
+                ? L10n.text("ui.relay_enabled") : L10n.text("ui.connecting")
         case .usingTemporaryRoute(let route):
             return L10n.format("ui.managed_connection_using_temporary_route", route.title)
         case .failed(let message):
@@ -590,125 +488,6 @@ struct ManagedConnectionDevicesView: View {
         }
     }
 
-    private var devicesSection: some View {
-        Section {
-            HStack(spacing: 16) {
-                deviceUsageLabel(
-                    title: L10n.text("ui.managed_devices_mac"),
-                    systemImage: "laptopcomputer",
-                    count: deviceStore.macCount,
-                    limit: ManagedConnectionDeviceStore.macLimit
-                )
-                Spacer(minLength: 8)
-                deviceUsageLabel(
-                    title: L10n.text("ui.managed_devices_mobile"),
-                    systemImage: "iphone.and.arrow.forward",
-                    count: deviceStore.mobileCount,
-                    limit: ManagedConnectionDeviceStore.mobileLimit
-                )
-            }
-            .accessibilityElement(children: .contain)
-
-            if deviceStore.isRefreshing, deviceStore.devices.isEmpty {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.text("ui.managed_devices_loading"))
-                }
-                .accessibilityElement(children: .combine)
-            } else if deviceStore.devices.isEmpty {
-                Text(L10n.text("ui.managed_devices_empty"))
-                    .foregroundStyle(tokens.secondaryText)
-            } else {
-                ForEach(deviceStore.devices) { device in
-                    deviceRow(device)
-                }
-            }
-
-            if let message = deviceStore.errorMessage {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(tokens.warning)
-                    Button(L10n.text("ui.retry")) {
-                        Task { await deviceStore.refreshDevices() }
-                    }
-                    .disabled(deviceStore.isRefreshing)
-                }
-            }
-        } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_devices_title"))
-        } footer: {
-            Text(L10n.text("ui.managed_devices_privacy_notice"))
-                .settingsSectionFooterStyle()
-        }
-        .settingsGroupRowStyle()
-    }
-
-    private func deviceUsageLabel(
-        title: String,
-        systemImage: String,
-        count: Int,
-        limit: Int
-    ) -> some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(themeStore.uiFont(.subheadline))
-                Text(L10n.format("ui.managed_devices_usage", count, limit))
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(tokens.secondaryText)
-                    .monospacedDigit()
-            }
-        } icon: {
-            Image(systemName: systemImage)
-        }
-    }
-
-    private func deviceRow(_ device: ManagedConnectionDevice) -> some View {
-        HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
-            Image(systemName: device.deviceType == .mac ? "laptopcomputer" : "iphone")
-                .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
-                .frame(width: SettingsLayoutMetrics.iconSlot)
-                .foregroundStyle(tokens.settingsIconTint)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(device.deviceType == .mac
-                        ? L10n.text("ui.managed_devices_mac")
-                        : L10n.text("ui.managed_devices_mobile"))
-                    if device.id == deviceStore.currentDeviceID {
-                        Text(L10n.text("ui.managed_devices_this_device"))
-                            .font(.caption)
-                            .foregroundStyle(tokens.secondaryText)
-                    }
-                }
-                Text(
-                    L10n.format(
-                        "ui.managed_devices_added_detail",
-                        device.createdAt.formatted(date: .abbreviated, time: .shortened),
-                        String(device.id.suffix(4)).uppercased()
-                    )
-                )
-                .font(themeStore.uiFont(.footnote))
-                .foregroundStyle(tokens.secondaryText)
-            }
-            Spacer(minLength: 8)
-            if deviceStore.removingDeviceID == device.id {
-                ProgressView()
-            } else {
-                Button(role: .destructive) {
-                    pendingRemoval = device
-                } label: {
-                    Image(systemName: "trash")
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(L10n.text("ui.managed_devices_remove_action"))
-            }
-        }
-        .settingsRow(.descriptive)
-        .accessibilityElement(children: .contain)
-    }
-
     private func configureManagedScanner() {
         qrScannerPresentation.configure(
             onSubmit: { rawValue, intent in
@@ -728,21 +507,14 @@ struct ManagedConnectionDevicesView: View {
         isConnectingMac = true
         defer { isConnectingMac = false }
         do {
-            guard isEntitled else {
-                throw ManagedConnectionDeviceStoreError.subscriptionRequired
-            }
             let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let url = URL(string: raw),
-                  let link = try TailcatPairingLink.parse(url),
-                  link.managedMacInstallationID != nil,
-                  link.managedMacTailcatPublicKey != nil else {
-                throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
-            }
+            guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID),
+                  let url = URL(string: raw) else { throw PairingLinkError.unsupportedURL }
             let wasConfigured = appStore.isConfigured
             if appStore.activeConnectionProfile == nil {
-                _ = try await sessionStore.applyManagedPairingURL(url)
+                _ = try await sessionStore.applyPairingURL(url)
             } else {
-                _ = try await sessionStore.addManagedConnectionProfile(
+                _ = try await sessionStore.addConnectionProfile(
                     pairingURL: url,
                     displayName: ""
                 )

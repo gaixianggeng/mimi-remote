@@ -33,20 +33,21 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var appStore: AppStore
     @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isManagingSubscription = false
     @State private var redemptionCode = ""
-    @State private var showsConnectStep = false
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
     /// 正式开放时改回 true（#949）。
     static let showsPurchaseOptions = false
 
-    /// 「我的」里的订阅页：只管买与订阅。线路、接入电脑与设备名额在「设备」里的
-    /// 托管线路与设备页（#891），这里只放一行跳转，不复制那边的控件。
+    /// 服务资格和名额集中在这里；当前电脑的实际连接仍由设备页展示。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
@@ -58,7 +59,24 @@ struct ManagedConnectionSubscriptionView: View {
                 statusSection
             }
             if isEntitled {
-                subscribedActionsSection
+                if appStore.activeConnectionProfile == nil {
+                    Section { Text(L10n.text("ui.managed_redemption_first_connection")) }
+                        .settingsGroupRowStyle()
+                } else if let route = appStore.activeConnectionProfile?.connectionRoute,
+                          route != .customTailcat, !route.isManaged {
+                    Section {
+                        Text(L10n.text("ui.relay_preserve_connection"))
+                        Button(L10n.text("ui.managed_devices_upgrade_current")) { sessionStore.activateMimiRelay() }
+                            .disabled(!appStore.connectionStatus.isConnected || sessionStore.isActivatingMimiRelay)
+                    }
+                    .settingsGroupRowStyle()
+                }
+                if let notice = sessionStore.mimiRelayNotice {
+                    Section { Text(notice).fixedSize(horizontal: false, vertical: true) }
+                        .settingsGroupRowStyle()
+                }
+                if appStore.activeConnectionProfile != nil { subscribedActionsSection }
+                ManagedConnectionDeviceListSection()
             }
             if !isEntitled {
                 redemptionSection
@@ -74,10 +92,6 @@ struct ManagedConnectionSubscriptionView: View {
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
-        // 开通只是第一步，线路要接入电脑后才切换：直接带用户去做，不让他以为已经完成。
-        .navigationDestination(isPresented: $showsConnectStep) {
-            ManagedConnectionDevicesView(qrScannerPresentation: qrScannerPresentation)
-        }
         .task {
             if entitlementStore.products.isEmpty {
                 await entitlementStore.load()
@@ -393,7 +407,8 @@ struct ManagedConnectionSubscriptionView: View {
             await entitlementStore.redeem(code: redemptionCode)
             if isEntitled {
                 redemptionCode = ""
-                showsConnectStep = true
+                sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+                if appStore.activeConnectionProfile == nil { dismiss() }
             }
         }
     }

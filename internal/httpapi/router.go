@@ -135,6 +135,7 @@ type Router struct {
 	tailcatLocalToken string
 	// 覆盖一次远程升级的完整流程，防止本机控制或自建 claim 在确认检查后插队。
 	tailcatControlMu              sync.Mutex
+	tailcatActivation             tailcatActivationStore
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -291,10 +292,16 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
-	// 升级会清除自建配对，必须使用 Bearer；开发免鉴权和 query token 均不适用。
+	// 远程启用和免费授权都必须持有电脑的 Bearer，开发免鉴权和 query token 均不适用。
 	tailcatPairingAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
 	mux.Handle("/api/tailcat/managed-pairing-link", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatManagedPairingLinkHandler)),
+	))
+	for _, path := range []string{"/api/tailcat/managed-pairing-operations", "/api/tailcat/managed-pairing-operations/"} {
+		mux.Handle(path, tailcatPairingAuth.Middleware(protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatActivationHandler))))
+	}
+	mux.Handle("/api/tailcat/free-route", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatFreeRouteHandler)),
 	))
 	if cfg.Debug.EnableCodexHistory && cfg.Codex.IsEnabled() {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
@@ -374,6 +381,7 @@ func (r *Router) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		r.tailcatActivation.close()
 		r.harnessNative.shutdown()
 		// 观察订阅可能正在投递回合提醒，必须先于 push.Close 退出。
 		r.harnessTurnPush.shutdown()

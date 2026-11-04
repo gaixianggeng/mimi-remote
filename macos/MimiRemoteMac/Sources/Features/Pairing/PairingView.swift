@@ -17,25 +17,33 @@ struct PairingView: View {
     static let columnWidth: CGFloat = 340
 
     var body: some View {
-        Group {
-            if !store.canPair || store.isBusy {
-                PairingUnavailableState(
-                    title: "配对暂不可用",
-                    description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason,
-                    isRetrying: isRefreshing || store.isBusy,
-                    retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: .automatic) } }
-                )
-            } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
-                pairingContent(pairing)
-            } else if let error = store.lastError {
-                PairingUnavailableState(
-                    title: "暂时无法生成二维码",
-                    description: error,
-                    isRetrying: isRefreshing,
-                    retry: { refreshPairing() }
-                )
-            } else {
-                PairingLoadingState()
+        VStack(spacing: 16) {
+            PairingNetworkPicker(
+                selection: $selectedNetwork,
+                isRefreshing: isRefreshing || store.isBusy,
+                networks: [.tailcat, .tailscale, .localNetwork]
+            )
+            .padding(.top, 20)
+            Group {
+                if !store.canPair || store.isBusy {
+                    PairingUnavailableState(
+                        title: "配对暂不可用",
+                        description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason,
+                        isRetrying: isRefreshing || store.isBusy,
+                        retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: .automatic) } }
+                    )
+                } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
+                    pairingContent(pairing)
+                } else if let error = store.lastError {
+                    PairingUnavailableState(
+                        title: "暂时无法生成二维码",
+                        description: error,
+                        isRetrying: isRefreshing,
+                        retry: { refreshPairing() }
+                    )
+                } else {
+                    PairingLoadingState()
+                }
             }
         }
         .frame(minWidth: 420, minHeight: 560)
@@ -91,13 +99,6 @@ struct PairingView: View {
             VStack(spacing: 0) {
                 PairingIntroduction()
                     .padding(.bottom, 20)
-
-                PairingNetworkPicker(
-                    selection: $selectedNetwork,
-                    isRefreshing: isRefreshing,
-                    networks: store.availablePairingNetworks
-                )
-                .padding(.bottom, 20)
 
                 PairingCodeCard(value: pairing.pairURL, isRefreshing: isRefreshing)
                     .padding(.bottom, 16)
@@ -190,6 +191,10 @@ struct PairingView: View {
         let targetNetwork = network ?? selectedNetwork
         isRefreshing = true
         Task {
+            // 选内置连接即授权开启 Tailcat，不再要求用户绕到高级设置。
+            if targetNetwork == .tailcat, !store.tailcatEnabled, store.canChangeTailcat {
+                await store.setTailcatEnabled(true)
+            }
             await store.refreshPairing(network: targetNetwork)
             // A superseded request may finish with no QR. Its remembered route
             // must not replace the user's current, available selection.
@@ -241,9 +246,9 @@ private struct PairingNetworkPicker: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Picker("配对网络", selection: $selection) {
+            Picker("连接方式", selection: $selection) {
                 ForEach(networks) { network in
-                    Text(network == .localNetwork ? "局域网" : network == .tailcat ? "Tailcat" : "Tailscale")
+                    Text(network == .localNetwork ? "同一局域网" : network == .tailcat ? "内置连接" : "Tailscale")
                         .tag(network)
                 }
             }
@@ -272,9 +277,9 @@ private struct PairingNetworkPicker: View {
         case .tailscale:
             "默认推荐 · 支持跨网络连接"
         case .localNetwork:
-            "设备需在同一局域网 · 刷新不会修改网络设置"
+            "手机和电脑需要处于同一局域网"
         case .tailcat:
-            "独立通道 · 不依赖已安装的 Tailscale 客户端"
+            "Tailcat 免费可用 · 可选 Mimi 中转服务"
         }
     }
 

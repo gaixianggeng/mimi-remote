@@ -35,7 +35,7 @@ func (s tailcatTrayStatus) title() string {
 	case !s.Running:
 		return "需要处理"
 	case s.managed():
-		return fmt.Sprintf("运行中 · 托管 · %d 台设备", s.PairedDeviceCount)
+		return fmt.Sprintf("Mimi 中转已启用 · %d 台设备", s.PairedDeviceCount)
 	default:
 		return fmt.Sprintf("运行中 · %d 台设备", s.PairedDeviceCount)
 	}
@@ -145,23 +145,11 @@ func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, erro
 	return result, nil
 }
 
-func tailcatManagedConfirmation(managed bool) (string, string, uint32) {
-	if managed {
-		return "改用 Mimi 托管连接？",
-			"开通过的手机经 Mimi 官方中继连接这台电脑，更快更稳，设备数按订阅限制。\r\n\r\n" +
-				"没开通的设备不受影响，继续走免费线路；已配对的设备不用重新扫码。",
-			mbYesNo | mbIconInfo
-	}
-	return "退出 Mimi 托管连接？",
-		"通过托管连接接入的手机和平板需要重新扫码，之后走免费线路。\r\n\r\n走免费线路、Tailscale 和局域网的设备不受影响。",
-		mbYesNo | mbIconWarning
-}
-
 func tailcatManagedMenuLabel(status tailcatTrayStatus) string {
 	if status.managed() {
-		return "退出 Mimi 托管连接"
+		return "Mimi 中转已启用"
 	}
-	return "改用 Mimi 托管连接"
+	return "Mimi 中转服务"
 }
 
 func tailcatManagedMenuEnabled(service agentStatus, hasTailcat bool, tailcatErr error, busy bool) bool {
@@ -171,7 +159,7 @@ func tailcatManagedMenuEnabled(service agentStatus, hasTailcat bool, tailcatErr 
 func tailcatToggleConfirmation(enable bool) (string, string, uint32) {
 	if enable {
 		return "开启 Tailcat？",
-			"Tailcat 是实验性的内置连接：手机不装 Tailscale、电脑不开局域网也能扫码连接。\r\n\r\n" +
+			"内置连接（Tailcat）免费可用，无需另外安装联网工具。Mimi 全部功能免费。\r\n\r\n" +
 				"连接先经 DERP 中继发现对端，网络允许时改为端到端加密直连，否则继续经中继转发。默认中继由 Tailscale 运营。" +
 				"Tailcat 只发起出站连接，不新增 Windows 防火墙规则。",
 			mbYesNo | mbIconInfo
@@ -252,44 +240,33 @@ func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr
 	}()
 }
 
-func (a *trayApplication) toggleTailcatManaged() {
-	status, has, err := a.tailcatSnapshot()
-	if !has || err != nil {
-		a.showError(errors.New("Tailcat 状态暂不可用，请刷新状态后重试"))
-		return
+func (a *trayApplication) showRelayServiceInfo() {
+	status, _, _ := a.tailcatSnapshot()
+	detail := "先选择内置连接并用手机扫码。\r\n\r\n在手机「我的 → Mimi 中转服务」通过邀请码或购买开通后，本机会自动启用。Mimi 全部功能免费。"
+	if status.managed() {
+		detail = "本机已启用 Mimi 中转。手机会根据开通状态选择中转或免费连接，能够直连时优先直连。\r\n\r\n服务开通和设备名额请在手机「我的 → Mimi 中转服务」管理。"
 	}
-	a.confirmAndSetTailcatManaged(!status.managed(), nil)
+	showMessage(a.window, "Mimi 中转服务", detail, mbOK|mbIconInfo)
 }
 
-// confirmAndSetTailcatManaged 在用户确认后切换连接模式。两个方向都会重建 Tailcat 身份，
-// 旧二维码随之失效。onSuccess 在切换成功后调用，用来继续生成二维码。
-func (a *trayApplication) confirmAndSetTailcatManaged(managed bool, onSuccess func()) {
-	title, text, flags := tailcatManagedConfirmation(managed)
-	if showMessage(a.window, title, text, flags) != idYes || !a.beginBusy() {
+func (a *trayApplication) setTailcatForPairing(window uintptr) {
+	if !a.beginBusy() {
 		return
 	}
 	go func() {
-		defer a.endBusy()
 		ctx, cancel := actionContext()
-		status, err := a.controller.setTailcatManaged(ctx, managed)
+		status, err := a.controller.setTailcat(ctx, true)
 		cancel()
 		if err == nil {
 			a.storeTailcat(status, nil)
 		}
 		a.refreshStatus()
+		a.endBusy()
 		if err != nil {
-			trayLogf("tailcat managed=%v failed: %v", managed, err)
-			a.showError(fmt.Errorf("切换 Mimi 托管连接失败：%w", err))
+			a.showError(err)
 			return
 		}
-		if managed {
-			a.showBalloon("Mimi Remote", "已改用 Mimi 托管连接，请重新生成二维码并扫码", niifInfo)
-		} else {
-			a.showBalloon("Mimi Remote", "已退出托管连接并恢复原中继", niifInfo)
-		}
-		if onSuccess != nil {
-			onSuccess()
-		}
+		procPostMessageW.Call(window, wmPanelTailcatEnabled, 0, 0)
 	}()
 }
 

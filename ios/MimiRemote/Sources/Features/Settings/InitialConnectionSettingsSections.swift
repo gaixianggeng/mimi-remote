@@ -819,7 +819,7 @@ struct InitialConnectionSettingsSections: View {
             // 设备页只进线路与设备；购买与订阅在「我的」（#891）。
             NavigationLink(value: SettingsDestination.managedConnectionDevices) {
                 ConnectionRowLabel(
-                    title: L10n.text("ui.managed_subscription_title"),
+                    title: L10n.text("ui.relay_short_title"),
                     value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
                         ? tailcatController.state.connectionMethodSummary
                         : managedConnectionEntitlementStore.currentGrant != nil
@@ -832,7 +832,7 @@ struct InitialConnectionSettingsSections: View {
             .accessibilityIdentifier("settings.connection.managedConnection")
         }
 
-        if appStore.isConfigured && appStore.activeConnectionProfile?.connectionRoute.isManaged != true {
+        if appStore.isConfigured {
             NavigationLink(value: SettingsDestination.tailcat) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_method"),
@@ -847,9 +847,8 @@ struct InitialConnectionSettingsSections: View {
 
     /// 展示生效中的方式：启用 Tailcat 时是档案上的 Tailcat 线路，关闭时回到已保存的直连线路。
     private var currentConnectionMethodTitle: String {
-        tailcatController.isEnabled
-            ? (appStore.activeConnectionProfile?.connectionRoute.title ?? "Tailcat")
-            : (appStore.savedFallbackConnectionRoute?.title ?? "Tailscale")
+        if tailcatController.isEnabled { return L10n.text("ui.relay_builtin") }
+        return appStore.savedFallbackConnectionRoute?.title ?? appStore.activeConnectionProfile?.connectionRoute.title ?? ""
     }
 
     /// 设备首页的添加入口：一行推进添加电脑页，那一页再给扫码主按钮和粘贴。
@@ -1081,6 +1080,12 @@ struct InitialConnectionSettingsSections: View {
             manualConnectionRow(tokens: tokens)
 
             // 还没连上时进不了「我的」，首启页自己给出支持页入口。
+            if ManagedConnectionSubscriptionView.isEntryVisible {
+                NavigationLink(value: SettingsDestination.managedConnection) {
+                    Label(L10n.text("ui.relay_have_invite"), systemImage: "ticket")
+                }
+                .accessibilityIdentifier("settings.firstConnection.invite")
+            }
             SettingsExternalLinkRow(
                 title: L10n.text("ui.usage_help"),
                 systemImage: "questionmark.circle",

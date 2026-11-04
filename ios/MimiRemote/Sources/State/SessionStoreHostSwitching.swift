@@ -65,10 +65,21 @@ struct ManagedConnectionUpgradeContext {
         try Task.checkCancellation()
         guard isCurrent(in: appStore) else { throw CancellationError() }
     }
+
+    func requestRelayActivation(requestID: UUID, appStore: AppStore) async throws -> ManagedPairingLinkResponse {
+        try checkCurrent(in: appStore)
+        let result = try await client.activateManagedRelay(requestID: requestID)
+        try checkCurrent(in: appStore)
+        return result
+    }
 }
 
 // 多 Mac 连接变更、Profile 清理和暖快照恢复共享同一事务边界。
 extension SessionStore {
+    var isConnectionSwitchInProgress: Bool {
+        connectionSwitchTargetProfileID != nil
+    }
+
     func resetConnectionForSettingsChange(clearData: Bool = false) {
         invalidatePreparedConnectionChange()
         connectionTermination = nil
@@ -97,21 +108,35 @@ extension SessionStore {
 
     @discardableResult
     func retryManagedConnection() async -> Bool {
-        guard let tailcatExperimentController else { return false }
+        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil,
+              !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
+              let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
+        // 手动切换与自动启用、自动回退共用连接事务，防止并发替换底层线路。
+        guard let generation = try? beginPreparedConnectionChange() else { return false }
+        let scope = appStore.activeHostScope
+        defer { finishPreparedConnectionChange(generation) }
         guard await tailcatExperimentController.retryManagedConnection(appStore: appStore) else {
             return false
         }
+        guard appStore.activeHostScope == scope, !Task.isCancelled else { return false }
         return await refreshAfterConnectionCommit(maxWait: 10)
     }
 
     @discardableResult
     func useSavedConnectionRouteOnce(_ route: ConnectionProfileRoute) async -> Bool {
-        guard let tailcatExperimentController else { return false }
+        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil,
+              !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
+              let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
+        // 手动切换与自动启用、自动回退共用连接事务，防止并发替换底层线路。
+        guard let generation = try? beginPreparedConnectionChange() else { return false }
+        let scope = appStore.activeHostScope
+        defer { finishPreparedConnectionChange(generation) }
         guard await tailcatExperimentController.useSavedRouteOnce(route, appStore: appStore) else {
             return false
         }
+        guard appStore.activeHostScope == scope, !Task.isCancelled else { return false }
         return await refreshAfterConnectionCommit(maxWait: 10)
     }
 

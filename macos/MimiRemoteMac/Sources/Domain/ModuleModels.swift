@@ -9,7 +9,7 @@ enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
         case .claude: "Claude Code"
         case .deepseek: "DeepSeek Harness"
         case .tailscale: "Tailscale"
-        case .tailcat: "Tailcat"
+        case .tailcat: "内置连接（Tailcat）"
         case .lan: "局域网"
         }
     }

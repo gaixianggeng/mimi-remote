@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -250,6 +251,7 @@ type controlPanel struct {
 	pairingLoading       bool
 	// pairingTailcat 为真时配对视图生成 Tailcat 二维码，否则按 agentd 当前网络配对。
 	pairingTailcat bool
+	pairingNetwork string
 
 	statusColor        uint32
 	statusBackground   uint32
@@ -513,9 +515,9 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.codexValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 228, 144, 20, 0)
 	p.claudeLabel = p.createControl(instance, "STATIC", "Claude Code", wsChild|wsVisible|ssLeft|ssNoPrefix, 314, 228, 76, 20, 0)
 	p.claudeValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 400, 228, 140, 20, 0)
-	p.tailcatLabel = p.createControl(instance, "STATIC", "Tailcat", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 261, 76, 20, 0)
+	p.tailcatLabel = p.createControl(instance, "STATIC", "内置连接", wsChild|wsVisible|ssLeft|ssNoPrefix, 48, 261, 76, 20, 0)
 	p.tailcatValue = p.createControl(instance, "STATIC", "正在检查", wsChild|wsVisible|ssLeft|ssNoPrefix, 134, 261, 160, 20, 0)
-	p.tailcatToggle = p.createControl(instance, "BUTTON", "开启 Tailcat", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 314, 258, 226, 26, panelTailcatToggle)
+	p.tailcatToggle = p.createControl(instance, "BUTTON", "开启内置连接", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 314, 258, 226, 26, panelTailcatToggle)
 
 	p.refresh = p.createControl(instance, "BUTTON", "刷新状态", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 303, 120, 42, panelRefresh)
 	p.start = p.createControl(instance, "BUTTON", "启动服务", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 162, 303, 120, 42, panelStart)
@@ -536,7 +538,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.pairBack = p.createControl(instance, "BUTTON", "返回面板", wsChild|wsTabStop|bsOwnerDraw, 32, 399, 120, 50, panelPairBack)
 	p.pairCopy = p.createControl(instance, "BUTTON", "复制链接", wsChild|wsTabStop|bsOwnerDraw, 162, 399, 120, 50, panelPairCopy)
 	p.pairRefresh = p.createControl(instance, "BUTTON", "刷新二维码", wsChild|wsTabStop|bsOwnerDraw, 292, 399, 120, 50, panelPairRefresh)
-	p.pairNetwork = p.createControl(instance, "BUTTON", "用 Tailcat", wsChild|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelPairNetwork)
+	p.pairNetwork = p.createControl(instance, "BUTTON", "连接方式", wsChild|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelPairNetwork)
 
 	controls := []uintptr{
 		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
@@ -795,6 +797,7 @@ func (p *controlPanel) showPairingView(preferTailcat bool) {
 		p.app.showError(errors.New("服务尚未就绪，请先启动服务并等待状态变为“运行正常”"))
 		return
 	}
+	p.pairingNetwork = ""
 	p.pairingTailcat = preferTailcat || defaultPairingUsesTailcat(status, tailcat, hasTailcat)
 	p.pairingView = true
 	setControlPanelText(p.subtitleLabel, "安全连接新设备")
@@ -826,6 +829,8 @@ func (p *controlPanel) refreshPairing() {
 	pair := p.app.controller.pairing
 	if p.pairingTailcat {
 		pair = p.app.controller.tailcatPairing
+	} else if network := p.pairingNetwork; network != "" {
+		pair = func(ctx context.Context) (pairingInfo, error) { return p.app.controller.pairingOnNetwork(ctx, network) }
 	}
 	go func() {
 		ctx, cancel := actionContext()
@@ -907,7 +912,7 @@ func (p *controlPanel) syncPairingControls() {
 		badge, title, summary, endpoint, warning = text.Badge, text.Title, text.Summary, text.Endpoint, text.Warning
 	} else if err != nil {
 		if _, hasTailcat, tailcatErr := p.app.tailcatSnapshot(); hasTailcat && tailcatErr == nil {
-			warning = "也可以点击“用 Tailcat”改用内置连接，无需 Tailscale 或局域网。"
+			warning = "点击“连接方式”可选择免费内置连接、Tailscale 或同一局域网。"
 		}
 	}
 	p.statusColor = color

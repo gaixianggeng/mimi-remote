@@ -142,6 +142,14 @@ struct ManagedPairingLinkResponse: Decodable, Equatable {
     }
 }
 
+struct ManagedPairingOperationResponse: Decodable {
+    let id: String
+    let state: String
+    let result: ManagedPairingLinkResponse?
+    let code: String?
+    let message: String?
+}
+
 /// 已连接电脑一键接入托管连接的稳定错误（#897）。只解析带 code 的业务错误，
 /// 鉴权失败仍走 AgentAPIError，保证凭据失效的处理不变。
 enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
@@ -179,8 +187,8 @@ enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
                 case pairedDeviceCount = "paired_device_count"
             }
         }
-        // 接口路径固定，404 只可能是旧版电脑端还没有它。
-        if status == 404 {
+        // 旧版电脑没有路径；新版异步结果过期也会返回 404，必须保留业务原因。
+        if status == 404, (try? JSONDecoder().decode(Payload.self, from: data)) == nil {
             return .hostTooOld
         }
         guard status != 401, status != 403,
@@ -534,6 +542,52 @@ struct AgentAPIClient {
         )
     }
 
+    /// 免费 Tailcat 启用中转时电脑会短暂重连；同一 request_id 重发只取回原操作，不重复配对。
+    func activateManagedRelay(requestID: UUID) async throws -> ManagedPairingLinkResponse {
+        let path = "/api/tailcat/managed-pairing-operations"
+        let body = try JSONSerialization.data(withJSONObject: ["request_id": requestID.uuidString])
+        let deadline = Date().addingTimeInterval(90)
+        var accepted = false
+        while Date() < deadline {
+            try Task.checkCancellation()
+            do {
+                let operation: ManagedPairingOperationResponse = try await request(
+                    path: accepted ? path + "/" + requestID.uuidString : path,
+                    method: accepted ? "GET" : "POST",
+                    body: accepted ? nil : body,
+                    timeout: min(10, max(1, deadline.timeIntervalSinceNow))
+                )
+                guard operation.id.lowercased() == requestID.uuidString.lowercased() else {
+                    throw AgentAPIError.invalidResponse
+                }
+                accepted = true
+                switch operation.state {
+                case "completed":
+                    guard let result = operation.result else { throw AgentAPIError.invalidResponse }
+                    return result
+                case "failed":
+                    throw ManagedPairingLinkAPIError.failed(
+                        code: operation.code ?? "tailcat_activation_failed", message: operation.message ?? ""
+                    )
+                case "pending": break
+                default: throw AgentAPIError.invalidResponse
+                }
+            } catch let error as URLError where error.code != .cancelled {
+                // 只容忍传输中断；鉴权、旧版电脑和业务拒绝必须立即返回。
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+        throw URLError(.timedOut)
+    }
+
+    func freeTailcatRoute(clientKey: String) async throws -> String {
+        struct Response: Decodable { let tailcat_address: String }
+        let body = try JSONSerialization.data(withJSONObject: ["client_key": clientKey])
+        let result: Response = try await request(path: "/api/tailcat/free-route", method: "POST", body: body)
+        guard !result.tailcat_address.isEmpty else { throw PairingLinkError.missingTailcatAddress }
+        return result.tailcat_address
+    }
+
     func capabilities(path: String?) async throws -> CapabilityListResponse {
         let body = try JSONEncoder().encode(CapabilityListRequest(path: path))
         return try await request(path: "/api/capabilities/list", method: "POST", body: body)
@@ -885,7 +939,7 @@ struct AgentAPIClient {
                let fileError = FileAccessAPIError.decode(status: http.statusCode, data: data) {
                 throw fileError
             }
-            if path == "/api/tailcat/managed-pairing-link",
+            if (path == "/api/tailcat/managed-pairing-link" || path.hasPrefix("/api/tailcat/managed-pairing-operations")),
                let linkError = ManagedPairingLinkAPIError.decode(status: http.statusCode, data: data) {
                 throw linkError
             }

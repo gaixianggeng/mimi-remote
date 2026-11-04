@@ -250,10 +250,6 @@ final class SessionStore: ObservableObject {
     var liveConnectionWarmUpTokens: Set<Int> = []
     var nextConnectionWarmUpToken = 0
 
-    var isConnectionSwitchInProgress: Bool {
-        connectionSwitchTargetProfileID != nil
-    }
-
     func setConnectionSwitchTargetProfileID(_ profileID: String?) {
         guard connectionSwitchTargetProfileID != profileID else {
             return
@@ -287,6 +283,14 @@ final class SessionStore: ObservableObject {
     let workspaceGitStore: WorkspaceGitStore
     private var workspaceGitObservation: AnyCancellable?
     let tailcatExperimentController: TailcatExperimentController?
+    @Published var isActivatingMimiRelay = false
+    @Published var mimiRelayNotice: String?
+    var mimiRelayTask: Task<Void, Never>?
+    var mimiRelayOperationID: UUID?
+    var mimiRelayProfileID: String?
+    var mimiRelayAttemptKey: String?
+    var mimiRelayBackupAttemptID: String?
+    var mimiRelayFallbackAttemptID: String?
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore
@@ -424,7 +428,7 @@ final class SessionStore: ObservableObject {
     var isNativeHarnessDirectoryListVisible = false
     var isNativeHarnessDirectoryForeground = false
     var connectionChangeGeneration = 0
-    var inFlightConnectionChangeGeneration: Int?
+    @Published var inFlightConnectionChangeGeneration: Int?
     var connectionSwitchTargetGeneration: Int?
     var connectionSwitchSupersession = ConnectionSwitchSupersession()
     var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?

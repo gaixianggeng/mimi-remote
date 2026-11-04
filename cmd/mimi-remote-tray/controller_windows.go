@@ -201,6 +201,19 @@ func (c *agentController) pairing(ctx context.Context) (pairingInfo, error) {
 	return parsePairingInfo(payload)
 }
 
+// 指定网络生成二维码，保留未指定时的旧默认行为。
+func (c *agentController) pairingOnNetwork(ctx context.Context, network string) (pairingInfo, error) {
+	if network != "tailscale" && network != "lan" {
+		return pairingInfo{}, errors.New("请选择 Tailscale 或同一局域网")
+	}
+	args := append(pairingArguments(), "--network", network)
+	payload, err := c.runCommand(ctx, args...)
+	if err != nil {
+		return pairingInfo{}, err
+	}
+	return parsePairingInfo(payload)
+}
+
 func pairingArguments() []string {
 	return []string{"pair", "--qr-only", "--json"}
 }

@@ -652,13 +652,13 @@ func (a *trayApplication) showMenu() {
 	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
-	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "Tailcat 配对…")
+	appendMenu(menu, menuFlags(busy || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
 	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
 	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
 	appendMenu(menu, mfSeparator, 0, "")
 	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
-	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "Tailcat："+tailcatPresentation.Value)
+	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "内置连接："+tailcatPresentation.Value)
 	appendMenu(menu, menuFlags(!tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
 	appendMenu(menu, menuFlags(!tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
 	appendMenu(menu, mfSeparator, 0, "")
@@ -717,7 +717,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuTailcatToggle:
 		a.toggleTailcat()
 	case menuTailcatManaged:
-		a.toggleTailcatManaged()
+		a.showRelayServiceInfo()
 	case menuDoctor:
 		a.runDoctor(false)
 	case menuDoctorFix:

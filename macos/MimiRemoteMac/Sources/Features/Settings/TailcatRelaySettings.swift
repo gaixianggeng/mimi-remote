@@ -27,7 +27,6 @@ struct TailcatRelaySettings: View {
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsTailcatReset = false
     @State private var confirmsRelayChange = false
-    @State private var confirmsEnterManaged = false
     @State private var confirmsExitManaged = false
     @State private var relayMode: TailcatRelayMode = .tailcatDefault
     @State private var customDERPMapURL = ""
@@ -42,9 +41,9 @@ struct TailcatRelaySettings: View {
                 if store.tailcatIsManaged {
                     // 托管模式的中继由 Mimi 管理，agentd 会拒绝手动修改；这里不给入口。
                     LabeledContent("当前中继") {
-                        Text("Mimi 托管中继")
+                        Text("Mimi 中转")
                     }
-                    Text("托管连接下中继由 Mimi 管理，不能手动修改。要改用其他中继，请先退出托管连接。")
+                    Text("Mimi 中转由服务统一配置。如需自定义免费中继，请先停用本机 Mimi 中转。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -87,26 +86,15 @@ struct TailcatRelaySettings: View {
             syncRelayConfiguration()
         }
         .confirmationDialog(
-            "改用 Mimi 托管连接？",
-            isPresented: $confirmsEnterManaged,
-            titleVisibility: .visible
-        ) {
-            Button("改用托管连接") {
-                Task { await store.setTailcatManagedMode(true) }
-            }
-        } message: {
-            Text(enterManagedMessage)
-        }
-        .confirmationDialog(
-            "退出 Mimi 托管连接？",
+            "退出 Mimi 中转服务？",
             isPresented: $confirmsExitManaged,
             titleVisibility: .visible
         ) {
-            Button("退出托管连接", role: .destructive) {
+            Button("停用本机 Mimi 中转", role: .destructive) {
                 Task { await store.setTailcatManagedMode(false) }
             }
         } message: {
-            Text("通过托管连接接入的手机和平板需要重新扫码，之后走免费线路。走免费线路、Tailscale 和局域网的设备不受影响。")
+            Text("停用会影响本机所有使用 Mimi 中转的设备。新版手机会尝试已保存的免费连接；没有备用线路的旧设备需要重新扫码。")
         }
         .confirmationDialog(
             "重置 Tailcat？",
@@ -136,30 +124,25 @@ struct TailcatRelaySettings: View {
         }
     }
 
-    /// 当前线路，以及开启、退出托管的入口（#896）。托管是额外的付费线路，免费线路一直可用（#966）。
+    /// 服务资格在手机上管理；电脑只展示本机能力，并保留高级停用入口。
     private var managedConnectionSection: some View {
-        Section("Mimi 托管连接") {
+        Section("Mimi 中转服务") {
             LabeledContent("连接方式") {
-                Text(store.tailcatIsManaged ? "Mimi 托管连接 + 免费线路" : "免费线路")
+                Text(store.tailcatIsManaged ? "Mimi 中转已启用 · 免费连接仍可用" : "免费线路")
             }
 
             Text(
                 store.tailcatIsManaged
-                    ? "开通过的手机走 Mimi 中继，更快更稳；没开通的设备走免费线路，同样能连。"
-                    : "不开通也能连。想要更快更稳，可以改用托管连接，手机需要在「Mimi 托管连接」里订阅。"
+                    ? "本机已准备好 Mimi 中转。实际是否经过中转取决于网络，能够直连时优先直连。"
+                    : "Mimi 全部功能免费。先用内置连接扫码；在手机「我的 → Mimi 中转服务」开通后，这台电脑会自动启用。"
             )
             .font(.caption)
             .foregroundStyle(.secondary)
 
             HStack {
                 if store.tailcatIsManaged {
-                    Button("退出托管连接…", role: .destructive) {
+                    Button("停用本机 Mimi 中转…", role: .destructive) {
                         confirmsExitManaged = true
-                    }
-                    .disabled(!store.canChangeTailcat)
-                } else {
-                    Button("改用 Mimi 托管连接…") {
-                        confirmsEnterManaged = true
                     }
                     .disabled(!store.canChangeTailcat)
                 }
@@ -172,10 +155,6 @@ struct TailcatRelaySettings: View {
                 }
             }
         }
-    }
-
-    private var enterManagedMessage: String {
-        "开通过的手机经 Mimi 官方中继连接这台电脑，更快更稳，设备数按订阅限制。没开通的设备不受影响，继续走免费线路，已配对的设备不用重新扫码。"
     }
 
     @ViewBuilder

@@ -154,11 +154,11 @@ func TestTailcatManagedArgumentsAndTitle(t *testing.T) {
 		t.Fatalf("exit arguments = %v", got)
 	}
 	managed := tailcatTrayStatus{Enabled: true, Running: true, Mode: "managed", PairedDeviceCount: 1}
-	if managed.title() != "运行中 · 托管 · 1 台设备" || tailcatManagedMenuLabel(managed) != "退出 Mimi 托管连接" {
+	if managed.title() != "Mimi 中转已启用 · 1 台设备" || tailcatManagedMenuLabel(managed) != "Mimi 中转已启用" {
 		t.Fatalf("managed presentation = %q / %q", managed.title(), tailcatManagedMenuLabel(managed))
 	}
 	free := tailcatTrayStatus{Enabled: true, Running: true, Mode: "self_hosted", PairedDeviceCount: 2}
-	if free.title() != "运行中 · 2 台设备" || tailcatManagedMenuLabel(free) != "改用 Mimi 托管连接" {
+	if free.title() != "运行中 · 2 台设备" || tailcatManagedMenuLabel(free) != "Mimi 中转服务" {
 		t.Fatalf("free presentation = %q / %q", free.title(), tailcatManagedMenuLabel(free))
 	}
 }
