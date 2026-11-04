@@ -219,6 +219,77 @@ func TestResetRevokesFreeNodeAndItsClients(t *testing.T) {
 	}
 }
 
+// 重置时免费节点可能正在后台启动。启动会写身份文件并放行旧白名单，重置必须等它结束再清理。
+func TestResetWaitsForInFlightFreeNodeStart(t *testing.T) {
+	revokedKey := key.NewNode().Public().String()
+	starter := newRecordingStarter()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	startHost := func(config tunnel.HostConfig) (managedHost, error) {
+		if filepath.Base(config.IdentityPath) == "free.private.json" {
+			first := false
+			once.Do(func() { first = true })
+			if first {
+				close(entered)
+				<-release
+				if err := os.WriteFile(config.IdentityPath, []byte("stale"), 0o600); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return starter.start(config)
+	}
+	manager := &Manager{
+		config:    Config{StateDir: t.TempDir(), FreeNode: true},
+		clients:   []string{revokedKey},
+		startHost: startHost,
+		closing:   make(chan struct{}),
+	}
+	if err := manager.startStableLocked(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	manager.mu.Lock()
+	manager.startFreeNodeLoopLocked()
+	manager.mu.Unlock()
+	<-entered
+
+	resetDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Reset()
+		resetDone <- err
+	}()
+	select {
+	case <-resetDone:
+		t.Fatal("重置不能在免费节点启动途中清理身份")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-resetDone; err != nil {
+		t.Fatal(err)
+	}
+	if identity, err := os.ReadFile(filepath.Join(manager.config.StateDir, "free.private.json")); err == nil {
+		t.Fatalf("重置后残留了旧身份：%q", identity)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		starter.mu.Lock()
+		starts := append([]tunnel.HostConfig(nil), starter.started["free"]...)
+		starter.mu.Unlock()
+		if len(starts) == 2 {
+			if len(starts[1].AllowedClientKeys) != 0 {
+				t.Fatalf("重置后的免费节点放行了已撤销设备：%v", starts[1].AllowedClientKeys)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("重置后没有重新拉起免费节点：%d", len(starts))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSelfHostedManagerKeepsSingleNode(t *testing.T) {
 	clientKey := key.NewNode().Public().String()
 	starter := newRecordingStarter()

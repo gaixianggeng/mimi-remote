@@ -77,6 +77,8 @@ type Manager struct {
 	freeHost       managedHost
 	freePairHost   managedHost
 	freeGeneration uint64
+	// freeStartMu 串行免费节点启动与重置，加锁顺序固定为先它后 mu。
+	freeStartMu    sync.Mutex
 	closing        chan struct{}
 	closeOnce      sync.Once
 	pairExpiresAt  time.Time
@@ -134,47 +136,59 @@ func (m *Manager) startFreeNodeLoopLocked() {
 		return
 	}
 	m.freeGeneration++
-	go m.runFreeNode(m.freeGeneration, append([]string(nil), m.clients...))
+	go m.runFreeNode(m.freeGeneration)
 }
 
-func (m *Manager) runFreeNode(generation uint64, clients []string) {
+func (m *Manager) runFreeNode(generation uint64) {
 	delay := freeNodeRetryBase
 	for {
-		host, err := m.startHost(tunnel.HostConfig{
-			TargetAddr:        m.config.TargetAddr,
-			RemotePort:        m.config.RemotePort,
-			IdentityPath:      filepath.Join(m.config.StateDir, "free.private.json"),
-			AddressPath:       filepath.Join(m.config.StateDir, "free.address"),
-			AllowedClientKeys: clients,
-			DERPMapURL:        m.config.FreeDERPMapURL,
-			Events:            m.config.Events,
-		})
-		if err == nil {
-			m.mu.Lock()
-			current := m.freeGeneration == generation && !m.closingLocked()
-			if current {
-				m.freeHost = host
-			}
-			m.mu.Unlock()
-			if !current {
-				_ = host.Close()
-			}
+		if m.startFreeNode(generation) {
 			return
 		}
-		log.Printf("免费节点启动失败，%s 后重试：%v", delay, err)
 		select {
 		case <-m.closing:
 			return
 		case <-time.After(delay):
 		}
-		m.mu.Lock()
-		current := m.freeGeneration == generation
-		m.mu.Unlock()
-		if !current {
-			return
-		}
 		delay = min(delay*2, freeNodeRetryMax)
 	}
+}
+
+// startFreeNode 全程持有 freeStartMu：启动时会写身份文件并按白名单放行，重置必须等它结束再清理，
+// 否则晚到的启动会写回旧身份，或者短暂放行已撤销的设备。返回 false 表示要稍后重试。
+func (m *Manager) startFreeNode(generation uint64) bool {
+	m.freeStartMu.Lock()
+	defer m.freeStartMu.Unlock()
+	m.mu.Lock()
+	current := m.freeGeneration == generation && !m.closingLocked()
+	clients := append([]string(nil), m.clients...)
+	m.mu.Unlock()
+	if !current {
+		return true
+	}
+	host, err := m.startHost(tunnel.HostConfig{
+		TargetAddr:        m.config.TargetAddr,
+		RemotePort:        m.config.RemotePort,
+		IdentityPath:      filepath.Join(m.config.StateDir, "free.private.json"),
+		AddressPath:       filepath.Join(m.config.StateDir, "free.address"),
+		AllowedClientKeys: clients,
+		DERPMapURL:        m.config.FreeDERPMapURL,
+		Events:            m.config.Events,
+	})
+	if err != nil {
+		log.Printf("免费节点启动失败，稍后重试：%v", err)
+		return false
+	}
+	m.mu.Lock()
+	closing := m.closingLocked()
+	if !closing {
+		m.freeHost = host
+	}
+	m.mu.Unlock()
+	if closing {
+		_ = host.Close()
+	}
+	return true
 }
 
 func (m *Manager) closingLocked() bool {
@@ -371,6 +385,8 @@ func (m *Manager) ReplaceManagedClients(rawKeys []string) (Status, error) {
 }
 
 func (m *Manager) Reset() (Status, error) {
+	m.freeStartMu.Lock()
+	defer m.freeStartMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pairErr := m.closePairLocked()

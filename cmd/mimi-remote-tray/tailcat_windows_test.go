@@ -115,7 +115,7 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 		t.Fatalf("busy tray must not offer the Tailcat toggle: %+v", p)
 	}
 	running := tailcatTrayStatus{Enabled: true, Running: true, PairedDeviceCount: 1}
-	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 自建 · 1 台设备" {
+	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 1 台设备" {
 		t.Fatalf("running Tailcat presentation = %+v", p)
 	}
 	stopped := agentStatus{Version: "1.0.0"}
