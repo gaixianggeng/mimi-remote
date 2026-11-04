@@ -1755,7 +1755,13 @@ struct InitialConnectionSettingsSections: View {
             token = appStore.token
             isAddingConnectionProfile = false
             if RelayServiceChoice.fromPairingURL(url) == .mimi, ManagedConnectionSubscriptionView.isEntryVisible {
-                qrScannerPresentation.openManagedConnection()
+                if !wasConfigured || qrScannerPresentation.intent == nil {
+                    // 粘贴没有扫码 Cover，不会触发 onDismiss。由工作台接续开通，
+                    // 也覆盖首台电脑建立后首次连接页被替换的情况。
+                    sessionStore.mimiRelaySetupProfileID = appStore.activeConnectionProfileID
+                } else {
+                    qrScannerPresentation.openManagedConnection()
+                }
             }
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
