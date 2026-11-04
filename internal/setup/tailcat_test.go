@@ -191,3 +191,40 @@ func TestTailcatPairIncludesOnlyPublicManagedHostMetadata(t *testing.T) {
 		t.Fatalf("Mac 二维码不能包含长期 Token 或尚未生成的托管 Grant：%s", result.PairURL)
 	}
 }
+
+func TestTailcatPairCarriesRelayChoiceWithoutAuthorizingIt(t *testing.T) {
+	for _, tc := range []struct{ name, mode, relay, want string }{
+		{"default", "self_hosted", "", "default"},
+		{"custom", "self_hosted", "https://relay.example/map", "custom"},
+		{"mimi", "managed", "", "mimi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := map[string]any{
+				"listen": "127.0.0.1:8787", "auth": map[string]string{"token": "test-token-for-relay-choice"},
+				"tailcat": map[string]any{"mode": tc.mode, "derp_map_url": tc.relay},
+			}
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := TailcatPairWithManagedHost(path, "temporary-pair", "", "", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			link, err := url.Parse(result.PairURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if link.Query().Get("relay_service") != tc.want {
+				t.Fatal("relay choice missing")
+			}
+			if link.Query().Get("managed_pairing_grant") != "" || link.Query().Get("token") != "" {
+				t.Fatal("display choice must not authorize a managed relay")
+			}
+		})
+	}
+}

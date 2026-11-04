@@ -274,6 +274,9 @@ extension SessionStore {
         }
         do {
             _ = try await applyPairingURL(url)
+            if RelayServiceChoice.fromPairingURL(url) == .mimi {
+                mimiRelaySetupProfileID = appStore.activeConnectionProfileID
+            }
             if reportsToFirstConnectionPage {
                 pairingLinkAttempt = .idle
             }
@@ -290,7 +293,7 @@ extension SessionStore {
 
     @discardableResult
     func applyPairingURL(_ url: URL) async throws -> Bool {
-        try await performPreparedConnectionChange {
+        let changed = try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
                try TailcatPairingLink.parse(url) != nil {
                 return try await controller.preparePairingURL(
@@ -301,6 +304,11 @@ extension SessionStore {
             }
             return try await self.appStore.preparePairingURL(url)
         }
+        if (try? TailcatPairingLink.parse(url)) != nil, let profileID = appStore.activeConnectionProfileID {
+            // 旧二维码没有选择信息时清掉旧偏好，不能把新免费配对重新升级为 Mimi。
+            tailcatExperimentController?.selectRelayService(RelayServiceChoice.fromPairingURL(url), profileID: profileID)
+        }
+        return changed
     }
 
     @discardableResult
@@ -330,7 +338,7 @@ extension SessionStore {
 
     @discardableResult
     func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
-        try await performPreparedConnectionChange {
+        let changed = try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
                try TailcatPairingLink.parse(url) != nil {
                 return try await controller.preparePairingURL(
@@ -344,6 +352,11 @@ extension SessionStore {
             }
             return try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
         }
+        if (try? TailcatPairingLink.parse(url)) != nil, let profileID = appStore.activeConnectionProfileID {
+            // 旧二维码没有选择信息时清掉旧偏好，不能把新免费配对重新升级为 Mimi。
+            tailcatExperimentController?.selectRelayService(RelayServiceChoice.fromPairingURL(url), profileID: profileID)
+        }
+        return changed
     }
 
     @discardableResult

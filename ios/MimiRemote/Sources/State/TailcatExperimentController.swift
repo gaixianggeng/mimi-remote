@@ -285,6 +285,7 @@ final class TailcatExperimentController: ObservableObject {
     static let legacyAddressKey = "agentd.tailcatExperiment.address.v1"
     static let diagnosticsKey = "agentd.tailcatExperiment.diagnostics.v1"
 
+    @Published private(set) var relayChoiceRevision = 0
     @Published private(set) var isEnabled: Bool
     @Published private(set) var address: String
     @Published private(set) var publicKey = ""
@@ -1196,6 +1197,17 @@ final class TailcatExperimentController: ObservableObject {
         try tokenStore.deleteTailcatAddress(profileID: profileID)
         try tokenStore.deleteFreeTailcatAddress(profileID: profileID)
         clearRelayActivationRequest(profileID: profileID)
+        defaults.removeObject(forKey: "mimi.relayChoice." + profileID)
+    }
+
+    func relayServiceChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.relayChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    func selectRelayService(_ choice: RelayServiceChoice?, profileID: String) {
+        guard choice != relayServiceChoice(profileID: profileID) else { return }
+        defaults.set(choice?.rawValue, forKey: "mimi.relayChoice." + profileID)
+        relayChoiceRevision &+= 1
     }
 
     func relayActivationRequestID(profileID: String) -> UUID {

@@ -63,6 +63,9 @@ func (p *controlPanel) actionButtonLabel(command uint32) string {
 		return fallbackText(p.tailcatToggleLabel, "开启内置连接")
 	case panelPairNetwork:
 		return "连接方式"
+	case panelRelay:
+		status, _, _ := p.app.tailcatSnapshot()
+		return "中转服务：" + status.relayTitle()
 	}
 	return panelActionLabel(command)
 }
@@ -164,7 +167,7 @@ func tailcatPairingCopy(base pairingCopy, loading bool, failed bool, ready bool)
 		result.Warning = "请稍后点击“刷新二维码”重试，或运行诊断查看 Tailcat 状态。"
 	case ready:
 		result.Badge = "Tailcat · 10 分钟"
-		result.Summary = "Mimi 全部功能免费。用手机扫码即可连接；已开通 Mimi 中转服务的设备会自动启用。"
+		result.Summary = "Mimi 全部功能免费。扫码同步中转选择；选择 Mimi 中转后，在手机完成开通并自动配置。"
 	}
 	return result
 }

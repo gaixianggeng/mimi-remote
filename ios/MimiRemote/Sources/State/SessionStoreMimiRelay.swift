@@ -1,9 +1,11 @@
 import Foundation
 
 extension SessionStore {
-    /// 开通只自动作用于内置连接；用户选过的 Tailscale、局域网和 HTTPS 保持原样。
-    static func shouldAutomaticallyActivateRelay(route: ConnectionProfileRoute?, connected: Bool, entitled: Bool) -> Bool {
-        route == .customTailcat && connected && entitled
+    /// 只有明确选择 Mimi 后才自动配置；开通权益本身不改变用户的线路选择。
+    static func shouldAutomaticallyActivateRelay(
+        route: ConnectionProfileRoute?, connected: Bool, entitled: Bool, selectedMimi: Bool = false
+    ) -> Bool {
+        selectedMimi && route != nil && route?.isManaged == false && connected && entitled
     }
 
     func reconcileMimiRelay(_ entitlements: ManagedConnectionEntitlementStore, retry: Bool = false) {
@@ -19,7 +21,8 @@ extension SessionStore {
         let entitled = ManagedConnectionDevicesView.hasEntitlementForUpgrade(
             status: entitlements.status, grant: entitlements.currentGrant, now: Date()
         )
-        if Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled),
+        if tailcatExperimentController?.relayServiceChoice(profileID: profile.id) == .mimi,
+           Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true),
            ManagedConnectionSubscriptionView.isEntryVisible {
             let key = profile.id + ":" + (entitlements.currentGrant?.entitlement.id ?? "")
             guard mimiRelayAttemptKey != key else { return }
@@ -77,6 +80,7 @@ extension SessionStore {
               let controller = tailcatExperimentController else { return }
         do {
             let context = try ManagedConnectionUpgradeContext(appStore: appStore, client: appStore.client())
+            controller.selectRelayService(.mimi, profileID: context.profile.id)
             mimiRelayProfileID = context.profile.id
             let operationID = UUID()
             mimiRelayOperationID = operationID

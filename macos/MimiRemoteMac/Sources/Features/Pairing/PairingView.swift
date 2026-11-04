@@ -12,6 +12,7 @@ struct PairingView: View {
     @State private var suppressNextNetworkChange = false
     @State private var copyFeedbackTask: Task<Void, Never>?
     @State private var contentOverflows = false
+    @State private var showsRelaySelection = false
 
     /// 窗口可以被拉宽，但这一页只有一件事：扫码。内容始终是一列固定宽度，不跟着窗口摊开。
     static let columnWidth: CGFloat = 340
@@ -24,6 +25,14 @@ struct PairingView: View {
                 networks: [.tailcat, .tailscale, .localNetwork]
             )
             .padding(.top, 20)
+            if selectedNetwork == .tailcat {
+                Button {
+                    showsRelaySelection = true
+                } label: {
+                    Label("中转服务：" + relayTitle, systemImage: "network")
+                }
+                .disabled(store.isBusy || isRefreshing)
+            }
             Group {
                 if !store.canPair || store.isBusy {
                     PairingUnavailableState(
@@ -91,6 +100,21 @@ struct PairingView: View {
         .onDisappear {
             copyFeedbackTask?.cancel()
         }
+        .sheet(isPresented: $showsRelaySelection) {
+            VStack {
+                Form {
+                    TailcatRelaySettings(store: store, onApplied: { showsRelaySelection = false })
+                }
+                .formStyle(.grouped)
+                Button("关闭") { showsRelaySelection = false }.padding(.bottom)
+            }
+            .frame(width: 560, height: 500)
+        }
+    }
+
+    private var relayTitle: String {
+        if store.tailcatIsManaged { return "Mimi 中转" }
+        return store.tailcatDERPMapURL.isEmpty ? "默认 Tailcat 自带" : "使用自己的"
     }
 
     private func pairingContent(_ pairing: PairingInfo) -> some View {

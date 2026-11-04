@@ -285,6 +285,7 @@ final class SessionStore: ObservableObject {
     let tailcatExperimentController: TailcatExperimentController?
     @Published var isActivatingMimiRelay = false
     @Published var mimiRelayNotice: String?
+    @Published var mimiRelaySetupProfileID: String?
     var mimiRelayTask: Task<Void, Never>?
     var mimiRelayOperationID: UUID?
     var mimiRelayProfileID: String?

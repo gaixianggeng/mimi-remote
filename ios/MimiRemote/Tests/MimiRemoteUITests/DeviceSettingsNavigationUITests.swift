@@ -39,7 +39,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         capture("devices-landscape")
         openMe()
         XCTAssertTrue(element("settings.tokenUsage").waitForExistence(timeout: 10))
-        XCTAssertEqual(element("settings.connectionManagement").exists, !expectsCompactNavigation)
+        XCTAssertFalse(element("settings.connectionManagement").exists)
+        XCTAssertFalse(element("settings.managedSubscription").exists)
         openDevices()
         XCUIDevice.shared.orientation = .portrait
         Thread.sleep(forTimeInterval: 2)
@@ -325,10 +326,12 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let managed = element("settings.connection.managedConnection")
         scrollTo(managed)
         managed.tap()
-        // 设备页只进线路与设备；未订阅时从这里跳到订阅页（#891）。
+        // 三种中转只从设备页进入，Mimi 直接进入开通流程。
         XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
         capture("managed-connection-devices")
-        let subscribe = element("settings.managedConnectionDevices.subscribe")
+        XCTAssertTrue(element("settings.relay.default").exists)
+        XCTAssertTrue(element("settings.relay.custom").exists)
+        let subscribe = element("settings.relay.mimi")
         XCTAssertTrue(subscribe.waitForExistence(timeout: 12))
         subscribe.tap()
         XCTAssertTrue(element("settings.managedSubscription.detail").waitForExistence(timeout: 12))
@@ -352,7 +355,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
             XCTAssertFalse(element("settings.devices.backToMe").exists)
         } else {
             XCTAssertTrue(element("sidebar.me").waitForExistence(timeout: 8))
-            XCTAssertTrue(element("settings.devices.backToMe").waitForExistence(timeout: 8))
+            XCTAssertTrue(element("sidebar.devices").waitForExistence(timeout: 8))
+            XCTAssertFalse(element("settings.devices.backToMe").exists)
         }
     }
 
@@ -379,10 +383,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     private func openDevices() {
         if expectsCompactNavigation { tab("devices").tap() }
         else {
-            openMe()
-            let connection = element("settings.connectionManagement")
-            scrollTo(connection)
-            connection.tap()
+            let devices = element("sidebar.devices")
+            XCTAssertTrue(devices.waitForExistence(timeout: 8))
+            devices.tap()
         }
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
     }

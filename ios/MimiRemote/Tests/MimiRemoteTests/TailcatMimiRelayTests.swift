@@ -3,14 +3,40 @@ import XCTest
 
 @MainActor
 extension TailcatExperimentRoutingTests {
-    func testRelayActivationPreservesExplicitNetworkChoices() {
-        for route in [ConnectionProfileRoute.lan, .tailscale, .https, .managedTailcat] {
+    func testRelayActivationRequiresExplicitSelectionAndPreservesFreeChoice() {
+        for route in [ConnectionProfileRoute.lan, .tailscale, .https, .customTailcat] {
             XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: true, entitled: true))
+            XCTAssertTrue(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: true, entitled: true, selectedMimi: true))
+            XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: false, entitled: true, selectedMimi: true))
+            XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: true, entitled: false, selectedMimi: true))
         }
-        XCTAssertTrue(SessionStore.shouldAutomaticallyActivateRelay(route: .customTailcat, connected: true, entitled: true))
-        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: .customTailcat, connected: false, entitled: true))
-        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: .customTailcat, connected: true, entitled: false))
-        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: nil, connected: true, entitled: true))
+        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: nil, connected: true, entitled: true, selectedMimi: true))
+        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: .managedTailcat, connected: true, entitled: true, selectedMimi: true))
+    }
+
+    func testRelayChoiceIsScopedToComputerAndRemovedWithItsRoute() throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.selectRelayService(.mimi, profileID: "first")
+        fixture.controller.selectRelayService(.custom, profileID: "second")
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "first"), .mimi)
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "second"), .custom)
+        XCTAssertNil(fixture.controller.relayServiceChoice(profileID: "third"))
+        fixture.controller.selectRelayService(.tailcatDefault, profileID: "first")
+        XCTAssertEqual(fixture.defaults.string(forKey: "mimi.relayChoice.first"), "default")
+        try fixture.controller.deleteProfileRoute(profileID: "first")
+        XCTAssertNil(fixture.controller.relayServiceChoice(profileID: "first"))
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "second"), .custom)
+    }
+
+    func testPairingRelayChoiceDoesNotTreatOtherTransportsAsMimi() throws {
+        for choice in RelayServiceChoice.allCases {
+            let url = try XCTUnwrap(URL(string: "mimiremote://pair?transport=tailcat&relay_service=" + choice.rawValue))
+            XCTAssertEqual(RelayServiceChoice.fromPairingURL(url), choice)
+        }
+        for suffix in ["transport=lan&relay_service=mimi", "transport=tailcat", "transport=tailcat&relay_service=unknown"] {
+            XCTAssertNil(RelayServiceChoice.fromPairingURL(try XCTUnwrap(URL(string: "mimiremote://pair?" + suffix))))
+        }
     }
 
     func testRelayOperationPollsAcceptedRequestWithoutStartingAnother() async throws {

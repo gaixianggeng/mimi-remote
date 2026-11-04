@@ -5,263 +5,165 @@ import SwiftUI
 private enum TailcatRelayMode: String, CaseIterable, Identifiable {
     case tailcatDefault
     case custom
+    case mimi
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .tailcatDefault: "Tailcat 默认"
-        case .custom: "自定义"
+        case .tailcatDefault: "默认 Tailcat 自带"
+        case .custom: "使用自己的"
+        case .mimi: "Mimi 中转"
         }
     }
 }
 
-private enum RelayInputField: Hashable {
-    case derpMapURL
-}
-
-/// Advanced Tailcat settings remain in Settings, not a separate experiment window.
+/// 三种中转共用一个入口；内部连接模式由配置动作处理，不要求用户先切换模式。
 struct TailcatRelaySettings: View {
     let store: HostStore
+    var onApplied: (() -> Void)? = nil
 
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsTailcatReset = false
     @State private var confirmsRelayChange = false
-    @State private var confirmsExitManaged = false
+    @State private var isApplyingRelay = false
     @State private var relayMode: TailcatRelayMode = .tailcatDefault
     @State private var customDERPMapURL = ""
-    @FocusState private var focusedInputField: RelayInputField?
+    @FocusState private var focusesRelayURL: Bool
 
     var body: some View {
-        Group {
-            managedConnectionSection
-
-            Section("Tailcat 中继与配对") {
-                Text(store.tailcatStatusDetail).font(.caption).foregroundStyle(.secondary)
-                if store.tailcatIsManaged {
-                    // 托管模式的中继由 Mimi 管理，agentd 会拒绝手动修改；这里不给入口。
-                    LabeledContent("当前中继") {
-                        Text("Mimi 中转")
-                    }
-                    Text("Mimi 中转由服务统一配置。如需自定义免费中继，请先停用本机 Mimi 中转。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    relayConfigurationRows
+        Section("中转服务") {
+            Picker("中转服务", selection: $relayMode) {
+                ForEach(TailcatRelayMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
                 }
-
-                HStack {
-                    Button("生成配对二维码") {
-                        Task {
-                            await store.refreshPairing(network: .tailcat)
-                            if store.pairingNetwork == .tailcat {
-                                openWindow(id: AppWindow.pairing.rawValue)
-                            }
-                        }
-                    }
-                    .disabled(!store.canPair || !store.availablePairingNetworks.contains(.tailcat) || store.isBusy)
-
-                    Spacer()
-
-                    Button("重置 Tailcat…", role: .destructive) {
-                        confirmsTailcatReset = true
-                    }
-                    .disabled(!store.canChangeTailcat || !store.tailcatEnabled)
-                }
-
-                Text("重置会更换主机身份并取消所有 Tailcat 配对。Tailscale、局域网和当前 agentd 会话不受影响。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+            .pickerStyle(.segmented)
+            .disabled(store.isBusy || isApplyingRelay)
+
+            switch relayMode {
+            case .tailcatDefault:
+                Text("免费使用 Tailcat 自带中转，无需配置。Mimi 全部功能均可使用。")
+                    .font(.caption).foregroundStyle(.secondary)
+            case .custom:
+                TextField("DERP Map HTTPS 地址", text: $customDERPMapURL)
+                    .textFieldStyle(.roundedBorder)
+                    .environment(\.layoutDirection, .leftToRight)
+                    .focused($focusesRelayURL)
+                Text("填写你自己部署的中转配置地址。更换后，手机需要重新扫码。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let relayValidationMessage {
+                    Text(relayValidationMessage).font(.caption).foregroundStyle(.red)
+                }
+            case .mimi:
+                Text("用手机扫描接下来的二维码，通过邀请码或订阅开通，自动完成配置。已开通的手机可直接连接。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            LabeledContent("当前中转", value: currentRelayMode.title)
+            HStack {
+                Button(relayMode == .mimi ? "继续并扫码开通" : "使用此中转") {
+                    if needsReconnectionConfirmation {
+                        confirmsRelayChange = true
+                    } else {
+                        Task { await applySelection() }
+                    }
+                }
+                .disabled(!store.canChangeTailcat || isApplyingRelay || relayValidationMessage != nil)
+                if store.isUpdatingTailcat { ProgressView().controlSize(.small) }
+            }
+            if let error = store.tailcatError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            } else if let notice = store.tailcatNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        Section("配对与恢复") {
+            Button("生成配对二维码") { Task { await showPairing() } }
+                .disabled(!store.canPair || !store.availablePairingNetworks.contains(.tailcat) || store.isBusy)
+            Button("重置内置连接…", role: .destructive) { confirmsTailcatReset = true }
+                .disabled(!store.canChangeTailcat || !store.tailcatEnabled)
         }
         .task {
             await store.refreshTailcatStatus()
-            syncRelayConfiguration()
-            focusDERPMapInputIfNeeded()
+            relayMode = currentRelayMode
+            if !store.tailcatIsManaged { customDERPMapURL = store.tailcatDERPMapURL }
         }
-        .onChange(of: relayMode) { _, _ in
-            focusDERPMapInputIfNeeded()
+        .onChange(of: relayMode) { _, mode in
+            focusesRelayURL = mode == .custom
         }
-        .onChange(of: store.tailcatDERPMapURL) { _, _ in
-            syncRelayConfiguration()
-        }
-        .confirmationDialog(
-            "退出 Mimi 中转服务？",
-            isPresented: $confirmsExitManaged,
-            titleVisibility: .visible
-        ) {
-            Button("停用本机 Mimi 中转", role: .destructive) {
-                Task { await store.setTailcatManagedMode(false) }
-            }
+        .confirmationDialog("更换中转服务？", isPresented: $confirmsRelayChange, titleVisibility: .visible) {
+            Button("更换并重新配对") { Task { await applySelection() } }
         } message: {
-            Text("停用会影响本机所有使用 Mimi 中转的设备。新版手机会尝试已保存的免费连接；没有备用线路的旧设备需要重新扫码。")
+            Text("本机的内置连接会短暂重连，使用该线路的手机可能需要重新扫码。Tailscale 和局域网连接不受影响。")
         }
-        .confirmationDialog(
-            "重置 Tailcat？",
-            isPresented: $confirmsTailcatReset,
-            titleVisibility: .visible
-        ) {
-            Button("重置 Tailcat", role: .destructive) {
-                Task { await store.resetTailcat() }
-            }
+        .confirmationDialog("重置内置连接？", isPresented: $confirmsTailcatReset, titleVisibility: .visible) {
+            Button("重置内置连接", role: .destructive) { Task { await store.resetTailcat() } }
         } message: {
-            Text("所有已配对设备需要重新扫码。这个操作不会关闭 Tailscale。")
-        }
-        .confirmationDialog(
-            "应用新的 Tailcat 中继？",
-            isPresented: $confirmsRelayChange,
-            titleVisibility: .visible
-        ) {
-            Button(store.tailcatEnabled ? "应用并重新配对" : "保存中继配置") {
-                Task { await store.configureTailcatDERPMap(selectedDERPMapURL) }
-            }
-        } message: {
-            if store.tailcatEnabled {
-                Text("Tailcat 会短暂重连，并取消现有 Tailcat 配对。失败时会恢复原中继。Tailscale 和局域网连接不受影响。")
-            } else {
-                Text("配置会在下次启用 Tailcat 时生效。Tailscale 和局域网连接不受影响。")
-            }
+            Text("所有通过内置连接配对的设备需要重新扫码。Tailscale 和局域网连接不受影响。")
         }
     }
 
-    /// 服务资格在手机上管理；电脑只展示本机能力，并保留高级停用入口。
-    private var managedConnectionSection: some View {
-        Section("Mimi 中转服务") {
-            LabeledContent("连接方式") {
-                Text(store.tailcatIsManaged ? "Mimi 中转已启用 · 免费连接仍可用" : "免费线路")
-            }
-
-            Text(
-                store.tailcatIsManaged
-                    ? "本机已准备好 Mimi 中转。实际是否经过中转取决于网络，能够直连时优先直连。"
-                    : "Mimi 全部功能免费。先用内置连接扫码；在手机「我的 → Mimi 中转服务」开通后，这台电脑会自动启用。"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-            HStack {
-                if store.tailcatIsManaged {
-                    Button("停用本机 Mimi 中转…", role: .destructive) {
-                        confirmsExitManaged = true
-                    }
-                    .disabled(!store.canChangeTailcat)
-                }
-
-                Spacer()
-
-                if store.isUpdatingTailcat {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var relayConfigurationRows: some View {
-        Picker("中继节点", selection: $relayMode) {
-            ForEach(TailcatRelayMode.allCases) { mode in
-                Text(mode.title).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-
-        if relayMode == .custom {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("DERP Map HTTPS 地址")
-
-                TextField(
-                    "DERP Map HTTPS 地址",
-                    text: $customDERPMapURL,
-                    prompt: Text("粘贴完整的 HTTPS 地址")
-                )
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.leading)
-                .environment(\.layoutDirection, .leftToRight)
-                .focused($focusedInputField, equals: .derpMapURL)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let relayValidationMessage {
-                Text(relayValidationMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-
-        LabeledContent("当前中继") {
-            Text(currentRelayTitle)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(store.tailcatDERPMapURL)
-        }
-
-        HStack {
-            Button("应用中继配置…") {
-                confirmsRelayChange = true
-            }
-            .disabled(
-                !store.canChangeTailcat ||
-                    relayValidationMessage != nil ||
-                    !relayConfigurationChanged
-            )
-
-            Spacer()
-        }
-
-        Text("DERP Map 是描述可用中继节点的配置地址。自定义地址必须使用 HTTPS。Tailcat 关闭时只保存地址，启用后才验证连通性。")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+    private var currentRelayMode: TailcatRelayMode {
+        if store.tailcatIsManaged { return .mimi }
+        return store.tailcatDERPMapURL.isEmpty ? .tailcatDefault : .custom
     }
 
     private var selectedDERPMapURL: String {
-        relayMode == .tailcatDefault
-            ? ""
-            : customDERPMapURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        relayMode == .tailcatDefault ? "" : customDERPMapURL.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var relayConfigurationChanged: Bool {
-        selectedDERPMapURL != store.tailcatDERPMapURL
-    }
-
-    private var currentRelayTitle: String {
-        store.tailcatDERPMapURL.isEmpty ? "Tailcat 默认" : store.tailcatDERPMapURL
+    private var needsReconnectionConfirmation: Bool {
+        store.tailcatEnabled && relayMode != .mimi &&
+            (store.tailcatIsManaged || selectedDERPMapURL != store.tailcatDERPMapURL)
     }
 
     private var relayValidationMessage: String? {
         guard relayMode == .custom else { return nil }
         let value = selectedDERPMapURL
         guard !value.isEmpty else { return "请输入完整的 DERP Map HTTPS 地址。" }
+        // 官方地址要求开通授权，不能作为自建地址保存后才发现错误并断开现有配置。
+        if value == "https://api.code89757.com/v1/relay/tailcat-derp-map.json" {
+            return "使用 Mimi 中转时，请直接选择“Mimi 中转”。"
+        }
         guard value.count <= 2048,
               let components = URLComponents(string: value),
               components.scheme?.lowercased() == "https",
               components.host?.isEmpty == false,
-              components.user == nil,
-              components.password == nil,
-              components.fragment == nil
-        else {
-            return "请输入不含账号、密码或片段的完整 HTTPS 地址。"
-        }
+              components.user == nil, components.password == nil, components.fragment == nil
+        else { return "请输入不含账号、密码或片段的完整 HTTPS 地址。" }
         return nil
     }
 
-    private func syncRelayConfiguration() {
-        let configuredURL = store.tailcatDERPMapURL
-        relayMode = configuredURL.isEmpty ? .tailcatDefault : .custom
-        if !configuredURL.isEmpty {
-            customDERPMapURL = configuredURL
+    private func applySelection() async {
+        guard !isApplyingRelay else { return }
+        isApplyingRelay = true
+        defer { isApplyingRelay = false }
+        let selectedMode = relayMode
+        let selectedURL = selectedDERPMapURL
+        if selectedMode == .mimi {
+            await store.setTailcatManagedMode(true)
+            guard store.tailcatError == nil, store.tailcatIsManaged else { return }
+            if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
+        } else {
+            // 先退出 Mimi 的配置，再保存用户选择；每一步都依据 agentd 回读，失败即停止。
+            if store.tailcatIsManaged {
+                await store.setTailcatManagedMode(false)
+                guard store.tailcatError == nil, !store.tailcatIsManaged else { return }
+            }
+            await store.configureTailcatDERPMap(selectedURL)
         }
+        guard store.tailcatError == nil else { return }
+        if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
+        guard store.tailcatError == nil else { return }
+        if store.tailcatEnabled { await showPairing() }
+        if store.lastError == nil { onApplied?() }
     }
 
-    private func focusDERPMapInputIfNeeded() {
-        guard relayMode == .custom else {
-            focusedInputField = nil
-            return
-        }
-        // 菜单栏 App 的独立窗口出现后，再把键盘焦点交给输入框，避免焦点留在 MenuBarExtra。
-        DispatchQueue.main.async {
-            focusedInputField = .derpMapURL
+    private func showPairing() async {
+        await store.refreshPairing(network: .tailcat)
+        if store.pairingNetwork == .tailcat, store.pairing != nil {
+            openWindow(id: AppWindow.pairing.rawValue)
         }
     }
 }

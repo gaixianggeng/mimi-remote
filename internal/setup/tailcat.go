@@ -180,6 +180,14 @@ func TailcatPairWithManagedHost(
 	}
 	query := parsed.Query()
 	query.Set("transport", "tailcat")
+	// 仅用于把电脑上的选择带到 App；中转授权仍由有效权益和配对签名决定。
+	relayService := "default"
+	if cfg.Tailcat.ConnectionMode() == config.TailcatModeManaged {
+		relayService = "mimi"
+	} else if strings.TrimSpace(cfg.Tailcat.DERPMapURL) != "" {
+		relayService = "custom"
+	}
+	query.Set("relay_service", relayService)
 	query.Set("tailcat_pair_address", pairAddress)
 	macInstallationID = strings.TrimSpace(macInstallationID)
 	macTailcatPublicKey = strings.TrimSpace(macTailcatPublicKey)

@@ -77,7 +77,7 @@ const (
 	defaultDPI    = 96
 
 	controlPanelLogicalWidth  = 600
-	controlPanelLogicalHeight = 583
+	controlPanelLogicalHeight = 630
 )
 
 const (
@@ -177,6 +177,15 @@ type panelDrawItem struct {
 
 type controlPanel struct {
 	app *trayApplication
+
+	relayEditing     bool
+	relayPicker      uintptr
+	relayTitle       uintptr
+	relayDescription uintptr
+	relayInput       uintptr
+	relayApply       uintptr
+	relayCancel      uintptr
+	relayControls    []uintptr
 
 	window uintptr
 	dpi    uint32
@@ -495,6 +504,9 @@ func (p *controlPanel) createFonts() {
 }
 
 func (p *controlPanel) createControls(instance uintptr) error {
+	if err := p.createRelayControls(instance); err != nil {
+		return err
+	}
 	p.titleLabel = p.createControl(instance, "STATIC", "Mimi Remote", wsChild|wsVisible|ssLeft|ssNoPrefix, 70, 16, 160, 30, 0)
 	p.appVersionLabel = p.createControl(instance, "STATIC", "应用 "+formatReleaseVersion(releaseVersion), wsChild|wsVisible|ssLeft|ssNoPrefix, 238, 25, 140, 22, 0)
 	p.subtitleLabel = p.createControl(instance, "STATIC", "Windows 控制面板", wsChild|wsVisible|ssLeft|ssNoPrefix, 70, 45, 300, 22, 0)
@@ -529,7 +541,7 @@ func (p *controlPanel) createControls(instance uintptr) error {
 	p.doctorFix = p.createControl(instance, "BUTTON", "诊断并修复", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 292, 399, 120, 50, panelDoctorFix)
 	p.logs = p.createControl(instance, "BUTTON", "查看日志", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 422, 399, 120, 50, panelLogs)
 
-	p.footerLabel = p.createControl(instance, "STATIC", "关闭窗口后，Mimi Remote 会继续在系统托盘中运行。", wsChild|wsVisible|ssLeft|ssNoPrefix, 24, 494, 540, 22, 0)
+	p.footerLabel = p.createControl(instance, "STATIC", "关闭窗口后，Mimi Remote 会继续在系统托盘中运行。", wsChild|wsVisible|ssLeft|ssNoPrefix, 24, 544, 540, 22, 0)
 	p.pairTitle = p.createControl(instance, "STATIC", "扫码连接设备", wsChild|ssLeft|ssNoPrefix, 290, 100, 250, 30, 0)
 	p.pairSummary = p.createControl(instance, "STATIC", "正在生成安全的短期配对二维码…", wsChild|ssLeft|ssNoPrefix, 290, 137, 250, 44, 0)
 	p.pairEndpoint = p.createControl(instance, "STATIC", "连接地址：—", wsChild|ssLeft|ssNoPrefix, 290, 198, 250, 22, 0)
@@ -573,6 +585,9 @@ func (p *controlPanel) createControls(instance uintptr) error {
 }
 
 func (p *controlPanel) applyFonts() {
+	for _, control := range append([]uintptr{p.relayPicker}, p.relayControls...) {
+		setControlPanelFont(control, p.normalFont)
+	}
 	for _, control := range []uintptr{
 		p.titleLabel, p.appVersionLabel, p.subtitleLabel, p.badgeLabel, p.statusDotLabel, p.statusLabel, p.summaryLabel,
 		p.endpointLabel, p.endpointValue, p.versionLabel, p.versionValue,
@@ -605,6 +620,7 @@ func (p *controlPanel) applyFonts() {
 }
 
 func (p *controlPanel) layoutControls() {
+	p.layoutRelayControls()
 	type layout struct {
 		control             uintptr
 		x, y, width, height int
@@ -640,7 +656,7 @@ func (p *controlPanel) layoutControls() {
 		{p.doctor, 162, 399, 120, 50},
 		{p.doctorFix, 292, 399, 120, 50},
 		{p.logs, 422, 399, 120, 50},
-		{p.footerLabel, 24, 494, 540, 22},
+		{p.footerLabel, 24, 544, 540, 22},
 		{p.pairTitle, 290, 100, 250, 30},
 		{p.pairSummary, 290, 137, 250, 44},
 		{p.pairEndpoint, 290, 198, 250, 22},
@@ -728,6 +744,13 @@ func setControlPanelFont(control uintptr, font uintptr) {
 }
 
 func (p *controlPanel) syncFromApplication() {
+	tailcat, _, _ := p.app.tailcatSnapshot()
+	setControlPanelText(p.relayPicker, "中转服务："+tailcat.relayTitle())
+	setControlPanelEnabled(p.relayPicker, p.pairNetworkEnabled())
+	if p.relayEditing {
+		setControlPanelEnabled(p.relayApply, p.pairNetworkEnabled())
+		return
+	}
 	p.app.mu.RLock()
 	status := p.app.status
 	statusErr := p.app.statusErr
@@ -774,6 +797,9 @@ func (p *controlPanel) syncFromApplication() {
 }
 
 func (p *controlPanel) showDashboardView() {
+	p.relayEditing = false
+	setControlPanelVisible(p.relayControls, false)
+	setControlPanelVisible([]uintptr{p.relayPicker}, true)
 	if p == nil || p.window == 0 {
 		return
 	}
@@ -785,6 +811,9 @@ func (p *controlPanel) showDashboardView() {
 }
 
 func (p *controlPanel) showPairingView(preferTailcat bool) {
+	p.relayEditing = false
+	setControlPanelVisible(p.relayControls, false)
+	setControlPanelVisible([]uintptr{p.relayPicker}, true)
 	if p == nil || p.window == 0 {
 		return
 	}
@@ -1205,6 +1234,9 @@ func controlPanelWindowProc(window uintptr, msg uint32, wParam uintptr, lParam u
 	}
 	panel := app.panel
 	switch msg {
+	case wmPanelRelayConfigured:
+		panel.showPairingView(true)
+		return 0
 	case wmPanelPairReady:
 		panel.finishPairingRefresh()
 		return 0
@@ -1284,7 +1316,9 @@ func (p *controlPanel) paint(window uintptr) {
 	if p.app.icon != 0 {
 		procPanelDrawIconEx.Call(dc, uintptr(p.scale(24)), uintptr(p.scale(18)), p.app.icon, uintptr(p.scale(34)), uintptr(p.scale(34)), 0, 0, diNormal)
 	}
-	if p.pairingView {
+	if p.relayEditing {
+		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 359), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
+	} else if p.pairingView {
 		drawPanelRoundedRect(dc, p.scaledRect(16, 76, 568, 359), p.scale32(16), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
 		drawPanelRoundedRect(dc, p.scaledRect(32, 92, 274, 343), p.scale32(12), rgbColor(255, 255, 255), rgbColor(232, 232, 236))
 		p.drawPairingQRCode(dc, p.scaledRect(46, 110, 260, 324))
@@ -1296,7 +1330,7 @@ func (p *controlPanel) paint(window uintptr) {
 		drawPanelLine(dc, p.scale32(48), p.scale32(254), p.scale32(536), p.scale32(254), rgbColor(229, 229, 233), max(1, p.scale(1)))
 		drawPanelLine(dc, p.scale32(298), p.scale32(160), p.scale32(298), p.scale32(281), rgbColor(229, 229, 233), max(1, p.scale(1)))
 	}
-	drawPanelRoundedRect(dc, p.scaledRect(16, 373, 568, 473), p.scale32(14), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
+	drawPanelRoundedRect(dc, p.scaledRect(16, 373, 568, 525), p.scale32(14), rgbColor(255, 255, 255), rgbColor(229, 229, 234))
 	drawPanelRoundedRect(dc, p.scaledRect(430, 20, 560, 54), p.scale32(17), p.statusBackground, p.statusBackground)
 }
 
@@ -1433,6 +1467,12 @@ func (p *controlPanel) drawActionButton(item *panelDrawItem) {
 
 func panelActionLabel(command uint32) string {
 	switch command {
+	case panelRelay:
+		return "中转服务…"
+	case panelRelayApply:
+		return "使用此中转"
+	case panelRelayCancel:
+		return "取消"
 	case panelRefresh:
 		return "刷新状态"
 	case panelStart:
@@ -1603,6 +1643,13 @@ func (p *controlPanel) updateStatusBrush(color uint32) {
 
 func (p *controlPanel) dispatch(command uint32) {
 	switch command {
+	case panelRelay:
+		p.chooseRelayService()
+	case panelRelayApply:
+		p.applyCustomRelay()
+	case panelRelayCancel:
+		p.showDashboardView()
+		p.syncFromApplication()
 	case panelRefresh:
 		p.app.refreshStatusInteractive()
 	case panelStart:

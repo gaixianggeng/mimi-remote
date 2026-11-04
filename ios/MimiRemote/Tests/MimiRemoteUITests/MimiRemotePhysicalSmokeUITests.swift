@@ -311,11 +311,9 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             XCTAssertTrue(entry.waitForExistence(timeout: 10) || scan.exists)
             return
         }
-        try openSettings()
-
-        let connection = app.descendant(identifier: "settings.connectionManagement")
-        XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
-        connection.tap()
+        let devicesSidebar = app.descendant(identifier: "sidebar.devices")
+        XCTAssertTrue(devicesSidebar.waitForExistence(timeout: 8), "侧栏应提供独立设备入口")
+        devicesSidebar.tap()
     }
 
     /// 设备首页已有电脑时，扫码和安装说明都在添加电脑页；首页就是添加流程时什么都不用做。
@@ -721,11 +719,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
                 || activityUnavailable.waitForExistence(timeout: 1),
             "Token 模块应展示真实点格数据或诚实的不可用状态"
         )
-        if app.descendant(identifier: "compactTab.devices").exists {
-            XCTAssertFalse(macDevices.exists, "四 Tab 中设备管理已独立")
-        } else {
-            XCTAssertTrue(macDevices.waitForExistence(timeout: 4), "横屏我的保留设备入口")
-        }
+        XCTAssertFalse(macDevices.exists, "设备管理只保留在设备页")
         XCTAssertTrue(appearance.waitForExistence(timeout: 4), "设置页应展示偏好设置")
 
         XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
@@ -1541,10 +1535,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             currentConnectionScan.tap()
         } else {
             try enterWorkbenchIfNeeded()
-            try openSettings()
-            let connection = app.descendant(identifier: "settings.connectionManagement")
-            XCTAssertTrue(scrollUntilHittable(connection), "设置页应提供 Mac 连接管理入口")
-            connection.tap()
+            try openConnectionSettings()
             openAddComputerIfNeeded()
             let scan = app.descendant(identifier: "settings.connection.scanQRCode")
             XCTAssertTrue(scrollUntilHittable(scan, maximumSwipes: 4), "添加电脑页应提供二维码扫码入口")
@@ -1919,18 +1910,16 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
     }
 
-    /// Mac 连接在紧凑布局里是独立的「设备」Tab，「我的」页不再重复这个入口；
-    /// 宽屏侧栏布局才从「我的」页的连接卡片进入（#678）。
+    /// 紧凑布局用设备 Tab，宽屏用侧栏设备入口。
     private func openMacConnection() throws {
         try enterWorkbenchIfNeeded()
         let devicesTab = app.descendant(identifier: "compactTab.devices")
         if devicesTab.waitForExistence(timeout: 3) {
             devicesTab.tap()
         } else {
-            try openSettings()
-            let macConnection = app.descendant(identifier: "settings.connectionManagement")
-            XCTAssertTrue(macConnection.waitForExistence(timeout: 5), "我的页面应提供 Mac 连接入口")
-            macConnection.tap()
+            let devicesSidebar = app.descendant(identifier: "sidebar.devices")
+            XCTAssertTrue(devicesSidebar.waitForExistence(timeout: 5), "侧栏应提供独立设备入口")
+            devicesSidebar.tap()
         }
         XCTAssertTrue(
             app.descendant(identifier: "settings.devices.page").waitForExistence(timeout: 8),

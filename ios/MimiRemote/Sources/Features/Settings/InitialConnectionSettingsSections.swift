@@ -55,6 +55,7 @@ enum ConnectionQRCodeScannerHost: String {
     case connectionSettings
     case addComputer
     case managedConnection
+    case relaySubscription
 }
 
 @MainActor
@@ -450,7 +451,6 @@ struct InitialConnectionSettingsSections: View {
             }
 
             connectionErrorMessageRow(displayErrorMessage, tokens: tokens)
-            managedConnectionLANHintRows(tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -815,22 +815,17 @@ struct InitialConnectionSettingsSections: View {
     /// 所以这里只展示当前方式，不提供切换；高级配置在行内导航的 Tailcat 页里。
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
-        if ManagedConnectionSubscriptionView.isEntryVisible {
-            // 设备页只进线路与设备；购买与订阅在「我的」（#891）。
-            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.relay_short_title"),
-                    value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
-                        ? tailcatController.state.connectionMethodSummary
-                        : managedConnectionEntitlementStore.currentGrant != nil
-                            ? L10n.text("ui.managed_connection_pending_connect")
-                            : L10n.text("ui.managed_connection_recommended_value"),
-                    systemImage: "network"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.connection.managedConnection")
+        NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.relay_service_title"),
+                value: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")?.title
+                    ?? (appStore.activeConnectionProfile?.connectionRoute.isManaged == true
+                        ? RelayServiceChoice.mimi.title : nil),
+                systemImage: "network"
+            )
         }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.connection.managedConnection")
 
         if appStore.isConfigured {
             NavigationLink(value: SettingsDestination.tailcat) {
@@ -1079,10 +1074,10 @@ struct InitialConnectionSettingsSections: View {
 
             manualConnectionRow(tokens: tokens)
 
-            // 还没连上时进不了「我的」，首启页自己给出支持页入口。
+            // 可选中转统一放在设备流程，不把服务开通混进必做的扫码步骤。
             if ManagedConnectionSubscriptionView.isEntryVisible {
-                NavigationLink(value: SettingsDestination.managedConnection) {
-                    Label(L10n.text("ui.relay_have_invite"), systemImage: "ticket")
+                NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+                    Label(L10n.text("ui.relay_service_optional"), systemImage: "network")
                 }
                 .accessibilityIdentifier("settings.firstConnection.invite")
             }
@@ -1759,6 +1754,9 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
+            if RelayServiceChoice.fromPairingURL(url) == .mimi, ManagedConnectionSubscriptionView.isEntryVisible {
+                qrScannerPresentation.openManagedConnection()
+            }
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in

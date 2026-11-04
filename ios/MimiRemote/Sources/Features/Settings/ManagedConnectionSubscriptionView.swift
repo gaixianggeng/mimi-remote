@@ -33,14 +33,15 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var tailcatController: TailcatExperimentController
     @State private var restoreResult: ManagedConnectionEntitlementStore.RestoreResult?
     @State private var isManagingSubscription = false
     @State private var redemptionCode = ""
+    @State private var isScanningConnection = false
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
@@ -60,14 +61,9 @@ struct ManagedConnectionSubscriptionView: View {
             }
             if isEntitled {
                 if appStore.activeConnectionProfile == nil {
-                    Section { Text(L10n.text("ui.managed_redemption_first_connection")) }
-                        .settingsGroupRowStyle()
-                } else if let route = appStore.activeConnectionProfile?.connectionRoute,
-                          route != .customTailcat, !route.isManaged {
                     Section {
-                        Text(L10n.text("ui.relay_preserve_connection"))
-                        Button(L10n.text("ui.managed_devices_upgrade_current")) { sessionStore.activateMimiRelay() }
-                            .disabled(!appStore.connectionStatus.isConnected || sessionStore.isActivatingMimiRelay)
+                        Text(L10n.text("ui.managed_redemption_first_connection"))
+                        scanComputerButton
                     }
                     .settingsGroupRowStyle()
                 }
@@ -75,7 +71,26 @@ struct ManagedConnectionSubscriptionView: View {
                     Section { Text(notice).fixedSize(horizontal: false, vertical: true) }
                         .settingsGroupRowStyle()
                 }
-                if appStore.activeConnectionProfile != nil { subscribedActionsSection }
+                if let profile = appStore.activeConnectionProfile {
+                    Section {
+                        if profile.connectionRoute.isManaged {
+                            Label(L10n.text("ui.relay_enabled"), systemImage: "checkmark.circle")
+                        } else if sessionStore.isActivatingMimiRelay {
+                            ProgressView(L10n.text("ui.relay_activating"))
+                        } else if !appStore.connectionStatus.isConnected {
+                            Text(L10n.text("ui.relay_connect_to_configure"))
+                            scanComputerButton
+                        } else {
+                            Button(L10n.text("ui.retry")) {
+                                sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+                            }
+                        }
+                    }
+                    .settingsGroupRowStyle()
+                }
+                if !entitlementStore.isRedemptionEntitlement {
+                    Section { manageSubscriptionButton }.settingsGroupRowStyle()
+                }
                 ManagedConnectionDeviceListSection()
             }
             if !isEntitled {
@@ -93,9 +108,30 @@ struct ManagedConnectionSubscriptionView: View {
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
         .task {
+            if let id = appStore.activeConnectionProfileID {
+                tailcatController.selectRelayService(.mimi, profileID: id)
+            }
             if entitlementStore.products.isEmpty {
                 await entitlementStore.load()
             }
+            sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+        }
+        .onChange(of: entitlementStore.currentGrant?.entitlement.id) { _, _ in
+            sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+        }
+        .onChange(of: appStore.connectionStatus.isConnected) { _, connected in
+            if connected { sessionStore.reconcileMimiRelay(entitlementStore) }
+        }
+        .fullScreenCover(
+            item: qrScannerPresentation.presentationBinding(for: .relaySubscription),
+            onDismiss: qrScannerPresentation.didDismiss
+        ) { intent in
+            QRCodeScannerSheet(
+                onDismiss: qrScannerPresentation.dismiss,
+                onChooseManualConnection: { qrScannerPresentation.dismiss() },
+                onOpenManagedConnection: nil,
+                onCode: { await connectComputer($0, intent: intent) }
+            )
         }
         .alert(
             L10n.text("ui.restore_purchases"),
@@ -122,7 +158,41 @@ struct ManagedConnectionSubscriptionView: View {
         .accessibilityIdentifier("settings.managedSubscription.detail")
     }
 
-    /// 「我的」首页这一行右侧的短状态。还在检查时不显示，避免一闪而过的占位文字。
+    private var scanComputerButton: some View {
+        Button {
+            qrScannerPresentation.request(
+                appStore.activeConnectionProfileID.map { .repairCurrentProfile(expectedProfileID: $0) }
+                    ?? .initialConnection,
+                from: .relaySubscription
+            )
+        } label: {
+            Label(L10n.text("ui.relay_scan_computer"), systemImage: "qrcode.viewfinder")
+        }
+        .disabled(isScanningConnection || sessionStore.isActivatingMimiRelay)
+        .accessibilityIdentifier("settings.relay.mimi.scan")
+    }
+
+    private func connectComputer(_ raw: String, intent: ConnectionQRCodeScanIntent) async -> QRCodeScannerSubmissionResult {
+        guard !isScanningConnection, intent.isValid(activeProfileID: appStore.activeConnectionProfileID),
+              let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return .rejected(L10n.text("ui.the_current_mac_has_changed_please_try_again"))
+        }
+        isScanningConnection = true
+        defer { isScanningConnection = false }
+        do {
+            _ = try await sessionStore.applyPairingURL(url)
+            // 手机已明确选了 Mimi；扫描旧电脑的普通二维码也继续同一个开通流程。
+            if let id = appStore.activeConnectionProfileID {
+                tailcatController.selectRelayService(.mimi, profileID: id)
+            }
+            sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+            return .accepted(L10n.text("ui.this_mac_is_connected"))
+        } catch {
+            return .rejected(ManagedConnectionDevicesView.pairingErrorMessage(error))
+        }
+    }
+
+    /// 中转服务的短状态。还在检查时不显示，避免一闪而过的占位文字。
     static func statusSummary(_ status: ManagedConnectionEntitlementStore.Status) -> String? {
         switch status {
         case .loading, .resolving, .failed:
@@ -297,27 +367,6 @@ struct ManagedConnectionSubscriptionView: View {
         ]
     }
 
-    private var subscribedActionsSection: some View {
-        Section {
-            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
-                SettingsValueLabel(
-                    title: L10n.text("ui.managed_route_and_devices_title"),
-                    systemImage: "point.3.connected.trianglepath.dotted"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.managedSubscription.devices")
-
-            if !entitlementStore.isRedemptionEntitlement {
-                manageSubscriptionButton
-            }
-        } header: {
-            // 统一表单把默认组间距设为零，无标题的操作卡片也要显式保留留白。
-            SettingsGroupHeader()
-        }
-        .settingsGroupRowStyle()
-    }
-
     @ViewBuilder
     private var manageSubscriptionButton: some View {
 #if targetEnvironment(macCatalyst)
@@ -408,7 +457,6 @@ struct ManagedConnectionSubscriptionView: View {
             if isEntitled {
                 redemptionCode = ""
                 sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
-                if appStore.activeConnectionProfile == nil { dismiss() }
             }
         }
     }

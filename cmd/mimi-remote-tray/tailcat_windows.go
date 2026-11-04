@@ -15,6 +15,7 @@ import (
 type tailcatTrayStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Mode              string `json:"mode"`
+	DERPMapURL        string `json:"derp_map_url"`
 	Running           bool   `json:"running"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error"`
@@ -147,9 +148,9 @@ func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, erro
 
 func tailcatManagedMenuLabel(status tailcatTrayStatus) string {
 	if status.managed() {
-		return "Mimi 中转已启用"
+		return "中转服务：Mimi 中转"
 	}
-	return "Mimi 中转服务"
+	return "中转服务：" + status.relayTitle()
 }
 
 func tailcatManagedMenuEnabled(service agentStatus, hasTailcat bool, tailcatErr error, busy bool) bool {
@@ -241,12 +242,10 @@ func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr
 }
 
 func (a *trayApplication) showRelayServiceInfo() {
-	status, _, _ := a.tailcatSnapshot()
-	detail := "先选择内置连接并用手机扫码。\r\n\r\n在手机「我的 → Mimi 中转服务」通过邀请码或购买开通后，本机会自动启用。Mimi 全部功能免费。"
-	if status.managed() {
-		detail = "本机已启用 Mimi 中转。手机会根据开通状态选择中转或免费连接，能够直连时优先直连。\r\n\r\n服务开通和设备名额请在手机「我的 → Mimi 中转服务」管理。"
+	a.showControlPanel()
+	if a.panel != nil {
+		a.panel.chooseRelayService()
 	}
-	showMessage(a.window, "Mimi 中转服务", detail, mbOK|mbIconInfo)
 }
 
 func (a *trayApplication) setTailcatForPairing(window uintptr) {

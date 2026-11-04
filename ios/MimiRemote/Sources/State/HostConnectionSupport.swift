@@ -92,6 +92,22 @@ struct PairingTicket: Equatable {
     }
 }
 
+/// 与电脑二维码共用的中转选择。它只表达用户意图，不替代订阅授权。
+enum RelayServiceChoice: String, CaseIterable, Identifiable {
+    case tailcatDefault = "default"
+    case custom
+    case mimi
+
+    var id: String { rawValue }
+    var title: String { L10n.text("ui.relay_choice_" + rawValue) }
+
+    static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.first(where: { $0.name == "transport" })?.value == "tailcat" else { return nil }
+        return items.first(where: { $0.name == "relay_service" })?.value.flatMap(Self.init(rawValue:))
+    }
+}
+
 struct TailcatPairingLink: Equatable {
     let ticket: PairingTicket
     let pairAddress: String

@@ -960,6 +960,9 @@ private struct MimiRelayConnectionLifecycle: ViewModifier {
         .onChange(of: appStore.connectionStatus) { _, _ in
             sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
         }
+        .onChange(of: tailcatExperimentController.relayChoiceRevision) { _, _ in
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
         .onChange(of: managedConnectionEntitlementStore.status) { _, _ in
             sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
         }

@@ -271,50 +271,6 @@ struct SettingsView: View {
             }
             .settingsGroupRowStyle()
 
-            if showsDeviceEntry {
-                Section {
-                    Button {
-                        openDevices()
-                    } label: {
-                        SettingsConnectionCard(
-                            deviceName: currentMacDisplayName,
-                            status: compactConnectionStatusText,
-                            savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
-                            statusTint: connectionStatusTone(tokens: tokens),
-                            warningText: connectionWarningText
-                        )
-                    }
-                    // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
-                    // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets())
-                    .accessibilityIdentifier("settings.connectionManagement")
-                } header: {
-                    SettingsGroupHeader(title: L10n.text("ui.mac_devices"))
-                }
-                .settingsGroupRowStyle()
-            }
-
-            if ManagedConnectionSubscriptionView.isEntryVisible {
-                Section {
-                    // 这里只管订阅；线路与设备名额在「设备」里（#891）。
-                    NavigationLink(value: SettingsDestination.managedConnection) {
-                        SettingsValueLabel(
-                            title: L10n.text("ui.managed_subscription_title"),
-                            value: ManagedConnectionSubscriptionView.statusSummary(
-                                managedConnectionEntitlementStore.status
-                            ),
-                            systemImage: "network"
-                        )
-                    }
-                    .settingsStandardListRow()
-                    .accessibilityIdentifier("settings.managedSubscription")
-                } header: {
-                    SettingsGroupHeader(title: L10n.text("ui.managed_subscription_section"))
-                }
-                .settingsGroupRowStyle()
-            }
-
             Section {
                 NavigationLink(value: SettingsDestination.appearance) {
                     SettingsValueLabel(

@@ -51,8 +51,18 @@
     },
     "ui.relay_connection_scope": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "This page shows this computer’s connection. Manage service access and device allowance in Me → Mimi Relay." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这里显示当前电脑的连接。开通状态和设备名额在「我的 → Mimi 中转服务」管理。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage connections, relay access and device slots under Devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接、服务开通和设备名额统一在「设备」管理。"
+          }
+        }
       }
     },
     "ui.relay_free_unavailable": {
@@ -45715,8 +45725,18 @@
     "ui.managed_redemption_first_connection": {
       "comment": "Shown on the first connection page after a code was redeemed from a link.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is active. Choose “Built-in Connection” when connecting your computer to enable it automatically." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转服务已开通。连接电脑时选择「内置连接」，即可自动启用。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay is active. Scan your computer’s QR code to connect and configure the relay automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi 中转已开通。扫描电脑二维码，自动完成连接和中转配置。"
+          }
+        }
       }
     },
     "ui.managed_connection_pending_connect": {
@@ -45932,8 +45952,18 @@
     "ui.managed_subscription_title": {
       "comment": "Mimi Managed Connection subscription title.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转服务" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi 中转"
+          }
+        }
       }
     },
     "ui.managed_subscription_trial_active": {
@@ -46931,6 +46961,246 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂不继续"
+          }
+        }
+      }
+    },
+    "ui.relay_service_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay service"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中转服务"
+          }
+        }
+      }
+    },
+    "ui.relay_service_optional": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay service (optional)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中转服务（可选）"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_default": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailcat default"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "默认 Tailcat 自带"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_custom": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use your own"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用自己的"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_mimi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi 中转"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_default_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Free, with no setup"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "免费使用，无需配置"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_custom_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use a relay you host"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用你自己部署的中转"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_mimi_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Activate with an invitation code or subscription"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "邀请码或订阅开通，自动配置"
+          }
+        }
+      }
+    },
+    "ui.relay_current_choice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选择"
+          }
+        }
+      }
+    },
+    "ui.relay_choice_footer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Mimi features are free. A relay carries encrypted traffic when a direct connection is unavailable."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi 全部功能免费。中转只负责在无法直连时传输加密数据。"
+          }
+        }
+      }
+    },
+    "ui.relay_custom_setup": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On your Mac or Windows PC, choose “Use your own” under Relay service and enter your DERP Map HTTPS URL. Save it, then scan the new QR code to sync the configuration."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 或 Windows 的「中转服务」选择「使用自己的」，填写 DERP Map HTTPS 地址。保存后扫描新二维码，App 会同步配置。"
+          }
+        }
+      }
+    },
+    "ui.relay_default_setup": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On your Mac or Windows PC, choose “Tailcat default” under Relay service, then scan the new QR code to use the free relay."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 或 Windows 的「中转服务」选择「默认 Tailcat 自带」。扫描新二维码，App 会同步使用免费中转。"
+          }
+        }
+      }
+    },
+    "ui.relay_scan_matching_choice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the same relay service on your computer, then scan the new QR code. Update an older computer app first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在电脑选择相同的中转服务，再扫描新二维码。旧版电脑请先更新。"
+          }
+        }
+      }
+    },
+    "ui.relay_scan_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan computer QR code"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "扫描电脑二维码"
+          }
+        }
+      }
+    },
+    "ui.relay_connect_to_configure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay will configure automatically when your computer reconnects. You can also scan a new QR code from your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后会自动配置 Mimi 中转。也可以扫描电脑上的新二维码。"
           }
         }
       }
