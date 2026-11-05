@@ -50,7 +50,7 @@ extension HostStoreTests {
         XCTAssertEqual(store.tailcatStatus?.pairedDeviceCount, 0)
         XCTAssertNil(store.pairing)
         XCTAssertEqual(store.pairingNetwork, .tailscale)
-        XCTAssertEqual(store.tailcatNotice, "中继已更新。请重新生成二维码，并在移动设备上扫码。")
+        XCTAssertEqual(store.tailcatNotice, "中转已更新，请在手机上重新扫码。")
     }
 
     func testEnteringAndExitingManagedConnectionUpdatesModeAndClearsTailcatPairing() async {
@@ -260,5 +260,43 @@ extension HostStoreTests {
 
         XCTAssertEqual(store.tailcatStatus, latestStatus)
         XCTAssertNil(store.tailcatError)
+    }
+
+    func testRelayModeFollowsActualConfiguration() {
+        XCTAssertEqual(TailcatRelayPresentation.mode(isManaged: false, derpMapURL: ""), .tailcatDefault)
+        XCTAssertEqual(TailcatRelayPresentation.mode(isManaged: false, derpMapURL: "https://relay.example/map.json"), .custom)
+        XCTAssertEqual(TailcatRelayPresentation.mode(isManaged: true, derpMapURL: "https://relay.example/map.json"), .mimi)
+    }
+
+    /// 选中即生效，所以确认框只能出现在真的会影响正在使用的手机时。
+    func testRelayChangeOnlyConfirmsWhenItCanInterruptPhones() {
+        func needsConfirmation(_ mode: TailcatRelayMode, url: String = "", enabled: Bool = true, managed: Bool = false, current: String = "") -> Bool {
+            TailcatRelayPresentation.needsReconnectionConfirmation(
+                mode: mode, url: url, tailcatEnabled: enabled, isManaged: managed, currentURL: current
+            )
+        }
+        XCTAssertFalse(needsConfirmation(.mimi), "改用 Mimi 不影响免费线路")
+        XCTAssertFalse(needsConfirmation(.custom, url: "https://a.example/map.json", enabled: false), "内置连接未开启时没有手机受影响")
+        XCTAssertFalse(needsConfirmation(.custom, url: "https://a.example/map.json", current: "https://a.example/map.json"))
+        XCTAssertTrue(needsConfirmation(.custom, url: "https://b.example/map.json", current: "https://a.example/map.json"))
+        XCTAssertTrue(needsConfirmation(.tailcatDefault, current: "https://a.example/map.json"))
+        XCTAssertTrue(needsConfirmation(.tailcatDefault, managed: true), "退出 Mimi 可能让旧设备重新扫码")
+    }
+
+    func testCustomRelayURLValidationBlocksUnusableAddresses() {
+        XCTAssertNil(TailcatRelayPresentation.customURLValidationMessage("https://relay.example/map.json"))
+        for invalid in [
+            "", "http://relay.example/map.json", "https://user:pass@relay.example/map.json",
+            "https://relay.example/map.json#frag", "relay.example",
+            "https://api.code89757.com/v1/relay/tailcat-derp-map.json"
+        ] {
+            XCTAssertNotNil(TailcatRelayPresentation.customURLValidationMessage(invalid), invalid)
+        }
+    }
+
+    func testRelayCaptionNeverExposesFullCustomAddress() {
+        let caption = TailcatRelayPresentation.caption(mode: .custom, derpMapURL: "https://relay.example/secret/map.json")
+        XCTAssertTrue(caption.contains("relay.example"))
+        XCTAssertFalse(caption.contains("secret"))
     }
 }

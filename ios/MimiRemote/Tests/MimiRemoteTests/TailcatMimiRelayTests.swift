@@ -34,6 +34,92 @@ extension TailcatExperimentRoutingTests {
         XCTAssertNil(ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: nil))
     }
 
+    /// 启用完成前实际还在走免费线路：页面要显示那一项，不能因为选了 Mimi 就变成「由电脑配置」。
+    func testRelayStatusShowsFreeRouteUntilMimiIsActuallyEnabled() {
+        XCTAssertEqual(
+            ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: .mimi, freeChoice: .tailcatDefault),
+            .tailcatDefault
+        )
+        XCTAssertEqual(
+            ManagedConnectionDevicesView.currentChoice(route: .customTailcat, savedChoice: .mimi, freeChoice: .custom),
+            .custom
+        )
+        XCTAssertEqual(
+            ManagedConnectionDevicesView.currentChoice(route: .managedTailcat, savedChoice: .mimi, freeChoice: .tailcatDefault),
+            .mimi
+        )
+    }
+
+    func testMimiRowSeparatesEntitlementFromThisComputer() {
+        func state(
+            profile: ConnectionProfileRoute? = .customTailcat, current: ConnectionProfileRoute? = .customTailcat,
+            connected: Bool = true, entitled: Bool = true, activating: Bool = false
+        ) -> ManagedConnectionDevicesView.MimiRowState {
+            ManagedConnectionDevicesView.mimiRowState(
+                profileRoute: profile, currentRoute: current,
+                connected: connected, entitled: entitled, activating: activating
+            )
+        }
+        XCTAssertEqual(state(), .readyToEnable)
+        XCTAssertEqual(state(entitled: false), .notActivated)
+        XCTAssertEqual(state(activating: true), .activating)
+        XCTAssertEqual(state(connected: false), .entitledWaitingForConnection)
+        XCTAssertEqual(state(profile: nil, current: nil), .entitledWaitingForConnection)
+        XCTAssertEqual(state(profile: .tailscale, current: .tailscale), .entitledWaitingForConnection, "Tailscale 不提供一键启用")
+        XCTAssertEqual(state(profile: .managedTailcat, current: .managedTailcat), .enabled)
+        XCTAssertEqual(state(profile: .managedTailcat, current: .customTailcat), .temporarilyFree, "临时回退不能显示已启用")
+    }
+
+    func testDeviceRowValueIsHonestAboutEveryRelayState() {
+        func value(_ route: ConnectionProfileRoute?, _ saved: RelayServiceChoice?, _ free: RelayServiceChoice? = nil) -> String {
+            ManagedConnectionDevicesView.relayRowValue(route: route, savedChoice: saved, freeChoice: free)
+        }
+        XCTAssertEqual(value(.tailscale, .mimi), L10n.text("ui.relay_not_needed"))
+        XCTAssertEqual(value(.lan, nil), L10n.text("ui.relay_not_needed"))
+        XCTAssertEqual(value(nil, nil), L10n.text("ui.not_connected"))
+        XCTAssertEqual(value(.customTailcat, .tailcatDefault), RelayServiceChoice.tailcatDefault.title)
+        XCTAssertEqual(value(.customTailcat, .mimi, .tailcatDefault), RelayServiceChoice.tailcatDefault.title)
+        XCTAssertEqual(value(.customTailcat, .mimi), L10n.text("ui.relay_mimi_not_activated"), "电脑选了 Mimi、手机还没开通")
+        XCTAssertEqual(value(.customTailcat, nil), L10n.text("ui.relay_configured_on_computer"), "旧二维码不猜测")
+        XCTAssertEqual(value(.managedTailcat, .mimi), RelayServiceChoice.mimi.title)
+    }
+
+    func testRelayNoticeOnlyKeepsWhatTheRowCannotSay() {
+        let visible = ManagedConnectionDevicesView.visibleRelayNotice
+        XCTAssertNil(visible(nil, false))
+        XCTAssertNil(visible(L10n.text("ui.relay_enabled"), false), "已启用由行本身表达")
+        XCTAssertNil(visible(L10n.text("ui.relay_activating"), false))
+        XCTAssertNil(visible("启用失败", true), "启用中不显示上一次的失败")
+        XCTAssertEqual(visible("启用失败", false), "启用失败")
+    }
+
+    /// 刷新时 Store 会短暂回到检查中，已有权益的人不能每次进页都看到邀请码输入框闪一下。
+    func testRefreshingKeepsShowingValidEntitlement() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func grant(expiresIn seconds: TimeInterval) -> ManagedConnectionEntitlementGrant {
+            ManagedConnectionEntitlementGrant(
+                entitlement: ManagedConnectionEntitlement(
+                    id: "e", productID: ManagedConnectionProductID.betaRedemption, status: .active,
+                    expiresAt: now.addingTimeInterval(seconds)
+                ),
+                token: "t", tokenExpiresAt: now.addingTimeInterval(60)
+            )
+        }
+        let valid = grant(expiresIn: 3_600)
+        for status in [ManagedConnectionEntitlementStore.Status.loading, .resolving] {
+            XCTAssertEqual(
+                ManagedConnectionSubscriptionView.displayStatus(status, grant: valid, now: now),
+                .entitled(valid.entitlement)
+            )
+            XCTAssertEqual(ManagedConnectionSubscriptionView.displayStatus(status, grant: nil, now: now), status)
+            XCTAssertEqual(
+                ManagedConnectionSubscriptionView.displayStatus(status, grant: grant(expiresIn: -1), now: now), status
+            )
+        }
+        XCTAssertEqual(ManagedConnectionSubscriptionView.displayStatus(.expired, grant: valid, now: now), .expired)
+        XCTAssertEqual(ManagedConnectionSubscriptionView.displayStatus(.available, grant: nil, now: now), .available)
+    }
+
     func testRelayActivationRequiresExplicitSelectionAndPreservesFreeChoice() {
         for route in [ConnectionProfileRoute.lan, .tailscale, .https, .customTailcat] {
             XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: route, connected: true, entitled: true))
@@ -43,6 +129,22 @@ extension TailcatExperimentRoutingTests {
         }
         XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: nil, connected: true, entitled: true, selectedMimi: true))
         XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(route: .managedTailcat, connected: true, entitled: true, selectedMimi: true))
+    }
+
+    /// 选 Mimi 不能抹掉原来的免费线路，否则启用失败后页面说不清实际在用哪一项。
+    func testChoosingMimiRemembersFreeChoiceUntilRouteIsRemoved() throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.controller.selectRelayService(.custom, profileID: "first")
+        fixture.controller.selectRelayService(.mimi, profileID: "first")
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "first"), .mimi)
+        XCTAssertEqual(fixture.controller.lastFreeRelayChoice(profileID: "first"), .custom)
+        XCTAssertNil(fixture.controller.lastFreeRelayChoice(profileID: "second"), "按电脑隔离")
+        fixture.controller.selectRelayService(nil, profileID: "first")
+        XCTAssertNil(fixture.controller.lastFreeRelayChoice(profileID: "first"), "旧二维码清掉后不再猜测")
+        fixture.controller.selectRelayService(.tailcatDefault, profileID: "first")
+        try fixture.controller.deleteProfileRoute(profileID: "first")
+        XCTAssertNil(fixture.controller.lastFreeRelayChoice(profileID: "first"))
     }
 
     func testRelayChoiceIsScopedToComputerAndRemovedWithItsRoute() throws {

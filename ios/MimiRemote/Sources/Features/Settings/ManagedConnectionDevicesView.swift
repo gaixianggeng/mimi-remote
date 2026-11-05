@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// 已配对电脑先展示实际连接；只有 Tailcat 需要在这里管理中转服务。
+/// 中转服务页回答两件事：这台电脑现在怎么连的；如果走内置连接，用哪个中转。
+/// 三个中转是同一个问题的三个答案，所以并排放在一张卡片里，当前项用对勾标出。
+/// 进入这一页或点开 Mimi 都不会改变线路，只有点「启用」和完成开通才算选择。
 struct ManagedConnectionDevicesView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
     @EnvironmentObject private var themeStore: ThemeStore
@@ -20,63 +23,57 @@ struct ManagedConnectionDevicesView: View {
                 )
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.relay.connectionMethod")
-                ConnectionRowLabel(
-                    title: L10n.text("ui.connection_status"), value: appStore.connectionStatus.title,
-                    systemImage: "link"
-                )
-                .settingsStandardListRow()
+                if currentRoute != nil {
+                    ConnectionRowLabel(
+                        title: L10n.text("ui.connection_status"), value: appStore.connectionStatus.title,
+                        systemImage: "link"
+                    )
+                    .settingsStandardListRow()
+                }
             } header: {
-                Text(L10n.text("ui.current_connection")).settingsSectionHeaderStyle()
+                SettingsGroupHeader(title: L10n.text("ui.current_connection"), showsDivider: false)
             } footer: {
-                Text(L10n.text("ui.relay_tailcat_scope")).settingsSectionFooterStyle()
+                if let scopeNote {
+                    Text(scopeNote).settingsSectionFooterStyle()
+                }
             }
             .settingsGroupRowStyle()
 
-            if currentRoute?.usesTailcat == true {
+            if showsRelayChoices {
                 Section {
-                    ConnectionRowLabel(
-                        title: L10n.text("ui.relay_configuration"),
-                        value: currentChoice?.title ?? L10n.text("ui.relay_configured_on_computer"),
-                        systemImage: "network"
-                    )
-                    .settingsStandardListRow()
-                    .accessibilityIdentifier("settings.relay.currentService")
+                    if currentRoute != nil {
+                        choiceRow(.tailcatDefault, tokens: tokens)
+                        choiceRow(.custom, tokens: tokens)
+                    }
                     if ManagedConnectionSubscriptionView.isEntryVisible {
-                        NavigationLink {
-                            ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
-                        } label: {
-                            ConnectionRowLabel(
-                                title: L10n.text(currentRoute?.isManaged == true
-                                    ? "ui.relay_manage_mimi" : "ui.relay_use_mimi"),
-                                systemImage: "network.badge.shield.half.filled"
-                            )
-                        }
-                        .settingsStandardListRow()
-                        .accessibilityIdentifier("settings.relay.mimi")
+                        mimiRow(tokens: tokens)
                     }
-                } footer: {
-                    Text(L10n.text("ui.relay_change_on_computer")).settingsSectionFooterStyle()
-                }
-                .settingsGroupRowStyle()
-            }
-
-            if let profile = appStore.activeConnectionProfile,
-               sessionStore.mimiRelayNotice != nil || showsRecoveryActions {
-                Section {
-                    if let notice = sessionStore.mimiRelayNotice {
-                        Text(notice).fixedSize(horizontal: false, vertical: true)
+                    if let notice = visibleNotice {
+                        // 问题写在受影响的选项下面，不另起一张没有标题的卡片。
+                        Label(notice, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(tokens.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 12)
+                            .settingsRow()
+                            .accessibilityIdentifier("settings.relay.notice")
                     }
-                    if showsRecoveryActions {
+                    if showsRecoveryActions, let profile = appStore.activeConnectionProfile {
                         Button(L10n.text("ui.managed_connection_retry")) {
                             changeRoute { await sessionStore.retryManagedConnection() }
                         }
                         .disabled(isChangingRoute || appStore.requiresRePairing)
+                        .settingsRow()
                         Button(L10n.text("ui.relay_use_free")) {
                             changeRoute { await sessionStore.useSavedConnectionRouteOnce(.customTailcat) }
                         }
                         .disabled(isChangingRoute || appStore.requiresRePairing ||
                                   !tailcatController.hasFreeRoute(profileID: profile.id))
+                        .settingsRow()
                     }
+                } header: {
+                    SettingsGroupHeader(title: L10n.text("ui.relay_section_choose"))
+                } footer: {
+                    Text(L10n.text("ui.relay_change_on_computer")).settingsSectionFooterStyle()
                 }
                 .settingsGroupRowStyle()
             }
@@ -86,7 +83,160 @@ struct ManagedConnectionDevicesView: View {
         .navigationTitle(L10n.text("ui.relay_service_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
+        .sensoryFeedback(.success, trigger: isMimiEnabled) { _, enabled in enabled }
+        .task {
+            // 启动时只刷新已有权益。这一行要显示开通状态，还没查过就在这里补一次。
+            guard ManagedConnectionSubscriptionView.isEntryVisible,
+                  case .loading = entitlementStore.status else { return }
+            await entitlementStore.load()
+        }
         .accessibilityIdentifier("settings.managedConnectionDevices.detail")
+    }
+
+    private func choiceRow(_ choice: RelayServiceChoice, tokens: ThemeTokens) -> some View {
+        let selected = currentChoice == choice
+        return ConnectionRowLabel(
+            title: choice.title,
+            value: selected ? choice.detail : L10n.text("ui.relay_set_on_computer"),
+            systemImage: selected ? "checkmark.circle.fill" : choice.systemImage,
+            iconTint: selected ? tokens.accent : nil
+        )
+        .settingsStandardListRow()
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("settings.relay.\(choice.rawValue)")
+    }
+
+    @ViewBuilder
+    private func mimiRow(tokens: ThemeTokens) -> some View {
+        let state = mimiRowState
+        switch state {
+        case .readyToEnable:
+            // 已开通时选择即生效：就地启用，不再多进一页。
+            Button(action: enableMimiRelay) {
+                mimiRowLabel(state, tokens: tokens)
+            }
+            .buttonStyle(.plain)
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.relay.mimi")
+        case .activating:
+            HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
+                mimiRowLabel(state, tokens: tokens)
+                ProgressView().controlSize(.small)
+            }
+            .settingsStandardListRow()
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("settings.relay.mimi")
+        case .enabled, .temporarilyFree, .entitledWaitingForConnection, .notActivated:
+            NavigationLink {
+                ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+            } label: {
+                mimiRowLabel(state, tokens: tokens)
+            }
+            .settingsStandardListRow()
+            .accessibilityAddTraits(state == .enabled ? .isSelected : [])
+            .accessibilityIdentifier("settings.relay.mimi")
+        }
+    }
+
+    private func mimiRowLabel(_ state: MimiRowState, tokens: ThemeTokens) -> some View {
+        ConnectionRowLabel(
+            title: RelayServiceChoice.mimi.title,
+            value: state.title,
+            systemImage: state == .enabled ? "checkmark.circle.fill" : RelayServiceChoice.mimi.systemImage,
+            titleTint: state == .readyToEnable ? tokens.accent : nil,
+            iconTint: state == .enabled ? tokens.accent : nil
+        )
+    }
+
+    private func enableMimiRelay() {
+        guard let id = appStore.activeConnectionProfileID else { return }
+        tailcatController.selectRelayService(.mimi, profileID: id)
+        sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+    }
+
+    /// Mimi 这一行的状态。开通资格、这台电脑是否启用、实际线路是三回事，这里分开表达。
+    enum MimiRowState: Equatable {
+        case enabled
+        /// 这台电脑选的是 Mimi，但现在临时走免费线路。
+        case temporarilyFree
+        case activating
+        /// 已开通且连着这台电脑，点一下就能启用。
+        case readyToEnable
+        /// 已开通，但现在没有可以启用的连接。
+        case entitledWaitingForConnection
+        case notActivated
+
+        var title: String {
+            switch self {
+            case .enabled: L10n.text("ui.relay_mimi_enabled")
+            case .temporarilyFree: L10n.text("ui.relay_mimi_fallback")
+            case .activating: L10n.text("ui.relay_mimi_activating")
+            case .readyToEnable: L10n.text("ui.relay_mimi_tap_to_enable")
+            case .entitledWaitingForConnection: L10n.text("ui.relay_mimi_entitled")
+            case .notActivated: L10n.text("ui.relay_mimi_get_started")
+            }
+        }
+    }
+
+    static func mimiRowState(
+        profileRoute: ConnectionProfileRoute?, currentRoute: ConnectionProfileRoute?,
+        connected: Bool, entitled: Bool, activating: Bool
+    ) -> MimiRowState {
+        if profileRoute?.isManaged == true {
+            return currentRoute?.isManaged == true ? .enabled : .temporarilyFree
+        }
+        if activating { return .activating }
+        guard entitled else { return .notActivated }
+        return connected && currentRoute?.usesTailcat == true ? .readyToEnable : .entitledWaitingForConnection
+    }
+
+    /// 启用中和已启用由 Mimi 行本身表达，不再重复一句同样的话；只留下需要用户知道的问题。
+    static func visibleRelayNotice(_ notice: String?, isActivating: Bool) -> String? {
+        guard !isActivating, let notice,
+              notice != L10n.text("ui.relay_enabled"),
+              notice != L10n.text("ui.relay_activating") else { return nil }
+        return notice
+    }
+
+    /// 设备页「中转服务」行的值。Tailscale、局域网不经过中转；已选 Mimi 但还没开通时如实说。
+    static func relayRowValue(
+        route: ConnectionProfileRoute?, savedChoice: RelayServiceChoice?, freeChoice: RelayServiceChoice?
+    ) -> String {
+        guard let route else { return L10n.text("ui.not_connected") }
+        guard route.usesTailcat else { return L10n.text("ui.relay_not_needed") }
+        if let choice = currentChoice(route: route, savedChoice: savedChoice, freeChoice: freeChoice) {
+            return choice.title
+        }
+        return L10n.text(savedChoice == .mimi ? "ui.relay_mimi_not_activated" : "ui.relay_configured_on_computer")
+    }
+
+    private var isMimiEnabled: Bool { mimiRowState == .enabled }
+
+    private var mimiRowState: MimiRowState {
+        Self.mimiRowState(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            currentRoute: currentRoute,
+            connected: appStore.connectionStatus.isConnected,
+            entitled: Self.hasEntitlementForUpgrade(
+                status: entitlementStore.status, grant: entitlementStore.currentGrant, now: Date()
+            ),
+            activating: sessionStore.isActivatingMimiRelay
+        )
+    }
+
+    private var visibleNotice: String? {
+        Self.visibleRelayNotice(sessionStore.mimiRelayNotice, isActivating: sessionStore.isActivatingMimiRelay)
+    }
+
+    /// 没有电脑时也要能走到开通：先拿到邀请码、再连电脑是合法顺序，这一页不能是死路。
+    private var showsRelayChoices: Bool {
+        guard let currentRoute else { return ManagedConnectionSubscriptionView.isEntryVisible }
+        return currentRoute.usesTailcat
+    }
+
+    private var scopeNote: String? {
+        guard let currentRoute else { return L10n.text("ui.relay_no_computer_detail") }
+        return currentRoute.usesTailcat ? nil : L10n.text("ui.relay_tailcat_scope")
     }
 
     private var showsRecoveryActions: Bool {
@@ -108,9 +258,11 @@ struct ManagedConnectionDevicesView: View {
     }
 
     private var currentChoice: RelayServiceChoice? {
-        Self.currentChoice(
+        let id = appStore.activeConnectionProfileID ?? ""
+        return Self.currentChoice(
             route: currentRoute,
-            savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")
+            savedChoice: tailcatController.relayServiceChoice(profileID: id),
+            freeChoice: tailcatController.lastFreeRelayChoice(profileID: id)
         )
     }
 
@@ -127,14 +279,17 @@ struct ManagedConnectionDevicesView: View {
 
     static func connectionMethodTitle(route: ConnectionProfileRoute?) -> String {
         guard let route else { return L10n.text("ui.not_connected") }
-        return route.usesTailcat ? "Tailcat" : route.title
+        return route.usesTailcat ? L10n.text("ui.relay_builtin_tailcat") : route.title
     }
 
-    static func currentChoice(route: ConnectionProfileRoute?, savedChoice: RelayServiceChoice?) -> RelayServiceChoice? {
+    /// 选择 Mimi 不等于开通成功：启用完成前实际还在走原来的免费线路，所以显示那一项。
+    /// 旧二维码没带中转信息时不猜测默认/自有配置。
+    static func currentChoice(
+        route: ConnectionProfileRoute?, savedChoice: RelayServiceChoice?, freeChoice: RelayServiceChoice? = nil
+    ) -> RelayServiceChoice? {
         guard let route, route.usesTailcat else { return nil }
         if route.isManaged { return .mimi }
-        // 选择 Mimi 不等于开通成功；旧二维码没带中转信息时也不猜测默认/自有配置。
-        return savedChoice == .mimi ? nil : savedChoice
+        return savedChoice == .mimi ? freeChoice : savedChoice
     }
 
     private func changeRoute(_ operation: @escaping @MainActor () async -> Bool) {

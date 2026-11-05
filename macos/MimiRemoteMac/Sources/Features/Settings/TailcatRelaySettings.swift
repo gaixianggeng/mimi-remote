@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 
-private enum TailcatRelayMode: String, CaseIterable, Identifiable {
+enum TailcatRelayMode: String, CaseIterable, Identifiable {
     case tailcatDefault
     case custom
     case mimi
@@ -18,109 +18,204 @@ private enum TailcatRelayMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// 三种中转共用一个入口；内部连接模式由配置动作处理，不要求用户先切换模式。
-struct TailcatRelaySettings: View {
+/// 中转服务是一个单选，选中即生效：不再有「选中 → 使用此中转」两步，也不把重置、生成二维码混进来。
+/// 只有会影响正在使用的手机时才确认一次；只有自建地址需要多填一步。
+struct TailcatRelayPicker: View {
     let store: HostStore
-    var onApplied: (() -> Void)? = nil
+    /// 配对窗口里说明文字放在二维码上方，这里只留控件和结果。
+    var showsCaption = true
+    @Binding var isApplying: Bool
+    /// 更换成功后的下一步由宿主决定：配对窗口就地刷新二维码，设置页打开配对窗口。
+    let onApplied: () async -> Void
 
-    @Environment(\.openWindow) private var openWindow
-    @State private var confirmsTailcatReset = false
-    @State private var confirmsRelayChange = false
-    @State private var isApplyingRelay = false
-    @State private var relayMode: TailcatRelayMode = .tailcatDefault
+    @State private var pendingMode: TailcatRelayMode?
+    @State private var isEditingCustomURL = false
     @State private var customDERPMapURL = ""
-    @FocusState private var focusesRelayURL: Bool
 
     var body: some View {
-        Section("中转服务") {
-            Picker("中转服务", selection: $relayMode) {
-                ForEach(TailcatRelayMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+        if showsCaption {
+            picker
+            Text(TailcatRelayPresentation.caption(mode: currentMode, derpMapURL: store.tailcatDERPMapURL))
+                .font(.caption).foregroundStyle(.secondary)
+            changeAddressButton
+            statusLine
+        } else {
+            // 配对窗口里和连接方式共用一行高度，控件并排，切换选项时二维码不会被顶下去。
+            VStack(spacing: 4) {
+                HStack(spacing: 8) {
+                    picker
+                        .fixedSize()
+                    changeAddressButton
                 }
+                statusLine
             }
-            .pickerStyle(.segmented)
-            .disabled(store.isBusy || isApplyingRelay)
+        }
+    }
 
-            switch relayMode {
-            case .tailcatDefault:
-                Text("免费使用 Tailcat 自带中转，无需配置。Mimi 全部功能均可使用。")
-                    .font(.caption).foregroundStyle(.secondary)
-            case .custom:
-                TextField("DERP Map HTTPS 地址", text: $customDERPMapURL)
-                    .textFieldStyle(.roundedBorder)
-                    .environment(\.layoutDirection, .leftToRight)
-                    .focused($focusesRelayURL)
-                Text("填写你自己部署的中转配置地址。更换后，手机需要重新扫码。")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let relayValidationMessage {
-                    Text(relayValidationMessage).font(.caption).foregroundStyle(.red)
-                }
-            case .mimi:
-                Text("用手机扫描接下来的二维码，通过邀请码或订阅开通，自动完成配置。已开通的手机可直接连接。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            LabeledContent("当前中转", value: currentRelayMode.title)
-            HStack {
-                Button(relayMode == .mimi ? "继续并扫码开通" : "使用此中转") {
-                    if needsReconnectionConfirmation {
-                        confirmsRelayChange = true
-                    } else {
-                        Task { await applySelection() }
-                    }
-                }
-                .disabled(!store.canChangeTailcat || isApplyingRelay || relayValidationMessage != nil)
-                if store.isUpdatingTailcat { ProgressView().controlSize(.small) }
-            }
-            if let error = store.tailcatError {
-                Text(error).font(.caption).foregroundStyle(.red)
-            } else if let notice = store.tailcatNotice {
-                Text(notice).font(.caption).foregroundStyle(.secondary)
+    private var picker: some View {
+        Picker("中转服务", selection: selection) {
+            ForEach(TailcatRelayMode.allCases) { mode in
+                Text(mode.title).tag(mode)
             }
         }
-        Section("配对与恢复") {
-            Button("生成配对二维码") { Task { await showPairing() } }
-                .disabled(!store.canPair || !store.availablePairingNetworks.contains(.tailcat) || store.isBusy)
-            Button("重置内置连接…", role: .destructive) { confirmsTailcatReset = true }
-                .disabled(!store.canChangeTailcat || !store.tailcatEnabled)
-        }
-        .task {
-            await store.refreshTailcatStatus()
-            relayMode = currentRelayMode
-            if !store.tailcatIsManaged { customDERPMapURL = store.tailcatDERPMapURL }
-        }
-        .onChange(of: relayMode) { _, mode in
-            focusesRelayURL = mode == .custom
-        }
-        .confirmationDialog("更换中转服务？", isPresented: $confirmsRelayChange, titleVisibility: .visible) {
-            Button("更换并重新配对") { Task { await applySelection() } }
-        } message: {
+        .pickerStyle(.menu)
+        .disabled(!store.canChangeTailcat || isApplying)
+        .task { await store.refreshTailcatStatus() }
+        .confirmationDialog(
+            "更换中转服务？",
+            isPresented: Binding(get: { pendingMode != nil }, set: { if !$0 { pendingMode = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingMode
+        ) { mode in
+            Button("更换并重新配对") { apply(mode, url: mode == .custom ? trimmedCustomURL : "") }
+        } message: { _ in
             Text("本机的内置连接会短暂重连，使用该线路的手机可能需要重新扫码。Tailscale 和局域网连接不受影响。")
         }
-        .confirmationDialog("重置内置连接？", isPresented: $confirmsTailcatReset, titleVisibility: .visible) {
-            Button("重置内置连接", role: .destructive) { Task { await store.resetTailcat() } }
-        } message: {
-            Text("所有通过内置连接配对的设备需要重新扫码。Tailscale 和局域网连接不受影响。")
+        .sheet(isPresented: $isEditingCustomURL) { customRelaySheet }
+    }
+
+    @ViewBuilder
+    private var changeAddressButton: some View {
+        if currentMode == .custom {
+            Button("更改地址…") { editCustomURL() }
+                .disabled(!store.canChangeTailcat || isApplying)
         }
     }
 
-    private var currentRelayMode: TailcatRelayMode {
-        if store.tailcatIsManaged { return .mimi }
-        return store.tailcatDERPMapURL.isEmpty ? .tailcatDefault : .custom
+    @ViewBuilder
+    private var statusLine: some View {
+        if isApplying || store.isUpdatingTailcat {
+            ProgressView().controlSize(.small)
+        } else if let error = store.tailcatError {
+            Text(error).font(.caption).foregroundStyle(.red)
+        } else if showsCaption, let notice = store.tailcatNotice {
+            Text(notice).font(.caption).foregroundStyle(.secondary)
+        }
     }
 
-    private var selectedDERPMapURL: String {
-        relayMode == .tailcatDefault ? "" : customDERPMapURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var selection: Binding<TailcatRelayMode> {
+        // 始终读实际配置：取消确认或更换失败时，控件要回到真实状态，不能停在没生效的选项上。
+        Binding(get: { currentMode }, set: { choose($0) })
     }
 
-    private var needsReconnectionConfirmation: Bool {
-        store.tailcatEnabled && relayMode != .mimi &&
-            (store.tailcatIsManaged || selectedDERPMapURL != store.tailcatDERPMapURL)
+    private var currentMode: TailcatRelayMode {
+        TailcatRelayPresentation.mode(isManaged: store.tailcatIsManaged, derpMapURL: store.tailcatDERPMapURL)
     }
 
-    private var relayValidationMessage: String? {
-        guard relayMode == .custom else { return nil }
-        let value = selectedDERPMapURL
+    private var trimmedCustomURL: String {
+        customDERPMapURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func choose(_ mode: TailcatRelayMode) {
+        guard mode != currentMode else { return }
+        if mode == .custom {
+            editCustomURL()
+        } else {
+            requestApply(mode, url: "")
+        }
+    }
+
+    private func editCustomURL() {
+        customDERPMapURL = store.tailcatIsManaged ? "" : store.tailcatDERPMapURL
+        isEditingCustomURL = true
+    }
+
+    private func requestApply(_ mode: TailcatRelayMode, url: String) {
+        if TailcatRelayPresentation.needsReconnectionConfirmation(
+            mode: mode, url: url, tailcatEnabled: store.tailcatEnabled,
+            isManaged: store.tailcatIsManaged, currentURL: store.tailcatDERPMapURL
+        ) {
+            pendingMode = mode
+        } else {
+            apply(mode, url: url)
+        }
+    }
+
+    private func apply(_ mode: TailcatRelayMode, url: String) {
+        guard !isApplying else { return }
+        isApplying = true
+        Task {
+            defer { isApplying = false }
+            if mode == .mimi {
+                await store.setTailcatManagedMode(true)
+                guard store.tailcatError == nil, store.tailcatIsManaged else { return }
+            } else {
+                // 先退出 Mimi 的配置，再保存用户选择；每一步都依据 agentd 回读，失败即停止。
+                if store.tailcatIsManaged {
+                    await store.setTailcatManagedMode(false)
+                    guard store.tailcatError == nil, !store.tailcatIsManaged else { return }
+                }
+                await store.configureTailcatDERPMap(url)
+                guard store.tailcatError == nil else { return }
+            }
+            if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
+            guard store.tailcatError == nil, store.tailcatEnabled else { return }
+            await onApplied()
+        }
+    }
+
+    private var customRelaySheet: some View {
+        let validation = TailcatRelayPresentation.customURLValidationMessage(trimmedCustomURL)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("使用自己的中转").font(.headline)
+            Text("填写你自己部署的 DERP Map HTTPS 地址。更换后，手机需要重新扫码。")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("https://", text: $customDERPMapURL)
+                .textFieldStyle(.roundedBorder)
+                .environment(\.layoutDirection, .leftToRight)
+            if !trimmedCustomURL.isEmpty, let validation {
+                Text(validation).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel) { isEditingCustomURL = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("使用此地址") {
+                    isEditingCustomURL = false
+                    requestApply(.custom, url: trimmedCustomURL)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(validation != nil || trimmedCustomURL == store.tailcatDERPMapURL)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+/// 三种中转的判定和文案。视图只负责呈现，规则可以直接测试。
+enum TailcatRelayPresentation {
+    static func mode(isManaged: Bool, derpMapURL: String) -> TailcatRelayMode {
+        if isManaged { return .mimi }
+        return derpMapURL.isEmpty ? .tailcatDefault : .custom
+    }
+
+    static func caption(mode: TailcatRelayMode, derpMapURL: String) -> String {
+        switch mode {
+        case .tailcatDefault:
+            "免费，无需配置。只在手机无法直连电脑时使用。"
+        case .custom:
+            if let host = URLComponents(string: derpMapURL)?.host, !host.isEmpty {
+                "正在使用你自己部署的中转：\(host)"
+            } else {
+                "正在使用你自己部署的中转。"
+            }
+        case .mimi:
+            mimiPairingNote
+        }
+    }
+
+    static let mimiPairingNote = "扫码后在手机上开通，自动完成配置。"
+
+    /// 只有会让正在使用的手机断开时才打断用户；改用 Mimi 不影响原有免费线路。
+    static func needsReconnectionConfirmation(
+        mode: TailcatRelayMode, url: String, tailcatEnabled: Bool, isManaged: Bool, currentURL: String
+    ) -> Bool {
+        tailcatEnabled && mode != .mimi && (isManaged || url != currentURL)
+    }
+
+    static func customURLValidationMessage(_ value: String) -> String? {
         guard !value.isEmpty else { return "请输入完整的 DERP Map HTTPS 地址。" }
         // 官方地址要求开通授权，不能作为自建地址保存后才发现错误并断开现有配置。
         if value == "https://api.code89757.com/v1/relay/tailcat-derp-map.json" {
@@ -134,30 +229,31 @@ struct TailcatRelaySettings: View {
         else { return "请输入不含账号、密码或片段的完整 HTTPS 地址。" }
         return nil
     }
+}
 
-    private func applySelection() async {
-        guard !isApplyingRelay else { return }
-        isApplyingRelay = true
-        defer { isApplyingRelay = false }
-        let selectedMode = relayMode
-        let selectedURL = selectedDERPMapURL
-        if selectedMode == .mimi {
-            await store.setTailcatManagedMode(true)
-            guard store.tailcatError == nil, store.tailcatIsManaged else { return }
-            if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
-        } else {
-            // 先退出 Mimi 的配置，再保存用户选择；每一步都依据 agentd 回读，失败即停止。
-            if store.tailcatIsManaged {
-                await store.setTailcatManagedMode(false)
-                guard store.tailcatError == nil, !store.tailcatIsManaged else { return }
-            }
-            await store.configureTailcatDERPMap(selectedURL)
+/// 设置页：中转单选加恢复操作。配对窗口只用上面的单选，不带这些低频操作。
+struct TailcatRelaySettings: View {
+    let store: HostStore
+
+    @Environment(\.openWindow) private var openWindow
+    @State private var confirmsTailcatReset = false
+    @State private var isApplyingRelay = false
+
+    var body: some View {
+        Section("中转服务") {
+            TailcatRelayPicker(store: store, isApplying: $isApplyingRelay) { await showPairing() }
         }
-        guard store.tailcatError == nil else { return }
-        if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
-        guard store.tailcatError == nil else { return }
-        if store.tailcatEnabled { await showPairing() }
-        if store.lastError == nil { onApplied?() }
+        Section("配对与恢复") {
+            Button("生成配对二维码") { Task { await showPairing() } }
+                .disabled(!store.canPair || !store.availablePairingNetworks.contains(.tailcat) || store.isBusy)
+            Button("重置内置连接…", role: .destructive) { confirmsTailcatReset = true }
+                .disabled(!store.canChangeTailcat || !store.tailcatEnabled)
+        }
+        .confirmationDialog("重置内置连接？", isPresented: $confirmsTailcatReset, titleVisibility: .visible) {
+            Button("重置内置连接", role: .destructive) { Task { await store.resetTailcat() } }
+        } message: {
+            Text("所有通过内置连接配对的设备需要重新扫码。Tailscale 和局域网连接不受影响。")
+        }
     }
 
     private func showPairing() async {

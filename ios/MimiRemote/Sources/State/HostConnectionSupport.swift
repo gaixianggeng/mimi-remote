@@ -115,6 +115,14 @@ enum RelayServiceChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    var systemImage: String {
+        switch self {
+        case .tailcatDefault: "network"
+        case .custom: "server.rack"
+        case .mimi: "network.badge.shield.half.filled"
+        }
+    }
+
     static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard items.first(where: { $0.name == "transport" })?.value == "tailcat" else { return nil }

@@ -815,21 +815,7 @@ struct InitialConnectionSettingsSections: View {
     /// 所以这里只展示当前方式，不提供切换；高级配置在行内导航的 Tailcat 页里。
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
-        NavigationLink(value: SettingsDestination.managedConnectionDevices) {
-            ConnectionRowLabel(
-                title: L10n.text("ui.relay_service_title"),
-                value: currentConnectionRoute?.usesTailcat == true
-                    ? ManagedConnectionDevicesView.currentChoice(
-                        route: currentConnectionRoute,
-                        savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? "")
-                    )?.title
-                    : L10n.text("ui.relay_not_needed"),
-                systemImage: "network"
-            )
-        }
-        .settingsStandardListRow()
-        .accessibilityIdentifier("settings.connection.managedConnection")
-
+        // 先是连接方式，再是它下面的中转：中转只对内置连接有意义，顺序要体现这层从属关系。
         if appStore.isConfigured {
             NavigationLink(value: SettingsDestination.tailcat) {
                 ConnectionRowLabel(
@@ -841,6 +827,20 @@ struct InitialConnectionSettingsSections: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.connection.tailcat")
         }
+
+        NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.relay_service_title"),
+                value: ManagedConnectionDevicesView.relayRowValue(
+                    route: currentConnectionRoute,
+                    savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? ""),
+                    freeChoice: tailcatController.lastFreeRelayChoice(profileID: appStore.activeConnectionProfileID ?? "")
+                ),
+                systemImage: "network"
+            )
+        }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.connection.managedConnection")
     }
 
     private var currentConnectionRoute: ConnectionProfileRoute? {
@@ -1083,11 +1083,12 @@ struct InitialConnectionSettingsSections: View {
 
             manualConnectionRow(tokens: tokens)
 
-            // 可选中转统一放在设备流程，不把服务开通混进必做的扫码步骤。
+            // 不把开通混进必做的扫码步骤；有邀请码的人直接进输入页，不经过还没有内容的中转页。
             if ManagedConnectionSubscriptionView.isEntryVisible {
-                NavigationLink(value: SettingsDestination.managedConnectionDevices) {
-                    Label(L10n.text("ui.relay_service_optional"), systemImage: "network")
+                NavigationLink(value: SettingsDestination.managedConnection) {
+                    ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
                 }
+                .settingsStandardListRow()
                 .accessibilityIdentifier("settings.firstConnection.invite")
             }
             SettingsExternalLinkRow(

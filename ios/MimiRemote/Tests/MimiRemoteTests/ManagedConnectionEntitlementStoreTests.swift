@@ -1,4 +1,5 @@
 import StoreKit
+import SwiftUI
 import XCTest
 @testable import MimiRemote
 
@@ -83,6 +84,56 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         let codes = InMemoryManagedConnectionRedemptionCodeStore(code: savedCode)
         let store = ManagedConnectionEntitlementStore(storeKit: kit, entitlementAPI: api, redemptionCodes: codes)
         return (store, kit, api, codes)
+    }
+
+    /// 看一眼 Mimi 页不等于选择 Mimi：返回后线路和设备页显示都不能变。
+    func testOpeningMimiPageDoesNotChooseMimi() async throws {
+        let suite = "MimiPage.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        let profile = ConnectionProfile(
+            id: "studio", displayName: "Studio", endpoint: "http://127.0.0.1:18787",
+            lastSuccessfulAt: Date(), installationID: "installation", hostPlatform: .apple,
+            connectionRoute: .customTailcat
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v2")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        try tokenStore.save("token", profileID: profile.id)
+        let appStore = MimiRemote.AppStore(defaults: defaults, tokenStore: tokenStore, prefersLocalConnection: false)
+        appStore.connectionStatus = .connected("test")
+        let controller = TailcatExperimentController(appStore: appStore, defaults: defaults, tokenStore: tokenStore)
+        controller.selectRelayService(.tailcatDefault, profileID: profile.id)
+        let client = MockSessionStoreClient(projects: [], sessions: [])
+        let sessionStore = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: controller, clientFactory: { client }
+        )
+        let entitlements = makeRedemptionStore().store
+        let themeDefaults = try XCTUnwrap(UserDefaults(suiteName: suite + ".theme"))
+        defer { themeDefaults.removePersistentDomain(forName: suite + ".theme") }
+
+        let page = NavigationStack {
+            ManagedConnectionSubscriptionView(qrScannerPresentation: ConnectionQRCodeScannerPresentation())
+        }
+        .environmentObject(appStore)
+        .environmentObject(sessionStore)
+        .environmentObject(controller)
+        .environmentObject(entitlements)
+        .environmentObject(ThemeStore(defaults: themeDefaults))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 393, height: 852)
+        window.rootViewController = UIHostingController(rootView: page)
+        window.isHidden = false
+        defer { window.isHidden = true }
+
+        // 状态离开「检查中」说明页面的 .task 确实跑过，否则这条断言不证明任何事。
+        for _ in 0..<40 where entitlements.status == .loading {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(entitlements.status, .available)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: profile.id), .tailcatDefault)
     }
 
     func testRedeemGrantsEntitlementAndSavesTrimmedCode() async {

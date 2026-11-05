@@ -535,6 +535,8 @@ struct SettingsValueLabel: View {
     var valueTint: Color? = nil
     /// 动作行（点了就执行，不导航）用强调色标题区分于导航行，与列表里的按钮惯例一致。
     var titleTint: Color? = nil
+    /// 单选的当前项把图标换成对勾并用强调色，其余行保持统一的图标色。
+    var iconTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
@@ -544,7 +546,7 @@ struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.settingsIconTint)
+                .foregroundStyle(iconTint ?? tokens.settingsIconTint)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot

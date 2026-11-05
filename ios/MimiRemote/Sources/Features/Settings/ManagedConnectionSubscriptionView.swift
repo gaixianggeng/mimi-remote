@@ -33,6 +33,7 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var sessionStore: SessionStore
@@ -42,80 +43,66 @@ struct ManagedConnectionSubscriptionView: View {
     @State private var isManagingSubscription = false
     @State private var redemptionCode = ""
     @State private var isScanningConnection = false
+    /// 用户在这一页发起了开通。只有这时结果才算选择 Mimi；冷启动查到已有权益不改线路。
+    @State private var requestedActivation = false
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
     /// 正式开放时改回 true（#949）。
     static let showsPurchaseOptions = false
 
-    /// 服务资格和名额集中在这里；当前电脑的实际连接仍由设备页展示。
+    /// 页面先给要做的事（开通），介绍和隐私放在后面：看这一页的人多半手里已经有邀请码。
+    /// 打开这一页不改变线路；完成开通或点「启用」才算选择了 Mimi。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            if case .available = entitlementStore.status {
-                // 还没订阅时先讲清用途，状态行只会显示「未订阅」，没有信息量。
-                benefitsSection
-            } else {
+            if !showsIntro {
                 statusSection
             }
             if isEntitled {
                 if appStore.activeConnectionProfile == nil {
                     Section {
                         Text(L10n.text("ui.managed_redemption_first_connection"))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 12)
+                            .settingsRow()
                         scanComputerButton
+                    } header: {
+                        SettingsGroupHeader(title: L10n.text("ui.relay_this_computer"))
                     }
                     .settingsGroupRowStyle()
-                }
-                if let notice = sessionStore.mimiRelayNotice {
-                    Section { Text(notice).fixedSize(horizontal: false, vertical: true) }
-                        .settingsGroupRowStyle()
-                }
-                if let profile = appStore.activeConnectionProfile {
-                    Section {
-                        if profile.connectionRoute.isManaged {
-                            Label(L10n.text("ui.relay_enabled"), systemImage: "checkmark.circle")
-                        } else if sessionStore.isActivatingMimiRelay {
-                            ProgressView(L10n.text("ui.relay_activating"))
-                        } else if !appStore.connectionStatus.isConnected {
-                            Text(L10n.text("ui.relay_reconnect_to_configure"))
-                        } else {
-                            Button(L10n.text("ui.retry")) {
-                                sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
-                            }
-                        }
-                    }
-                    .settingsGroupRowStyle()
+                } else {
+                    thisComputerSection
                 }
                 if !entitlementStore.isRedemptionEntitlement {
-                    Section { manageSubscriptionButton }.settingsGroupRowStyle()
+                    Section { manageSubscriptionButton } header: { SettingsGroupHeader() }
+                        .settingsGroupRowStyle()
                 }
                 ManagedConnectionDeviceListSection()
-            }
-            if !isEntitled {
+            } else if !isChecking {
+                if showsProducts {
+                    productsSection
+                }
                 redemptionSection
+                serviceSection
             }
-            if Self.showsPurchaseOptions, !entitlementStore.isRedemptionEntitlement {
-                productsSection
-            }
-            privacySection
-            subscriptionInformationSection
+            moreInformationSection
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.managed_subscription_title"))
         .navigationBarTitleDisplayMode(.inline)
         .tint(tokens.accent)
+        .sensoryFeedback(.success, trigger: isEntitled) { _, entitled in entitled }
         .task {
-            if let id = appStore.activeConnectionProfileID {
-                tailcatController.selectRelayService(.mimi, profileID: id)
-            }
             if entitlementStore.products.isEmpty {
                 await entitlementStore.load()
             }
             sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
         }
-        .onChange(of: entitlementStore.currentGrant?.entitlement.id) { _, _ in
+        .onChange(of: entitlementStore.currentGrant?.entitlement.id) { _, id in
+            if id != nil, requestedActivation { selectMimiForCurrentComputer() }
             sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
         }
         .onChange(of: appStore.connectionStatus.isConnected) { _, connected in
@@ -229,8 +216,111 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     private var isEntitled: Bool {
-        guard case .entitled = entitlementStore.status else { return false }
+        guard case .entitled = displayStatus else { return false }
         return true
+    }
+
+    private var isChecking: Bool {
+        switch displayStatus {
+        case .loading, .resolving: true
+        default: false
+        }
+    }
+
+    private var displayStatus: ManagedConnectionEntitlementStore.Status {
+        Self.displayStatus(entitlementStore.status, grant: entitlementStore.currentGrant, now: Date())
+    }
+
+    /// 刷新时 Store 会短暂回到检查中。已有有效权益的人不该每次进页都看到邀请码输入框闪一下。
+    static func displayStatus(
+        _ status: ManagedConnectionEntitlementStore.Status,
+        grant: ManagedConnectionEntitlementGrant?,
+        now: Date
+    ) -> ManagedConnectionEntitlementStore.Status {
+        switch status {
+        case .loading, .resolving:
+            if let grant, grant.entitlement.expiresAt > now { return .entitled(grant.entitlement) }
+            return status
+        default:
+            return status
+        }
+    }
+
+    /// 在这一页完成开通就是选择了 Mimi；Tailscale、局域网只保留资格，不改线路。
+    private func selectMimiForCurrentComputer() {
+        guard let profile = appStore.activeConnectionProfile, profile.connectionRoute.usesTailcat else { return }
+        tailcatController.selectRelayService(.mimi, profileID: profile.id)
+    }
+
+    private var currentRouteUsesTailcat: Bool {
+        appStore.activeConnectionProfile?.connectionRoute.usesTailcat == true
+    }
+
+    private var visibleNotice: String? {
+        ManagedConnectionDevicesView.visibleRelayNotice(
+            sessionStore.mimiRelayNotice, isActivating: sessionStore.isActivatingMimiRelay
+        )
+    }
+
+    /// 资格属于账号，启用属于电脑：这里只回答「这台电脑用上了吗」，并给出唯一的下一步。
+    private var thisComputerSection: some View {
+        Section {
+            if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
+                ConnectionRowLabel(
+                    title: L10n.text("ui.relay_enabled_short"),
+                    systemImage: "checkmark.circle.fill",
+                    iconTint: tokens.accent
+                )
+                .settingsStandardListRow()
+            } else if sessionStore.isActivatingMimiRelay {
+                HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
+                    ProgressView()
+                        .frame(width: SettingsLayoutMetrics.iconSlot)
+                    Text(L10n.text("ui.relay_activating"))
+                }
+                .settingsRow()
+                .accessibilityElement(children: .combine)
+            } else if !currentRouteUsesTailcat {
+                explanationRow(L10n.text("ui.relay_preserve_connection"))
+            } else if !appStore.connectionStatus.isConnected {
+                explanationRow(L10n.text("ui.relay_reconnect_to_configure"))
+            } else {
+                Button {
+                    selectMimiForCurrentComputer()
+                    sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+                } label: {
+                    ConnectionRowLabel(
+                        title: L10n.text("ui.relay_enable_current"),
+                        systemImage: "network.badge.shield.half.filled",
+                        titleTint: tokens.accent
+                    )
+                }
+                .buttonStyle(.plain)
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.relay.mimi.enable")
+            }
+            if let notice = visibleNotice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 12)
+                    .settingsRow()
+            }
+        } header: {
+            SettingsGroupHeader(title: L10n.text("ui.relay_this_computer"))
+        } footer: {
+            if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
+                Text(L10n.text("ui.relay_leave_on_computer")).settingsSectionFooterStyle()
+            }
+        }
+        .settingsGroupRowStyle()
+    }
+
+    private func explanationRow(_ text: String) -> some View {
+        Text(text)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 12)
+            .settingsRow()
     }
 
     private var tokens: ThemeTokens {
@@ -240,7 +330,7 @@ struct ManagedConnectionSubscriptionView: View {
     @ViewBuilder
     private var statusSection: some View {
         Section {
-            switch entitlementStore.status {
+            switch displayStatus {
             case .loading, .resolving:
                 HStack(spacing: 12) {
                     ProgressView()
@@ -278,23 +368,19 @@ struct ManagedConnectionSubscriptionView: View {
                 )
                 .foregroundStyle(tokens.warning)
             case .entitled(let entitlement):
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(
-                        entitlement.productID == ManagedConnectionProductID.betaRedemption
-                            ? L10n.text("ui.managed_redemption_active")
-                            : entitlementStatusText(entitlement.status),
-                        systemImage: "checkmark.circle.fill"
-                    )
-                    .foregroundStyle(tokens.success)
-                    Text(
-                        L10n.format(
-                            "ui.managed_subscription_valid_until",
-                            entitlement.expiresAt.formatted(date: .abbreviated, time: .omitted)
-                        )
-                    )
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(tokens.secondaryText)
-                }
+                ConnectionRowLabel(
+                    title: entitlement.productID == ManagedConnectionProductID.betaRedemption
+                        ? L10n.text("ui.managed_redemption_active")
+                        : entitlementStatusText(entitlement.status),
+                    value: L10n.format(
+                        "ui.managed_subscription_valid_until",
+                        entitlement.expiresAt.formatted(date: .abbreviated, time: .omitted)
+                    ),
+                    systemImage: "checkmark.circle.fill",
+                    titleTint: tokens.success,
+                    iconTint: tokens.success
+                )
+                .settingsStandardListRow()
             case .failed(let message):
                 VStack(alignment: .leading, spacing: 10) {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -326,32 +412,56 @@ struct ManagedConnectionSubscriptionView: View {
         }
     }
 
-    private var benefitsSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L10n.text("ui.managed_plan_headline"))
-                    .font(themeStore.uiFont(.headline))
-                    .foregroundStyle(tokens.primaryText)
-                Text(L10n.text("ui.managed_plan_subtitle"))
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .settingsRow(.descriptive)
-            .accessibilityElement(children: .combine)
+    private var showsIntro: Bool {
+        if case .available = displayStatus { return true }
+        return false
+    }
 
+    /// 一句话讲清这是什么，放在第一张卡片的标题上方：开通入口要在第一屏，不用先滑过介绍。
+    @ViewBuilder
+    private func sectionHeader(title: String, isFirst: Bool) -> some View {
+        if isFirst, showsIntro {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(L10n.text("ui.managed_plan_subtitle"))
+                    .settingsDetailFont()
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, SettingsLayoutMetrics.groupCardSpacing - SettingsLayoutMetrics.groupTitleBottomSpacing)
+                    .accessibilityIdentifier("settings.managedSubscription.intro")
+                Text(title)
+                    .settingsSectionHeaderStyle()
+                    .accessibilityAddTraits(.isHeader)
+            }
+            .padding(.top, SettingsLayoutMetrics.groupTitleTopInset)
+            .padding(.bottom, SettingsLayoutMetrics.groupTitleBottomSpacing)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .listRowInsets(EdgeInsets(
+                top: 0, leading: SettingsLayoutMetrics.rowHorizontalInset,
+                bottom: 0, trailing: SettingsLayoutMetrics.rowHorizontalInset
+            ))
+        } else {
+            SettingsGroupHeader(title: title)
+        }
+    }
+
+    private var showsProducts: Bool {
+        Self.showsPurchaseOptions && !entitlementStore.isRedemptionEntitlement
+    }
+
+    /// 大字号下单行标题会折行，上下要留白，否则文字贴到分隔线上。
+    private var wrappedRowPadding: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 10 : 0
+    }
+
+    private var serviceSection: some View {
+        Section {
             ForEach(Self.benefits, id: \.text) { benefit in
-                Label {
-                    Text(benefit.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: benefit.systemImage)
-                        .foregroundStyle(tokens.settingsIconTint)
-                }
-                .settingsRow(.descriptive)
+                ConnectionRowLabel(title: benefit.text, systemImage: benefit.systemImage)
+                    .padding(.vertical, wrappedRowPadding)
+                    .settingsStandardListRow()
             }
         } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_plan_benefits"), showsDivider: false)
+            SettingsGroupHeader(title: L10n.text("ui.managed_plan_benefits"))
         }
         .settingsGroupRowStyle()
         .accessibilityIdentifier("settings.managedSubscription.benefits")
@@ -359,8 +469,6 @@ struct ManagedConnectionSubscriptionView: View {
 
     private static var benefits: [(text: String, systemImage: String)] {
         [
-            (L10n.text("ui.managed_plan_benefit_no_setup"), "checkmark.circle"),
-            (L10n.text("ui.managed_plan_benefit_relay"), "point.3.connected.trianglepath.dotted"),
             (L10n.text("ui.managed_plan_benefit_private"), "lock"),
             (L10n.text("ui.managed_plan_benefit_devices"), "laptopcomputer.and.iphone")
         ]
@@ -394,30 +502,42 @@ struct ManagedConnectionSubscriptionView: View {
     /// TestFlight 内测用。整页只在带入口的构建显示，App Store 构建看不到（#887、#949）。
     private var redemptionSection: some View {
         Section {
-            TextField(L10n.text("ui.managed_redemption_placeholder"), text: $redemptionCode)
-                .textInputAutocapitalization(.characters)
-                .autocorrectionDisabled()
-                .submitLabel(.done)
-                .onSubmit(submitRedemption)
-                .frame(minHeight: 44)
-                .accessibilityIdentifier("settings.managedSubscription.redemptionCode")
-
             HStack(spacing: 12) {
-                Button(L10n.text("ui.managed_redemption_submit"), action: submitRedemption)
-                    .disabled(canSubmitRedemption == false)
-                    .accessibilityIdentifier("settings.managedSubscription.redeem")
-                Spacer(minLength: 12)
+                TextField(L10n.text("ui.managed_redemption_placeholder"), text: $redemptionCode)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit(submitRedemption)
+                    .accessibilityIdentifier("settings.managedSubscription.redemptionCode")
                 // 系统粘贴按钮不会弹「允许粘贴」；整段聊天消息也能认出里面的码。
                 PasteButton(payloadType: String.self) { strings in
                     Task { @MainActor in applyPastedRedemption(strings) }
                 }
-                .labelStyle(.titleAndIcon)
-                .buttonBorderShape(.capsule)
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
                 .disabled(entitlementStore.isBusy)
                 .accessibilityIdentifier("settings.managedSubscription.pasteCode")
             }
-            .frame(minHeight: 44)
-            .buttonStyle(.borderless)
+            .settingsRow()
+
+            Button(action: submitRedemption) {
+                ConnectionActionLabel(
+                    title: L10n.text("ui.managed_redemption_submit"),
+                    systemImage: "ticket",
+                    isBusy: entitlementStore.isBusy,
+                    busyTint: tokens.primaryActionForeground
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(tokens.primaryAction)
+            // 主操作的文字色是配深底的，禁用态底色变浅后要换成次级文字，否则看不清。
+            .foregroundStyle(canSubmitRedemption ? tokens.primaryActionForeground : tokens.secondaryText)
+            .controlSize(.large)
+            .disabled(canSubmitRedemption == false)
+            .padding(.vertical, 12)
+            .listRowSeparator(.hidden)
+            .settingsRow()
+            .accessibilityIdentifier("settings.managedSubscription.redeem")
 
             if CommunityContact.bundled != nil {
                 NavigationLink(value: SettingsDestination.community) {
@@ -425,12 +545,13 @@ struct ManagedConnectionSubscriptionView: View {
                         title: L10n.text("ui.managed_redemption_get_code"),
                         systemImage: "person.2"
                     )
+                    .padding(.vertical, wrappedRowPadding)
                 }
                 .settingsStandardListRow()
                 .accessibilityIdentifier("settings.managedSubscription.getCode")
             }
         } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_redemption_title"))
+            sectionHeader(title: L10n.text("ui.managed_redemption_title"), isFirst: !showsProducts)
         } footer: {
             if let message = entitlementStore.redemptionErrorMessage {
                 Text(message)
@@ -451,10 +572,12 @@ struct ManagedConnectionSubscriptionView: View {
 
     private func submitRedemption() {
         guard canSubmitRedemption else { return }
+        requestedActivation = true
         Task {
             await entitlementStore.redeem(code: redemptionCode)
             if isEntitled {
                 redemptionCode = ""
+                selectMimiForCurrentComputer()
                 sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
             }
         }
@@ -469,27 +592,7 @@ struct ManagedConnectionSubscriptionView: View {
         submitRedemption()
     }
 
-    /// 用大白话说清三件事：内容谁能看、服务器知道什么、我们存什么。必须和隐私政策一致。
-    private var privacySection: some View {
-        Section {
-            ForEach(Self.privacyPoints, id: \.text) { point in
-                Label {
-                    Text(point.text)
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: point.systemImage)
-                        .foregroundStyle(tokens.settingsIconTint)
-                }
-                .settingsRow(.descriptive)
-            }
-        } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_privacy_title"))
-        }
-        .settingsGroupRowStyle()
-        .accessibilityIdentifier("settings.managedSubscription.privacy")
-    }
-
-    private static var privacyPoints: [(text: String, systemImage: String)] {
+    fileprivate static var privacyPoints: [(text: String, systemImage: String)] {
         [
             (L10n.text("ui.managed_privacy_content"), "lock"),
             (L10n.text("ui.managed_privacy_relay"), "arrow.left.arrow.right"),
@@ -508,6 +611,7 @@ struct ManagedConnectionSubscriptionView: View {
             } else {
                 ForEach(Self.displayOrder(entitlementStore.products)) { product in
                     Button {
+                        requestedActivation = true
                         Task { await entitlementStore.purchase(productID: product.id) }
                     } label: {
                         VStack(alignment: .leading, spacing: 5) {
@@ -539,7 +643,7 @@ struct ManagedConnectionSubscriptionView: View {
                 }
             }
         } header: {
-            SettingsGroupHeader(title: L10n.text("ui.managed_subscription_plans"))
+            sectionHeader(title: L10n.text("ui.managed_subscription_plans"), isFirst: true)
         } footer: {
             Text(L10n.text("ui.managed_subscription_renews_automatically"))
                 .settingsSectionFooterStyle()
@@ -547,29 +651,77 @@ struct ManagedConnectionSubscriptionView: View {
         .settingsGroupRowStyle()
     }
 
-    private var subscriptionInformationSection: some View {
+    private var moreInformationSection: some View {
         Section {
             if Self.showsPurchaseOptions {
                 Button(L10n.text("ui.restore_purchases")) {
                     Task { restoreResult = await entitlementStore.restorePurchases() }
                 }
-                .frame(minHeight: 44)
+                .settingsRow()
                 .disabled(entitlementStore.isBusy)
                 .accessibilityIdentifier("settings.managedSubscription.restore")
             }
-
-            Link(destination: AppExternalLinks.termsOfUse) {
-                Label(L10n.text("ui.terms_of_use"), systemImage: "doc.text")
+            NavigationLink {
+                ManagedConnectionPrivacyView()
+            } label: {
+                ConnectionRowLabel(title: L10n.text("ui.managed_privacy_title"), systemImage: "lock.shield")
             }
-            .frame(minHeight: 44)
-
-            Link(destination: AppExternalLinks.privacyPolicy) {
-                Label(L10n.text("ui.privacy_policy"), systemImage: "hand.raised")
-            }
-            .frame(minHeight: 44)
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.managedSubscription.privacy")
+            SettingsExternalLinkRow(
+                title: L10n.text("ui.terms_of_use"), systemImage: "doc.text",
+                destination: AppExternalLinks.termsOfUse
+            )
+            .settingsStandardListRow()
+            SettingsExternalLinkRow(
+                title: L10n.text("ui.privacy_policy"), systemImage: "hand.raised",
+                destination: AppExternalLinks.privacyPolicy
+            )
+            .settingsStandardListRow()
         } header: {
             SettingsGroupHeader(title: L10n.text("ui.subscription_information"))
         }
         .settingsGroupRowStyle()
+    }
+}
+
+/// 用大白话说清三件事：内容谁能看、服务器知道什么、我们存什么。必须和隐私政策一致。
+/// 内容重要但不是每次都要读，所以放到下一层；开通页只留一个入口。
+private struct ManagedConnectionPrivacyView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        Form {
+            Section {
+                ForEach(ManagedConnectionSubscriptionView.privacyPoints, id: \.text) { point in
+                    HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
+                        Image(systemName: point.systemImage)
+                            .font(.system(size: SettingsLayoutMetrics.symbolPointSize, weight: .regular))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(tokens.settingsIconTint)
+                            .frame(width: SettingsLayoutMetrics.iconSlot)
+                            .accessibilityHidden(true)
+                        Text(point.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // 多行正文要有上下留白，否则文字会贴到分隔线上。
+                    .padding(.vertical, 12)
+                    .settingsRow()
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in
+                        SettingsLayoutMetrics.iconSlot + SettingsLayoutMetrics.iconSpacing
+                    }
+                }
+            } header: {
+                SettingsGroupHeader(showsDivider: false)
+            }
+            .settingsGroupRowStyle()
+        }
+        .themedSettingsForm(tokens: tokens)
+        .settingsDetailPage(tokens: tokens)
+        .navigationTitle(L10n.text("ui.managed_privacy_title"))
+        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityIdentifier("settings.managedSubscription.privacy.detail")
     }
 }

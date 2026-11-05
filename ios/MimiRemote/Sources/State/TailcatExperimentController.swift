@@ -1198,6 +1198,7 @@ final class TailcatExperimentController: ObservableObject {
         try tokenStore.deleteFreeTailcatAddress(profileID: profileID)
         clearRelayActivationRequest(profileID: profileID)
         defaults.removeObject(forKey: "mimi.relayChoice." + profileID)
+        defaults.removeObject(forKey: "mimi.relayFreeChoice." + profileID)
     }
 
     func relayServiceChoice(profileID: String) -> RelayServiceChoice? {
@@ -1207,7 +1208,13 @@ final class TailcatExperimentController: ObservableObject {
     func selectRelayService(_ choice: RelayServiceChoice?, profileID: String) {
         guard choice != relayServiceChoice(profileID: profileID) else { return }
         defaults.set(choice?.rawValue, forKey: "mimi.relayChoice." + profileID)
+        // 选 Mimi 不覆盖原来的免费线路：启用失败或还没开通时，页面要如实显示实际在用的那一项。
+        if choice != .mimi { defaults.set(choice?.rawValue, forKey: "mimi.relayFreeChoice." + profileID) }
         relayChoiceRevision &+= 1
+    }
+
+    func lastFreeRelayChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.relayFreeChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
     }
 
     func relayActivationRequestID(profileID: String) -> UUID {

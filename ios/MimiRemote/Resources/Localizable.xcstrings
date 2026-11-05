@@ -38,13 +38,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "To use the Tailcat default or your own relay, change the setting in Tailcat on your computer."
+            "value": "Relays only apply to the built-in connection (Tailcat), and only when a direct connection isn’t available. Change the default or your own relay on your computer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "如需切换到 Tailcat 默认中转或自有中转，请在电脑端的 Tailcat 设置中修改。"
+            "value": "中转只用于内置连接（Tailcat），只在无法直连时使用。默认和自己的中转要在电脑上更换。"
           }
         }
       }
@@ -118,13 +118,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "These relay settings apply only to Tailcat. Tailscale and local network connections do not need them."
+            "value": "This connection doesn’t use a relay, so there’s nothing to set up. Relays only apply to the built-in connection (Tailcat)."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这里的中转服务仅用于 Tailcat。使用 Tailscale 或局域网连接时，无需配置此项。"
+            "value": "当前连接不经过中转，无需配置。中转服务只用于内置连接（Tailcat）。"
           }
         }
       }
@@ -167,8 +167,8 @@
     },
     "ui.relay_preserve_connection": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is active. Your current connection is unchanged. Enable the built-in connection below when you are ready." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转服务已开通，当前连接方式已保留。需要时可在下方改用内置连接。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is active. This computer keeps its current connection, which doesn’t use a relay. To use it, choose the built-in connection on your computer and scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转已开通。这台电脑保持当前连接方式，不经过中转。需要时在电脑上选择内置连接，重新扫码即可。" } }
       }
     },
     "ui.relay_quota_notice": {
@@ -334,8 +334,8 @@
     "ui.managed_plan_benefit_devices": {
       "comment": "Managed Connection benefit: device limits per subscription.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Relay allowance: 3 computers and 5 phones or tablets" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "中转名额：3 台电脑、5 台手机或平板" } }
+        "en": { "stringUnit": { "state": "translated", "value": "3 computers and 5 phones or tablets" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "可接入 3 台电脑、5 台手机或平板" } }
       }
     },
     "ui.managed_plan_benefit_no_setup": {
@@ -348,8 +348,8 @@
     "ui.managed_plan_benefit_private": {
       "comment": "Managed Connection benefit: end-to-end encryption.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Connections remain end-to-end encrypted" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "继续使用端到端加密连接" } }
+        "en": { "stringUnit": { "state": "translated", "value": "End-to-end encrypted; servers can’t read it" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全程端到端加密，服务器看不到内容" } }
       }
     },
     "ui.managed_plan_benefit_relay": {
@@ -383,8 +383,8 @@
     "ui.managed_plan_subtitle": {
       "comment": "Supporting line under the Managed Connection headline.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "All Mimi features are free. Pay or use an invitation code to access Mimi’s relay servers." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。付费或使用邀请码，即可使用 Mimi 提供的中转服务器。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "All Mimi features are free. Mimi Relay is an optional service for the built-in connection (Tailcat): when your phone can’t reach your computer directly, traffic goes through Mimi’s servers." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。Mimi 中转是内置连接（Tailcat）的可选服务：手机无法直连电脑时，经 Mimi 的服务器转发。" } }
       }
     },
     "ui.managed_route_and_devices_title": {
@@ -45783,15 +45783,15 @@
     "ui.managed_redemption_submit": {
       "comment": "Button that redeems a beta redemption code.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Redeem" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "兑换" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Activate" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通" } }
       }
     },
     "ui.managed_redemption_hint": {
       "comment": "Explains what a beta redemption code does and how to reuse it.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enter a code to turn this on. Use the same code to restore access on a new phone." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "输入邀请码即可开通。换手机时输入同一个码就能恢复。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is set up for this computer automatically. Enter the same code to restore it on a new phone." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通后自动为这台电脑配置。换手机时输入同一个码就能恢复。" } }
       }
     },
     "ui.managed_redemption_active": {
@@ -47125,6 +47125,230 @@
         }
       }
     },
+    "ui.relay_builtin_tailcat": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in (Tailcat)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置连接（Tailcat）"
+          }
+        }
+      }
+    },
+    "ui.relay_section_choose": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用哪个中转"
+          }
+        }
+      }
+    },
+    "ui.relay_set_on_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set on computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在电脑上设置"
+          }
+        }
+      }
+    },
+    "ui.relay_this_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台电脑"
+          }
+        }
+      }
+    },
+    "ui.relay_enabled_short": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay is on"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已启用 Mimi 中转"
+          }
+        }
+      }
+    },
+    "ui.relay_leave_on_computer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To go back to the default or your own relay, change it under Relay Service on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如需改回默认或自己的中转，在电脑的「中转服务」里更换。"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_enabled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已启用"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_fallback": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Using free for now"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂用免费连接"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_activating": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning on…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启用…"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_tap_to_enable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to turn on"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点按启用"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_entitled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已开通"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_get_started": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get started"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "去开通"
+          }
+        }
+      }
+    },
+    "ui.relay_mimi_not_activated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi Relay not active"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mimi 中转未开通"
+          }
+        }
+      }
+    },
+    "ui.relay_no_computer_detail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to see its connection here. Relays only apply to the built-in connection (Tailcat) and are optional."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，这里会显示实际的连接方式。中转服务只用于内置连接（Tailcat），不开通也能使用全部功能。"
+          }
+        }
+      }
+    },
     "ui.relay_choice_default": {
       "localizations": {
         "en": {
@@ -47136,7 +47360,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tailcat 默认中转"
+            "value": "默认 Tailcat 自带"
           }
         }
       }
@@ -47146,13 +47370,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use your own"
+            "value": "Your own relay"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自有中转"
+            "value": "使用自己的"
           }
         }
       }
@@ -47178,13 +47402,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Free, with no setup"
+            "value": "Free, no setup"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "免费使用，无需配置"
+            "value": "免费，无需配置"
           }
         }
       }
@@ -47194,13 +47418,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use a relay you host"
+            "value": "Your own server"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "使用你自己部署的中转"
+            "value": "你自己部署的中转"
           }
         }
       }

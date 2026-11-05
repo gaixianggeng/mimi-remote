@@ -871,8 +871,8 @@ final class HostStore {
                 pairingNetwork = .tailscale
             }
             tailcatNotice = wasEnabled
-                ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
-                : "中继配置已保存，将在启用 Tailcat 后生效。"
+                ? "中转已更新，请在手机上重新扫码。"
+                : "中转配置已保存，开启内置连接后生效。"
         } catch {
             tailcatError = error.localizedDescription
         }
