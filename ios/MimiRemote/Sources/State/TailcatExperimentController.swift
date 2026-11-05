@@ -792,11 +792,18 @@ final class TailcatExperimentController: ObservableObject {
             if usesManagedAuthorization {
                 do {
                     if requiresManagedAuthorization, let freePairAddress = link.freePairAddress {
-                        let free = try await claimThroughPairNode(
-                            address: freePairAddress, claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
-                            privateKey: privateKey, managed: false, appStore: appStore, generation: operationGeneration
-                        )
-                        preparedFreeAddress = free.tailcatAddress
+                        // 免费线路在这里只是备份。它不通时正是最需要 Mimi 的时候，不能挡住开通；
+                        // 连上之后对账会再补齐备份。托管授权的检查都在下面，不受影响。
+                        do {
+                            let free = try await claimThroughPairNode(
+                                address: freePairAddress, claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
+                                privateKey: privateKey, managed: false, appStore: appStore, generation: operationGeneration
+                            )
+                            preparedFreeAddress = free.tailcatAddress
+                        } catch {
+                            guard TailcatConnectionFailure.shouldRecord(error) else { throw error }
+                            try ensureCurrent(operationGeneration)
+                        }
                     }
                     response = try await claimManagedPairing(
                         link,

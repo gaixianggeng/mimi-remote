@@ -400,6 +400,41 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         }
     }
 
+    /// 免费节点不通时不能挡住开通 Mimi：用户正是因为连不上才需要它。
+    func testActivationContinuesWhenFreeBackupNodeIsUnreachable() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(body: #"{"endpoint":"http://127.0.0.1:8787","token":"managed-token","tailcat_address":"tailcat:managed"}"#)
+        }
+        let authorizer = ManagedPairingAuthorizerStub()
+        let fixture = try makeControllerFixture(
+            startResults: [
+                .failure(.startFailed),
+                .success("http://127.0.0.1:49152"),
+                .success("http://127.0.0.1:49153")
+            ],
+            managedPairingAuthorizer: authorizer
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store, endpoint: "http://100.64.0.10:8787", dnsName: nil)
+        let profileID = try XCTUnwrap(fixture.store.activeConnectionProfileID)
+        let context = try ManagedConnectionUpgradeContext(appStore: fixture.store, client: fixture.store.client())
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+        let url = try XCTUnwrap(URL(string: Self.managedTailcatPairingURL + "&tailcat_free_pair_address=tailcat%3Afree-pair"))
+
+        _ = try await sessions.applyManagedPairingURL(url, upgrading: context)
+
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+        XCTAssertEqual(authorizer.completions.count, 1)
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertEqual(starts, 3, "必须先试过免费节点")
+        XCTAssertEqual(try fixture.tokenStore.loadFreeTailcatAddress(profileID: profileID), "", "备份之后再补，不能猜")
+    }
+
     func testManagedScanWithoutUpgradeStillUsesTicketEndpoint() async throws {
         URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
         defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }

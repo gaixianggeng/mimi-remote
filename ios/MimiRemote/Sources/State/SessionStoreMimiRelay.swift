@@ -129,7 +129,9 @@ extension SessionStore {
             }
             return false
         }
-        guard appStore.activeHostScope == scope, !Task.isCancelled else { return true }
+        // 提交会递增连接代次，这里不能再和提交前的 scope 比较；只确认还是这台电脑。
+        // 提交时旧连接已经断开，必须刷新才能恢复实时更新。
+        guard appStore.activeConnectionProfileID == profile.id, !Task.isCancelled else { return true }
         _ = await refreshAfterConnectionCommit(maxWait: 10)
         return true
     }

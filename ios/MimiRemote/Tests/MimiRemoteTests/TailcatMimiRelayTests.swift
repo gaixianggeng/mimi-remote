@@ -195,15 +195,17 @@ extension TailcatExperimentRoutingTests {
         try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
         fixture.controller.selectRelayService(.tailcatDefault, profileID: "managed-mac")
         fixture.controller.selectRelayService(.mimi, profileID: "managed-mac")
+        let client = MockSessionStoreClient(projects: [makeProject(id: "proj_1")], sessions: [])
         let sessions = SessionStore(
             appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
-            tailcatExperimentController: fixture.controller
+            tailcatExperimentController: fixture.controller, clientFactory: { client }
         )
 
         let switched = await sessions.switchToFreeRelay()
 
         XCTAssertTrue(switched)
         XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .customTailcat, "必须写入档案，不是临时线路")
+        XCTAssertEqual(sessions.projects.map(\.id), ["proj_1"], "提交会断开旧连接，切换后必须刷新")
         XCTAssertEqual(try fixture.tokenStore.loadTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
         XCTAssertEqual(try fixture.tokenStore.loadFreeTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
         XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "managed-mac"), .tailcatDefault)
