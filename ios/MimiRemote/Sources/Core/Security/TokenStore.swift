@@ -175,6 +175,12 @@ struct TokenStore {
         try save(deviceID, account: managedMobileRegisteredDeviceIDAccount)
     }
 
+#if DEBUG
+    func deleteTailcatExperimentPrivateKey() throws {
+        try delete(account: tailcatExperimentAccount, allowMissing: true)
+    }
+#endif
+
     func deleteTailcatExperimentAddress(allowMissing: Bool = true) throws {
         try delete(account: tailcatExperimentAddressAccount, allowMissing: allowMissing)
     }

@@ -1505,6 +1505,16 @@ final class TailcatExperimentController: ObservableObject {
             && current.localEndpoint == candidate.localEndpoint
     }
 
+#if DEBUG
+    /// 真机验收用：带这个启动参数的那一次启动删除手机的连接密钥，下次用到时生成新的，
+    /// 相当于一台从没用过 Mimi 中转的手机（#973）。之后要重新扫码，电脑才会放行新身份。
+    @discardableResult
+    static func resetIdentityIfRequested(arguments: [String], tokenStore: TokenStore) -> Bool {
+        guard arguments.contains("--debug-reset-tailcat-identity") else { return false }
+        return (try? tokenStore.deleteTailcatExperimentPrivateKey()) != nil
+    }
+#endif
+
     private func loadOrCreatePrivateKey() throws -> String {
         let saved = try tokenStore.loadTailcatExperimentPrivateKey()
         if !saved.isEmpty { return saved }

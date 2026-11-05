@@ -259,6 +259,19 @@ extension TailcatExperimentRoutingTests {
         XCTAssertEqual(noBackup.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
     }
 
+    #if DEBUG
+    func testIdentityResetOnlyRunsWithExplicitArgument() throws {
+        let tokenStore = TokenStore(keychain: TestKeychainOperations())
+        try tokenStore.saveTailcatExperimentPrivateKey("private-key")
+        XCTAssertFalse(TailcatExperimentController.resetIdentityIfRequested(arguments: ["app"], tokenStore: tokenStore))
+        XCTAssertEqual(try tokenStore.loadTailcatExperimentPrivateKey(), "private-key")
+        XCTAssertTrue(TailcatExperimentController.resetIdentityIfRequested(
+            arguments: ["app", "--debug-reset-tailcat-identity"], tokenStore: tokenStore
+        ))
+        XCTAssertEqual(try tokenStore.loadTailcatExperimentPrivateKey(), "")
+    }
+    #endif
+
     func testSwitchToFreeOnlyOfferedWhenThisPhoneHasFreeRoute() {
         func can(_ route: ConnectionProfileRoute?, hasFree: Bool = true) -> Bool {
             ManagedConnectionDevicesView.canSwitchToFree(profileRoute: route, hasFreeRoute: hasFree)
