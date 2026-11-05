@@ -26,7 +26,7 @@ extension HostStore {
         if let tailcatNotice { return tailcatNotice }
         if let error = tailcatStatus?.error, !error.isEmpty { return error }
         guard let tailcatStatus, tailcatStatus.enabled else {
-            return "默认关闭。开启后会启动独立 sidecar，不会替换或重启现有 Tailscale 连接。"
+            return "内置连接免费可用。开启后即可扫码；Mimi 中转服务可在手机上开通。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
     }
@@ -53,7 +53,7 @@ extension HostStore {
     }
     var canPair: Bool {
         status?.serviceOK == true && (codexEnabled || claudeEnabled || deepSeekEnabled)
-            && !availablePairingNetworks.isEmpty
+            && (!availablePairingNetworks.isEmpty || (tailcatStatus != nil && canChangeTailcat))
     }
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }

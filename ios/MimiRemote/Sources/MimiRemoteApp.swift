@@ -490,6 +490,11 @@ struct MimiRemoteApp: App {
         let managedConnectionEventReporter = ManagedConnectionEventReporter(
             identityStore: managedConnectionIdentityStore
         )
+#if DEBUG
+        TailcatExperimentController.resetIdentityIfRequested(
+            arguments: ProcessInfo.processInfo.arguments, tokenStore: TokenStore()
+        )
+#endif
         let tailcatExperimentController = TailcatExperimentController(
             appStore: appStore,
             managedPairingAuthorizer: managedConnectionDeviceStore,

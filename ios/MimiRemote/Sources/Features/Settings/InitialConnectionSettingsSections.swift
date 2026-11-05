@@ -55,6 +55,7 @@ enum ConnectionQRCodeScannerHost: String {
     case connectionSettings
     case addComputer
     case managedConnection
+    case relaySubscription
 }
 
 @MainActor
@@ -450,7 +451,6 @@ struct InitialConnectionSettingsSections: View {
             }
 
             connectionErrorMessageRow(displayErrorMessage, tokens: tokens)
-            managedConnectionLANHintRows(tokens: tokens)
 
             routeStatusRow(tokens: tokens)
             connectionMethodRows(tokens: tokens)
@@ -815,24 +815,8 @@ struct InitialConnectionSettingsSections: View {
     /// 所以这里只展示当前方式，不提供切换；高级配置在行内导航的 Tailcat 页里。
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
-        if ManagedConnectionSubscriptionView.isEntryVisible {
-            // 设备页只进线路与设备；购买与订阅在「我的」（#891）。
-            NavigationLink(value: SettingsDestination.managedConnectionDevices) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.managed_subscription_title"),
-                    value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
-                        ? tailcatController.state.connectionMethodSummary
-                        : managedConnectionEntitlementStore.currentGrant != nil
-                            ? L10n.text("ui.managed_connection_pending_connect")
-                            : L10n.text("ui.managed_connection_recommended_value"),
-                    systemImage: "network"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.connection.managedConnection")
-        }
-
-        if appStore.isConfigured && appStore.activeConnectionProfile?.connectionRoute.isManaged != true {
+        // 先是连接方式，再是它下面的中转：中转只对内置连接有意义，顺序要体现这层从属关系。
+        if appStore.isConfigured {
             NavigationLink(value: SettingsDestination.tailcat) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_method"),
@@ -843,13 +827,32 @@ struct InitialConnectionSettingsSections: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.connection.tailcat")
         }
+
+        NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.relay_service_title"),
+                value: ManagedConnectionDevicesView.currentRelayTitle(
+                    route: currentConnectionRoute,
+                    savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? ""),
+                    freeChoice: tailcatController.lastFreeRelayChoice(profileID: appStore.activeConnectionProfileID ?? "")
+                ),
+                systemImage: "network"
+            )
+        }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.connection.managedConnection")
     }
 
-    /// 展示生效中的方式：启用 Tailcat 时是档案上的 Tailcat 线路，关闭时回到已保存的直连线路。
+    private var currentConnectionRoute: ConnectionProfileRoute? {
+        ManagedConnectionDevicesView.currentRoute(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            tailcatEnabled: tailcatController.isEnabled, tailcatState: tailcatController.state,
+            fallbackRoute: appStore.savedFallbackConnectionRoute
+        )
+    }
+
     private var currentConnectionMethodTitle: String {
-        tailcatController.isEnabled
-            ? (appStore.activeConnectionProfile?.connectionRoute.title ?? "Tailcat")
-            : (appStore.savedFallbackConnectionRoute?.title ?? "Tailscale")
+        ManagedConnectionDevicesView.connectionMethodTitle(route: currentConnectionRoute)
     }
 
     /// 设备首页的添加入口：一行推进添加电脑页，那一页再给扫码主按钮和粘贴。
@@ -1080,7 +1083,14 @@ struct InitialConnectionSettingsSections: View {
 
             manualConnectionRow(tokens: tokens)
 
-            // 还没连上时进不了「我的」，首启页自己给出支持页入口。
+            // 不把开通混进必做的扫码步骤；有邀请码的人直接进输入页，不经过还没有内容的中转页。
+            if ManagedConnectionSubscriptionView.isEntryVisible {
+                NavigationLink(value: SettingsDestination.managedConnection) {
+                    ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.firstConnection.invite")
+            }
             SettingsExternalLinkRow(
                 title: L10n.text("ui.usage_help"),
                 systemImage: "questionmark.circle",
@@ -1754,6 +1764,15 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
+            if RelayServiceChoice.fromPairingURL(url) == .mimi, ManagedConnectionSubscriptionView.isEntryVisible {
+                if !wasConfigured || qrScannerPresentation.intent == nil {
+                    // 粘贴没有扫码 Cover，不会触发 onDismiss。由工作台接续开通，
+                    // 也覆盖首台电脑建立后首次连接页被替换的情况。
+                    sessionStore.mimiRelaySetupProfileID = appStore.activeConnectionProfileID
+                } else {
+                    qrScannerPresentation.openManagedConnection()
+                }
+            }
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in

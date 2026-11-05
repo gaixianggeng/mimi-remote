@@ -19,6 +19,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         if name.contains("ManagedConnection") {
             app.launchArguments.append("--debug-enable-managed-connection")
         }
+        if name.contains("TailcatRelay") {
+            app.launchArguments += ["--debug-enable-managed-connection", "--debug-store-route-tailcat"]
+        }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25))
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
@@ -39,7 +42,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         capture("devices-landscape")
         openMe()
         XCTAssertTrue(element("settings.tokenUsage").waitForExistence(timeout: 10))
-        XCTAssertEqual(element("settings.connectionManagement").exists, !expectsCompactNavigation)
+        XCTAssertFalse(element("settings.connectionManagement").exists)
+        XCTAssertFalse(element("settings.managedSubscription").exists)
         openDevices()
         XCUIDevice.shared.orientation = .portrait
         Thread.sleep(forTimeInterval: 2)
@@ -308,6 +312,30 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         assertDeviceNavigation()
     }
 
+    /// 真机验收发现：从中转页进 Mimi 页后点「加入用户群」，新页面被插到 Mimi 页下面，要返回一次才看得到。
+    func testTailcatRelayCommunityLinkOpensOnTopOfMimiPage() throws {
+        let relay = element("settings.connection.managedConnection")
+        scrollTo(relay)
+        relay.tap()
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
+        let mimi = element("settings.relay.mimi")
+        XCTAssertTrue(mimi.waitForExistence(timeout: 12))
+        capture("relay-status")
+        mimi.tap()
+        let getCode = element("settings.managedSubscription.getCode")
+        XCTAssertTrue(getCode.waitForExistence(timeout: 12))
+        capture("mimi-page")
+        getCode.tap()
+        let community = element("settings.community.qrCode")
+        XCTAssertTrue(community.waitForExistence(timeout: 8), "用户群页面必须直接显示在最上层")
+        XCTAssertTrue(community.isHittable, "用户群页面不能被 Mimi 页盖住")
+        capture("community-on-top")
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.managedSubscription.redemptionCode").waitForExistence(timeout: 8))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 8))
+    }
+
     func testInstallerAndManagedConnectionRemainReachable() throws {
         openAddComputer()
         let installer = element("settings.hostInstaller.disclosure")
@@ -325,16 +353,14 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let managed = element("settings.connection.managedConnection")
         scrollTo(managed)
         managed.tap()
-        // 设备页只进线路与设备；未订阅时从这里跳到订阅页（#891）。
+        // 已有的 Tailscale 连接只展示状态，不再让用户重复扫码或选择 Tailcat 中转。
         XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
+        XCTAssertTrue(element("settings.relay.connectionMethod").exists)
+        XCTAssertFalse(element("settings.relay.default").exists)
+        XCTAssertFalse(element("settings.relay.custom").exists)
+        XCTAssertFalse(element("settings.relay.mimi").exists)
+        XCTAssertFalse(element("settings.relay.scan").exists)
         capture("managed-connection-devices")
-        let subscribe = element("settings.managedConnectionDevices.subscribe")
-        XCTAssertTrue(subscribe.waitForExistence(timeout: 12))
-        subscribe.tap()
-        XCTAssertTrue(element("settings.managedSubscription.detail").waitForExistence(timeout: 12))
-        capture("managed-connection")
-        app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
     }
@@ -352,7 +378,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
             XCTAssertFalse(element("settings.devices.backToMe").exists)
         } else {
             XCTAssertTrue(element("sidebar.me").waitForExistence(timeout: 8))
-            XCTAssertTrue(element("settings.devices.backToMe").waitForExistence(timeout: 8))
+            XCTAssertTrue(element("sidebar.devices").waitForExistence(timeout: 8))
+            XCTAssertFalse(element("settings.devices.backToMe").exists)
         }
     }
 
@@ -379,10 +406,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     private func openDevices() {
         if expectsCompactNavigation { tab("devices").tap() }
         else {
-            openMe()
-            let connection = element("settings.connectionManagement")
-            scrollTo(connection)
-            connection.tap()
+            let devices = element("sidebar.devices")
+            XCTAssertTrue(devices.waitForExistence(timeout: 8))
+            devices.tap()
         }
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
     }

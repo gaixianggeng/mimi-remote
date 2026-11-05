@@ -92,6 +92,42 @@ struct PairingTicket: Equatable {
     }
 }
 
+/// 与电脑二维码共用的中转选择。它只表达用户意图，不替代订阅授权。
+enum RelayServiceChoice: String, CaseIterable, Identifiable {
+    case tailcatDefault = "default"
+    case custom
+    case mimi
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default")
+        case .custom: L10n.text("ui.relay_choice_custom")
+        case .mimi: L10n.text("ui.relay_choice_mimi")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default_detail")
+        case .custom: L10n.text("ui.relay_choice_custom_detail")
+        case .mimi: L10n.text("ui.relay_choice_mimi_detail")
+        }
+    }
+
+    static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.first(where: { $0.name == "transport" })?.value == "tailcat" else { return nil }
+        return items.first(where: { $0.name == "relay_service" })?.value.flatMap(Self.init(rawValue:))
+    }
+}
+
+/// 电脑上选择的中转，以及这台电脑的免费线路是哪一条。
+struct ComputerRelayChoice: Equatable {
+    let relay: RelayServiceChoice
+    let free: RelayServiceChoice?
+}
+
 struct TailcatPairingLink: Equatable {
     let ticket: PairingTicket
     let pairAddress: String

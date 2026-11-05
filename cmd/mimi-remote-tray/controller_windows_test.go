@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -152,5 +153,26 @@ func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
 	}
 	if _, err := parsePairingInfo([]byte(`{"endpoint":"http://127.0.0.1:8787"}`)); err == nil {
 		t.Fatal("missing short-lived pair URL should fail closed")
+	}
+}
+
+func TestPairingOnNetworkPreservesExplicitSelection(t *testing.T) {
+	for _, network := range []string{"tailscale", "lan"} {
+		var received []string
+		controller := &agentController{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+			received = args
+			return []byte(`{"pair_url":"mimiremote://pair?endpoint=http%3A%2F%2F192.0.2.1%3A8787"}`), nil
+		}}
+		if _, err := controller.pairingOnNetwork(context.Background(), network); err != nil {
+			t.Fatal(err)
+		}
+		expected := []string{"pair", "--qr-only", "--json", "--network", network}
+		if !reflect.DeepEqual(received, expected) {
+			t.Fatalf("network %s: %v", network, received)
+		}
+	}
+	controller := &agentController{}
+	if _, err := controller.pairingOnNetwork(context.Background(), "unknown"); err == nil {
+		t.Fatal("accepted unknown network")
 	}
 }

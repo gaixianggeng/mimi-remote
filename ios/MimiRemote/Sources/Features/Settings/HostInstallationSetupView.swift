@@ -348,6 +348,7 @@ struct ConnectionRowLabel: View {
     let systemImage: String
     var valueTint: Color? = nil
     var titleTint: Color? = nil
+    var iconTint: Color? = nil
 
     var body: some View {
         SettingsValueLabel(
@@ -355,7 +356,8 @@ struct ConnectionRowLabel: View {
             value: value,
             systemImage: systemImage,
             valueTint: valueTint,
-            titleTint: titleTint
+            titleTint: titleTint,
+            iconTint: iconTint
         )
     }
 }

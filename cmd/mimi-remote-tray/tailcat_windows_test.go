@@ -108,14 +108,14 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, errors.New("old agentd"), false); p.ToggleEnabled || p.Value != "状态不可用" {
 		t.Fatalf("unreadable Tailcat state offered a toggle: %+v", p)
 	}
-	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启 Tailcat" || p.Value != "未开启" {
+	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启内置连接" || p.Value != "未开启" {
 		t.Fatalf("disabled Tailcat presentation = %+v", p)
 	}
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, true); p.ToggleEnabled {
 		t.Fatalf("busy tray must not offer the Tailcat toggle: %+v", p)
 	}
 	running := tailcatTrayStatus{Enabled: true, Running: true, PairedDeviceCount: 1}
-	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 1 台设备" {
+	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭内置连接" || p.Value != "运行中 · 1 台设备" {
 		t.Fatalf("running Tailcat presentation = %+v", p)
 	}
 	stopped := agentStatus{Version: "1.0.0"}
@@ -154,11 +154,11 @@ func TestTailcatManagedArgumentsAndTitle(t *testing.T) {
 		t.Fatalf("exit arguments = %v", got)
 	}
 	managed := tailcatTrayStatus{Enabled: true, Running: true, Mode: "managed", PairedDeviceCount: 1}
-	if managed.title() != "运行中 · 托管 · 1 台设备" || tailcatManagedMenuLabel(managed) != "退出 Mimi 托管连接" {
+	if managed.title() != "Mimi 中转已启用 · 1 台设备" || tailcatManagedMenuLabel(managed) != "中转服务：Mimi 中转" {
 		t.Fatalf("managed presentation = %q / %q", managed.title(), tailcatManagedMenuLabel(managed))
 	}
 	free := tailcatTrayStatus{Enabled: true, Running: true, Mode: "self_hosted", PairedDeviceCount: 2}
-	if free.title() != "运行中 · 2 台设备" || tailcatManagedMenuLabel(free) != "改用 Mimi 托管连接" {
+	if free.title() != "运行中 · 2 台设备" || tailcatManagedMenuLabel(free) != "中转服务：默认 Tailcat 自带" {
 		t.Fatalf("free presentation = %q / %q", free.title(), tailcatManagedMenuLabel(free))
 	}
 }

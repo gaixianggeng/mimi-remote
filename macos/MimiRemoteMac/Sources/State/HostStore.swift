@@ -871,8 +871,8 @@ final class HostStore {
                 pairingNetwork = .tailscale
             }
             tailcatNotice = wasEnabled
-                ? "中继已更新。请重新生成二维码，并在移动设备上扫码。"
-                : "中继配置已保存，将在启用 Tailcat 后生效。"
+                ? "中转已更新，请在手机上重新扫码。"
+                : "中转配置已保存，开启内置连接后生效。"
         } catch {
             tailcatError = error.localizedDescription
         }
@@ -904,10 +904,10 @@ final class HostStore {
             }
             if managed {
                 tailcatNotice = wasEnabled
-                    ? "已开启 Mimi 托管连接。开通过的手机重新扫码后走托管中继，其他设备不受影响。"
-                    : "已改用 Mimi 托管连接，开启 Tailcat 后生效。"
+                    ? "本机已启用 Mimi 中转。已开通的手机可使用中转，免费连接继续可用。"
+                    : "本机已准备好 Mimi 中转，开启内置连接后生效。"
             } else {
-                tailcatNotice = "已退出托管连接。托管接入的设备请重新扫码，其他设备不受影响。"
+                tailcatNotice = "本机已停用 Mimi 中转。手机会尝试免费备用线路；旧设备可能需要重新扫码。"
             }
         } catch {
             tailcatError = error.localizedDescription

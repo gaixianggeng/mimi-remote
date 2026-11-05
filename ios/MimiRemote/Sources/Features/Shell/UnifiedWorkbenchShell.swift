@@ -130,6 +130,9 @@ struct UnifiedWorkbenchShell: View {
                 applyDebugLaunchRouteIfNeeded(layout: layout)
                 synchronizeSidebarLifecycle()
             }
+            .task(id: sessionStore.mimiRelaySetupProfileID) {
+                applyPendingRelaySetup(layout: layout)
+            }
             .task(id: managedConnectionEntitlementStore.pendingRoute) {
                 applyPendingManagedConnectionRoute(layout: layout)
             }
@@ -545,7 +548,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     func openConnectionSettings(layout: WorkbenchLayout) {
-        open(layout.usesCompactNavigation ? .devices : .me, layout: layout)
+        open(.devices, layout: layout)
     }
 
     private var settingsModalIsPresented: Bool {
@@ -960,7 +963,9 @@ struct UnifiedWorkbenchShell: View {
             tokens: tokens,
             usesFloatingSurface: layout.usesFloatingSidebarSurface,
             bottomSafeAreaInset: bottomSafeAreaInset,
-            isMeSelected: navigationState.selection == .me || navigationState.selection == .devices,
+            isMeSelected: navigationState.selection == .me,
+            isDevicesSelected: navigationState.selection == .devices,
+            onOpenDevices: { open(.devices, layout: layout) },
             onOpenSettings: {
                 // “我的”是一级入口，但不覆盖后台保留的会话/工作区恢复路由。
                 open(.me, layout: layout)

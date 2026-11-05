@@ -91,8 +91,8 @@ final class LocalizationTests: XCTestCase {
             ("ui.more", "More", "更多"),
             ("ui.experimental_features", "Experimental Features", "实验功能"),
             ("ui.tailcat_experiment", "Tailcat", "Tailcat"),
-            ("ui.managed_subscription_title", "Mimi Managed Connection", "Mimi 托管连接"),
-            ("ui.custom_tailcat", "Free Tailcat", "免费 Tailcat"),
+            ("ui.managed_subscription_title", "Mimi Relay", "Mimi 中转"),
+            ("ui.custom_tailcat", "Built-in connection · Free", "内置连接 · 免费"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")

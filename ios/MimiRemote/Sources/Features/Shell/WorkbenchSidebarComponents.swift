@@ -366,6 +366,8 @@ struct WorkbenchSidebarFooter: View {
     let usesFloatingSurface: Bool
     let bottomSafeAreaInset: CGFloat
     let isMeSelected: Bool
+    let isDevicesSelected: Bool
+    let onOpenDevices: (() -> Void)?
     let onOpenSettings: () -> Void
     let onNewSession: () -> Void
     let newSessionPresentationNamespace: Namespace.ID?
@@ -375,6 +377,8 @@ struct WorkbenchSidebarFooter: View {
         usesFloatingSurface: Bool = false,
         bottomSafeAreaInset: CGFloat = 0,
         isMeSelected: Bool = false,
+        isDevicesSelected: Bool = false,
+        onOpenDevices: (() -> Void)? = nil,
         onOpenSettings: @escaping () -> Void,
         onNewSession: @escaping () -> Void,
         newSessionPresentationNamespace: Namespace.ID? = nil
@@ -383,6 +387,8 @@ struct WorkbenchSidebarFooter: View {
         self.usesFloatingSurface = usesFloatingSurface
         self.bottomSafeAreaInset = bottomSafeAreaInset
         self.isMeSelected = isMeSelected
+        self.isDevicesSelected = isDevicesSelected
+        self.onOpenDevices = onOpenDevices
         self.onOpenSettings = onOpenSettings
         self.onNewSession = onNewSession
         self.newSessionPresentationNamespace = newSessionPresentationNamespace
@@ -409,7 +415,20 @@ struct WorkbenchSidebarFooter: View {
     }
 
     private var footerButtonRow: some View {
-        HStack {
+        HStack(spacing: 4) {
+            if let onOpenDevices {
+                Button(action: onOpenDevices) {
+                    Label(L10n.text("ui.devices"), systemImage: "laptopcomputer.and.iphone")
+                        .font(themeStore.uiFont(.subheadline, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isDevicesSelected ? tokens.accentText : tokens.secondaryText)
+                .background(Capsule().fill(isDevicesSelected ? tokens.selectionFill : .clear))
+                .accessibilityAddTraits(isDevicesSelected ? .isSelected : [])
+                .accessibilityIdentifier("sidebar.devices")
+            }
             meButton
 
             Spacer(minLength: 0)

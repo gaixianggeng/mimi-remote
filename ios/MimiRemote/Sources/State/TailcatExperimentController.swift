@@ -285,6 +285,7 @@ final class TailcatExperimentController: ObservableObject {
     static let legacyAddressKey = "agentd.tailcatExperiment.address.v1"
     static let diagnosticsKey = "agentd.tailcatExperiment.diagnostics.v1"
 
+    @Published private(set) var relayChoiceRevision = 0
     @Published private(set) var isEnabled: Bool
     @Published private(set) var address: String
     @Published private(set) var publicKey = ""
@@ -303,6 +304,8 @@ final class TailcatExperimentController: ObservableObject {
         let previousLegacyAddress: String?
         var targetProfileID: String?
         var previousProfileAddress: String?
+        var freeAddress: String? = nil
+        var previousFreeAddress: String? = nil
     }
 
     private struct RoutePreparation {
@@ -507,7 +510,8 @@ final class TailcatExperimentController: ObservableObject {
         _ route: ConnectionProfileRoute,
         appStore: AppStore
     ) async -> Bool {
-        guard appStore.activeConnectionProfile?.connectionRoute.isManaged == true,
+        if route == .customTailcat { return await useFreeRouteOnce(appStore: appStore) }
+        guard !appStore.requiresRePairing, appStore.activeConnectionProfile?.connectionRoute.isManaged == true,
               appStore.canUseSavedFallback(route) else {
             return false
         }
@@ -530,8 +534,11 @@ final class TailcatExperimentController: ObservableObject {
 
     @discardableResult
     func retryManagedConnection(appStore: AppStore) async -> Bool {
-        guard appStore.activeConnectionProfile?.connectionRoute.isManaged == true else {
+        guard !appStore.requiresRePairing, appStore.activeConnectionProfile?.connectionRoute.isManaged == true else {
             return false
+        }
+        if let profileID = appStore.activeConnectionProfileID {
+            address = (try? tokenStore.loadTailcatAddress(profileID: profileID)) ?? address
         }
         let routeReady: Bool
         if case .connected = state {
@@ -572,9 +579,11 @@ final class TailcatExperimentController: ObservableObject {
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard isEnabled else { return true }
-        if case .usingTemporaryRoute = state {
+        if case .usingTemporaryRoute(let route) = state {
             // “仅本次使用”覆盖整个当前进程。前后台切换不应被当成用户主动重试。
-            return true
+            // Tailscale、局域网不经过本地隧道；临时免费线路还依赖它，隧道没了要原样重建。
+            guard route.usesTailcat else { return true }
+            return await recoverTemporaryFreeRoute(appStore: appStore)
         }
         if let inFlightPreparation = preparationTask {
             _ = await inFlightPreparation.task.value
@@ -622,6 +631,23 @@ final class TailcatExperimentController: ObservableObject {
             forceRestart: true,
             refreshPathDiagnosticAfterPreparation: refreshPathDiagnosticAfterPreparation
         )
+    }
+
+    /// 隧道还能用就不打断连接；否则重建同一条免费线路，不回到 Mimi，档案里的默认线路也不变。
+    private func recoverTemporaryFreeRoute(appStore: AppStore) async -> Bool {
+        let capturedGeneration = generation
+        if let endpoint = appStore.tailcatExperimentEndpoint, await localEndpointProbe(endpoint) {
+            guard !Task.isCancelled, capturedGeneration == generation else { return false }
+            do {
+                _ = try await runtime.discoPing()
+                guard !Task.isCancelled, capturedGeneration == generation else { return false }
+                return true
+            } catch {
+                recordConnectionFailure(stage: .foregroundProbe, error: error)
+            }
+        }
+        guard !Task.isCancelled, capturedGeneration == generation else { return false }
+        return await useFreeRouteOnce(appStore: appStore)
     }
 
     private func prepareRoute(
@@ -738,8 +764,8 @@ final class TailcatExperimentController: ObservableObject {
         guard isAvailable else {
             throw PairingLinkError.unsupportedURL
         }
-        // 任何入口扫到托管二维码都走托管授权，结果与托管连接页的专用扫码一致。
-        let usesManagedAuthorization = requiresManagedAuthorization || link.isManagedPairing
+        // 先建立免费连接，再由开通流程自动启用中转。扫码入口不决定免费用户能否连接。
+        let usesManagedAuthorization = requiresManagedAuthorization || (link.isManagedPairing && link.freePairAddress == nil)
         let resolvedProfileTarget: PreparedConnectionProfileTarget
         if case .currentOrNew(let displayName) = profileTarget,
            appStore.activeConnectionProfileID == nil {
@@ -753,6 +779,7 @@ final class TailcatExperimentController: ObservableObject {
         let previousLegacyAddress = (try? tokenStore.loadTailcatExperimentAddress()) ?? ""
         var candidateEndpoint: String?
         var claimedManaged = false
+        var preparedFreeAddress: String?
         state = .starting
         generation &+= 1
         let operationGeneration = generation
@@ -764,6 +791,20 @@ final class TailcatExperimentController: ObservableObject {
             let response: PairingClaimResponse
             if usesManagedAuthorization {
                 do {
+                    if requiresManagedAuthorization, let freePairAddress = link.freePairAddress {
+                        // 免费线路在这里只是备份。它不通时正是最需要 Mimi 的时候，不能挡住开通；
+                        // 连上之后对账会再补齐备份。托管授权的检查都在下面，不受影响。
+                        do {
+                            let free = try await claimThroughPairNode(
+                                address: freePairAddress, claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
+                                privateKey: privateKey, managed: false, appStore: appStore, generation: operationGeneration
+                            )
+                            preparedFreeAddress = free.tailcatAddress
+                        } catch {
+                            guard TailcatConnectionFailure.shouldRecord(error) else { throw error }
+                            try ensureCurrent(operationGeneration)
+                        }
+                    }
                     response = try await claimManagedPairing(
                         link,
                         clientKey: clientKey,
@@ -773,8 +814,7 @@ final class TailcatExperimentController: ObservableObject {
                     )
                     claimedManaged = true
                 } catch {
-                    // 托管只是更快更稳的线路，走不通（没开通、名额已满、授权冲突、控制面不可达）
-                    // 就走免费节点。只有用户明确在托管连接页扫码时才把原因告诉他。
+                    // 自动启用失败由上层保留已连接的免费线路。旧二维码继续沿用旧授权协议。
                     guard !requiresManagedAuthorization,
                           TailcatConnectionFailure.shouldRecord(error),
                           let freePairAddress = link.freePairAddress else {
@@ -792,7 +832,7 @@ final class TailcatExperimentController: ObservableObject {
                 }
             } else {
                 response = try await claimThroughPairNode(
-                    address: link.pairAddress,
+                    address: link.freePairAddress ?? link.pairAddress,
                     claim: link.ticket.claimRequest(tailcatClientKey: clientKey),
                     privateKey: privateKey,
                     managed: false,
@@ -838,6 +878,7 @@ final class TailcatExperimentController: ObservableObject {
                 targetProfileID: nil,
                 previousProfileAddress: nil
             )
+            pendingPairing?.freeAddress = claimedManaged ? preparedFreeAddress : stableAddress
             candidateEndpoint = nil
             return prepared
         } catch {
@@ -953,6 +994,35 @@ final class TailcatExperimentController: ObservableObject {
         }
         let targetAddress = try tokenStore.loadTailcatAddress(profileID: id)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await prepareTailcatProfileRoute(
+            profile: profile,
+            targetAddress: targetAddress,
+            managed: profile.connectionRoute.isManaged,
+            appStore: appStore
+        )
+    }
+
+    /// 用户在手机上改回免费线路。走和切换电脑同一条准备路径：先在候选线路上确认连到的还是这台电脑，
+    /// 通过后才提交；失败时托管线路和保存的地址都不变。免费地址继续保留，之后还能一键启用 Mimi。
+    func prepareFreeRouteSwitch(appStore: AppStore) async throws -> PreparedConnectionSettings {
+        guard let profile = appStore.activeConnectionProfile, profile.connectionRoute.isManaged else {
+            throw ConnectionProfileError.notFound
+        }
+        return try await prepareTailcatProfileRoute(
+            profile: profile,
+            targetAddress: tokenStore.loadFreeTailcatAddress(profileID: profile.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            managed: false,
+            appStore: appStore
+        )
+    }
+
+    private func prepareTailcatProfileRoute(
+        profile: ConnectionProfile,
+        targetAddress: String,
+        managed: Bool,
+        appStore: AppStore
+    ) async throws -> PreparedConnectionSettings {
         guard !targetAddress.isEmpty else {
             throw PairingLinkError.missingTailcatAddress
         }
@@ -972,10 +1042,10 @@ final class TailcatExperimentController: ObservableObject {
             candidateEndpoint = endpoint
             try ensureCurrent(operationGeneration)
             let prepared = try await appStore.prepareConnectionProfileSwitch(
-                id: id,
+                id: profile.id,
                 activeEndpoint: endpoint,
                 tailcatAddress: targetAddress,
-                managed: profile.connectionRoute.isManaged
+                managed: managed
             )
             try ensureCurrent(operationGeneration)
             pendingPairing = PendingPairing(
@@ -1037,13 +1107,18 @@ final class TailcatExperimentController: ObservableObject {
             profileID = activeProfileID
         }
         let previousAddress = try tokenStore.loadTailcatAddress(profileID: profileID)
+        let previousFreeAddress = try tokenStore.loadFreeTailcatAddress(profileID: profileID)
         do {
+            if let freeAddress = pendingPairing.freeAddress, !freeAddress.isEmpty {
+                try tokenStore.saveFreeTailcatAddress(freeAddress, profileID: profileID)
+            }
             try tokenStore.saveTailcatAddress(pendingPairing.stableAddress, profileID: profileID)
             guard try tokenStore.loadTailcatAddress(profileID: profileID) == pendingPairing.stableAddress else {
                 throw URLError(.cannotWriteToFile)
             }
         } catch {
             try? restoreProfileAddress(previousAddress, profileID: profileID)
+            try? restoreFreeProfileAddress(previousFreeAddress, profileID: profileID)
             _ = try? await runtime.discardPrepared(endpoint: pendingPairing.localEndpoint)
             guard ownsPendingPairing(
                 pendingPairing,
@@ -1065,6 +1140,7 @@ final class TailcatExperimentController: ObservableObject {
         }
         pendingPairing.targetProfileID = profileID
         pendingPairing.previousProfileAddress = previousAddress
+        pendingPairing.previousFreeAddress = previousFreeAddress
         self.pendingPairing = pendingPairing
     }
 
@@ -1158,6 +1234,9 @@ final class TailcatExperimentController: ObservableObject {
         if let profileID = pendingPairing.targetProfileID,
            let previousProfileAddress = pendingPairing.previousProfileAddress {
             try? restoreProfileAddress(previousProfileAddress, profileID: profileID)
+            if let freeAddress = pendingPairing.previousFreeAddress {
+                try? restoreFreeProfileAddress(freeAddress, profileID: profileID)
+            }
         }
         await restoreAfterPairingFailure(
             previousEnabled: pendingPairing.previousEnabled,
@@ -1171,6 +1250,125 @@ final class TailcatExperimentController: ObservableObject {
 
     func deleteProfileRoute(profileID: String) throws {
         try tokenStore.deleteTailcatAddress(profileID: profileID)
+        try tokenStore.deleteFreeTailcatAddress(profileID: profileID)
+        clearRelayActivationRequest(profileID: profileID)
+        defaults.removeObject(forKey: "mimi.relayChoice." + profileID)
+        defaults.removeObject(forKey: "mimi.relayFreeChoice." + profileID)
+        defaults.removeObject(forKey: "mimi.computerRelayChoice." + profileID)
+    }
+
+    func relayServiceChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.relayChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    func selectRelayService(_ choice: RelayServiceChoice?, profileID: String) {
+        guard choice != relayServiceChoice(profileID: profileID) else { return }
+        defaults.set(choice?.rawValue, forKey: "mimi.relayChoice." + profileID)
+        // 选 Mimi 不覆盖原来的免费线路：启用失败或还没开通时，页面要如实显示实际在用的那一项。
+        if choice != .mimi { defaults.set(choice?.rawValue, forKey: "mimi.relayFreeChoice." + profileID) }
+        relayChoiceRevision &+= 1
+    }
+
+    func lastFreeRelayChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.relayFreeChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    func computerRelayChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.computerRelayChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    /// 记下电脑当前的选择，返回手机是否应该跟随到 Mimi。只认「变成 Mimi」这一下：
+    /// 用户在手机上改回免费时电脑仍然选着 Mimi，没有变化就不会被切回去；电脑重新选一次才算新的选择。
+    func noteComputerRelayChoice(_ choice: ComputerRelayChoice, profileID: String) -> Bool {
+        let previous = computerRelayChoice(profileID: profileID)
+        var changed = previous != choice.relay
+        defaults.set(choice.relay.rawValue, forKey: "mimi.computerRelayChoice." + profileID)
+        if let free = choice.free, free != .mimi, free != lastFreeRelayChoice(profileID: profileID) {
+            defaults.set(free.rawValue, forKey: "mimi.relayFreeChoice." + profileID)
+            changed = true
+        }
+        if changed { relayChoiceRevision &+= 1 }
+        return choice.relay == .mimi && previous != .mimi
+    }
+
+    func relayActivationRequestID(profileID: String) -> UUID {
+        let key = "mimi.relayActivation." + profileID
+        if let saved = defaults.dictionary(forKey: key),
+           let created = saved["created"] as? Date, now().timeIntervalSince(created) < 540,
+           let raw = saved["id"] as? String, let id = UUID(uuidString: raw) { return id }
+        let id = UUID()
+        // 只保存非敏感的幂等请求标识。退后台或重启后可领取原操作结果，避免重复启用。
+        defaults.set(["id": id.uuidString, "created": now()], forKey: key)
+        return id
+    }
+
+    func clearRelayActivationRequest(profileID: String) {
+        defaults.removeObject(forKey: "mimi.relayActivation." + profileID)
+    }
+
+    func hasFreeRoute(profileID: String) -> Bool {
+        !((try? tokenStore.loadFreeTailcatAddress(profileID: profileID)) ?? "").isEmpty
+    }
+
+    private func restoreFreeProfileAddress(_ address: String, profileID: String) throws {
+        if address.isEmpty { try tokenStore.deleteFreeTailcatAddress(profileID: profileID) }
+        else { try tokenStore.saveFreeTailcatAddress(address, profileID: profileID) }
+    }
+
+    /// 先保留同一台电脑的免费授权，服务过期后仍可使用。旧托管档案只在已验证连接上补齐。
+    func preserveFreeRoute(appStore: AppStore) async throws {
+        guard let profile = appStore.activeConnectionProfile, !appStore.requiresRePairing else { throw CancellationError() }
+        let scope = appStore.activeHostScope
+        let freeAddress: String
+        if profile.connectionRoute == .customTailcat {
+            freeAddress = try tokenStore.loadTailcatAddress(profileID: profile.id)
+        } else {
+            let clientKey = try bridge.publicKey(loadOrCreatePrivateKey())
+            freeAddress = try await appStore.client().freeTailcatRoute(clientKey: clientKey)
+        }
+        try Task.checkCancellation()
+        guard appStore.activeHostScope == scope, !freeAddress.isEmpty else { throw CancellationError() }
+        try tokenStore.saveFreeTailcatAddress(freeAddress, profileID: profile.id)
+    }
+
+    /// 只使用已经保存并授权的地址，且验证 installationID 后才切换本次线路。
+    func useFreeRouteOnce(appStore: AppStore) async -> Bool {
+        guard let profile = appStore.activeConnectionProfile, profile.connectionRoute.isManaged, !appStore.requiresRePairing,
+              let freeAddress = try? tokenStore.loadFreeTailcatAddress(profileID: profile.id), !freeAddress.isEmpty
+        else { return false }
+        let scope = appStore.activeHostScope
+        generation &+= 1
+        let operationGeneration = generation
+        state = .starting
+        var candidate: String?
+        do {
+            let endpoint = try await runtime.prepare(address: freeAddress, privateKey: loadOrCreatePrivateKey())
+            candidate = endpoint
+            try ensureCurrent(operationGeneration)
+            let prepared = try await appStore.prepareConnectionProfileSwitch(
+                id: profile.id, activeEndpoint: endpoint, tailcatAddress: freeAddress, managed: false
+            )
+            // 只借候选上下文核对电脑身份，不提交为默认线路；释放验证时预热的连接。
+            await prepared.hostContext?.discard()
+            try ensureCurrent(operationGeneration)
+            guard appStore.activeHostScope == scope else { throw CancellationError() }
+            try await runtime.activatePrepared(endpoint: endpoint)
+            try ensureCurrent(operationGeneration)
+            guard appStore.activeHostScope == scope else { throw CancellationError() }
+            appStore.setTailcatExperimentModeEnabled(true)
+            appStore.setTailcatExperimentEndpoint(endpoint)
+            isEnabled = true
+            address = freeAddress
+            state = .usingTemporaryRoute(.customTailcat)
+            return true
+        } catch {
+            let restoredEndpoint = if let candidate { try? await runtime.discardPrepared(endpoint: candidate) } else { nil as String? }
+            guard appStore.activeHostScope == scope, generation == operationGeneration else { return false }
+            appStore.setTailcatExperimentEndpoint(restoredEndpoint)
+            if appStore.acceptsCredentialInvalidation(error) { appStore.markCredentialsInvalid() }
+            state = .failed(message: error.localizedDescription)
+            return false
+        }
     }
 
     @discardableResult
@@ -1332,6 +1530,16 @@ final class TailcatExperimentController: ObservableObject {
         return current.generation == candidate.generation
             && current.localEndpoint == candidate.localEndpoint
     }
+
+#if DEBUG
+    /// 真机验收用：带这个启动参数的那一次启动删除手机的连接密钥，下次用到时生成新的，
+    /// 相当于一台从没用过 Mimi 中转的手机（#973）。之后要重新扫码，电脑才会放行新身份。
+    @discardableResult
+    static func resetIdentityIfRequested(arguments: [String], tokenStore: TokenStore) -> Bool {
+        guard arguments.contains("--debug-reset-tailcat-identity") else { return false }
+        return (try? tokenStore.deleteTailcatExperimentPrivateKey()) != nil
+    }
+#endif
 
     private func loadOrCreatePrivateKey() throws -> String {
         let saved = try tokenStore.loadTailcatExperimentPrivateKey()

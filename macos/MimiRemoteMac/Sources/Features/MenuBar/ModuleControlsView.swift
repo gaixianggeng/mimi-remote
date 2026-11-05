@@ -432,7 +432,7 @@ private struct ModuleDetailView: View {
             .font(.caption).foregroundStyle(.secondary)
         if module == .tailcat {
             Text(store.tailcatStatusDetail).font(.caption)
-            Button("中继与配对管理…") { openSettings() }
+            Button("中转与配对管理…") { openSettings() }
                 .controlSize(.small)
         }
         if module == .tailscale {
