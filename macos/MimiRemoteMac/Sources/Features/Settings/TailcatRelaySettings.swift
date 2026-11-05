@@ -12,7 +12,7 @@ enum TailcatRelayMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .tailcatDefault: "默认 Tailcat 自带"
-        case .custom: "使用自己的"
+        case .custom: "自建中转"
         case .mimi: "Mimi 中转"
         }
     }
@@ -157,11 +157,17 @@ struct TailcatRelayPicker: View {
     private var customRelaySheet: some View {
         let validation = TailcatRelayPresentation.customURLValidationMessage(trimmedCustomURL)
         return VStack(alignment: .leading, spacing: 12) {
-            Text("使用自己的中转").font(.headline)
-            Text("填写你自己部署的 DERP Map HTTPS 地址。更换后，手机需要重新扫码。")
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            TextField("https://", text: $customDERPMapURL)
+            Text("自建中转").font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(TailcatRelayPresentation.selfHostedSteps.enumerated()), id: \.offset) { index, step in
+                    Text("\(index + 1). \(step)")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .font(.callout).foregroundStyle(.secondary)
+            Link("查看部署文档", destination: TailcatRelayPresentation.selfHostedGuideURL)
+                .font(.callout)
+            TextField("DERP Map 地址，例如 https://relay.example.com/derpmap.json", text: $customDERPMapURL)
                 .textFieldStyle(.roundedBorder)
                 .environment(\.layoutDirection, .leftToRight)
             if !trimmedCustomURL.isEmpty, let validation {
@@ -197,16 +203,24 @@ enum TailcatRelayPresentation {
             "免费，无需配置。只在手机无法直连电脑时使用。"
         case .custom:
             if let host = URLComponents(string: derpMapURL)?.host, !host.isEmpty {
-                "正在使用你自己部署的中转：\(host)"
+                "正在使用自建中转：\(host)"
             } else {
-                "正在使用你自己部署的中转。"
+                "正在使用自建中转。"
             }
         case .mimi:
-            mimiPairingNote
+            "已开通的手机会自动切换。没开通的手机继续走免费线路，开通后再切换。"
         }
     }
 
-    static let mimiPairingNote = "扫码后在手机上开通，自动完成配置。"
+    static let mimiPairingNote = "已开通的手机直接用上 Mimi 中转，没开通的先走免费线路。"
+
+    static let selfHostedSteps = [
+        "在有公网域名的服务器上部署 derper。",
+        "把 DERP Map 文件发布到一个 HTTPS 地址。",
+        "把地址填到下面，然后用手机重新扫码。"
+    ]
+
+    static let selfHostedGuideURL = URL(string: "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/self-hosted-relay.md")!
 
     /// 只有会让正在使用的手机断开时才打断用户；改用 Mimi 不影响原有免费线路。
     static func needsReconnectionConfirmation(
@@ -240,7 +254,8 @@ struct TailcatRelaySettings: View {
     @State private var isApplyingRelay = false
 
     var body: some View {
-        Section("中转服务") {
+        // 中转只属于内置连接；分组名不再和下面的选项重名。
+        Section("内置连接") {
             TailcatRelayPicker(store: store, isApplying: $isApplyingRelay) { await showPairing() }
         }
         Section("配对与恢复") {

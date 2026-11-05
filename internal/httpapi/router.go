@@ -303,6 +303,9 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/tailcat/free-route", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatFreeRouteHandler)),
 	))
+	mux.Handle("/api/tailcat/relay-choice", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatRelayChoiceHandler)),
+	))
 	if cfg.Debug.EnableCodexHistory && cfg.Codex.IsEnabled() {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {

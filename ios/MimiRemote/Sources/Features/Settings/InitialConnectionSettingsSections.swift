@@ -831,7 +831,7 @@ struct InitialConnectionSettingsSections: View {
         NavigationLink(value: SettingsDestination.managedConnectionDevices) {
             ConnectionRowLabel(
                 title: L10n.text("ui.relay_service_title"),
-                value: ManagedConnectionDevicesView.relayRowValue(
+                value: ManagedConnectionDevicesView.currentRelayTitle(
                     route: currentConnectionRoute,
                     savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? ""),
                     freeChoice: tailcatController.lastFreeRelayChoice(profileID: appStore.activeConnectionProfileID ?? "")

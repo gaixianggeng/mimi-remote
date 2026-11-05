@@ -60,6 +60,8 @@ type tailcatStatus struct {
 	// 托管模式下给没开通设备用的免费节点。还没就绪时为空，二维码就只带托管节点。
 	FreeAddress     string `json:"free_address,omitempty"`
 	FreePairAddress string `json:"free_pair_address,omitempty"`
+	// 免费线路走的中继地址，空值表示 Tailcat 默认中继。只从本机配置回填，不经过 sidecar。
+	FreeDERPMapURL string `json:"-"`
 }
 
 type tailcatSidecar interface {
@@ -377,6 +379,14 @@ func (s *tailcatSidecarSupervisor) stopProcess(ctx context.Context, cmd *exec.Cm
 	return nil
 }
 
+// freeNodeDERPMapURL 返回免费线路用的中继：托管模式下是进入托管前的中继，否则就是当前中继。
+func freeNodeDERPMapURL(cfg config.TailcatConfig) string {
+	if cfg.ConnectionMode() == config.TailcatModeManaged {
+		return cfg.FreeRelayURL()
+	}
+	return strings.TrimSpace(cfg.DERPMapURL)
+}
+
 func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 	if s == nil {
 		return tailcatStatus{}
@@ -385,11 +395,14 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 	enabled := s.config.Enabled
 	derpMapURL := s.config.DERPMapURL
 	mode := s.config.ConnectionMode()
+	freeDERPMapURL := freeNodeDERPMapURL(s.config)
 	running := s.cmd != nil
 	starting := s.starting
 	lastError := s.lastError
 	s.mu.Unlock()
-	status := tailcatStatus{Enabled: enabled, Running: running, DERPMapURL: derpMapURL, Mode: mode}
+	status := tailcatStatus{
+		Enabled: enabled, Running: running, DERPMapURL: derpMapURL, Mode: mode, FreeDERPMapURL: freeDERPMapURL,
+	}
 	if !enabled {
 		return status
 	}
@@ -398,6 +411,7 @@ func (s *tailcatSidecarSupervisor) Status(ctx context.Context) tailcatStatus {
 			status.Enabled = true
 			status.DERPMapURL = derpMapURL
 			status.Mode = mode
+			status.FreeDERPMapURL = freeDERPMapURL
 			return status
 		} else if lastError == "" && !starting {
 			lastError = err.Error()

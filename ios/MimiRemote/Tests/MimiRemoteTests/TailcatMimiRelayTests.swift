@@ -70,18 +70,57 @@ extension TailcatExperimentRoutingTests {
         XCTAssertEqual(state(profile: .managedTailcat, current: .customTailcat), .temporarilyFree, "临时回退不能显示已启用")
     }
 
-    func testDeviceRowValueIsHonestAboutEveryRelayState() {
-        func value(_ route: ConnectionProfileRoute?, _ saved: RelayServiceChoice?, _ free: RelayServiceChoice? = nil) -> String {
-            ManagedConnectionDevicesView.relayRowValue(route: route, savedChoice: saved, freeChoice: free)
+    /// 「当前中转」只说这台手机实际走的线路，不把电脑上的选择或开通资格当成已经用上。
+    func testCurrentRelayTitleReportsActualRoute() {
+        func title(_ route: ConnectionProfileRoute?, _ saved: RelayServiceChoice?, _ free: RelayServiceChoice? = nil) -> String {
+            ManagedConnectionDevicesView.currentRelayTitle(route: route, savedChoice: saved, freeChoice: free)
         }
-        XCTAssertEqual(value(.tailscale, .mimi), L10n.text("ui.relay_not_needed"))
-        XCTAssertEqual(value(.lan, nil), L10n.text("ui.relay_not_needed"))
-        XCTAssertEqual(value(nil, nil), L10n.text("ui.not_connected"))
-        XCTAssertEqual(value(.customTailcat, .tailcatDefault), RelayServiceChoice.tailcatDefault.title)
-        XCTAssertEqual(value(.customTailcat, .mimi, .tailcatDefault), RelayServiceChoice.tailcatDefault.title)
-        XCTAssertEqual(value(.customTailcat, .mimi), L10n.text("ui.relay_mimi_not_activated"), "电脑选了 Mimi、手机还没开通")
-        XCTAssertEqual(value(.customTailcat, nil), L10n.text("ui.relay_configured_on_computer"), "旧二维码不猜测")
-        XCTAssertEqual(value(.managedTailcat, .mimi), RelayServiceChoice.mimi.title)
+        XCTAssertEqual(title(.tailscale, .mimi), L10n.text("ui.relay_not_needed"))
+        XCTAssertEqual(title(.lan, nil), L10n.text("ui.relay_not_needed"))
+        XCTAssertEqual(title(nil, nil), L10n.text("ui.not_connected"))
+        XCTAssertEqual(title(.customTailcat, .tailcatDefault), RelayServiceChoice.tailcatDefault.title)
+        XCTAssertEqual(title(.customTailcat, .mimi, .custom), RelayServiceChoice.custom.title, "选了 Mimi 但还没用上")
+        XCTAssertEqual(title(.customTailcat, nil, .tailcatDefault), RelayServiceChoice.tailcatDefault.title, "旧二维码由电脑告知")
+        XCTAssertEqual(title(.customTailcat, .mimi), L10n.text("ui.relay_free_status"), "没有信息时不猜默认还是自建")
+        XCTAssertEqual(title(.customTailcat, nil), L10n.text("ui.relay_free_status"))
+        XCTAssertEqual(title(.managedTailcat, .mimi, .tailcatDefault), RelayServiceChoice.mimi.title)
+    }
+
+    func testComputerSelectedMimiNoteOnlyAppliesToUnactivatedFreeRoute() {
+        func shows(_ computer: RelayServiceChoice?, _ route: ConnectionProfileRoute?, entitled: Bool = false) -> Bool {
+            ManagedConnectionDevicesView.computerSelectedMimiButNotActivated(
+                computerChoice: computer, route: route, entitled: entitled
+            )
+        }
+        XCTAssertTrue(shows(.mimi, .customTailcat))
+        XCTAssertFalse(shows(.mimi, .customTailcat, entitled: true), "已开通会自动切换")
+        XCTAssertFalse(shows(.mimi, .managedTailcat), "已经在用 Mimi")
+        XCTAssertFalse(shows(.tailcatDefault, .customTailcat))
+        XCTAssertFalse(shows(nil, .customTailcat))
+        XCTAssertFalse(shows(.mimi, .tailscale))
+    }
+
+    /// 电脑改选 Mimi 时手机跟随一次；手机改回免费后，电脑没有新动作就不能把它切回去。
+    func testPhoneFollowsComputerOnlyWhenSelectionBecomesMimi() throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let controller = fixture.controller
+        func note(_ relay: RelayServiceChoice, free: RelayServiceChoice? = .tailcatDefault, id: String = "first") -> Bool {
+            controller.noteComputerRelayChoice(ComputerRelayChoice(relay: relay, free: free), profileID: id)
+        }
+        XCTAssertFalse(note(.tailcatDefault), "默认不跟随")
+        XCTAssertEqual(controller.lastFreeRelayChoice(profileID: "first"), .tailcatDefault)
+        XCTAssertTrue(note(.mimi), "电脑改选 Mimi")
+        XCTAssertFalse(note(.mimi), "同一次选择只跟随一次，手机改回免费后不会被切回去")
+        XCTAssertFalse(note(.tailcatDefault))
+        XCTAssertTrue(note(.mimi), "电脑重新选一次才算新的选择")
+        XCTAssertTrue(note(.mimi, id: "second"), "第一次看到电脑已选 Mimi 也要跟随")
+        XCTAssertFalse(note(.custom, free: .custom))
+        XCTAssertEqual(controller.lastFreeRelayChoice(profileID: "first"), .custom)
+        XCTAssertEqual(controller.computerRelayChoice(profileID: "first"), .custom)
+        XCTAssertEqual(controller.computerRelayChoice(profileID: "second"), .mimi, "按电脑隔离")
+        try controller.deleteProfileRoute(profileID: "first")
+        XCTAssertNil(controller.computerRelayChoice(profileID: "first"))
     }
 
     func testRelayNoticeOnlyKeepsWhatTheRowCannotSay() {
@@ -169,6 +208,10 @@ extension TailcatExperimentRoutingTests {
         XCTAssertEqual(try fixture.tokenStore.loadFreeTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
         XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "managed-mac"), .tailcatDefault)
         XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49152"))
+        // 电脑还选着 Mimi 时，下一次检查不能把这次改回当成新选择。
+        XCTAssertFalse(fixture.controller.noteComputerRelayChoice(
+            ComputerRelayChoice(relay: .mimi, free: .tailcatDefault), profileID: "managed-mac"
+        ))
         XCTAssertNil(sessions.inFlightConnectionChangeGeneration)
         XCTAssertFalse(sessions.isSwitchingToFreeRelay)
         // 选择已不是 Mimi，提交后的连接变化不能把线路自动启用回去。
@@ -216,19 +259,15 @@ extension TailcatExperimentRoutingTests {
         XCTAssertEqual(noBackup.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
     }
 
-    func testFreeSwitchActionOnlyOffersRouteThisPhoneCanUse() {
-        func action(
-            _ route: ConnectionProfileRoute?, hasFree: Bool = true, free: RelayServiceChoice? = .tailcatDefault
-        ) -> ManagedConnectionDevicesView.FreeSwitchAction? {
-            ManagedConnectionDevicesView.freeSwitchAction(profileRoute: route, hasFreeRoute: hasFree, freeChoice: free)
+    func testSwitchToFreeOnlyOfferedWhenThisPhoneHasFreeRoute() {
+        func can(_ route: ConnectionProfileRoute?, hasFree: Bool = true) -> Bool {
+            ManagedConnectionDevicesView.canSwitchToFree(profileRoute: route, hasFreeRoute: hasFree)
         }
-        XCTAssertEqual(action(.managedTailcat), .choice(.tailcatDefault))
-        XCTAssertEqual(action(.managedTailcat, free: .custom), .choice(.custom))
-        XCTAssertEqual(action(.managedTailcat, free: nil), .unnamedFreeRoute, "不猜免费线路叫什么")
-        XCTAssertNil(action(.managedTailcat, hasFree: false))
-        XCTAssertNil(action(.customTailcat), "已经在免费线路上")
-        XCTAssertNil(action(.tailscale))
-        XCTAssertNil(action(nil))
+        XCTAssertTrue(can(.managedTailcat))
+        XCTAssertFalse(can(.managedTailcat, hasFree: false))
+        XCTAssertFalse(can(.customTailcat), "已经在免费线路上")
+        XCTAssertFalse(can(.tailscale))
+        XCTAssertFalse(can(nil))
     }
 
     func testRelayChoiceIsScopedToComputerAndRemovedWithItsRoute() throws {

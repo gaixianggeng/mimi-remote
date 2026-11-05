@@ -294,6 +294,18 @@ extension HostStoreTests {
         }
     }
 
+    /// 选 Mimi 后已开通的手机会自动跟随，说明不能再把扫码写成必经步骤。
+    func testMimiCaptionDoesNotRequireScanning() {
+        let caption = TailcatRelayPresentation.caption(mode: .mimi, derpMapURL: "")
+        XCTAssertTrue(caption.contains("自动切换"))
+        XCTAssertFalse(caption.contains("扫码"))
+    }
+
+    func testSelfHostedGuidePointsToPublicDocument() {
+        XCTAssertEqual(TailcatRelayPresentation.selfHostedGuideURL.scheme, "https")
+        XCTAssertTrue(TailcatRelayPresentation.selfHostedGuideURL.path.hasSuffix("docs/self-hosted-relay.md"))
+    }
+
     func testRelayCaptionNeverExposesFullCustomAddress() {
         let caption = TailcatRelayPresentation.caption(mode: .custom, derpMapURL: "https://relay.example/secret/map.json")
         XCTAssertTrue(caption.contains("relay.example"))

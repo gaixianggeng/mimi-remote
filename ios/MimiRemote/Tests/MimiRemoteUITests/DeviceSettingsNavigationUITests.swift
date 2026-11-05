@@ -19,6 +19,9 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         if name.contains("ManagedConnection") {
             app.launchArguments.append("--debug-enable-managed-connection")
         }
+        if name.contains("TailcatRelay") {
+            app.launchArguments += ["--debug-enable-managed-connection", "--debug-store-route-tailcat"]
+        }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25))
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
@@ -307,6 +310,30 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         returnToDeviceHome()
         assertDeviceNavigation()
+    }
+
+    /// 真机验收发现：从中转页进 Mimi 页后点「加入用户群」，新页面被插到 Mimi 页下面，要返回一次才看得到。
+    func testTailcatRelayCommunityLinkOpensOnTopOfMimiPage() throws {
+        let relay = element("settings.connection.managedConnection")
+        scrollTo(relay)
+        relay.tap()
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 12))
+        let mimi = element("settings.relay.mimi")
+        XCTAssertTrue(mimi.waitForExistence(timeout: 12))
+        capture("relay-status")
+        mimi.tap()
+        let getCode = element("settings.managedSubscription.getCode")
+        XCTAssertTrue(getCode.waitForExistence(timeout: 12))
+        capture("mimi-page")
+        getCode.tap()
+        let community = element("settings.community.qrCode")
+        XCTAssertTrue(community.waitForExistence(timeout: 8), "用户群页面必须直接显示在最上层")
+        XCTAssertTrue(community.isHittable, "用户群页面不能被 Mimi 页盖住")
+        capture("community-on-top")
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.managedSubscription.redemptionCode").waitForExistence(timeout: 8))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(element("settings.managedConnectionDevices.detail").waitForExistence(timeout: 8))
     }
 
     func testInstallerAndManagedConnectionRemainReachable() throws {

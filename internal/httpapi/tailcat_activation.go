@@ -162,6 +162,42 @@ func (r *Router) activateTailcatRelay(ctx context.Context) (tailcatManagedPairin
 }
 
 // 已拥有电脑访问凭据的设备可以登记自己的免费节点。它不读取或修改官方中转白名单。
+// tailcatRelayChoiceHandler 告诉已配对的手机电脑上选了哪个中转，以及免费线路是哪一条。
+// 只读、只返回选项名，不含中继地址；旧版电脑没有这个接口，手机按没有选择信息处理。
+func (r *Router) tailcatRelayChoiceHandler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if r.tailcat == nil {
+		writeError(w, http.StatusServiceUnavailable, "内置连接未启用")
+		return
+	}
+	status := r.tailcat.Status(req.Context())
+	if !status.Enabled {
+		writeError(w, http.StatusServiceUnavailable, "内置连接未启用")
+		return
+	}
+	relayService, freeRelayService := tailcatRelayServices(status)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"relay_service":      relayService,
+		"free_relay_service": freeRelayService,
+	})
+}
+
+func tailcatRelayServices(status tailcatStatus) (relayService, freeRelayService string) {
+	if status.FreeDERPMapURL != "" {
+		freeRelayService = "custom"
+	} else {
+		freeRelayService = "default"
+	}
+	if status.Mode == config.TailcatModeManaged {
+		return "mimi", freeRelayService
+	}
+	return freeRelayService, freeRelayService
+}
+
 func (r *Router) tailcatFreeRouteHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if req.Method != http.MethodPost {

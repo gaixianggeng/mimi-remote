@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,60 @@ func TestTailcatActivationAndFreeRouteRequireBearer(t *testing.T) {
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("%s: %d", path, response.Code)
 		}
+	}
+}
+
+func TestTailcatRelayChoiceReportsSelectionWithoutAddresses(t *testing.T) {
+	const relayURL = "https://relay.example/map.json"
+	for _, test := range []struct {
+		name          string
+		mode, freeURL string
+		relay, free   string
+	}{
+		{"default", config.TailcatModeSelfHosted, "", "default", "default"},
+		{"custom", config.TailcatModeSelfHosted, relayURL, "custom", "custom"},
+		{"mimi over default", config.TailcatModeManaged, "", "mimi", "default"},
+		{"mimi over custom", config.TailcatModeManaged, relayURL, "mimi", "custom"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, sidecar, _ := newLinkTestServer(t)
+			sidecar.status.Mode, sidecar.status.FreeDERPMapURL = test.mode, test.freeURL
+			response := httptest.NewRecorder()
+			server.handler.ServeHTTP(response, authedRequest(t, http.MethodGet, "/api/tailcat/relay-choice", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status: %d %s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "relay.example") {
+				t.Fatalf("relay address leaked: %s", response.Body.String())
+			}
+			var body map[string]string
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["relay_service"] != test.relay || body["free_relay_service"] != test.free {
+				t.Fatalf("wrong choice: %v", body)
+			}
+		})
+	}
+}
+
+func TestTailcatRelayChoiceRequiresBearerGetAndEnabledRoute(t *testing.T) {
+	server, sidecar, _ := newLinkTestServer(t)
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/tailcat/relay-choice", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("no bearer: %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	server.handler.ServeHTTP(response, authedRequest(t, http.MethodPost, "/api/tailcat/relay-choice", map[string]string{}))
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("post: %d", response.Code)
+	}
+	sidecar.status.Enabled = false
+	response = httptest.NewRecorder()
+	server.handler.ServeHTTP(response, authedRequest(t, http.MethodGet, "/api/tailcat/relay-choice", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled: %d", response.Code)
 	}
 }
 

@@ -580,6 +580,18 @@ struct AgentAPIClient {
         throw URLError(.timedOut)
     }
 
+    /// 电脑上选择的中转。旧版电脑没有这个接口，调用方按没有选择信息处理。
+    func tailcatRelayChoice() async throws -> ComputerRelayChoice {
+        struct Response: Decodable { let relay_service: String; let free_relay_service: String }
+        let result: Response = try await request(
+            path: "/api/tailcat/relay-choice", method: "GET", body: Optional<Data>.none
+        )
+        guard let relay = RelayServiceChoice(rawValue: result.relay_service) else {
+            throw AgentAPIError.invalidResponse
+        }
+        return ComputerRelayChoice(relay: relay, free: RelayServiceChoice(rawValue: result.free_relay_service))
+    }
+
     func freeTailcatRoute(clientKey: String) async throws -> String {
         struct Response: Decodable { let tailcat_address: String }
         let body = try JSONSerialization.data(withJSONObject: ["client_key": clientKey])

@@ -38,13 +38,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Relays only apply to the built-in connection (Tailcat), and only when a direct connection isn’t available. Change the default or your own relay on your computer."
+            "value": "You can switch between the default, self-hosted and Mimi relays under Relay Service on your computer. Relays are used only when your phone can’t reach your computer directly."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "中转只用于内置连接（Tailcat），只在无法直连时使用。默认和自己的中转要在电脑上更换。"
+            "value": "可以在电脑的「中转服务」里切换默认、自建或 Mimi 中转。中转只在手机无法直连电脑时使用。"
           }
         }
       }
@@ -47146,13 +47146,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Relay"
+            "value": "Optional service"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "使用哪个中转"
+            "value": "可选服务"
           }
         }
       }
@@ -47210,13 +47210,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "To go back to the default or your own relay, change it under Relay Service on your computer."
+            "value": "To use the default or a self-hosted relay, change it under Relay Service on your computer."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "如需改回默认或自己的中转，在电脑的「中转服务」里更换。"
+            "value": "如需改回默认或自建中转，在电脑的「中转服务」里更换。"
           }
         }
       }
@@ -47429,6 +47429,38 @@
         }
       }
     },
+    "ui.relay_current_service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current relay"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前中转"
+          }
+        }
+      }
+    },
+    "ui.relay_computer_selected_mimi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your computer selected Mimi Relay. This phone switches automatically once activated, and uses the free connection until then."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑已选择 Mimi 中转。这台手机开通后会自动切换，在此之前继续走免费线路。"
+          }
+        }
+      }
+    },
     "ui.relay_choice_default": {
       "localizations": {
         "en": {
@@ -47450,13 +47482,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your own relay"
+            "value": "Self-hosted relay"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "使用自己的"
+            "value": "自建中转"
           }
         }
       }

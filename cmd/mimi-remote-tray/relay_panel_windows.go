@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -16,15 +17,18 @@ const (
 	panelRelay = 2100 + iota
 	panelRelayApply
 	panelRelayCancel
+	panelRelayGuide
 	wmPanelRelayConfigured = wmApp + 22
 )
+
+const selfHostedRelayGuideURL = "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/self-hosted-relay.md"
 
 func (s tailcatTrayStatus) relayTitle() string {
 	if s.managed() {
 		return "Mimi 中转"
 	}
 	if strings.TrimSpace(s.DERPMapURL) != "" {
-		return "使用自己的"
+		return "自建中转"
 	}
 	return "默认 Tailcat 自带"
 }
@@ -76,12 +80,13 @@ func (c *agentController) configureRelay(ctx context.Context, choice, rawURL str
 
 func (p *controlPanel) createRelayControls(instance uintptr) error {
 	p.relayPicker = p.createControl(instance, "BUTTON", "中转服务…", wsChild|wsVisible|wsTabStop|bsOwnerDraw, 32, 480, 510, 32, panelRelay)
-	p.relayTitle = p.createControl(instance, "STATIC", "使用自己的中转", wsChild|ssLeft|ssNoPrefix, 32, 100, 510, 30, 0)
-	p.relayDescription = p.createControl(instance, "STATIC", "填写你自己部署的 DERP Map HTTPS 地址。应用后，用手机扫描新二维码同步配置。", wsChild|ssLeft|ssNoPrefix, 32, 145, 510, 58, 0)
+	p.relayTitle = p.createControl(instance, "STATIC", "自建中转", wsChild|ssLeft|ssNoPrefix, 32, 100, 510, 30, 0)
+	p.relayDescription = p.createControl(instance, "STATIC", "在有公网域名的服务器上部署 derper，把 DERP Map 文件发布到 HTTPS 地址，再填到下面。应用后，用手机扫描新二维码。", wsChild|ssLeft|ssNoPrefix, 32, 145, 510, 58, 0)
 	p.relayInput = p.createControl(instance, "EDIT", "", wsChild|wsTabStop|0x00800000|0x0080, 32, 210, 510, 32, 0)
 	p.relayApply = p.createControl(instance, "BUTTON", "使用此中转", wsChild|wsTabStop|bsOwnerDraw, 292, 270, 120, 42, panelRelayApply)
 	p.relayCancel = p.createControl(instance, "BUTTON", "取消", wsChild|wsTabStop|bsOwnerDraw, 422, 270, 120, 42, panelRelayCancel)
-	p.relayControls = []uintptr{p.relayTitle, p.relayDescription, p.relayInput, p.relayApply, p.relayCancel}
+	p.relayGuide = p.createControl(instance, "BUTTON", "部署文档", wsChild|wsTabStop|bsOwnerDraw, 32, 270, 120, 42, panelRelayGuide)
+	p.relayControls = []uintptr{p.relayTitle, p.relayDescription, p.relayInput, p.relayApply, p.relayCancel, p.relayGuide}
 	for _, control := range append([]uintptr{p.relayPicker}, p.relayControls...) {
 		if control == 0 {
 			return errors.New("创建中转配置控件失败")
@@ -99,7 +104,7 @@ func (p *controlPanel) layoutRelayControls() {
 	}{
 		{p.relayPicker, 32, 480, 510, 32}, {p.relayTitle, 32, 100, 510, 30},
 		{p.relayDescription, 32, 145, 510, 58}, {p.relayInput, 32, 210, 510, 32},
-		{p.relayApply, 292, 270, 120, 42}, {p.relayCancel, 422, 270, 120, 42},
+		{p.relayApply, 292, 270, 120, 42}, {p.relayCancel, 422, 270, 120, 42}, {p.relayGuide, 32, 270, 120, 42},
 	} {
 		procPanelSetWindowPos.Call(item.control, 0, uintptr(p.scale(item.x)), uintptr(p.scale(item.y)),
 			uintptr(p.scale(item.w)), uintptr(p.scale(item.h)), swpNoZOrder|swpNoActivate)
@@ -120,7 +125,7 @@ func (p *controlPanel) chooseRelayService() {
 		return
 	}
 	defer procDestroyMenu.Call(menu)
-	for i, title := range []string{"默认 Tailcat 自带", "使用自己的", "Mimi 中转"} {
+	for i, title := range []string{"默认 Tailcat 自带", "自建中转", "Mimi 中转"} {
 		flags := uint32(0)
 		if title == status.relayTitle() {
 			flags = 0x0008
@@ -179,6 +184,13 @@ func (p *controlPanel) applyRelay(choice, relayURL string) {
 		}
 		procPostMessageW.Call(window, wmPanelRelayConfigured, 0, 0)
 	}()
+}
+
+// 交给系统默认浏览器打开文档；打不开时提示地址，不影响正在填写的中转。
+func (p *controlPanel) openSelfHostedRelayGuide() {
+	if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", selfHostedRelayGuideURL).Start(); err != nil {
+		p.app.showError(errors.New("无法打开浏览器，请访问：" + selfHostedRelayGuideURL))
+	}
 }
 
 func (p *controlPanel) applyCustomRelay() {

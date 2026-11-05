@@ -185,6 +185,7 @@ type controlPanel struct {
 	relayInput       uintptr
 	relayApply       uintptr
 	relayCancel      uintptr
+	relayGuide       uintptr
 	relayControls    []uintptr
 
 	window uintptr
@@ -1473,6 +1474,8 @@ func panelActionLabel(command uint32) string {
 		return "使用此中转"
 	case panelRelayCancel:
 		return "取消"
+	case panelRelayGuide:
+		return "部署文档"
 	case panelRefresh:
 		return "刷新状态"
 	case panelStart:
@@ -1649,6 +1652,8 @@ func (p *controlPanel) dispatch(command uint32) {
 		p.applyCustomRelay()
 	case panelRelayCancel:
 		p.showDashboardView()
+	case panelRelayGuide:
+		p.openSelfHostedRelayGuide()
 		p.syncFromApplication()
 	case panelRefresh:
 		p.app.refreshStatusInteractive()

@@ -1228,6 +1228,7 @@ final class TailcatExperimentController: ObservableObject {
         clearRelayActivationRequest(profileID: profileID)
         defaults.removeObject(forKey: "mimi.relayChoice." + profileID)
         defaults.removeObject(forKey: "mimi.relayFreeChoice." + profileID)
+        defaults.removeObject(forKey: "mimi.computerRelayChoice." + profileID)
     }
 
     func relayServiceChoice(profileID: String) -> RelayServiceChoice? {
@@ -1244,6 +1245,24 @@ final class TailcatExperimentController: ObservableObject {
 
     func lastFreeRelayChoice(profileID: String) -> RelayServiceChoice? {
         defaults.string(forKey: "mimi.relayFreeChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    func computerRelayChoice(profileID: String) -> RelayServiceChoice? {
+        defaults.string(forKey: "mimi.computerRelayChoice." + profileID).flatMap(RelayServiceChoice.init(rawValue:))
+    }
+
+    /// 记下电脑当前的选择，返回手机是否应该跟随到 Mimi。只认「变成 Mimi」这一下：
+    /// 用户在手机上改回免费时电脑仍然选着 Mimi，没有变化就不会被切回去；电脑重新选一次才算新的选择。
+    func noteComputerRelayChoice(_ choice: ComputerRelayChoice, profileID: String) -> Bool {
+        let previous = computerRelayChoice(profileID: profileID)
+        var changed = previous != choice.relay
+        defaults.set(choice.relay.rawValue, forKey: "mimi.computerRelayChoice." + profileID)
+        if let free = choice.free, free != .mimi, free != lastFreeRelayChoice(profileID: profileID) {
+            defaults.set(free.rawValue, forKey: "mimi.relayFreeChoice." + profileID)
+            changed = true
+        }
+        if changed { relayChoiceRevision &+= 1 }
+        return choice.relay == .mimi && previous != .mimi
     }
 
     func relayActivationRequestID(profileID: String) -> UUID {

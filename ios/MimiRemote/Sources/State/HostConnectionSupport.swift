@@ -115,19 +115,17 @@ enum RelayServiceChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .tailcatDefault: "network"
-        case .custom: "server.rack"
-        case .mimi: "network.badge.shield.half.filled"
-        }
-    }
-
     static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard items.first(where: { $0.name == "transport" })?.value == "tailcat" else { return nil }
         return items.first(where: { $0.name == "relay_service" })?.value.flatMap(Self.init(rawValue:))
     }
+}
+
+/// 电脑上选择的中转，以及这台电脑的免费线路是哪一条。
+struct ComputerRelayChoice: Equatable {
+    let relay: RelayServiceChoice
+    let free: RelayServiceChoice?
 }
 
 struct TailcatPairingLink: Equatable {

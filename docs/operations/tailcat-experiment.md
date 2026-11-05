@@ -137,6 +137,9 @@ agentd tailcat configure --derp-map-url=
 ```
 
 这里需要填写 DERP Map 地址，不是 DERP 服务的 IP 和端口。
+部署步骤见 [自建中转](../self-hosted-relay.md)。
+
+已配对的手机通过 `GET /api/tailcat/relay-choice` 读取电脑选择的中转（`relay_service`）和免费线路（`free_relay_service`），取值为 `default`、`custom`、`mimi`，不含中继地址。手机只在电脑的选择变成 Mimi 时跟随，用户在手机上改回免费后不会被切回去。
 
 #### 已连接设备一键接入（agentd 接口）
 
