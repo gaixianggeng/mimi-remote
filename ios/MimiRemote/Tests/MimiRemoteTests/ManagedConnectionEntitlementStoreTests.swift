@@ -128,8 +128,10 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         window.isHidden = false
         defer { window.isHidden = true }
 
-        // 状态离开「检查中」说明页面的 .task 确实跑过，否则这条断言不证明任何事。
-        for _ in 0..<40 where entitlements.status == .loading {
+        // 查到结果说明页面的 .task 确实跑过，否则后面的断言不证明任何事。
+        // 状态会先经过 .resolving，必须等到最终结果；CI 上这一步可能要一两秒。
+        let deadline = Date().addingTimeInterval(10)
+        while entitlements.status != .available, Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertEqual(entitlements.status, .available)
