@@ -82,6 +82,7 @@ if [[ "$run_all" -eq 1 ]]; then
   ios_scope=true
   rust_scope=true
   macos_scope=true
+  windows_scope=true
   docs_scope=true
   path_count="all"
 else
@@ -104,6 +105,7 @@ else
   ios_scope=false
   rust_scope=false
   macos_scope=false
+  windows_scope=false
   docs_scope=false
   path_count=0
 
@@ -118,6 +120,7 @@ else
         ios_scope=true
         rust_scope=true
         macos_scope=true
+        windows_scope=true
         docs_scope=true
         continue
         ;;
@@ -171,6 +174,14 @@ else
         ;;
     esac
 
+    # Windows 原生 App 与它的宿主检查：C#/XAML 工程、宿主 PE 门禁和
+    # windows-ci 工作流都只由 Windows Gate 覆盖。
+    case "$changed_path" in
+      windows/*|windows/**/*|scripts/check-windows-host-subsystem.ps1|.github/workflows/windows-ci.yml)
+        windows_scope=true
+        ;;
+    esac
+
     case "$changed_path" in
       scripts/check-packaging.sh|scripts/check-app-store-metadata.sh|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb)
         docs_scope=true
@@ -180,11 +191,12 @@ else
 fi
 
 output="$(
-  printf 'go=%s\nios=%s\nrust=%s\nmacos=%s\ndocs=%s\n' \
+  printf 'go=%s\nios=%s\nrust=%s\nmacos=%s\nwindows=%s\ndocs=%s\n' \
     "$go_scope" \
     "$ios_scope" \
     "$rust_scope" \
     "$macos_scope" \
+    "$windows_scope" \
     "$docs_scope"
 )"
 printf '%s\n' "$output"
@@ -202,6 +214,7 @@ if [[ -n "$summary_file" ]]; then
     echo "- iOS: \`$ios_scope\`"
     echo "- Rust bridge: \`$rust_scope\`"
     echo "- Mac App: \`$macos_scope\`"
+    echo "- Windows App: \`$windows_scope\`"
     echo "- Docs/static: \`$docs_scope\`"
     echo "- Codex protocol and repository safety: \`always\`"
   } >> "$summary_file"
