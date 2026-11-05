@@ -968,6 +968,35 @@ final class TailcatExperimentController: ObservableObject {
         }
         let targetAddress = try tokenStore.loadTailcatAddress(profileID: id)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await prepareTailcatProfileRoute(
+            profile: profile,
+            targetAddress: targetAddress,
+            managed: profile.connectionRoute.isManaged,
+            appStore: appStore
+        )
+    }
+
+    /// 用户在手机上改回免费线路。走和切换电脑同一条准备路径：先在候选线路上确认连到的还是这台电脑，
+    /// 通过后才提交；失败时托管线路和保存的地址都不变。免费地址继续保留，之后还能一键启用 Mimi。
+    func prepareFreeRouteSwitch(appStore: AppStore) async throws -> PreparedConnectionSettings {
+        guard let profile = appStore.activeConnectionProfile, profile.connectionRoute.isManaged else {
+            throw ConnectionProfileError.notFound
+        }
+        return try await prepareTailcatProfileRoute(
+            profile: profile,
+            targetAddress: tokenStore.loadFreeTailcatAddress(profileID: profile.id)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            managed: false,
+            appStore: appStore
+        )
+    }
+
+    private func prepareTailcatProfileRoute(
+        profile: ConnectionProfile,
+        targetAddress: String,
+        managed: Bool,
+        appStore: AppStore
+    ) async throws -> PreparedConnectionSettings {
         guard !targetAddress.isEmpty else {
             throw PairingLinkError.missingTailcatAddress
         }
@@ -987,10 +1016,10 @@ final class TailcatExperimentController: ObservableObject {
             candidateEndpoint = endpoint
             try ensureCurrent(operationGeneration)
             let prepared = try await appStore.prepareConnectionProfileSwitch(
-                id: id,
+                id: profile.id,
                 activeEndpoint: endpoint,
                 tailcatAddress: targetAddress,
-                managed: profile.connectionRoute.isManaged
+                managed: managed
             )
             try ensureCurrent(operationGeneration)
             pendingPairing = PendingPairing(

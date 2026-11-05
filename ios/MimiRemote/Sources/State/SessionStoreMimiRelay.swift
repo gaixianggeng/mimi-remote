@@ -62,6 +62,40 @@ extension SessionStore {
         }
     }
 
+    /// 手机上改回免费线路，长期生效。与启用共用连接事务，防止并发替换底层线路。
+    /// 服务资格和设备名额都不动，所以随时可以再一键启用 Mimi。
+    @discardableResult
+    func switchToFreeRelay() async -> Bool {
+        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil, !isAppInBackground,
+              !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
+              let controller = tailcatExperimentController,
+              let profile = appStore.activeConnectionProfile, profile.connectionRoute.isManaged,
+              controller.hasFreeRoute(profileID: profile.id) else { return false }
+        let scope = appStore.activeHostScope
+        let previousChoice = controller.relayServiceChoice(profileID: profile.id)
+        // 必须在提交前改掉选择：提交后的连接变化会触发对账，若还写着 Mimi 就会立刻被启用回去。
+        controller.selectRelayService(controller.lastFreeRelayChoice(profileID: profile.id), profileID: profile.id)
+        mimiRelayNotice = nil
+        isSwitchingToFreeRelay = true
+        defer { isSwitchingToFreeRelay = false }
+        do {
+            _ = try await performPreparedConnectionChange(
+                isNavigationCurrent: { self.appStore.activeHostScope == scope }
+            ) {
+                try await controller.prepareFreeRouteSwitch(appStore: self.appStore)
+            }
+        } catch {
+            controller.selectRelayService(previousChoice, profileID: profile.id)
+            if !(error is CancellationError), appStore.activeHostScope == scope {
+                mimiRelayNotice = L10n.format("ui.relay_switch_failed", error.localizedDescription)
+            }
+            return false
+        }
+        guard appStore.activeHostScope == scope, !Task.isCancelled else { return true }
+        _ = await refreshAfterConnectionCommit(maxWait: 10)
+        return true
+    }
+
     func cancelMimiRelay() {
         mimiRelayTask?.cancel()
         mimiRelayTask = nil

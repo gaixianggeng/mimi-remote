@@ -252,6 +252,11 @@ struct ManagedConnectionSubscriptionView: View {
         tailcatController.selectRelayService(.mimi, profileID: profile.id)
     }
 
+    private var canSwitchToFree: Bool {
+        guard let profile = appStore.activeConnectionProfile else { return false }
+        return profile.connectionRoute.isManaged && tailcatController.hasFreeRoute(profileID: profile.id)
+    }
+
     private var currentRouteUsesTailcat: Bool {
         appStore.activeConnectionProfile?.connectionRoute.usesTailcat == true
     }
@@ -272,6 +277,22 @@ struct ManagedConnectionSubscriptionView: View {
                     iconTint: tokens.accent
                 )
                 .settingsStandardListRow()
+                if canSwitchToFree {
+                    Button {
+                        Task { await sessionStore.switchToFreeRelay() }
+                    } label: {
+                        ConnectionRowLabel(
+                            title: L10n.text(sessionStore.isSwitchingToFreeRelay
+                                ? "ui.relay_switching" : "ui.relay_switch_to_free"),
+                            systemImage: "arrow.uturn.backward",
+                            titleTint: tokens.accent
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(sessionStore.isSwitchingToFreeRelay || appStore.requiresRePairing)
+                    .settingsStandardListRow()
+                    .accessibilityIdentifier("settings.relay.mimi.switchToFree")
+                }
             } else if sessionStore.isActivatingMimiRelay {
                 HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
                     ProgressView()
@@ -310,7 +331,8 @@ struct ManagedConnectionSubscriptionView: View {
             SettingsGroupHeader(title: L10n.text("ui.relay_this_computer"))
         } footer: {
             if appStore.activeConnectionProfile?.connectionRoute.isManaged == true {
-                Text(L10n.text("ui.relay_leave_on_computer")).settingsSectionFooterStyle()
+                Text(L10n.text(canSwitchToFree ? "ui.relay_switch_keeps_service" : "ui.relay_leave_on_computer"))
+                    .settingsSectionFooterStyle()
             }
         }
         .settingsGroupRowStyle()

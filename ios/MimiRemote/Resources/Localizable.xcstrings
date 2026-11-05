@@ -47349,6 +47349,86 @@
         }
       }
     },
+    "ui.relay_tap_to_switch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap to switch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点按切换"
+          }
+        }
+      }
+    },
+    "ui.relay_switching": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Switching…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在切换…"
+          }
+        }
+      }
+    },
+    "ui.relay_switch_to_free": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use free connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改用免费连接"
+          }
+        }
+      }
+    },
+    "ui.relay_switch_keeps_service": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Mimi Relay stays active, so you can turn it back on anytime."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "改用免费连接后，Mimi 中转仍保持开通，可以随时再启用。"
+          }
+        }
+      }
+    },
+    "ui.relay_switch_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t switch to the free connection. Your current connection is unchanged. %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能改用免费连接，当前连接没有变化。%@"
+          }
+        }
+      }
+    },
     "ui.relay_choice_default": {
       "localizations": {
         "en": {

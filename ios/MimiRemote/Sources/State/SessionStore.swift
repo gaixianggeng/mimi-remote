@@ -284,6 +284,7 @@ final class SessionStore: ObservableObject {
     private var workspaceGitObservation: AnyCancellable?
     let tailcatExperimentController: TailcatExperimentController?
     @Published var isActivatingMimiRelay = false
+    @Published var isSwitchingToFreeRelay = false
     @Published var mimiRelayNotice: String?
     @Published var mimiRelaySetupProfileID: String?
     var mimiRelayTask: Task<Void, Never>?

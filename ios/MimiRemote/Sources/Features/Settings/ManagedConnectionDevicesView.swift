@@ -48,6 +48,9 @@ struct ManagedConnectionDevicesView: View {
                     if ManagedConnectionSubscriptionView.isEntryVisible {
                         mimiRow(tokens: tokens)
                     }
+                    if currentRoute != nil, freeSwitchAction == .unnamedFreeRoute {
+                        switchToFreeRow(title: L10n.text("ui.relay_switch_to_free"), tokens: tokens)
+                    }
                     if let notice = visibleNotice {
                         // 问题写在受影响的选项下面，不另起一张没有标题的卡片。
                         Label(notice, systemImage: "exclamationmark.circle")
@@ -57,17 +60,12 @@ struct ManagedConnectionDevicesView: View {
                             .settingsRow()
                             .accessibilityIdentifier("settings.relay.notice")
                     }
-                    if showsRecoveryActions, let profile = appStore.activeConnectionProfile {
+                    if showsRecoveryActions {
+                        // 改回免费线路就在上面的选项里，这里只留重试，不再并列一个「仅本次」的按钮。
                         Button(L10n.text("ui.managed_connection_retry")) {
                             changeRoute { await sessionStore.retryManagedConnection() }
                         }
                         .disabled(isChangingRoute || appStore.requiresRePairing)
-                        .settingsRow()
-                        Button(L10n.text("ui.relay_use_free")) {
-                            changeRoute { await sessionStore.useSavedConnectionRouteOnce(.customTailcat) }
-                        }
-                        .disabled(isChangingRoute || appStore.requiresRePairing ||
-                                  !tailcatController.hasFreeRoute(profileID: profile.id))
                         .settingsRow()
                     }
                 } header: {
@@ -93,17 +91,52 @@ struct ManagedConnectionDevicesView: View {
         .accessibilityIdentifier("settings.managedConnectionDevices.detail")
     }
 
+    @ViewBuilder
     private func choiceRow(_ choice: RelayServiceChoice, tokens: ThemeTokens) -> some View {
-        let selected = currentChoice == choice
-        return ConnectionRowLabel(
-            title: choice.title,
-            value: selected ? choice.detail : L10n.text("ui.relay_set_on_computer"),
-            systemImage: selected ? "checkmark.circle.fill" : choice.systemImage,
-            iconTint: selected ? tokens.accent : nil
-        )
-        .settingsStandardListRow()
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityIdentifier("settings.relay.\(choice.rawValue)")
+        if freeSwitchAction == .choice(choice) {
+            // 手机能改回的只有这台电脑已授权的那条免费线路，其余中转仍要在电脑上更换。
+            switchToFreeRow(title: choice.title, systemImage: choice.systemImage, tokens: tokens)
+                .accessibilityIdentifier("settings.relay.\(choice.rawValue)")
+        } else {
+            let selected = currentChoice == choice
+            ConnectionRowLabel(
+                title: choice.title,
+                value: selected ? choice.detail : L10n.text("ui.relay_set_on_computer"),
+                systemImage: selected ? "checkmark.circle.fill" : choice.systemImage,
+                iconTint: selected ? tokens.accent : nil
+            )
+            .settingsStandardListRow()
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityIdentifier("settings.relay.\(choice.rawValue)")
+        }
+    }
+
+    @ViewBuilder
+    private func switchToFreeRow(
+        title: String, systemImage: String = "arrow.uturn.backward", tokens: ThemeTokens
+    ) -> some View {
+        if sessionStore.isSwitchingToFreeRelay {
+            HStack(spacing: SettingsLayoutMetrics.trailingAccessorySpacing) {
+                ConnectionRowLabel(
+                    title: title, value: L10n.text("ui.relay_switching"), systemImage: systemImage
+                )
+                ProgressView().controlSize(.small)
+            }
+            .settingsStandardListRow()
+            .accessibilityElement(children: .combine)
+        } else {
+            Button {
+                Task { await sessionStore.switchToFreeRelay() }
+            } label: {
+                ConnectionRowLabel(
+                    title: title, value: L10n.text("ui.relay_tap_to_switch"), systemImage: systemImage,
+                    titleTint: tokens.accent
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(sessionStore.isActivatingMimiRelay || appStore.requiresRePairing)
+            .settingsStandardListRow()
+        }
     }
 
     @ViewBuilder
@@ -152,6 +185,30 @@ struct ManagedConnectionDevicesView: View {
         guard let id = appStore.activeConnectionProfileID else { return }
         tailcatController.selectRelayService(.mimi, profileID: id)
         sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+    }
+
+    /// 手机上怎样改回免费线路。知道原来用哪个中转就落在那一行；只知道有已授权的免费线路时
+    /// （比如电脑选 Mimi 后首次配对）不猜名字，单独给一行。
+    enum FreeSwitchAction: Equatable {
+        case choice(RelayServiceChoice)
+        case unnamedFreeRoute
+    }
+
+    static func freeSwitchAction(
+        profileRoute: ConnectionProfileRoute?, hasFreeRoute: Bool, freeChoice: RelayServiceChoice?
+    ) -> FreeSwitchAction? {
+        guard profileRoute?.isManaged == true, hasFreeRoute else { return nil }
+        guard let freeChoice, freeChoice != .mimi else { return .unnamedFreeRoute }
+        return .choice(freeChoice)
+    }
+
+    private var freeSwitchAction: FreeSwitchAction? {
+        let id = appStore.activeConnectionProfileID ?? ""
+        return Self.freeSwitchAction(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            hasFreeRoute: tailcatController.hasFreeRoute(profileID: id),
+            freeChoice: tailcatController.lastFreeRelayChoice(profileID: id)
+        )
     }
 
     /// Mimi 这一行的状态。开通资格、这台电脑是否启用、实际线路是三回事，这里分开表达。

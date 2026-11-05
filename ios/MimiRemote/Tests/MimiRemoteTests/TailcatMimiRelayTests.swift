@@ -147,6 +147,90 @@ extension TailcatExperimentRoutingTests {
         XCTAssertNil(fixture.controller.lastFreeRelayChoice(profileID: "first"))
     }
 
+    /// 改回免费是长期选择：下次启动也不回到 Mimi；免费地址保留，之后还能一键启用。
+    func testSwitchToFreeRelayCommitsFreeRouteAndKeepsWayBack() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")], managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
+        fixture.controller.selectRelayService(.tailcatDefault, profileID: "managed-mac")
+        fixture.controller.selectRelayService(.mimi, profileID: "managed-mac")
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+
+        let switched = await sessions.switchToFreeRelay()
+
+        XCTAssertTrue(switched)
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .customTailcat, "必须写入档案，不是临时线路")
+        XCTAssertEqual(try fixture.tokenStore.loadTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
+        XCTAssertEqual(try fixture.tokenStore.loadFreeTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "managed-mac"), .tailcatDefault)
+        XCTAssertEqual(fixture.controller.state, .connected(endpoint: "http://127.0.0.1:49152"))
+        XCTAssertNil(sessions.inFlightConnectionChangeGeneration)
+        XCTAssertFalse(sessions.isSwitchingToFreeRelay)
+        // 选择已不是 Mimi，提交后的连接变化不能把线路自动启用回去。
+        XCTAssertFalse(SessionStore.shouldAutomaticallyActivateRelay(
+            route: .customTailcat, connected: true, entitled: true,
+            selectedMimi: fixture.controller.relayServiceChoice(profileID: "managed-mac") == .mimi
+        ))
+    }
+
+    /// 切换失败要留在原线路：档案、地址和选择都不变，否则下一次对账会走错方向。
+    func testSwitchToFreeRelayFailureLeavesMimiUntouched() async throws {
+        let fixture = try makeControllerFixture(startResults: [.failure(.startFailed)], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
+        fixture.controller.selectRelayService(.tailcatDefault, profileID: "managed-mac")
+        fixture.controller.selectRelayService(.mimi, profileID: "managed-mac")
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+
+        let switched = await sessions.switchToFreeRelay()
+
+        XCTAssertFalse(switched)
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+        XCTAssertEqual(try fixture.tokenStore.loadTailcatAddress(profileID: "managed-mac"), "tailcat:managed-mac")
+        XCTAssertEqual(try fixture.tokenStore.loadFreeTailcatAddress(profileID: "managed-mac"), "tailcat:free-backup")
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: "managed-mac"), .mimi)
+        XCTAssertEqual(fixture.controller.lastFreeRelayChoice(profileID: "managed-mac"), .tailcatDefault)
+        XCTAssertNotNil(sessions.mimiRelayNotice)
+        XCTAssertFalse(sessions.isSwitchingToFreeRelay)
+    }
+
+    func testSwitchToFreeRelayRequiresManagedRouteAndAuthorizedFreeAddress() async throws {
+        let noBackup = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { noBackup.defaults.removePersistentDomain(forName: noBackup.suiteName) }
+        let sessions = SessionStore(
+            appStore: noBackup.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: noBackup.controller
+        )
+        let switched = await sessions.switchToFreeRelay()
+        XCTAssertFalse(switched, "没有已授权的免费地址时不能猜测")
+        let starts = await noBackup.runtime.startCallCount()
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(noBackup.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+    }
+
+    func testFreeSwitchActionOnlyOffersRouteThisPhoneCanUse() {
+        func action(
+            _ route: ConnectionProfileRoute?, hasFree: Bool = true, free: RelayServiceChoice? = .tailcatDefault
+        ) -> ManagedConnectionDevicesView.FreeSwitchAction? {
+            ManagedConnectionDevicesView.freeSwitchAction(profileRoute: route, hasFreeRoute: hasFree, freeChoice: free)
+        }
+        XCTAssertEqual(action(.managedTailcat), .choice(.tailcatDefault))
+        XCTAssertEqual(action(.managedTailcat, free: .custom), .choice(.custom))
+        XCTAssertEqual(action(.managedTailcat, free: nil), .unnamedFreeRoute, "不猜免费线路叫什么")
+        XCTAssertNil(action(.managedTailcat, hasFree: false))
+        XCTAssertNil(action(.customTailcat), "已经在免费线路上")
+        XCTAssertNil(action(.tailscale))
+        XCTAssertNil(action(nil))
+    }
+
     func testRelayChoiceIsScopedToComputerAndRemovedWithItsRoute() throws {
         let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
