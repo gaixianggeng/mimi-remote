@@ -373,6 +373,60 @@ extension TailcatExperimentRoutingTests {
         XCTAssertEqual(probes, ["http://127.0.0.1:49152"])
     }
 
+    /// 系统可能在后台杀掉本地隧道：回前台要重建同一条免费线路，不能继续用失效的端口。
+    func testForegroundRebuildsDeadTunnelForTemporaryFreeRoute() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152"), .success("http://127.0.0.1:49153")],
+            localEndpointProbe: { _ in false }, managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
+        let started = await fixture.controller.useFreeRouteOnce(appStore: fixture.store)
+        XCTAssertTrue(started)
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+
+        XCTAssertTrue(recovered)
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49153")
+        XCTAssertEqual(fixture.controller.state, .usingTemporaryRoute(.customTailcat), "仍是临时线路")
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat, "默认线路不变")
+    }
+
+    func testForegroundKeepsHealthyTunnelForTemporaryFreeRoute() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152")], localEndpointProbe: { _ in true }, managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
+        let started = await fixture.controller.useFreeRouteOnce(appStore: fixture.store)
+        XCTAssertTrue(started)
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+
+        XCTAssertTrue(recovered)
+        let starts = await fixture.runtime.startCallCount()
+        XCTAssertEqual(starts, 1, "隧道健康时不打断连接")
+        XCTAssertEqual(fixture.store.connectionEndpoint, "http://127.0.0.1:49152")
+    }
+
+    func testForegroundReportsFailureWhenFreeTunnelCannotRebuild() async throws {
+        let fixture = try makeControllerFixture(
+            startResults: [.success("http://127.0.0.1:49152"), .failure(.startFailed)],
+            localEndpointProbe: { _ in false }, managedProfile: true
+        )
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try fixture.tokenStore.saveFreeTailcatAddress("tailcat:free-backup", profileID: "managed-mac")
+        let started = await fixture.controller.useFreeRouteOnce(appStore: fixture.store)
+        XCTAssertTrue(started)
+
+        let recovered = await fixture.controller.recoverRouteFromForeground(appStore: fixture.store)
+
+        XCTAssertFalse(recovered, "不能把失效的隧道报告成恢复成功")
+        XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
+    }
+
     func testFreeFallbackRejectsRevokedCredentialsAndStopsFurtherAttempts() async throws {
         let fixture = try makeControllerFixture(
             startResults: [.success("http://127.0.0.1:49152")], managedProfile: true,

@@ -579,9 +579,11 @@ final class TailcatExperimentController: ObservableObject {
     ) async -> Bool {
         guard !Task.isCancelled else { return false }
         guard isEnabled else { return true }
-        if case .usingTemporaryRoute = state {
+        if case .usingTemporaryRoute(let route) = state {
             // “仅本次使用”覆盖整个当前进程。前后台切换不应被当成用户主动重试。
-            return true
+            // Tailscale、局域网不经过本地隧道；临时免费线路还依赖它，隧道没了要原样重建。
+            guard route.usesTailcat else { return true }
+            return await recoverTemporaryFreeRoute(appStore: appStore)
         }
         if let inFlightPreparation = preparationTask {
             _ = await inFlightPreparation.task.value
@@ -629,6 +631,23 @@ final class TailcatExperimentController: ObservableObject {
             forceRestart: true,
             refreshPathDiagnosticAfterPreparation: refreshPathDiagnosticAfterPreparation
         )
+    }
+
+    /// 隧道还能用就不打断连接；否则重建同一条免费线路，不回到 Mimi，档案里的默认线路也不变。
+    private func recoverTemporaryFreeRoute(appStore: AppStore) async -> Bool {
+        let capturedGeneration = generation
+        if let endpoint = appStore.tailcatExperimentEndpoint, await localEndpointProbe(endpoint) {
+            guard !Task.isCancelled, capturedGeneration == generation else { return false }
+            do {
+                _ = try await runtime.discoPing()
+                guard !Task.isCancelled, capturedGeneration == generation else { return false }
+                return true
+            } catch {
+                recordConnectionFailure(stage: .foregroundProbe, error: error)
+            }
+        }
+        guard !Task.isCancelled, capturedGeneration == generation else { return false }
+        return await useFreeRouteOnce(appStore: appStore)
     }
 
     private func prepareRoute(
