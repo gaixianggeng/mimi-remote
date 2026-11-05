@@ -1,5 +1,17 @@
 import Foundation
 
+/// Mimi 中转的后台任务和去重状态，都不直接驱动界面，所以不是 @Published。
+struct MimiRelayRuntime {
+    var task: Task<Void, Never>?
+    var operationID: UUID?
+    var profileID: String?
+    var attemptKey: String?
+    var backupAttemptID: String?
+    var fallbackAttemptID: String?
+    var computerChoiceTask: Task<Void, Never>?
+    var computerChoiceCheckedAt: Date?
+}
+
 extension SessionStore {
     /// 只有明确选择 Mimi 后才自动配置；开通权益本身不改变用户的线路选择。
     static func shouldAutomaticallyActivateRelay(
@@ -10,13 +22,13 @@ extension SessionStore {
 
     func reconcileMimiRelay(_ entitlements: ManagedConnectionEntitlementStore, retry: Bool = false) {
         guard let profile = appStore.activeConnectionProfile else { cancelMimiRelay(); return }
-        if mimiRelayProfileID != profile.id {
+        if mimiRelay.profileID != profile.id {
             cancelMimiRelay()
-            mimiRelayProfileID = profile.id
+            mimiRelay.profileID = profile.id
         }
-        guard mimiRelayTask == nil, !isAppInBackground, inFlightConnectionChangeGeneration == nil,
+        guard mimiRelay.task == nil, !isAppInBackground, inFlightConnectionChangeGeneration == nil,
               !appStore.requiresRePairing, connectionTermination != .credentialsInvalid else { return }
-        if retry { mimiRelayAttemptKey = nil; mimiRelayFallbackAttemptID = nil; mimiRelayBackupAttemptID = nil }
+        if retry { mimiRelay.attemptKey = nil; mimiRelay.fallbackAttemptID = nil; mimiRelay.backupAttemptID = nil }
         syncComputerRelayChoice(force: retry)
         let connected = appStore.connectionStatus.isConnected
         let entitled = ManagedConnectionDevicesView.hasEntitlementForUpgrade(
@@ -26,8 +38,8 @@ extension SessionStore {
            Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true),
            ManagedConnectionSubscriptionView.isEntryVisible {
             let key = profile.id + ":" + (entitlements.currentGrant?.entitlement.id ?? "")
-            guard mimiRelayAttemptKey != key else { return }
-            mimiRelayAttemptKey = key
+            guard mimiRelay.attemptKey != key else { return }
+            mimiRelay.attemptKey = key
             activateMimiRelay()
             return
         }
@@ -41,20 +53,20 @@ extension SessionStore {
         if case .failed = appStore.connectionStatus { failed = true }
         else if case .failed = tailcatExperimentController?.state { failed = true }
         else { failed = false }
-        if (expired || failed), mimiRelayFallbackAttemptID != profile.id,
+        if (expired || failed), mimiRelay.fallbackAttemptID != profile.id,
            appStore.authenticatedCredentialFingerprint != nil,
            case .usingTemporaryRoute = tailcatExperimentController?.state { return }
-        if (expired || failed), mimiRelayFallbackAttemptID != profile.id,
+        if (expired || failed), mimiRelay.fallbackAttemptID != profile.id,
            appStore.authenticatedCredentialFingerprint != nil {
-            mimiRelayFallbackAttemptID = profile.id
+            mimiRelay.fallbackAttemptID = profile.id
             useFreeConnectionAfterRelayFailure()
-        } else if connected, mimiRelayBackupAttemptID != profile.id,
+        } else if connected, mimiRelay.backupAttemptID != profile.id,
                   tailcatExperimentController?.hasFreeRoute(profileID: profile.id) == false {
-            mimiRelayBackupAttemptID = profile.id
+            mimiRelay.backupAttemptID = profile.id
             let scope = appStore.activeHostScope
             let operationID = UUID()
-            mimiRelayOperationID = operationID
-            mimiRelayTask = Task { @MainActor in
+            mimiRelay.operationID = operationID
+            mimiRelay.task = Task { @MainActor in
                 defer { finishMimiRelay(operationID) }
                 guard appStore.activeHostScope == scope, !Task.isCancelled else { return }
                 do { try await tailcatExperimentController?.preserveFreeRoute(appStore: appStore) }
@@ -66,16 +78,16 @@ extension SessionStore {
     /// 读取电脑上选择的中转：页面据此显示实际线路；电脑改选 Mimi 时手机跟随，已开通的会自动启用。
     /// 回到前台、重连和打开中转页时检查，其余连接变化最多 5 秒查一次。
     func syncComputerRelayChoice(force: Bool = false) {
-        guard computerRelayChoiceTask == nil, ManagedConnectionSubscriptionView.isEntryVisible, !isAppInBackground,
+        guard mimiRelay.computerChoiceTask == nil, ManagedConnectionSubscriptionView.isEntryVisible, !isAppInBackground,
               let controller = tailcatExperimentController,
               let profile = appStore.activeConnectionProfile, profile.connectionRoute.usesTailcat,
               appStore.connectionStatus.isConnected else { return }
         let now = Date()
-        if !force, let checkedAt = computerRelayChoiceCheckedAt, now.timeIntervalSince(checkedAt) < 5 { return }
-        computerRelayChoiceCheckedAt = now
+        if !force, let checkedAt = mimiRelay.computerChoiceCheckedAt, now.timeIntervalSince(checkedAt) < 5 { return }
+        mimiRelay.computerChoiceCheckedAt = now
         let scope = appStore.activeHostScope
-        computerRelayChoiceTask = Task { @MainActor in
-            defer { computerRelayChoiceTask = nil }
+        mimiRelay.computerChoiceTask = Task { @MainActor in
+            defer { mimiRelay.computerChoiceTask = nil }
             // 查询失败（旧版电脑、线路正在重建）不影响连接，下一次连接变化再查。
             guard let client = try? appStore.client(),
                   let choice = try? await client.tailcatRelayChoice(),
@@ -90,7 +102,7 @@ extension SessionStore {
     /// 服务资格和设备名额都不动，所以随时可以再一键启用 Mimi。
     @discardableResult
     func switchToFreeRelay() async -> Bool {
-        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil, !isAppInBackground,
+        guard mimiRelay.task == nil, inFlightConnectionChangeGeneration == nil, !isAppInBackground,
               !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
               let controller = tailcatExperimentController,
               let profile = appStore.activeConnectionProfile, profile.connectionRoute.isManaged,
@@ -123,33 +135,33 @@ extension SessionStore {
     }
 
     func cancelMimiRelay() {
-        computerRelayChoiceTask?.cancel()
-        computerRelayChoiceTask = nil
-        computerRelayChoiceCheckedAt = nil
-        mimiRelayTask?.cancel()
-        mimiRelayTask = nil
-        mimiRelayOperationID = nil
-        mimiRelayProfileID = nil
-        mimiRelayAttemptKey = nil
-        mimiRelayBackupAttemptID = nil
-        mimiRelayFallbackAttemptID = nil
+        mimiRelay.computerChoiceTask?.cancel()
+        mimiRelay.computerChoiceTask = nil
+        mimiRelay.computerChoiceCheckedAt = nil
+        mimiRelay.task?.cancel()
+        mimiRelay.task = nil
+        mimiRelay.operationID = nil
+        mimiRelay.profileID = nil
+        mimiRelay.attemptKey = nil
+        mimiRelay.backupAttemptID = nil
+        mimiRelay.fallbackAttemptID = nil
         isActivatingMimiRelay = false
         mimiRelayNotice = nil
     }
 
     func activateMimiRelay() {
-        guard mimiRelayTask == nil, !isAppInBackground, inFlightConnectionChangeGeneration == nil,
+        guard mimiRelay.task == nil, !isAppInBackground, inFlightConnectionChangeGeneration == nil,
               !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
               let controller = tailcatExperimentController else { return }
         do {
             let context = try ManagedConnectionUpgradeContext(appStore: appStore, client: appStore.client())
             controller.selectRelayService(.mimi, profileID: context.profile.id)
-            mimiRelayProfileID = context.profile.id
+            mimiRelay.profileID = context.profile.id
             let operationID = UUID()
-            mimiRelayOperationID = operationID
+            mimiRelay.operationID = operationID
             isActivatingMimiRelay = true
             mimiRelayNotice = L10n.text("ui.relay_activating")
-            mimiRelayTask = Task { @MainActor in
+            mimiRelay.task = Task { @MainActor in
                 defer { finishMimiRelay(operationID) }
                 do {
                     if context.profile.connectionRoute == .customTailcat {
@@ -187,9 +199,9 @@ extension SessionStore {
         guard let controller = tailcatExperimentController else { return }
         let scope = appStore.activeHostScope
         let operationID = UUID()
-        mimiRelayOperationID = operationID
+        mimiRelay.operationID = operationID
         mimiRelayNotice = L10n.text("ui.relay_trying_free")
-        mimiRelayTask = Task { @MainActor in
+        mimiRelay.task = Task { @MainActor in
             defer { finishMimiRelay(operationID) }
             // 尽量先补齐旧档案；即使过期，仍健康的直连也可登记免费授权。
             if let id = appStore.activeConnectionProfileID, !controller.hasFreeRoute(profileID: id),
@@ -214,9 +226,9 @@ extension SessionStore {
 
     private func finishMimiRelay(_ operationID: UUID) {
         // 同一台电脑切走再切回时，旧任务的 defer 也不能清除新任务。
-        guard mimiRelayOperationID == operationID else { return }
-        mimiRelayTask = nil
-        mimiRelayOperationID = nil
+        guard mimiRelay.operationID == operationID else { return }
+        mimiRelay.task = nil
+        mimiRelay.operationID = nil
         isActivatingMimiRelay = false
     }
 }

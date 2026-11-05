@@ -285,16 +285,9 @@ final class SessionStore: ObservableObject {
     let tailcatExperimentController: TailcatExperimentController?
     @Published var isActivatingMimiRelay = false
     @Published var isSwitchingToFreeRelay = false
-    var computerRelayChoiceTask: Task<Void, Never>?
-    var computerRelayChoiceCheckedAt: Date?
     @Published var mimiRelayNotice: String?
     @Published var mimiRelaySetupProfileID: String?
-    var mimiRelayTask: Task<Void, Never>?
-    var mimiRelayOperationID: UUID?
-    var mimiRelayProfileID: String?
-    var mimiRelayAttemptKey: String?
-    var mimiRelayBackupAttemptID: String?
-    var mimiRelayFallbackAttemptID: String?
+    var mimiRelay = MimiRelayRuntime()
     let conversationStore: ConversationStore
     let logStore: LogStore
     let contextStore: SessionContextStore

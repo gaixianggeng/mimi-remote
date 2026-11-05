@@ -410,7 +410,7 @@ extension TailcatExperimentRoutingTests {
             appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
             tailcatExperimentController: fixture.controller
         )
-        sessions.mimiRelayTask = Task { }
+        sessions.mimiRelay.task = Task { }
         let retried = await sessions.retryManagedConnection()
         let switched = await sessions.useSavedConnectionRouteOnce(.customTailcat)
         XCTAssertFalse(retried)

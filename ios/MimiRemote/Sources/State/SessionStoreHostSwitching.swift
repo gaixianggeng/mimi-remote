@@ -108,7 +108,7 @@ extension SessionStore {
 
     @discardableResult
     func retryManagedConnection() async -> Bool {
-        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil,
+        guard mimiRelay.task == nil, inFlightConnectionChangeGeneration == nil,
               !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
               let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
@@ -125,7 +125,7 @@ extension SessionStore {
 
     @discardableResult
     func useSavedConnectionRouteOnce(_ route: ConnectionProfileRoute) async -> Bool {
-        guard mimiRelayTask == nil, inFlightConnectionChangeGeneration == nil,
+        guard mimiRelay.task == nil, inFlightConnectionChangeGeneration == nil,
               !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
               let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
