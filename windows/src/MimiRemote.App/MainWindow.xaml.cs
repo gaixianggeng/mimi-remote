@@ -30,6 +30,14 @@ public sealed partial class MainWindow : Window, IDisposable
         Title = preview ? "Mimi Remote · 界面预览" : "Mimi Remote";
         SystemBackdrop = new MicaBackdrop();
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1040, 760));
+        Root.Loaded += (_, _) =>
+        {
+            var scale = Root.XamlRoot.RasterizationScale;
+            var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Primary).WorkArea;
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(
+                Math.Min((int)(1040 * scale), Math.Max(320, area.Width - 48)),
+                Math.Min((int)(760 * scale), Math.Max(320, area.Height - 48))));
+        };
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "mimi-remote.ico"));
         if (!preview)
         {
@@ -55,7 +63,9 @@ public sealed partial class MainWindow : Window, IDisposable
             }
         };
         pairingTimer.Start();
-        Navigation.SelectedItem = Navigation.MenuItems[0];
+        if (!preview) { InitializeNotifications(); }
+        Navigation.SelectedItem = Navigation.MenuItems.OfType<NavigationViewItem>().First(item => (string)item.Tag ==
+            (!preview && (!preferences.SetupCompleted || !File.Exists(DesktopPreferences.ConfigPath)) ? "setup" : "overview"));
     }
 
     public void InitializeTray()
@@ -71,6 +81,8 @@ public sealed partial class MainWindow : Window, IDisposable
         lifetime.Cancel();
         pairingTimer.Stop();
         tray?.Dispose();
+        DisposeNotifications();
+        updates.Dispose();
         lifetime.Dispose();
     }
 
@@ -87,6 +99,11 @@ public sealed partial class MainWindow : Window, IDisposable
         var selected = Navigation.MenuItems.OfType<NavigationViewItem>()
             .FirstOrDefault(item => (string)item.Tag == destination);
         Navigation.SelectedItem = selected ?? Navigation.MenuItems[0];
+    }
+
+    public void HideToTray()
+    {
+        if (tray is not null) { AppWindow.Hide(); }
     }
 
     private async void Navigate(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -111,10 +128,12 @@ public sealed partial class MainWindow : Window, IDisposable
                 Projects = 4,
                 ServiceOk = true,
                 ProcessOk = true,
+                ModuleStatus = new ModuleStatus { CodexEnabled = true, ClaudeEnabled = true, TailscaleEnabled = true },
                 RuntimeStatus = new RuntimeStatus
                 {
                     Runtimes = [
-                    new RuntimeEntry { Id = "codex", Title = "Codex", Enabled = true, State = "ready" },
+                    new RuntimeEntry { Id = "codex", Title = "Codex", Enabled = true, State = "ready",
+                        RateLimits = new RuntimeRateLimits { PlanType = "预览", Primary = new RateLimitWindow { UsedPercent = 24, WindowDurationMins = 300 } } },
                     new RuntimeEntry { Id = "claude", Title = "Claude", Enabled = true, State = "ready" }]
                 }
             };
@@ -122,6 +141,7 @@ public sealed partial class MainWindow : Window, IDisposable
         }
         else
         {
+            if (page == "setup" && !File.Exists(DesktopPreferences.ConfigPath)) { return; }
             var agent = RequireClient();
             host = await agent.ReadAsync<HostStatus>(["status", "--json", "--runtime"], lifetime.Token);
             tailcat = null;
@@ -147,7 +167,8 @@ public sealed partial class MainWindow : Window, IDisposable
         try { await operation(); }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
         catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException
-            or System.Text.Json.JsonException or ArgumentException or System.ComponentModel.Win32Exception)
+            or System.Text.Json.JsonException or ArgumentException or System.ComponentModel.Win32Exception
+            or System.Net.Http.HttpRequestException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
         {
             ShowError(error.Message);
         }
@@ -209,6 +230,9 @@ public sealed partial class MainWindow : Window, IDisposable
         switch (page)
         {
             case "pair": RenderPairing(); break;
+            case "setup": RenderSetup(); break;
+            case "assistants": RenderAssistants(); break;
+            case "settings": RenderSettings(); break;
             case "connection": RenderConnection(); break;
             case "diagnostics": RenderDiagnostics(); break;
             default: RenderOverview(); break;

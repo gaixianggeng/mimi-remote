@@ -13,11 +13,16 @@
             </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
                 <NavigationViewItem Content="概览" Tag="overview" Icon="Home"/>
+                <NavigationViewItem Content="首次设置" Tag="setup" Icon="Folder"/>
                 <NavigationViewItem Content="连接手机" Tag="pair" Icon="CellPhone"/>
                 <NavigationViewItem Content="连接与中转" Tag="connection" Icon="World"/>
+                <NavigationViewItem Content="AI 助手" Tag="assistants" Icon="Contact"/>
                 <NavigationViewItem Content="诊断与日志" Tag="diagnostics" Icon="Repair"/>
+                <NavigationViewItem Content="设置" Tag="settings" Icon="Setting"/>
             </NavigationView.MenuItems>
-            <Grid Padding="28,24" RowSpacing="16">
+            <Grid x:Name="ContentHost">
+            <Grid Width="{Binding ActualWidth, ElementName=ContentHost}" MaxWidth="906"
+                HorizontalAlignment="Center" Padding="28,24" RowSpacing="16">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
@@ -32,9 +37,11 @@
                     <ProgressBar x:Name="Progress" IsIndeterminate="True" Visibility="Collapsed"/>
                     <InfoBar x:Name="Notice" IsOpen="False" IsClosable="True" Severity="Error"/>
                 </StackPanel>
-                <ScrollViewer x:Name="PageScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel x:Name="Body" Spacing="16" MaxWidth="850" HorizontalAlignment="Stretch"/>
+                <ScrollViewer x:Name="PageScroll" Grid.Row="2" HorizontalScrollBarVisibility="Disabled"
+                    HorizontalContentAlignment="Stretch">
+                    <StackPanel x:Name="Body" Spacing="16" HorizontalAlignment="Stretch"/>
                 </ScrollViewer>
+            </Grid>
             </Grid>
         </NavigationView>
     </Grid>

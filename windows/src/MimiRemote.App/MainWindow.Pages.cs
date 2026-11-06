@@ -59,6 +59,7 @@ public sealed partial class MainWindow
 
     private void RenderPairing()
     {
+        if (!preview && !File.Exists(DesktopPreferences.ConfigPath)) { RenderSetup(); return; }
         var content = new StackPanel { Spacing = 16 };
         content.Children.Add(Text("用手机扫一扫", 26));
         content.Children.Add(Text("打开 Mimi Remote 手机端，在添加电脑时扫描此处二维码。二维码仅用于短期配对。"));
@@ -70,46 +71,50 @@ public sealed partial class MainWindow
         content.Children.Add(network);
         pairImage = new Image { Width = 280, Height = 280, HorizontalAlignment = HorizontalAlignment.Left };
         pairNote = Text("点击生成二维码。请勿把二维码发给他人。");
-        content.Children.Add(Action("生成二维码", async () =>
-        {
-            ClearPairing();
-            var generation = pairGeneration;
-            string[] arguments = network.SelectedIndex switch
-            {
-                1 => ["pair", "--network", "tailscale", "--qr-only", "--json"],
-                2 => ["pair", "--network", "lan", "--qr-only", "--json"],
-                _ => ["tailcat", "pair", "--qr-only", "--json"],
-            };
-            var pairing = await RequireClient().ReadAsync<PairingInfo>(arguments, lifetime.Token);
-            if (generation != pairGeneration || disposed) { return; }
-            if (string.IsNullOrWhiteSpace(pairing.PairUrl) ||
-                !DateTimeOffset.TryParse(pairing.PairExpiresAt, out var expiry) || expiry <= DateTimeOffset.UtcNow)
-            {
-                throw new InvalidDataException("配对信息无效或已经过期，请重新生成。");
-            }
-            using var qr = QRCodeGenerator.GenerateQrCode(pairing.PairUrl, QRCodeGenerator.ECCLevel.M);
-            using var png = new PngByteQRCode(qr);
-            using var stream = new InMemoryRandomAccessStream();
-            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
-            {
-                writer.WriteBytes(png.GetGraphic(6));
-                await writer.StoreAsync();
-            }
-            stream.Seek(0);
-            var bitmap = new BitmapImage();
-            await bitmap.SetSourceAsync(stream);
-            if (generation != pairGeneration || disposed) { return; }
-            pairImage.Source = bitmap;
-            pairExpiry = expiry;
-            pairNote.Text = $"有效期至 {expiry.ToLocalTime():HH:mm:ss}。\n" + string.Join("\n", pairing.Warnings);
-        }));
+        content.Children.Add(Action("生成二维码", () => GeneratePairAsync(network.SelectedIndex)));
         content.Children.Add(pairImage);
         content.Children.Add(pairNote);
         Body.Children.Add(Card(content));
     }
 
+    private async Task GeneratePairAsync(int network)
+    {
+        if (page != "pair" || pairImage is null || pairNote is null) { return; }
+        ClearPairing();
+        var generation = pairGeneration;
+        string[] arguments = network switch
+        {
+            1 => ["pair", "--network", "tailscale", "--qr-only", "--json"],
+            2 => ["pair", "--network", "lan", "--qr-only", "--json"],
+            _ => ["tailcat", "pair", "--qr-only", "--json"],
+        };
+        var pairing = await RequireClient().ReadAsync<PairingInfo>(arguments, lifetime.Token);
+        if (generation != pairGeneration || disposed) { return; }
+        if (string.IsNullOrWhiteSpace(pairing.PairUrl) ||
+            !DateTimeOffset.TryParse(pairing.PairExpiresAt, out var expiry) || expiry <= DateTimeOffset.UtcNow)
+        {
+            throw new InvalidDataException("配对信息无效或已经过期，请重新生成。");
+        }
+        using var qr = QRCodeGenerator.GenerateQrCode(pairing.PairUrl, QRCodeGenerator.ECCLevel.M);
+        using var png = new PngByteQRCode(qr);
+        using var stream = new InMemoryRandomAccessStream();
+        using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+        {
+            writer.WriteBytes(png.GetGraphic(6));
+            await writer.StoreAsync();
+        }
+        stream.Seek(0);
+        var bitmap = new BitmapImage();
+        await bitmap.SetSourceAsync(stream);
+        if (generation != pairGeneration || disposed) { return; }
+        pairImage.Source = bitmap;
+        pairExpiry = expiry;
+        pairNote.Text = $"有效期至 {expiry.ToLocalTime():HH:mm:ss}。\n" + string.Join("\n", pairing.Warnings);
+    }
+
     private void RenderConnection()
     {
+        RenderNetworkModules();
         var content = new StackPanel { Spacing = 16 };
         content.Children.Add(Text("内置连接", 24));
         content.Children.Add(Text(tailcat?.Running == true ? "运行中" : "尚未运行"));
