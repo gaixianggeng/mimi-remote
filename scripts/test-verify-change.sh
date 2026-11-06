@@ -267,7 +267,8 @@ python_output="$(assert_plan python_control scripts/prepare-ios-store-screenshot
 assert_contains "$python_output" "Python 脚本先做无产物语法检查"
 
 powershell_output="$(assert_plan powershell_control scripts/check-windows-installer.ps1)"
-assert_contains "$powershell_output" "延后到 Windows CI"
+assert_contains "$powershell_output" "本轮执行宿主构建与隔离测试"
+assert_contains "$powershell_output" "scripts/test-windows-app.ps1"
 
 device_control_output="$(assert_plan device_control scripts/ios-dev.sh)"
 assert_contains "$device_control_output" "test-tailcat-mobile-build.sh"
