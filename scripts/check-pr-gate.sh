@@ -134,6 +134,8 @@ assert_windows_scope true windows/src/MimiRemote.AgentHost/Program.cs
 assert_windows_scope true packaging/windows/register-service.ps1
 assert_windows_scope true scripts/test-windows-agent-host.ps1
 assert_windows_scope true scripts/build-windows-installer.ps1
+assert_windows_scope true scripts/publish-windows-client.ps1
+assert_windows_scope true scripts/copy-windows-client-notices.ps1
 assert_windows_scope true contracts/host-cli/relay-cases.json
 assert_windows_scope false internal/httpapi/router.go
 

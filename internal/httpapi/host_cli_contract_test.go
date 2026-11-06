@@ -28,7 +28,7 @@ func TestSharedHostCLIRelayCases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.ID, func(t *testing.T) {
-			server := newTestServer(t)
+			server := newRelayTestServer(t)
 			fake := &fakeTailcatSidecar{status: tc.Current, configureApplies: true}
 			managed := &fakeManagedPairingService{status: tc.Current}
 			managed.onConfigureMode = func(bool) { fake.status.Mode = config.TailcatModeManaged }

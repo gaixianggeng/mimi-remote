@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,12 +14,27 @@ import (
 )
 
 // relay-set 是 Mac 和 Windows 客户端共用的中转切换事务，顺序和回读校验都在这里定死。
+func newRelayTestServer(t *testing.T) testServer {
+	t.Helper()
+	server := newTestServer(t)
+	// enableTailcat 会持久化开关，测试必须在临时目录准备自己的配置。
+	server.router.configPath = filepath.Join(t.TempDir(), "config.json")
+	raw, err := json.Marshal(server.router.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(server.router.configPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
+
 func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 	previous := "https://self-hosted.example.invalid/derp-map.json"
 	custom := "https://custom.example.invalid/derp-map.json"
 
 	t.Run("mimi", func(t *testing.T) {
-		server := newTestServer(t)
+		server := newRelayTestServer(t)
 		fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeManaged, Enabled: true, Running: true}}
 		managed := &fakeManagedPairingService{status: tailcatStatus{Mode: config.TailcatModeManaged, Running: true}}
 		server.router.tailcat = fake
@@ -39,7 +57,7 @@ func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 	})
 
 	t.Run("custom_from_self_hosted", func(t *testing.T) {
-		server := newTestServer(t)
+		server := newRelayTestServer(t)
 		fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeSelfHosted, DERPMapURL: previous, Enabled: true, Running: true}, configureApplies: true}
 		managed := &fakeManagedPairingService{status: tailcatStatus{Mode: config.TailcatModeSelfHosted}}
 		server.router.tailcat = fake
@@ -59,7 +77,7 @@ func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 	})
 
 	t.Run("custom_from_managed_uses_one_transaction", func(t *testing.T) {
-		server := newTestServer(t)
+		server := newRelayTestServer(t)
 		fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeManaged, DERPMapURL: testOfficialRelayURL, Enabled: true, Running: true}, configureApplies: true}
 		managed := &fakeManagedPairingService{status: tailcatStatus{Mode: config.TailcatModeManaged}}
 		managed.onConfigureRelay = func(ctx context.Context, url string) (tailcatStatus, error) {
@@ -82,7 +100,7 @@ func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 	})
 
 	t.Run("default", func(t *testing.T) {
-		server := newTestServer(t)
+		server := newRelayTestServer(t)
 		fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeSelfHosted, Enabled: true, Running: true}}
 		server.router.tailcat = fake
 		server.router.managedPairing = &fakeManagedPairingService{status: tailcatStatus{Mode: config.TailcatModeSelfHosted}}
@@ -114,7 +132,7 @@ func TestTailcatRelaySetRejectsInvalidInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := newTestServer(t)
+			server := newRelayTestServer(t)
 			fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeSelfHosted, Enabled: true, Running: true}}
 			managed := &fakeManagedPairingService{status: tailcatStatus{Mode: config.TailcatModeSelfHosted}}
 			server.router.tailcat = fake
@@ -133,7 +151,7 @@ func TestTailcatRelaySetRejectsInvalidInput(t *testing.T) {
 }
 
 func TestTailcatRelaySetFailsWhenReadBackMismatches(t *testing.T) {
-	server := newTestServer(t)
+	server := newRelayTestServer(t)
 	// sidecar 接受配置但状态没变，模拟“命令成功但没生效”。
 	fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeSelfHosted, DERPMapURL: "", Enabled: true, Running: true}}
 	server.router.tailcat = fake

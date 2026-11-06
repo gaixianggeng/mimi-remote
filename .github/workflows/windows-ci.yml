@@ -9,6 +9,8 @@ on:
       - "windows/**"
       - "scripts/check-windows-*.ps1"
       - "scripts/test-windows-*.ps1"
+      - "scripts/publish-windows-client.ps1"
+      - "scripts/copy-windows-client-notices.ps1"
       - "packaging/windows/**"
       - "scripts/build-windows-installer.ps1"
       - ".github/workflows/windows-ci.yml"
@@ -74,6 +76,18 @@ jobs:
 
       - name: Verify isolated process tree and console visibility
         run: pwsh -NoProfile -File ../scripts/test-windows-agent-host.ps1 -HostPath "$env:RUNNER_TEMP\host\mimi-agent-host.exe"
+
+      - name: Publish native client preview with notices
+        run: pwsh -NoProfile -File ../scripts/publish-windows-client.ps1 -OutputDirectory "$env:RUNNER_TEMP\native-client"
+
+      - name: Upload native client preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mimi-remote-native-client-win-x64
+          path: |
+            ${{ runner.temp }}\native-client\*.zip
+            ${{ runner.temp }}\native-client\*.sha256
+          if-no-files-found: error
 
       - name: Upload host artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

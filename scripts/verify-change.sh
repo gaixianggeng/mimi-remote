@@ -234,6 +234,7 @@ has_verify_control=false
 has_packaging_control=false
 has_source_size_control=false
 has_repository_security_control=false
+has_notices_control=false
 has_ios_privacy_control=false
 has_ios_device_control=false
 has_tailcat_source=false
@@ -339,7 +340,7 @@ for path in "${changed_paths[@]:-}"; do
       add_go_package_for_path "cmd/agentd/tailcat.go"
       add_go_package_for_path "internal/httpapi/tailcat.go"
       ;;
-    windows/*|scripts/test-windows-*.ps1|scripts/check-windows-*.ps1)
+    windows/*|scripts/test-windows-*.ps1|scripts/check-windows-*.ps1|scripts/publish-windows-client.ps1|scripts/copy-windows-client-notices.ps1)
       path_is_windows=true; direct_windows=true ;;
   esac
 
@@ -431,8 +432,11 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/test-public-repo-safety.sh|scripts/check-third-party-notices.sh|NOTICE.md|THIRD_PARTY_NOTICES.md)
+    .github/workflows/public-repo-safety.yml|scripts/check-public-repo-safety.sh|scripts/test-public-repo-safety.sh|scripts/check-third-party-notices.sh)
       has_repository_security_control=true
+      ;;
+    LICENSE|NOTICE.md|THIRD_PARTY_NOTICES.md|packaging/windows/licenses/*)
+      has_notices_control=true
       ;;
   esac
   case "$path" in
@@ -615,6 +619,9 @@ if [[ "$has_packaging_control" == true ]]; then
 fi
 if [[ "$has_repository_security_control" == true ]]; then
   add_check "公开仓库安全门自身变化必须执行完整安全检查" "bash ./scripts/check-public-repo-safety.sh"
+elif [[ "$has_notices_control" == true ]]; then
+  # 许可清单是安全门的输入；仅输入变化时校验许可，不把它误判成安全门自身修改并扫描完整历史。
+  add_check "许可及第三方声明变化校验分发清单" "bash ./scripts/check-third-party-notices.sh"
 fi
 if [[ "$has_ios_privacy_control" == true ]]; then
   add_check "iOS 网络与隐私边界变化必须执行专项静态检查" "bash ./scripts/check-ios-network-security.sh && bash ./scripts/check-ios-privacy-manifest.sh" "ios"

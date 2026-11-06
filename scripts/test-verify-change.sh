@@ -256,6 +256,10 @@ security_full_output="$(assert_full_plan security_full scripts/check-public-repo
 assert_contains "$security_full_output" "bash ./scripts/check-public-repo-safety.sh"
 assert_not_contains "$security_full_output" "bash ./scripts/check-pr-gate.sh"
 
+notices_output="$(assert_plan license_inputs LICENSE NOTICE.md THIRD_PARTY_NOTICES.md)"
+assert_contains "$notices_output" "bash ./scripts/check-third-party-notices.sh"
+assert_not_contains "$notices_output" "bash ./scripts/check-public-repo-safety.sh"
+
 privacy_output="$(assert_plan ios_privacy ios/MimiRemote/Sources/Resources/PrivacyInfo.xcprivacy)"
 assert_contains "$privacy_output" "check-ios-network-security.sh"
 assert_contains "$privacy_output" "check-ios-privacy-manifest.sh"
