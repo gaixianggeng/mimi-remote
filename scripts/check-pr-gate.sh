@@ -79,6 +79,7 @@ assert_scope macos_runner false false false true false scripts/test-macos-app.sh
 assert_scope release true false false false false scripts/check-release-artifacts.sh
 assert_scope release_source true false false false false scripts/check-release-source.sh
 assert_scope windows_release true false false false false scripts/build-windows-installer.ps1
+assert_scope host_cli_contract true false false true false contracts/host-cli/relay-cases.json
 assert_scope ios_release false true false false false scripts/ios_testflight_ci.sh
 assert_scope ios_asc_pin false true false false false config/release/ios-asc-cli.env
 assert_scope ios_asc_test false true false false false scripts/test-ios-asc-cli.sh
@@ -133,6 +134,9 @@ assert_windows_scope true windows/src/MimiRemote.AgentHost/Program.cs
 assert_windows_scope true packaging/windows/register-service.ps1
 assert_windows_scope true scripts/test-windows-agent-host.ps1
 assert_windows_scope true scripts/build-windows-installer.ps1
+assert_windows_scope true scripts/publish-windows-client.ps1
+assert_windows_scope true scripts/copy-windows-client-notices.ps1
+assert_windows_scope true contracts/host-cli/relay-cases.json
 assert_windows_scope false internal/httpapi/router.go
 
 ruby <<'RUBY'

@@ -1,0 +1,10 @@
+{
+  "version": "fixture-client",
+  "server_version": "fixture-server",
+  "endpoint": "http://127.0.0.1:8787",
+  "projects": 3,
+  "process_ok": true,
+  "service_ok": true,
+  "runtime_status": {"runtimes":[{"id":"codex","title":"Codex","enabled":true,"state":"ready","version":"fixture-runtime"}]},
+  "future_field": "ignored-for-forward-compatibility"
+}

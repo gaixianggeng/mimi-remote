@@ -41,11 +41,19 @@ func runTailcat(args []string) error {
 
 func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) < 2 {
-		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset、configure、enter-managed 或 exit-managed")
+		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset、configure、enter-managed、exit-managed 或 relay-set")
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
+	if action == "relay" {
+		if len(args) < 3 || args[2] != "set" {
+			return errors.New("用法：tailcat relay set --choice default|custom|mimi [--derp-map-url <地址>] --json")
+		}
+		// 对外使用分层命令；内部 HTTP action 与早期草稿别名保持兼容。
+		args = append([]string{args[0], "relay-set"}, args[3:]...)
+		action = "relay-set"
+	}
 	switch action {
-	case "status", "enable", "disable", "pair", "reset", "configure", "enter-managed", "exit-managed":
+	case "status", "enable", "disable", "pair", "reset", "configure", "enter-managed", "exit-managed", "relay-set":
 	default:
 		return fmt.Errorf("未知 Tailcat 子命令 %q", action)
 	}
@@ -56,13 +64,21 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "配对时只输出短期配对信息")
 	derpMapURL := fs.String("derp-map-url", "", "自定义 DERP Map HTTPS URL；空值恢复 Tailcat 默认中继")
+	choice := fs.String("choice", "", "relay-set 的中转选择：default、custom 或 mimi")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return errors.New("tailcat 子命令不接受多余的位置参数")
+	}
 	derpMapURLSet := false
+	choiceSet := false
 	fs.Visit(func(current *flag.Flag) {
-		if current.Name == "derp-map-url" {
+		switch current.Name {
+		case "derp-map-url":
 			derpMapURLSet = true
+		case "choice":
+			choiceSet = true
 		}
 	})
 	if *qrOnly && action != "pair" {
@@ -71,8 +87,14 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	if action == "configure" && !derpMapURLSet {
 		return errors.New("tailcat configure 必须显式提供 --derp-map-url；使用 --derp-map-url= 恢复默认中继")
 	}
-	if action != "configure" && derpMapURLSet {
-		return errors.New("--derp-map-url 只适用于 tailcat configure")
+	if action != "configure" && action != "relay-set" && derpMapURLSet {
+		return errors.New("--derp-map-url 只适用于 tailcat configure 和 tailcat relay-set")
+	}
+	if action != "relay-set" && choiceSet {
+		return errors.New("--choice 只适用于 tailcat relay-set")
+	}
+	if action == "relay-set" && !choiceSet {
+		return errors.New("tailcat relay-set 必须提供 --choice=default|custom|mimi")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
@@ -81,7 +103,7 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action, *derpMapURL)
+	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action, *derpMapURL, *choice)
 	if err != nil {
 		return err
 	}
@@ -123,6 +145,7 @@ func requestTailcatControl(
 	cfg config.Config,
 	action string,
 	derpMapURL string,
+	choice string,
 ) (tailcatCommandStatus, error) {
 	localToken, err := httpapi.ReadTailcatLocalControlToken(configPath)
 	if err != nil {
@@ -142,6 +165,10 @@ func requestTailcatControl(
 		if action == "configure" {
 			payload["derp_map_url"] = derpMapURL
 		}
+		if action == "relay-set" {
+			payload["choice"] = strings.TrimSpace(choice)
+			payload["derp_map_url"] = derpMapURL
+		}
 		encoded, encodeErr := json.Marshal(payload)
 		if encodeErr != nil {
 			return tailcatCommandStatus{}, encodeErr
@@ -149,8 +176,9 @@ func requestTailcatControl(
 		body = bytes.NewReader(encoded)
 	}
 	timeout := 25 * time.Second
-	if action == "configure" || action == "enter-managed" || action == "exit-managed" {
-		// 切换中继会验证新 sidecar，并在失败时恢复旧 sidecar。
+	if action == "configure" || action == "enter-managed" || action == "exit-managed" || action == "relay-set" {
+		// 切换中继会验证新 sidecar，并在失败时恢复旧 sidecar。relay-set 把
+		// 这几步串起来，预算要比单步更宽。
 		timeout = 50 * time.Second
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)

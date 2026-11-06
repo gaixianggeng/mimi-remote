@@ -23,7 +23,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <!-- 只引用界面和自包含部署需要的组件，避免把未使用的 AI/ML、Widgets、Search 打入预览包。 -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.6.5" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <ProjectReference Include="../MimiRemote.Core/MimiRemote.Core.csproj" />
+    <Content Include="../../../packaging/windows/mimi-remote.ico" Link="mimi-remote.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

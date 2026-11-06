@@ -256,6 +256,10 @@ security_full_output="$(assert_full_plan security_full scripts/check-public-repo
 assert_contains "$security_full_output" "bash ./scripts/check-public-repo-safety.sh"
 assert_not_contains "$security_full_output" "bash ./scripts/check-pr-gate.sh"
 
+notices_output="$(assert_plan license_inputs LICENSE NOTICE.md THIRD_PARTY_NOTICES.md)"
+assert_contains "$notices_output" "bash ./scripts/check-third-party-notices.sh"
+assert_not_contains "$notices_output" "bash ./scripts/check-public-repo-safety.sh"
+
 privacy_output="$(assert_plan ios_privacy ios/MimiRemote/Sources/Resources/PrivacyInfo.xcprivacy)"
 assert_contains "$privacy_output" "check-ios-network-security.sh"
 assert_contains "$privacy_output" "check-ios-privacy-manifest.sh"
@@ -577,5 +581,9 @@ assert_contains "$windows_output" "check-source-size.sh"
 assert_not_contains "$windows_output" "go test ./..."
 windows_test_output="$(assert_plan windows_test scripts/test-windows-agent-host.ps1)"
 assert_contains "$windows_test_output" "scripts/test-windows-app.ps1"
+host_cli_output="$(assert_plan host_cli contracts/host-cli/relay-cases.json)"
+assert_contains "$host_cli_output" "go test ./cmd/agentd ./internal/httpapi -count=1"
+assert_contains "$host_cli_output" "scripts/test-windows-app.ps1"
+assert_contains "$host_cli_output" "scripts/test-macos-app.sh"
 
 echo "分层验证自测通过：范围与来源、full 覆盖边界、构建证据复用标注、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"

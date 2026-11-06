@@ -38,6 +38,7 @@ type managedPairingService interface {
 	Complete(context.Context, string, string, string) (tailcatStatus, error)
 	Reset(context.Context) error
 	ConfigureMode(context.Context, bool) (tailcatStatus, error)
+	ConfigureRelay(context.Context, string) (tailcatStatus, error)
 	Close()
 }
 
