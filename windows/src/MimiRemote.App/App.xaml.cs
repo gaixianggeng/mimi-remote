@@ -36,6 +36,7 @@ public sealed partial class App : Application, IDisposable
             window.InitializeTray();
         }
         if (Environment.GetCommandLineArgs().Contains("--pair", StringComparer.Ordinal)) { window.ShowPage("pair"); }
+        else if (Environment.GetCommandLineArgs().Contains("--background", StringComparer.Ordinal)) { window.HideToTray(); }
     }
 
     public void Dispose()

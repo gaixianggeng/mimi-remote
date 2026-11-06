@@ -14,6 +14,7 @@ public sealed record HostStatus
     public string ProcessError { get; init; } = "";
     public string ServiceError { get; init; } = "";
     public RuntimeStatus? RuntimeStatus { get; init; }
+    public ModuleStatus? ModuleStatus { get; init; }
     public string Title => ServiceOk ? "电脑已就绪" : ProcessOk ? "服务需要处理" : "服务已停止";
 }
 
@@ -29,6 +30,7 @@ public sealed record RuntimeEntry
     public string State { get; init; } = "";
     public string Version { get; init; } = "";
     public string Reason { get; init; } = "";
+    public RuntimeRateLimits? RateLimits { get; init; }
 }
 public sealed record TailcatStatus
 {

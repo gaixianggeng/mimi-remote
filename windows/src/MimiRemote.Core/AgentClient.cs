@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace MimiRemote.Core;
 
 /// <summary>All commands go directly to agentd; no shell or terminal is involved.</summary>
-public sealed class AgentClient(string executable)
+public sealed class AgentClient(string executable) : IAgentCommand
 {
     public static JsonSerializerOptions JsonOptions { get; } = new()
     {
@@ -36,7 +36,13 @@ public sealed class AgentClient(string executable)
     public Task<string> RunAsync(string[] arguments, CancellationToken cancellationToken = default) =>
         RunAsync(arguments, false, cancellationToken);
 
-    public async Task<string> RunAsync(string[] arguments, bool allowFailure, CancellationToken cancellationToken = default)
+    public Task<string> RunAsync(string[] arguments, bool allowFailure, CancellationToken cancellationToken = default) =>
+        RunCoreAsync(arguments, allowFailure, null, cancellationToken);
+
+    public Task<string> RunWithInputAsync(string[] arguments, string input, CancellationToken cancellationToken = default) =>
+        RunCoreAsync(arguments, false, input, cancellationToken);
+
+    private async Task<string> RunCoreAsync(string[] arguments, bool allowFailure, string? input, CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -45,18 +51,22 @@ public sealed class AgentClient(string executable)
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = new UTF8Encoding(false),
+            StandardErrorEncoding = new UTF8Encoding(false),
         };
         foreach (var argument in arguments) { start.ArgumentList.Add(argument); }
         using var process = new Process { StartInfo = start };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(90));
         process.Start();
-        process.StandardInput.Close();
         // Drain both pipes concurrently, retaining at most 1 MiB per stream.
         var stdout = ReadBoundedAsync(process.StandardOutput, timeout.Token);
         var stderr = ReadBoundedAsync(process.StandardError, timeout.Token);
         try
         {
+            if (input is not null) { await process.StandardInput.WriteAsync(input.AsMemory(), timeout.Token).ConfigureAwait(false); }
+            process.StandardInput.Close();
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             var output = await stdout.ConfigureAwait(false);
             var error = await stderr.ConfigureAwait(false);
@@ -74,6 +84,10 @@ public sealed class AgentClient(string executable)
             catch (OperationCanceledException) { }
             if (cancellationToken.IsCancellationRequested) { throw; }
             throw new TimeoutException("电脑服务响应超时。请刷新状态，确认操作是否已经生效。");
+        }
+        finally
+        {
+            if (!process.HasExited) { process.Kill(entireProcessTree: true); }
         }
     }
 
