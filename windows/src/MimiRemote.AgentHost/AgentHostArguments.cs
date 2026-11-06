@@ -29,7 +29,7 @@ internal sealed record AgentHostArguments(string LogFile)
 
             if (logFile is not null)
             {
-                error = "只接受一个参数，收到多余的值：" + argument;
+                error = "只接受 --log-file，收到多余参数";
                 return false;
             }
 
@@ -52,7 +52,7 @@ internal sealed record AgentHostArguments(string LogFile)
                 continue;
             }
 
-            error = "未知参数：" + argument;
+            error = "未知参数；只接受 --log-file <路径>";
             return false;
         }
 

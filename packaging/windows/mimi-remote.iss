@@ -58,11 +58,6 @@ Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 
-[InstallDelete]
-; 旧版本在开始菜单放过一个直接调用 cmd 的日志入口。升级时必须显式删掉，
-; 否则用户仍会从这里打开终端窗口。
-Type: files; Name: "{group}\Mimi Remote Logs.lnk"
-
 [Tasks]
 Name: "lanfirewall"; Description: "Allow private LAN access (Private networks / LocalSubnet only)"; Flags: unchecked
 
@@ -370,6 +365,7 @@ var
   FirewallMarker: Cardinal;
 begin
   if CurStep = ssPostInstall then begin
+    DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'));
     // Validate the active network before registering or starting the new
     // service. An upgrade may carry an old allow_lan=true configuration, so
     // starting first would fail with a generic readiness error on Public Wi-Fi.
@@ -414,6 +410,7 @@ var
 begin
   if CurUninstallStep = usUninstall then begin
     StopManagedService;
+    StopAgentHost;
     StopTailcatHelper;
     StopTrayApp;
     RemoveScheduledTask;
@@ -427,4 +424,4 @@ begin
 end;
 
 // Agent configuration and logs deliberately live under %APPDATA% / %LOCALAPPDATA%
-// and are not listed in [InstallDelete], so normal uninstall preserves user state.
+// and are never removed during installation or normal uninstall.

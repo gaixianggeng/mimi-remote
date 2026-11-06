@@ -7,7 +7,10 @@ on:
       - main
     paths:
       - "windows/**"
-      - "scripts/check-windows-host-subsystem.ps1"
+      - "scripts/check-windows-*.ps1"
+      - "scripts/test-windows-*.ps1"
+      - "packaging/windows/**"
+      - "scripts/build-windows-installer.ps1"
       - ".github/workflows/windows-ci.yml"
   workflow_dispatch:
 
@@ -30,10 +33,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: "10.0.403"
+          global-json-file: windows/global.json
 
       # 锁文件固定传递依赖；版本漂移必须显式提 PR 改锁文件，不能靠 CI 悄悄升级。
       - name: Restore
@@ -54,6 +62,9 @@ jobs:
 
       - name: Verify host is a GUI subsystem binary
         run: pwsh -NoProfile -File ../scripts/check-windows-host-subsystem.ps1 -Path "$env:RUNNER_TEMP\host\mimi-agent-host.exe" -Expected GUI
+
+      - name: Verify isolated process tree and console visibility
+        run: pwsh -NoProfile -File ../scripts/test-windows-agent-host.ps1 -HostPath "$env:RUNNER_TEMP\host\mimi-agent-host.exe"
 
       - name: Upload host artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

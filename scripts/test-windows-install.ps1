@@ -113,17 +113,8 @@ $firewallSource = Get-Content -LiteralPath $firewall -Raw
 foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateNetwork')", 'Get-NetConnectionProfile', 'Get-UnmanagedInboundAllowRules', 'Remove-UnmanagedInboundAllowRules', '-Profile Private', '-RemoteAddress LocalSubnet', '-Program $AgentPath', 'Get-NetFirewallApplicationFilter', 'Get-NetFirewallAddressFilter')) {
     if (-not $firewallSource.Contains($expected)) { throw "Firewall script is missing required policy: $expected" }
 }
-# [InstallDelete] 只允许用于清理旧版本的开始菜单快捷方式；卸载和升级都不能
-# 碰用户的配置、日志和已配对设备目录，否则升级会强制手机重新扫码。
-foreach ($section in [regex]::Matches($source, '(?ms)^\[InstallDelete\]$(.*?)(?=^\[|\z)')) {
-    $installDeleteBody = $section.Groups[1].Value
-    if ($installDeleteBody -match '\{(userappdata|localappdata|userprofile|userdocs|commondocs|app)\}') {
-        throw 'Installer [InstallDelete] must not delete user configuration/log directories on normal uninstall.'
-    }
-    if ($installDeleteBody -notmatch '\.lnk') {
-        throw 'Installer [InstallDelete] is only allowed for stale shortcut cleanup.'
-    }
-}
+if ($source.Contains('[InstallDelete]')) { throw 'Installer must preserve the blanket InstallDelete prohibition.' }
+if (-not $source.Contains("DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'))")) { throw 'Upgrade must remove the legacy log shortcut explicitly.' }
 foreach ($script in @($register, $firewall, $signing, $build, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }
 $buildSource = Get-Content -LiteralPath $build -Raw
 if (-not $buildSource.Contains('target-feature=+crt-static')) { throw 'Windows release bridge must use a static Rust CRT.' }

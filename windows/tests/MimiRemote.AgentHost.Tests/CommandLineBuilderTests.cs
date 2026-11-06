@@ -5,16 +5,8 @@ namespace MimiRemote.AgentHost.Tests;
 /// <summary>
 /// 命令行拼装的防回归测试。
 ///
-/// 目标程序是 Go 写的 agentd。Go 在 Windows 上的 <c>os.Args</c> 使用 CR 运行库规则：
-/// <c>\"</c> 表示字面引号，引号内结尾的反斜杠要成对。注意这**不等于**
-/// <c>CommandLineToArgvW</c> 的实际行为——实测该 API 不把反斜杠当转义符，
-/// 用它做基准会得到错误结论。下列期望值已用真实 Go 程序逐一验证：
-///
-/// | 拼出的命令行                     | Go 收到的参数            |
-/// | -------------------------------- | ------------------------ |
-/// | "C:\Program Files\a.log"         | C:\Program Files\a.log   |
-/// | "C:\dir x\\"                     | C:\dir x\                |
-/// | "C:\quote\"inside\x.log"         | C:\quote"inside\x.log    |
+/// 普通参数按 Windows CRT 的引号和反斜杠规则转义。运行时测试另用真实 Go
+/// fakeagentd 验证完整命令行，避免把 argv[0] 的特殊解析规则用于普通参数。
 /// </summary>
 public class CommandLineBuilderTests
 {

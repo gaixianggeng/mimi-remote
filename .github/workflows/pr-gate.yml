@@ -167,7 +167,6 @@ jobs:
           require_scoped_success "Rust bridge" "$RUST_REQUIRED" "$RUST_RESULT"
           require_scoped_success "Mac App" "$MACOS_REQUIRED" "$MACOS_RESULT"
           require_scoped_success "Windows App" "$WINDOWS_REQUIRED" "$WINDOWS_RESULT"
-          require_scoped_success "Windows App" "$WINDOWS_REQUIRED" "$WINDOWS_RESULT"
           require_scoped_success "Docs and static policy" "$DOCS_REQUIRED" "$DOCS_RESULT"
 
           {
@@ -182,7 +181,6 @@ jobs:
             echo "| iOS | \`$IOS_REQUIRED\` | \`$IOS_RESULT\` |"
             echo "| Rust bridge | \`$RUST_REQUIRED\` | \`$RUST_RESULT\` |"
             echo "| Mac App | \`$MACOS_REQUIRED\` | \`$MACOS_RESULT\` |"
-            echo "| Windows App | \`$WINDOWS_REQUIRED\` | \`$WINDOWS_RESULT\` |"
             echo "| Windows App | \`$WINDOWS_REQUIRED\` | \`$WINDOWS_RESULT\` |"
             echo "| Docs and static policy | \`$DOCS_REQUIRED\` | \`$DOCS_RESULT\` |"
           } >> "$GITHUB_STEP_SUMMARY"

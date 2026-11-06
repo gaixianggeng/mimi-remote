@@ -570,4 +570,11 @@ evidence_full_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_ca
   bash ./scripts/verify-change.sh --plan --full --base HEAD)"
 assert_not_contains "$evidence_full_output" "构建证据："
 
+windows_output="$(assert_plan windows_host windows/src/MimiRemote.AgentHost/Program.cs)"
+assert_contains "$windows_output" "scripts/test-windows-app.ps1"
+assert_contains "$windows_output" "check-source-size.sh"
+assert_not_contains "$windows_output" "go test ./..."
+windows_test_output="$(assert_plan windows_test scripts/test-windows-agent-host.ps1)"
+assert_contains "$windows_test_output" "scripts/test-windows-app.ps1"
+
 echo "分层验证自测通过：范围与来源、full 覆盖边界、构建证据复用标注、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"

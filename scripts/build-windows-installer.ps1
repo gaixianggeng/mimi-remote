@@ -96,7 +96,21 @@ try {
     )
     $hostProject = Join-Path $root 'windows\src\MimiRemote.AgentHost\MimiRemote.AgentHost.csproj'
     $hostOutput = Join-Path $work 'host'
-    & $dotnet publish $hostProject -c Release -r win-x64 --self-contained true -p:PublishAot=true -o $hostOutput --nologo
+    $bash = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
+    if (-not (Test-Path -LiteralPath $bash)) { $bash = Find-Tool 'bash' @() }
+    $previousArtifacts = $env:MIMI_DOTNET_ARTIFACTS
+    try {
+        if (-not $env:MIMI_DOTNET_ARTIFACTS) {
+            $cachePath = & $bash -c 'cygpath -w "$(bash ./scripts/development-cache-path.sh dotnet)"'
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve shared .NET cache.' }
+            $env:MIMI_DOTNET_ARTIFACTS = $cachePath.Trim()
+        }
+        Push-Location (Join-Path $root 'windows')
+        try {
+            & $dotnet publish $hostProject -c Release -r win-x64 --self-contained true -p:PublishAot=true -o $hostOutput --nologo
+            if ($LASTEXITCODE -ne 0) { throw 'dotnet publish for the agent host failed.' }
+        } finally { Pop-Location }
+    } finally { $env:MIMI_DOTNET_ARTIFACTS = $previousArtifacts }
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish for the agent host failed.' }
     $hostBinary = Join-Path $hostOutput 'mimi-agent-host.exe'
     if (-not (Test-Path -LiteralPath $hostBinary -PathType Leaf)) { throw "Native AOT did not produce mimi-agent-host.exe: $hostBinary" }

@@ -79,6 +79,17 @@ public class AgentHostArgumentsTests
         AssertRejected("--log-file", @"C:\a.log", "extra");
     }
 
+    [Theory]
+    [InlineData("--token=private-test-value")]
+    [InlineData("private-test-value")]
+    public void 未知参数不会写入诊断(string argument)
+    {
+        Assert.False(AgentHostArguments.TryParse([argument], out _, out var error));
+        Assert.DoesNotContain("private-test-value", error, StringComparison.Ordinal);
+        Assert.False(AgentHostArguments.TryParse(["--log-file", "a.log", argument], out _, out error));
+        Assert.DoesNotContain("private-test-value", error, StringComparison.Ordinal);
+    }
+
     private static void AssertRejected(params string[] args)
     {
         Assert.False(AgentHostArguments.TryParse(args, out var options, out var error));
