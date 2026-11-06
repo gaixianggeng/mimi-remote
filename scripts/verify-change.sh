@@ -144,6 +144,7 @@ ios_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "ios" { print $2 }')
 rust_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "rust" { print $2 }')"
 macos_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "macos" { print $2 }')"
 docs_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "docs" { print $2 }')"
+windows_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "windows" { print $2 }')"
 
 # config.example.json 与 README/示例文档同类：对外发布的配置示例，不是产品源码。
 # 此前它没有映射，改一行也会让 quick 在任何检查前 fail closed；这里按文档路径归口到文档静态门禁。
@@ -158,7 +159,7 @@ is_documentation_path() {
 
 is_control_path() {
   case "$1" in
-    .github/*|scripts/*|packaging/*|config/*|config.example.json|.goreleaser.yml|.gitignore|.editorconfig|.xcodebuildmcp/*)
+    .github/*|scripts/*|packaging/*|config/*|config.example.json|.goreleaser.yml|.gitignore|.gitattributes|.editorconfig|.xcodebuildmcp/*)
       return 0
       ;;
   esac
@@ -167,7 +168,7 @@ is_control_path() {
 
 is_go_source_path() {
   case "$1" in
-    experiments/tailcat/*)
+    experiments/tailcat/*|windows/*)
       return 1
       ;;
   esac
@@ -221,6 +222,7 @@ direct_go=false
 direct_ios=false
 direct_rust=false
 direct_macos=false
+direct_windows=false
 direct_claude_sdk=false
 has_control=false
 has_contract=false
@@ -328,6 +330,11 @@ for path in "${changed_paths[@]:-}"; do
   path_is_rust=false
   path_is_macos=false
   path_is_claude_sdk=false
+  path_is_windows=false
+  case "$path" in
+    windows/*|scripts/test-windows-*.ps1|scripts/check-windows-*.ps1)
+      path_is_windows=true; direct_windows=true ;;
+  esac
 
   if is_documentation_path "$path"; then
     path_is_documentation=true
@@ -492,7 +499,8 @@ for path in "${changed_paths[@]:-}"; do
      [[ "$path_is_ios" == false ]] && \
      [[ "$path_is_rust" == false ]] && \
      [[ "$path_is_macos" == false ]] && \
-     [[ "$path_is_claude_sdk" == false ]]; then
+     [[ "$path_is_claude_sdk" == false ]] && \
+     [[ "$path_is_windows" == false ]]; then
     unknown_paths+=("$path")
   fi
 done
@@ -631,9 +639,9 @@ fi
 if [[ "$has_harness_native_contract" == true ]]; then
   add_check "原生 Harness 契约夹具完整性" "bash ./scripts/check-harness-native-contract.sh" "go ios"
 fi
-if [[ "$direct_go" == true || "$direct_ios" == true || "$has_source_size_control" == true ]]; then
+if [[ "$direct_go" == true || "$direct_ios" == true || "$direct_windows" == true || "$has_source_size_control" == true ]]; then
   # 先用秒级门禁拦住超大源文件，避免等到 Xcode/Go 构建后才失败。
-  add_check "Go/iOS 源码体积快速门禁" "bash ./scripts/check-source-size.sh" "go ios"
+  add_check "Go/iOS/Windows 源码体积快速门禁" "bash ./scripts/check-source-size.sh" "go ios windows"
 fi
 if [[ "$direct_rust" == true ]]; then
   add_check "Rust 格式检查" "cargo fmt --all -- --check" "rust"
@@ -701,6 +709,10 @@ if [[ "$direct_claude_sdk" == true ]]; then
   add_check "Claude SDK 适配器：锁定依赖、类型检查与测试" "bash ./scripts/check-claude-sdk-adapter.sh" "claude-sdk"
 fi
 
+if [[ "$direct_windows" == true ]]; then
+  add_check "Windows 宿主编译、单测与隔离进程树验证" "pwsh -NoProfile -File ./scripts/test-windows-app.ps1" "windows"
+fi
+
 if [[ "$direct_macos" == true ]]; then
   add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh" "macos"
 fi
@@ -717,7 +729,7 @@ print_plan() {
     echo "- 来源计数：committed=${committed_count}, staged=${staged_count}, unstaged=${unstaged_count}, untracked=${untracked_count}"
   fi
   echo "- 去重后路径：${#changed_paths[@]}"
-  echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}"
+  echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}, windows=${windows_scope}"
   echo
 
   echo "验证阶段："
@@ -757,7 +769,7 @@ print_plan() {
 
   if [[ "$all_docs" == true ]]; then
     echo "判定：纯文档/静态内容；不启动 Go、Cargo、Xcode 或真机。"
-  elif [[ "$has_control" == true && "$direct_go" == false && "$direct_ios" == false && "$direct_rust" == false && "$direct_macos" == false ]]; then
+  elif [[ "$has_control" == true && "$direct_go" == false && "$direct_ios" == false && "$direct_rust" == false && "$direct_macos" == false && "$direct_windows" == false ]]; then
     echo "判定：CI/脚本/发布控制面；只运行语法与映射自检，不启动语言构建。"
   else
     echo "判定：包含产品源码；只验证直接受影响的语言栈。"
@@ -775,7 +787,9 @@ print_plan() {
   if [[ "$direct_ios" == true ]]; then
     echo "真机：默认延后。相机、通知、Keychain、Tailscale/弱网、性能和发布前专项仍必须单独真机验收。"
   fi
-  if [[ "${#powershell_paths[@]}" -gt 0 ]]; then
+  if [[ "$direct_windows" == true ]]; then
+    echo "Windows：本轮执行宿主构建与隔离测试，需要 Windows、PowerShell 7 和 .NET Native AOT 工具链。"
+  elif [[ "${#powershell_paths[@]}" -gt 0 ]]; then
     echo "Windows：PowerShell 脚本的执行与平台语义延后到 Windows CI；本地不启动额外虚拟机。"
   fi
   if [[ "$mode" == "quick" ]]; then

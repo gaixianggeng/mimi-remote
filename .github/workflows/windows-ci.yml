@@ -1,0 +1,74 @@
+name: Windows App
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+    paths:
+      - "windows/**"
+      - "scripts/check-windows-*.ps1"
+      - "scripts/test-windows-*.ps1"
+      - "packaging/windows/**"
+      - "scripts/build-windows-installer.ps1"
+      - ".github/workflows/windows-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host:
+    name: Agent host
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: windows/global.json
+
+      # 锁文件固定传递依赖；版本漂移必须显式提 PR 改锁文件，不能靠 CI 悄悄升级。
+      - name: Restore
+        run: dotnet restore MimiRemote.slnx --locked-mode
+
+      - name: Format check
+        run: dotnet format MimiRemote.slnx --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build MimiRemote.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test MimiRemote.slnx -c Release --no-build --no-restore
+
+      # 宿主的发布形态必须与安装包一致：Native AOT、自包含、单文件。
+      - name: Publish agent host
+        run: dotnet publish src/MimiRemote.AgentHost/MimiRemote.AgentHost.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=true -o "$env:RUNNER_TEMP\host" --no-restore
+
+      - name: Verify host is a GUI subsystem binary
+        run: pwsh -NoProfile -File ../scripts/check-windows-host-subsystem.ps1 -Path "$env:RUNNER_TEMP\host\mimi-agent-host.exe" -Expected GUI
+
+      - name: Verify isolated process tree and console visibility
+        run: pwsh -NoProfile -File ../scripts/test-windows-agent-host.ps1 -HostPath "$env:RUNNER_TEMP\host\mimi-agent-host.exe"
+
+      - name: Upload host artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mimi-agent-host-win-x64
+          path: ${{ runner.temp }}\host\mimi-agent-host.exe
+          if-no-files-found: error

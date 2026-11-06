@@ -267,7 +267,8 @@ python_output="$(assert_plan python_control scripts/prepare-ios-store-screenshot
 assert_contains "$python_output" "Python 脚本先做无产物语法检查"
 
 powershell_output="$(assert_plan powershell_control scripts/check-windows-installer.ps1)"
-assert_contains "$powershell_output" "延后到 Windows CI"
+assert_contains "$powershell_output" "本轮执行宿主构建与隔离测试"
+assert_contains "$powershell_output" "scripts/test-windows-app.ps1"
 
 device_control_output="$(assert_plan device_control scripts/ios-dev.sh)"
 assert_contains "$device_control_output" "test-tailcat-mobile-build.sh"
@@ -569,5 +570,12 @@ assert_contains "$evidence_plan_output" "构建证据：无法检查（找不到
 evidence_full_output="$(cd "$execution_root" && VERIFY_TEST_CALLS="$execution_calls" \
   bash ./scripts/verify-change.sh --plan --full --base HEAD)"
 assert_not_contains "$evidence_full_output" "构建证据："
+
+windows_output="$(assert_plan windows_host windows/src/MimiRemote.AgentHost/Program.cs)"
+assert_contains "$windows_output" "scripts/test-windows-app.ps1"
+assert_contains "$windows_output" "check-source-size.sh"
+assert_not_contains "$windows_output" "go test ./..."
+windows_test_output="$(assert_plan windows_test scripts/test-windows-agent-host.ps1)"
+assert_contains "$windows_test_output" "scripts/test-windows-app.ps1"
 
 echo "分层验证自测通过：范围与来源、full 覆盖边界、构建证据复用标注、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"
