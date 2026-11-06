@@ -177,8 +177,15 @@ else
     # Windows 原生 App 与它的宿主检查：C#/XAML 工程、宿主 PE 门禁和
     # windows-ci 工作流都只由 Windows Gate 覆盖。
     case "$changed_path" in
-      windows/*|windows/**/*|packaging/windows/*|scripts/build-windows-installer.ps1|scripts/check-windows-*.ps1|scripts/test-windows-*.ps1|.github/workflows/windows-ci.yml)
+      windows/*|windows/**/*|contracts/host-cli/*|packaging/windows/*|scripts/build-windows-installer.ps1|scripts/check-windows-*.ps1|scripts/test-windows-*.ps1|.github/workflows/windows-ci.yml)
         windows_scope=true
+        ;;
+    esac
+
+    case "$changed_path" in
+      contracts/host-cli/*)
+        go_scope=true
+        macos_scope=true
         ;;
     esac
 

@@ -36,8 +36,8 @@ func main() {
 		must(err)
 	}
 	// 故意在生成新身份后失败，验证回滚不能只恢复 URL。
-	failure, _ := os.ReadFile(filepath.Join(*stateDir, "fail-start-url"))
-	if string(failure) == *relay && len(failure) > 0 {
+	failure, failureErr := os.ReadFile(filepath.Join(*stateDir, "fail-start-url"))
+	if failureErr == nil && string(failure) == *relay {
 		os.Exit(1)
 	}
 	// 模拟控制接口迟迟不就绪，验证等待就绪期间可以被取消。

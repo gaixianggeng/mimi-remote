@@ -52,6 +52,9 @@ struct AgentCommandClient: Sendable {
     var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前电脑端不支持 Mimi 中转服务，请更新后重试。")
     }
+    var setTailcatRelay: @Sendable (_ choice: String, _ url: String) async throws -> TailcatStatus = { _, _ in
+        throw AgentClientError.commandFailed("当前电脑端不支持统一中转设置，请更新后重试。")
+    }
     var configureDeepSeek: @Sendable (
         _ action: DeepSeekConfigurationAction,
         _ startupURL: String?
@@ -323,6 +326,14 @@ extension AgentCommandClient {
                     timeout: .seconds(55)
                 ))
             },
+            setTailcatRelay: { choice, url in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TailcatStatus.self, from: try await execute(
+                    binary: binary,
+                    arguments: tailcatRelayArguments(choice: choice, url: url),
+                    timeout: .seconds(55)
+                ))
+            },
             configureDeepSeek: { action, startupURL in
                 let binary = try requireEmbeddedBinary()
                 let arguments = deepSeekConfigurationArguments(action: action, hasStartupURL: startupURL != nil)
@@ -468,6 +479,10 @@ extension AgentCommandClient {
             "--json",
             "--qr-only",
         ]
+    }
+
+    static func tailcatRelayArguments(choice: String, url: String) -> [String] {
+        ["tailcat", "relay", "set", "--choice", choice, "--derp-map-url", choice == "custom" ? url : "", "--json"]
     }
 
     static func tailcatArguments(action: String, derpMapURL: String? = nil) -> [String] {

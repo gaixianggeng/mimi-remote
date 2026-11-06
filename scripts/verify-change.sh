@@ -332,6 +332,13 @@ for path in "${changed_paths[@]:-}"; do
   path_is_claude_sdk=false
   path_is_windows=false
   case "$path" in
+    contracts/host-cli/*)
+      path_is_windows=true; direct_windows=true
+      path_is_go=true; direct_go=true
+      path_is_macos=true; direct_macos=true
+      add_go_package_for_path "cmd/agentd/tailcat.go"
+      add_go_package_for_path "internal/httpapi/tailcat.go"
+      ;;
     windows/*|scripts/test-windows-*.ps1|scripts/check-windows-*.ps1)
       path_is_windows=true; direct_windows=true ;;
   esac

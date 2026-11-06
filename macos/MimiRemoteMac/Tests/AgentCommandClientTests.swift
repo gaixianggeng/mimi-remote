@@ -2,6 +2,41 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentCommandClientTests: XCTestCase {
+    func testSharedHostCliRelayContract() throws {
+        struct RelayCase: Decodable {
+            struct Current: Decodable {
+                let enabled: Bool
+                let mode: String
+                let derpMapUrl: String
+            }
+            let id: String
+            let choice: String
+            let url: String
+            let current: Current
+            let needsConfirmation: Bool
+            let valid: Bool
+        }
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("contracts/host-cli/relay-cases.json"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        for item in try decoder.decode([RelayCase].self, from: data) {
+            let mode: TailcatRelayMode
+            if item.choice == "default" { mode = .tailcatDefault }
+            else { mode = try XCTUnwrap(TailcatRelayMode(rawValue: item.choice)) }
+            XCTAssertEqual(TailcatRelayPresentation.needsReconnectionConfirmation(
+                mode: mode, url: item.url, tailcatEnabled: item.current.enabled,
+                isManaged: item.current.mode == "managed", currentURL: item.current.derpMapUrl
+            ), item.needsConfirmation, item.id)
+            if item.choice == "custom" {
+                XCTAssertEqual(TailcatRelayPresentation.customURLValidationMessage(item.url) == nil, item.valid, item.id)
+            }
+            XCTAssertEqual(AgentCommandClient.tailcatRelayArguments(choice: item.choice, url: item.url),
+                ["tailcat", "relay", "set", "--choice", item.choice, "--derp-map-url", item.url, "--json"], item.id)
+        }
+    }
+
     func testSetupUsesSeparateProjectScanAndHomeBrowseRoots() {
         let arguments = AgentCommandClient.setupArguments(
             workspaceRoot: URL(filePath: "/test-user/code"),

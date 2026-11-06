@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><RootNamespace>MimiRemote.Core</RootNamespace></PropertyGroup>
+</Project>
