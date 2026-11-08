@@ -134,11 +134,19 @@ extension SessionStore {
     }
 
     /// 下拉刷新：和回到前台一样重新核对电脑的选择和开通状态，失败过的启用也会再试一次。
-    /// 先查电脑的选择，它比验证权益快；查询结束才收起下拉指示。
+    /// 查询结束才收起下拉指示。
     func refreshMimiRelay(_ entitlements: ManagedConnectionEntitlementStore) async {
-        reconcileMimiRelay(entitlements, retry: true)
+        await afterComputerRelayChoiceCheck { reconcileMimiRelay(entitlements, retry: true) }
         await entitlements.refreshEntitlement()
         await mimiRelay.computerChoiceTask?.value
+    }
+
+    /// 等电脑的选择查回来再继续。重试会立刻发起启用，而启用会把电脑切到 Mimi；
+    /// 不等结果，电脑刚离开 Mimi 时待启用的选择来不及撤销。
+    func afterComputerRelayChoiceCheck(_ next: () -> Void) async {
+        syncComputerRelayChoice(force: true)
+        await mimiRelay.computerChoiceTask?.value
+        next()
     }
 
     /// 手机上改回免费线路，长期生效。与启用共用连接事务，防止并发替换底层线路。

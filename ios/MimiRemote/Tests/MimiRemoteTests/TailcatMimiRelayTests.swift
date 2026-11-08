@@ -282,6 +282,29 @@ extension TailcatExperimentRoutingTests {
         XCTAssertNotNil(sessions.mimiRelayNotice, "用户要能看到这次为什么没启用")
     }
 
+    /// 重试会立刻发起启用，必须等电脑的选择查回来，否则电脑刚离开 Mimi 时会被切回去。
+    func testPullToRefreshWaitsForComputerChoiceBeforeRetrying() async throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller,
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        let (gate, release) = AsyncStream<Void>.makeStream()
+        sessions.mimiRelay.computerChoiceTask = Task { for await _ in gate {} }
+        var retried = false
+        let refresh = Task { @MainActor in
+            await sessions.afterComputerRelayChoiceCheck { retried = true }
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(retried, "查询还没回来，不能重试")
+
+        release.finish()
+        await refresh.value
+        XCTAssertTrue(retried)
+    }
+
     func testRepeatUntilCancelledChecksAfterEachIntervalAndStopsWhenSleepIsCancelled() async {
         var sleeps: [Duration] = []
         var checks = 0
