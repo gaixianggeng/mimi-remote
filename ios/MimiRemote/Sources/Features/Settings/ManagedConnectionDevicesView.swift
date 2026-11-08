@@ -4,6 +4,9 @@ import SwiftUI
 /// 默认和自建中转只能在电脑上改，不在这里摆成看起来能选的选项；手机能做的只有 Mimi 相关的操作。
 /// 进入这一页或点开 Mimi 都不会改变线路。
 struct ManagedConnectionDevicesView: View {
+    /// 查询很轻，只在这一页可见时进行；启用本身要 6–7 秒，再密也不会明显更快。
+    static let computerChoicePollInterval: Duration = .seconds(3)
+
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
@@ -87,6 +90,16 @@ struct ManagedConnectionDevicesView: View {
             guard ManagedConnectionSubscriptionView.isEntryVisible,
                   case .loading = entitlementStore.status else { return }
             await entitlementStore.load()
+        }
+        .task {
+            // 停留在这一页时也要跟上电脑的改动；离开页面时任务随之取消，退到后台时查询自己会跳过。
+            guard ManagedConnectionSubscriptionView.isEntryVisible else { return }
+            await SessionStore.repeatUntilCancelled(every: Self.computerChoicePollInterval) {
+                sessionStore.syncComputerRelayChoice(force: true)
+            }
+        }
+        .refreshable {
+            await sessionStore.refreshMimiRelay(entitlementStore)
         }
         .accessibilityIdentifier("settings.managedConnectionDevices.detail")
     }
