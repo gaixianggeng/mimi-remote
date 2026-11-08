@@ -92,10 +92,53 @@ extension SessionStore {
             guard let client = try? appStore.client(),
                   let choice = try? await client.tailcatRelayChoice(),
                   appStore.activeHostScope == scope, !Task.isCancelled else { return }
-            if controller.noteComputerRelayChoice(choice, profileID: profile.id) {
-                controller.selectRelayService(.mimi, profileID: profile.id)
-            }
+            followComputerRelayChoice(choice, profileID: profile.id, route: profile.connectionRoute, controller: controller)
         }
+    }
+
+    /// 让手机的待启用选择跟上电脑。电脑新选了 Mimi 是一次新的选择，上一次启用尝试的去重不能挡住它，
+    /// 否则同一次运行里电脑切走再切回，手机会一直停在免费线路。
+    /// 电脑离开 Mimi 而手机还没启用成功时要撤销选择：手机发起的启用会把电脑切到 Mimi，留着它，
+    /// 下一次重试（回前台、下拉刷新）就会推翻用户刚在电脑上做的决定。只认「离开」这一下，
+    /// 电脑一直没选 Mimi 时用户在手机上点启用是合法操作，不能被查询撤销。
+    func followComputerRelayChoice(
+        _ choice: ComputerRelayChoice, profileID: String, route: ConnectionProfileRoute,
+        controller: TailcatExperimentController
+    ) {
+        let previous = controller.computerRelayChoice(profileID: profileID)
+        if controller.noteComputerRelayChoice(choice, profileID: profileID) {
+            mimiRelay.attemptKey = nil
+            controller.selectRelayService(.mimi, profileID: profileID)
+        } else if previous == .mimi, choice.relay != .mimi, !route.isManaged, mimiRelay.task == nil {
+            abandonMimiSelection(profileID: profileID, controller: controller)
+            mimiRelayNotice = nil
+        }
+    }
+
+    private func abandonMimiSelection(profileID: String, controller: TailcatExperimentController) {
+        guard controller.relayServiceChoice(profileID: profileID) == .mimi else { return }
+        controller.selectRelayService(controller.lastFreeRelayChoice(profileID: profileID), profileID: profileID)
+    }
+
+    /// 定期执行，直到所在任务被取消。电脑改选中转时没有事件推给手机，中转服务页靠它在几秒内跟上。
+    static func repeatUntilCancelled(
+        every interval: Duration,
+        sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        action: () -> Void
+    ) async {
+        while !Task.isCancelled {
+            do { try await sleep(interval) } catch { return }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+    }
+
+    /// 下拉刷新：和回到前台一样重新核对电脑的选择和开通状态，失败过的启用也会再试一次。
+    /// 先查电脑的选择，它比验证权益快；查询结束才收起下拉指示。
+    func refreshMimiRelay(_ entitlements: ManagedConnectionEntitlementStore) async {
+        reconcileMimiRelay(entitlements, retry: true)
+        await entitlements.refreshEntitlement()
+        await mimiRelay.computerChoiceTask?.value
     }
 
     /// 手机上改回免费线路，长期生效。与启用共用连接事务，防止并发替换底层线路。
@@ -185,7 +228,12 @@ extension SessionStore {
                         appStore.markCredentialsInvalid()
                         return
                     }
-                    if !(error is URLError) { controller.clearRelayActivationRequest(profileID: context.profile.id) }
+                    if !(error is URLError) {
+                        controller.clearRelayActivationRequest(profileID: context.profile.id)
+                        // 被明确拒绝就放弃这次选择。手机发起的启用会把电脑切到 Mimi，
+                        // 留着选择，每次回前台都会再失败并再切一次；用户可以随时点启用重试。
+                        abandonMimiSelection(profileID: context.profile.id, controller: controller)
+                    }
                     mimiRelayNotice = L10n.format("ui.relay_activation_failed", error.localizedDescription)
                     // 免费节点身份没有改变；启用失败时重新验证原连接，不要求用户重新扫码。
                     if context.profile.connectionRoute == .customTailcat {

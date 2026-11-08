@@ -186,6 +186,124 @@ extension TailcatExperimentRoutingTests {
         XCTAssertNil(fixture.controller.lastFreeRelayChoice(profileID: "first"))
     }
 
+    /// 同一次运行里电脑切走再切回：上一次启用的去重不能挡住新的选择；手机改回免费后，电脑没动就不跟随。
+    func testFollowingComputerClearsPreviousActivationAttempt() throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let controller = fixture.controller
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: controller,
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        func follow(_ relay: RelayServiceChoice) {
+            sessions.followComputerRelayChoice(
+                ComputerRelayChoice(relay: relay, free: .tailcatDefault), profileID: "managed-mac",
+                route: .customTailcat, controller: controller
+            )
+        }
+        follow(.tailcatDefault)
+        sessions.mimiRelay.attemptKey = "managed-mac:entitlement"
+        controller.selectRelayService(.tailcatDefault, profileID: "managed-mac")
+
+        follow(.mimi)
+        XCTAssertNil(sessions.mimiRelay.attemptKey, "电脑的新选择要能重新启用")
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .mimi)
+
+        sessions.mimiRelay.attemptKey = "managed-mac:entitlement"
+        controller.selectRelayService(.tailcatDefault, profileID: "managed-mac")
+        follow(.mimi)
+        XCTAssertEqual(sessions.mimiRelay.attemptKey, "managed-mac:entitlement", "定期查询到同一次选择不算新选择")
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .tailcatDefault, "手机改回免费后不能被查询切回 Mimi")
+    }
+
+    /// 手机发起的启用会把电脑切到 Mimi。电脑已离开 Mimi 时，还没成功的选择必须撤销，重试才不会把电脑切回去。
+    func testComputerLeavingMimiWithdrawsPendingActivation() throws {
+        let fixture = try makeControllerFixture(startResults: [], managedProfile: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        let controller = fixture.controller
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: controller,
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: []) }
+        )
+        func follow(_ relay: RelayServiceChoice, route: ConnectionProfileRoute = .customTailcat) {
+            sessions.followComputerRelayChoice(
+                ComputerRelayChoice(relay: relay, free: .tailcatDefault), profileID: "managed-mac",
+                route: route, controller: controller
+            )
+        }
+        follow(.tailcatDefault)
+        follow(.mimi)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .mimi)
+
+        sessions.mimiRelay.task = Task {}
+        follow(.tailcatDefault)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .mimi, "启用进行中不打断")
+        sessions.mimiRelay.task = nil
+
+        follow(.mimi)
+        follow(.tailcatDefault, route: .managedTailcat)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .mimi, "已经在 Mimi 上不算待启用")
+
+        follow(.mimi)
+        sessions.mimiRelayNotice = "上一次启用失败"
+        follow(.tailcatDefault)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .tailcatDefault)
+        XCTAssertNil(sessions.mimiRelayNotice, "撤销后不再留着上一次的报错")
+
+        controller.selectRelayService(.mimi, profileID: "managed-mac")
+        follow(.tailcatDefault)
+        XCTAssertEqual(controller.relayServiceChoice(profileID: "managed-mac"), .mimi, "电脑没有离开 Mimi，这是用户在手机上点的启用")
+    }
+
+    /// 手机发起的启用会把电脑切到 Mimi。被明确拒绝后放弃这次选择，否则每次回前台都会再失败并再切一次（#984）。
+    func testRejectedActivationAbandonsMimiSelection() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        ManagedUpgradeURLProtocol.configure { request in
+            request.respond(status: 409, body: #"{"code":"tailcat_agents_disabled","error":"全部助手已关闭"}"#)
+        }
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store, endpoint: "http://127.0.0.1:9", dnsName: nil)
+        let profileID = try XCTUnwrap(fixture.store.activeConnectionProfileID)
+        fixture.controller.selectRelayService(.tailcatDefault, profileID: profileID)
+        fixture.controller.selectRelayService(.mimi, profileID: profileID)
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+
+        sessions.activateMimiRelay()
+        await sessions.mimiRelay.task?.value
+
+        XCTAssertEqual(fixture.controller.relayServiceChoice(profileID: profileID), .tailcatDefault)
+        XCTAssertNotNil(sessions.mimiRelayNotice, "用户要能看到这次为什么没启用")
+    }
+
+    func testRepeatUntilCancelledChecksAfterEachIntervalAndStopsWhenSleepIsCancelled() async {
+        var sleeps: [Duration] = []
+        var checks = 0
+        await SessionStore.repeatUntilCancelled(every: .seconds(3), sleep: { interval in
+            sleeps.append(interval)
+            if sleeps.count == 3 { throw CancellationError() }
+        }, action: { checks += 1 })
+        XCTAssertEqual(sleeps, [.seconds(3), .seconds(3), .seconds(3)])
+        XCTAssertEqual(checks, 2, "进入页面时已查询过一次，这里先等待；取消后不再查询")
+    }
+
+    func testRepeatUntilCancelledDoesNotCheckAfterPageLeaves() async {
+        var checks = 0
+        let task = Task { @MainActor in
+            await SessionStore.repeatUntilCancelled(every: .seconds(3), sleep: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }, action: { checks += 1 })
+        }
+        await task.value
+        XCTAssertEqual(checks, 0, "等待结束时页面已离开，不能再发查询")
+    }
+
     /// 改回免费是长期选择：下次启动也不回到 Mimi；免费地址保留，之后还能一键启用。
     func testSwitchToFreeRelayCommitsFreeRouteAndKeepsWayBack() async throws {
         let fixture = try makeControllerFixture(

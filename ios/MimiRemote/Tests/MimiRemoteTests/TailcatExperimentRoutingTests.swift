@@ -579,7 +579,7 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.activeConnectionProfileID, "mac-b")
     }
 
-    private func seedUpgradeProfile(
+    func seedUpgradeProfile(
         _ store: AppStore,
         id: String = "mac-a",
         endpoint: String = "http://192.168.1.20:8787",
