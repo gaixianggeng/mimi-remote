@@ -45787,6 +45787,118 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通" } }
       }
     },
+    "ui.managed_transfer_add_device": {
+      "comment": "Row and sheet title for showing the redemption code to another device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Add Another Device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "添加另一台设备" } }
+      }
+    },
+    "ui.managed_transfer_auth_reason": {
+      "comment": "Face ID or passcode prompt before the redemption code is shown.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verify it’s you to show your Mimi Relay code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "验证身份后显示你的 Mimi 中转邀请码" } }
+      }
+    },
+    "ui.managed_transfer_auth_failed": {
+      "comment": "Error when device owner verification fails and the code stays hidden.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t verify it’s you, so the code wasn’t shown. Try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "身份验证没有通过，邀请码未显示，请重试。" } }
+      }
+    },
+    "ui.managed_transfer_instruction": {
+      "comment": "Tells the user how to use the QR code on their other device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On your other device, open Mimi, go to Mimi Relay, and tap Scan Code from Another Device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在另一台设备上打开 Mimi，进入「Mimi 中转」，点「扫描另一台设备的二维码」。" } }
+      }
+    },
+    "ui.managed_transfer_qr_label": {
+      "comment": "Accessibility label for the QR code containing the redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "QR code for your Mimi Relay code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转邀请码的二维码" } }
+      }
+    },
+    "ui.managed_transfer_copy_code": {
+      "comment": "Button that copies the redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制邀请码" } }
+      }
+    },
+    "ui.managed_transfer_copied": {
+      "comment": "Confirmation after copying the redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copied" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制" } }
+      }
+    },
+    "ui.managed_transfer_copy_hint": {
+      "comment": "Explains how a copied code reaches another device and when it is cleared.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "On a device signed in to the same Apple Account, paste it on the Mimi Relay page. It’s cleared from the clipboard after 5 minutes." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在登录同一 Apple 账户的设备上，到「Mimi 中转」页粘贴。5 分钟后自动从剪贴板清除。" } }
+      }
+    },
+    "ui.managed_transfer_private_note": {
+      "comment": "Warns that the redemption code grants access to the user's device slots.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Anyone with this code can use your device slots. Only use it on your own devices." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "拿到这个码的设备都能占用你的名额，只在自己的设备上使用。" } }
+      }
+    },
+    "ui.managed_transfer_scan_row": {
+      "comment": "Row that opens the camera to scan a code shown by another device.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan Code from Another Device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描另一台设备的二维码" } }
+      }
+    },
+    "ui.managed_transfer_scan_title": {
+      "comment": "Title of the camera page when scanning a redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Scan Code" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "扫描邀请码" } }
+      }
+    },
+    "ui.managed_transfer_scan_guidance": {
+      "comment": "Guidance over the camera when scanning a redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Point the camera at the QR code on your other device" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "对准另一台设备上显示的二维码" } }
+      }
+    },
+    "ui.managed_transfer_activating": {
+      "comment": "Progress message after a redemption code is recognized.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Activating Mimi Relay" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "正在开通 Mimi 中转" } }
+      }
+    },
+    "ui.managed_transfer_success_title": {
+      "comment": "Title after a scanned redemption code activates the service.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Activated" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通成功" } }
+      }
+    },
+    "ui.managed_transfer_success": {
+      "comment": "Message after a scanned redemption code activates the service.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is active on this device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台设备已开通 Mimi 中转。" } }
+      }
+    },
+    "ui.managed_transfer_not_a_code": {
+      "comment": "Error when the scanned QR code is not a redemption code.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This isn’t a Mimi Relay code. Scan the QR code shown on your other device." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这不是 Mimi 中转邀请码。请扫描另一台设备上显示的二维码。" } }
+      }
+    },
     "ui.managed_redemption_hint": {
       "comment": "Explains what a beta redemption code does and how to reuse it.",
       "localizations": {

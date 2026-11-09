@@ -70,6 +70,8 @@
 	<string>Allow Mimi Remote to find and connect to a development environment you configure.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Allow Mimi Remote to confirm it’s you before showing your Mimi Relay code.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Allow Mimi Remote to turn your speech into text in the message composer.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

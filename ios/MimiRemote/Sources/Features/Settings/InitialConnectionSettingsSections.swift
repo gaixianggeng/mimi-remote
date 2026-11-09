@@ -1584,7 +1584,15 @@ struct InitialConnectionSettingsSections: View {
     private func configureQRCodeScannerPresentation() {
         qrScannerPresentation.configure(
             onSubmit: { rawValue, intent in
-                await applyScannedConnection(rawValue, intent: intent)
+                // 「扫电脑」入口扫到另一台设备出示的邀请码：按系统相机打开链接处理，
+                // 后续启用和跳转由工作台统一完成，不报成配对失败（#989）。
+                if ManagedConnectionSubscriptionView.isEntryVisible,
+                   let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   let link = ManagedRedemptionLink(url: url) {
+                    await managedConnectionEntitlementStore.redeemFromLink(link)
+                    return managedConnectionEntitlementStore.redemptionScanResult
+                }
+                return await applyScannedConnection(rawValue, intent: intent)
             },
             onChooseManualConnection: { intent in
                 pendingManualConnectionIntent = intent

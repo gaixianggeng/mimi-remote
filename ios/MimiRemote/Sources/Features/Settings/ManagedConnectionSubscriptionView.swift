@@ -45,7 +45,14 @@ struct ManagedConnectionSubscriptionView: View {
     @State private var isScanningConnection = false
     /// 用户在这一页发起了开通。只有这时结果才算选择 Mimi；冷启动查到已有权益不改线路。
     @State private var requestedActivation = false
+    /// 发起扫码时定下用途。开通成功后 isEntitled 立刻变化，扫码页的文案不能跟着跳。
+    @State private var scanPurpose: QRCodeScannerPurpose = .pairing
+    /// 明文只在出示页打开期间留在这里，关闭即清空。
+    @State private var transferCode: ManagedConnectionTransferCode?
+    @State private var isVerifyingTransfer = false
+    @State private var transferFailed = false
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
+    var deviceOwnerAuthenticator: any DeviceOwnerAuthenticating = SystemDeviceOwnerAuthenticator()
 
     /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
     /// 正式开放时改回 true（#949）。
@@ -78,6 +85,9 @@ struct ManagedConnectionSubscriptionView: View {
                 if !entitlementStore.isRedemptionEntitlement {
                     Section { manageSubscriptionButton } header: { SettingsGroupHeader() }
                         .settingsGroupRowStyle()
+                }
+                if entitlementStore.hasTransferableRedemption {
+                    addDeviceSection
                 }
                 ManagedConnectionDeviceListSection()
             } else if !isChecking {
@@ -116,8 +126,12 @@ struct ManagedConnectionSubscriptionView: View {
                 onDismiss: qrScannerPresentation.dismiss,
                 onChooseManualConnection: { qrScannerPresentation.dismiss() },
                 onOpenManagedConnection: nil,
-                onCode: { await connectComputer($0, intent: intent) }
+                purpose: scanPurpose,
+                onCode: { await handleScannedCode($0, intent: intent) }
             )
+        }
+        .sheet(item: $transferCode) { item in
+            ManagedConnectionTransferSheet(code: item.code) { transferCode = nil }
         }
         .alert(
             L10n.text("ui.restore_purchases"),
@@ -146,16 +160,93 @@ struct ManagedConnectionSubscriptionView: View {
 
     private var scanComputerButton: some View {
         Button {
-            qrScannerPresentation.request(
-                appStore.activeConnectionProfileID.map { .repairCurrentProfile(expectedProfileID: $0) }
-                    ?? .initialConnection,
-                from: .relaySubscription
-            )
+            requestScan(.pairing)
         } label: {
             Label(L10n.text("ui.relay_scan_computer"), systemImage: "qrcode.viewfinder")
         }
         .disabled(isScanningConnection || sessionStore.isActivatingMimiRelay)
         .accessibilityIdentifier("settings.relay.mimi.scan")
+    }
+
+    private func requestScan(_ purpose: QRCodeScannerPurpose) {
+        scanPurpose = purpose
+        qrScannerPresentation.request(
+            appStore.activeConnectionProfileID.map { .repairCurrentProfile(expectedProfileID: $0) }
+                ?? .initialConnection,
+            from: .relaySubscription
+        )
+    }
+
+    private func handleScannedCode(
+        _ raw: String,
+        intent: ConnectionQRCodeScanIntent
+    ) async -> QRCodeScannerSubmissionResult {
+        if scanPurpose == .redemption {
+            return await redeemScannedCode(raw)
+        }
+        return await connectComputer(raw, intent: intent)
+    }
+
+    /// 扫到另一台设备出示的邀请码：和手动输入一样算选择了 Mimi，已连接电脑时直接启用，不用再扫电脑。
+    private func redeemScannedCode(_ raw: String) async -> QRCodeScannerSubmissionResult {
+        guard let code = ManagedRedemptionCode.extract(from: raw) else {
+            return .rejected(L10n.text("ui.managed_transfer_not_a_code"))
+        }
+        requestedActivation = true
+        await entitlementStore.redeem(code: code)
+        let result = entitlementStore.redemptionScanResult
+        if case .accepted = result {
+            selectMimiForCurrentComputer()
+            sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+        }
+        return result
+    }
+
+    private var addDeviceSection: some View {
+        Section {
+            Button(action: beginTransfer) {
+                SettingsValueLabel(
+                    title: L10n.text("ui.managed_transfer_add_device"),
+                    systemImage: "qrcode",
+                    titleTint: tokens.accent
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(isVerifyingTransfer)
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.managedSubscription.addDevice")
+        } header: {
+            SettingsGroupHeader()
+        } footer: {
+            if transferFailed {
+                Text(L10n.text("ui.managed_transfer_auth_failed"))
+                    .foregroundStyle(tokens.warning)
+                    .settingsSectionFooterStyle()
+            }
+        }
+        .settingsGroupRowStyle()
+    }
+
+    private func beginTransfer() {
+        guard !isVerifyingTransfer else { return }
+        isVerifyingTransfer = true
+        transferFailed = false
+        Task {
+            defer { isVerifyingTransfer = false }
+            let outcome = await ManagedConnectionTransferGate.requestCode(
+                entitlementStore.transferableRedemptionCode,
+                authenticator: deviceOwnerAuthenticator,
+                reason: L10n.text("ui.managed_transfer_auth_reason")
+            )
+            switch outcome {
+            case .reveal(let code):
+                transferCode = ManagedConnectionTransferCode(code: code)
+            case .cancelled:
+                break
+            case .failed:
+                transferFailed = true
+            }
+        }
     }
 
     private func connectComputer(_ raw: String, intent: ConnectionQRCodeScanIntent) async -> QRCodeScannerSubmissionResult {
@@ -560,6 +651,22 @@ struct ManagedConnectionSubscriptionView: View {
             .listRowSeparator(.hidden)
             .settingsRow()
             .accessibilityIdentifier("settings.managedSubscription.redeem")
+
+            // 这台设备手上没有码、另一台设备已开通时走这里（#989）。
+            Button {
+                requestScan(.redemption)
+            } label: {
+                SettingsValueLabel(
+                    title: L10n.text("ui.managed_transfer_scan_row"),
+                    systemImage: "qrcode.viewfinder",
+                    titleTint: tokens.accent
+                )
+                .padding(.vertical, wrappedRowPadding)
+            }
+            .buttonStyle(.plain)
+            .disabled(entitlementStore.isBusy)
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.managedSubscription.scanCode")
 
             if CommunityContact.bundled != nil {
                 NavigationLink(value: SettingsDestination.community) {
