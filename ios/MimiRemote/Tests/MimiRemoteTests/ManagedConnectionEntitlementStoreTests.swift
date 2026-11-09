@@ -240,6 +240,119 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertFalse(ManagedConnectionSubscriptionView.showsPurchaseOptions)
     }
 
+    // MARK: - 转给另一台设备（#989）
+
+    private final class AuthenticatorFake: DeviceOwnerAuthenticating {
+        let result: DeviceOwnerAuthenticationResult
+        private(set) var promptCount = 0
+
+        init(_ result: DeviceOwnerAuthenticationResult) {
+            self.result = result
+        }
+
+        func authenticate(reason: String) async -> DeviceOwnerAuthenticationResult {
+            promptCount += 1
+            return result
+        }
+    }
+
+    func testTransferCodeIsShownOnlyAfterOwnerVerification() async {
+        func outcome(_ result: DeviceOwnerAuthenticationResult) async -> ManagedConnectionTransferGate.Outcome {
+            await ManagedConnectionTransferGate.requestCode(
+                "MIMI-AAAA-BBBB-CCCC-DDDD", authenticator: AuthenticatorFake(result), reason: "reason"
+            )
+        }
+
+        let authenticated = await outcome(.authenticated)
+        XCTAssertEqual(authenticated, .reveal("MIMI-AAAA-BBBB-CCCC-DDDD"))
+        let cancelled = await outcome(.cancelled)
+        XCTAssertEqual(cancelled, .cancelled)
+        let failed = await outcome(.failed)
+        XCTAssertEqual(failed, .failed)
+        // 没设锁屏密码时系统无从验证，机主本人也不能因此被挡住。
+        let notConfigured = await outcome(.notConfigured)
+        XCTAssertEqual(notConfigured, .reveal("MIMI-AAAA-BBBB-CCCC-DDDD"))
+    }
+
+    func testTransferWithoutSavedCodeNeverPromptsForVerification() async {
+        let authenticator = AuthenticatorFake(.authenticated)
+        let outcome = await ManagedConnectionTransferGate.requestCode(nil, authenticator: authenticator, reason: "reason")
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(authenticator.promptCount, 0)
+    }
+
+    func testTransferIsOfferedOnlyForRedemptionEntitlement() async {
+        let empty = makeRedemptionStore()
+        XCTAssertFalse(empty.store.hasTransferableRedemption)
+        XCTAssertNil(empty.store.transferableRedemptionCode)
+
+        let redeemed = makeRedemptionStore()
+        await redeemed.api.setRedeemResult(.success(Self.redemptionGrant))
+        await redeemed.store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")
+        XCTAssertTrue(redeemed.store.hasTransferableRedemption)
+        XCTAssertEqual(redeemed.store.transferableRedemptionCode, "MIMI-AAAA-BBBB-CCCC-DDDD")
+
+        // 订阅靠 Apple 账户同步，没有码可转；即使本机还留着旧码也不能出示。
+        let subscribed = makeRedemptionStore(savedCode: "MIMI-AAAA-BBBB-CCCC-DDDD")
+        await subscribed.kit.setCurrent(.verified(Self.evidence), productID: ManagedConnectionProductID.monthly)
+        await subscribed.store.load()
+        XCTAssertEqual(subscribed.store.currentGrant, Self.grant)
+        XCTAssertFalse(subscribed.store.hasTransferableRedemption)
+        XCTAssertNil(subscribed.store.transferableRedemptionCode)
+    }
+
+    func testTransferEntryOutlivesTheShortEntitlementToken() async {
+        var current = Date()
+        let api = EntitlementAPIFake(result: .success(Self.grant))
+        await api.setRedeemResult(.success(Self.redemptionGrant))
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: StoreKitFake(),
+            entitlementAPI: api,
+            redemptionCodes: InMemoryManagedConnectionRedemptionCodeStore(),
+            now: { current }
+        )
+        await store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")
+
+        current = current.addingTimeInterval(3_600)
+        XCTAssertTrue(store.hasTransferableRedemption, "token 到期不代表资格失效")
+        XCTAssertEqual(store.transferableRedemptionCode, "MIMI-AAAA-BBBB-CCCC-DDDD")
+
+        current = current.addingTimeInterval(86_400 * 31)
+        XCTAssertFalse(store.hasTransferableRedemption, "权益本身到期后不再出示")
+        XCTAssertNil(store.transferableRedemptionCode)
+    }
+
+    func testTransferLinkRoundTripsThroughRedemptionParser() throws {
+        let url = try XCTUnwrap(ManagedRedemptionLink.url(forCode: "MIMI-AB12-CD34-EF56-GH78"))
+        XCTAssertEqual(url.absoluteString, "mimi://redeem?code=MIMI-AB12-CD34-EF56-GH78")
+        XCTAssertEqual(ManagedRedemptionLink(url: url)?.code, "MIMI-AB12-CD34-EF56-GH78")
+        // 扫码页直接从二维码原文取码，和粘贴走同一套解析。
+        XCTAssertEqual(ManagedRedemptionCode.extract(from: url.absoluteString), "MIMI-AB12-CD34-EF56-GH78")
+    }
+
+    func testScannedRedemptionReportsOutcomeToScanner() async {
+        let success = makeRedemptionStore()
+        await success.api.setRedeemResult(.success(Self.redemptionGrant))
+        await success.store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")
+        XCTAssertEqual(success.store.redemptionScanResult, .accepted(L10n.text("ui.managed_transfer_success")))
+
+        let failure = makeRedemptionStore()
+        await failure.store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")
+        let message = failure.store.redemptionErrorMessage
+        XCTAssertNotNil(message)
+        XCTAssertEqual(failure.store.redemptionScanResult, .rejected(message ?? ""))
+    }
+
+    func testRedemptionScannerHidesComputerPairingFallbacks() {
+        for action in [QRCodeScannerRecoveryAction.pasteLink, .manualConnection] {
+            XCTAssertFalse(QRCodeScannerPurpose.redemption.allows(action))
+            XCTAssertTrue(QRCodeScannerPurpose.pairing.allows(action))
+        }
+        for action in [QRCodeScannerRecoveryAction.openSettings, .retryScanning] {
+            XCTAssertTrue(QRCodeScannerPurpose.redemption.allows(action))
+        }
+    }
+
     func testRedeemIgnoresBlankInput() async {
         let fixture = makeRedemptionStore()
 

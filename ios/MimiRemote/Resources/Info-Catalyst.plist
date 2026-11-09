@@ -62,6 +62,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Allow Mimi Remote to confirm it’s you before showing your Mimi Relay code.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>

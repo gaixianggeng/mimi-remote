@@ -43,6 +43,15 @@ struct ManagedRedemptionLink: Equatable {
             .queryItems?.first { $0.name == "code" }?.value
         code = value.flatMap(ManagedRedemptionCode.extract(from:))
     }
+
+    /// 已开通的设备出示给另一台设备的二维码内容（#989）。
+    static func url(forCode code: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "mimi"
+        components.host = "redeem"
+        components.queryItems = [URLQueryItem(name: "code", value: code)]
+        return components.url
+    }
 }
 
 @MainActor
@@ -490,6 +499,27 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
 
     private var savedRedemptionCode: String? {
         unsavedRedemptionCode ?? redemptionCodes.load()
+    }
+
+    /// 这份权益来自兑换码，可以转给用户的另一台设备（#989）。只看权益本身：
+    /// 15 分钟的 token 到期不代表资格失效，刷新时 status 也会短暂变化，入口不能因此消失或闪动。
+    var hasTransferableRedemption: Bool {
+        guard let entitlement = currentGrant?.entitlement else { return false }
+        return entitlement.productID == ManagedConnectionProductID.betaRedemption
+            && entitlement.expiresAt > now()
+    }
+
+    /// 只在用户确认要出示时读取，不放进视图刷新路径，避免反复访问 Keychain。
+    var transferableRedemptionCode: String? {
+        hasTransferableRedemption ? savedRedemptionCode : nil
+    }
+
+    /// 把刚结束的一次兑换翻译成扫码页的结果。
+    var redemptionScanResult: QRCodeScannerSubmissionResult {
+        if let redemptionErrorMessage { return .rejected(redemptionErrorMessage) }
+        return isRedemptionEntitlement
+            ? .accepted(L10n.text("ui.managed_transfer_success"))
+            : .rejected(L10n.text("ui.managed_redemption_invalid"))
     }
 
     /// 过期或撤销时用兑换码的说法：内测用户没有买过订阅。
