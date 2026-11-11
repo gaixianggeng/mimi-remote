@@ -55,6 +55,108 @@ final class FloatingSidebarHeaderSnapshotTests: SimplifiedChineseSnapshotTestCas
         assertSnapshot(of: image, as: .image(precision: 0.98))
     }
 
+    /// #993：浮动侧栏底部「设备 / 我的」后方和间隙不能透出会话行。同一底栏分别叠在满屏的行
+    /// 和空列表上，入口所在那一段（渐隐以下到面板底边）的像素必须一致：只要有一行透出来就会不同。
+    /// 原来底栏只是 overlay 在列表上，未选中的「设备」没有底色，两枚胶囊之间和右侧都会露出行文字。
+    func testFloatingFooterHidesRowsBehindDestinationBar() async throws {
+        let outerInset = WorkbenchSidebarSurfaceMetrics.outerInset
+        let size = CGSize(width: WorkbenchSidebarSurfaceMetrics.overlayWidth + outerInset * 2, height: 420)
+        let overRows = try await renderInWindow(size: size, scrollsToBottom: false) { tokens in
+            self.floatingSidebar(tokens: tokens) { self.sidebarList }
+        }
+        let overEmptyList = try await renderInWindow(size: size, scrollsToBottom: false) { tokens in
+            self.floatingSidebar(tokens: tokens) {
+                List {}
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+            }
+        }
+        // 入口胶囊高 44pt，上下内距 4 + 10；只取渐隐以下这一段，渐隐本来就允许行半透出来。
+        let barBandHeight: CGFloat = 54
+        let band = CGRect(
+            x: outerInset,
+            y: size.height - outerInset - barBandHeight,
+            width: WorkbenchSidebarSurfaceMetrics.overlayWidth,
+            height: barBandHeight
+        )
+        let differingPixels = try differingPixelCount(overRows, overEmptyList, in: band)
+        XCTAssertEqual(differingPixels, 0, "底栏入口那一段不应因为后方有行而改变")
+    }
+
+    private func floatingSidebar<ListContent: View>(
+        tokens: ThemeTokens,
+        @ViewBuilder list: () -> ListContent
+    ) -> some View {
+        let list = list()
+        return WorkbenchSidebarContainer(tokens: tokens, usesFloatingSurface: true) {
+            WorkbenchSidebarContentLayout(usesFloatingSurface: true) {
+                list
+            } footer: {
+                WorkbenchSidebarFooter(
+                    tokens: tokens,
+                    usesFloatingSurface: true,
+                    isDevicesSelected: true,
+                    onOpenDevices: {},
+                    onOpenSettings: {},
+                    onNewSession: {}
+                )
+            }
+        } floatingHeader: {
+            WorkbenchFloatingSidebarHeader(tokens: tokens, onCollapse: {}) {
+                Text("当前电脑")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 44)
+            }
+        } toolbarHeader: {
+            EmptyView()
+        }
+    }
+
+    /// 两张图都按同一 RGBA 布局重绘后逐像素比较；单通道差超过 8 才算不同，吸收合成时的舍入。
+    private func differingPixelCount(_ lhs: UIImage, _ rhs: UIImage, in rect: CGRect) throws -> Int {
+        let left = try rgbaPixels(of: lhs, in: rect)
+        let right = try rgbaPixels(of: rhs, in: rect)
+        XCTAssertEqual(left.count, right.count)
+        var count = 0
+        for index in stride(from: 0, to: min(left.count, right.count), by: 4) {
+            let differs = (0..<4).contains { channel in
+                abs(Int(left[index + channel]) - Int(right[index + channel])) > 8
+            }
+            if differs { count += 1 }
+        }
+        return count
+    }
+
+    private func rgbaPixels(of image: UIImage, in rect: CGRect) throws -> [UInt8] {
+        let cgImage = try XCTUnwrap(image.cgImage)
+        let scale = image.scale
+        let cropRect = CGRect(
+            x: rect.minX * scale,
+            y: rect.minY * scale,
+            width: rect.width * scale,
+            height: rect.height * scale
+        ).integral
+        let cropped = try XCTUnwrap(cgImage.cropping(to: cropRect))
+        let width = cropped.width
+        let height = cropped.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(cropped, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return pixels
+    }
+
     private var sidebarList: some View {
         List {
             Section {
@@ -79,6 +181,7 @@ final class FloatingSidebarHeaderSnapshotTests: SimplifiedChineseSnapshotTestCas
 
     private func renderInWindow<Content: View>(
         size: CGSize,
+        scrollsToBottom: Bool = true,
         @ViewBuilder content: (ThemeTokens) -> Content
     ) async throws -> UIImage {
         let suiteName = "FloatingSidebarHeaderSnapshotTests.Theme.\(UUID().uuidString)"
@@ -110,14 +213,16 @@ final class FloatingSidebarHeaderSnapshotTests: SimplifiedChineseSnapshotTestCas
 
         host.view.frame = window.bounds
         try await settleLayout(of: host.view)
-        let scrollView = try XCTUnwrap(firstScrollView(in: host.view), "侧栏 List 应落在真实 UIScrollView 上")
-        let bottomOffset = scrollView.contentSize.height
-            + scrollView.adjustedContentInset.bottom
-            - scrollView.bounds.height
-        XCTAssertGreaterThan(bottomOffset, 80, "样例列表必须比视口高出至少两行，否则滚到底等于没滚")
-        scrollView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
-        // 等滚动几何回调写回渐隐强度、overlay 重新排版这几轮更新落定。
-        try await settleLayout(of: host.view)
+        if scrollsToBottom {
+            let scrollView = try XCTUnwrap(firstScrollView(in: host.view), "侧栏 List 应落在真实 UIScrollView 上")
+            let bottomOffset = scrollView.contentSize.height
+                + scrollView.adjustedContentInset.bottom
+                - scrollView.bounds.height
+            XCTAssertGreaterThan(bottomOffset, 80, "样例列表必须比视口高出至少两行，否则滚到底等于没滚")
+            scrollView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
+            // 等滚动几何回调写回渐隐强度、overlay 重新排版这几轮更新落定。
+            try await settleLayout(of: host.view)
+        }
         return UIGraphicsImageRenderer(size: size).image { _ in
             host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
         }
