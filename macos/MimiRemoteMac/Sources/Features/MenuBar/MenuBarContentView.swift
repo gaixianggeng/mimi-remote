@@ -73,6 +73,15 @@ struct MenuBarContentView: View {
                 Divider()
                     .opacity(MenuBarLayout.actionDividerOpacity)
 
+                // 回到电脑前找手机上用过的会话（#991）。服务没运行时窗口会说明原因。
+                MenuActionRow(title: "会话…", systemImage: "bubble.left.and.bubble.right") {
+                    presentWindow(.sessions)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
                 MenuActionRow(title: "配对设备…", systemImage: "qrcode", isEnabled: !store.isBusy) {
                     // 空状态也可打开：说明是缺少助手、连接方式，还是服务未启动。
                     presentWindow(.pairing)

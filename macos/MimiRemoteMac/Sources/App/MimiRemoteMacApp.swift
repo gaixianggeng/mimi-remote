@@ -111,6 +111,11 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 720, height: 620)
 
+        Window("会话", id: AppWindow.sessions.rawValue) {
+            SessionsWindowView(host: store)
+        }
+        .defaultSize(width: 720, height: 560)
+
         Settings {
             MacSettingsView(store: store, updates: updates)
         }
@@ -134,4 +139,5 @@ enum AppWindow: String {
     case dashboard
     case pairing
     case diagnostics
+    case sessions
 }
