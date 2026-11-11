@@ -14,6 +14,13 @@ enum SessionRuntime: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// 要读取的助手。只有拿到服务明确报告的开关时才按它过滤：状态刷新的间隙里开关会暂时缺失，
+    /// 缺失时按「已关闭」处理会让列表时有时无（#991 实机走查）。真关闭时网关会返回明确原因。
+    static func enabled(in modules: AgentModuleStatus?) -> [SessionRuntime] {
+        guard let modules else { return allCases }
+        return allCases.filter { $0 == .codex ? modules.codexEnabled : modules.claudeEnabled }
+    }
+
     var brandMark: RuntimeBrandMark {
         switch self {
         case .codex: .openAI

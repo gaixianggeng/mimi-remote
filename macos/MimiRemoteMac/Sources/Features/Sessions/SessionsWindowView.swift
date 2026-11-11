@@ -15,20 +15,16 @@ struct SessionsWindowView: View {
     }
 
     var body: some View {
-        content
+        // 筛选放在内容顶部常驻显示。放在工具栏时，搜索框获得焦点后会变宽，
+        // 把筛选和刷新挤进溢出菜单（#991 实机走查）。
+        VStack(spacing: 0) {
+            filterBar
+            noticeBar
+            content
+        }
             .frame(minWidth: 560, minHeight: 420)
             .navigationTitle("会话")
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Picker("助手", selection: $store.filter) {
-                        ForEach(SessionsStore.RuntimeFilter.allCases) { filter in
-                            Text(filter.title).tag(filter)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .accessibilityIdentifier("sessions.filter")
-                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         Task { await reload() }
@@ -42,6 +38,47 @@ struct SessionsWindowView: View {
             }
             .searchable(text: $store.query, placement: .toolbar, prompt: "搜索会话或项目")
             .task(id: loadKey) { await reload() }
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Picker("助手", selection: $store.filter) {
+                ForEach(SessionsStore.RuntimeFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("sessions.filter")
+            Spacer(minLength: 0)
+            if store.isRefreshing, store.phase == .loaded {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// 读取失败的说明放在内容外面：列表为空或搜索无结果时也要看得到原因。
+    @ViewBuilder
+    private var noticeBar: some View {
+        if store.phase == .loaded, !store.notices.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(store.notices, id: \.self) { notice in
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityIdentifier("sessions.notices")
+        }
     }
 
     @ViewBuilder
@@ -89,14 +126,6 @@ struct SessionsWindowView: View {
 
     private var sessionList: some View {
         List {
-            if !store.notices.isEmpty {
-                Section {
-                    ForEach(store.notices, id: \.self) { notice in
-                        Label(notice, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
             ForEach(store.visibleSections) { section in
                 Section(section.title) {
                     ForEach(section.sessions) { session in
@@ -210,12 +239,7 @@ struct SessionsWindowView: View {
     }
 
     private var enabledRuntimes: [SessionRuntime] {
-        SessionRuntime.allCases.filter { runtime in
-            switch runtime {
-            case .codex: host.moduleEnabled(.codex)
-            case .claude: host.moduleEnabled(.claude)
-            }
-        }
+        SessionRuntime.enabled(in: host.status?.moduleStatus)
     }
 
     /// 服务地址或已启用的助手变化时重新加载。

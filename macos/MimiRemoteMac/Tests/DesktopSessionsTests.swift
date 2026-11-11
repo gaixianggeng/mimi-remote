@@ -346,3 +346,40 @@ final class DesktopSessionActionsTests: XCTestCase {
         XCTAssertEqual(LocalGatewayError.requestRejected(code: 1, reason: "other", message: "原文").errorDescription, "原文")
     }
 }
+
+final class SessionRuntimeSelectionTests: XCTestCase {
+    func testMissingModuleStatusReadsBothRuntimes() throws {
+        XCTAssertEqual(SessionRuntime.enabled(in: nil), [.codex, .claude])
+        let onlyCodex = try JSONDecoder().decode(AgentModuleStatus.self, from: Data(#"""
+        {"codex_enabled":true,"claude_enabled":false,"tailscale_enabled":false,"lan_enabled":true,"tailscale_available":false,"lan_available":true}
+        """#.utf8))
+        XCTAssertEqual(SessionRuntime.enabled(in: onlyCodex), [.codex])
+    }
+}
+
+@MainActor
+final class SessionsStoreOutcomeTests: XCTestCase {
+    private struct SlowClaudeSource: DesktopSessionSource {
+        func listSessions(runtime: SessionRuntime, port: Int, pageBudget: Int) async throws -> DesktopSessionListing {
+            // 后到的一路也必须进入结果（#991：Release 构建里 Claude 后返回时被丢掉）。
+            if runtime == .claude { try await Task.sleep(for: .milliseconds(80)) }
+            return DesktopSessionListing(sessions: [DesktopSession(
+                threadID: runtime.rawValue, runtime: runtime, title: runtime.rawValue, projectName: "p", cwd: "/p",
+                updatedAt: Date(), activity: .idle, holder: nil
+            )], hasMore: false)
+        }
+
+        func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult {
+            ClaudeDesktopOpenResult(alreadyInDesktop: false)
+        }
+    }
+
+    func testLaterRuntimeIsNotDropped() async {
+        let store = SessionsStore(source: SlowClaudeSource())
+        for _ in 0..<5 {
+            await store.reload(endpoint: "http://127.0.0.1:8787", runtimes: [.codex, .claude])
+            XCTAssertEqual(Set(store.sessions.map(\.runtime)), [.codex, .claude])
+            XCTAssertTrue(store.notices.isEmpty)
+        }
+    }
+}

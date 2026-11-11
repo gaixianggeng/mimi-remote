@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// 会话窗口的数据（#991）。每次加载重新取列表，不在电脑端缓存会话。
 @MainActor
@@ -51,6 +52,9 @@ final class SessionsStore {
     var actionError: String?
     var filter: RuntimeFilter = .all
     var query = ""
+
+    /// 只记数量、阶段和错误，不记会话标题或路径。
+    private static let log = Logger(subsystem: "com.gaixianggeng.mimi.mac", category: "sessions")
 
     private let source: any DesktopSessionSource
     private let refreshDelay: Duration
@@ -139,38 +143,52 @@ final class SessionsStore {
 
         let source = self.source
         let budget = pageBudget
-        let results = await withTaskGroup(of: (SessionRuntime, Result<DesktopSessionListing, Error>).self) { group in
+        Self.log.notice("load start gen=\(current) runtimes=\(runtimes.map(\.rawValue).joined(separator: ","), privacy: .public) budget=\(budget)")
+        // 每一路结果自带 runtime 放进数组。原先用「元组 + 字典」收集，Release（-O）构建下
+        // 后到的一路会丢失（#991 实机：Claude 恒为空），调试构建与单测都复现不了。
+        let outcomes = await withTaskGroup(of: RuntimeLoadOutcome.self, returning: [RuntimeLoadOutcome].self) { group in
             for runtime in runtimes {
                 group.addTask {
                     do {
-                        return (runtime, .success(try await source.listSessions(runtime: runtime, port: port, pageBudget: budget)))
+                        let listing = try await source.listSessions(runtime: runtime, port: port, pageBudget: budget)
+                        return RuntimeLoadOutcome(runtime: runtime, listing: listing, errorMessage: nil)
                     } catch {
-                        return (runtime, .failure(error))
+                        return RuntimeLoadOutcome(runtime: runtime, listing: nil, errorMessage: error.localizedDescription)
                     }
                 }
             }
-            var collected: [SessionRuntime: Result<DesktopSessionListing, Error>] = [:]
-            for await (runtime, result) in group { collected[runtime] = result }
+            var collected: [RuntimeLoadOutcome] = []
+            for await outcome in group { collected.append(outcome) }
             return collected
         }
+        for runtime in runtimes {
+            let outcome = outcomes.first { $0.runtime == runtime }
+            if let listing = outcome?.listing {
+                Self.log.notice("load result gen=\(current) \(runtime.rawValue, privacy: .public) ok count=\(listing.sessions.count) more=\(listing.hasMore)")
+            } else {
+                Self.log.error("load result gen=\(current) \(runtime.rawValue, privacy: .public) failed: \(outcome?.errorMessage ?? "missing", privacy: .public)")
+            }
+        }
         // 用户在等待期间刷新或换了服务，旧结果不能盖住新的。
-        guard current == generation else { return }
+        guard current == generation else {
+            Self.log.notice("load dropped gen=\(current) latest=\(self.generation)")
+            return
+        }
 
         var merged: [DesktopSession] = []
         var notices: [String] = []
         var failures: [String] = []
         var hasMore = false
         for runtime in runtimes {
-            switch results[runtime] {
-            case .success(let listing):
+            let outcome = outcomes.first { $0.runtime == runtime }
+            if let listing = outcome?.listing {
                 merged += listing.sessions
                 hasMore = hasMore || listing.hasMore
-            case .failure(let error):
-                let message = error.localizedDescription
+            } else {
+                // 缺失也按失败处理并说明原因，不能悄悄显示成「没有会话」。
+                let message = outcome?.errorMessage ?? "没有收到结果。"
                 failures.append(message)
                 notices.append("暂时读不到 \(runtime.title) 会话：\(message)")
-            case nil:
-                break
             }
         }
         if failures.count == runtimes.count {
@@ -187,4 +205,11 @@ final class SessionsStore {
         self.phase = phase
         isRefreshing = false
     }
+}
+
+/// 一个 runtime 的加载结果；listing 为 nil 时 errorMessage 说明原因。
+struct RuntimeLoadOutcome: Sendable {
+    let runtime: SessionRuntime
+    let listing: DesktopSessionListing?
+    let errorMessage: String?
 }
