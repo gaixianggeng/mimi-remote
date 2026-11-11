@@ -155,7 +155,8 @@ struct SessionsWindowView: View {
         .accessibilityIdentifier("sessions.list")
         .safeAreaInset(edge: .bottom) {
             if store.sessions.contains(where: { $0.runtime == .claude }) {
-                Text("在 Claude 桌面版打开后，手机上这条会话会暂停输入，直到在手机上接管或在桌面版里关掉它。")
+                // Claude 桌面版、终端各自只在打开时读一次记录，互不同步（#991 实机发现，属上游行为）。
+                Text("同一条 Claude 会话在桌面版、终端等多处打开时，各处不会互相同步，旧窗口里继续发消息会让记录分叉。换到另一处继续前，先关掉原来那处；回到原来那处时重新打开这条会话。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
