@@ -54,6 +54,8 @@ enum QRCodeScannerFailure: Equatable {
 
 enum QRCodeScannerSubmissionResult: Equatable {
     case accepted(String)
+    /// 扫到的是邀请码并已开通：不论从哪个入口扫，标题都说「开通成功」而不是「连接成功」（#989）。
+    case activated(String)
     case rejected(String)
     case requiresManagedConnection(String)
 }
@@ -92,6 +94,7 @@ struct QRCodeScannerSheet: View {
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
     @State private var completionMessage: String?
+    @State private var completionTitle: String?
     @State private var submissionTask: Task<Void, Never>?
     /// 相机对着屏幕一直没识别到时才出现的求助卡片；过去扫码页永不超时，也没有下一步（#554）。
     @State private var showsScanHelp = false
@@ -166,7 +169,7 @@ struct QRCodeScannerSheet: View {
                 )
             } else if let completionMessage {
                 scannerStatusCard(
-                    title: purpose.successTitle,
+                    title: completionTitle ?? purpose.successTitle,
                     message: completionMessage,
                     systemImage: "checkmark.circle.fill"
                 )
@@ -246,7 +249,7 @@ struct QRCodeScannerSheet: View {
             Color.black
             if let completionMessage {
                 scannerStatusCard(
-                    title: purpose.successTitle,
+                    title: completionTitle ?? purpose.successTitle,
                     message: completionMessage,
                     systemImage: "checkmark.circle.fill"
                 )
@@ -449,9 +452,12 @@ struct QRCodeScannerSheet: View {
             }
 
             switch result {
-            case .accepted(let message):
+            case .accepted(let message), .activated(let message):
                 // 二维码可能在相机首帧就被识别；先展示明确完成态，避免直接关闭被误认为相机没有打开。
                 isSubmittingCode = false
+                if case .activated = result {
+                    completionTitle = L10n.text("ui.managed_transfer_success_title")
+                }
                 completionMessage = message
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 do {
