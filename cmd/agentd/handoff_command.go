@@ -22,6 +22,34 @@ import (
 type handoffCommand struct {
 	CWD  string   `json:"cwd"`
 	Argv []string `json:"argv"`
+	// Env 是终端里必须与 Mimi 保持一致的环境变量，否则会去另一个目录找会话。
+	Env map[string]string `json:"env,omitempty"`
+}
+
+// 只透传决定会话存放位置的变量；其余配置（代理、令牌等）不进终端脚本。
+var handoffEnvKeys = map[string][]string{
+	"codex":  {"CODEX_HOME"},
+	"claude": {"CLAUDE_CONFIG_DIR"},
+}
+
+func handoffEnv(runtimeID string, env map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, key := range handoffEnvKeys[runtimeID] {
+		value := strings.TrimSpace(env[key])
+		if value == "" {
+			continue
+		}
+		if value == "~" || strings.HasPrefix(value, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				value = filepath.Join(home, strings.TrimPrefix(value, "~"))
+			}
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // 会话 ID 只允许字母、数字和连字符：它会进入终端脚本的参数。
@@ -89,14 +117,18 @@ func buildHandoffCommand(cfg config.Config, runtimeID, threadID, cwd string) (ha
 		if err != nil {
 			return handoffCommand{}, err
 		}
-		return handoffCommand{CWD: cwd, Argv: []string{bin, "resume", threadID, "--remote", "unix://" + socket}}, nil
+		return handoffCommand{
+			CWD:  cwd,
+			Argv: []string{bin, "resume", threadID, "--remote", "unix://" + socket},
+			Env:  handoffEnv("codex", cfg.Codex.Env),
+		}, nil
 	case "claude":
 		// Mimi 的适配器发现终端里的 claude 接手后会自动让出（#658）。
 		bin, err := handoffClaudeBin(cfg)
 		if err != nil {
 			return handoffCommand{}, err
 		}
-		return handoffCommand{CWD: cwd, Argv: []string{bin, "--resume", threadID}}, nil
+		return handoffCommand{CWD: cwd, Argv: []string{bin, "--resume", threadID}, Env: handoffEnv("claude", cfg.Claude.Env)}, nil
 	default:
 		return handoffCommand{}, errors.New("handoff-command --runtime 只能是 codex 或 claude")
 	}

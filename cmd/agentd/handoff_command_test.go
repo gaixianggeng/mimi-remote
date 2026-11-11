@@ -71,6 +71,9 @@ func TestHandoffCommandCodexAttachesToSharedService(t *testing.T) {
 	if strings.Join(command.Argv, "|") != strings.Join(want, "|") || command.CWD != dir {
 		t.Fatalf("command = %+v", command)
 	}
+	if command.Env["CODEX_HOME"] != "/Users/me/codex-home" || len(command.Env) != 1 {
+		t.Fatalf("env = %v, want only CODEX_HOME", command.Env)
+	}
 }
 
 func TestHandoffCommandCodexRefusesRemoteSSHTransport(t *testing.T) {
@@ -93,6 +96,9 @@ func TestHandoffCommandClaudePrefersAdapterCLI(t *testing.T) {
 	}
 	if strings.Join(command.Argv, " ") != "/custom/claude --resume aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" {
 		t.Fatalf("argv = %v", command.Argv)
+	}
+	if command.Env != nil {
+		t.Fatalf("env = %v, want none when CLAUDE_CONFIG_DIR is unset", command.Env)
 	}
 
 	// 配置的路径失效时退回 PATH 里的 claude。
@@ -123,5 +129,31 @@ func TestHandoffCommandRejectsUnsafeInput(t *testing.T) {
 		if _, err := runHandoffForTest(t, args...); err == nil {
 			t.Errorf("expected rejection for %v", args)
 		}
+	}
+}
+
+// 适配器在 CLAUDE_CONFIG_DIR 下找会话；终端不带上它就会去默认目录，接不上这条会话。
+func TestHandoffCommandCarriesSessionLocationOnly(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Claude.Env = map[string]string{
+		"CLAUDE_CONFIG_DIR":        "/srv/claude-config",
+		"ANTHROPIC_API_KEY":        "secret",
+		"CLAUDE_BRIDGE_CLAUDE_BIN": "/custom/claude",
+	}
+	stubHandoffResolvers(t, cfg)
+	command, err := runHandoffForTest(t, "--runtime", "claude", "--thread", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--cwd", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(command.Env) != 1 || command.Env["CLAUDE_CONFIG_DIR"] != "/srv/claude-config" {
+		t.Fatalf("env = %v, want only CLAUDE_CONFIG_DIR", command.Env)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	if got := handoffEnv("claude", map[string]string{"CLAUDE_CONFIG_DIR": "~/claude-alt"}); got["CLAUDE_CONFIG_DIR"] != filepath.Join(home, "claude-alt") {
+		t.Fatalf("tilde not expanded: %v", got)
 	}
 }

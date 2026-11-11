@@ -5,6 +5,8 @@ import Foundation
 struct TerminalHandoffCommand: Decodable, Equatable, Sendable {
     let cwd: String
     let argv: [String]
+    /// 决定会话存放位置的环境变量（如 CLAUDE_CONFIG_DIR）；旧版 agentd 不给。
+    var env: [String: String]? = nil
 }
 
 /// 把命令写成一次性的 .command 脚本，交给用户选的终端打开。
@@ -12,11 +14,17 @@ struct TerminalHandoffCommand: Decodable, Equatable, Sendable {
 enum TerminalLauncher {
     static func script(for command: TerminalHandoffCommand) -> String {
         let invocation = command.argv.map(shellQuoted).joined(separator: " ")
+        // 变量名只接受常规形式，值一律单引号转义，不能借此注入命令。
+        let exports = (command.env ?? [:])
+            .filter { $0.key.range(of: "^[A-Z_][A-Z0-9_]*$", options: .regularExpression) != nil }
+            .sorted { $0.key < $1.key }
+            .map { "export \($0.key)=\(shellQuoted($0.value))\n" }
+            .joined()
         return """
         #!/bin/zsh -l
         # Mimi Remote：在终端继续会话。脚本只用一次，打开后即删除。
         rm -f -- "$0"
-        cd -- \(shellQuoted(command.cwd)) || exit 1
+        \(exports)cd -- \(shellQuoted(command.cwd)) || exit 1
         exec \(invocation)
 
         """

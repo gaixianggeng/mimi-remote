@@ -346,6 +346,39 @@ final class DesktopSessionActionsTests: XCTestCase {
         XCTAssertEqual(TerminalLauncher.shellQuoted("$(id)"), "'$(id)'")
     }
 
+    func testTerminalScriptExportsSessionLocationSafely() {
+        var command = TerminalHandoffCommand(cwd: "/repo", argv: ["/bin/claude", "--resume", "abc-123"])
+        command.env = ["CLAUDE_CONFIG_DIR": "/srv/it's config", "bad-key; rm": "x"]
+        let script = TerminalLauncher.script(for: command)
+        XCTAssertTrue(script.contains(#"export CLAUDE_CONFIG_DIR='/srv/it'\''s config'"#), script)
+        XCTAssertFalse(script.contains("bad-key"), "变量名不合规的直接丢掉")
+        let exportLine = script.range(of: "export CLAUDE_CONFIG_DIR")!.lowerBound
+        XCTAssertLessThan(exportLine, script.range(of: "exec ")!.lowerBound, "要在启动命令之前生效")
+    }
+
+    func testAuthorizationKeepsPagingUntilTheSessionIsFound() async throws {
+        var calls = 0
+        let found = try await LocalGatewayClient.authorizeThread("target", cwd: "/repo") { params in
+            calls += 1
+            XCTAssertEqual(params["cwd"] as? String, "/repo")
+            let isLast = calls == 9
+            return [
+                "data": [["id": isLast ? "target" : "other-\(calls)"]],
+                "nextCursor": isLast ? "" : "c\(calls)",
+            ]
+        }
+        XCTAssertTrue(found, "超过 6 页的旧会话也要能打开")
+        XCTAssertEqual(calls, 9)
+
+        calls = 0
+        let missing = try await LocalGatewayClient.authorizeThread("target", cwd: "/repo") { _ in
+            calls += 1
+            return ["data": [], "nextCursor": "same"]
+        }
+        XCTAssertFalse(missing)
+        XCTAssertEqual(calls, LocalGatewayClient.authorizationPageLimit, "游标出错时不能死循环")
+    }
+
     func testHandoffArgumentsAndFriendlyErrors() {
         XCTAssertEqual(
             AgentCommandClient.handoffCommandArguments(runtime: .claude, threadID: "abc", cwd: "/repo"),
