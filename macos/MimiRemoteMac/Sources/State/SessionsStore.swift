@@ -89,7 +89,7 @@ final class SessionsStore {
     func continueInTerminal(
         _ session: DesktopSession,
         command: @Sendable (SessionRuntime, String, String) async throws -> TerminalHandoffCommand,
-        launch: @MainActor (TerminalHandoffCommand) throws -> Void
+        launch: @MainActor (TerminalHandoffCommand) async throws -> Void
     ) async {
         guard workingSessionID == nil else { return }
         if let reason = DesktopSessionActions.terminalUnavailableReason(for: session) {
@@ -99,7 +99,19 @@ final class SessionsStore {
         workingSessionID = session.id
         defer { workingSessionID = nil }
         do {
-            try launch(try await command(session.runtime, session.threadID, session.cwd))
+            try await launch(try await command(session.runtime, session.threadID, session.cwd))
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// 在 Codex 桌面版打开。桌面版没接本机 SSH 且会话被手机占着时，桌面版自己会报错并给「重试」。
+    func openInCodexDesktop(_ session: DesktopSession, open: @MainActor (String) async throws -> Void) async {
+        guard session.runtime == .codex, workingSessionID == nil else { return }
+        workingSessionID = session.id
+        defer { workingSessionID = nil }
+        do {
+            try await open(session.threadID)
         } catch {
             actionError = error.localizedDescription
         }

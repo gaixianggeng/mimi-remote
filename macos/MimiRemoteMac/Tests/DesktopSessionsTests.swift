@@ -254,6 +254,19 @@ final class SessionsStoreTests: XCTestCase {
         XCTAssertNil(store.workingSessionID)
     }
 
+    func testOpenInCodexDesktopOpensOrShowsError() async {
+        let store = SessionsStore(source: FakeSource(results: [:]), refreshDelay: .zero)
+        let codex = DesktopSession(threadID: "c1", runtime: .codex, title: "c1", projectName: "p", cwd: "/repo",
+                                   updatedAt: nil, activity: .running, holder: .otherCodexProcess)
+        var opened: [String] = []
+        await store.openInCodexDesktop(codex) { opened.append($0) }
+        XCTAssertEqual(opened, ["c1"], "不看占用状态，直接打开")
+        XCTAssertNil(store.actionError)
+        await store.openInCodexDesktop(codex) { _ in throw AgentClientError.commandFailed("没有找到 Codex 桌面版。") }
+        XCTAssertEqual(store.actionError, "没有找到 Codex 桌面版。")
+        XCTAssertNil(store.workingSessionID)
+    }
+
     func testContinueInTerminalLaunchesGeneratedCommandOrExplains() async {
         let store = SessionsStore(source: FakeSource(results: [:]), refreshDelay: .zero)
         let codex = DesktopSession(threadID: "c1", runtime: .codex, title: "c1", projectName: "p", cwd: "/repo",

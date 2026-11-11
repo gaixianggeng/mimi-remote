@@ -6,6 +6,13 @@ import SwiftUI
 struct SessionsWindowView: View {
     let host: HostStore
     @State private var store: SessionsStore
+    @State private var installedApps: Set<String> = []
+    /// Codex 和 Claude 各记各的「打开」去处，因为两边的桌面版不同。
+    @AppStorage("sessions.openTarget.codex") private var codexOpenTarget = ""
+    @AppStorage("sessions.openTarget.claude") private var claudeOpenTarget = ""
+    @AppStorage("sessions.codexSharedHintMuted") private var codexSharedHintMuted = false
+    /// 桌面版没在运行时无从判断接没接共用服务，沿用上一次看到的结果。
+    @AppStorage("sessions.codexDesktopSharedSeen") private var codexDesktopSharedSeen = false
 
     /// store 只在测试与预览里注入；默认读本机服务。
     @MainActor
@@ -130,17 +137,7 @@ struct SessionsWindowView: View {
                 Section(section.title) {
                     ForEach(section.sessions) { session in
                         SessionRow(session: session) {
-                            primaryAction(for: session)
-                            Menu {
-                                sessionMenu(for: session)
-                            } label: {
-                                Image(systemName: "ellipsis.circle")
-                                    .accessibilityLabel("更多操作")
-                            }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
-                            .fixedSize()
-                            .disabled(store.workingSessionID != nil)
+                            openControl(for: session)
                         }
                         .contextMenu { sessionMenu(for: session) }
                     }
@@ -176,35 +173,86 @@ struct SessionsWindowView: View {
         }
     }
 
+    private func candidates(for session: DesktopSession) -> [SessionOpenTarget] {
+        SessionOpenTarget.candidates(for: session.runtime, installedBundleIDs: installedApps)
+    }
+
+    private func preferredTarget(for session: DesktopSession) -> SessionOpenTarget? {
+        SessionOpenTarget.preferred(
+            stored: session.runtime == .codex ? codexOpenTarget : claudeOpenTarget,
+            candidates: candidates(for: session),
+            installedBundleIDs: installedApps
+        )
+    }
+
+    /// 行尾的「打开 ▾」：左半边用上次选的 App 直接打开，右半边选别的 App。
     @ViewBuilder
-    private func primaryAction(for session: DesktopSession) -> some View {
+    private func openControl(for session: DesktopSession) -> some View {
         if store.workingSessionID == session.id {
             ProgressView()
                 .controlSize(.small)
                 .frame(minWidth: 28)
-        } else if let action = DesktopSessionActions.primary(for: session) {
-            let title = switch action {
-            case .openInClaudeDesktop, .waitForTurn: "在 Claude 桌面版打开"
-            case .bringClaudeDesktopForward: "前往"
+        } else if let target = preferredTarget(for: session) {
+            let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps)
+            Menu {
+                sessionMenu(for: session)
+            } label: {
+                Label {
+                    Text(target.buttonTitle(for: session))
+                } icon: {
+                    if let icon = SessionOpenApps.icon(for: target) { Image(nsImage: icon) }
+                }
+                .labelStyle(.titleAndIcon)
+            } primaryAction: {
+                open(session, with: target, remember: false)
             }
-            Button(title) { openInClaudeDesktop(session) }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(action == .waitForTurn || store.workingSessionID != nil)
-                .help(action == .waitForTurn ? "这一轮结束后才能打开。" : "在 Claude 桌面版里继续这条会话。")
-                .accessibilityIdentifier("sessions.openDesktop.\(session.id)")
+            .menuStyle(.button)
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(store.workingSessionID != nil)
+            .help(reason ?? "用 \(target.title) 打开这条会话。")
+            .accessibilityIdentifier("sessions.open.\(session.id)")
         }
     }
 
-    private func openInClaudeDesktop(_ session: DesktopSession) {
-        Task { await store.openInClaudeDesktop(session, endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
+    private func open(_ session: DesktopSession, with target: SessionOpenTarget, remember: Bool) {
+        if let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps) {
+            store.actionError = reason
+            return
+        }
+        if remember {
+            if session.runtime == .codex { codexOpenTarget = target.storageValue } else { claudeOpenTarget = target.storageValue }
+        }
+        switch target {
+        case .claudeDesktop:
+            Task { await store.openInClaudeDesktop(session, endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
+        case .codexDesktop:
+            Task { await openInCodexDesktop(session) }
+        case .terminal(let app):
+            let command = host.agent.terminalHandoffCommand
+            Task {
+                await store.continueInTerminal(session, command: command) {
+                    try await TerminalLauncher.launch($0, in: app, title: session.title)
+                }
+            }
+        }
     }
 
-    private func continueInTerminal(_ session: DesktopSession) {
-        let command = host.agent.terminalHandoffCommand
-        Task {
-            await store.continueInTerminal(session, command: command) { try TerminalLauncher.launch($0) }
+    /// 桌面版没接本机 SSH 时先建议配置；用户选「仍然打开」就不管会话是否被占用，直接打开。
+    private func openInCodexDesktop(_ session: DesktopSession) async {
+        let connection = await CodexDesktopLink.connection()
+        if connection != .notRunning { codexDesktopSharedSeen = connection == .shared }
+        if !codexDesktopSharedSeen, !codexSharedHintMuted {
+            switch CodexSharedHint.present() {
+            case .cancel: return
+            case .showGuide:
+                NSWorkspace.shared.open(CodexDesktopLink.setupGuideURL)
+                return
+            case .openAnyway(let mute):
+                codexSharedHintMuted = mute
+            }
         }
+        await store.openInCodexDesktop(session) { try await CodexDesktopLink.open(threadID: $0) }
     }
 
     private var loadMoreButton: some View {
@@ -217,14 +265,19 @@ struct SessionsWindowView: View {
 
     @ViewBuilder
     private func sessionMenu(for session: DesktopSession) -> some View {
-        if let action = DesktopSessionActions.primary(for: session), action != .waitForTurn {
-            Button(action == .bringClaudeDesktopForward ? "前往 Claude 桌面版" : "在 Claude 桌面版打开") {
-                openInClaudeDesktop(session)
+        ForEach(candidates(for: session), id: \.self) { target in
+            let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps)
+            Button {
+                open(session, with: target, remember: true)
+            } label: {
+                Label {
+                    Text(reason.map { "\(target.title)（\($0.trimmingCharacters(in: CharacterSet(charactersIn: "。")))）" } ?? target.title)
+                } icon: {
+                    if let icon = SessionOpenApps.icon(for: target) { Image(nsImage: icon) }
+                }
             }
+            .disabled(reason != nil)
         }
-        let terminalReason = DesktopSessionActions.terminalUnavailableReason(for: session)
-        Button(terminalReason.map { "在终端继续（\($0)）" } ?? "在终端继续") { continueInTerminal(session) }
-            .disabled(terminalReason != nil)
         Divider()
         Button("复制会话 ID") {
             let pasteboard = NSPasteboard.general
@@ -249,6 +302,7 @@ struct SessionsWindowView: View {
     }
 
     private func reload() async {
+        installedApps = SessionOpenApps.installedBundleIDs()
         let endpoint = host.status?.processOK == true ? host.status?.endpoint : nil
         await store.reload(endpoint: endpoint, runtimes: enabledRuntimes)
     }
