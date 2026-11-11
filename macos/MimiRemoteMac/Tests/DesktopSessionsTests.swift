@@ -184,6 +184,17 @@ final class SessionsStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleSections.flatMap(\.sessions).map(\.threadID), ["k2"])
         store.query = "nothing"
         XCTAssertTrue(store.isEmptyAfterFiltering)
+        XCTAssertTrue(store.hasMore, "筛选后为空时仍要能继续读取更早的会话")
+    }
+
+    func testEmptyFirstPagesStillOfferMore() async {
+        let store = SessionsStore(source: FakeSource(results: [
+            .codex: .success(listing(.codex, ids: [], hasMore: true)),
+        ]))
+        await store.reload(endpoint: "http://127.0.0.1:8787", runtimes: [.codex])
+        XCTAssertEqual(store.phase, .loaded)
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertTrue(store.hasMore)
     }
 
     func testOneRuntimeFailingKeepsTheOtherWithNotice() async {

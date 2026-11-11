@@ -59,14 +59,28 @@ struct SessionsWindowView: View {
                 Button("重试") { Task { await reload() } }
             }
         case .loaded:
+            // 空页也可能带着后续页（子任务或网关裁掉的条目占满了前几页），
+            // 所以空状态里同样要能继续加载，不能把唯一的入口藏起来。
             if store.sessions.isEmpty {
-                ContentUnavailableView(
-                    "还没有会话",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("在手机或电脑上开始一段 Codex 或 Claude 对话后，会出现在这里。")
-                )
+                ContentUnavailableView {
+                    Label("还没有会话", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text(store.hasMore
+                        ? "最近的记录里没有可显示的会话，可以继续读取更早的。"
+                        : "在手机或电脑上开始一段 Codex 或 Claude 对话后，会出现在这里。")
+                } actions: {
+                    if store.hasMore { loadMoreButton }
+                }
             } else if store.isEmptyAfterFiltering {
-                ContentUnavailableView.search(text: store.query)
+                ContentUnavailableView {
+                    Label("没有匹配的会话", systemImage: "magnifyingglass")
+                } description: {
+                    Text(store.hasMore
+                        ? "已读取的会话里没有匹配的，更早的会话还没有读取。"
+                        : "换个关键词或助手试试。")
+                } actions: {
+                    if store.hasMore { loadMoreButton }
+                }
             } else {
                 sessionList
             }
@@ -92,20 +106,22 @@ struct SessionsWindowView: View {
                 }
             }
             if store.hasMore {
-                Button {
-                    Task { await store.loadMore(endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
-                } label: {
-                    Text(store.isRefreshing ? "正在读取…" : "加载更早的会话")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderless)
-                .disabled(store.isRefreshing)
-                .padding(.vertical, 6)
-                .accessibilityIdentifier("sessions.loadMore")
+                loadMoreButton
+                    .buttonStyle(.borderless)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
             }
         }
         .listStyle(.inset)
         .accessibilityIdentifier("sessions.list")
+    }
+
+    private var loadMoreButton: some View {
+        Button(store.isRefreshing ? "正在读取…" : "加载更早的会话") {
+            Task { await store.loadMore(endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
+        }
+        .disabled(store.isRefreshing)
+        .accessibilityIdentifier("sessions.loadMore")
     }
 
     @ViewBuilder
