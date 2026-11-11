@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,6 +56,13 @@ func TestHandoffCommandCodexAttachesToSharedService(t *testing.T) {
 	stubHandoffResolvers(t, cfg)
 	dir := t.TempDir()
 	command, err := runHandoffForTest(t, "--runtime", "codex", "--thread", "0190aaaa-bbbb-7ccc-8ddd-ffffffffffff", "--cwd", dir)
+	if runtime.GOOS == "windows" {
+		// Windows 的 Codex 共用服务不是 Unix socket，终端接不进去，必须明确拒绝而不是给出接不上的命令。
+		if err == nil {
+			t.Fatalf("windows must refuse terminal handoff, got %+v", command)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
