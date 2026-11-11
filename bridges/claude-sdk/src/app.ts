@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { Catalog, HistoryStore } from "./claude/catalog.ts";
 import { ClaudeCodeVersionGate, type ClaudeCodeProbe } from "./claude/claudeCode.ts";
+import { systemDesktop, type DesktopSystem } from "./claude/desktop.ts";
 import { DesktopSpawnIndex } from "./claude/desktopSpawns.ts";
 import { legacyIndexPath, migrateLegacyNames, readLegacyIndex } from "./claude/legacy.ts";
 import { Overlay } from "./claude/overlay.ts";
@@ -11,6 +12,7 @@ import { CommandCatalog, sdkCommandDiscovery, type DiscoverCommands } from "./cl
 import { ModelCatalog, sdkModelDiscovery, type DiscoverModels } from "./claude/models.ts";
 import { createAccountHandlers } from "./handlers/account.ts";
 import { createCommandHandlers } from "./handlers/commands.ts";
+import { createDesktopHandlers } from "./handlers/desktop.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
@@ -82,6 +84,8 @@ export interface AppOptions {
   probeClaudeCode?: (executable: string) => Promise<ClaudeCodeProbe>;
   /** 发给全部已附着连接的通知；常驻模式由 main 接到会话注册表。 */
   broadcast?: ManagerOptions["broadcast"];
+  /** 测试用：Claude 桌面版的查找与深链打开。 */
+  desktop?: DesktopSystem;
   /** 缺省开启；agentd 的 Mac 配置关闭时用环境变量显式传 false。 */
   turnHintsEnabled?: boolean;
 }
@@ -144,6 +148,8 @@ export function createApp(options: AppOptions): App {
     async (threadId) => isHolderWorking((await holders()).get(threadId)),
   );
   const turns = createTurnHandlers({ manager, catalog, sessions, holders, claudeCode, overlay });
+  const desktopSystem = options.desktop ?? systemDesktop;
+  const desktop = createDesktopHandlers({ manager, catalog, sessions, holders, desktop: desktopSystem });
   const models = new ModelCatalog({ discover: options.discoverModels ?? sdkModelDiscovery(claudeExecutable), log: options.log });
   const account = createAccountHandlers(models, () => manager.observedRateLimits ?? unavailableRateLimits());
   const commands = createCommandHandlers(
@@ -179,6 +185,10 @@ export function createApp(options: AppOptions): App {
     ["model/list", () => account.modelList()],
     ["slashCommand/list", (params) => commands.list(params)],
     ["account/rateLimits/read", () => account.rateLimitsRead()],
+    // 桌面版深链只在 macOS 上可用；其他平台不声明，客户端据此不显示入口。
+    ...(desktopSystem.platform === "darwin"
+      ? ([["thread/desktop/open", (params: unknown) => desktop.open(params)]] as Array<[string, Handler]>)
+      : []),
   ]);
   async function migrateNames(): Promise<void> {
     await overlay.load();

@@ -223,6 +223,9 @@ var appServerClaudeAllowedMethods = map[string]struct{}{
 	// Claude 专用（SDK 适配器）：输入框 `/` 菜单的命令目录，只读。cwd 同样必须来自授权工作区；
 	// 旧 Rust bridge 没有这个方法，channel 只在适配器声明时开放。
 	"slashCommand/list": {},
+	// Claude 专用（SDK 适配器，#726、#991）：在这台 Mac 的 Claude 桌面版里打开会话。线程授权同
+	// thread/takeover；适配器只在 macOS 上声明，旧 bridge 和其他平台都不开放。
+	"thread/desktop/open": {},
 }
 
 type appServerConfigResponse struct {
@@ -581,6 +584,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 		}
 		if !probe.supportsMethod("slashCommand/list", func(string) bool { return false }) {
 			claudeMethods = removeAppServerMethod(claudeMethods, "slashCommand/list")
+		}
+		if !probe.supportsMethod("thread/desktop/open", func(string) bool { return false }) {
+			claudeMethods = removeAppServerMethod(claudeMethods, "thread/desktop/open")
 		}
 		claudeTakeoverAvailable := probe.supportsMethod("thread/takeover", claudebridge.SupportsThreadTakeover)
 		if !claudeTakeoverAvailable {

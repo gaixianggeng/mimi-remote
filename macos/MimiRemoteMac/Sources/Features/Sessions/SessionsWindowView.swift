@@ -6,6 +6,14 @@ import SwiftUI
 struct SessionsWindowView: View {
     let host: HostStore
     @State private var store: SessionsStore
+    @State private var installedApps: Set<String> = []
+    /// Codex 和 Claude 各记各的「打开」去处，因为两边的桌面版不同。
+    @AppStorage("sessions.openTarget.codex") private var codexOpenTarget = ""
+    @AppStorage("sessions.openTarget.claude") private var claudeOpenTarget = ""
+    @AppStorage("sessions.codexSharedHintMuted") private var codexSharedHintMuted = false
+    /// 桌面版没在运行时无从判断接没接共用服务，沿用上一次看到的结果。
+    @AppStorage("sessions.codexDesktopSharedSeen") private var codexDesktopSharedSeen = false
+    @State private var showsSharedSetup = false
 
     /// store 只在测试与预览里注入；默认读本机服务。
     @MainActor
@@ -15,20 +23,16 @@ struct SessionsWindowView: View {
     }
 
     var body: some View {
-        content
+        // 筛选放在内容顶部常驻显示。放在工具栏时，搜索框获得焦点后会变宽，
+        // 把筛选和刷新挤进溢出菜单（#991 实机走查）。
+        VStack(spacing: 0) {
+            filterBar
+            noticeBar
+            content
+        }
             .frame(minWidth: 560, minHeight: 420)
             .navigationTitle("会话")
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Picker("助手", selection: $store.filter) {
-                        ForEach(SessionsStore.RuntimeFilter.allCases) { filter in
-                            Text(filter.title).tag(filter)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .accessibilityIdentifier("sessions.filter")
-                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         Task { await reload() }
@@ -42,6 +46,47 @@ struct SessionsWindowView: View {
             }
             .searchable(text: $store.query, placement: .toolbar, prompt: "搜索会话或项目")
             .task(id: loadKey) { await reload() }
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Picker("助手", selection: $store.filter) {
+                ForEach(SessionsStore.RuntimeFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("sessions.filter")
+            Spacer(minLength: 0)
+            if store.isRefreshing, store.phase == .loaded {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// 读取失败的说明放在内容外面：列表为空或搜索无结果时也要看得到原因。
+    @ViewBuilder
+    private var noticeBar: some View {
+        if store.phase == .loaded, !store.notices.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(store.notices, id: \.self) { notice in
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityIdentifier("sessions.notices")
+        }
     }
 
     @ViewBuilder
@@ -89,19 +134,13 @@ struct SessionsWindowView: View {
 
     private var sessionList: some View {
         List {
-            if !store.notices.isEmpty {
-                Section {
-                    ForEach(store.notices, id: \.self) { notice in
-                        Label(notice, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
             ForEach(store.visibleSections) { section in
                 Section(section.title) {
                     ForEach(section.sessions) { session in
-                        SessionRow(session: session)
-                            .contextMenu { contextMenu(for: session) }
+                        SessionRow(session: session) {
+                            openControl(for: session)
+                        }
+                        .contextMenu { sessionMenu(for: session) }
                     }
                 }
             }
@@ -114,6 +153,111 @@ struct SessionsWindowView: View {
         }
         .listStyle(.inset)
         .accessibilityIdentifier("sessions.list")
+        .safeAreaInset(edge: .bottom) {
+            if store.sessions.contains(where: { $0.runtime == .claude }) {
+                // Claude 桌面版、终端各自只在打开时读一次记录，互不同步（#991 实机发现，属上游行为）。
+                Text("同一条 Claude 会话在桌面版、终端等多处打开时，各处不会互相同步，旧窗口里继续发消息会让记录分叉。换到另一处继续前，先关掉原来那处；回到原来那处时重新打开这条会话。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
+        }
+        .alert(
+            "没能完成",
+            isPresented: Binding(get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
+        ) {
+            Button("好") { store.actionError = nil }
+        } message: {
+            Text(store.actionError ?? "")
+        }
+        .sheet(isPresented: $showsSharedSetup) {
+            CodexSharedSetupView()
+        }
+    }
+
+    private func candidates(for session: DesktopSession) -> [SessionOpenTarget] {
+        SessionOpenTarget.candidates(for: session.runtime, installedBundleIDs: installedApps)
+    }
+
+    private func preferredTarget(for session: DesktopSession) -> SessionOpenTarget? {
+        SessionOpenTarget.preferred(
+            stored: session.runtime == .codex ? codexOpenTarget : claudeOpenTarget,
+            candidates: candidates(for: session),
+            installedBundleIDs: installedApps
+        )
+    }
+
+    /// 行尾的「打开 ▾」：左半边用上次选的 App 直接打开，右半边选别的 App。
+    @ViewBuilder
+    private func openControl(for session: DesktopSession) -> some View {
+        if store.workingSessionID == session.id {
+            ProgressView()
+                .controlSize(.small)
+                .frame(minWidth: 28)
+        } else if let target = preferredTarget(for: session) {
+            let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps)
+            Menu {
+                sessionMenu(for: session)
+            } label: {
+                Label {
+                    Text(target.buttonTitle(for: session))
+                } icon: {
+                    if let icon = SessionOpenApps.icon(for: target) { Image(nsImage: icon) }
+                }
+                .labelStyle(.titleAndIcon)
+            } primaryAction: {
+                open(session, with: target, remember: false)
+            }
+            .menuStyle(.button)
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(store.workingSessionID != nil)
+            .help(reason ?? "用 \(target.title) 打开这条会话。")
+            .accessibilityIdentifier("sessions.open.\(session.id)")
+        }
+    }
+
+    private func open(_ session: DesktopSession, with target: SessionOpenTarget, remember: Bool) {
+        if let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps) {
+            store.actionError = reason
+            return
+        }
+        if remember {
+            if session.runtime == .codex { codexOpenTarget = target.storageValue } else { claudeOpenTarget = target.storageValue }
+        }
+        switch target {
+        case .claudeDesktop:
+            Task { await store.openInClaudeDesktop(session, endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
+        case .codexDesktop:
+            Task { await openInCodexDesktop(session) }
+        case .terminal(let app):
+            let command = host.agent.terminalHandoffCommand
+            Task {
+                await store.continueInTerminal(session, command: command) {
+                    try await TerminalLauncher.launch($0, in: app, title: session.title)
+                }
+            }
+        }
+    }
+
+    /// 桌面版没接本机 SSH 时先建议配置；用户选「仍然打开」就不管会话是否被占用，直接打开。
+    private func openInCodexDesktop(_ session: DesktopSession) async {
+        let connection = await CodexDesktopLink.connection()
+        if connection != .notRunning { codexDesktopSharedSeen = connection == .shared }
+        if !codexDesktopSharedSeen, !codexSharedHintMuted {
+            switch CodexSharedHint.present() {
+            case .cancel: return
+            case .showGuide:
+                showsSharedSetup = true
+                return
+            case .openAnyway(let mute):
+                codexSharedHintMuted = mute
+            }
+        }
+        await store.openInCodexDesktop(session) { try await CodexDesktopLink.open(threadID: $0) }
     }
 
     private var loadMoreButton: some View {
@@ -125,7 +269,24 @@ struct SessionsWindowView: View {
     }
 
     @ViewBuilder
-    private func contextMenu(for session: DesktopSession) -> some View {
+    private func sessionMenu(for session: DesktopSession) -> some View {
+        ForEach(candidates(for: session), id: \.self) { target in
+            let reason = target.unavailableReason(for: session, installedBundleIDs: installedApps)
+            Button {
+                open(session, with: target, remember: true)
+            } label: {
+                Label {
+                    Text(reason.map { "\(target.title)（\($0.trimmingCharacters(in: CharacterSet(charactersIn: "。")))）" } ?? target.title)
+                } icon: {
+                    if let icon = SessionOpenApps.icon(for: target) { Image(nsImage: icon) }
+                }
+            }
+            .disabled(reason != nil)
+        }
+        if session.runtime == .codex, !codexDesktopSharedSeen {
+            Button("让 Codex 桌面版和手机同时使用…") { showsSharedSetup = true }
+        }
+        Divider()
         Button("复制会话 ID") {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -139,12 +300,7 @@ struct SessionsWindowView: View {
     }
 
     private var enabledRuntimes: [SessionRuntime] {
-        SessionRuntime.allCases.filter { runtime in
-            switch runtime {
-            case .codex: host.moduleEnabled(.codex)
-            case .claude: host.moduleEnabled(.claude)
-            }
-        }
+        SessionRuntime.enabled(in: host.status?.moduleStatus)
     }
 
     /// 服务地址或已启用的助手变化时重新加载。
@@ -154,13 +310,15 @@ struct SessionsWindowView: View {
     }
 
     private func reload() async {
+        installedApps = SessionOpenApps.installedBundleIDs()
         let endpoint = host.status?.processOK == true ? host.status?.endpoint : nil
         await store.reload(endpoint: endpoint, runtimes: enabledRuntimes)
     }
 }
 
-private struct SessionRow: View {
+private struct SessionRow<Actions: View>: View {
     let session: DesktopSession
+    @ViewBuilder let actions: () -> Actions
 
     var body: some View {
         HStack(spacing: 10) {
@@ -186,10 +344,12 @@ private struct SessionRow: View {
                         in: Capsule()
                     )
             }
+            actions()
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        // 行内有按钮，不能合并成一个无障碍元素，否则按钮读不到也点不到。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions.row.\(session.id)")
     }
 

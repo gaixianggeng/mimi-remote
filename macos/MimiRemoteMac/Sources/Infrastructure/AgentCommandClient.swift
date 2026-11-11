@@ -12,6 +12,14 @@ struct AgentCommandClient: Sendable {
     var readiness: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
     var doctor: @Sendable (_ fix: Bool) async throws -> DoctorFixResults
+    /// 生成在本机终端继续会话的命令（#991）。旧版内嵌 agentd 没有这个子命令。
+    var terminalHandoffCommand: @Sendable (
+        _ runtime: SessionRuntime,
+        _ threadID: String,
+        _ cwd: String
+    ) async throws -> TerminalHandoffCommand = { _, _, _ in
+        throw AgentClientError.commandFailed("请更新 Mimi Remote Mac 后再在终端继续。")
+    }
     var releaseCodexSession: @Sendable () async throws -> CodexSessionReleaseResult = {
         throw AgentClientError.commandFailed("当前 agentd 不支持共享运行环境修复，请更新 App。")
     }
@@ -193,6 +201,13 @@ extension AgentCommandClient {
                 }
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
+            },
+            terminalHandoffCommand: { runtime, threadID, cwd in
+                let binary = try requireEmbeddedBinary()
+                return try decode(TerminalHandoffCommand.self, from: try await execute(
+                    binary: binary,
+                    arguments: handoffCommandArguments(runtime: runtime, threadID: threadID, cwd: cwd)
+                ))
             },
             releaseCodexSession: {
                 let binary = try requireEmbeddedBinary()
@@ -433,6 +448,10 @@ extension AgentCommandClient {
             arguments.append("--runtime")
         }
         return arguments
+    }
+
+    static func handoffCommandArguments(runtime: SessionRuntime, threadID: String, cwd: String) -> [String] {
+        ["handoff-command", "--runtime", runtime.rawValue, "--thread", threadID, "--cwd", cwd]
     }
 
     static func codexSessionRepairArguments() -> [String] {

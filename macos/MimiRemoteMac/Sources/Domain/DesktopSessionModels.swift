@@ -14,6 +14,13 @@ enum SessionRuntime: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// 要读取的助手。只有拿到服务明确报告的开关时才按它过滤：状态刷新的间隙里开关会暂时缺失，
+    /// 缺失时按「已关闭」处理会让列表时有时无（#991 实机走查）。真关闭时网关会返回明确原因。
+    static func enabled(in modules: AgentModuleStatus?) -> [SessionRuntime] {
+        guard let modules else { return allCases }
+        return allCases.filter { $0 == .codex ? modules.codexEnabled : modules.claudeEnabled }
+    }
+
     var brandMark: RuntimeBrandMark {
         switch self {
         case .codex: .openAI
@@ -145,11 +152,10 @@ enum DesktopSessionParser {
             return (thread["writerHeldElsewhere"] as? Bool) == true ? .otherCodexProcess : nil
         case .claude:
             guard let owner = thread["claudeOwner"] as? [String: Any] else { return nil }
-            switch owner["entrypoint"] as? String {
-            case "claude-desktop": return .claudeDesktop
-            case "cli": return .claudeTerminal
-            default: return .otherClaudeProcess
-            }
+            // 配了第三方模型网关的桌面版登记为 claude-desktop-3p（#991 复测），按前缀认。
+            let entrypoint = owner["entrypoint"] as? String ?? ""
+            if entrypoint.hasPrefix("claude-desktop") { return .claudeDesktop }
+            return entrypoint == "cli" ? .claudeTerminal : .otherClaudeProcess
         }
     }
 
@@ -204,6 +210,46 @@ enum DesktopSessionGrouping {
         }
         return titles.compactMap { title in
             buckets[title].map { Section(title: title, sessions: $0) }
+        }
+    }
+}
+
+/// 每条会话能做的交接操作（#991）。规则集中在这里，界面只负责展示。
+enum DesktopSessionActions {
+    enum Primary: Equatable {
+        case openInClaudeDesktop
+        /// 桌面版已经开着这条会话，只把窗口切过去。
+        case bringClaudeDesktopForward
+        /// 回合还在跑：桌面版接手会让 Mimi 让出进程，正在跑的回合会被打断。
+        case waitForTurn
+    }
+
+    static func primary(for session: DesktopSession) -> Primary? {
+        guard session.runtime == .claude else { return nil }
+        switch session.holder {
+        case .claudeDesktop: return .bringClaudeDesktopForward
+        case .claudeTerminal, .otherClaudeProcess: return nil
+        case .otherCodexProcess, nil: break
+        }
+        return session.activity == .idle || session.activity == .failed ? .openInClaudeDesktop : .waitForTurn
+    }
+
+    /// 不能在终端继续的原因；nil 表示可以。
+    static func terminalUnavailableReason(for session: DesktopSession) -> String? {
+        guard !session.cwd.isEmpty else { return "读不到这条会话的工作目录。" }
+        switch session.runtime {
+        case .codex:
+            // 终端接的是共用服务；锁在别的 Codex 进程手里时接不上。
+            return session.holder == .otherCodexProcess ? "电脑上的 Codex 正在使用这条会话。" : nil
+        case .claude:
+            switch session.holder {
+            case .claudeDesktop: return "Claude 桌面版正在使用这条会话。"
+            case .claudeTerminal: return "这条会话已经在终端里打开。"
+            case .otherClaudeProcess: return "电脑上另一个 Claude 正在使用这条会话。"
+            case .otherCodexProcess, nil: break
+            }
+            // Claude 没有多写入方保护：Mimi 发现终端接手会让出进程，正在跑的回合会被打断。
+            return session.activity == .idle || session.activity == .failed ? nil : "这一轮结束后才能在终端继续。"
         }
     }
 }
