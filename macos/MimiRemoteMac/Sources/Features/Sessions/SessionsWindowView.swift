@@ -100,8 +100,20 @@ struct SessionsWindowView: View {
             ForEach(store.visibleSections) { section in
                 Section(section.title) {
                     ForEach(section.sessions) { session in
-                        SessionRow(session: session)
-                            .contextMenu { contextMenu(for: session) }
+                        SessionRow(session: session) {
+                            primaryAction(for: session)
+                            Menu {
+                                sessionMenu(for: session)
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .accessibilityLabel("更多操作")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                            .disabled(store.workingSessionID != nil)
+                        }
+                        .contextMenu { sessionMenu(for: session) }
                     }
                 }
             }
@@ -114,6 +126,56 @@ struct SessionsWindowView: View {
         }
         .listStyle(.inset)
         .accessibilityIdentifier("sessions.list")
+        .safeAreaInset(edge: .bottom) {
+            if store.sessions.contains(where: { $0.runtime == .claude }) {
+                Text("在 Claude 桌面版打开后，手机上这条会话会暂停输入，直到在手机上接管或在桌面版里关掉它。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
+        }
+        .alert(
+            "没能完成",
+            isPresented: Binding(get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
+        ) {
+            Button("好") { store.actionError = nil }
+        } message: {
+            Text(store.actionError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func primaryAction(for session: DesktopSession) -> some View {
+        if store.workingSessionID == session.id {
+            ProgressView()
+                .controlSize(.small)
+                .frame(minWidth: 28)
+        } else if let action = DesktopSessionActions.primary(for: session) {
+            let title = switch action {
+            case .openInClaudeDesktop, .waitForTurn: "在 Claude 桌面版打开"
+            case .bringClaudeDesktopForward: "前往"
+            }
+            Button(title) { openInClaudeDesktop(session) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(action == .waitForTurn || store.workingSessionID != nil)
+                .help(action == .waitForTurn ? "这一轮结束后才能打开。" : "在 Claude 桌面版里继续这条会话。")
+                .accessibilityIdentifier("sessions.openDesktop.\(session.id)")
+        }
+    }
+
+    private func openInClaudeDesktop(_ session: DesktopSession) {
+        Task { await store.openInClaudeDesktop(session, endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
+    }
+
+    private func continueInTerminal(_ session: DesktopSession) {
+        let command = host.agent.terminalHandoffCommand
+        Task {
+            await store.continueInTerminal(session, command: command) { try TerminalLauncher.launch($0) }
+        }
     }
 
     private var loadMoreButton: some View {
@@ -125,7 +187,16 @@ struct SessionsWindowView: View {
     }
 
     @ViewBuilder
-    private func contextMenu(for session: DesktopSession) -> some View {
+    private func sessionMenu(for session: DesktopSession) -> some View {
+        if let action = DesktopSessionActions.primary(for: session), action != .waitForTurn {
+            Button(action == .bringClaudeDesktopForward ? "前往 Claude 桌面版" : "在 Claude 桌面版打开") {
+                openInClaudeDesktop(session)
+            }
+        }
+        let terminalReason = DesktopSessionActions.terminalUnavailableReason(for: session)
+        Button(terminalReason.map { "在终端继续（\($0)）" } ?? "在终端继续") { continueInTerminal(session) }
+            .disabled(terminalReason != nil)
+        Divider()
         Button("复制会话 ID") {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -159,8 +230,9 @@ struct SessionsWindowView: View {
     }
 }
 
-private struct SessionRow: View {
+private struct SessionRow<Actions: View>: View {
     let session: DesktopSession
+    @ViewBuilder let actions: () -> Actions
 
     var body: some View {
         HStack(spacing: 10) {
@@ -186,10 +258,12 @@ private struct SessionRow: View {
                         in: Capsule()
                     )
             }
+            actions()
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        // 行内有按钮，不能合并成一个无障碍元素，否则按钮读不到也点不到。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessions.row.\(session.id)")
     }
 

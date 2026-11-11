@@ -10,6 +10,7 @@
 		0233FB757655D673A1588B25 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 414A74A2A5A2877C1A9CB604 /* MenuBarContentView.swift */; };
 		0CA331176F893C656E0CCDA1 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */; };
 		11399EBAD3569F1EA7DC3A55 /* MenuBarWindowPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */; };
+		1558298C0DABAC47D7584ACC /* TerminalLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22B9EB7B9243BF6303A6265E /* TerminalLauncher.swift */; };
 		1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 252E87DED48E48439FF3A75F /* BrandColors.swift */; };
 		233962E6F05066A3F95714E0 /* AgentdConfigCheckClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FF281B4F3BF8FE32837DF47 /* AgentdConfigCheckClientTests.swift */; };
 		28EBD25B9A113B0FD13FE90E /* AppUpdateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */; };
@@ -90,6 +91,7 @@
 		1986CF55627D6A29668B3B10 /* TailcatRelaySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailcatRelaySettings.swift; sourceTree = "<group>"; };
 		1AE25E5AEC2D1798E2848DB9 /* AgentdSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentdSupervisor.swift; sourceTree = "<group>"; };
 		1F17DD694E825499E8C8965E /* AgentDiagnosticsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentDiagnosticsModels.swift; sourceTree = "<group>"; };
+		22B9EB7B9243BF6303A6265E /* TerminalLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLauncher.swift; sourceTree = "<group>"; };
 		24B06CDBE2D2236E362381FA /* DesktopSessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSessionsTests.swift; sourceTree = "<group>"; };
 		252E87DED48E48439FF3A75F /* BrandColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandColors.swift; sourceTree = "<group>"; };
 		26EA59AD362FB829B5B57AFF /* CodexRuntimeUpdateNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexRuntimeUpdateNotice.swift; sourceTree = "<group>"; };
@@ -347,6 +349,7 @@
 				4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */,
 				0431AEFF2D4E005613D17105 /* ServiceManagementClient.swift */,
 				6C3BE1BEFF7B67CA613F386C /* SystemPrivacySettingsClient.swift */,
+				22B9EB7B9243BF6303A6265E /* TerminalLauncher.swift */,
 			);
 			path = Infrastructure;
 			sourceTree = "<group>";
@@ -507,6 +510,7 @@
 				9381140D2855654A9E07746E /* StatusComponents.swift in Sources */,
 				E1BE3D2E8D8A4F2E50236DC3 /* SystemPrivacySettingsClient.swift in Sources */,
 				6954EBFF208DE2B1D0A7D3A8 /* TailcatRelaySettings.swift in Sources */,
+				1558298C0DABAC47D7584ACC /* TerminalLauncher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

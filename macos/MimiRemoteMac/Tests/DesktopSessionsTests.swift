@@ -156,10 +156,22 @@ final class LocalGatewayClientTests: XCTestCase {
 final class SessionsStoreTests: XCTestCase {
     private struct FakeSource: DesktopSessionSource {
         var results: [SessionRuntime: Result<DesktopSessionListing, LocalGatewayError>]
+        var openResult: Result<ClaudeDesktopOpenResult, LocalGatewayError> = .success(ClaudeDesktopOpenResult(alreadyInDesktop: false))
+        var opened: OpenLog? = nil
 
         func listSessions(runtime: SessionRuntime, port: Int, pageBudget: Int) async throws -> DesktopSessionListing {
             try results[runtime, default: .failure(.invalidResponse)].get()
         }
+
+        func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult {
+            opened?.append("\(threadID)@\(cwd):\(port)")
+            return try openResult.get()
+        }
+    }
+
+    final class OpenLog: @unchecked Sendable {
+        private(set) var entries: [String] = []
+        func append(_ entry: String) { entries.append(entry) }
     }
 
     private func listing(_ runtime: SessionRuntime, ids: [String], hasMore: Bool = false) -> DesktopSessionListing {
@@ -217,6 +229,50 @@ final class SessionsStoreTests: XCTestCase {
         XCTAssertTrue(store.sessions.isEmpty)
     }
 
+    func testOpenInClaudeDesktopCallsSourceThenRefreshes() async {
+        let log = OpenLog()
+        let claude = DesktopSession(threadID: "k1", runtime: .claude, title: "k1", projectName: "p", cwd: "/repo",
+                                    updatedAt: Date(), activity: .idle, holder: nil)
+        let store = SessionsStore(source: FakeSource(results: [
+            .claude: .success(DesktopSessionListing(sessions: [claude], hasMore: false)),
+        ], opened: log), refreshDelay: .zero)
+        await store.openInClaudeDesktop(claude, endpoint: "http://127.0.0.1:9000", runtimes: [.claude])
+        XCTAssertEqual(log.entries, ["k1@/repo:9000"])
+        XCTAssertNil(store.actionError)
+        XCTAssertNil(store.workingSessionID)
+        XCTAssertEqual(store.phase, .loaded, "打开后刷新列表以更新占用状态")
+    }
+
+    func testOpenInClaudeDesktopFailureIsShown() async {
+        let claude = DesktopSession(threadID: "k1", runtime: .claude, title: "k1", projectName: "p", cwd: "/repo",
+                                    updatedAt: nil, activity: .idle, holder: nil)
+        let store = SessionsStore(source: FakeSource(results: [:], openResult: .failure(
+            .requestRejected(code: -32602, reason: "not_installed", message: "Claude Desktop is not installed")
+        )), refreshDelay: .zero)
+        await store.openInClaudeDesktop(claude, endpoint: "http://127.0.0.1:8787", runtimes: [.claude])
+        XCTAssertEqual(store.actionError, "这台电脑上没有安装 Claude 桌面版。")
+        XCTAssertNil(store.workingSessionID)
+    }
+
+    func testContinueInTerminalLaunchesGeneratedCommandOrExplains() async {
+        let store = SessionsStore(source: FakeSource(results: [:]), refreshDelay: .zero)
+        let codex = DesktopSession(threadID: "c1", runtime: .codex, title: "c1", projectName: "p", cwd: "/repo",
+                                   updatedAt: nil, activity: .running, holder: nil)
+        var launched: [TerminalHandoffCommand] = []
+        await store.continueInTerminal(codex, command: { runtime, id, cwd in
+            TerminalHandoffCommand(cwd: cwd, argv: ["codex", "resume", id, runtime.rawValue])
+        }, launch: { launched.append($0) })
+        XCTAssertEqual(launched, [TerminalHandoffCommand(cwd: "/repo", argv: ["codex", "resume", "c1", "codex"])])
+
+        let busyClaude = DesktopSession(threadID: "k1", runtime: .claude, title: "k1", projectName: "p", cwd: "/repo",
+                                        updatedAt: nil, activity: .running, holder: nil)
+        await store.continueInTerminal(busyClaude, command: { _, _, _ in
+            XCTFail("不该生成命令")
+            return TerminalHandoffCommand(cwd: "", argv: [])
+        }, launch: { _ in })
+        XCTAssertEqual(store.actionError, "这一轮结束后才能在终端继续。")
+    }
+
     func testMissingServiceOrRuntimesExplainsWhy() async {
         let store = SessionsStore(source: FakeSource(results: [:]))
         await store.reload(endpoint: nil, runtimes: [.codex])
@@ -225,5 +281,68 @@ final class SessionsStoreTests: XCTestCase {
         await store.reload(endpoint: "http://127.0.0.1:8787", runtimes: [])
         guard case .failed(let noRuntime) = store.phase else { return XCTFail("助手全关应提示") }
         XCTAssertTrue(noRuntime.contains("都已关闭"))
+    }
+}
+
+final class DesktopSessionActionsTests: XCTestCase {
+    private func session(
+        _ runtime: SessionRuntime,
+        activity: DesktopSession.Activity = .idle,
+        holder: DesktopSession.Holder? = nil,
+        cwd: String = "/repo"
+    ) -> DesktopSession {
+        DesktopSession(threadID: "t", runtime: runtime, title: "t", projectName: "p", cwd: cwd,
+                       updatedAt: nil, activity: activity, holder: holder)
+    }
+
+    func testClaudeDesktopAppIsRecognisedByPrefix() {
+        XCTAssertEqual(DesktopSessionParser.holder(from: ["claudeOwner": ["entrypoint": "claude-desktop-3p"]], runtime: .claude), .claudeDesktop)
+    }
+
+    func testPrimaryActionOnlyForClaudeAndRespectsTurnsAndHolders() {
+        XCTAssertNil(DesktopSessionActions.primary(for: session(.codex)), "Codex 桌面版交接在下一步")
+        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude)), .openInClaudeDesktop)
+        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .failed)), .openInClaudeDesktop)
+        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .running)), .waitForTurn)
+        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .waitingForApproval)), .waitForTurn)
+        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, holder: .claudeDesktop)), .bringClaudeDesktopForward)
+        XCTAssertNil(DesktopSessionActions.primary(for: session(.claude, holder: .claudeTerminal)))
+        XCTAssertNil(DesktopSessionActions.primary(for: session(.claude, holder: .otherClaudeProcess)))
+    }
+
+    func testTerminalRules() {
+        XCTAssertNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex)))
+        XCTAssertNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex, activity: .running)), "Codex 终端与 Mimi 可同时使用")
+        XCTAssertNotNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex, holder: .otherCodexProcess)))
+        XCTAssertNil(DesktopSessionActions.terminalUnavailableReason(for: session(.claude)))
+        XCTAssertNotNil(DesktopSessionActions.terminalUnavailableReason(for: session(.claude, activity: .running)))
+        XCTAssertNotNil(DesktopSessionActions.terminalUnavailableReason(for: session(.claude, holder: .claudeDesktop)))
+        XCTAssertNotNil(DesktopSessionActions.terminalUnavailableReason(for: session(.claude, holder: .claudeTerminal)))
+        XCTAssertNotNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex, cwd: "")))
+    }
+
+    func testTerminalScriptQuotesEveryArgument() {
+        let script = TerminalLauncher.script(for: TerminalHandoffCommand(
+            cwd: "/Users/me/it's here",
+            argv: ["/opt/codex", "resume", "abc-123", "--remote", "unix:///Users/me/.codex/s.sock"]
+        ))
+        XCTAssertTrue(script.hasPrefix("#!/bin/zsh -l\n"))
+        XCTAssertTrue(script.contains(#"cd -- '/Users/me/it'\''s here' || exit 1"#))
+        XCTAssertTrue(script.contains(#"exec '/opt/codex' 'resume' 'abc-123' '--remote' 'unix:///Users/me/.codex/s.sock'"#))
+        XCTAssertTrue(script.contains(#"rm -f -- "$0""#), "脚本只用一次")
+        XCTAssertEqual(TerminalLauncher.shellQuoted("$(id)"), "'$(id)'")
+    }
+
+    func testHandoffArgumentsAndFriendlyErrors() {
+        XCTAssertEqual(
+            AgentCommandClient.handoffCommandArguments(runtime: .claude, threadID: "abc", cwd: "/repo"),
+            ["handoff-command", "--runtime", "claude", "--thread", "abc", "--cwd", "/repo"]
+        )
+        XCTAssertEqual(
+            LocalGatewayError.requestRejected(code: -32602, reason: "turn_active", message: "x").errorDescription,
+            "这一轮还在运行，结束后再打开。"
+        )
+        XCTAssertTrue(LocalGatewayError.requestRejected(code: -32080, reason: nil, message: "app-server method 不允许").errorDescription?.contains("重新启动") == true)
+        XCTAssertEqual(LocalGatewayError.requestRejected(code: 1, reason: "other", message: "原文").errorDescription, "原文")
     }
 }

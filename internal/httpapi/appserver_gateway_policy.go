@@ -230,6 +230,20 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
 		}
+	case "thread/desktop/open":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		// 与接管相同不套只读拒写：桌面版已经持有的会话（canAcceptDirectInput=false）再打开只是
+		// 切到前台，终端持有时由适配器拒绝。子会话 / 浏览线程没有可在桌面版继续的 transcript。
+		if thread.readOnly {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能在 Claude 桌面版打开", method)
+		}
 	case "thread/fork":
 		threadID, ok := gatewayStringParam(params, "threadId")
 		if !ok {
@@ -826,6 +840,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayReviewStartParams(params)
 	case "thread/start", "thread/resume", "thread/fork":
 		sanitized = sanitizedGatewayThreadParams(runtimeID, method, params)
+	case "thread/desktop/open":
+		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/takeover":
 		// 历史另走分页接口，接管响应只需要 thread 本体。
 		sanitized = copyGatewayParams(params, "threadId", "cwd")

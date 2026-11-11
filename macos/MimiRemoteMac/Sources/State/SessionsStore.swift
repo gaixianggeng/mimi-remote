@@ -46,15 +46,59 @@ final class SessionsStore {
     private(set) var notices: [String] = []
     private(set) var hasMore = false
     private(set) var isRefreshing = false
+    /// 正在交接的会话；同一时间只处理一条，避免连点开出多个窗口。
+    private(set) var workingSessionID: String?
+    var actionError: String?
     var filter: RuntimeFilter = .all
     var query = ""
 
     private let source: any DesktopSessionSource
+    private let refreshDelay: Duration
     private var pageBudget = SessionsStore.initialPageBudget
     private var generation = 0
 
-    init(source: any DesktopSessionSource = LocalGatewayClient()) {
+    init(source: any DesktopSessionSource = LocalGatewayClient(), refreshDelay: Duration = .seconds(2)) {
         self.source = source
+        self.refreshDelay = refreshDelay
+    }
+
+    /// 在 Claude 桌面版打开（或切到已打开的窗口）。桌面版接手后占用状态会变，稍后刷新列表。
+    func openInClaudeDesktop(_ session: DesktopSession, endpoint: String?, runtimes: [SessionRuntime]) async {
+        guard session.runtime == .claude, workingSessionID == nil else { return }
+        guard let endpoint, let port = LocalGatewayClient.port(fromEndpoint: endpoint) else {
+            actionError = "Mimi 服务没有运行。"
+            return
+        }
+        workingSessionID = session.id
+        defer { workingSessionID = nil }
+        do {
+            _ = try await source.openInClaudeDesktop(threadID: session.threadID, cwd: session.cwd, port: port)
+        } catch {
+            actionError = error.localizedDescription
+            return
+        }
+        try? await Task.sleep(for: refreshDelay)
+        await load(endpoint: endpoint, runtimes: runtimes)
+    }
+
+    /// 让 agentd 生成命令，再交给终端打开。
+    func continueInTerminal(
+        _ session: DesktopSession,
+        command: @Sendable (SessionRuntime, String, String) async throws -> TerminalHandoffCommand,
+        launch: @MainActor (TerminalHandoffCommand) throws -> Void
+    ) async {
+        guard workingSessionID == nil else { return }
+        if let reason = DesktopSessionActions.terminalUnavailableReason(for: session) {
+            actionError = reason
+            return
+        }
+        workingSessionID = session.id
+        defer { workingSessionID = nil }
+        do {
+            try launch(try await command(session.runtime, session.threadID, session.cwd))
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     var visibleSections: [DesktopSessionGrouping.Section] {
