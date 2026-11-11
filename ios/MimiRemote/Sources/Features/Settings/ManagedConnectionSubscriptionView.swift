@@ -50,7 +50,8 @@ struct ManagedConnectionSubscriptionView: View {
     /// 明文只在出示页打开期间留在这里，关闭即清空。
     @State private var transferCode: ManagedConnectionTransferCode?
     @State private var isVerifyingTransfer = false
-    @State private var transferFailed = false
+    /// 出示邀请码失败的原因；nil 表示没有失败。
+    @State private var transferFailureKey: String?
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     var deviceOwnerAuthenticator: any DeviceOwnerAuthenticating = SystemDeviceOwnerAuthenticator()
 
@@ -195,7 +196,7 @@ struct ManagedConnectionSubscriptionView: View {
         requestedActivation = true
         await entitlementStore.redeem(code: code)
         let result = entitlementStore.redemptionScanResult
-        if case .accepted = result {
+        if case .activated = result {
             selectMimiForCurrentComputer()
             sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
         }
@@ -218,8 +219,8 @@ struct ManagedConnectionSubscriptionView: View {
         } header: {
             SettingsGroupHeader()
         } footer: {
-            if transferFailed {
-                Text(L10n.text("ui.managed_transfer_auth_failed"))
+            if let transferFailureKey {
+                Text(L10n.text(transferFailureKey))
                     .foregroundStyle(tokens.warning)
                     .settingsSectionFooterStyle()
             }
@@ -230,7 +231,7 @@ struct ManagedConnectionSubscriptionView: View {
     private func beginTransfer() {
         guard !isVerifyingTransfer else { return }
         isVerifyingTransfer = true
-        transferFailed = false
+        transferFailureKey = nil
         Task {
             defer { isVerifyingTransfer = false }
             let outcome = await ManagedConnectionTransferGate.requestCode(
@@ -244,7 +245,9 @@ struct ManagedConnectionSubscriptionView: View {
             case .cancelled:
                 break
             case .failed:
-                transferFailed = true
+                transferFailureKey = "ui.managed_transfer_auth_failed"
+            case .codeUnavailable:
+                transferFailureKey = "ui.managed_transfer_code_unavailable"
             }
         }
     }

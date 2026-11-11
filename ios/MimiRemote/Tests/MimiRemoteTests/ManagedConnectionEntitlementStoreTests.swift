@@ -277,7 +277,7 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
     func testTransferWithoutSavedCodeNeverPromptsForVerification() async {
         let authenticator = AuthenticatorFake(.authenticated)
         let outcome = await ManagedConnectionTransferGate.requestCode(nil, authenticator: authenticator, reason: "reason")
-        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(outcome, .codeUnavailable, "读不到码不能说成身份验证没通过")
         XCTAssertEqual(authenticator.promptCount, 0)
     }
 
@@ -334,7 +334,11 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         let success = makeRedemptionStore()
         await success.api.setRedeemResult(.success(Self.redemptionGrant))
         await success.store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")
-        XCTAssertEqual(success.store.redemptionScanResult, .accepted(L10n.text("ui.managed_transfer_success")))
+        XCTAssertEqual(
+            success.store.redemptionScanResult,
+            .activated(L10n.text("ui.managed_transfer_success")),
+            "「扫电脑」入口扫到邀请码时标题也要说开通成功"
+        )
 
         let failure = makeRedemptionStore()
         await failure.store.redeem(code: "MIMI-AAAA-BBBB-CCCC-DDDD")

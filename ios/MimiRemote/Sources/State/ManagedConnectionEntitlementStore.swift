@@ -518,7 +518,7 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     var redemptionScanResult: QRCodeScannerSubmissionResult {
         if let redemptionErrorMessage { return .rejected(redemptionErrorMessage) }
         return isRedemptionEntitlement
-            ? .accepted(L10n.text("ui.managed_transfer_success"))
+            ? .activated(L10n.text("ui.managed_transfer_success"))
             : .rejected(L10n.text("ui.managed_redemption_invalid"))
     }
 

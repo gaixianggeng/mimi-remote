@@ -8,6 +8,8 @@ enum ManagedConnectionTransferGate {
         case reveal(String)
         case cancelled
         case failed
+        /// 钥匙串里没有这台设备开通时用的码（例如重装后），验证机主也拿不出来，不能说成验证没通过。
+        case codeUnavailable
     }
 
     static func requestCode(
@@ -15,7 +17,7 @@ enum ManagedConnectionTransferGate {
         authenticator: any DeviceOwnerAuthenticating,
         reason: String
     ) async -> Outcome {
-        guard let code else { return .failed }
+        guard let code else { return .codeUnavailable }
         switch await authenticator.authenticate(reason: reason) {
         case .authenticated:
             return .reveal(code)

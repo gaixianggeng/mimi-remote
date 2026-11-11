@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.managed_transfer_code_unavailable": {
+      "comment": "Shown when this device has no saved invite code to show, e.g. after reinstalling.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device doesn’t have the invite code saved, so it can’t be shown. Set up the other device with the code you received when you activated."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台设备上没有保存邀请码，无法出示。请用开通时收到的邀请码在另一台设备上开通。"
+          }
+        }
+      }
+    },
     "ui.relay_reconnect_to_configure": {
       "localizations": {
         "en": {
