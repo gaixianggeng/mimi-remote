@@ -188,7 +188,8 @@ struct WorkbenchSidebarTopScrollEdgeFade: ViewModifier {
     }
 
     /// 上沿满色、下沿全透明，两端斜率为 0，不会读出一条横线。
-    private static func stops(color: Color, intensity: Double) -> [Gradient.Stop] {
+    /// 侧栏底部入口的收边反向复用同一组色标（#993）。
+    static func stops(color: Color, intensity: Double) -> [Gradient.Stop] {
         var stops: [Gradient.Stop] = []
         stops.reserveCapacity(sampleCount)
         let lastIndex: CGFloat = CGFloat(sampleCount - 1)
