@@ -95,3 +95,33 @@ final class SessionOpenTargetTests: XCTestCase {
         XCTAssertEqual(object["argv"] as? [String], ["/bin/zsh", "-l", "/tmp/x.command"])
     }
 }
+
+final class CodexSharedSetupStatusTests: XCTestCase {
+    func testSharedDesktopMarksEveryStepDone() {
+        let status = CodexSharedSetupStatus.make(desktop: .shared, remoteLogin: false, passwordless: false)
+        XCTAssertTrue(status.allDone, "桌面版已经经本机 SSH 连上，前两步必然已做好")
+    }
+
+    func testStepsWithoutDesktopConnection() {
+        let off = CodexSharedSetupStatus.make(desktop: .separate, remoteLogin: false, passwordless: true)
+        XCTAssertEqual(off.remoteLogin, .todo)
+        XCTAssertEqual(off.passwordlessLogin, .todo, "远程登录没开时免密登录不可能成立")
+        XCTAssertEqual(off.desktopConnected, .todo)
+        XCTAssertFalse(off.desktopNotRunning)
+
+        let ready = CodexSharedSetupStatus.make(desktop: .notRunning, remoteLogin: true, passwordless: true)
+        XCTAssertEqual(ready.remoteLogin, .done)
+        XCTAssertEqual(ready.passwordlessLogin, .done)
+        XCTAssertEqual(ready.desktopConnected, .todo)
+        XCTAssertTrue(ready.desktopNotRunning)
+        XCTAssertFalse(ready.allDone)
+    }
+
+    func testKeySetupCommandIsIdempotentAndNonInteractive() {
+        let command = CodexSharedSetupChecks.keySetupCommand
+        XCTAssertTrue(command.contains("[ -f ~/.ssh/id_ed25519 ] ||"), "已有钥匙时不覆盖")
+        XCTAssertTrue(command.contains("grep -qxF"), "公钥已在 authorized_keys 里时不重复追加")
+        XCTAssertTrue(command.contains("BatchMode=yes"), "按桌面版的方式试登，不弹密码")
+        XCTAssertFalse(command.contains("sudo"))
+    }
+}

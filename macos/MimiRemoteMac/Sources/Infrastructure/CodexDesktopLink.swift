@@ -12,7 +12,6 @@ enum CodexDesktopLink {
         case notRunning
     }
 
-    static let setupGuideURL = URL(string: "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/shared-ssh-app-server.md")!
 
     static func url(threadID: String) -> URL? {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))

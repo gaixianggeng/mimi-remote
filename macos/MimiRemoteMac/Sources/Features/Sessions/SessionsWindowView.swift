@@ -13,6 +13,7 @@ struct SessionsWindowView: View {
     @AppStorage("sessions.codexSharedHintMuted") private var codexSharedHintMuted = false
     /// 桌面版没在运行时无从判断接没接共用服务，沿用上一次看到的结果。
     @AppStorage("sessions.codexDesktopSharedSeen") private var codexDesktopSharedSeen = false
+    @State private var showsSharedSetup = false
 
     /// store 只在测试与预览里注入；默认读本机服务。
     @MainActor
@@ -171,6 +172,9 @@ struct SessionsWindowView: View {
         } message: {
             Text(store.actionError ?? "")
         }
+        .sheet(isPresented: $showsSharedSetup) {
+            CodexSharedSetupView()
+        }
     }
 
     private func candidates(for session: DesktopSession) -> [SessionOpenTarget] {
@@ -246,7 +250,7 @@ struct SessionsWindowView: View {
             switch CodexSharedHint.present() {
             case .cancel: return
             case .showGuide:
-                NSWorkspace.shared.open(CodexDesktopLink.setupGuideURL)
+                showsSharedSetup = true
                 return
             case .openAnyway(let mute):
                 codexSharedHintMuted = mute
@@ -277,6 +281,9 @@ struct SessionsWindowView: View {
                 }
             }
             .disabled(reason != nil)
+        }
+        if session.runtime == .codex, !codexDesktopSharedSeen {
+            Button("让 Codex 桌面版和手机同时使用…") { showsSharedSetup = true }
         }
         Divider()
         Button("复制会话 ID") {
