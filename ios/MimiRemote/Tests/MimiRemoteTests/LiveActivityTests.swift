@@ -164,7 +164,7 @@ final class MimiTurnActivityPresentationTests: XCTestCase {
     }
 }
 
-/// 开关默认开启、跟随消息通知总开关；票据只在 Token 与绑定都没变时复用。
+/// 开关默认关闭（#1004）、跟随消息通知总开关；票据只在 Token 与绑定都没变时复用。
 final class LiveActivityPreferencesTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suiteName: String!
@@ -180,10 +180,12 @@ final class LiveActivityPreferencesTests: XCTestCase {
         super.tearDown()
     }
 
-    func testToggleDefaultsOnAndFollowsMessageNotifications() {
+    func testToggleDefaultsOffAndFollowsMessageNotifications() {
         let cases: [(toggle: Bool?, notifications: Bool?, toggleOn: Bool, effective: Bool)] = [
-            (nil, nil, true, true),
-            (nil, false, true, false),
+            // 从没动过开关（含从默认开启的旧版升级上来）：按关闭处理。
+            (nil, nil, false, false),
+            (nil, true, false, false),
+            (nil, false, false, false),
             (false, true, false, false),
             (true, false, true, false),
             (true, true, true, true),
@@ -210,7 +212,7 @@ final class LiveActivityPreferencesTests: XCTestCase {
             (true, .systemDisabled, "ui.live_activity_system_disabled"),
             (true, .unavailableOnHost, "ui.live_activity_unavailable_on_host"),
             (true, .failed, "ui.live_activity_status_failed"),
-            (true, .pending, "ui.live_activity_status_on"),
+            (true, .pending, "ui.live_activity_status_pending"),
             (true, .ready, "ui.live_activity_status_on"),
             (true, .disablePending, "ui.live_activity_disable_pending"),
             (false, .disablePending, "ui.live_activity_disable_pending"),
@@ -219,6 +221,33 @@ final class LiveActivityPreferencesTests: XCTestCase {
             let key = LiveActivitySettingsCopy.statusKey(notificationsEnabled: testCase.0, availability: testCase.1)
             XCTAssertEqual(key, testCase.2)
             XCTAssertNotEqual(L10n.text(key), key, "缺少文案 \(key)")
+        }
+    }
+
+    /// 启动后、第一次和电脑对账前的状态（#1004）：关着的开关不能显示成「已开启」，
+    /// 开着但没登记好的也不能显示成「正在显示」。
+    func testInitialAvailabilityBeforeFirstSync() {
+        typealias Availability = LiveActivityCoordinator.Availability
+        let cases: [(on: Bool, effective: Bool, backlog: Bool, start: Bool, system: Bool, expected: Availability)] = [
+            (false, false, false, false, true, .off),
+            (false, false, false, true, true, .off),
+            (false, false, true, true, true, .disablePending),
+            (true, false, false, true, true, .requiresNotifications),
+            (true, false, true, false, true, .disablePending),
+            (true, true, false, false, true, .pending),
+            (true, true, true, false, true, .pending),
+            (true, true, false, true, true, .ready),
+            (true, true, false, true, false, .systemDisabled),
+        ]
+        for (index, testCase) in cases.enumerated() {
+            let availability = LiveActivityCoordinator.initialAvailability(
+                isToggleOn: testCase.on,
+                isEffective: testCase.effective,
+                hasRevocationBacklog: testCase.backlog,
+                hasStartTicket: testCase.start,
+                systemAllowsActivities: testCase.system
+            )
+            XCTAssertEqual(availability, testCase.expected, "case \(index)")
         }
     }
 
@@ -329,6 +358,8 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         super.setUp()
         suiteName = "LiveActivityCoordinatorRevocationTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
+        // 这组用例默认是用户手动开启过的设备；从没动过开关的升级场景单独覆盖。
+        LiveActivityPreferences.setToggle(true, in: defaults)
         RevocationStubURLProtocol.reset()
     }
 
@@ -460,6 +491,51 @@ final class LiveActivityCoordinatorRevocationTests: XCTestCase {
         XCTAssertEqual(tickets.loadBacklog()?.tickets ?? [], [])
         XCTAssertEqual(tickets.loadBacklog()?.unregisterProfileID, "mac-a", "Mac 离线：注销留着在关闭期间重试")
         XCTAssertEqual(coordinator.availability, .disablePending)
+    }
+
+    /// 从默认开启的旧版升级、从没动过开关（#1004）：启动时按关闭处理，结束活动并撤销已登记的票据，
+    /// 也要向 agentd 注销，否则那台 Mac 还会继续远程拉起。
+    func testUpgradeWithUntouchedToggleTearsDownRegisteredTickets() async throws {
+        let tickets = seededTicketStore(profileID: "mac-a")
+        defaults.removeObject(forKey: LiveActivityPreferences.key)
+        RevocationStubURLProtocol.status = 200
+        let coordinator = makeCoordinator(
+            ticketStore: tickets,
+            lockScreenStore: try boundLockScreenStore(profileID: "mac-a"),
+            profileExists: { _ in true }
+        )
+        XCTAssertFalse(coordinator.isToggleOn)
+        XCTAssertEqual(coordinator.availability, .off, "对账前就显示关闭")
+        await coordinator.waitForPendingOperations()
+        XCTAssertNil(tickets.load())
+        XCTAssertEqual(Set(RevocationStubURLProtocol.revokedTickets()), ["s", "u"])
+        XCTAssertEqual(tickets.loadBacklog()?.unregisterProfileID, "mac-a", "Mac 离线：注销留着在下次前台重试")
+        XCTAssertEqual(coordinator.availability, .disablePending)
+    }
+
+    /// 开着但还没对账：本机有 push-to-start 票据就是就绪，没有就是「正在开启」，不能一律显示已开启。
+    func testInitialAvailabilityFollowsLocalRecordBeforeFirstSync() async throws {
+        // 系统开关由钩子给定：真实 ActivityKit 授权随模拟器设置变化。
+        let system = LiveActivitySystemHooks(
+            activitiesEnabled: { true }, isActivityAlive: { _ in true }, beginBackgroundExecution: { _ in {} }
+        )
+        let (empty, emptyStore) = try makeBoundLiveActivityCoordinator(
+            defaults: defaults,
+            tickets: LiveActivityTicketStore(keychain: TestKeychainOperations()),
+            session: URLSession(configuration: .ephemeral),
+            system: system
+        )
+        XCTAssertEqual(empty.availability, .pending)
+        let (registered, registeredStore) = try makeBoundLiveActivityCoordinator(
+            defaults: defaults,
+            tickets: seededTicketStore(profileID: "mac-a"),
+            session: URLSession(configuration: .ephemeral),
+            system: system
+        )
+        XCTAssertEqual(registered.availability, .ready)
+        await empty.waitForPendingOperations()
+        await registered.waitForPendingOperations()
+        withExtendedLifetime((emptyStore, registeredStore)) {}
     }
 
     /// 关闭消息通知后进程在清理前被结束：实时活动开关仍开着，启动时也要补做清理；
@@ -1272,6 +1348,10 @@ private func makeBoundLiveActivityCoordinator(
     let store = LockScreenApprovalStore(
         defaults: defaults, ticketStore: PushTicketStore(keychain: keychain), identityStore: identityStore
     )
+    // 实时活动默认关闭（#1004）；这些用例都是用户手动开启过的设备，个别用例会先显式关掉。
+    if defaults.object(forKey: LiveActivityPreferences.key) == nil {
+        LiveActivityPreferences.setToggle(true, in: defaults)
+    }
     let coordinator = LiveActivityCoordinator(
         defaults: defaults,
         ticketStore: tickets,

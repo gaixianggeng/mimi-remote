@@ -63,7 +63,7 @@ struct LockScreenApprovalSettingsView: View {
 
             if LiveActivityCoordinator.isSupportedPlatform {
                 Section {
-                    // 默认开启、跟随消息通知总开关：活动票据只能挂在已登记消息提醒的设备上（#830）。
+                    // 默认关闭（#1004），跟随消息通知总开关：活动票据只能挂在已登记消息提醒的设备上（#830）。
                     Toggle(isOn: liveActivityToggleBinding) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(L10n.text("ui.live_activity_toggle"))

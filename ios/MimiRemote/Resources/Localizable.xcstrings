@@ -739,37 +739,55 @@
       }
     },
     "ui.live_activity_status_on": {
-      "comment": "Settings footnote when Live Activities are on.",
+      "comment": "Settings footnote when Live Activities are on and registered.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Shows running tasks on the Lock Screen and in the Dynamic Island."
+            "value": "Shows running tasks on the Lock Screen and in the Dynamic Island. A brief alert may appear when a task starts."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "任务进行时在锁屏和灵动岛显示进度。"
+            "value": "任务进行时在锁屏和灵动岛显示进度，任务开始时可能弹出一条提示。"
+          }
+        }
+      }
+    },
+    "ui.live_activity_status_pending": {
+      "comment": "Settings footnote when Live Activities are turned on but not registered with the computer yet.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning on. Takes effect once the app connects to the computer that sends notifications."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在开启，连上接收通知的电脑后生效。"
           }
         }
       }
     },
     "ui.live_activity_status_off": {
-      "comment": "Settings footnote when Live Activities are off.",
+      "comment": "Settings footnote when Live Activities are off (the default); describes what turning them on does.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Off. Live Activities won't start or update."
+            "value": "When on, running tasks show on the Lock Screen and in the Dynamic Island, and a brief alert may appear when a task starts."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已关闭，不再启动或更新实时活动。"
+            "value": "开启后，任务进行时在锁屏和灵动岛显示进度，任务开始时可能弹出一条提示。"
           }
         }
       }
