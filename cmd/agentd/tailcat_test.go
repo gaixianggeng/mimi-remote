@@ -50,7 +50,7 @@ func TestPrintTailcatStatusIncludesRelayMode(t *testing.T) {
 }
 
 func TestPrintTailcatStatusIncludesManagedAndSelfHostedMode(t *testing.T) {
-	for mode, label := range map[string]string{"": "免费线路", "self_hosted": "免费线路", "managed": "托管 + 免费线路"} {
+	for mode, label := range map[string]string{"": "免费线路", "self_hosted": "免费线路", "managed": "Mimi 中转 + 免费线路"} {
 		var output bytes.Buffer
 		printTailcatStatus(&output, tailcatCommandStatus{Mode: mode})
 		if !strings.Contains(output.String(), "线路："+label) {
@@ -108,7 +108,7 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 		if err := runTailcatWithWriters([]string{"tailcat", action, "--config", path}, &stdout, &stderr); err != nil {
 			t.Fatal(err)
 		}
-		label := "托管 + 免费线路"
+		label := "Mimi 中转 + 免费线路"
 		if action == "exit-managed" {
 			label = "免费线路"
 		}

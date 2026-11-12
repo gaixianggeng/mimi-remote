@@ -398,7 +398,7 @@ func TestManagedTailcatClaimRequiresManagedMode(t *testing.T) {
 			Endpoint: ticket.Endpoint, IssuedAt: ticket.IssuedAt, ExpiresAt: ticket.ExpiresAt, Signature: ticket.Signature,
 			TailcatClientKey: testManagedMobileKey, ManagedSessionID: fields[0], ManagedGrant: fields[1],
 		})
-		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"tailcat_managed_mode_required"`) || !strings.Contains(response.Body.String(), "请先在电脑上进入托管模式") {
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"tailcat_managed_mode_required"`) || !strings.Contains(response.Body.String(), "请先在电脑的「中转服务」里选择 Mimi 中转") {
 			t.Fatalf("未返回稳定错误：%d %s", response.Code, response.Body.String())
 		}
 	}

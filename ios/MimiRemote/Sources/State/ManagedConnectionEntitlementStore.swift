@@ -79,6 +79,8 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
     }
 
     @Published private(set) var products: [ManagedConnectionProduct] = []
+    /// 和商品同一次加载读到的商店地区，用来解释商品为什么是空的（#1006）。
+    @Published private(set) var storefrontCountryCode: String?
     @Published private(set) var status: Status = .loading {
         didSet { stateRevision &+= 1 }
     }
@@ -162,13 +164,31 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         let generation = productGeneration
         do {
             let loadedProducts = try await storeKit.products()
+            let loadedCountryCode = await storeKit.storefrontCountryCode()
             try Task.checkCancellation()
             guard generation == productGeneration else { return }
             products = loadedProducts
+            storefrontCountryCode = loadedCountryCode
         } catch {
             guard generation == productGeneration else { return }
             throw error
         }
+    }
+
+    enum ProductsUnavailableReason: Equatable {
+        /// 商店或网络暂时拿不到商品，稍后会恢复。
+        case temporarilyUnavailable
+        /// 当前 App Store 地区不销售 Mimi 中转（#1006）。
+        case notSoldInStorefront
+    }
+
+    /// 商品为空时的原因；有商品时为 nil。只有确认地区不在销售范围才算地区限制。
+    var productsUnavailableReason: ProductsUnavailableReason? {
+        guard products.isEmpty else { return nil }
+        if ManagedConnectionSalesRegion.isSold(inStorefront: storefrontCountryCode) == false {
+            return .notSoldInStorefront
+        }
+        return .temporarilyUnavailable
     }
 
     func refreshEntitlement() async {

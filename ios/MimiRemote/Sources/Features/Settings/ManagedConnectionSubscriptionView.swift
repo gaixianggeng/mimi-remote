@@ -737,9 +737,13 @@ struct ManagedConnectionSubscriptionView: View {
     @ViewBuilder
     private var productsSection: some View {
         Section {
-            if entitlementStore.products.isEmpty, !entitlementStore.isBusy {
-                Text(L10n.text("ui.managed_subscription_product_unavailable"))
+            if let reason = entitlementStore.productsUnavailableReason, !entitlementStore.isBusy {
+                Text(L10n.text(Self.productsUnavailableKey(reason)))
                     .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 12)
+                    .settingsRow()
+                    .accessibilityIdentifier("settings.managedSubscription.productsUnavailable")
             } else {
                 ForEach(Self.displayOrder(entitlementStore.products)) { product in
                     Button {
@@ -777,10 +781,28 @@ struct ManagedConnectionSubscriptionView: View {
         } header: {
             sectionHeader(title: L10n.text("ui.managed_subscription_plans"), isFirst: true)
         } footer: {
-            Text(L10n.text("ui.managed_subscription_renews_automatically"))
+            // 拉不到商品时正文已经说明了原因，续费说明和服务器位置都不适用。
+            if entitlementStore.productsUnavailableReason == nil {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L10n.text("ui.managed_subscription_region_notice"))
+                        .accessibilityIdentifier("settings.managedSubscription.regionNotice")
+                    Text(L10n.text("ui.managed_subscription_renews_automatically"))
+                }
                 .settingsSectionFooterStyle()
+            }
         }
         .settingsGroupRowStyle()
+    }
+
+    /// 只在中国大陆 App Store 销售（#1006）：其他地区拉不到商品时说清原因和免费替代，
+    /// 不能显示成「暂时不可用」让人以为出了故障。
+    static func productsUnavailableKey(
+        _ reason: ManagedConnectionEntitlementStore.ProductsUnavailableReason
+    ) -> String {
+        switch reason {
+        case .temporarilyUnavailable: "ui.managed_subscription_product_unavailable"
+        case .notSoldInStorefront: "ui.managed_subscription_region_unavailable"
+        }
     }
 
     private var moreInformationSection: some View {

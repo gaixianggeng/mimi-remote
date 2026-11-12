@@ -70,7 +70,7 @@ func (r *Router) createTailcatManagedPairingLink(
 		return tailcatManagedPairingLinkResponse{}, &tailcatActionFailure{status: status, code: code, err: errors.New(message)}
 	}
 	if r.tailcat == nil || r.managedPairing == nil || strings.TrimSpace(r.installationID) == "" {
-		return fail(http.StatusServiceUnavailable, "tailcat_managed_pairing_unavailable", "Mimi 托管连接尚未初始化")
+		return fail(http.StatusServiceUnavailable, "tailcat_managed_pairing_unavailable", "Mimi 中转尚未初始化")
 	}
 	// 先检查配对前提，避免明知不能配对仍清除用户的自建身份。
 	if !r.cfg.HasEnabledAgent() {
@@ -93,7 +93,7 @@ func (r *Router) createTailcatManagedPairingLink(
 		return fail(http.StatusServiceUnavailable, "tailcat_status_unavailable", "无法读取 Tailcat 设备状态，请稍后重试")
 	}
 	if _, err := r.managedPairing.ConfigureMode(ctx, true); err != nil {
-		return fail(http.StatusServiceUnavailable, "tailcat_managed_mode_failed", "进入托管模式失败，已尝试恢复原状态，请在电脑上检查")
+		return fail(http.StatusServiceUnavailable, "tailcat_managed_mode_failed", "切换到 Mimi 中转失败，已尝试恢复原状态，请在电脑上检查")
 	}
 	status, failure := r.pairTailcat(ctx)
 	if failure != nil {

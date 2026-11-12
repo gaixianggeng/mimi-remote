@@ -26,7 +26,7 @@ extension HostStore {
         if let tailcatNotice { return tailcatNotice }
         if let error = tailcatStatus?.error, !error.isEmpty { return error }
         guard let tailcatStatus, tailcatStatus.enabled else {
-            return "内置连接免费可用。开启后即可扫码；Mimi 中转服务可在手机上开通。"
+            return "内置连接免费可用。开启后即可扫码；Mimi 中转可在手机上开通。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
     }

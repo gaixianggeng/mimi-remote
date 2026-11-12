@@ -112,7 +112,7 @@ extension HostStoreTests {
                 )
             },
             setTailcatManagedMode: { _ in
-                throw AgentClientError.commandFailed("托管模式下不能手动修改中继，请先退出托管模式")
+                throw AgentClientError.commandFailed("正在使用 Mimi 中转，不能手动修改中继；请先在「中转服务」里改回默认或自建中转")
             }
         )
 

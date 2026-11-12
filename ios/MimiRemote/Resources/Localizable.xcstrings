@@ -167,7 +167,7 @@
     "ui.relay_service_active": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is active" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转服务已开通" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转已开通" } }
       }
     },
     "ui.relay_use_free": {
@@ -268,14 +268,14 @@
       "comment": "Row that opens the Managed Connection subscription page from the Devices tab.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Get Mimi Relay" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通Mimi 中转服务" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "开通 Mimi 中转" } }
       }
     },
     "ui.managed_devices_subscribe_notice": {
       "comment": "Shown on the managed route page when there is no active Managed Connection subscription.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "All Mimi features are free. Mimi Relay is an optional relay service for the built-in connection." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。Mimi 中转服务是内置连接可选用的中转服务。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。Mimi 中转是内置连接可选用的中转服务。" } }
       }
     },
     "ui.managed_devices_upgrade_busy": {
@@ -331,7 +331,7 @@
       "comment": "Link in the local-network hint that opens the Managed Connection page.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Learn About Mimi Relay" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "了解Mimi 中转服务" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "了解 Mimi 中转" } }
       }
     },
     "ui.managed_lan_hint_dismiss": {
@@ -345,7 +345,7 @@
       "comment": "Hint on the Devices tab when a computer paired over the local network can't be reached.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Away from your computer’s network? The free built-in Tailcat connection works across networks. Mimi Relay is optional." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不在电脑所在的网络？免费内置连接（Tailcat）也支持跨网络使用，可按需开通 Mimi 中转服务。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "不在电脑所在的网络？免费内置连接（Tailcat）也支持跨网络使用，可按需开通 Mimi 中转。" } }
       }
     },
     "ui.managed_plan_benefit_devices": {
@@ -45255,7 +45255,7 @@
       "comment": "Scan failure: the computer uses managed connection and this device has no entitlement.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "This computer's QR code only supports Mimi Relay. Update Mimi on your computer to connect for free, or turn on Mimi Relay now." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑的二维码只支持 Mimi 中转服务。把电脑上的 Mimi 更新到最新版就能免费连接，也可以现在开通Mimi 中转服务。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑的二维码只支持 Mimi 中转。把电脑上的 Mimi 更新到最新版就能免费连接，也可以现在开通 Mimi 中转。" } }
       }
     },
     "ui.tailcat_pairing_node_unreachable_managed": {
@@ -45721,7 +45721,7 @@
       "comment": "Confirmation message before revoking a managed device.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "This device will lose access right away. To use it again, connect each computer again." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去Mimi 中转服务。再次使用时，需要重新接入每台电脑。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "该设备会立即失去 Mimi 中转。再次使用时，需要重新接入每台电脑。" } }
       }
     },
     "ui.managed_devices_remove_title": {
@@ -45741,7 +45741,7 @@
     "ui.managed_devices_server_invalid": {
       "comment": "Shown when the managed device service returns malformed data.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "The managed device service returned an invalid response." } },
+        "en": { "stringUnit": { "state": "translated", "value": "The Mimi Relay device service returned an invalid response." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "中转设备服务返回了无效响应。" } }
       }
     },
@@ -45756,7 +45756,7 @@
       "comment": "Shown when managed pairing is attempted without an active verified subscription.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Turn on Mimi Relay first." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要先开通 Mimi 中转服务。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "需要先开通 Mimi 中转。" } }
       }
     },
     "ui.managed_devices_this_device": {
@@ -46053,7 +46053,7 @@
       "comment": "Guidance when connecting must start from the Mac.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Open “Pair Device…” on Mac or Windows, choose “Built-in Connection”, and scan the code. Mimi Relay will be enabled automatically if you have access." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在 Mac 或 Windows 上打开「配对设备…」，选择「内置连接」后扫码。已开通 Mimi 中转服务时会自动启用。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在 Mac 或 Windows 上打开「配对设备…」，选择「内置连接」后扫码。已开通 Mimi 中转时会自动启用。" } }
       }
     },
     "ui.managed_devices_connected_hint": {
@@ -46182,6 +46182,20 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "订阅方案暂时不可用。" } }
       }
     },
+    "ui.managed_subscription_region_notice": {
+      "comment": "Footer above the auto-renewal disclosure: Mimi Relay servers are in mainland China (#1006).",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay servers are in mainland China and work best on mainland China networks. In other regions they may be slower, so subscribing isn’t recommended." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转的服务器位于中国大陆，适合在中国大陆网络下使用；在其他地区可能更慢，不建议开通。" } }
+      }
+    },
+    "ui.managed_subscription_region_unavailable": {
+      "comment": "Shown instead of the plans when the App Store region doesn't sell Mimi Relay (#1006).",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay is currently offered only on the China mainland App Store. Its servers are in mainland China and mainly improve connections on mainland networks, so it isn’t recommended in other regions. Local network, Tailscale and the free built-in connection keep working, and all Mimi features stay available." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转目前只在中国大陆 App Store 提供。服务器位于中国大陆，主要改善中国大陆网络下的连接，其他地区不建议使用。局域网、Tailscale 和免费内置连接都可以照常使用，Mimi 全部功能不受影响。" } }
+      }
+    },
     "ui.managed_subscription_renews_automatically": {
       "comment": "Auto-renewal disclosure below the subscription products.",
       "localizations": {
@@ -46199,8 +46213,8 @@
     "ui.managed_subscription_section": {
       "comment": "Settings section title for the managed connection subscription.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Managed connection" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转服务" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Relay" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 中转" } }
       }
     },
     "ui.managed_subscription_server_invalid": {
@@ -46322,7 +46336,7 @@
       "comment": "First-setup explanation for the managed connection product.",
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "All Mimi features are free. Invitation codes and purchases provide access to the same Mimi Relay service for the built-in connection." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。邀请码和购买开通同一项 Mimi 中转服务，用于内置连接。" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Mimi 全部功能免费。邀请码和购买开通的是同一项 Mimi 中转，用于内置连接。" } }
       }
     },
     "ui.managed_connection_route_status": {

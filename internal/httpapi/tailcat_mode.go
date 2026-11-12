@@ -15,10 +15,10 @@ import (
 )
 
 var (
-	errTailcatManagedModeRequired  = errors.New("请先在电脑上进入托管模式，再重新生成二维码并扫码")
-	errTailcatManagedRelayLocked   = errors.New("托管模式下不能手动修改中继，请先退出托管模式")
-	errTailcatManagedGrantRequired = errors.New("免费线路还没有就绪，请稍后重新扫码；也可以在 App 的「Mimi 托管连接」里扫码配对")
-	errTailcatOfficialRelayManaged = errors.New("Mimi 官方中继只给托管连接使用，这里不用填写；留空会使用 Tailcat 默认中继")
+	errTailcatManagedModeRequired  = errors.New("请先在电脑的「中转服务」里选择 Mimi 中转，再重新生成二维码并扫码")
+	errTailcatManagedRelayLocked   = errors.New("正在使用 Mimi 中转，不能手动修改中继；请先在「中转服务」里改回默认或自建中转")
+	errTailcatManagedGrantRequired = errors.New("免费线路还没有就绪，请稍后重新扫码；也可以在 App 的「Mimi 中转」里扫码配对")
+	errTailcatOfficialRelayManaged = errors.New("Mimi 中转的服务器只给开通的设备使用，这里不用填写；留空会使用 Tailcat 默认中继")
 )
 
 // leaveOfficialRelayWhenSelfHosted 修复「不是托管模式却连着官方中继」的旧配置。官方中继开启准入后

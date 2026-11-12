@@ -85,7 +85,7 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(status))
 	case "enter-managed", "exit-managed":
 		if r.managedPairing == nil {
-			writeError(w, http.StatusServiceUnavailable, "Mimi 托管连接尚未初始化")
+			writeError(w, http.StatusServiceUnavailable, "Mimi 中转尚未初始化")
 			return
 		}
 		status, err := r.managedPairing.ConfigureMode(req.Context(), strings.TrimSpace(strings.ToLower(payload.Action)) == "enter-managed")
