@@ -1,6 +1,6 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-11-02
+生效日期 / Effective date：2026-11-12
 
 ## 中文
 
@@ -73,7 +73,7 @@ Mimi 托管连接（Mimi Managed Connection）让不在同一 Wi-Fi 的设备连
 
 #### 锁屏与灵动岛实时活动
 
-实时活动默认开启，并跟随消息通知：消息通知关闭时，实时活动不会启动或更新。也可以在 App 设置里单独关闭。开启后：
+实时活动默认关闭，需要在 App 设置里手动开启；它跟随消息通知，消息通知关闭时实时活动不会启动或更新。开启后：
 
 - 发送给通知服务的只有：系统为实时活动分配的推送 Token（同样换成加密的推送凭据，由电脑保存）、状态枚举（运行中、待你处理、已完成、失败）、运行中与待你处理的会话数、本轮开始时间，以及电脑与会话的匿名短标签。
 - 会话标题、项目名和电脑名从设备上的本机缓存读取，只在本机显示，不发送给通知服务或 Apple。
@@ -176,7 +176,7 @@ Turning the switch off immediately stops automatic local task notifications and 
 
 #### Lock Screen and Dynamic Island Live Activities
 
-Live Activities are on by default and follow message notifications: when message notifications are off, Live Activities neither start nor update. You can also turn them off separately in the app. When enabled:
+Live Activities are off by default; you can turn them on in the app. They follow message notifications: when message notifications are off, Live Activities neither start nor update. When enabled:
 
 - What the notification service receives: the push tokens the system assigns for Live Activities (also exchanged for encrypted push credentials that your computer stores), the status as a fixed enum (running, needs you, completed, or failed), the number of running sessions and of sessions waiting for you, the start time of the current round, and anonymous short tags for the computer and the session.
 - Session titles, project names, and computer names are read from a cache on your device and shown only there. They are not sent to the notification service or to Apple.

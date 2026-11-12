@@ -3,13 +3,17 @@ import Security
 
 /// 锁屏 / 灵动岛实时活动的开关（#830）。
 ///
-/// 默认开启并跟随「消息通知」总开关：活动票据只能挂在已登记消息提醒的设备上，
-/// 消息通知关闭时活动也不再启动或更新；单独关掉本开关不影响消息通知。
+/// 默认关闭（#1004）：远程拉起活动时系统必定弹一条「任务已开始」横幅，卡片又会在任务进行中
+/// 一直挂在锁屏上，和「只在需要处理、完成或出错时提醒」的消息通知节奏冲突，所以改成用户主动开启。
+/// 键名不变：用户手动打开过的保持开启，从没动过的升级后按关闭处理，启动时撤销已登记的票据。
+///
+/// 跟随「消息通知」总开关：活动票据只能挂在已登记消息提醒的设备上，消息通知关闭时活动也不再
+/// 启动或更新；单独关掉本开关不影响消息通知。
 enum LiveActivityPreferences {
     static let key = "liveActivity.enabled.v1"
 
     static func isToggleOn(in defaults: UserDefaults = .standard) -> Bool {
-        (defaults.object(forKey: key) as? Bool) ?? true
+        (defaults.object(forKey: key) as? Bool) ?? false
     }
 
     static func setToggle(_ enabled: Bool, in defaults: UserDefaults = .standard) {
@@ -231,7 +235,9 @@ enum LiveActivitySettingsCopy {
         case .systemDisabled: return "ui.live_activity_system_disabled"
         case .unavailableOnHost: return "ui.live_activity_unavailable_on_host"
         case .failed: return "ui.live_activity_status_failed"
-        case .pending, .ready: return "ui.live_activity_status_on"
+        // 还没登记好时不能说「已在显示」：例如当前连的不是接收通知的那台电脑（#1004）。
+        case .pending: return "ui.live_activity_status_pending"
+        case .ready: return "ui.live_activity_status_on"
         case .disablePending: return "ui.live_activity_disable_pending"
         }
     }
