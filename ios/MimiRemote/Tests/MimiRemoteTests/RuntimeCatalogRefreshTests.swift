@@ -192,6 +192,30 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         XCTAssertEqual(store.appServerModelOptions.map(\.model), ["opus"])
     }
 
+    func testModelMenuPreservesPendingSendCatalogAfterNegativeCacheExpires() async {
+        let client = MockSessionStoreClient(projects: [], sessions: [])
+        client.modelOptionsByRuntime["claude"] = [Self.claudeOption]
+        let targetedGate = PreparedConnectionGate()
+        client.targetedModelOptionsGate = targetedGate
+        let store = makeStore(client: client)
+        let hostScope = store.appStore.activeHostScope
+        // 失败的负缓存已过期，发送先发起补拉；用户在响应回来前打开模型菜单。
+        store.turnModelRefreshByRuntime["claude"] = (hostScope, Date().addingTimeInterval(-301))
+        let send = Task {
+            await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: hostScope)
+        }
+        await targetedGate.waitUntilStarted()
+        let menu = Task { await store.refetchMissingModelCatalogs(runtimeProviders: ["claude"]) }
+        for _ in 0..<5 { await Task.yield() }
+        await targetedGate.release()
+        await send.value
+        await menu.value
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "菜单应复用发送的在途请求")
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["opus"], "成功目录不能因打开菜单被当成过期结果丢掉")
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+    }
+
     func testDefaultModelCatalogWaitsForInFlightAggregateRefresh() async {
         let client = MockSessionStoreClient(
             projects: [], sessions: [],

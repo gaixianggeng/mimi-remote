@@ -33,7 +33,11 @@ extension SessionStore {
     private func refetchMissingModelCatalogs(runtimeProviders: [String], hostScope: HostScope) async {
         for provider in runtimeProviders where modelCatalogIsMissing(runtimeProvider: provider) {
             guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
-            turnModelRefreshByRuntime.removeValue(forKey: Self.normalizedRuntimeProvider(provider))
+            let normalizedProvider = Self.normalizedRuntimeProvider(provider)
+            // 复用在途请求时必须保留它的刷新快照，否则成功响应会被误判为过期。
+            if turnModelTasksByRuntime[normalizedProvider]?.hostScope != hostScope {
+                turnModelRefreshByRuntime.removeValue(forKey: normalizedProvider)
+            }
             await prepareTurnModelOptions(runtimeProvider: provider, hostScope: hostScope)
         }
     }
