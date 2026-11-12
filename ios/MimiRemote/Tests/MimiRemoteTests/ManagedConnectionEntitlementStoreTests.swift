@@ -997,6 +997,82 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertFalse(store.isBusy)
     }
 
+    // #1006：Mimi 中转只在中国大陆 App Store 销售。其他地区拉不到商品要说明原因，不能显示成临时故障。
+    func testEmptyCatalogOutsideSalesStorefrontIsExplainedAsRegion() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setStorefrontCountryCode("USA")
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await store.load()
+
+        XCTAssertEqual(store.storefrontCountryCode, "USA")
+        XCTAssertEqual(store.productsUnavailableReason, .notSoldInStorefront)
+        XCTAssertNotEqual(
+            L10n.text(ManagedConnectionSubscriptionView.productsUnavailableKey(.notSoldInStorefront)),
+            L10n.text(ManagedConnectionSubscriptionView.productsUnavailableKey(.temporarilyUnavailable))
+        )
+    }
+
+    func testEmptyCatalogInSalesStorefrontOrUnknownRegionStaysTemporary() async {
+        for countryCode in ["CHN", nil] as [String?] {
+            let storeKit = StoreKitFake()
+            await storeKit.setStorefrontCountryCode(countryCode)
+            let store = ManagedConnectionEntitlementStore(
+                storeKit: storeKit,
+                entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+            )
+            await store.load()
+
+            XCTAssertEqual(store.productsUnavailableReason, .temporarilyUnavailable, "\(String(describing: countryCode))")
+        }
+    }
+
+    func testLoadedCatalogHasNoUnavailableReasonInAnyRegion() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setProducts([Self.oldProduct])
+        await storeKit.setStorefrontCountryCode("USA")
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await store.load()
+
+        XCTAssertEqual(store.products, [Self.oldProduct])
+        XCTAssertNil(store.productsUnavailableReason)
+    }
+
+    func testStorefrontChangeToSalesRegionClearsRegionReason() async {
+        let storeKit = StoreKitFake()
+        await storeKit.setStorefrontCountryCode("JPN")
+        let store = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: EntitlementAPIFake(result: .success(Self.grant))
+        )
+        await store.load()
+        XCTAssertEqual(store.productsUnavailableReason, .notSoldInStorefront)
+
+        let observer = Task { await store.observeStorefrontUpdates() }
+        await storeKit.setProducts([Self.updatedProduct])
+        await storeKit.setStorefrontCountryCode("CHN")
+        await storeKit.sendStorefrontUpdate()
+        await waitUntil { store.products == [Self.updatedProduct] }
+        observer.cancel()
+        await observer.value
+
+        XCTAssertEqual(store.storefrontCountryCode, "CHN")
+        XCTAssertNil(store.productsUnavailableReason)
+    }
+
+    func testSalesRegionMatchesMainlandStorefrontOnly() {
+        XCTAssertEqual(ManagedConnectionSalesRegion.isSold(inStorefront: "CHN"), true)
+        XCTAssertEqual(ManagedConnectionSalesRegion.isSold(inStorefront: "chn"), true)
+        XCTAssertEqual(ManagedConnectionSalesRegion.isSold(inStorefront: "HKG"), false)
+        XCTAssertNil(ManagedConnectionSalesRegion.isSold(inStorefront: nil))
+        XCTAssertNil(ManagedConnectionSalesRegion.isSold(inStorefront: ""))
+    }
+
     func testProductRefreshFailureDoesNotClearEntitlementOrCatalog() async {
         let storeKit = StoreKitFake()
         await storeKit.setProducts([Self.oldProduct])
@@ -1627,6 +1703,7 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     private var purchaseError: Error?
     private(set) var productsCount = 0
     private var productValues: [ManagedConnectionProduct] = []
+    private var countryCode: String?
     private var shouldPausePurchase = false
     private var purchaseContinuation: CheckedContinuation<Void, Never>?
     private var shouldPauseSync = false
@@ -1646,6 +1723,8 @@ private actor StoreKitFake: ManagedConnectionStoreKitClient {
     }
 
     func setProducts(_ products: [ManagedConnectionProduct]) { productValues = products }
+    func setStorefrontCountryCode(_ code: String?) { countryCode = code }
+    func storefrontCountryCode() async -> String? { countryCode }
     func pausePurchase() { shouldPausePurchase = true }
     func resumePurchase() { purchaseContinuation?.resume(); purchaseContinuation = nil }
     func pauseSync() { shouldPauseSync = true }

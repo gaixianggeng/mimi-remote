@@ -58,7 +58,7 @@ struct AgentCommandClient: Sendable {
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
     }
     var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
-        throw AgentClientError.commandFailed("当前电脑端不支持 Mimi 中转服务，请更新后重试。")
+        throw AgentClientError.commandFailed("当前电脑端不支持 Mimi 中转，请更新后重试。")
     }
     var configureDeepSeek: @Sendable (
         _ action: DeepSeekConfigurationAction,

@@ -196,7 +196,7 @@ func printTailcatStatus(w io.Writer, status tailcatCommandStatus) {
 	fmt.Fprintf(w, "Tailcat 实验：%s\n", state)
 	mode := "免费线路"
 	if status.Mode == config.TailcatModeManaged {
-		mode = "托管 + 免费线路"
+		mode = "Mimi 中转 + 免费线路"
 	}
 	fmt.Fprintf(w, "线路：%s\n", mode)
 	if status.Version != "" {

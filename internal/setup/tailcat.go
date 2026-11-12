@@ -68,7 +68,7 @@ func ConfigureTailcatDERPMap(configPath, rawURL string) (TailcatDERPConfiguratio
 		}
 	}
 	if mode == config.TailcatModeManaged {
-		return TailcatDERPConfigurationResult{}, fmt.Errorf("托管模式下不能手动修改中继，请先退出托管模式")
+		return TailcatDERPConfigurationResult{}, fmt.Errorf("正在使用 Mimi 中转，不能手动修改中继；请先在「中转服务」里改回默认或自建中转")
 	}
 	previous := ""
 	if raw := tailcatDocument["derp_map_url"]; len(raw) > 0 {

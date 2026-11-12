@@ -133,7 +133,7 @@ func (e *managedCloudError) Error() string {
 	if strings.TrimSpace(e.Code) != "" {
 		return e.Code
 	}
-	return fmt.Sprintf("托管连接服务返回 HTTP %d", e.StatusCode)
+	return fmt.Sprintf("Mimi 中转服务返回 HTTP %d", e.StatusCode)
 }
 
 func newDefaultManagedPairingController(
@@ -163,10 +163,10 @@ func newManagedPairingController(options managedPairingControllerOptions) (*mana
 		return nil, err
 	}
 	if strings.TrimSpace(options.StatePath) == "" || options.Tailcat == nil {
-		return nil, errors.New("托管连接缺少本地状态路径或 Tailcat 管理器")
+		return nil, errors.New("Mimi 中转缺少本地状态路径或 Tailcat 管理器")
 	}
 	if parsed, err := uuid.Parse(strings.TrimSpace(options.InstallationID)); err != nil || parsed.Version() != 4 {
-		return nil, errors.New("托管连接缺少有效的 Mac 安装身份")
+		return nil, errors.New("Mimi 中转缺少有效的 Mac 安装身份")
 	}
 	loopContext, cancel := context.WithCancel(context.Background())
 	controller := &managedPairingController{
@@ -208,7 +208,7 @@ func newManagedPairingController(options managedPairingControllerOptions) (*mana
 func parseManagedConnectionBaseURL(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("托管连接服务地址无效")
+		return nil, errors.New("Mimi 中转服务地址无效")
 	}
 	if !strings.EqualFold(parsed.Scheme, "https") {
 		host, _, splitErr := net.SplitHostPort(parsed.Host)
@@ -217,7 +217,7 @@ func parseManagedConnectionBaseURL(raw string) (*url.URL, error) {
 		}
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		if !strings.EqualFold(parsed.Scheme, "http") || !(strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()) {
-			return nil, errors.New("托管连接服务只允许 HTTPS 或本机测试地址")
+			return nil, errors.New("Mimi 中转服务只允许 HTTPS 或本机测试地址")
 		}
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
@@ -322,7 +322,7 @@ func (c *managedPairingController) Complete(
 	mobilePublicKey string,
 ) (tailcatStatus, error) {
 	if c == nil {
-		return tailcatStatus{}, errors.New("Mimi 托管连接尚未初始化")
+		return tailcatStatus{}, errors.New("Mimi 中转尚未初始化")
 	}
 	parsedSession, err := uuid.Parse(strings.TrimSpace(sessionID))
 	if err != nil || parsedSession.Version() != 4 {
@@ -387,7 +387,7 @@ func (c *managedPairingController) Complete(
 	if parseErr != nil || parsedHostID.Version() != 4 {
 		return tailcatStatus{}, c.invalidateAmbiguousCompletionLocked(
 			ctx,
-			errors.New("托管连接服务返回了无效主机身份"),
+			errors.New("Mimi 中转服务返回了无效主机身份"),
 		)
 	}
 	hostID := parsedHostID.String()
@@ -492,14 +492,14 @@ func (c *managedPairingController) refreshPolicyLocked(ctx context.Context) (tai
 		return c.invalidatePolicyLocked(ctx, err)
 	}
 	if policy.HostID != c.state.HostID || policy.PolicyVersion == 0 {
-		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略身份或版本无效"))
+		return c.invalidatePolicyLocked(ctx, errors.New("Mimi 中转策略身份或版本无效"))
 	}
 	if c.state.PolicyVersion != 0 && policy.PolicyVersion < c.state.PolicyVersion {
-		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略版本发生回退"))
+		return c.invalidatePolicyLocked(ctx, errors.New("Mimi 中转策略版本发生回退"))
 	}
 	validUntil, parseErr := time.Parse(time.RFC3339Nano, policy.ValidUntil)
 	if parseErr != nil || !validUntil.After(c.now()) {
-		return c.invalidatePolicyLocked(ctx, errors.New("托管连接策略已经失效"))
+		return c.invalidatePolicyLocked(ctx, errors.New("Mimi 中转策略已经失效"))
 	}
 	keys, validationErr := normalizeManagedPolicyKeys(policy.AllowedMobileKeys)
 	if validationErr != nil {
@@ -656,7 +656,7 @@ func (c *managedPairingController) saveStateLocked(next managedPairingState) err
 		next.Version = 1
 	}
 	if err := c.writeState(c.statePath, next); err != nil {
-		return fmt.Errorf("保存托管连接策略：%w", err)
+		return fmt.Errorf("保存Mimi 中转策略：%w", err)
 	}
 	c.state = next
 	c.stateLoadError = nil
@@ -720,36 +720,36 @@ func loadManagedPairingState(path string) (managedPairingState, error) {
 		return managedPairingState{Version: 1}, nil
 	}
 	if err != nil {
-		return managedPairingState{}, fmt.Errorf("读取托管连接策略：%w", err)
+		return managedPairingState{}, fmt.Errorf("读取Mimi 中转策略：%w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return managedPairingState{}, errors.New("托管连接策略必须是普通文件")
+		return managedPairingState{}, errors.New("Mimi 中转策略必须是普通文件")
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		return managedPairingState{}, errors.New("托管连接策略权限必须为 0600")
+		return managedPairingState{}, errors.New("Mimi 中转策略权限必须为 0600")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return managedPairingState{}, fmt.Errorf("读取托管连接策略：%w", err)
+		return managedPairingState{}, fmt.Errorf("读取Mimi 中转策略：%w", err)
 	}
 	var state managedPairingState
 	if err := json.Unmarshal(data, &state); err != nil || state.Version != 1 {
-		return managedPairingState{}, errors.New("托管连接策略格式损坏")
+		return managedPairingState{}, errors.New("Mimi 中转策略格式损坏")
 	}
 	if state.HostDeviceToken != "" {
 		if _, err := decodeManagedDeviceToken(state.HostDeviceToken); err != nil {
-			return managedPairingState{}, errors.New("托管连接设备凭证损坏")
+			return managedPairingState{}, errors.New("Mimi 中转设备凭证损坏")
 		}
 	}
 	if state.HostID != "" {
 		parsedHostID, err := uuid.Parse(state.HostID)
 		if err != nil || parsedHostID.Version() != 4 || state.HostDeviceToken == "" ||
 			!validManagedTailcatPublicKey(state.MacTailcatPublicKey) {
-			return managedPairingState{}, errors.New("托管连接主机身份损坏")
+			return managedPairingState{}, errors.New("Mimi 中转主机身份损坏")
 		}
 	} else if state.MacTailcatPublicKey != "" || state.PolicyVersion != 0 || state.PolicyFetchedAt != "" ||
 		state.PolicyValidUntil != "" || len(state.AllowedMobileKeys) != 0 || state.AuthorizationInvalid {
-		return managedPairingState{}, errors.New("托管连接策略缺少主机身份")
+		return managedPairingState{}, errors.New("Mimi 中转策略缺少主机身份")
 	}
 	if _, err := normalizeManagedPolicyKeys(state.AllowedMobileKeys); err != nil {
 		return managedPairingState{}, err
@@ -812,17 +812,17 @@ func decodeManagedDeviceToken(value string) ([]byte, error) {
 
 func normalizeManagedPolicyKeys(rawKeys []string) ([]string, error) {
 	if len(rawKeys) > 5 {
-		return nil, errors.New("托管连接策略超过移动设备上限")
+		return nil, errors.New("Mimi 中转策略超过移动设备上限")
 	}
 	seen := make(map[string]struct{}, len(rawKeys))
 	keys := make([]string, 0, len(rawKeys))
 	for _, rawKey := range rawKeys {
 		key := strings.TrimSpace(rawKey)
 		if !validManagedTailcatPublicKey(key) {
-			return nil, errors.New("托管连接策略包含无效 Tailcat 公钥")
+			return nil, errors.New("Mimi 中转策略包含无效 Tailcat 公钥")
 		}
 		if _, exists := seen[key]; exists {
-			return nil, errors.New("托管连接策略包含重复 Tailcat 公钥")
+			return nil, errors.New("Mimi 中转策略包含重复 Tailcat 公钥")
 		}
 		seen[key] = struct{}{}
 		keys = append(keys, key)

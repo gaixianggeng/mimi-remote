@@ -586,6 +586,7 @@ private actor MIM260StoreKitFake: ManagedConnectionStoreKitClient {
     nonisolated func storefrontUpdates() -> AsyncStream<Void> {
         AsyncStream { $0.finish() }
     }
+    func storefrontCountryCode() async -> String? { nil }
     func signedAppTransaction() async throws -> String { "signed-app-transaction" }
     func finish(transactionID: UInt64) async {}
     func syncPurchases() async throws {}
