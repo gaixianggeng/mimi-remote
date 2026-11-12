@@ -157,6 +157,22 @@ final class FloatingSidebarHeaderSnapshotTests: SimplifiedChineseSnapshotTestCas
         return pixels
     }
 
+    /// #993：分组标题右侧比左侧多留约 8pt，细线只补右端，补到与左侧对称为止。
+    func testSectionHeaderDividerExtendsTrailingEdgeToMatchLeadingGap() {
+        let list = CGRect(x: 12, y: 0, width: 300, height: 600)
+        let header = CGRect(x: 32, y: 150, width: 252, height: 34)
+        XCTAssertEqual(
+            WorkbenchSidebarSectionHeader.dividerTrailingExtension(headerFrame: header, listFrame: list),
+            8
+        )
+        // 已经对称、右侧更窄或几何未知时都不补。
+        let symmetric = CGRect(x: 32, y: 150, width: 260, height: 34)
+        XCTAssertEqual(WorkbenchSidebarSectionHeader.dividerTrailingExtension(headerFrame: symmetric, listFrame: list), 0)
+        let wider = CGRect(x: 32, y: 150, width: 270, height: 34)
+        XCTAssertEqual(WorkbenchSidebarSectionHeader.dividerTrailingExtension(headerFrame: wider, listFrame: list), 0)
+        XCTAssertEqual(WorkbenchSidebarSectionHeader.dividerTrailingExtension(headerFrame: nil, listFrame: list), 0)
+    }
+
     private var sidebarList: some View {
         List {
             Section {

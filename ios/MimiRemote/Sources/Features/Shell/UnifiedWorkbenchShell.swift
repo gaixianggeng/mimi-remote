@@ -799,6 +799,7 @@ struct UnifiedWorkbenchShell: View {
         .scrollContentBackground(.hidden)
         // 浮动侧栏的拖动窄条只压行外边距，右侧与左侧一样不留滚动内容边距（#993）。
         .contentMargins(.trailing, 0, for: .scrollContent)
+        .workbenchSidebarListGlobalFrameReader()
         .environment(\.defaultMinListRowHeight, 40)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
