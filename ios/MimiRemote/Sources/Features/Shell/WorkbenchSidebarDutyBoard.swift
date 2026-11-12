@@ -42,6 +42,9 @@ struct WorkbenchSidebarSectionHeader: View {
     let kind: SessionSidebarSectionKind
     let showsDivider: Bool
 
+    @Environment(\.workbenchSidebarListGlobalFrame) private var listFrame
+    @State private var headerFrame: CGRect?
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
@@ -50,6 +53,10 @@ struct WorkbenchSidebarSectionHeader: View {
                 Rectangle()
                     .fill(tokens.border)
                     .frame(height: 1 / max(displayScale, 1))
+                    .padding(
+                        .trailing,
+                        -Self.dividerTrailingExtension(headerFrame: headerFrame, listFrame: listFrame)
+                    )
                     .accessibilityHidden(true)
             }
             Text("\(title) \(count)")
@@ -58,6 +65,54 @@ struct WorkbenchSidebarSectionHeader: View {
                 .textCase(nil)
         }
         .padding(.top, showsDivider ? 6 : 0)
+        .onGeometryChange(for: CGRect?.self) { proxy in
+            showsDivider ? proxy.frame(in: .global) : nil
+        } action: { frame in
+            headerFrame = frame
+        }
+    }
+
+    /// SidebarListStyle 的分组标题右侧比左侧多留一截（实测约 8pt，疑为可折叠分组的尾部预留），
+    /// 对标题设 `listRowInsets` 不生效，标题里也拿不到 `.scrollView` 坐标。这里用列表与标题的
+    /// 全局边框量出左右实际距离，只把细线右端补齐到与左侧对称；不写死系统预留值，文字位置不变（#993）。
+    static func dividerTrailingExtension(headerFrame: CGRect?, listFrame: CGRect?) -> CGFloat {
+        guard let headerFrame, let listFrame else { return 0 }
+        let leadingGap = headerFrame.minX - listFrame.minX
+        let trailingGap = listFrame.maxX - headerFrame.maxX
+        return max(0, (trailingGap - leadingGap).rounded())
+    }
+}
+
+private struct WorkbenchSidebarListGlobalFrameKey: EnvironmentKey {
+    static let defaultValue: CGRect? = nil
+}
+
+extension EnvironmentValues {
+    /// 侧栏 List 的全局边框，供分组标题对齐细线；标题位于 List 单元内，量不到滚动视图坐标。
+    var workbenchSidebarListGlobalFrame: CGRect? {
+        get { self[WorkbenchSidebarListGlobalFrameKey.self] }
+        set { self[WorkbenchSidebarListGlobalFrameKey.self] = newValue }
+    }
+}
+
+private struct WorkbenchSidebarListGlobalFrameReader: ViewModifier {
+    @State private var frame: CGRect?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.workbenchSidebarListGlobalFrame, frame)
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)
+            } action: { newFrame in
+                frame = newFrame
+            }
+    }
+}
+
+extension View {
+    /// 挂在侧栏 List 上，让分组标题的细线能按列表实际左右边缘对称（#993）。
+    func workbenchSidebarListGlobalFrameReader() -> some View {
+        modifier(WorkbenchSidebarListGlobalFrameReader())
     }
 }
 
