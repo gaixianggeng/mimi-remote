@@ -138,10 +138,81 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "发送路径沿用负缓存，不重复请求")
         XCTAssertTrue(store.modelCatalogIsMissing(runtimeProvider: "claude"))
 
-        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        await store.refreshPickerModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
 
         XCTAssertEqual(Set(store.appServerModelOptions.map(\.model)), ["gpt-live", "opus"], "默认模型页不能停在「型号未确认」")
         XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "codex"))
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+    }
+
+    func testComposerRefetchesMissingRuntimeAfterFailedStartupRefresh() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.notConnectedToInternet),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        // 冷启动或回前台时，工作区页的首次聚合刷新早于 Tailcat 隧道就绪：失败也给所有 Runtime
+        // 记下 5 分钟负缓存（#1000）。
+        await store.refreshAppServerModelOptions()
+        client.modelOptionsError = nil
+        client.modelOptionsByRuntime["claude"] = [Self.claudeOption]
+
+        // 连接恢复后打开 Claude 会话：输入框准备时补拉，不能等用户手动「刷新模型列表」。
+        await store.refreshPickerModelCatalog(runtimeProviders: ["claude"], force: false)
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "启动时那次失败不能挡住输入框补拉")
+        XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+
+        await store.refetchMissingModelCatalogs(runtimeProviders: ["claude"])
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "目录已补齐后打开菜单不重复请求")
+    }
+
+    func testModelMenuRefetchesAfterComposerPrepareAlsoFailed() async {
+        let client = MockSessionStoreClient(
+            projects: [], sessions: [],
+            modelOptionsError: URLError(.notConnectedToInternet),
+            runtimeChannelAvailability: ["codex": true, "claude": true]
+        )
+        let store = makeStore(client: client)
+        // 恢复到 Claude 会话时输入框准备得太早，聚合刷新和定向补拉都失败了。
+        await store.refreshPickerModelCatalog(runtimeProviders: ["claude"], force: false)
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"])
+        XCTAssertTrue(store.modelCatalogIsMissing(runtimeProvider: "claude"))
+
+        client.modelOptionsError = nil
+        client.modelOptionsByRuntime["claude"] = [Self.claudeOption]
+        // 发送路径仍沿用负缓存。
+        await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: store.appStore.activeHostScope)
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "发送路径不越过负缓存")
+
+        // 连接就绪后用户打开模型菜单：越过负缓存补拉，菜单就地换成真实目录。
+        await store.refetchMissingModelCatalogs(runtimeProviders: ["claude"])
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude", "claude"])
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["opus"])
+    }
+
+    func testModelMenuPreservesPendingSendCatalogAfterNegativeCacheExpires() async {
+        let client = MockSessionStoreClient(projects: [], sessions: [])
+        client.modelOptionsByRuntime["claude"] = [Self.claudeOption]
+        let targetedGate = PreparedConnectionGate()
+        client.targetedModelOptionsGate = targetedGate
+        let store = makeStore(client: client)
+        let hostScope = store.appStore.activeHostScope
+        // 失败的负缓存已过期，发送先发起补拉；用户在响应回来前打开模型菜单。
+        store.turnModelRefreshByRuntime["claude"] = (hostScope, Date().addingTimeInterval(-301))
+        let send = Task {
+            await store.prepareTurnModelOptions(runtimeProvider: "claude", hostScope: hostScope)
+        }
+        await targetedGate.waitUntilStarted()
+        let menu = Task { await store.refetchMissingModelCatalogs(runtimeProviders: ["claude"]) }
+        for _ in 0..<5 { await Task.yield() }
+        await targetedGate.release()
+        await send.value
+        await menu.value
+
+        XCTAssertEqual(client.targetedModelOptionsRequests, ["claude"], "菜单应复用发送的在途请求")
+        XCTAssertEqual(store.appServerModelOptions.map(\.model), ["opus"], "成功目录不能因打开菜单被当成过期结果丢掉")
         XCTAssertFalse(store.modelCatalogIsMissing(runtimeProvider: "claude"))
     }
 
@@ -162,7 +233,7 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
         let aggregate = Task { await store.refreshAppServerModelOptions() }
         await aggregateGate.waitUntilStarted()
         let page = Task {
-            await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+            await store.refreshPickerModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
         }
         // 让页面任务先跑到第一个挂起点（修复前是定向请求，修复后是等聚合刷新收尾），再放行聚合失败。
         for _ in 0..<5 { await Task.yield() }
@@ -185,10 +256,10 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
             runtimeChannelAvailability: ["codex": true, "claude": true]
         )
         let store = makeStore(client: client)
-        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        await store.refreshPickerModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
         let aggregateCalls = client.modelOptionsCallCount
 
-        await store.refreshDefaultModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
+        await store.refreshPickerModelCatalog(runtimeProviders: ["codex", "claude"], force: false)
 
         XCTAssertTrue(client.targetedModelOptionsRequests.isEmpty, "目录齐全时不定向补拉")
         XCTAssertEqual(client.modelOptionsCallCount, aggregateCalls, "非强制刷新沿用聚合目录缓存")

@@ -169,18 +169,14 @@ extension ComposerView {
         }
     }
 
-    /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录时，
-    /// 菜单不能先落到内置兜底、强制刷新后才换成电脑端的真实目录（#778）。
+    /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录（#778），或启动时
+    /// 那次刷新赶在连接就绪前失败（#1000），菜单都不能停在内置兜底、等手动刷新才换成真实目录。
     func refreshModelOptionsForComposerRuntime(force: Bool = false) async {
-        await sessionStore.refreshAppServerModelOptions(force: force)
-        await ensureModelOptionsForComposerRuntime()
+        await sessionStore.refreshPickerModelCatalog(runtimeProviders: [composerRuntimeProvider], force: force)
     }
 
     func ensureModelOptionsForComposerRuntime() async {
-        await sessionStore.prepareTurnModelOptions(
-            runtimeProvider: composerRuntimeProvider,
-            hostScope: sessionStore.appStore.activeHostScope
-        )
+        await sessionStore.refetchMissingModelCatalogs(runtimeProviders: [composerRuntimeProvider])
     }
 
     var modelPickerPresentationDetents: Set<PresentationDetent> {

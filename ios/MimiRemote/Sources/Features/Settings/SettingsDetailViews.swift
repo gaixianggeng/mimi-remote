@@ -1289,7 +1289,7 @@ struct DefaultModelSettingsView: View {
         let generation = catalogLoadGeneration
         isLoadingCatalog = true
         didLoadCatalog = true
-        await sessionStore.refreshDefaultModelCatalog(
+        await sessionStore.refreshPickerModelCatalog(
             runtimeProviders: displayedRuntimes.map(\.rawValue),
             force: force
         )

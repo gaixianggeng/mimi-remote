@@ -440,10 +440,13 @@ struct ComposerView: View {
         clampModelSelectionToSelectedSessionRuntime()
         restoreComposerPermissionSelection(for: currentComposerDraftScope)
         voiceInput.prewarm()
-        await refreshModelOptionsForComposerRuntime()
+        // 模型目录会先等在途的聚合刷新收尾（#1000）；连接还没就绪时那次刷新可能要等到超时，
+        // 不能让技能、权限档位和斜杠命令排在它后面。
+        async let modelCatalog: Void = refreshModelOptionsForComposerRuntime()
         await sessionStore.refreshCapabilities()
         await refreshPermissionProfilesForCurrentCWD()
         await refreshClaudeSlashCommandCatalog()
+        await modelCatalog
     }
 
     @MainActor
