@@ -189,6 +189,133 @@ final class ConversationTurnHintTests: XCTestCase {
         XCTAssertEqual(cardMessage.activityPayload?.turnHint?.question, "Open a PR?")
     }
 
+    func testNextStepFollowsFinalProcessGroupsAndFileChanges() throws {
+        let hint = turnHintMessage(itemID: "hint", turnID: "turn")
+        let command = ConversationMessage(turnID: "turn", role: .system, kind: .commandSummary, content: "检查")
+        let diff = ConversationMessage(turnID: "turn", role: .system, kind: .fileChangeSummary, content: "修改")
+        let final = ConversationMessage(turnID: "turn", role: .assistant, content: "最终总结")
+        let nextUser = ConversationMessage(turnID: "next", role: .user, content: "继续")
+
+        for messages in [[hint, command, diff, final], [command, diff, hint, final], [hint, final, diff]] {
+            for detailed in [false, true] {
+                let rows = ConversationTimelineItemBuilder.items(
+                    from: messages + [nextUser], provider: .claude, showsDetailedTranscript: detailed
+                )
+                XCTAssertEqual(Array(rows.suffix(2)), [.message(hint), .message(nextUser)])
+                guard case .fileChanges(let files) = rows[rows.count - 3] else {
+                    return XCTFail("文件入口应排在下一步卡片之前")
+                }
+                XCTAssertEqual(files.messageIDs, [diff.id])
+                XCTAssertTrue(rows.dropLast(3).contains(.message(final)))
+                XCTAssertTrue(rows.dropLast(3).contains { row in
+                    if case .processGroup(let group) = row { return group.messages.contains(diff) }
+                    return false
+                })
+                XCTAssertEqual(rows.filter { $0 == .message(hint) }.count, 1)
+            }
+        }
+    }
+
+    func testNextStepWithoutFinalStillFollowsFileChangesAtTurnBoundary() {
+        let hint = turnHintMessage(itemID: "hint", turnID: "turn")
+        let diff = ConversationMessage(turnID: "turn", role: .system, kind: .fileChangeSummary, content: "修改")
+        let next = ConversationMessage(turnID: "next", role: .assistant, content: "下一轮")
+
+        for messages in [[diff, hint], [hint, diff]] {
+            let rows = ConversationTimelineItemBuilder.items(from: messages + [next])
+            XCTAssertEqual(Array(rows.suffix(3)), [
+                .fileChanges(ConversationFileChanges(messageIDs: [diff.id])), .message(hint), .message(next)
+            ])
+        }
+    }
+
+    func testNextStepsKeepTheirOwnTurnAndOriginalActionEligibility() throws {
+        let first = turnHintMessage(itemID: "first", turnID: "turn-1")
+        let firstFinal = ConversationMessage(turnID: "turn-1", role: .assistant, content: "第一轮")
+        let user = ConversationMessage(turnID: "turn-2", role: .user, content: "继续")
+        let second = turnHintMessage(itemID: "second", turnID: "turn-2")
+        let secondFinal = ConversationMessage(turnID: "turn-2", role: .assistant, content: "第二轮")
+        let messages = [first, firstFinal, user, second, secondFinal]
+        let rows = ConversationTimelineItemBuilder.items(from: messages)
+
+        XCTAssertEqual(rows, [.message(firstFinal), .message(first), .message(user), .message(secondFinal), .message(second)])
+        XCTAssertFalse(ConversationTurnHintActionPolicy.isLatestActionableHint(
+            try XCTUnwrap(ConversationTurnHintIdentity(message: first)), in: messages
+        ))
+        XCTAssertTrue(ConversationTurnHintActionPolicy.isLatestActionableHint(
+            try XCTUnwrap(ConversationTurnHintIdentity(message: second)), in: messages
+        ))
+
+        let reusedTurnUser = ConversationMessage(turnID: "turn-1", role: .user, content: "新的请求")
+        XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [first, firstFinal, reusedTurnUser]), [
+            .message(firstFinal), .message(first), .message(reusedTurnUser)
+        ])
+    }
+
+    func testMissingTurnIDsStayInSourceOrderAndEndKnownTurnDeferral() {
+        let known = turnHintMessage(itemID: "known", turnID: "turn")
+        let final = ConversationMessage(turnID: "turn", role: .assistant, content: "最终总结")
+        for turnID in [nil, "", "  "] as [String?] {
+            var legacy = turnHintMessage(itemID: "legacy", turnID: "turn")
+            legacy.turnID = turnID
+            XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [legacy, final]), [.message(legacy), .message(final)])
+            XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [known, legacy, final]), [
+                .message(known), .message(legacy), .message(final)
+            ])
+        }
+        let legacyFinal = ConversationMessage(role: .assistant, content: "无回合 ID 的正文")
+        XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [known, legacyFinal, final]), [
+            .message(known), .message(legacyFinal), .message(final)
+        ])
+    }
+
+    func testTaskProposalsKeepTheirPositionAndMultipleNextStepsKeepTheirOrder() {
+        let proposal = taskProposalMessage(proposalID: nil)
+        let first = turnHintMessage(itemID: "first", turnID: "turn-task")
+        let second = turnHintMessage(itemID: "second", turnID: "turn-task")
+        let final = ConversationMessage(turnID: "turn-task", role: .assistant, content: "总结")
+
+        XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [proposal, final]), [.message(proposal), .message(final)])
+        XCTAssertEqual(ConversationTimelineItemBuilder.items(from: [first, proposal, second, final]), [
+            .message(proposal), .message(final), .message(first), .message(second)
+        ])
+    }
+
+    func testStreamingNextStepStaysAtTailAndMatchesReloadedHistory() {
+        let oldHint = turnHintMessage(itemID: "old", turnID: "old-turn")
+        let oldFinal = ConversationMessage(turnID: "old-turn", role: .assistant, content: "上一轮总结")
+        let user = ConversationMessage(turnID: "turn", role: .user, content: "开始")
+        let hint = turnHintMessage(itemID: "hint", turnID: "turn")
+        var final = ConversationMessage(turnID: "turn", role: .assistant, content: "总结")
+        let diff = ConversationMessage(turnID: "turn", role: .system, kind: .fileChangeSummary, content: "修改")
+        let cache = ConversationTimelineItemCache()
+        var messages = [oldHint, oldFinal, user, hint]
+        let initial = cache.snapshot(from: messages, provider: .claude)
+        let hintRowID = ConversationTimelineItem.message(hint).id
+        XCTAssertEqual(initial.rowIDs.last, hintRowID)
+
+        for step in 0..<3 {
+            if step == 0 { messages.append(final) }
+            if step == 1 {
+                final.content += "继续到达"
+                messages[messages.count - 1] = final
+            }
+            if step == 2 { messages.append(diff) }
+            let live = cache.snapshot(from: messages, provider: .claude)
+            let history = ConversationTimelineItemCache().snapshot(from: messages, provider: .claude)
+            XCTAssertEqual(live.projectionMode, .tail)
+            XCTAssertEqual(live.rowIDs.last, hintRowID)
+            XCTAssertEqual(live.rows, history.rows)
+            XCTAssertEqual(Array(live.rows.prefix(3)), [.message(oldFinal), .message(oldHint), .message(user)])
+        }
+
+        let nextUser = ConversationMessage(turnID: "next", role: .user, content: "继续")
+        messages.append(nextUser)
+        let next = cache.snapshot(from: messages, provider: .claude)
+        XCTAssertEqual(Array(next.rows.suffix(2)), [.message(hint), .message(nextUser)])
+        XCTAssertEqual(next.rows, ConversationTimelineItemBuilder.items(from: messages, provider: .claude))
+    }
+
     func testInteractionRetriesFailureLocksSuccessAndDismissesWithoutSubmitting() {
         var state = ConversationTurnHintInteractionState()
         XCTAssertTrue(state.begin(actionIndex: 0))
