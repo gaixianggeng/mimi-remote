@@ -195,6 +195,10 @@ fail_check("Nightly publish 必须只在需要发布且凭据预检成功时执�
 publish_with = publish.fetch("with")
 fail_check("Nightly publish source_ref 必须来自 plan SHA") unless publish_with["source_ref"].to_s.include?("needs.plan.outputs.source_sha")
 fail_check("Nightly publish 必须显式启用 reusable TestFlight") unless publish_with["publish_internal_testflight"] == true
+fail_check("Nightly publish 必须带 Mimi 中转入口（#997）") unless publish_with["enable_managed_connection"] == true
+ios_dispatch_entry = triggers(ios, ios_path).dig("workflow_dispatch", "inputs", "enable_managed_connection")
+fail_check("ios-ci 手动 dispatch 的托管入口必须默认关闭，避免提交审核的构建带入口（#887）") unless
+  ios_dispatch_entry.is_a?(Hash) && ios_dispatch_entry["default"] == false
 fail_check("Nightly publish What to Test 必须来自 plan") unless publish_with["what_to_test"].to_s.include?("needs.plan.outputs.what_to_test")
 fail_check("Nightly publish 必须使用 secrets: inherit") unless publish["secrets"] == "inherit"
 fail_check("Nightly final 必须 always 聚合 plan、发布凭据预检和 publish") unless
