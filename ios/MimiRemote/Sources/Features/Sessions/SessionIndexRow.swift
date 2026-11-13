@@ -654,6 +654,19 @@ struct SessionIndexRow: View {
             Spacer(minLength: 12)
 
             if isSessionLibrary {
+                if let projectIdentity {
+                    Text(projectIdentity)
+                        .font(themeStore.uiFont(size: metadataPointSize))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(tokens.selectionFill, in: Capsule())
+                        // 标题优先，项目名有界截断，时间与状态仍保留自己的位置。
+                        .frame(minWidth: 32, maxWidth: density == .table ? 160 : 96, alignment: .trailing)
+                        .accessibilityHidden(true)
+                }
                 // 单行里没有第二行可放状态：需要处理或仍在运行时，状态文字占据时间的位置；
                 // 提醒、只看等标记跟在它前面。普通历史行照常显示时间。
                 stableStateIcons(tokens: tokens)
@@ -696,24 +709,19 @@ struct SessionIndexRow: View {
             ? SessionListPresentation.distinctPreviewDisplayText(for: session)
             : ""
         return Self.librarySupportingText(
-            projectIdentity: projectIdentity,
             searchSnippet: searchSnippet,
             ordinaryPreview: ordinaryPreview
         )
     }
 
     static func librarySupportingText(
-        projectIdentity: String?,
         searchSnippet: String?,
         ordinaryPreview: String
     ) -> String {
         let snippet = searchSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let preview = snippet.isEmpty ? ordinaryPreview : snippet
-        // 紧凑行平时保持单行；搜索命中上下文和少数项目身份才值得增加第二行。
-        return [projectIdentity, preview]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
+        // 项目已在标题行独立展示，不再为了项目名增加第二行。
+        return preview.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func standardMetadataLine(tokens: ThemeTokens) -> some View {

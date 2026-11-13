@@ -194,7 +194,6 @@ struct SessionListView: View {
         // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
         // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
         let visibleSessions = self.visibleSessions
-        let dominantProject = SessionListPresentation.dominantIdentity(visibleSessions.map(\.project))
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
         let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
@@ -216,7 +215,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
                         families: familyPartition.active,
-                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
@@ -225,7 +223,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
                         families: familyPartition.pinned,
-                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
@@ -234,7 +231,6 @@ struct SessionListView: View {
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         families: group.families,
-                        dominantProject: dominantProject,
                         tokens: tokens
                     )
                 }
@@ -828,13 +824,11 @@ struct SessionListView: View {
     private func sessionSection(
         title: String,
         families: [SessionFamily],
-        dominantProject: String?,
         tokens: ThemeTokens
     ) -> some View {
         Section {
             sessionRows(
                 families,
-                dominantProject: dominantProject,
                 tokens: tokens
             )
         } header: {
@@ -857,7 +851,6 @@ struct SessionListView: View {
     @ViewBuilder
     private func sessionRows(
         _ families: [SessionFamily],
-        dominantProject: String?,
         tokens: ThemeTokens
     ) -> some View {
         SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
@@ -882,12 +875,11 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    // iPhone 普通行保持单行；iPad 大字与 Mac Catalyst 仍需项目名区分会话。
-                    projectIdentity: UIDevice.current.userInterfaceIdiom != .phone && selectedWorkspaceID == "all"
-                        ? SessionListPresentation.projectIdentityToDisplay(
-                            session.project,
-                            dominant: dominantProject
-                        ) : nil,
+                    projectIdentity: SessionListPresentation.projectIdentityToDisplay(
+                        session.project,
+                        selectedWorkspaceID: selectedWorkspaceID,
+                        openedWorkspaceCount: sessionStore.recentWorkspaces.count
+                    ),
                     leadingSlot: .runtimeIcon,
                     // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
                     showsSessionPreview: usesWideIPadRow
