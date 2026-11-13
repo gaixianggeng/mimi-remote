@@ -712,6 +712,11 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     }
 
     func testConcurrentManagedPreparationEmitsOneConnectionEvent() async throws {
+        // 本例只验证并发上报次数；诊断不能访问可能被 CI 占用的真实回环端口。
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TailcatUnavailableHealthURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
         let reporter = ManagedConnectionEventReporterStub()
         let reported = expectation(description: "one managed event")
         reporter.onReport = { reported.fulfill() }
@@ -719,7 +724,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             startResults: [.success("http://127.0.0.1:49152")],
             blockedStartCall: 1,
             managedProfile: true,
-            managedConnectionEventReporter: reporter
+            managedConnectionEventReporter: reporter,
+            agentAPISession: session
         )
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
 
