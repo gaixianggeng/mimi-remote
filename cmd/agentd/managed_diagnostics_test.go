@@ -12,6 +12,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
+	"github.com/gaixianggeng/mimi-remote/internal/tailcatevents"
 )
 
 func TestDiagnosticClearRejectsReplacedActiveFile(t *testing.T) {
@@ -268,5 +269,59 @@ func TestDebugLogFollowsTheDetailWindowAndStaysOutOfTheSafeExport(t *testing.T) 
 	data, _ := os.ReadFile(debugPath)
 	if strings.Contains(string(data), "after window") || strings.Contains(string(data), "thread/name/set") {
 		t.Fatalf("清除后不应留下调试内容：%q", data)
+	}
+}
+
+func TestTailcatEventLogIsAlwaysOnLocalAndClearable(t *testing.T) {
+	directory := t.TempDir()
+	logs, closeLogs, err := configureServeFileLogging(filepath.Join(directory, "agentd.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeLogs()
+	eventPath := filepath.Join(directory, tailcatEventLogFileName)
+
+	// 没有开启详细记录窗口时也要落盘：偶发断连事先无法预知。
+	tailcatevents.RecordSidecarLine(tailcatevents.LinePrefix + `{"event":"derp_lost","region":901,"reason":"timeout"}`)
+	tailcatevents.Record(tailcatevents.EventSidecarExited, "dial 203.0.113.9:8443: exit status 1")
+	if err := logs.tailcatSink.Sync(func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(eventPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "event=derp_lost region=901 reason=timeout") || !strings.Contains(text, "event=sidecar_exited") {
+		t.Fatalf("事件未落盘：%s", text)
+	}
+	if strings.Contains(text, "203.0.113.9") {
+		t.Fatalf("事件日志含真实地址：%s", text)
+	}
+	info, err := os.Stat(eventPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("事件日志权限 = %o", info.Mode().Perm())
+	}
+
+	exported, err := logs.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(exported, "\n"), "derp_lost") {
+		t.Fatal("连接事件不应进入导出的安全日志")
+	}
+
+	if _, err := logs.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(eventPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("清除后事件日志应为空：%s", data)
 	}
 }

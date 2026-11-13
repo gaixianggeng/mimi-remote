@@ -44,6 +44,7 @@ func newManagedControllerForTest(
 	writeState func(string, managedPairingState) error,
 ) *managedPairingController {
 	t.Helper()
+	fake.status.Mode = "managed"
 	controller, err := newManagedPairingController(managedPairingControllerOptions{
 		BaseURL:        serverURL,
 		StatePath:      filepath.Join(t.TempDir(), managedPairingStateFileName),

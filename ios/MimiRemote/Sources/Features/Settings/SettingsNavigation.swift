@@ -21,6 +21,7 @@ enum SettingsDestination: Hashable {
     case termsOfUse
     case thirdPartyNotices
     case managedConnection
+    case managedConnectionDevices
     case addComputer
     case speedTest
     case tailcat
@@ -202,6 +203,8 @@ struct SettingsDestinationView: View {
             ThirdPartyNoticesView()
         case .managedConnection:
             ManagedConnectionSubscriptionView(qrScannerPresentation: qrScannerPresentation)
+        case .managedConnectionDevices:
+            ManagedConnectionDevicesView(qrScannerPresentation: qrScannerPresentation)
         case .addComputer:
             AddComputerView(qrScannerPresentation: qrScannerPresentation, navigation: navigation)
         case .speedTest:
@@ -228,27 +231,18 @@ struct WorkbenchSettingsPage: View {
                     ConnectionSettingsView(
                         qrScannerPresentation: qrScannerPresentation,
                         navigation: navigation,
-                        isDevicesTab: usesCompactNavigation
+                        isDevicesTab: true
                     )
                     .navigationDestination(for: SettingsDestination.self) { destination in
                         SettingsDestinationView(navigation: navigation, qrScannerPresentation: qrScannerPresentation, destination: destination)
                     }
-                    .toolbar {
-                        if !usesCompactNavigation {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button(action: onReturnToMe) {
-                                    Label(L10n.text("ui.me"), systemImage: "chevron.left")
-                                }
-                                .accessibilityIdentifier("settings.devices.backToMe")
-                            }
-                        }
-                    }
+
                 }
             } else {
                 SettingsView(
                     isInitialSetup: false,
                     showsDoneButton: false,
-                    showsDeviceEntry: !usesCompactNavigation,
+                    showsDeviceEntry: false,
                     onOpenDevices: onOpenDevices,
                     navigation: navigation,
                     qrScannerPresentation: qrScannerPresentation

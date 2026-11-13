@@ -77,6 +77,8 @@ final class MockWebSocketClient: SessionWebSocketClient {
 
     private(set) var connectedSessionIDs: [SessionID] = []
     private(set) var replayBufferedEventsByConnect: [Bool] = []
+    private(set) var historyReplayBoundariesByConnect: [HistoryReplayBoundary?] = []
+    private(set) var afterSequencesByConnect: [EventSequence?] = []
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
@@ -100,6 +102,12 @@ final class MockWebSocketClient: SessionWebSocketClient {
         connectedSessionIDs.append(sessionID)
         replayBufferedEventsByConnect.append(replayBufferedEvents)
         onStatus?(.connecting)
+    }
+
+    func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
+        afterSequencesByConnect.append(afterSequence)
+        historyReplayBoundariesByConnect.append(historyReplayBoundary)
+        connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
     }
 
     func disconnect() {
@@ -1922,6 +1930,15 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
+        resolveHistoryItemRequest(at: index, result: .success(page), file: file, line: line)
+    }
+
+    func resolveHistoryItemRequest(
+        at index: Int,
+        result: Result<HistoryTurnItemsPage, Error>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
         lock.lock()
         let continuation = itemPageContinuations.indices.contains(index)
             ? itemPageContinuations[index]
@@ -1934,7 +1951,7 @@ final class OrderedHistoryPageClient: SessionStoreAPIClient {
             XCTFail("No pending history Item request at index \(index)", file: file, line: line)
             return
         }
-        continuation.resume(returning: page)
+        continuation.resume(with: result)
     }
 
     private func appendHistoryRequest(

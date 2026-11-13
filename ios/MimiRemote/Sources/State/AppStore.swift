@@ -55,6 +55,8 @@ final class AppStore: ObservableObject {
     private let usesDefaultRouteProbe: Bool
     var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
+    /// Tailcat 隧道已建好但请求仍失败时通知连接诊断；不参与连接决策。
+    var onTailcatPreflightFailure: ((Error) -> Void)?
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
     var activeRouteEndpoint: String?
@@ -976,6 +978,8 @@ final class AppStore: ObservableObject {
         try await credentialVault.delete(profileID: id)
         persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
+        // 档案删了，它的预览副本也不会再被用到（#918）。
+        await MediaWorker.shared.discardPreviews(profileID: id)
     }
 
     /// 只修改非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。
@@ -1372,6 +1376,9 @@ final class AppStore: ObservableObject {
         if !usesTailcatExperiment, acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
+        }
+        if usesTailcatExperiment {
+            onTailcatPreflightFailure?(finalError)
         }
         connectionStatus = .failed(finalError.localizedDescription)
         lastError = finalError.localizedDescription

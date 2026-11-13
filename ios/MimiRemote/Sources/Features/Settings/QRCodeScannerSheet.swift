@@ -9,6 +9,8 @@ enum QRCodeScannerRecoveryAction: Equatable {
     /// 扫不了码的 DMG 用户只能走这一条，所以它排在手动输入地址前面（#554）。
     case pasteLink
     case manualConnection
+    /// 电脑已改用托管连接、这台设备还没开通时，直接去开通页。
+    case openManagedConnection
 }
 enum QRCodeScannerFailure: Equatable {
     case permissionDenied
@@ -16,6 +18,7 @@ enum QRCodeScannerFailure: Equatable {
     case cameraUnavailable
     case configurationFailed(String)
     case rejectedCode(String)
+    case managedConnectionRequired(String)
 
     var message: String {
         switch self {
@@ -29,6 +32,8 @@ enum QRCodeScannerFailure: Equatable {
             return reason
         case .rejectedCode(let reason):
             return reason
+        case .managedConnectionRequired(let reason):
+            return reason
         }
     }
 
@@ -40,13 +45,46 @@ enum QRCodeScannerFailure: Equatable {
             return [.pasteLink, .manualConnection]
         case .rejectedCode:
             return [.retryScanning, .pasteLink, .manualConnection]
+        case .managedConnectionRequired:
+            // 换入口或手动输入都绕不过准入，只给开通和重新扫码。
+            return [.openManagedConnection, .retryScanning]
         }
     }
 }
 
 enum QRCodeScannerSubmissionResult: Equatable {
     case accepted(String)
+    /// 扫到的是邀请码并已开通：不论从哪个入口扫，标题都说「开通成功」而不是「连接成功」（#989）。
+    case activated(String)
     case rejected(String)
+    case requiresManagedConnection(String)
+}
+
+/// 同一个取景器的两种用途：连电脑，或扫另一台设备出示的邀请码（#989）。
+enum QRCodeScannerPurpose: Equatable {
+    case pairing
+    case redemption
+
+    var title: String {
+        L10n.text(self == .pairing ? "ui.scan_the_pairing_qr_code" : "ui.managed_transfer_scan_title")
+    }
+
+    var guidance: String {
+        L10n.text(self == .pairing ? "ui.scan_guidance_aim" : "ui.managed_transfer_scan_guidance")
+    }
+
+    var submittingMessage: String {
+        L10n.text(self == .pairing ? "ui.verifying_mac_connection" : "ui.managed_transfer_activating")
+    }
+
+    var successTitle: String {
+        L10n.text(self == .pairing ? "ui.connection_successful" : "ui.managed_transfer_success_title")
+    }
+
+    /// 粘贴配对链接和手动输入地址都是连电脑的后备，开通时出现只会把人带偏。
+    func allows(_ action: QRCodeScannerRecoveryAction) -> Bool {
+        self == .pairing || (action != .pasteLink && action != .manualConnection)
+    }
 }
 
 struct QRCodeScannerSheet: View {
@@ -56,6 +94,7 @@ struct QRCodeScannerSheet: View {
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
     @State private var completionMessage: String?
+    @State private var completionTitle: String?
     @State private var submissionTask: Task<Void, Never>?
     /// 相机对着屏幕一直没识别到时才出现的求助卡片；过去扫码页永不超时，也没有下一步（#554）。
     @State private var showsScanHelp = false
@@ -67,6 +106,9 @@ struct QRCodeScannerSheet: View {
 
     let onDismiss: () -> Void
     let onChooseManualConnection: () -> Void
+    /// 宿主页能打开托管连接开通页时才传入；没有时失败页不显示这个按钮。
+    var onOpenManagedConnection: (() -> Void)? = nil
+    var purpose: QRCodeScannerPurpose = .pairing
     let onCode: (String) async -> QRCodeScannerSubmissionResult
 
     var body: some View {
@@ -82,7 +124,7 @@ struct QRCodeScannerSheet: View {
                 }
             }
             .ignoresSafeArea(edges: .bottom)
-            .navigationTitle(L10n.text("ui.scan_the_pairing_qr_code"))
+            .navigationTitle(purpose.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -127,7 +169,7 @@ struct QRCodeScannerSheet: View {
                 )
             } else if let completionMessage {
                 scannerStatusCard(
-                    title: L10n.text("ui.connection_successful"),
+                    title: completionTitle ?? purpose.successTitle,
                     message: completionMessage,
                     systemImage: "checkmark.circle.fill"
                 )
@@ -136,7 +178,7 @@ struct QRCodeScannerSheet: View {
             } else if isSubmittingCode {
                 scannerStatusCard(
                     title: L10n.text("ui.qr_code_recognized"),
-                    message: L10n.text("ui.verifying_mac_connection"),
+                    message: purpose.submittingMessage,
                     showsProgress: true
                 )
             } else if isScanningEnabled {
@@ -144,7 +186,8 @@ struct QRCodeScannerSheet: View {
             }
         }
         .task(id: isScanningEnabled) {
-            guard isScanningEnabled, !showsScanHelp else { return }
+            // 求助卡片讲的都是连电脑的出路，开通时不出现。
+            guard purpose == .pairing, isScanningEnabled, !showsScanHelp else { return }
             do {
                 try await Task.sleep(for: Self.scanHelpDelay)
             } catch {
@@ -187,7 +230,7 @@ struct QRCodeScannerSheet: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("qrScanner.help")
             } else {
-                Text(L10n.text("ui.scan_guidance_aim"))
+                Text(purpose.guidance)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
@@ -206,7 +249,7 @@ struct QRCodeScannerSheet: View {
             Color.black
             if let completionMessage {
                 scannerStatusCard(
-                    title: L10n.text("ui.connection_successful"),
+                    title: completionTitle ?? purpose.successTitle,
                     message: completionMessage,
                     systemImage: "checkmark.circle.fill"
                 )
@@ -277,7 +320,7 @@ struct QRCodeScannerSheet: View {
 
                 VStack(spacing: 10) {
                     // 第一个恢复动作是主按钮，其余是次按钮，顺序即推荐顺序。
-                    ForEach(Array(failure.recoveryActions.enumerated()), id: \.offset) { index, action in
+                    ForEach(Array(visibleRecoveryActions(failure).enumerated()), id: \.offset) { index, action in
                         recoveryButton(action, isPrimary: index == 0)
                     }
                 }
@@ -309,6 +352,8 @@ struct QRCodeScannerSheet: View {
                 pastePairingLink()
             case .manualConnection:
                 chooseManualConnection()
+            case .openManagedConnection:
+                onOpenManagedConnection?()
             }
         } label: {
             Text(recoveryTitle(action))
@@ -341,6 +386,14 @@ struct QRCodeScannerSheet: View {
             L10n.text("ui.paste_pairing_link")
         case .manualConnection:
             L10n.text("ui.use_manual_connection_instead")
+        case .openManagedConnection:
+            L10n.text("ui.managed_devices_subscribe_action")
+        }
+    }
+
+    private func visibleRecoveryActions(_ failure: QRCodeScannerFailure) -> [QRCodeScannerRecoveryAction] {
+        failure.recoveryActions.filter {
+            purpose.allows($0) && ($0 != .openManagedConnection || onOpenManagedConnection != nil)
         }
     }
 
@@ -399,9 +452,12 @@ struct QRCodeScannerSheet: View {
             }
 
             switch result {
-            case .accepted(let message):
+            case .accepted(let message), .activated(let message):
                 // 二维码可能在相机首帧就被识别；先展示明确完成态，避免直接关闭被误认为相机没有打开。
                 isSubmittingCode = false
+                if case .activated = result {
+                    completionTitle = L10n.text("ui.managed_transfer_success_title")
+                }
                 completionMessage = message
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 do {
@@ -416,6 +472,9 @@ struct QRCodeScannerSheet: View {
             case .rejected(let message):
                 isSubmittingCode = false
                 scannerFailure = .rejectedCode(message)
+            case .requiresManagedConnection(let message):
+                isSubmittingCode = false
+                scannerFailure = .managedConnectionRequired(message)
             }
             submissionTask = nil
         }

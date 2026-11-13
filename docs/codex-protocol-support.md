@@ -28,7 +28,7 @@
 
 最后一个上游订阅退出后仍可能有空闲宽限期。启用审批 broker 时，页面收到的 `unsubscribed` 还可能只代表页面退出：agentd 会为运行、排队和待审批任务保留上游订阅，空闲后才退订。不要用退订 ACK 显示“会话已完全释放”，也不要用删除锁文件或整服重启实现自动交接。
 
-2026-10-10 对 `0.162.0` 的隔离实测使用独立配置目录、Unix Socket 和本机假模型。两个连接订阅同一测试会话，首个连接退订后另一个仍能读取历史；最后连接退订后 0 至 3020 ms 的 11 次检查均为 loaded，第二个独立 App Server 恢复该会话仍返回 `-32600 active writer`。原 App Server 可再次恢复，并读回测试输入与回复。这证明退订不会立即全局释放；本次没有等待并验证 30 分钟最终卸载。测试进程已全部退出，未连接用户共享服务。
+2026-10-10 对 `0.162.0` 的隔离实测使用独立配置目录、Unix Socket 和本机假模型。两个连接订阅同一测试会话，首个连接退订后另一个仍能读取历史；最后连接退订后 0 至 3020 ms 的 11 次检查均为 loaded，第二个独立 App Server 恢复该会话仍返回 `-32600 active writer`。原 App Server 可再次恢复，并读回测试输入与回复。这证明退订不会立即全局释放；本次没有等待并验证 30 分钟最终卸载。测试进程已全部退出，未连接用户共享服务。2026-11-03 对 `0.166.0` 的复测见[共享 App Server 的占用标记](shared-ssh-app-server.md#占用标记)：无人订阅的空闲会话约 60 秒释放。
 
 ### 新版字段兼容
 
@@ -74,6 +74,17 @@ Claude 实验通道使用更小的独立 allowlist，当前要求 `alleycat-clau
 OAuth usage endpoint 不是稳定公开 API，可能被 Anthropic 调整。主动查询失败时 bridge 继续降级到官方 `rate_limit_event`：按 `rateLimitType` 合并缓存 5h/7d 窗口，把事件中的 0...1 `utilization` 映射为 `usedPercent`。未观测到 utilization 的窗口保留 `unavailableReason=usage_percentage_unavailable`，不会伪造为 `0%`；只有 `rejected` 会映射为额度耗尽，`allowed_warning` 不阻断发送。主动查询和事件缓存都不可用时返回 `rateLimits.availability=unavailable`、`unavailableReason=headless_statusline_unavailable`。
 
 Claude 专用的 `slashCommand/list`（#765）只在 SDK 适配器的能力声明里出现时才进入 channel methods，旧 Rust bridge 不声明。请求的 `cwd` 必须来自 projects allowlist 或 browse_roots；`sandboxPolicy` 只用来选出该执行边界下 Claude Code 认识的命令，Gateway 只转发规范化后的 `type`（`readOnly`、`workspaceWrite`、`dangerFullAccess`）与布尔 `forceReload`，其余字段丢弃。命令本身仍作为普通文本经 `turn/start` 发送，由 Claude Code 解析。
+
+Claude 专用的 `thread/desktop/open`（#726、#991）在这台 Mac 的 Claude 桌面版里打开会话，只在 SDK 适配器的能力声明里出现时才进入 channel methods。适配器只在 macOS 上声明，旧 Rust bridge 不声明。线程授权同 `thread/takeover`：子会话和浏览线程拒绝，桌面版已经持有的会话（`canAcceptDirectInput=false`）可以打开，Gateway 只转发 `threadId`。
+
+适配器的处理顺序：
+1. 拒绝本适配器回合仍在运行（`turn_active`）和被终端 `claude` 持有（`held_elsewhere`）的会话。持有方 `entrypoint` 以 `claude-desktop` 开头时视为桌面版已打开，只把窗口切过去；配置了第三方模型网关的桌面版登记为 `claude-desktop-3p`（桌面版 5.12 实测）。
+2. 检查 `/Applications/Claude.app` 或 `~/Applications/Claude.app` 是否存在（`not_installed`）、版本是否不低于 `1.1.9669`（`outdated`）。
+3. transcript 末尾 256 KB 内没有 `custom-title` 时，用 `renameSession` 追加一条与当前标题相同的记录，因为桌面版导入时只从这里读标题。
+4. 停掉自己空闲的常驻进程。
+5. 执行 `open claude://resume?session=<id>`，失败时返回 `open_failed`。
+
+这与 CLI `/desktop` 使用同一个公开入口，不写桌面版私有索引，也不改写 `entrypoint`。桌面版未登录或深链被管理策略禁用时，`open` 仍会成功，这两种情况检测不到。
 
 Claude bridge 必须通过标准 `--version` 门禁才会被标记为可用；审批反向请求的响应和随后到达的 `serverRequest/resolved` notification 均透明透传。bridge 版本缺失、低于 `0.2.7` 或运行中退出时，Gateway 返回结构化错误并终止等待。正式 Mimi Remote Mac 已内置并签名兼容 bridge；Homebrew、Linux 和独立开发环境可执行 `cargo install --git https://github.com/gaixianggeng/mimi-remote.git --locked --force --bin alleycat-claude-bridge alleycat-claude-bridge` 安装外置版本。导入来源固定记录在 `bridges/claude/UPSTREAM.md`。
 

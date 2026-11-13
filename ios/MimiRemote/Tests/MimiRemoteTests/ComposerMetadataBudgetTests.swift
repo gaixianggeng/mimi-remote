@@ -3,17 +3,19 @@ import UIKit
 import XCTest
 @testable import MimiRemote
 
-/// 真机打开会话即崩溃（#852）的回归防线。
+/// 真机打开会话即崩溃（#852）和输入框占栈过多（#869）的回归防线。
 ///
 /// 真机主线程栈约 1 MB，模拟器是 8 MB，栈溢出在模拟器和 CI 上复现不了。这里直接约束
 /// 决定栈用量的两项类型指标（原因见 ComposerErasedControls.swift）：
-/// - `ComposerView.Body` 的值大小：进入 body 前 SwiftUI 已用的栈约是它的 42 倍；
+/// - 值大小：构建 `some View` 的函数，栈帧约是修饰链上各中间值大小之和，所以 body 和它的每一段都按值大小设预算；
 /// - 组合类型的嵌套层数：解析泛型元数据时逐层递归，每层约 3 KB。
 ///
-/// 预算按 iPad mini（iPadOS 27.2）上验证过的修复版设定，只留少量余量：
-/// 修复版 Body 11 776 B / 90 层、输入行 13 层，进入 body 时已用 480 KB、峰值 593 KB；
-/// #838 合并后的 main 是 Body 21 480 B / 109 层、输入行 42 层，进入 body 时已用 878 KB 并崩溃。
-/// 超出预算时先把新控件放进 ComposerErasedControls.swift 擦除，再在真机上用种子会话
+/// 预算按 iPad mini（iPadOS 27.2）上验证过的版本设定，只留少量余量：
+/// - #869 分段擦除后 Body 968 B / 23 层，最大一段（VStack 内容）7 032 B；进入 body 时已用 79 KB，
+///   输入框路径峰值宽屏 205 KB、竖屏 196 KB，打开会话的全局峰值已不在输入框路径上；
+/// - 分段前 Body 11 776 B / 90 层，body 单帧 412 KB，进入 body 时已用 481 KB、峰值 593 KB；
+/// - #838 合并后的 main 是 Body 21 480 B / 109 层、输入行 42 层，进入 body 时已用 878 KB 并崩溃。
+/// 超出预算时先把新控件或修饰符放进 ComposerErasedControls.swift 擦除，再在真机上用种子会话
 /// 打开一次确认，不要直接调大预算。
 @MainActor
 final class ComposerMetadataBudgetTests: XCTestCase {
@@ -30,9 +32,25 @@ final class ComposerMetadataBudgetTests: XCTestCase {
     func testComposerBodyStaysWithinDeviceStackBudget() {
         let metrics = ViewTypeMetrics(ComposerView.Body.self)
 
-        XCTAssertGreaterThan(metrics.depth, 20, metrics.summary("ComposerView.Body"))
-        XCTAssertLessThanOrEqual(metrics.size, 14 * 1024, metrics.summary("ComposerView.Body"))
-        XCTAssertLessThanOrEqual(metrics.depth, 96, metrics.summary("ComposerView.Body"))
+        // body 只在最后一段 AnyView 上挂生命周期修饰符；层数过低说明 opaque 类型没有展开，预算会形同虚设。
+        XCTAssertGreaterThan(metrics.depth, 12, metrics.summary("ComposerView.Body"))
+        XCTAssertLessThanOrEqual(metrics.size, 1280, metrics.summary("ComposerView.Body"))
+        XCTAssertLessThanOrEqual(metrics.depth, 28, metrics.summary("ComposerView.Body"))
+    }
+
+    func testComposerBodySegmentsStayWithinDeviceStackBudget() {
+        // 每段在自己的盒子里构建，栈帧约是段内中间值大小之和；直接往 body 加修饰符或子视图也会落到这里。
+        let segments = [
+            ("composerPresentedContent", ViewTypeMetrics.result(of: ComposerView.composerPresentedContent), 8 * 1024, 32),
+            ("composerPresentations", ViewTypeMetrics.result(of: ComposerView.composerPresentations), 3 * 1024, 16),
+            ("composerScopeObservers", ViewTypeMetrics.result(of: ComposerView.composerScopeObservers), 1024, 24),
+            ("composerDraftObservers", ViewTypeMetrics.result(of: ComposerView.composerDraftObservers), 1024, 16),
+        ]
+
+        for (label, metrics, sizeBudget, depthBudget) in segments {
+            XCTAssertLessThanOrEqual(metrics.size, sizeBudget, metrics.summary(label))
+            XCTAssertLessThanOrEqual(metrics.depth, depthBudget, metrics.summary(label))
+        }
     }
 
     func testComposerInputRowOnlyHoldsErasedCards() {

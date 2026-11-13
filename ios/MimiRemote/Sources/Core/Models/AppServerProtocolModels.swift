@@ -624,38 +624,40 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "account/usage/read", params: params)
     }
 
-    func threadStart(projectID: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
+    func threadStart(
+        projectID: String,
+        model: String? = nil,
+        options: CodexAppServerTurnOptions = .default,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
+    ) throws -> CodexAppServerRequestSpec {
         var resolved = options
         if resolved.model == nil {
             resolved.model = model
         }
-        return try threadStart(cwd: pathForProject(id: projectID), options: resolved)
+        return try threadStart(
+            cwd: pathForProject(id: projectID),
+            options: resolved,
+            mimiTaskProposal: mimiTaskProposal
+        )
     }
 
-    func threadStart(cwd: String, model: String? = nil, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
-        var resolved = options
-        if resolved.model == nil {
-            resolved.model = model
-        }
-        return try threadStart(cwd: cwd, options: resolved)
-    }
-
-    func threadStart(cwd: String, options: CodexAppServerTurnOptions = .default) throws -> CodexAppServerRequestSpec {
-        let path = try allowlistedPath(cwd)
-        var params = safeThreadRuntimeParams(cwd: path)
-        options.threadParams(projectPath: path).forEach { key, value in
-            params[key] = value
-        }
-        if options.registersMimiTaskTools {
-            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
-        }
-        try validateRemoteSafeParams(params, projectPath: path)
-        return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
-    }
-
-    func threadStartForSharedQueue(
+    func threadStart(
         cwd: String,
-        options: CodexAppServerTurnOptions
+        model: String? = nil,
+        options: CodexAppServerTurnOptions = .default,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
+    ) throws -> CodexAppServerRequestSpec {
+        var resolved = options
+        if resolved.model == nil {
+            resolved.model = model
+        }
+        return try threadStart(cwd: cwd, options: resolved, mimiTaskProposal: mimiTaskProposal)
+    }
+
+    func threadStart(
+        cwd: String,
+        options: CodexAppServerTurnOptions = .default,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
     ) throws -> CodexAppServerRequestSpec {
         let path = try allowlistedPath(cwd)
         var params = safeThreadRuntimeParams(cwd: path)
@@ -664,6 +666,35 @@ struct CodexAppServerRequestBuilder {
         }
         if options.registersMimiTaskTools {
             params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
+        }
+        if let mimiTaskProposal {
+            params["mimiTaskProposal"] = .object([
+                "id": .string(mimiTaskProposal.id),
+                "parentThreadId": .string(mimiTaskProposal.parentThreadID)
+            ])
+        }
+        try validateRemoteSafeParams(params, projectPath: path)
+        return CodexAppServerRequestSpec(method: "thread/start", params: .object(params.compactMapValues { $0 }))
+    }
+
+    func threadStartForSharedQueue(
+        cwd: String,
+        options: CodexAppServerTurnOptions,
+        mimiTaskProposal: MimiTaskProposalRequest? = nil
+    ) throws -> CodexAppServerRequestSpec {
+        let path = try allowlistedPath(cwd)
+        var params = safeThreadRuntimeParams(cwd: path)
+        options.threadParams(projectPath: path).forEach { key, value in
+            params[key] = value
+        }
+        if options.registersMimiTaskTools {
+            params["dynamicTools"] = CodexMimiTasksToolCatalog.appServerValue
+        }
+        if let mimiTaskProposal {
+            params["mimiTaskProposal"] = .object([
+                "id": .string(mimiTaskProposal.id),
+                "parentThreadId": .string(mimiTaskProposal.parentThreadID)
+            ])
         }
         params["effort"] = options.reasoningEffort.map { .string($0.rawValue) }
         params["summary"] = options.reasoningSummary.map { .string($0.rawValue) }

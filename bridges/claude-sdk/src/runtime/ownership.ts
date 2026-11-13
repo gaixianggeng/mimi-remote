@@ -3,6 +3,7 @@
 // 订阅任何会话，终端里开着的会话开始 / 结束处理也要能推到列表。目录事件让反应在毫秒级；
 // 轮询兜底，防止事件丢失或目录稍后才出现。
 import { watch, type FSWatcher } from "node:fs";
+import { nextFreshnessMark } from "../util/freshness.ts";
 import { ownerSummary, type SessionHolder } from "./holders.ts";
 
 export interface OwnershipWatcherOptions {
@@ -10,7 +11,11 @@ export interface OwnershipWatcherOptions {
   /** 需要关注的会话（有订阅或有常驻进程）。 */
   tracked(): Iterable<string>;
   read(): Promise<Map<string, SessionHolder>>;
-  onChange(threadId: string, holder: SessionHolder | undefined): Promise<void> | void;
+  /**
+   * `freshSince`：本轮读完登记时取的先后标记（nextFreshnessMark）。同一轮里的各个变化共用它：
+   * 晚于它开始的 transcript 索引扫描已包含持有方报告空闲前写下的内容，不必每个变化各扫一次（#912）。
+   */
+  onChange(threadId: string, holder: SessionHolder | undefined, freshSince: number): Promise<void> | void;
   log(message: string): void;
   pollMs?: number;
 }
@@ -94,6 +99,7 @@ export class OwnershipWatcher {
       this.options.log(`ownership scan failed: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
+    const freshSince = nextFreshnessMark();
     // 上次见过持有方、这次登记里没有了的会话也要扫到，否则"持有方退出"推不出去。
     const candidates = new Set([...tracked, ...holders.keys(), ...this.known.keys()]);
     for (const threadId of candidates) {
@@ -104,7 +110,7 @@ export class OwnershipWatcher {
       if (key === "" && !tracked.has(threadId)) this.known.delete(threadId);
       else this.known.set(threadId, key);
       try {
-        await this.options.onChange(threadId, holder);
+        await this.options.onChange(threadId, holder, freshSince);
       } catch (error) {
         this.options.log(`ownership change for ${threadId.slice(0, 8)} failed: ${error instanceof Error ? error.message : String(error)}`);
       }

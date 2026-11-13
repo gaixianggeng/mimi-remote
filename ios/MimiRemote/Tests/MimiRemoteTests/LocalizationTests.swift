@@ -91,8 +91,8 @@ final class LocalizationTests: XCTestCase {
             ("ui.more", "More", "更多"),
             ("ui.experimental_features", "Experimental Features", "实验功能"),
             ("ui.tailcat_experiment", "Tailcat", "Tailcat"),
-            ("ui.managed_subscription_title", "Mimi Managed Connection", "Mimi 托管连接"),
-            ("ui.custom_tailcat", "Self-hosted Tailcat", "自建 Tailcat"),
+            ("ui.managed_subscription_title", "Mimi Relay", "Mimi 中转"),
+            ("ui.custom_tailcat", "Built-in connection · Free", "内置连接 · 免费"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
             ("ui.about_and_legal", "About & Legal", "关于与法律")
@@ -107,19 +107,19 @@ final class LocalizationTests: XCTestCase {
     func testActiveWriterConflictExplainsRecoveryAction() {
         XCTAssertEqual(
             L10n.text("ui.codex_active_writer_conflict", language: .english),
-            "Close the session in the other app before continuing here."
+            "To continue here, quit Codex on your computer (make sure nothing is running there), then tap Retry. Switching to another chat won’t release it."
         )
         XCTAssertEqual(
             L10n.text("ui.codex_active_writer_conflict", language: .simplifiedChinese),
-            "请先在那边关闭会话，才能在这里继续。"
+            "要在这里继续，请先退出电脑上的 Codex（确认那边没有任务在运行），再点“重试”。只切到别的会话不会释放。"
         )
-        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in another app")
-        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在另一个应用中打开")
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .english), "Open in Codex on your computer")
+        XCTAssertEqual(L10n.text("ui.codex_active_writer_conflict_title", language: .simplifiedChinese), "已在电脑上的 Codex 中打开")
         let writerConflictForkValues: [(String, String, String)] = [
             (
                 "ui.writer_conflict_fork_idle_explanation",
-                "Copy this session to continue here; the original stays unchanged.",
-                "复制为新会话后，可在这里继续；原会话保持不变。"
+                "Copy this session to continue here. To continue the original, quit Codex on your computer, then tap Retry.",
+                "可复制为新会话继续。要继续原会话，请先退出电脑上的 Codex，再点“重试”。"
             ),
             (
                 "ui.writer_conflict_fork_running_explanation",

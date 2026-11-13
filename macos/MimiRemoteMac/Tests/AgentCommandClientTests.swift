@@ -88,6 +88,17 @@ final class AgentCommandClientTests: XCTestCase {
         )
     }
 
+    func testClaudeTurnHintsConfigurationArgumentsAreIndependentFromModuleActivation() {
+        XCTAssertEqual(
+            AgentCommandClient.claudeTurnHintsConfigurationArguments(enabled: true),
+            ["runtime", "--claude-turn-hints=enabled", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.claudeTurnHintsConfigurationArguments(enabled: false),
+            ["runtime", "--claude-turn-hints=disabled", "--json"]
+        )
+    }
+
     func testTailcatUsesDedicatedExperimentalCommands() {
         XCTAssertEqual(
             AgentCommandClient.pairArguments(network: .tailcat),
@@ -114,6 +125,10 @@ final class AgentCommandClientTests: XCTestCase {
         XCTAssertEqual(
             AgentCommandClient.tailcatArguments(action: "configure", derpMapURL: ""),
             ["tailcat", "configure", "--json", "--derp-map-url="]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.tailcatArguments(action: "enter-managed"),
+            ["tailcat", "enter-managed", "--json"]
         )
     }
 

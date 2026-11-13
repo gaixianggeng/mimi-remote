@@ -173,6 +173,37 @@ final class HarnessSessionJournalTests: XCTestCase {
         XCTAssertTrue(journal.activeAttempt?.chunks.isEmpty == true)
     }
 
+    /// #917：追加片段原地写入，不因取出/写回 attempt 而复制已收的全部片段。
+    func testLiveChunkAppendsWithoutCopyingEarlierChunks() throws {
+        var journal = HarnessSessionJournal(generation: 1)
+        XCTAssertTrue(journal.apply(snapshot: try snapshotFixture(), acceptingGeneration: 1))
+        XCTAssertNil(journal.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start, revision: 1, index: nil, chunk: nil, outcome: nil,
+            attemptId: "attempt-append", turn: 1, step: 1, startedAfterSeq: 2
+        )))
+        func chunk(_ index: Int) -> HarnessAssistantStreamFrame {
+            HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.chunk, revision: index + 2, index: index,
+                chunk: HarnessAssistantChunk(
+                    type: HarnessWireChunkType.textDelta, index: 0, text: "片段\(index)",
+                    blockType: nil, argumentsDelta: nil
+                ),
+                outcome: nil, attemptId: "attempt-append", turn: nil, step: nil, startedAfterSeq: nil
+            )
+        }
+        var next = 0
+        repeat {
+            XCTAssertNil(journal.apply(assistantStream: chunk(next)))
+            next += 1
+        } while next < 64 || journal.activeAttemptChunkStorage().count == journal.activeAttemptChunkStorage().capacity
+
+        let before = journal.activeAttemptChunkStorage()
+        XCTAssertNil(journal.apply(assistantStream: chunk(next)))
+        let after = journal.activeAttemptChunkStorage()
+        XCTAssertEqual(after.count, before.count + 1)
+        XCTAssertEqual(after.address, before.address, "容量够用时追加片段不应重新分配并复制前缀")
+    }
+
     /// 正向对照：snapshot 里的 records 按 seq 进入 journal。
     func testSnapshotRecordsLandInJournalBySeq() throws {
         let snapshot = try snapshotFixture()
@@ -661,5 +692,14 @@ final class HarnessHistoryPageTests: XCTestCase {
         data: [String: HarnessJSONValue]
     ) -> HarnessDurableEvent {
         HarnessDurableEvent(type: type, seq: seq, time: 1_789_755_158_627, data: .object(data))
+    }
+}
+
+extension HarnessSessionJournal {
+    /// 测试用：活动 attempt 的片段数组当前的存储地址、数量与容量。取完即释放临时副本。
+    func activeAttemptChunkStorage() -> (address: UInt?, count: Int, capacity: Int) {
+        guard let chunks = activeAttempt?.chunks else { return (nil, 0, 0) }
+        let address = chunks.withUnsafeBufferPointer { $0.baseAddress.map { UInt(bitPattern: $0) } }
+        return (address, chunks.count, chunks.capacity)
     }
 }

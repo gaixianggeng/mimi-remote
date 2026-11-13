@@ -161,13 +161,21 @@ extension CodexAppServerSessionRuntime {
         threadsResumedOnConnection.removeAll(keepingCapacity: true)
         connection = prepared.connection
         notificationPumpTask = Task { [weak self, notifications = prepared.notifications, installedConnection = prepared.connection] in
-            for await notification in notifications { await self?.handle(notification) }
+            for await notification in notifications {
+                await self?.handle(notification, from: installedConnection)
+            }
             guard !Task.isCancelled else { return }
             await self?.handleNotificationStreamEnded(for: installedConnection)
         }
         serverRequestPumpTask = Task { [weak self, serverRequests = prepared.serverRequests] in
             for await request in serverRequests { await self?.handle(request) }
         }
+    }
+
+    func handle(_ notification: CodexAppServerNotification, from source: CodexAppServerConnection) {
+        // 取消旧 pump 后仍可能有已排队的尾包；建议不能跨连接代次进入当前草稿。
+        if notification.method == "_mimi/turn/promptSuggestion", connection !== source { return }
+        handle(notification)
     }
 
     func handleNotificationStreamEnded(for endedConnection: CodexAppServerConnection) async {
@@ -197,11 +205,15 @@ extension CodexAppServerSessionRuntime {
         cancelMimiTaskRequests()
         let mailboxes = eventMailboxesBySessionID.values.flatMap { $0.values }
         eventMailboxesBySessionID.removeAll(keepingCapacity: true)
+        deferredStateReplayEventsBySessionID.removeAll(keepingCapacity: true)
+        completedDeferredStateReplaySessionIDs.removeAll(keepingCapacity: true)
         for mailbox in mailboxes { mailbox.finishFromProducer() }
     }
 
     func finishAttachedEventStreams(sessionID: SessionID) {
         let mailboxes = eventMailboxesBySessionID.removeValue(forKey: sessionID)?.values ?? [:].values
+        deferredStateReplayEventsBySessionID.removeValue(forKey: sessionID)
+        completedDeferredStateReplaySessionIDs.remove(sessionID)
         for mailbox in mailboxes { mailbox.finishFromProducer() }
     }
 }

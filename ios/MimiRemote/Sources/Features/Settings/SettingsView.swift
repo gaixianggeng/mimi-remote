@@ -106,6 +106,8 @@ struct SettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    /// 只在托管入口可见时读取；测试与快照不注入它，入口也不会显示。
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
 
     let isInitialSetup: Bool
     var showsDoneButton = true
@@ -268,46 +270,6 @@ struct SettingsView: View {
                 }
             }
             .settingsGroupRowStyle()
-
-            if showsDeviceEntry {
-                Section {
-                    Button {
-                        openDevices()
-                    } label: {
-                        SettingsConnectionCard(
-                            deviceName: currentMacDisplayName,
-                            status: compactConnectionStatusText,
-                            savedDeviceCount: appStore.connectionProfileSettingsModel.savedCount,
-                            statusTint: connectionStatusTone(tokens: tokens),
-                            warningText: connectionWarningText
-                        )
-                    }
-                    // 用 Button 而不是 NavigationLink：卡片自己画了箭头，
-                    // NavigationLink 会再叠一个系统 disclosure，右侧就成了两个箭头。
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets())
-                    .accessibilityIdentifier("settings.connectionManagement")
-                } header: {
-                    SettingsGroupHeader(title: L10n.text("ui.mac_devices"))
-                }
-                .settingsGroupRowStyle()
-            }
-
-            if ManagedConnectionSubscriptionView.isEntryVisible {
-                Section {
-                    NavigationLink(value: SettingsDestination.managedConnection) {
-                        SettingsValueLabel(
-                            title: L10n.text("ui.managed_subscription_title"),
-                            systemImage: "creditcard"
-                        )
-                    }
-                    .settingsStandardListRow()
-                    .accessibilityIdentifier("settings.managedSubscription")
-                } header: {
-                    SettingsGroupHeader(title: L10n.text("ui.managed_subscription_section"))
-                }
-                .settingsGroupRowStyle()
-            }
 
             Section {
                 NavigationLink(value: SettingsDestination.appearance) {
@@ -573,6 +535,8 @@ struct SettingsValueLabel: View {
     var valueTint: Color? = nil
     /// 动作行（点了就执行，不导航）用强调色标题区分于导航行，与列表里的按钮惯例一致。
     var titleTint: Color? = nil
+    /// 单选的当前项把图标换成对勾并用强调色，其余行保持统一的图标色。
+    var iconTint: Color? = nil
     var symbolPointSize: CGFloat = SettingsLayoutMetrics.symbolPointSize
 
     var body: some View {
@@ -582,7 +546,7 @@ struct SettingsValueLabel: View {
             Image(systemName: systemImage)
                 .font(.system(size: symbolPointSize, weight: .regular))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(tokens.settingsIconTint)
+                .foregroundStyle(iconTint ?? tokens.settingsIconTint)
                 .frame(
                     width: SettingsLayoutMetrics.iconSlot,
                     height: SettingsLayoutMetrics.iconSlot

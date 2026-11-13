@@ -323,7 +323,7 @@ struct WorkbenchSidebarDestinationButton: View {
     }
 }
 
-/// 宽屏浮动侧栏让列表铺满整列，底部操作只作为局部玻璃控件叠加；
+/// 宽屏浮动侧栏让列表铺满整列，底部入口叠在列表下沿；
 /// 其他布局仍保留稳定 Footer，避免改变 iPhone 与覆盖式侧栏行为。
 struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
     let usesFloatingSurface: Bool
@@ -344,9 +344,12 @@ struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
     var body: some View {
         if usesFloatingSurface {
             content
-                // 最后一行可以滚到按钮上方，但列表视口与背景仍完整延伸到底部。
-                .contentMargins(.bottom, 64, for: .scrollContent)
-                .overlay(alignment: .bottom) {
+                // 列表视口仍延伸到面板底部，滚动内容的底部留白随 Footer 实际高度（含收边渐隐、
+                // 大字号）变化：滚到底时最后一行完整停在渐隐上方。之前固定 64pt 再 overlay，
+                // 按钮后方没有底色，行文字会从胶囊之间和旁边露出来（#993）。
+                // SidebarListStyle 自带的底部内容边距会叠在 inset 上，多出一截空白，这里归零。
+                .contentMargins(.bottom, 0, for: .scrollContent)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
                     footer
                 }
         } else {
@@ -358,14 +361,18 @@ struct WorkbenchSidebarContentLayout<Content: View, Footer: View>: View {
     }
 }
 
-/// 全局配置固定在左侧；只有主内容没有独立 FAB 的布局才在右侧补充创建入口。
+/// 贴边侧栏：全局配置固定在左侧；只有主内容没有独立 FAB 的布局才在右侧补充创建入口。
+/// 浮动侧栏：没有创建入口，「设备」「我的」合成一枚等分胶囊，在侧栏内水平居中（#993）。
 struct WorkbenchSidebarFooter: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let tokens: ThemeTokens
     let usesFloatingSurface: Bool
     let bottomSafeAreaInset: CGFloat
     let isMeSelected: Bool
+    let isDevicesSelected: Bool
+    let onOpenDevices: (() -> Void)?
     let onOpenSettings: () -> Void
     let onNewSession: () -> Void
     let newSessionPresentationNamespace: Namespace.ID?
@@ -375,6 +382,8 @@ struct WorkbenchSidebarFooter: View {
         usesFloatingSurface: Bool = false,
         bottomSafeAreaInset: CGFloat = 0,
         isMeSelected: Bool = false,
+        isDevicesSelected: Bool = false,
+        onOpenDevices: (() -> Void)? = nil,
         onOpenSettings: @escaping () -> Void,
         onNewSession: @escaping () -> Void,
         newSessionPresentationNamespace: Namespace.ID? = nil
@@ -383,33 +392,155 @@ struct WorkbenchSidebarFooter: View {
         self.usesFloatingSurface = usesFloatingSurface
         self.bottomSafeAreaInset = bottomSafeAreaInset
         self.isMeSelected = isMeSelected
+        self.isDevicesSelected = isDevicesSelected
+        self.onOpenDevices = onOpenDevices
         self.onOpenSettings = onOpenSettings
         self.onNewSession = onNewSession
         self.newSessionPresentationNamespace = newSessionPresentationNamespace
     }
 
+    @ViewBuilder
     var body: some View {
+        if usesFloatingSurface {
+            floatingFooter
+        } else {
+            attachedFooter
+        }
+    }
+
+    private var attachedFooter: some View {
         // footer 下方还包含系统安全区；向下补偿其一半（最多 10pt），让控件在整块可见底栏中视觉居中，
         // 同时仍把完整触控区域留在安全区之上。
         let safeAreaVisualOffset = min(max(bottomSafeAreaInset, 0) / 2, 10)
 
-        // Footer 按钮各自绘制自己的表面，不再交给 GlassEffectContainer 合成：
-        // 合成只对 Liquid Glass 有意义，而这一行现在和其它 chrome 一样是扁平磨砂。
-        footerButtonRow
+        return footerButtonRow
             .offset(y: safeAreaVisualOffset)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .overlay(alignment: .top) {
-                if !usesFloatingSurface {
-                    Rectangle()
-                        .fill(tokens.border.opacity(0.55))
-                        .frame(height: 1)
-                }
+                Rectangle()
+                    .fill(tokens.border.opacity(0.55))
+                    .frame(height: 1)
             }
     }
 
+    /// 浮动侧栏的列表滚到这里时先淡出、再被同色底板接住：胶囊后方和间隙里不再露出行文字。
+    /// 渐隐和侧栏上沿同一组 smoothstep 色标，只是方向相反；渐隐不接收触摸，点按穿到下面的行。
+    private var floatingFooter: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                stops: WorkbenchSidebarTopScrollEdgeFade.stops(
+                    color: tokens.sidebarSurfaceBackground,
+                    intensity: 1
+                ),
+                startPoint: .bottom,
+                endPoint: .top
+            )
+            .frame(height: WorkbenchSidebarTopScrollEdgeFade.fadeHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+
+            floatingDestinationBar
+                // 左右与底边同一档内距，胶囊与面板圆角之间的留白看起来一样宽。
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
+                .background(tokens.sidebarSurfaceBackground)
+        }
+    }
+
+    /// 两个入口共用一枚磨砂胶囊、等分宽度，读法与紧凑布局的底部 Tab 一致：
+    /// 选中项是胶囊里的一块中性提亮，不再一个有底、一个透明。
+    private var floatingDestinationBar: some View {
+        HStack(spacing: 0) {
+            if let onOpenDevices {
+                floatingDestinationButton(
+                    title: L10n.text("ui.devices"),
+                    icon: .devices,
+                    isSelected: isDevicesSelected,
+                    accessibilityIdentifier: "sidebar.devices",
+                    action: onOpenDevices
+                )
+            }
+            floatingDestinationButton(
+                title: L10n.text("ui.me"),
+                icon: .me,
+                isSelected: isMeSelected,
+                accessibilityIdentifier: "sidebar.me",
+                action: onOpenSettings
+            )
+        }
+        .background { WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens) }
+    }
+
+    private func floatingDestinationButton(
+        title: String,
+        icon: WorkbenchNavigationIcon,
+        isSelected: Bool,
+        accessibilityIdentifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label {
+                Text(title)
+                    .font(themeStore.uiFont(.subheadline, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            } icon: {
+                destinationIcon(icon)
+            }
+            .frame(maxWidth: .infinity, minHeight: 38)
+            .background {
+                if isSelected {
+                    Capsule().fill(
+                        WorkbenchChromeMaterial<Capsule>.selectionTint(
+                            tokens: tokens,
+                            reduceTransparency: reduceTransparency
+                        )
+                    )
+                }
+            }
+            // 内距放在按钮里：胶囊边缘也算点按区域，整枚胶囊保持 44pt 高。
+            .padding(3)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? tokens.accentText : tokens.secondaryText)
+        .accessibilityLabel(title)
+        .accessibilityValue(
+            isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected")
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+
+    /// 与侧栏导航行、底部 Tab 用同一张图；尺寸对齐 WorkbenchChromeIcon 的符号框，
+    /// 免得同一列里资源图比 SF Symbol 大一圈。
+    private func destinationIcon(_ icon: WorkbenchNavigationIcon) -> some View {
+        icon.navigationImage()
+            .resizable()
+            .scaledToFit()
+            .frame(
+                width: WorkbenchChromeIconMetrics.symbolFrame,
+                height: WorkbenchChromeIconMetrics.symbolFrame
+            )
+    }
+
     private var footerButtonRow: some View {
-        HStack {
+        HStack(spacing: 4) {
+            if let onOpenDevices {
+                Button(action: onOpenDevices) {
+                    Label(L10n.text("ui.devices"), systemImage: "laptopcomputer.and.iphone")
+                        .font(themeStore.uiFont(.subheadline, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isDevicesSelected ? tokens.accentText : tokens.secondaryText)
+                .background(Capsule().fill(isDevicesSelected ? tokens.selectionFill : .clear))
+                .accessibilityAddTraits(isDevicesSelected ? .isSelected : [])
+                .accessibilityIdentifier("sidebar.devices")
+            }
             meButton
 
             Spacer(minLength: 0)
@@ -433,26 +564,15 @@ struct WorkbenchSidebarFooter: View {
         .buttonStyle(.plain)
         .foregroundStyle(isMeSelected ? tokens.accentText : tokens.secondaryText)
         .background {
-            if usesFloatingSurface {
-                // 浮层侧栏与顶栏按钮、工作区胶囊共用同一档磨砂；选中态复用
-                // WorkbenchChromeMaterial 的中性提亮，不再额外描边或换一种材质。
-                WorkbenchChromeMaterial(
-                    shape: Capsule(),
-                    tokens: tokens,
-                    tintLevel: isMeSelected ? 1 : 0
-                )
-            } else {
-                // 贴边侧栏本身就是实色板，磨砂在实色上只会发灰；这里继续用实色填充表达选中。
-                Capsule().fill(
-                    isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
-                )
-            }
+            // 贴边侧栏本身就是实色板，磨砂在实色上只会发灰；这里用实色填充表达选中。
+            // 浮动侧栏的「我的」在 floatingDestinationBar 里，不走这里。
+            Capsule().fill(
+                isMeSelected ? tokens.selectionFill : tokens.surface.opacity(0.72)
+            )
         }
         .overlay {
-            if !usesFloatingSurface {
-                Capsule()
-                    .stroke(tokens.border.opacity(0.6), lineWidth: 1)
-            }
+            Capsule()
+                .stroke(tokens.border.opacity(0.6), lineWidth: 1)
         }
         .accessibilityLabel(L10n.text("ui.me"))
         .accessibilityValue(
@@ -473,15 +593,7 @@ struct WorkbenchSidebarFooter: View {
             Text(L10n.text("ui.me"))
                 .font(themeStore.uiFont(.subheadline, weight: .medium))
         } icon: {
-            // 与侧栏导航行、底部 Tab 用同一张图；尺寸对齐 WorkbenchChromeIcon 的符号框，
-            // 免得同一列里资源图比 SF Symbol 大一圈。
-            WorkbenchNavigationIcon.me.navigationImage()
-                .resizable()
-                .scaledToFit()
-                .frame(
-                    width: WorkbenchChromeIconMetrics.symbolFrame,
-                    height: WorkbenchChromeIconMetrics.symbolFrame
-                )
+            destinationIcon(.me)
         }
     }
 

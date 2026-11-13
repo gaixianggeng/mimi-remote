@@ -756,8 +756,11 @@ enum WorkbenchSidebarSurfaceMetrics {
     static let overlayWidth: CGFloat = 300
     static let outerInset: CGFloat = 12
     static let cornerRadius: CGFloat = 18
-    // 展开态只从列表末端预留的窄条接管横向拖动；关闭态只捕获屏幕最左侧窄边缘。
-    static let openDragStripWidth: CGFloat = 22
+    // 展开态只从面板右缘的窄条接管横向拖动；关闭态只捕获屏幕最左侧窄边缘。
+    // 展开态窄条横跨面板外的 12pt 间隙和面板内 8pt 的行外边距，不压任何行内容，
+    // 列表因此不必在右侧再预留一条空白，行左右内边距对称（#993）。
+    static let openDragStripPanelOverlap: CGFloat = 8
+    static let openDragStripWidth: CGFloat = outerInset + openDragStripPanelOverlap
     static let openDragStripVerticalInset: CGFloat = 72
     static let closedEdgeDragWidth: CGFloat = 22
     static let closedEdgeDragVerticalInset: CGFloat = 72
@@ -829,12 +832,27 @@ struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
                 // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
                 // tintLevel 让亮度与横滑进度 1:1 对应，不需要额外的主题色相。
                 shape.fill(
-                    tokens.primaryText.opacity(
-                        (reduceTransparency ? 0.14 : 0.10) * min(max(tintLevel, 0), 1)
+                    Self.selectionTint(
+                        tokens: tokens,
+                        reduceTransparency: reduceTransparency,
+                        level: tintLevel
                     )
                 )
             }
         }
+    }
+}
+
+extension WorkbenchChromeMaterial {
+    /// 磨砂表面上的选中提亮。分段胶囊里的选中项只画这一层，不再叠第二层磨砂。
+    static func selectionTint(
+        tokens: ThemeTokens,
+        reduceTransparency: Bool,
+        level: Double = 1
+    ) -> Color {
+        tokens.primaryText.opacity(
+            (reduceTransparency ? 0.14 : 0.10) * min(max(level, 0), 1)
+        )
     }
 }
 

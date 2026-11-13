@@ -114,8 +114,8 @@ extension SessionStore {
             try requireCurrentWorkspaceHost(lease)
             throw error
         }
+        // 过期结果的副本不在这里删：同一内容的副本可能已交给别的视图，留给下次启动清理（#918）。
         guard canApplyWorkspaceHostResult(lease) else {
-            await MediaWorker.shared.discardPreview(at: url)
             throw CancellationError()
         }
         return url

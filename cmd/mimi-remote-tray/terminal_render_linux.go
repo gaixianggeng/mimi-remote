@@ -103,6 +103,10 @@ func (s *linuxTerminalScreen) content() string {
 			return "Tailcat 当前未启用。\n\n启用后使用 Mimi 内置连接，无需外部 Tailscale 客户端。\n这会启动 Tailcat，并保存到当前主机配置。"
 		case "tailcat-disable":
 			return "关闭 Tailcat 会断开正在使用 Tailcat 的设备。\n\nagentd 和外部 Tailscale 服务继续运行。"
+		case "tailcat-enter-managed":
+			return "改用 Mimi 中转：开通过的手机经 Mimi 中转的服务器连接这台电脑，设备数按开通的名额限制。\n\n没开通的设备不受影响，继续走免费线路；已配对的设备不用重新扫码。"
+		case "tailcat-exit-managed":
+			return "停用 Mimi 中转：经 Mimi 中转接入的设备需要重新扫码，之后走免费线路。\n\n走免费线路、Tailscale 和局域网的设备不受影响。"
 		case "stop":
 			return "停止 Mimi Remote 服务会断开当前连接。\n\n之后可从托盘重新启动。"
 		case "restart":

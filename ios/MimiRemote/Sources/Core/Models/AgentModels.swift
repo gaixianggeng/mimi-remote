@@ -112,6 +112,9 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// Claude 会话正被 Mac 上其他 Claude 进程（终端 / Claude 桌面）持有时，bridge 附带的
     /// 持有方摘要；此时 `canAcceptDirectInput` 一定为 false。只用于展示，不参与授权判断。
     var claudeOwner: ClaudeSessionOwner?
+    /// Codex 会话的 writer 被电脑上另一个 Codex 进程占着（通常是普通 Desktop “This Mac”）。只说明
+    /// 占用，不代表正在运行，也不决定能否写入。nil 表示不知道；不持久化，冷启动后以列表为准。
+    var writerHeldElsewhere: Bool? = nil
     /// Claude 桌面版"主会话派生会话"的父会话线程 ID，只用于列表分组展示。
     /// 派生会话是完整会话，和 `parentThreadID`（子 Agent，只读）无关，不参与授权。
     var spawnedFromThreadID: String?
@@ -200,6 +203,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         agentRole: String? = nil,
         canAcceptDirectInput: Bool? = nil,
         claudeOwner: ClaudeSessionOwner? = nil,
+        writerHeldElsewhere: Bool? = nil,
         spawnedFromThreadID: String? = nil,
         context: SessionContextSnapshot? = nil
     ) {
@@ -244,6 +248,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.agentRole = agentRole
         self.canAcceptDirectInput = canAcceptDirectInput
         self.claudeOwner = claudeOwner
+        self.writerHeldElsewhere = writerHeldElsewhere
         let normalizedSpawnedFrom = spawnedFromThreadID?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.spawnedFromThreadID = normalizedSpawnedFrom?.isEmpty == false && normalizedSpawnedFrom != id
             ? normalizedSpawnedFrom
@@ -435,6 +440,8 @@ struct AgentSessionDisplayStatus: Hashable {
     let systemImage: String
     let tone: AgentSessionStatusTone
     let showsSpinner: Bool
+    /// 列表默认省略中性的历史状态；这类状态解释了会话为什么不能直接继续，必须留在行内。
+    var staysVisibleInList = false
 }
 
 struct AgentSessionStatusBadge: Identifiable, Hashable {
@@ -572,6 +579,18 @@ extension AgentSession {
             return AgentSessionDisplayStatus(title: L10n.text("ui.failed_status"), systemImage: "exclamationmark.triangle.fill", tone: .danger, showsSpinner: false)
         case .draft, .needsYou, .idle:
             break
+        }
+
+        // 被别处占用时不能显示成“历史记录”：那等于告诉用户这条会话已经结束。这里也不说“运行中”，
+        // 共享 App Server 看不到另一个实例里的回合。
+        if writerHeldElsewhere == true {
+            return AgentSessionDisplayStatus(
+                title: L10n.text("ui.session_open_on_computer"),
+                systemImage: "desktopcomputer",
+                tone: .neutral,
+                showsSpinner: false,
+                staysVisibleInList: true
+            )
         }
 
         // 空闲态保留历史 / 完成 / 已结束 / 空闲的细分文案；它们只是展示差异，不是不同的活动状态。
@@ -1911,6 +1930,7 @@ struct ConversationActivityPayload: Codable, Hashable {
     let historyOutputID: String?
     let commandPresentationKind: ConversationCommandPresentationKind?
     let toolPresentationKind: ConversationToolPresentationKind?
+    let turnHint: ConversationTurnHint?
 
     enum CodingKeys: String, CodingKey {
         case category
@@ -1928,6 +1948,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         case historyOutputID = "history_output_id"
         case commandPresentationKind = "command_presentation_kind"
         case toolPresentationKind = "tool_presentation_kind"
+        case turnHint = "turn_hint"
     }
 
     init(
@@ -1945,7 +1966,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         outputByteCount: Int? = nil,
         historyOutputID: String? = nil,
         commandPresentationKind: ConversationCommandPresentationKind? = nil,
-        toolPresentationKind: ConversationToolPresentationKind? = nil
+        toolPresentationKind: ConversationToolPresentationKind? = nil,
+        turnHint: ConversationTurnHint? = nil
     ) {
         self.category = category
         self.displayTitle = displayTitle
@@ -1962,6 +1984,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.historyOutputID = historyOutputID
         self.commandPresentationKind = commandPresentationKind
         self.toolPresentationKind = toolPresentationKind
+        self.turnHint = turnHint
     }
 
     init(from decoder: Decoder) throws {
@@ -1990,6 +2013,7 @@ struct ConversationActivityPayload: Codable, Hashable {
         } else {
             toolPresentationKind = nil
         }
+        turnHint = try? container.decodeIfPresent(ConversationTurnHint.self, forKey: .turnHint)
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
@@ -2054,6 +2078,17 @@ struct ConversationActivityPayload: Codable, Hashable {
                 outputDigest: historyOutputID.map(Self.stableDigest) ?? output.map(Self.stableDigest),
                 outputByteCount: historyOutputByteCount ?? output?.utf8.count,
                 historyOutputID: historyOutputID
+            )
+
+        case "mcpToolCall" where ConversationTurnHint(item: item) != nil:
+            // 回合提示是给用户的卡片，不是执行过程：不带状态，避免影响回合进行中判断。
+            let hint = ConversationTurnHint(item: item)
+            self.init(
+                category: .toolCall,
+                displayTitle: hint?.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
+                subtitle: hint?.title ?? hint?.question,
+                toolName: Self.toolIdentifier(from: item, type: type),
+                turnHint: hint
             )
 
         case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch":

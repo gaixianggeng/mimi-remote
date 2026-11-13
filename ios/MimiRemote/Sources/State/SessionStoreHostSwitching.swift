@@ -18,8 +18,68 @@ struct ConnectionSwitchSupersession {
     var idleWaiters: [CheckedContinuation<Void, Never>] = []
 }
 
+/// 一键接入的请求与二次确认共用同一份主机快照。切走再切回也会改变 scope 代次，
+/// 旧确认不能重新获得授权；client 固定为最初的电脑，不能在确认时重新取当前电脑。
+@MainActor
+struct ManagedConnectionUpgradeContext {
+    let id = UUID()
+    let profile: ConnectionProfile
+    private let hostScope: HostScope
+    private let credentialFingerprint: String
+    private let client: AgentAPIClient
+
+    init(appStore: AppStore, client: AgentAPIClient) throws {
+        guard let profile = appStore.activeConnectionProfile,
+              let fingerprint = appStore.authenticatedCredentialFingerprint else {
+            throw CancellationError()
+        }
+        self.profile = profile
+        hostScope = appStore.activeHostScope
+        credentialFingerprint = fingerprint
+        self.client = client
+    }
+
+    func isCurrent(in appStore: AppStore) -> Bool {
+        appStore.activeHostScope == hostScope &&
+            appStore.activeConnectionProfile?.revision == profile.revision &&
+            appStore.authenticatedCredentialFingerprint == credentialFingerprint
+    }
+
+    func requestPairingLink(
+        confirmResetSelfHosted: Bool,
+        appStore: AppStore
+    ) async throws -> ManagedPairingLinkResponse {
+        try checkCurrent(in: appStore)
+        do {
+            let response = try await client.managedPairingLink(confirmResetSelfHosted: confirmResetSelfHosted)
+            try checkCurrent(in: appStore)
+            return response
+        } catch {
+            // 迟到的 409 也必须失效，否则它会在另一台电脑上重新弹出危险操作确认。
+            try checkCurrent(in: appStore)
+            throw error
+        }
+    }
+
+    func checkCurrent(in appStore: AppStore) throws {
+        try Task.checkCancellation()
+        guard isCurrent(in: appStore) else { throw CancellationError() }
+    }
+
+    func requestRelayActivation(requestID: UUID, appStore: AppStore) async throws -> ManagedPairingLinkResponse {
+        try checkCurrent(in: appStore)
+        let result = try await client.activateManagedRelay(requestID: requestID)
+        try checkCurrent(in: appStore)
+        return result
+    }
+}
+
 // 多 Mac 连接变更、Profile 清理和暖快照恢复共享同一事务边界。
 extension SessionStore {
+    var isConnectionSwitchInProgress: Bool {
+        connectionSwitchTargetProfileID != nil
+    }
+
     func resetConnectionForSettingsChange(clearData: Bool = false) {
         invalidatePreparedConnectionChange()
         connectionTermination = nil
@@ -48,21 +108,35 @@ extension SessionStore {
 
     @discardableResult
     func retryManagedConnection() async -> Bool {
-        guard let tailcatExperimentController else { return false }
+        guard mimiRelay.task == nil, inFlightConnectionChangeGeneration == nil,
+              !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
+              let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
+        // 手动切换与自动启用、自动回退共用连接事务，防止并发替换底层线路。
+        guard let generation = try? beginPreparedConnectionChange() else { return false }
+        let scope = appStore.activeHostScope
+        defer { finishPreparedConnectionChange(generation) }
         guard await tailcatExperimentController.retryManagedConnection(appStore: appStore) else {
             return false
         }
+        guard appStore.activeHostScope == scope, !Task.isCancelled else { return false }
         return await refreshAfterConnectionCommit(maxWait: 10)
     }
 
     @discardableResult
     func useSavedConnectionRouteOnce(_ route: ConnectionProfileRoute) async -> Bool {
-        guard let tailcatExperimentController else { return false }
+        guard mimiRelay.task == nil, inFlightConnectionChangeGeneration == nil,
+              !appStore.requiresRePairing, connectionTermination != .credentialsInvalid,
+              let tailcatExperimentController else { return false }
         resetConnectionForSettingsChange()
+        // 手动切换与自动启用、自动回退共用连接事务，防止并发替换底层线路。
+        guard let generation = try? beginPreparedConnectionChange() else { return false }
+        let scope = appStore.activeHostScope
+        defer { finishPreparedConnectionChange(generation) }
         guard await tailcatExperimentController.useSavedRouteOnce(route, appStore: appStore) else {
             return false
         }
+        guard appStore.activeHostScope == scope, !Task.isCancelled else { return false }
         return await refreshAfterConnectionCommit(maxWait: 10)
     }
 
@@ -191,14 +265,18 @@ extension SessionStore {
     /// 系统相机扫码或其它 App 打开的配对链接。配对仍在 App 层执行，停在哪一页都能连上；
     /// 但首次配对页按 #557 只显示本页操作的反馈、不读全局 `lastError`，所以还没有任何电脑时
     /// 要把进度和失败原因经 `pairingLinkAttempt` 交给它，否则失败时页面毫无变化（#728）。
+    /// 只存了其它电脑、没有当前电脑时同理：设备页没有当前电脑卡片，全局错误也无处显示（#959）。
     func openPairingLink(_ url: URL) async {
         let wasConfigured = appStore.isConfigured
-        let reportsToFirstConnectionPage = appStore.connectionProfiles.isEmpty
+        let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
         }
         do {
             _ = try await applyPairingURL(url)
+            if RelayServiceChoice.fromPairingURL(url) == .mimi {
+                mimiRelaySetupProfileID = appStore.activeConnectionProfileID
+            }
             if reportsToFirstConnectionPage {
                 pairingLinkAttempt = .idle
             }
@@ -215,7 +293,7 @@ extension SessionStore {
 
     @discardableResult
     func applyPairingURL(_ url: URL) async throws -> Bool {
-        try await performPreparedConnectionChange {
+        let changed = try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
                try TailcatPairingLink.parse(url) != nil {
                 return try await controller.preparePairingURL(
@@ -226,11 +304,23 @@ extension SessionStore {
             }
             return try await self.appStore.preparePairingURL(url)
         }
+        if (try? TailcatPairingLink.parse(url)) != nil, let profileID = appStore.activeConnectionProfileID {
+            // 旧二维码没有选择信息时清掉旧偏好，不能把新免费配对重新升级为 Mimi。
+            tailcatExperimentController?.selectRelayService(RelayServiceChoice.fromPairingURL(url), profileID: profileID)
+        }
+        return changed
     }
 
     @discardableResult
-    func applyManagedPairingURL(_ url: URL) async throws -> Bool {
-        try await performPreparedConnectionChange {
+    func applyManagedPairingURL(
+        _ url: URL,
+        upgrading context: ManagedConnectionUpgradeContext? = nil
+    ) async throws -> Bool {
+        try context?.checkCurrent(in: appStore)
+        return try await performPreparedConnectionChange(
+            isNavigationCurrent: { context?.isCurrent(in: self.appStore) ?? true }
+        ) {
+            try context?.checkCurrent(in: self.appStore)
             guard let controller = self.tailcatExperimentController,
                   try TailcatPairingLink.parse(url) != nil else {
                 throw ManagedConnectionDeviceStoreError.managedQRCodeRequired
@@ -238,15 +328,17 @@ extension SessionStore {
             return try await controller.preparePairingURL(
                 url,
                 appStore: self.appStore,
-                profileTarget: .currentOrNew(displayName: nil),
-                requiresManagedAuthorization: true
+                profileTarget: context.map { .existingProfile(id: $0.profile.id) }
+                    ?? .currentOrNew(displayName: nil),
+                requiresManagedAuthorization: true,
+                preservingEndpoint: context?.profile.endpoint
             )
         }
     }
 
     @discardableResult
     func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
-        try await performPreparedConnectionChange {
+        let changed = try await performPreparedConnectionChange {
             if let controller = self.tailcatExperimentController,
                try TailcatPairingLink.parse(url) != nil {
                 return try await controller.preparePairingURL(
@@ -260,6 +352,11 @@ extension SessionStore {
             }
             return try await self.appStore.prepareNewPairingURL(url, displayName: displayName)
         }
+        if (try? TailcatPairingLink.parse(url)) != nil, let profileID = appStore.activeConnectionProfileID {
+            // 旧二维码没有选择信息时清掉旧偏好，不能把新免费配对重新升级为 Mimi。
+            tailcatExperimentController?.selectRelayService(RelayServiceChoice.fromPairingURL(url), profileID: profileID)
+        }
+        return changed
     }
 
     @discardableResult
@@ -283,7 +380,7 @@ extension SessionStore {
     @discardableResult
     func performPreparedConnectionChange(
         switchTargetProfileID: String? = nil,
-        isNavigationCurrent: () -> Bool = { true },
+        isNavigationCurrent: @escaping () -> Bool = { true },
         _ prepare: @escaping () async throws -> PreparedConnectionSettings
     ) async throws -> Bool {
         let operationGeneration = try beginPreparedConnectionChange(isSwitch: switchTargetProfileID != nil)
@@ -321,11 +418,15 @@ extension SessionStore {
             try await tailcatExperimentController?.stagePreparedRouteIfNeeded(prepared, appStore: appStore)
             // stage 和提交里的凭据写入都会 await，取消或改选可能正落在这期间；只撤销已结束的
             // prepare 任务拦不住，提交门前必须再核对代次（#801）。
-            let isOperationCurrent = { self.connectionChangeGeneration == operationGeneration }
-            guard isNavigationCurrent(), isOperationCurrent() else { throw CancellationError() }
+            let isOperationCurrent = {
+                self.connectionChangeGeneration == operationGeneration && isNavigationCurrent()
+            }
+            guard isOperationCurrent() else { throw CancellationError() }
             let committed = try await commitPreparedConnection(prepared, isStillCurrent: isOperationCurrent)
             await tailcatExperimentController?.commitPreparedRouteIfNeeded(prepared, appStore: appStore)
             preparedCandidate = nil
+            // 换到已有电脑不算配对；扫码、粘贴链接和新增电脑当天都不邀请评分（#842）。
+            if switchTargetProfileID == nil { appReviewPrompt?.recordPairingCompleted() }
             return committed
         } catch {
             if let preparedCandidate {

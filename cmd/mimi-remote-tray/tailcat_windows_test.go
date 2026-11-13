@@ -11,8 +11,8 @@ import (
 )
 
 func TestTailcatMenuCommandIDsAppendAfterExistingCommands(t *testing.T) {
-	if menuTailcatPair != 111 || menuTailcatToggle != 112 || menuTailcatStatus != 113 {
-		t.Fatalf("Tailcat menu IDs = %d/%d/%d, want 111/112/113", menuTailcatPair, menuTailcatToggle, menuTailcatStatus)
+	if menuTailcatPair != 111 || menuTailcatToggle != 112 || menuTailcatStatus != 113 || menuTailcatManaged != 114 {
+		t.Fatalf("Tailcat menu IDs = %d/%d/%d/%d, want 111/112/113/114", menuTailcatPair, menuTailcatToggle, menuTailcatStatus, menuTailcatManaged)
 	}
 }
 
@@ -108,14 +108,14 @@ func TestTailcatPresentationOnlyOffersToggleForKnownState(t *testing.T) {
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, errors.New("old agentd"), false); p.ToggleEnabled || p.Value != "状态不可用" {
 		t.Fatalf("unreadable Tailcat state offered a toggle: %+v", p)
 	}
-	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启 Tailcat" || p.Value != "未开启" {
+	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "开启内置连接" || p.Value != "未开启" {
 		t.Fatalf("disabled Tailcat presentation = %+v", p)
 	}
 	if p := makeTailcatPresentation(ready, tailcatTrayStatus{}, true, nil, true); p.ToggleEnabled {
 		t.Fatalf("busy tray must not offer the Tailcat toggle: %+v", p)
 	}
 	running := tailcatTrayStatus{Enabled: true, Running: true, PairedDeviceCount: 1}
-	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭 Tailcat" || p.Value != "运行中 · 1 台设备" {
+	if p := makeTailcatPresentation(ready, running, true, nil, false); !p.ToggleEnabled || p.ToggleLabel != "关闭内置连接" || p.Value != "运行中 · 1 台设备" {
 		t.Fatalf("running Tailcat presentation = %+v", p)
 	}
 	stopped := agentStatus{Version: "1.0.0"}
@@ -143,5 +143,40 @@ func TestDefaultPairingUsesTailcatOnlyWithoutReachableNetwork(t *testing.T) {
 	}
 	if defaultPairingUsesTailcat(agentStatus{}, running, true) {
 		t.Fatal("unknown module status must keep the default pairing code")
+	}
+}
+
+func TestTailcatManagedArgumentsAndTitle(t *testing.T) {
+	if got := tailcatManagedArguments(true); !reflect.DeepEqual(got, []string{"tailcat", "enter-managed", "--json"}) {
+		t.Fatalf("enter arguments = %v", got)
+	}
+	if got := tailcatManagedArguments(false); !reflect.DeepEqual(got, []string{"tailcat", "exit-managed", "--json"}) {
+		t.Fatalf("exit arguments = %v", got)
+	}
+	managed := tailcatTrayStatus{Enabled: true, Running: true, Mode: "managed", PairedDeviceCount: 1}
+	if managed.title() != "Mimi 中转已启用 · 1 台设备" || tailcatManagedMenuLabel(managed) != "中转服务：Mimi 中转" {
+		t.Fatalf("managed presentation = %q / %q", managed.title(), tailcatManagedMenuLabel(managed))
+	}
+	free := tailcatTrayStatus{Enabled: true, Running: true, Mode: "self_hosted", PairedDeviceCount: 2}
+	if free.title() != "运行中 · 2 台设备" || tailcatManagedMenuLabel(free) != "中转服务：默认 Tailcat 自带" {
+		t.Fatalf("free presentation = %q / %q", free.title(), tailcatManagedMenuLabel(free))
+	}
+}
+
+func TestSetTailcatManagedRequiresModeReadback(t *testing.T) {
+	var calls []string
+	controller := fakeTailcatController(map[string]string{
+		"tailcat enter-managed --json": `{}`,
+		"tailcat status --json":        `{"enabled":true,"running":true,"mode":"self_hosted"}`,
+	}, &calls)
+	if _, err := controller.setTailcatManaged(context.Background(), true); err == nil {
+		t.Fatal("unchanged mode must not be reported as switched")
+	}
+	controller = fakeTailcatController(map[string]string{
+		"tailcat enter-managed --json": `{}`,
+		"tailcat status --json":        `{"enabled":true,"running":true,"mode":"managed"}`,
+	}, &calls)
+	if status, err := controller.setTailcatManaged(context.Background(), true); err != nil || !status.managed() {
+		t.Fatalf("switch to managed = %+v, %v", status, err)
 	}
 }

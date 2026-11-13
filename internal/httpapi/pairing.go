@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -117,6 +119,24 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		Endpoint: strings.TrimSpace(payload.Endpoint),
 		Token:    token,
 	}
+	if strings.TrimSpace(payload.TailcatClientKey) != "" {
+		// 自建白名单写入不能越过远程升级的设备数检查。
+		r.tailcatControlMu.Lock()
+		defer r.tailcatControlMu.Unlock()
+	}
+	if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
+		if r.tailcat == nil || r.tailcat.Status(req.Context()).Mode != config.TailcatModeManaged {
+			writeManagedModeRequired(w)
+			return
+		}
+	} else if strings.TrimSpace(payload.TailcatClientKey) != "" && r.tailcat != nil {
+		// 不带托管授权的设备走免费节点，托管节点不会放行它。免费节点还没就绪时不能写白名单，
+		// 否则设备拿不到能用的地址。
+		if status := r.tailcat.Status(req.Context()); status.Mode == config.TailcatModeManaged && status.FreeAddress == "" {
+			writeManagedGrantRequired(w)
+			return
+		}
+	}
 	if publicKey := strings.TrimSpace(payload.TailcatClientKey); publicKey != "" {
 		if r.tailcat == nil {
 			writeError(w, http.StatusServiceUnavailable, "Tailcat 实验未启用")
@@ -132,7 +152,7 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		var err error
 		if managedSessionID != "" {
 			if r.managedPairing == nil {
-				writeError(w, http.StatusServiceUnavailable, "Mimi 托管连接尚未初始化")
+				writeError(w, http.StatusServiceUnavailable, "Mimi 中转尚未初始化")
 				return
 			}
 			status, err = r.managedPairing.Complete(
@@ -144,6 +164,14 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		} else {
 			status, err = r.tailcat.AllowClient(req.Context(), publicKey)
 		}
+		if errors.Is(err, errTailcatManagedModeRequired) {
+			writeManagedModeRequired(w)
+			return
+		}
+		if errors.Is(err, errTailcatManagedGrantRequired) {
+			writeManagedGrantRequired(w)
+			return
+		}
 		if err != nil || !status.Running || strings.TrimSpace(status.Address) == "" {
 			if err != nil {
 				writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -153,6 +181,13 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		response.TailcatAddress = status.Address
+		if managedSessionID == "" && status.Mode == config.TailcatModeManaged {
+			response.TailcatAddress = status.FreeAddress
+		}
+		if strings.TrimSpace(response.TailcatAddress) == "" {
+			writeManagedGrantRequired(w)
+			return
+		}
 	} else if strings.TrimSpace(payload.ManagedSessionID) != "" || strings.TrimSpace(payload.ManagedGrant) != "" {
 		writeError(w, http.StatusBadRequest, "托管配对必须提供 Tailcat 客户端公钥")
 		return
@@ -165,4 +200,12 @@ func (r *Router) pairingClaimHandler(w http.ResponseWriter, req *http.Request) {
 		response.TailscaleDeviceName = host.DeviceName
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func writeManagedModeRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_mode_required", "error": errTailcatManagedModeRequired.Error()})
+}
+
+func writeManagedGrantRequired(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"code": "tailcat_managed_grant_required", "error": errTailcatManagedGrantRequired.Error()})
 }

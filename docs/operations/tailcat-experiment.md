@@ -16,6 +16,8 @@ iPad App 内嵌 Tailcat Go 客户端。客户端在本机打开一个随机 loop
 
 托管授权列表只增加设备时原地追加，不中断现有连接；撤销设备时仍重建服务，确保旧授权失效。直连与 DERP 路径切换不代表辅助进程重启。
 
+sidecar 意外退出时，`agentd` 按 1 秒起步、最长 5 分钟的退避自动重启，持续重试直到恢复；连续稳定运行 2 分钟后退避清零。主机身份和地址不变，已配对设备无需重新扫码，托管授权在重启后立即重放。`agentd` 启动时第一次拉起失败（例如刚开机没网、中继暂时不可达）按同样的退避重试，就绪后才启动托管策略同步。用户关闭 Tailcat、切换模式或中继、重置以及 `agentd` 退出都不会触发重启，也会取消进行中的重试。用户手动开启失败仍回滚为关闭状态，不进入重试。
+
 Mac 和 iPad 设置页都提供显式实验开关。开关打开后，App 只使用 Tailcat 路由，不回退到 Tailscale 地址或本机直连。开关关闭后，App 立即恢复原连接档案，且不会改写档案地址或 Agent Token。
 
 配对使用 10 分钟有效的签名二维码。二维码不包含长期 Agent Token。iPad 先通过临时 Tailcat 服务提交自己的公钥，Mac 将该公钥写入稳定服务的允许列表，再返回稳定连接地址。任何验证、Keychain 写入或档案提交失败都会恢复原路由。
@@ -53,6 +55,66 @@ agentd tailcat pair
 
 `agentd tailcat pair` 只输出短期配对链接。它不会输出或修改长期 Agent Token。
 
+托管连接只是更快更稳的升级，不是使用门槛：没开通的设备走局域网、Tailscale 或 Tailcat 默认中继，
+不限设备数；开通的设备走 Mimi 托管中继，设备数按订阅限制（3 台电脑、5 台手机）。
+
+要用托管中继，电脑要先进入托管模式，再生成二维码。不能扫码后才切换，
+因为进入托管模式会为托管中继生成新的稳定公钥，扫码授权绑定的是二维码中的公钥。
+
+进入托管模式后，电脑同时运行两个稳定节点：
+
+| 节点 | 中继 | 放行名单 | 状态文件 |
+| --- | --- | --- | --- |
+| 托管节点 | 官方中继 | 只来自控制面策略 | `host.private.json`、`host.address` |
+| 免费节点 | 进入托管前的中继；若那是官方中继，则用 Tailcat 默认中继 | `clients.json` | `free.private.json`、`free.address` |
+
+免费白名单不进托管节点，托管策略也不进免费节点，所以不带授权的设备绕不过订阅。
+托管二维码的 `tailcat_pair_address` 是托管配对节点，`tailcat_free_pair_address` 是免费配对节点。
+iOS 从通用入口（添加电脑、粘贴链接、系统相机）扫码时先走托管授权；没开通、设备数已满、
+授权冲突或控制面不可达时，改走免费配对节点。从托管连接页扫码时不改走，直接说明原因。
+免费节点在后台启动，启动失败不影响托管节点，按 5 秒起步、最长 5 分钟退避重试；
+还没就绪时二维码只带托管配对节点。
+
+```bash
+agentd tailcat enable
+agentd tailcat enter-managed
+agentd tailcat status
+agentd tailcat pair
+```
+
+本机控制接口 `POST /api/local/tailcat` 对应的 `action` 是 `enter-managed` 和
+`exit-managed`，沿用现有本机 Token、loopback 和禁止 Origin 的控制边界。
+状态 JSON 的 `mode` 为 `managed`（托管）或 `self_hosted`（只有免费线路）；命令状态会显示中文线路。
+托管模式下，状态里的 `free_address`、`free_pair_address` 是免费节点的地址。
+电脑端界面的进入、退出入口及各端模式展示另行实现。
+
+托管模式使用 Mimi 官方 DERP Map：
+`https://api.code89757.com/v1/relay/tailcat-derp-map.json`。配置项
+`tailcat.managed_derp_map_url` 可以覆盖该地址，只允许完整 HTTPS URL，供测试或自建控制面使用。
+不配置时使用统一的官方默认值。`tailcat.mode`、当前 `tailcat.derp_map_url` 和
+`tailcat.previous_derp_map_url` 在一次配置提交中保存；原地址为空表示 Tailcat 默认中继。
+
+官方中继只接受托管节点。不在托管模式却连着官方中继的旧配置，`agentd` 启动 sidecar 时自动切回
+Tailcat 默认中继并换新身份（这些设备本来就被准入拒绝）；手动 `configure` 官方中继会被拒绝。
+旧配置没有 `mode` 时按免费线路处理，不自动迁移已有配对。
+
+进入托管模式时，原稳定节点改名成免费节点，身份、地址和 `clients.json` 都不变，已配对的免费设备
+不用重新扫码；托管节点使用新身份。退出托管时把免费节点换回稳定节点，中继恢复为免费节点的中继，
+托管接入的设备需要重新扫码。原节点连的是官方中继时例外：它当免费节点也会被拒绝，所以清掉重建。
+切换失败时恢复切换前的中继、身份和免费配对，退出失败时也恢复仍有效的托管授权。
+成功退出会清空托管注册。重复进入或退出不改变身份或已记录的原值。
+`agentd` 重启后继续保留模式及原中继记录。已在托管模式的旧版电脑升级后自动补上免费节点，
+托管设备不用重新扫码。显式 `reset` 同时清空两个节点。
+
+```bash
+agentd tailcat exit-managed
+agentd tailcat status
+```
+
+托管模式下，手动 `configure` 返回 HTTP 409、错误码 `tailcat_managed_relay_locked`。
+未进入托管模式的托管 claim 返回 HTTP 409、错误码 `tailcat_managed_mode_required`，
+并提示先在电脑进入托管模式后重新生成二维码。iOS 现有错误处理会显示这条中文提示。
+
 二维码会同时携带 Mac 的随机安装 ID 和稳定 Tailcat 公钥。这两项都是公开身份，
 不是访问凭证。免费自建 Tailcat 仍按原流程把扫码设备公钥写入 `clients.json`。
 
@@ -63,16 +125,79 @@ Mimi 托管连接会在移动端取得订阅权益和 10 分钟配对授权后�
 托管策略保存在 Tailcat 状态目录的 `managed-policy.json`，文件权限固定为 `0600`，
 写入采用临时文件替换。`agentd` 启动后立即同步，此后每 5 分钟同步一次。在线撤销
 最迟在 10 分钟内生效。控制面临时不可达时可以继续使用最后一次有效策略，但最多
-保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费自建
-白名单与托管白名单分开保存，应用策略时才合并，托管撤销不会删除免费配对。
+保留 24 小时；超时、主机身份变化或控制面明确撤销后会清空托管白名单。免费白名单与
+托管白名单分开保存，分属两个节点，托管撤销不会删除免费配对。
+云端撤销、主机身份变化及显式 `reset` 都保持托管模式，只清空对应授权或注册并等待重新配对。
+只有显式 `exit-managed` 才恢复原中继，避免一次云端异常让电脑悄悄换回公共中继。
 
-恢复 Tailcat 默认中继：
+自建模式下恢复 Tailcat 默认中继：
 
 ```bash
 agentd tailcat configure --derp-map-url=
 ```
 
 这里需要填写 DERP Map 地址，不是 DERP 服务的 IP 和端口。
+部署步骤见 [自建中转](../self-hosted-relay.md)。
+
+已配对的手机通过 `GET /api/tailcat/relay-choice` 读取电脑选择的中转（`relay_service`）和免费线路（`free_relay_service`），取值为 `default`、`custom`、`mimi`，不含中继地址。手机只在电脑的选择变成 Mimi 时跟随，用户在手机上改回免费后不会被切回去。
+
+#### 已连接设备一键接入（agentd 接口）
+
+已经持有这台电脑 Agent Token 的客户端可调用 `POST /api/tailcat/managed-pairing-link`，
+获取与 `agentd tailcat pair` 二维码相同格式的托管配对链接。该接口强制要求
+`Authorization: Bearer …`，开发免鉴权及查询参数 Token 都不能代替 Bearer。
+`/api/local/tailcat` 的本机控制限制保持不变。iOS 入口由客户端另行实现。
+
+接口先开启 Tailcat，再进入托管模式并生成链接。已配对的免费设备转到免费节点，不受影响，所以不需要确认。
+请求 JSON 中旧版客户端发送的 `confirm_reset_self_hosted` 字段继续接受，但不再起作用。
+
+切换模式会重启 sidecar，可能切断当前 Tailcat 请求，所以客户端应通过已有局域网或 Tailscale 线路调用。
+
+以下命令通过已有连接调用接口。`AGENT_URL` 设置为当前电脑的 HTTP 服务地址，
+`AGENT_TOKEN` 设置为现有 Agent Token；不要把两者或返回链接写入日志。
+
+```bash
+curl --fail-with-body --request POST \
+  "${AGENT_URL:?请先设置现有连接地址}/api/tailcat/managed-pairing-link" \
+  --header "Authorization: Bearer ${AGENT_TOKEN:?请先设置现有 Agent Token}" \
+  --header 'Content-Type: application/json' \
+  --data '{"confirm_reset_self_hosted":false}'
+```
+
+成功返回 HTTP 200，且响应带 `Cache-Control: no-store`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `pair_url` | 可交给现有扫码解析流程的短期链接，包含 `managed_*` 公开身份和配对签名，不含长期 Agent Token |
+| `pair_expires_at` | RFC3339 格式的有效期，取签名票据与临时节点有效期中较早者 |
+| `mode` | 固定为 `managed` |
+
+接口与本机模式切换、配对和自建 claim 共用流程锁。同一时间只执行一个升级请求；
+已有控制操作执行时立即返回 HTTP 409、`tailcat_operation_in_progress`，不排队生成链接。
+现有配对接口没有按时间窗口限流；新接口继续使用 sidecar 配对超时及超时节点复用逻辑。
+操作日志只记录固定结果码，不包含链接、地址、公钥或凭证。
+
+业务失败响应包含 `code` 和中文 `error`：
+
+| HTTP | `code` | 含义与处理 |
+| --- | --- | --- |
+| 409 | `tailcat_operation_in_progress` | Tailcat 正忙，稍后重试 |
+| 503 | `tailcat_managed_pairing_unavailable` | Tailcat、托管控制器或安装身份未就绪，在电脑上检查服务 |
+| 503 | `tailcat_agents_disabled` | 全部 AI 编程助手已关闭，先启用助手 |
+| 500 / 503 | `tailcat_enable_failed` | 保存开启配置或启动 sidecar 失败，在电脑上检查 |
+| 503 | `tailcat_enable_rollback_failed` | 开启失败且恢复关闭状态也失败，需要在电脑上处理 |
+| 503 | `tailcat_status_unavailable` | 无法可靠读取设备状态，稍后重试 |
+| 503 | `tailcat_managed_mode_failed` | 模式切换或收敛失败，已按原逻辑尝试恢复，在电脑上检查 |
+| 503 | `tailcat_pair_failed` | 临时配对节点生成失败、超时、缺失或过期，稍后重试 |
+| 500 | `tailcat_pair_link_failed` | 配置无法生成有效链接，或磁盘凭证与运行中服务不一致，在电脑上检查并重启服务 |
+
+另沿用公共中间件响应：400 非法 JSON、401 未鉴权、405 方法不支持、413 请求体过大，
+这些响应只有 `error`；协议头错误为 400 `protocol_metadata_invalid`，协议不兼容为
+426 `protocol_incompatible`。客户端先按 HTTP 状态兜底，再使用业务 `code` 提示。
+
+启用失败时关闭配置并停止 sidecar，取消请求不取消这一步恢复；模式切换失败沿用身份、
+白名单及托管注册回滚。模式切换成功后的配对或链接生成失败保持托管模式。已托管且官方中继未变化时保留稳定身份与已有授权；中继配置变化时
+仍按现有收敛逻辑重建身份。生成链接本身不完成云端授权，后续订阅校验与 claim 流程保持不变。
 
 ### 3. 在 iPad 扫码
 
@@ -87,6 +212,28 @@ bash ./scripts/ios-dev.sh run
 从常规的“添加电脑”或“修复当前电脑”入口扫描 Mac 二维码。扫码成功后，iPad 会自动开启 Tailcat 实验。无需粘贴连接地址或手工复制公钥。
 
 完成后可在“设置 → 实验功能 → 连接诊断”查看当前路径延迟和一次真实 HTTP 请求耗时。诊断区分直连、Peer Relay 和 DERP 中转。本机只保留最近 10 条脱敏结果。
+
+### 偶发连不上时对照两侧记录
+
+Mac 侧的 `~/Library/Logs/mimi-remote/tailcat-events.log` 常开记录连接事件，时间为 UTC，2 MB 轮转并保留一份 `.previous`。只在本机保存，不进入“导出安全日志”；“清除日志”时一并清空。内容只有固定事件名和白名单字段，不含 IP、端点和完整公钥，`peer=[xxxxx]` 是公钥短前缀，写法与中继日志一致。
+
+| 事件 | 含义 |
+| --- | --- |
+| `peer_contact` / `peer_rejected` | 设备的握手已经到达 Mac；被拒绝说明它不在授权列表内 |
+| `path_direct` | 与该设备改走直连 |
+| `derp_connected` / `derp_lost` / `derp_closed` | Mac 与中继的连接状态，`reason` 为固定类别 |
+| `network_changed` / `network_down` | Mac 的网络发生变化或全部断开 |
+| `conn_opened` / `conn_closed` / `backend_dial_failed` | 隧道内的 TCP 连接，以及转发到 agentd 失败 |
+| `sidecar_started` / `sidecar_exited` / `sidecar_stopped` / `sidecar_start_failed` | 辅助程序生命周期 |
+
+iPhone 或 iPad 上，“连接诊断”页显示最近的连接失败，“复制脱敏诊断结果”会带上最多 20 条 `failure stage=… reason=… network=…`，时间含时区。
+
+判读方法：
+
+- 设备有失败记录，同一时刻 Mac 没有 `peer_contact`：设备的握手没有到达 Mac，先看设备网络和中继。
+- Mac 同时有 `derp_lost` 或 `network_down`：断在 Mac 到中继这一段。
+- Mac 有 `peer_contact` 和 `conn_opened`，设备仍报请求失败：隧道已通，继续看 agentd 的 `/api/diagnostics/relay`。
+- Mac 有 `sidecar_exited` 或 `sidecar_start_failed` 且之后没有 `sidecar_started`：辅助程序没有起来，`agentd` 在按退避重试；`sidecar_start_failed` 持续出现时，看同一时段的 stderr 行判断原因。
 
 以下结果同时成立才算本轮通过：
 

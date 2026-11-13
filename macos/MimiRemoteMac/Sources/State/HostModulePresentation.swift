@@ -1,6 +1,36 @@
 import Foundation
 
 extension HostStore {
+    // Tailcat 的只读展示状态（#896 拆出，HostStore 只保留会修改状态的操作）。
+    var tailcatEnabled: Bool {
+        tailcatStatus?.enabled ?? false
+    }
+
+    var canChangeTailcat: Bool {
+        owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
+    }
+
+    var tailcatDERPMapURL: String {
+        tailcatStatus?.derpMapURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    var tailcatIsManaged: Bool {
+        tailcatStatus?.isManagedMode ?? false
+    }
+
+    var tailcatStatusDetail: String {
+        if owner == .homebrew {
+            return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
+        }
+        if let tailcatError { return tailcatError }
+        if let tailcatNotice { return tailcatNotice }
+        if let error = tailcatStatus?.error, !error.isEmpty { return error }
+        guard let tailcatStatus, tailcatStatus.enabled else {
+            return "内置连接免费可用。开启后即可扫码；Mimi 中转可在手机上开通。"
+        }
+        return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
+    }
+
     var canChangeModules: Bool {
         owner == .macApp && !isBusy && lifecycle != .loading && lifecycle != .starting
     }
@@ -23,7 +53,7 @@ extension HostStore {
     }
     var canPair: Bool {
         status?.serviceOK == true && (codexEnabled || claudeEnabled || deepSeekEnabled)
-            && !availablePairingNetworks.isEmpty
+            && (!availablePairingNetworks.isEmpty || (tailcatStatus != nil && canChangeTailcat))
     }
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }

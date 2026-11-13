@@ -61,6 +61,15 @@ func ConfigureTailcatDERPMap(configPath, rawURL string) (TailcatDERPConfiguratio
 	if err != nil {
 		return TailcatDERPConfigurationResult{}, err
 	}
+	var mode string
+	if raw := tailcatDocument["mode"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &mode); err != nil {
+			return TailcatDERPConfigurationResult{}, fmt.Errorf("tailcat.mode 必须是字符串")
+		}
+	}
+	if mode == config.TailcatModeManaged {
+		return TailcatDERPConfigurationResult{}, fmt.Errorf("正在使用 Mimi 中转，不能手动修改中继；请先在「中转服务」里改回默认或自建中转")
+	}
 	previous := ""
 	if raw := tailcatDocument["derp_map_url"]; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &previous); err != nil {
@@ -140,12 +149,14 @@ func commitTailcatConfiguration(
 
 // TailcatPairWithManagedHost 只把 Mac 的随机安装 ID、稳定公钥和当前临时
 // 配对公钥加入二维码。它们都不是凭证；移动端仍需取得订阅权益和短期授权。
+// freePairAddress 是给没开通设备用的免费配对节点，只在托管二维码里才有意义。
 func TailcatPairWithManagedHost(
 	configPath string,
 	pairAddress string,
 	macInstallationID string,
 	macTailcatPublicKey string,
 	pairTailcatPublicKey string,
+	freePairAddress string,
 ) (Result, error) {
 	pairAddress = strings.TrimSpace(pairAddress)
 	if pairAddress == "" {
@@ -169,6 +180,14 @@ func TailcatPairWithManagedHost(
 	}
 	query := parsed.Query()
 	query.Set("transport", "tailcat")
+	// 仅用于把电脑上的选择带到 App；中转授权仍由有效权益和配对签名决定。
+	relayService := "default"
+	if cfg.Tailcat.ConnectionMode() == config.TailcatModeManaged {
+		relayService = "mimi"
+	} else if strings.TrimSpace(cfg.Tailcat.DERPMapURL) != "" {
+		relayService = "custom"
+	}
+	query.Set("relay_service", relayService)
 	query.Set("tailcat_pair_address", pairAddress)
 	macInstallationID = strings.TrimSpace(macInstallationID)
 	macTailcatPublicKey = strings.TrimSpace(macTailcatPublicKey)
@@ -181,6 +200,9 @@ func TailcatPairWithManagedHost(
 		query.Set("managed_mac_installation_id", macInstallationID)
 		query.Set("managed_mac_tailcat_public_key", macTailcatPublicKey)
 		query.Set("managed_pair_tailcat_public_key", pairTailcatPublicKey)
+		if freePairAddress = strings.TrimSpace(freePairAddress); freePairAddress != "" {
+			query.Set("tailcat_free_pair_address", freePairAddress)
+		}
 	}
 	parsed.RawQuery = query.Encode()
 	return Result{

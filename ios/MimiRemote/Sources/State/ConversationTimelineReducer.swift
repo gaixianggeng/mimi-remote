@@ -208,8 +208,21 @@ struct ConversationTimelineReducer {
             )
         }
 
-        var outgoing = Array(repeating: Set<Int>(), count: nodes.count)
-        var indegree = Array(repeating: 0, count: nodes.count)
+        // Item 补齐只细化已有 Turn。沿用首屏已经建立的 Turn 顺序，不能让旧 Turn
+        // 的估算时间或晚到页面把新消息挤到中间。虚拟边界以线性数量的边约束整组 Item。
+        var knownTurnOrder: [TurnID] = []
+        var knownTurns = Set<TurnID>()
+        if snapshotOrdering == .incrementalFragments {
+            for index in current.indices {
+                guard let nodeIndex = nodeIndexByCurrentIndex[index] else { continue }
+                if let turnID = nodes[nodeIndex].message.turnID, !turnID.isEmpty, knownTurns.insert(turnID).inserted {
+                    knownTurnOrder.append(turnID)
+                }
+            }
+        }
+        let boundaryCount = max(0, knownTurnOrder.count - 1)
+        var outgoing = Array(repeating: Set<Int>(), count: nodes.count + boundaryCount)
+        var indegree = Array(repeating: 0, count: outgoing.count)
         func addEdge(_ from: Int, _ to: Int) {
             guard from != to, outgoing[from].insert(to).inserted else { return }
             indegree[to] += 1
@@ -221,6 +234,7 @@ struct ConversationTimelineReducer {
             let right = nodes[pair.1]
             // 两端都来自 snapshot 时由服务端顺序裁决；只保留含本地专属 Item 的首次出现约束。
             if (left.snapshotIndex == nil || right.snapshotIndex == nil),
+               !currentAdjacencyHasCanonicalReplacement(left: left, right: right, ordering: snapshotOrdering),
                !currentAdjacencyConflictsWithInjectedUser(left: left, right: right) {
                 addEdge(pair.0, pair.1)
             }
@@ -234,6 +248,12 @@ struct ConversationTimelineReducer {
         }
 
         if snapshotOrdering == .incrementalFragments {
+            let nodeIndicesByTurn = Dictionary(grouping: nodes.indices) { nodes[$0].message.turnID }
+            for (index, pair) in zip(knownTurnOrder, knownTurnOrder.dropFirst()).enumerated() {
+                let boundary = nodes.count + index
+                for nodeIndex in nodeIndicesByTurn[pair.0] ?? [] { addEdge(nodeIndex, boundary) }
+                for nodeIndex in nodeIndicesByTurn[pair.1] ?? [] { addEdge(boundary, nodeIndex) }
+            }
             var canonicalNodeIndicesByTurn: [TurnID: [Int]] = [:]
             for nodeIndex in nodes.indices {
                 guard let turnID = nodes[nodeIndex].message.turnID,
@@ -258,19 +278,23 @@ struct ConversationTimelineReducer {
             }
         }
 
-        var ready = nodes.indices.filter { indegree[$0] == 0 }
+        var ready = indegree.indices.filter { indegree[$0] == 0 }
         var orderedNodeIndices: [Int] = []
         orderedNodeIndices.reserveCapacity(nodes.count)
         while !ready.isEmpty {
             ready.sort {
-                isNode(
+                // 虚拟边界没有展示内容，就绪后立即释放下一组 Turn。
+                if $0 >= nodes.count || $1 >= nodes.count {
+                    return $0 >= nodes.count && $1 < nodes.count
+                }
+                return isNode(
                     nodes[$0],
                     orderedBefore: nodes[$1],
                     snapshotOrdering: snapshotOrdering
                 )
             }
             let nodeIndex = ready.removeFirst()
-            orderedNodeIndices.append(nodeIndex)
+            if nodeIndex < nodes.count { orderedNodeIndices.append(nodeIndex) }
             for next in outgoing[nodeIndex] {
                 indegree[next] -= 1
                 if indegree[next] == 0 {
@@ -296,6 +320,16 @@ struct ConversationTimelineReducer {
             ambiguousAliasCount: ambiguousAliasCount,
             hadOrderingCycle: hadOrderingCycle
         )
+    }
+
+    private func currentAdjacencyHasCanonicalReplacement(left: Node, right: Node, ordering: SnapshotOrdering) -> Bool {
+        guard ordering == .incrementalFragments,
+              let leftTurn = left.message.turnID, !leftTurn.isEmpty,
+              let rightTurn = right.message.turnID, !rightTurn.isEmpty else { return false }
+        // 跨 Turn 由整组边界约束；同 Turn 的两个规范 Item 由 ordinal 链约束。
+        // summary 占位合并获得 ordinal 后，旧槽位边必须让位，否则会与协议顺序成环。
+        return leftTurn != rightTurn
+            || (left.message.timelineOrdinal != nil && right.message.timelineOrdinal != nil)
     }
 
     private func currentAdjacencyConflictsWithInjectedUser(left: Node, right: Node) -> Bool {
@@ -360,6 +394,12 @@ struct ConversationTimelineReducer {
             || isTerminalActivity(snapshot.activityPayload)
         if existingIsTerminal, !snapshotIsTerminal {
             return true
+        }
+        // 历史没有本地事件 revision。已经结束的正文仍能收敛尚在 streaming 的气泡，
+        // 但不能覆盖已由实时终态确认的内容与失败/取消状态。
+        if !existingIsTerminal, existing.role == .assistant, snapshot.role == .assistant,
+           existing.sendStatus == .sending, snapshot.sendStatus == .confirmed {
+            return false
         }
         if existing.revision != nil, snapshot.revision == nil {
             return true

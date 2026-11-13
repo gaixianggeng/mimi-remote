@@ -348,6 +348,7 @@ struct ConnectionRowLabel: View {
     let systemImage: String
     var valueTint: Color? = nil
     var titleTint: Color? = nil
+    var iconTint: Color? = nil
 
     var body: some View {
         SettingsValueLabel(
@@ -355,7 +356,8 @@ struct ConnectionRowLabel: View {
             value: value,
             systemImage: systemImage,
             valueTint: valueTint,
-            titleTint: titleTint
+            titleTint: titleTint,
+            iconTint: iconTint
         )
     }
 }
@@ -399,6 +401,25 @@ struct RouteStatusRow: View {
         .accessibilityHint(L10n.text("ui.refresh"))
         .accessibilityIdentifier(refreshAccessibilityIdentifier)
         .animation(reduceMotion ? nil : .default, value: isBusy)
+    }
+}
+
+/// 诊断页的一条连接失败：标题是失败阶段，值是原因、当时网络和时间。完整时间在复制内容里。
+struct TailcatConnectionFailureRow: View {
+    let failure: TailcatConnectionFailure
+    let warningTint: Color
+
+    var body: some View {
+        ConnectionRowLabel(
+            title: failure.stage.title,
+            value: [
+                failure.reason.title,
+                failure.network.title,
+                ConnectionRouteFormatting.timeText(failure.occurredAt)
+            ].joined(separator: " · "),
+            systemImage: "exclamationmark.triangle",
+            valueTint: warningTint
+        )
     }
 }
 

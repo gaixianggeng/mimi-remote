@@ -556,8 +556,8 @@ extension CodexAppServerSessionRuntime {
         guard var events = bufferedEventsBySessionID[sessionID] else {
             return
         }
-        events.removeAll { event in
-            switch event {
+        events.removeAll { entry in
+            switch entry.event {
             case .approvalRequest(_, let metadata),
                  .userInputRequest(_, let metadata):
                 guard let turnID else {
@@ -644,8 +644,8 @@ extension CodexAppServerSessionRuntime {
             guard var events = bufferedEventsBySessionID[candidateSessionID] else {
                 continue
             }
-            events.removeAll { event in
-                switch event {
+            events.removeAll { entry in
+                switch entry.event {
                 case .approvalRequest(let request, let metadata):
                     return requestIDs.contains(request.id)
                         || metadata.itemID.map(requestIDs.contains) == true

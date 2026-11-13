@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/systemproxy"
 )
 
 const bypassPermissionsKey = "CLAUDE_BRIDGE_BYPASS_PERMISSIONS"
@@ -88,7 +90,8 @@ func Build(extra map[string]string) []string {
 	for _, entry := range ordered {
 		result = append(result, entry.key+"="+entry.value)
 	}
-	return result
+	// 没有显式代理时，Windows 上由 agentd 的系统代理中转补上；ProxyValues 会把它一并脱敏。
+	return systemproxy.ApplyEnvironment(result)
 }
 
 // HasSupportedProxy reports whether Claude has a non-empty HTTP(S) proxy.

@@ -157,6 +157,9 @@ enum ConversationActivityDetailText {
 
 extension ConversationActivityPayload {
     func detailText(from item: [String: CodexAppServerJSONValue]) -> String {
+        if let turnHint {
+            return turnHint.plainText
+        }
         let output = ConversationActivityDetailText.output(from: item) ?? outputPreview
         guard let input = ConversationActivityDetailText.toolInput(from: item) else {
             return output ?? summaryText

@@ -14,6 +14,8 @@ enum AppExternalLinks {
     static let support = makeURL("https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md")
     /// 首次连接引导的前置条件：电脑上要先有能用的 Codex。与 README「Get started」第一步同一链接。
     static let codexSetup = makeURL("https://learn.chatgpt.com/docs/codex/cli")
+    /// Mac Catalyst 没有系统的订阅管理表单，改为打开 App Store 账户里的订阅页。
+    static let manageSubscriptions = makeURL("https://apps.apple.com/account/subscriptions")
 
     private static func makeURL(_ value: String) -> URL {
         guard let url = URL(string: value), url.scheme == "https" else {

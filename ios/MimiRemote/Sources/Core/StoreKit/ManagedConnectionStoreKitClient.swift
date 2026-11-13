@@ -5,6 +5,20 @@ enum ManagedConnectionProductID {
     static let monthly = "com.gaixianggeng.mimi.managed.monthly"
     static let annual = "com.gaixianggeng.mimi.managed.annual"
     static let all = [monthly, annual]
+    /// 内测兑换码的权益标识，不是 App Store 商品，不参与购买和商品加载（#949）。
+    static let betaRedemption = "com.gaixianggeng.mimi.managed.beta"
+}
+
+/// Mimi 中转只在这些 App Store 地区销售（#1006）。中转服务器在中国大陆，其他地区不建议开通；
+/// 实际销售范围以 App Store Connect 为准，这里只决定商品拉不到时怎么向用户解释。
+enum ManagedConnectionSalesRegion {
+    static let storefrontCountryCodes: Set<String> = ["CHN"]
+
+    /// 读不到商店地区时返回 nil，调用方按「暂时不可用」处理，不误报为地区限制。
+    static func isSold(inStorefront countryCode: String?) -> Bool? {
+        guard let countryCode, !countryCode.isEmpty else { return nil }
+        return storefrontCountryCodes.contains(countryCode.uppercased())
+    }
 }
 
 struct ManagedConnectionProduct: Identifiable, Equatable, Sendable {
@@ -43,6 +57,8 @@ enum ManagedConnectionTransactionUpdate: Equatable, Sendable {
 protocol ManagedConnectionStoreKitClient: Sendable {
     func products() async throws -> [ManagedConnectionProduct]
     func storefrontUpdates() -> AsyncStream<Void>
+    /// 当前 App Store 地区的 ISO 3166-1 alpha-3 代码，例如 CHN；读不到时为 nil。
+    func storefrontCountryCode() async -> String?
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome
     func currentEntitlement(productID: String) async -> ManagedConnectionCurrentEntitlementOutcome
     func transactionUpdates() -> AsyncStream<ManagedConnectionTransactionUpdate>
@@ -103,6 +119,10 @@ actor LiveManagedConnectionStoreKitClient: ManagedConnectionStoreKitClient {
                 listener.cancel()
             }
         }
+    }
+
+    func storefrontCountryCode() async -> String? {
+        await Storefront.current?.countryCode
     }
 
     func purchase(productID: String) async throws -> ManagedConnectionPurchaseOutcome {

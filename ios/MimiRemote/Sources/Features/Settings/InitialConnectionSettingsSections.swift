@@ -55,6 +55,7 @@ enum ConnectionQRCodeScannerHost: String {
     case connectionSettings
     case addComputer
     case managedConnection
+    case relaySubscription
 }
 
 @MainActor
@@ -67,6 +68,8 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     @Published var intent: ConnectionQRCodeScanIntent?
     @Published private(set) var isRequestingCameraAuthorization = false
     @Published private(set) var host: ConnectionQRCodeScannerHost = .connectionSettings
+    @Published private(set) var managedConnectionHost: ConnectionQRCodeScannerHost?
+    private var pendingManagedConnectionHost: ConnectionQRCodeScannerHost?
 
     private var submissionHandler: SubmissionHandler?
     private var manualConnectionHandler: ((ConnectionQRCodeScanIntent) -> Void)?
@@ -144,6 +147,23 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
         intent = nil
     }
 
+    /// 扫码失败页的「开通托管连接」：关掉扫码页，由发起扫码的那一页推出开通页。
+    func openManagedConnection() {
+        pendingManagedConnectionHost = host
+        intent = nil
+    }
+
+    /// 与扫码 Cover 同理，只让发起扫码的宿主页推出开通页。
+    func managedConnectionBinding(for host: ConnectionQRCodeScannerHost) -> Binding<Bool> {
+        Binding(
+            get: { [weak self] in self?.managedConnectionHost == host },
+            set: { [weak self] isPresented in
+                guard let self, !isPresented, self.managedConnectionHost == host else { return }
+                self.managedConnectionHost = nil
+            }
+        )
+    }
+
     func chooseManualConnection(for intent: ConnectionQRCodeScanIntent) {
         manualConnectionHandler?(intent)
     }
@@ -160,6 +180,11 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 
     func didDismiss() {
         dismissalHandler?()
+        // 关闭动画结束后才推出开通页；Cover 还在退场时推送，导航栈不会接受。
+        if let pendingManagedConnectionHost {
+            self.pendingManagedConnectionHost = nil
+            managedConnectionHost = pendingManagedConnectionHost
+        }
     }
 }
 
@@ -179,6 +204,9 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var tailcatController: TailcatExperimentController
+    /// 只在托管入口可见时读取；快照测试不注入它，入口也不会显示。
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+    @AppStorage("managedConnection.lanHintDismissedAt") private var managedLANHintDismissedAt: Double = 0
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -376,6 +404,13 @@ struct InitialConnectionSettingsSections: View {
             otherComputersSection(model.others, ownsPresentation: false)
         } else if !model.others.isEmpty {
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
+            // 没有当前电脑卡片可挂错误行，外部链接配对失败等本页反馈单独成组显示（#959）。
+            if let message = localError.map({ friendlyConnectionMessage($0, honorsActiveConnectionTermination: false) }) {
+                Section {
+                    connectionErrorMessageRow(message, tokens: tokens)
+                }
+                .settingsGroupRowStyle()
+            }
             otherComputersSection(model.others, ownsPresentation: true)
         } else {
             firstConnectionGuideSections(tokens: tokens)
@@ -780,21 +815,8 @@ struct InitialConnectionSettingsSections: View {
     /// 所以这里只展示当前方式，不提供切换；高级配置在行内导航的 Tailcat 页里。
     @ViewBuilder
     private func connectionMethodRows(tokens: ThemeTokens) -> some View {
-        if ManagedConnectionSubscriptionView.isEntryVisible {
-            NavigationLink(value: SettingsDestination.managedConnection) {
-                ConnectionRowLabel(
-                    title: L10n.text("ui.managed_subscription_title"),
-                    value: appStore.activeConnectionProfile?.connectionRoute.isManaged == true
-                        ? tailcatController.state.connectionMethodSummary
-                        : L10n.text("ui.managed_connection_recommended_value"),
-                    systemImage: "network"
-                )
-            }
-            .settingsStandardListRow()
-            .accessibilityIdentifier("settings.connection.managedConnection")
-        }
-
-        if appStore.isConfigured && appStore.activeConnectionProfile?.connectionRoute.isManaged != true {
+        // 先是连接方式，再是它下面的中转：中转只对内置连接有意义，顺序要体现这层从属关系。
+        if appStore.isConfigured {
             NavigationLink(value: SettingsDestination.tailcat) {
                 ConnectionRowLabel(
                     title: L10n.text("ui.connection_method"),
@@ -805,13 +827,32 @@ struct InitialConnectionSettingsSections: View {
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.connection.tailcat")
         }
+
+        NavigationLink(value: SettingsDestination.managedConnectionDevices) {
+            ConnectionRowLabel(
+                title: L10n.text("ui.relay_service_title"),
+                value: ManagedConnectionDevicesView.currentRelayTitle(
+                    route: currentConnectionRoute,
+                    savedChoice: tailcatController.relayServiceChoice(profileID: appStore.activeConnectionProfileID ?? ""),
+                    freeChoice: tailcatController.lastFreeRelayChoice(profileID: appStore.activeConnectionProfileID ?? "")
+                ),
+                systemImage: "network"
+            )
+        }
+        .settingsStandardListRow()
+        .accessibilityIdentifier("settings.connection.managedConnection")
     }
 
-    /// 展示生效中的方式：启用 Tailcat 时是档案上的 Tailcat 线路，关闭时回到已保存的直连线路。
+    private var currentConnectionRoute: ConnectionProfileRoute? {
+        ManagedConnectionDevicesView.currentRoute(
+            profileRoute: appStore.activeConnectionProfile?.connectionRoute,
+            tailcatEnabled: tailcatController.isEnabled, tailcatState: tailcatController.state,
+            fallbackRoute: appStore.savedFallbackConnectionRoute
+        )
+    }
+
     private var currentConnectionMethodTitle: String {
-        tailcatController.isEnabled
-            ? (appStore.activeConnectionProfile?.connectionRoute.title ?? "Tailcat")
-            : (appStore.savedFallbackConnectionRoute?.title ?? "Tailscale")
+        ManagedConnectionDevicesView.connectionMethodTitle(route: currentConnectionRoute)
     }
 
     /// 设备首页的添加入口：一行推进添加电脑页，那一页再给扫码主按钮和粘贴。
@@ -934,6 +975,23 @@ struct InitialConnectionSettingsSections: View {
     /// 所以粘贴在这里是写明文字的次按钮，而不是只有图标；地址 + 访问码收在最后一行。
     @ViewBuilder
     private func firstConnectionGuideSections(tokens: ThemeTokens) -> some View {
+        // 新用户可能先点了兑换链接：告诉他结果和下一步，配对后工作台会接着带他走完。
+        if ManagedConnectionSubscriptionView.isEntryVisible {
+            if managedConnectionEntitlementStore.isRedemptionEntitlement {
+                Section {
+                    Label(L10n.text("ui.managed_redemption_first_connection"), systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(tokens.success)
+                        .accessibilityIdentifier("settings.firstConnection.redeemed")
+                }
+                .settingsGroupRowStyle()
+            } else if let message = managedConnectionEntitlementStore.redemptionErrorMessage {
+                Section {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(tokens.warning)
+                }
+                .settingsGroupRowStyle()
+            }
+        }
         Section {
             SettingsExternalLinkRow(
                 title: L10n.text("ui.first_connection_install_codex"),
@@ -1025,7 +1083,14 @@ struct InitialConnectionSettingsSections: View {
 
             manualConnectionRow(tokens: tokens)
 
-            // 还没连上时进不了「我的」，首启页自己给出支持页入口。
+            // 不把开通混进必做的扫码步骤；有邀请码的人直接进输入页，不经过还没有内容的中转页。
+            if ManagedConnectionSubscriptionView.isEntryVisible {
+                NavigationLink(value: SettingsDestination.managedConnection) {
+                    ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
+                }
+                .settingsStandardListRow()
+                .accessibilityIdentifier("settings.firstConnection.invite")
+            }
             SettingsExternalLinkRow(
                 title: L10n.text("ui.usage_help"),
                 systemImage: "questionmark.circle",
@@ -1281,6 +1346,78 @@ struct InitialConnectionSettingsSections: View {
         }
     }
 
+    /// 局域网档案连不上时（常见于出门用流量），提示一次可以开通托管连接（#894）。
+    /// 只按连接失败判断，不探测网络类型；关闭后 7 天内不再出现。
+    @ViewBuilder
+    private func managedConnectionLANHintRows(tokens: ThemeTokens) -> some View {
+        if showsManagedConnectionLANHint {
+            NavigationLink(value: SettingsDestination.managedConnection) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n.text("ui.managed_lan_hint_message"))
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(L10n.text("ui.managed_lan_hint_action"))
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.accent)
+                }
+                .settingsRow(.descriptive)
+            }
+            .accessibilityIdentifier("settings.connection.managedLANHint")
+
+            Button(L10n.text("ui.managed_lan_hint_dismiss")) {
+                managedLANHintDismissedAt = Date().timeIntervalSince1970
+            }
+            .font(themeStore.uiFont(.footnote))
+            .foregroundStyle(tokens.secondaryText)
+            .settingsRow()
+            .accessibilityIdentifier("settings.connection.managedLANHint.dismiss")
+        }
+    }
+
+    private var showsManagedConnectionLANHint: Bool {
+        // 入口不可见时不读订阅状态：快照与默认 Release 构建都不注入、也不需要它。
+        guard ManagedConnectionSubscriptionView.isEntryVisible else { return false }
+        let connectionFailed: Bool
+        if case .failed = appStore.connectionStatus, displayErrorMessage != nil {
+            connectionFailed = true
+        } else {
+            connectionFailed = false
+        }
+        // 冷启动和回前台时订阅状态会经过检查中；只有确认未订阅（含已过期、撤销）才提示，
+        // 避免已订阅用户在核验完成前短暂看到开通提示。待批准的购买也不再打扰。
+        let confirmedNotSubscribed: Bool
+        switch managedConnectionEntitlementStore.status {
+        case .available, .expired, .revoked:
+            confirmedNotSubscribed = true
+        case .loading, .resolving, .failed, .pending, .entitled:
+            confirmedNotSubscribed = false
+        }
+        return Self.showsManagedConnectionLANHint(
+            route: appStore.activeConnectionProfile?.connectionRoute,
+            connectionFailed: connectionFailed,
+            confirmedNotSubscribed: confirmedNotSubscribed,
+            dismissedAt: managedLANHintDismissedAt > 0
+                ? Date(timeIntervalSince1970: managedLANHintDismissedAt)
+                : nil,
+            now: Date()
+        )
+    }
+
+    static let managedConnectionLANHintSnooze: TimeInterval = 7 * 24 * 60 * 60
+
+    static func showsManagedConnectionLANHint(
+        route: ConnectionProfileRoute?,
+        connectionFailed: Bool,
+        confirmedNotSubscribed: Bool,
+        dismissedAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard route == .lan, connectionFailed, confirmedNotSubscribed else { return false }
+        guard let dismissedAt else { return true }
+        return now.timeIntervalSince(dismissedAt) >= managedConnectionLANHintSnooze
+    }
+
     /// 「添加电脑」页只显示本轮添加流程自己的反馈。
     ///
     /// 全局的 `appStore.lastError` 描述的是**当前这台电脑**：它的线路断了、或凭据已过期，
@@ -1315,7 +1452,8 @@ struct InitialConnectionSettingsSections: View {
             return termination.message
         }
         if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") ||
-            HostPlatform.isPairingQRCodeExpiredGuidance(raw) {
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
+            TailcatPairingError.isUserFacingMessage(raw) {
             return raw
         }
         let lowercased = raw.lowercased()
@@ -1446,7 +1584,15 @@ struct InitialConnectionSettingsSections: View {
     private func configureQRCodeScannerPresentation() {
         qrScannerPresentation.configure(
             onSubmit: { rawValue, intent in
-                await applyScannedConnection(rawValue, intent: intent)
+                // 「扫电脑」入口扫到另一台设备出示的邀请码：按系统相机打开链接处理，
+                // 后续启用和跳转由工作台统一完成，不报成配对失败（#989）。
+                if ManagedConnectionSubscriptionView.isEntryVisible,
+                   let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   let link = ManagedRedemptionLink(url: url) {
+                    await managedConnectionEntitlementStore.redeemFromLink(link)
+                    return managedConnectionEntitlementStore.redemptionScanResult
+                }
+                return await applyScannedConnection(rawValue, intent: intent)
             },
             onChooseManualConnection: { intent in
                 pendingManualConnectionIntent = intent
@@ -1626,6 +1772,15 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
+            if RelayServiceChoice.fromPairingURL(url) == .mimi, ManagedConnectionSubscriptionView.isEntryVisible {
+                if !wasConfigured || qrScannerPresentation.intent == nil {
+                    // 粘贴没有扫码 Cover，不会触发 onDismiss。由工作台接续开通，
+                    // 也覆盖首台电脑建立后首次连接页被替换的情况。
+                    sessionStore.mimiRelaySetupProfileID = appStore.activeConnectionProfileID
+                } else {
+                    qrScannerPresentation.openManagedConnection()
+                }
+            }
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
             Task { @MainActor in
@@ -1651,6 +1806,9 @@ struct InitialConnectionSettingsSections: View {
             appStore.lastError = message
             setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
             // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
+            if (error as? TailcatPairingError) == .managedConnectionRequired {
+                return .requiresManagedConnection(message)
+            }
             return .rejected(message)
         }
     }

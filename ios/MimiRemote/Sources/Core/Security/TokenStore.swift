@@ -57,8 +57,10 @@ struct TokenStore {
     private let tailcatExperimentAccount = "tailcat-experiment-client-key.v1"
     private let tailcatExperimentAddressAccount = "tailcat-experiment-address.v1"
     private let tailcatProfileAddressAccountPrefix = "tailcat-profile-address.v1."
+    private let freeTailcatProfileAddressAccountPrefix = "tailcat-free-profile-address.v1."
     private let managedMobileInstallationIDAccount = "managed-mobile-installation-id.v1"
     private let managedMobileRegisteredDeviceIDAccount = "managed-mobile-registered-device-id.v1"
+    private let managedRedemptionCodeAccount = "managed-redemption-code.v1"
     private let managedMobileDeviceTokenAccountPrefix = "managed-mobile-device-token.v1."
     private let keychain: any KeychainOperating
 
@@ -84,6 +86,18 @@ struct TokenStore {
 
     func loadTailcatAddress(profileID: String) throws -> String {
         try load(account: tailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func loadFreeTailcatAddress(profileID: String) throws -> String {
+        try load(account: freeTailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func saveFreeTailcatAddress(_ address: String, profileID: String) throws {
+        try save(address, account: freeTailcatProfileAddressAccountPrefix + profileID)
+    }
+
+    func deleteFreeTailcatAddress(profileID: String) throws {
+        try delete(account: freeTailcatProfileAddressAccountPrefix + profileID, allowMissing: true)
     }
 
     func loadManagedMobileDeviceToken(installationID: String) throws -> String {
@@ -137,6 +151,18 @@ struct TokenStore {
         try save(address, account: tailcatProfileAddressAccountPrefix + profileID)
     }
 
+    func loadManagedRedemptionCode() throws -> String {
+        try load(account: managedRedemptionCodeAccount)
+    }
+
+    func saveManagedRedemptionCode(_ code: String) throws {
+        try save(code, account: managedRedemptionCodeAccount)
+    }
+
+    func deleteManagedRedemptionCode() throws {
+        try delete(account: managedRedemptionCodeAccount, allowMissing: true)
+    }
+
     func saveManagedMobileDeviceToken(_ token: String, installationID: String) throws {
         try save(token, account: managedMobileDeviceTokenAccountPrefix + installationID.lowercased())
     }
@@ -148,6 +174,12 @@ struct TokenStore {
     func saveManagedMobileRegisteredDeviceID(_ deviceID: String) throws {
         try save(deviceID, account: managedMobileRegisteredDeviceIDAccount)
     }
+
+#if DEBUG
+    func deleteTailcatExperimentPrivateKey() throws {
+        try delete(account: tailcatExperimentAccount, allowMissing: true)
+    }
+#endif
 
     func deleteTailcatExperimentAddress(allowMissing: Bool = true) throws {
         try delete(account: tailcatExperimentAddressAccount, allowMissing: allowMissing)

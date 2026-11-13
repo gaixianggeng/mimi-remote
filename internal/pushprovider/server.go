@@ -394,8 +394,10 @@ func clientIP(req *http.Request) string {
 
 // rateLimiter 是进程内令牌桶。Provider 是单实例小服务，不为限速引入 Redis。
 type rateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	lastSweep time.Time
+	sweeps    int
 }
 
 type bucket struct {
@@ -407,6 +409,9 @@ const (
 	rateBurst      = 20
 	ratePerSecond  = 2.0
 	bucketIdleLife = 10 * time.Minute
+	// 状态表达到阈值后才清扫过期项，且最多每个间隔扫一次，不让每个请求都持锁遍历全表（#915）。
+	stateSweepThreshold = 4096
+	stateSweepInterval  = time.Minute
 )
 
 func newRateLimiter() *rateLimiter {
@@ -434,10 +439,14 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	return true
 }
 
+// evictLocked 回收 10 分钟没访问的桶。表满且全部活跃时新 key 照常准入：IP 维度的 key 来自
+// 未认证请求，拒绝新 key 会让别人塞满的表挡住正常用户；活跃状态的规模由限速本身约束。
 func (l *rateLimiter) evictLocked(now time.Time) {
-	if len(l.buckets) < 4096 {
+	if len(l.buckets) < stateSweepThreshold || now.Sub(l.lastSweep) < stateSweepInterval {
 		return
 	}
+	l.lastSweep = now
+	l.sweeps++
 	for key, entry := range l.buckets {
 		if now.Sub(entry.lastSeen) > bucketIdleLife {
 			delete(l.buckets, key)

@@ -130,6 +130,83 @@ enum FilePermissionDomain: String, Decodable {
     case other
 }
 
+struct ManagedPairingLinkResponse: Decodable, Equatable {
+    let pairURL: String
+    let pairExpiresAt: String
+    let mode: String
+
+    enum CodingKeys: String, CodingKey {
+        case pairURL = "pair_url"
+        case pairExpiresAt = "pair_expires_at"
+        case mode
+    }
+}
+
+struct ManagedPairingOperationResponse: Decodable {
+    let id: String
+    let state: String
+    let result: ManagedPairingLinkResponse?
+    let code: String?
+    let message: String?
+}
+
+/// 已连接电脑一键接入托管连接的稳定错误（#897）。只解析带 code 的业务错误，
+/// 鉴权失败仍走 AgentAPIError，保证凭据失效的处理不变。
+enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
+    case selfHostedClientsPresent(count: Int)
+    case busy
+    /// 电脑端版本早于 v1.1.9，没有这个接口。
+    case hostTooOld
+    case failed(code: String, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .selfHostedClientsPresent(let count):
+            return L10n.format("ui.managed_devices_upgrade_reset_message", String(count))
+        case .busy:
+            return L10n.text("ui.managed_devices_upgrade_busy")
+        case .hostTooOld:
+            return L10n.text("ui.managed_devices_host_too_old")
+        case .failed(let code, let message):
+            // 全部助手都关着时用户能自己处理；其余是电脑端内部原因，只给下一步和错误代码。
+            return code == "tailcat_agents_disabled"
+                ? message
+                : L10n.format("ui.managed_devices_upgrade_failed", code)
+        }
+    }
+
+    static func decode(status: Int, data: Data) -> ManagedPairingLinkAPIError? {
+        struct Payload: Decodable {
+            let code: String
+            let error: String?
+            let pairedDeviceCount: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case code
+                case error
+                case pairedDeviceCount = "paired_device_count"
+            }
+        }
+        // 旧版电脑没有路径；新版异步结果过期也会返回 404，必须保留业务原因。
+        if status == 404, (try? JSONDecoder().decode(Payload.self, from: data)) == nil {
+            return .hostTooOld
+        }
+        guard status != 401, status != 403,
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              !payload.code.isEmpty else {
+            return nil
+        }
+        switch payload.code {
+        case "tailcat_self_hosted_clients_present":
+            return .selfHostedClientsPresent(count: max(payload.pairedDeviceCount ?? 0, 1))
+        case "tailcat_operation_in_progress":
+            return .busy
+        default:
+            return .failed(code: payload.code, message: payload.error ?? payload.code)
+        }
+    }
+}
+
 struct FileAccessAPIError: LocalizedError, Equatable {
     let status: Int
     let message: String
@@ -451,6 +528,76 @@ struct AgentAPIClient {
 
     func tailscaleNetworkPath() async throws -> TailscaleNetworkPathResponse {
         try await request(path: "/api/diagnostics/tailscale-path", method: "GET", body: Optional<Data>.none)
+    }
+
+    /// 请当前电脑进入托管模式并发起一次托管配对，返回与电脑端二维码相同的链接（#897）。
+    /// 进入托管模式会验证新 sidecar、失败时回滚，再生成临时配对节点，所以超时放宽。
+    func managedPairingLink(confirmResetSelfHosted: Bool) async throws -> ManagedPairingLinkResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["confirm_reset_self_hosted": confirmResetSelfHosted])
+        return try await request(
+            path: "/api/tailcat/managed-pairing-link",
+            method: "POST",
+            body: body,
+            timeout: 90
+        )
+    }
+
+    /// 免费 Tailcat 启用中转时电脑会短暂重连；同一 request_id 重发只取回原操作，不重复配对。
+    func activateManagedRelay(requestID: UUID) async throws -> ManagedPairingLinkResponse {
+        let path = "/api/tailcat/managed-pairing-operations"
+        let body = try JSONSerialization.data(withJSONObject: ["request_id": requestID.uuidString])
+        let deadline = Date().addingTimeInterval(90)
+        var accepted = false
+        while Date() < deadline {
+            try Task.checkCancellation()
+            do {
+                let operation: ManagedPairingOperationResponse = try await request(
+                    path: accepted ? path + "/" + requestID.uuidString : path,
+                    method: accepted ? "GET" : "POST",
+                    body: accepted ? nil : body,
+                    timeout: min(10, max(1, deadline.timeIntervalSinceNow))
+                )
+                guard operation.id.lowercased() == requestID.uuidString.lowercased() else {
+                    throw AgentAPIError.invalidResponse
+                }
+                accepted = true
+                switch operation.state {
+                case "completed":
+                    guard let result = operation.result else { throw AgentAPIError.invalidResponse }
+                    return result
+                case "failed":
+                    throw ManagedPairingLinkAPIError.failed(
+                        code: operation.code ?? "tailcat_activation_failed", message: operation.message ?? ""
+                    )
+                case "pending": break
+                default: throw AgentAPIError.invalidResponse
+                }
+            } catch let error as URLError where error.code != .cancelled {
+                // 只容忍传输中断；鉴权、旧版电脑和业务拒绝必须立即返回。
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+        throw URLError(.timedOut)
+    }
+
+    /// 电脑上选择的中转。旧版电脑没有这个接口，调用方按没有选择信息处理。
+    func tailcatRelayChoice() async throws -> ComputerRelayChoice {
+        struct Response: Decodable { let relay_service: String; let free_relay_service: String }
+        let result: Response = try await request(
+            path: "/api/tailcat/relay-choice", method: "GET", body: Optional<Data>.none
+        )
+        guard let relay = RelayServiceChoice(rawValue: result.relay_service) else {
+            throw AgentAPIError.invalidResponse
+        }
+        return ComputerRelayChoice(relay: relay, free: RelayServiceChoice(rawValue: result.free_relay_service))
+    }
+
+    func freeTailcatRoute(clientKey: String) async throws -> String {
+        struct Response: Decodable { let tailcat_address: String }
+        let body = try JSONSerialization.data(withJSONObject: ["client_key": clientKey])
+        let result: Response = try await request(path: "/api/tailcat/free-route", method: "POST", body: body)
+        guard !result.tailcat_address.isEmpty else { throw PairingLinkError.missingTailcatAddress }
+        return result.tailcat_address
     }
 
     func capabilities(path: String?) async throws -> CapabilityListResponse {
@@ -803,6 +950,10 @@ struct AgentAPIClient {
             if path == "/api/files/read",
                let fileError = FileAccessAPIError.decode(status: http.statusCode, data: data) {
                 throw fileError
+            }
+            if (path == "/api/tailcat/managed-pairing-link" || path.hasPrefix("/api/tailcat/managed-pairing-operations")),
+               let linkError = ManagedPairingLinkAPIError.decode(status: http.statusCode, data: data) {
+                throw linkError
             }
             if AgentAPIError.isCredentialRejection(
                 status: http.statusCode,

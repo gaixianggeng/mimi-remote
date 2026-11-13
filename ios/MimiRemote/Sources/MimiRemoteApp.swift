@@ -479,7 +479,8 @@ struct MimiRemoteApp: App {
         let notificationResponseAdapter = SessionNotificationResponseAdapter()
         let managedConnectionEntitlementStore = ManagedConnectionEntitlementStore(
             storeKit: LiveManagedConnectionStoreKitClient(),
-            entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
+            entitlementAPI: LiveManagedConnectionEntitlementAPIClient(),
+            redemptionCodes: KeychainManagedConnectionRedemptionCodeStore()
         )
         let managedConnectionIdentityStore = ManagedConnectionMobileIdentityStore()
         let managedConnectionDeviceStore = ManagedConnectionDeviceStore(
@@ -489,6 +490,11 @@ struct MimiRemoteApp: App {
         let managedConnectionEventReporter = ManagedConnectionEventReporter(
             identityStore: managedConnectionIdentityStore
         )
+#if DEBUG
+        TailcatExperimentController.resetIdentityIfRequested(
+            arguments: ProcessInfo.processInfo.arguments, tokenStore: TokenStore()
+        )
+#endif
         let tailcatExperimentController = TailcatExperimentController(
             appStore: appStore,
             managedPairingAuthorizer: managedConnectionDeviceStore,
@@ -505,6 +511,7 @@ struct MimiRemoteApp: App {
             tailcatExperimentController: tailcatExperimentController
         )
         notificationResponseAdapter.approvalInbox.navigationOwnership = sessionStore.notificationNavigation
+        sessionStore.appReviewPrompt = AppReviewPromptCoordinator.makeLive(appStore: appStore, sessionStore: sessionStore)
         _appStore = StateObject(wrappedValue: appStore)
         _conversationStore = StateObject(wrappedValue: conversationStore)
         _logStore = StateObject(wrappedValue: logStore)
@@ -604,9 +611,22 @@ struct MimiRemoteApp: App {
         UNUserNotificationCenter.current().delegate = notificationResponseAdapter
     }
 
+    @ViewBuilder
+    private var applicationRoot: some View {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--debug-image-recovery-fixture") {
+            DebugImageRecoveryFixture(appStore: appStore)
+        } else {
+            RootView()
+        }
+#else
+        RootView()
+#endif
+    }
+
     var body: some Scene {
         WindowGroup {
-            RootView()
+            applicationRoot
                 // locale 变化会让整个 SwiftUI 视图树重新求值，现有 L10n 调用即可即时换语言。
                 .environment(\.locale, selectedAppLanguage.locale)
                 .environmentObject(appStore)
@@ -633,6 +653,14 @@ struct MimiRemoteApp: App {
                             activeProfileID: appStore.activeConnectionProfileID,
                             sessions: sessionStore.sessions
                         )
+                        return
+                    }
+                    if let link = ManagedRedemptionLink(url: url) {
+                        // 入口关闭的构建里没有兑换码这回事，链接也不能绕过开关。
+                        guard ManagedConnectionSubscriptionView.isEntryVisible else { return }
+                        Task { @MainActor in
+                            await managedConnectionEntitlementStore.redeemFromLink(link)
+                        }
                         return
                     }
                     Task { @MainActor in

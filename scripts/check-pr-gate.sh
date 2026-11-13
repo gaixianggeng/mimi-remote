@@ -35,6 +35,7 @@ done
 
 bash ./scripts/test-verify-change.sh
 bash ./scripts/test-ios-test-inventory.sh
+python3 ./scripts/test-conversation-results.py
 bash ./scripts/check-critical-regressions.sh
 bash ./scripts/check-nightly-release.sh
 bash ./scripts/check-release-source.sh --self-test
@@ -86,6 +87,7 @@ assert_scope file_reference_cases true true false false false contracts/file-ref
 assert_scope mimi_contract_generator true true false false false internal/protocolcontract/cmd/generate/main.go
 assert_scope mimi_contract_checker true false false false false scripts/check-mimi-protocol-contract.sh
 assert_scope critical_runner true true false false false scripts/test-conversation-regressions.sh
+assert_scope critical_result_policy true true false false false scripts/test-conversation-results.py
 assert_scope critical_checker true true false false false scripts/check-critical-regressions.sh
 assert_scope ios_test_inventory false true false false false scripts/ios-test-inventory.py
 assert_scope ios_test_selector_checker false true false false false scripts/check-ios-test-selectors.sh

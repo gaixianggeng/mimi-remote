@@ -139,6 +139,10 @@ func linuxConfirmationWord(action string) string {
 		return "enable"
 	case "tailcat-disable":
 		return "disable"
+	case "tailcat-enter-managed":
+		return "managed"
+	case "tailcat-exit-managed":
+		return "exit"
 	}
 	return ""
 }

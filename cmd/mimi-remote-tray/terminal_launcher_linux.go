@@ -13,7 +13,7 @@ import (
 
 func validLinuxTerminalAction(action string) bool {
 	switch action {
-	case "status", "service", "pair-tailcat", "pair-tailscale", "pair-lan", "doctor", "logs", "start", "restart", "stop", "tailcat-enable", "tailcat-disable":
+	case "status", "service", "pair-tailcat", "pair-tailscale", "pair-lan", "doctor", "logs", "start", "restart", "stop", "tailcat-enable", "tailcat-disable", "tailcat-enter-managed", "tailcat-exit-managed":
 		return true
 	}
 	return false

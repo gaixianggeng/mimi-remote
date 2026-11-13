@@ -773,7 +773,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(secondPage.messages.compactMap(\.timelineOrdinal), [0, 1, 2, 3])
     }
 
-    func testSummaryFinalMovesBehindLaterCanonicalEnrichmentItems() {
+    func testSummaryFinalAliasReplacesStaleAdjacencyWithCanonicalItemOrder() {
         let reducer = ConversationTimelineReducer()
         let turnID = "turn-large-enrichment"
         let completedAt = Date(timeIntervalSince1970: 200)
@@ -787,9 +787,9 @@ extension ConversationDataFlowTests {
                 createdAt: Date(timeIntervalSince1970: 100)
             ),
             ConversationMessage(
-                stableID: "final-236",
+                stableID: "summary-final",
                 turnID: turnID,
-                itemID: "final-236",
+                itemID: "summary-final",
                 role: .assistant,
                 content: "已修复并推送",
                 createdAt: completedAt
@@ -801,16 +801,18 @@ extension ConversationDataFlowTests {
             itemID: "image-207",
             role: .assistant,
             content: "![截图](/tmp/result.png)",
-            createdAt: completedAt,
+            createdAt: completedAt.addingTimeInterval(10),
             timelineOrdinal: 207
         )
 
+        // 模拟旧版本已经显示的错误槽位；实际分页发布层还须保护未补齐的最新 Turn。
+        // 此处单独验证收到规范 Item 后可以修复旧槽位，不把 U→S→I 当成允许的界面结果。
         let afterFirstEnrichment = reducer.rebase(
             snapshot: [image],
             current: initial,
             snapshotOrdering: .incrementalFragments
         )
-        XCTAssertEqual(afterFirstEnrichment.messages.map(\.itemID), ["user-0", "image-207", "final-236"])
+        XCTAssertEqual(afterFirstEnrichment.messages.map(\.itemID), ["user-0", "summary-final", "image-207"])
 
         let laterActivity = ConversationMessage(
             stableID: "activity-220",
@@ -839,11 +841,44 @@ extension ConversationDataFlowTests {
         )
 
         XCTAssertFalse(afterSecondEnrichment.hadOrderingCycle)
+        XCTAssertEqual(afterSecondEnrichment.stableIDAliases["final-236"], initial.last?.id)
         XCTAssertEqual(
             afterSecondEnrichment.messages.map(\.itemID),
             ["user-0", "image-207", "activity-220", "final-236"]
         )
         XCTAssertEqual(afterSecondEnrichment.messages.last?.content, "已修复并推送")
+        let repeated = reducer.rebase(
+            snapshot: [laterActivity, canonicalFinal],
+            current: afterSecondEnrichment.messages,
+            snapshotOrdering: .incrementalFragments
+        )
+        XCTAssertFalse(repeated.hadOrderingCycle)
+        XCTAssertEqual(repeated.messages.map(\.itemID), afterSecondEnrichment.messages.map(\.itemID))
+    }
+
+    func testOlderTurnEnrichmentKeepsLatestTurnAtTailAcrossPartialAndRepeatedPages() {
+        let reducer = ConversationTimelineReducer()
+        func message(_ id: String, turn: String, ordinal: Int64? = nil, time: TimeInterval) -> ConversationMessage {
+            ConversationMessage(
+                stableID: id, turnID: turn, itemID: id, role: .assistant,
+                content: id, createdAt: Date(timeIntervalSince1970: time), timelineOrdinal: ordinal
+            )
+        }
+        let summary = message("old-final", turn: "old", time: 200)
+        let latest = message("latest-final", turn: "latest", time: 300)
+        let oldImage = message("old-image", turn: "old", ordinal: 207, time: 400)
+        let oldActivity = message("old-activity", turn: "old", ordinal: 220, time: 100)
+        let canonicalFinal = message("old-final", turn: "old", ordinal: 236, time: 200)
+        var current = [summary, latest]
+        // 每次成功页提交后就必须保持尾部。失败或取消不再提交新页，也不能依赖最后一页修复。
+        for page in [[oldImage], [oldActivity, canonicalFinal], [oldImage], [oldActivity, canonicalFinal], []] {
+            let result = reducer.rebase(snapshot: page, current: current, snapshotOrdering: .incrementalFragments)
+            XCTAssertFalse(result.hadOrderingCycle)
+            XCTAssertEqual(result.messages.last?.itemID, "latest-final")
+            XCTAssertEqual(Set(result.messages.map(\.id)).count, result.messages.count)
+            current = result.messages
+        }
+        XCTAssertEqual(current.map(\.itemID), ["old-image", "old-activity", "old-final", "latest-final"])
     }
 
     func testTimelineOrdinalDoesNotOrderItemsAcrossTurns() {

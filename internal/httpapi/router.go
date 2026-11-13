@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/codexhistory"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -29,6 +30,9 @@ import (
 )
 
 type Router struct {
+	// codexWriterLocks 只在本机共享 App Server 上存在：SSH 与 Windows 受管模式没有可读的锁目录。
+	codexWriterLocks gatewayWriterLockInspector
+
 	cfg            config.Config
 	configPath     string
 	projects       *projects.Registry
@@ -124,11 +128,14 @@ type Router struct {
 	claudeBridge     *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
 	// harnessTurnPush 在手机离线后继续观察经 Mimi 提交的 DeepSeek 回合，结束时推送提醒。
-	harnessNative                 harnessNativeResources
-	harnessTurnPush               harnessTurnPushWatchers
-	tailcat                       tailcatSidecar
-	managedPairing                managedPairingService
-	tailcatLocalToken             string
+	harnessNative     harnessNativeResources
+	harnessTurnPush   harnessTurnPushWatchers
+	tailcat           tailcatSidecar
+	managedPairing    managedPairingService
+	tailcatLocalToken string
+	// 覆盖一次远程升级的完整流程，防止本机控制或自建 claim 在确认检查后插队。
+	tailcatControlMu              sync.Mutex
+	tailcatActivation             tailcatActivationStore
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -192,6 +199,14 @@ func NewRouterWithInstallationIDAndOptions(
 	if managedPairing == nil {
 		managedPairing = newDefaultManagedPairingController(options.ConfigPath, installationID, tailcat)
 	}
+	if supervisor, ok := tailcat.(*tailcatSidecarSupervisor); ok && managedPairing != nil {
+		// 托管白名单只在辅助程序内存中，重启后立即重放，不等 5 分钟轮询。
+		supervisor.setRestartHandler(func(ctx context.Context) {
+			if err := managedPairing.Sync(ctx); err != nil {
+				log.Printf("tailcat sidecar: 重启后同步托管策略失败，等待下次轮询")
+			}
+		})
+	}
 	tailcatLocalToken := strings.TrimSpace(options.tailcatLocalToken)
 	if tailcatLocalToken == "" {
 		tailcatLocalToken, _ = ReadTailcatLocalControlToken(options.ConfigPath)
@@ -231,19 +246,20 @@ func NewRouterWithInstallationIDAndOptions(
 		diagnosticLogs:              options.DiagnosticLogs,
 	}
 	if cfg.Tailcat.Enabled {
-		go func() {
-			if err := r.tailcat.Start(context.Background()); err != nil {
-				log.Printf("tailcat sidecar start failed: %v", err)
-				return
-			}
+		go r.tailcat.StartAtBoot(func() {
 			if r.managedPairing != nil {
 				r.managedPairing.Start()
 			}
-		}()
+		})
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
+	if cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "local") {
+		if home, ok := cfg.EffectiveLocalCodexHome(); ok {
+			r.codexWriterLocks = appserver.NewWriterLockInspector(home)
+		}
+	}
 	if cfg.Codex.IsEnabled() && cfg.AppServer.AutoTitle {
 		r.autoThreadTitles = newAutoThreadTitleCoordinator(
 			newCodexAutoThreadTitleGenerator(r),
@@ -276,6 +292,20 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
+	// 远程启用和免费授权都必须持有电脑的 Bearer，开发免鉴权和 query token 均不适用。
+	tailcatPairingAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	mux.Handle("/api/tailcat/managed-pairing-link", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatManagedPairingLinkHandler)),
+	))
+	for _, path := range []string{"/api/tailcat/managed-pairing-operations", "/api/tailcat/managed-pairing-operations/"} {
+		mux.Handle(path, tailcatPairingAuth.Middleware(protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatActivationHandler))))
+	}
+	mux.Handle("/api/tailcat/free-route", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatFreeRouteHandler)),
+	))
+	mux.Handle("/api/tailcat/relay-choice", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatRelayChoiceHandler)),
+	))
 	if cfg.Debug.EnableCodexHistory && cfg.Codex.IsEnabled() {
 		mux.Handle("/api/debug/codex-history", authed(http.HandlerFunc(r.codexHistoryDebugHandler)))
 	} else {
@@ -354,6 +384,7 @@ func (r *Router) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		r.tailcatActivation.close()
 		r.harnessNative.shutdown()
 		// 观察订阅可能正在投递回合提醒，必须先于 push.Close 退出。
 		r.harnessTurnPush.shutdown()

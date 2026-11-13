@@ -112,6 +112,10 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 		args = []string{"tailcat", "enable", "--json"}
 	case "tailcat-disable":
 		args = []string{"tailcat", "disable", "--json"}
+	case "tailcat-enter-managed":
+		args = []string{"tailcat", "enter-managed", "--json"}
+	case "tailcat-exit-managed":
+		args = []string{"tailcat", "exit-managed", "--json"}
 	default:
 		return "", errors.New("不支持的操作")
 	}
@@ -177,6 +181,7 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 // Read only the public status fields, never configuration or private keys.
 type linuxTailcatStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
 	Running           bool   `json:"running"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error"`

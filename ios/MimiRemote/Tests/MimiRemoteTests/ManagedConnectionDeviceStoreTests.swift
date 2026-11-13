@@ -434,6 +434,60 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         XCTAssertNil(fixture.store.errorMessage)
     }
 
+    func testRedemptionEntitlementManagesDevicesWithCodeNotStoreKit() async {
+        // 没有 StoreKit 交易的兑换码权益，也要能列出和移除设备（#949）。
+        let storeKit = MIM260StoreKitFake(
+            evidence: ManagedConnectionTransactionEvidence(
+                transactionID: 42,
+                productID: "no-current-subscription",
+                signedTransaction: "unused"
+            )
+        )
+        let entitlementAPI = MIM260EntitlementAPIFake(grant: grant)
+        await entitlementAPI.setRedemptionGrant(
+            ManagedConnectionEntitlementGrant(
+                entitlement: ManagedConnectionEntitlement(
+                    id: "entitlement-beta",
+                    productID: ManagedConnectionProductID.betaRedemption,
+                    status: .active,
+                    expiresAt: now.addingTimeInterval(3_600)
+                ),
+                token: "entitlement-token-that-is-long-enough",
+                tokenExpiresAt: now.addingTimeInterval(900)
+            )
+        )
+        let entitlementStore = ManagedConnectionEntitlementStore(
+            storeKit: storeKit,
+            entitlementAPI: entitlementAPI,
+            redemptionCodes: InMemoryManagedConnectionRedemptionCodeStore(),
+            now: { self.now }
+        )
+        await entitlementStore.redeem(code: "MIMI-CODE")
+        let api = MIM260DeviceAPIFake(now: now)
+        let store = ManagedConnectionDeviceStore(
+            entitlementStore: entitlementStore,
+            api: api,
+            identityStore: MIM260IdentityFake(
+                identity: ManagedConnectionMobileIdentity(
+                    installationID: "10000000-0000-4000-8000-000000000001",
+                    deviceToken: Self.token(byte: 3),
+                    registeredDeviceID: nil
+                )
+            ),
+            now: { self.now },
+            makeUUID: { UUID(uuidString: "30000000-0000-4000-8000-000000000002")! },
+            makeToken: { Self.token(byte: 4) }
+        )
+
+        await store.refreshDevices()
+        await store.refreshDevices()
+
+        let codes = await api.redemptionManagementCodes
+        let storeKitSessions = await api.lastManagementEvidence
+        XCTAssertEqual(codes, ["MIMI-CODE"], "管理凭证未过期时复用，不重复创建")
+        XCTAssertNil(storeKitSessions)
+    }
+
     private func makeFixture() async -> (
         store: ManagedConnectionDeviceStore,
         api: MIM260DeviceAPIFake,
@@ -532,6 +586,7 @@ private actor MIM260StoreKitFake: ManagedConnectionStoreKitClient {
     nonisolated func storefrontUpdates() -> AsyncStream<Void> {
         AsyncStream { $0.finish() }
     }
+    func storefrontCountryCode() async -> String? { nil }
     func signedAppTransaction() async throws -> String { "signed-app-transaction" }
     func finish(transactionID: UInt64) async {}
     func syncPurchases() async throws {}
@@ -549,6 +604,16 @@ private actor MIM260EntitlementAPIFake: ManagedConnectionEntitlementAPIClient {
         signedTransaction: String
     ) async throws -> ManagedConnectionEntitlementGrant {
         grant
+    }
+
+    func redeem(code: String) async throws -> ManagedConnectionEntitlementGrant {
+        redemptionGrant ?? grant
+    }
+
+    private var redemptionGrant: ManagedConnectionEntitlementGrant?
+
+    func setRedemptionGrant(_ grant: ManagedConnectionEntitlementGrant) {
+        redemptionGrant = grant
     }
 }
 
@@ -718,6 +783,16 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         lastManagementEvidence = (signedAppTransaction, signedTransaction)
         return ManagedConnectionManagementSession(
             token: "management-token-\(managementSessionCount)-that-is-long-enough",
+            expiresAt: now.addingTimeInterval(600)
+        )
+    }
+
+    private(set) var redemptionManagementCodes: [String] = []
+
+    func createManagementSession(redemptionCode: String) async throws -> ManagedConnectionManagementSession {
+        redemptionManagementCodes.append(redemptionCode)
+        return ManagedConnectionManagementSession(
+            token: "redemption-management-token-that-is-long-enough",
             expiresAt: now.addingTimeInterval(600)
         )
     }

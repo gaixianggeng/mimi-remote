@@ -202,3 +202,12 @@ func TestLinuxMenuSubmenuAndSymbolicStates(t *testing.T) {
 		t.Fatal("fallback icon has an opaque square")
 	}
 }
+
+func TestLinuxTerminalManagedActionsRequireConfirmation(t *testing.T) {
+	if word := linuxConfirmationWord("tailcat-enter-managed"); word != "managed" {
+		t.Fatal(word)
+	}
+	if !validLinuxTerminalAction("tailcat-enter-managed") || !validLinuxTerminalAction("tailcat-exit-managed") {
+		t.Fatal("menu actions must be accepted by the terminal launcher")
+	}
+}

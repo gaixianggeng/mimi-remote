@@ -273,7 +273,7 @@ final class CodexTurnInterruptBeforeStartTests: XCTestCase {
 
     func waitForRuntimeStartedSignal(_ fixture: CodexTurnInterruptBeforeStartFixture) async throws {
         for _ in 0..<200 {
-            let events = await fixture.runtime.bufferedEventsBySessionID[fixture.session.id] ?? []
+            let events = await fixture.runtime.bufferedEventsBySessionID[fixture.session.id]?.map(\.event) ?? []
             if events.contains(where: { if case .turnStarted = $0 { return true } else { return false } }) {
                 return
             }
@@ -305,7 +305,7 @@ final class CodexTurnInterruptBeforeStartTests: XCTestCase {
 
     func completedLifecycles(_ fixture: CodexTurnInterruptBeforeStartFixture) async -> [ConversationTurnLifecycle] {
         // 只读缓冲区，不消费：bufferedEvents(sessionID:) 会把事件取走。
-        let events = await fixture.runtime.bufferedEventsBySessionID[fixture.session.id] ?? []
+            let events = await fixture.runtime.bufferedEventsBySessionID[fixture.session.id]?.map(\.event) ?? []
         return events.compactMap { event in
             guard case .turnCompleted(let metadata) = event else { return nil }
             return metadata.turnLifecycle ?? .completed

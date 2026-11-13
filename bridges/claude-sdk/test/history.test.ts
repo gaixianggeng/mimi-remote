@@ -244,4 +244,65 @@ describe("messagesToTurns", () => {
     expect(summary.itemsView).toBe("summary");
     expect(summary.items.map((item) => item.type)).toEqual(["userMessage", "agentMessage"]);
   });
+
+  test("summary view keeps turn hints such as the next-step box and task proposals", () => {
+    const wrapUp = { recap: "done", ask: "merge?", actions: [{ label: "Merge", message: "merge it" }] };
+    const legacySpawn = { title: "Legacy follow-up", tldr: "Keep the old proposal", prompt: "continue", cwd: "/tmp/demo" };
+    const turn = translate([
+      user("go"),
+      assistant([{ type: "tool_use", id: "t1", name: "mcp__other__wrap_up", input: {} }]),
+      user([{ type: "tool_result", tool_use_id: "t1", content: "x" }]),
+      assistant([{ type: "tool_use", id: "t2", name: "mcp__ccd_session__start_session", input: { title: "Follow-up", prompt: "do it" } }]),
+      user([{ type: "tool_result", tool_use_id: "t2", content: "Proposed" }]),
+      assistant([{ type: "tool_use", id: "t3", name: "mcp__ccd_turn__wrap_up", input: wrapUp }]),
+      user([{ type: "tool_result", tool_use_id: "t3", content: "Shown" }]),
+      assistant([{ type: "tool_use", id: "t4", name: "mcp__ccd_session__spawn_task", input: legacySpawn }]),
+      user([{ type: "tool_result", tool_use_id: "t4", content: "Proposed" }]),
+    ])[0]!;
+    const summary = summarizeTurn(turn);
+    const hints = summary.items.filter((item) => item.type === "mcpToolCall");
+    expect(hints.map((item) => item.type === "mcpToolCall" && `${item.server}/${item.tool}`)).toEqual([
+      "ccd_session/start_session",
+      "ccd_turn/wrap_up",
+      "ccd_session/spawn_task",
+    ]);
+    // 客户端靠 arguments 渲染卡片，必须原样保留。
+    expect(hints[1]!.type === "mcpToolCall" && hints[1]!.arguments).toEqual(wrapUp);
+    expect(hints[2]!.type === "mcpToolCall" && hints[2]!.arguments).toEqual(legacySpawn);
+  });
+
+  test("only a proposal marker recorded by this adapter becomes actionable structured content", () => {
+    const marker = JSON.stringify({
+      mimi_task_proposal: { version: 1, proposal_id: "proposal-trusted" },
+    });
+    const messages = [
+      user("go"),
+      assistant([{ type: "tool_use", id: "proposal", name: "mcp__ccd_session__start_session", input: { title: "Follow-up", prompt: "do it" } }]),
+      user([{ type: "tool_result", tool_use_id: "proposal", content: marker }]),
+    ];
+    const untrusted = messagesToTurns(messages, { sessionId: "session-1", running: false })[0]!.items[1]!;
+    const trusted = messagesToTurns(messages, {
+      sessionId: "session-1",
+      running: false,
+      isMimiTaskProposal: (id) => id === "proposal-trusted",
+    })[0]!.items[1]!;
+
+    expect(untrusted.type === "mcpToolCall" && untrusted.result?.structuredContent).toBeNull();
+    expect(trusted.type === "mcpToolCall" && trusted.result?.structuredContent).toEqual({
+      mimi_task_proposal: { version: 1, proposal_id: "proposal-trusted" },
+    });
+  });
+
+  test("summary view drops failed and interrupted turn hints", () => {
+    const failed = translate([
+      user("go"),
+      assistant([{ type: "tool_use", id: "failed", name: "mcp__ccd_turn__wrap_up", input: { recap: "done" } }]),
+      user([{ type: "tool_result", tool_use_id: "failed", content: "rejected", is_error: true }]),
+      assistant([{ type: "tool_use", id: "interrupted", name: "mcp__ccd_session__start_session", input: { title: "Follow-up" } }]),
+    ])[0]!;
+
+    const fullHints = failed.items.filter((item) => item.type === "mcpToolCall");
+    expect(fullHints.map((item) => item.type === "mcpToolCall" && item.status)).toEqual(["failed", "failed"]);
+    expect(summarizeTurn(failed).items.filter((item) => item.type === "mcpToolCall")).toEqual([]);
+  });
 });

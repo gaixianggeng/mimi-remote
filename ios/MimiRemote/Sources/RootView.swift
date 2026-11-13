@@ -1,3 +1,4 @@
+import StoreKit
 import SwiftUI
 import UIKit
 
@@ -34,6 +35,7 @@ struct RootView: View {
     @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.requestReview) private var requestReview
     @State private var showingLogInspector = false
     @SceneStorage("root.lastSessionSnapshot") private var lastSessionSnapshot = ""
     @SceneStorage("root.workbenchRoute.v1") private var workbenchRouteStorage = WorkbenchRestorationRoute.defaultStorageValue
@@ -64,12 +66,17 @@ struct RootView: View {
         .task(id: appStore.activeHostScope) {
             migrateLegacyWorkspaceAppearance()
         }
+        .onAppear {
+            // 评分邀请只调用系统评分框（#842）；多窗口时由最后出现的窗口装入，系统决定显示在哪个场景。
+            sessionStore.appReviewPrompt?.requestReview = { requestReview() }
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             // StoreKit 当前权益是冷启动与回到前台时的本地事实入口。
             // 只有发现 Apple 已验证的交易后，Store 才会把两份签名 JWS 发给权益服务。
             await managedConnectionEntitlementStore.refreshEntitlement()
             await managedConnectionEntitlementStore.refreshProducts()
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore, retry: true)
         }
         .task {
             // 从 App 启动开始监听未完成和后续交易；任务随 RootView 生命周期取消。
@@ -87,6 +94,7 @@ struct RootView: View {
             // 不要求用户先进入工作区页面才能恢复原来的图标偏好。
             migrateLegacyWorkspaceAppearance()
         }
+        .modifier(MimiRelayConnectionLifecycle())
         .task {
             AppDiagnostics.record(stage: .lifecycle, result: .started, reason: .startup)
             AppDiagnostics.maintain()
@@ -216,6 +224,7 @@ struct RootView: View {
             case .ignore:
                 return
             case .cancel:
+                sessionStore.cancelMimiRelay()
                 foregroundResumeTask?.cancel()
                 foregroundResumeTask = nil
                 if let generation = foregroundResume.inFlightGeneration {
@@ -936,5 +945,36 @@ private final class ThemeScreenContextView: UIView {
         let isPad = traitCollection.userInterfaceIdiom == .pad
 #endif
         onResolve(isPad, screen.bounds.size)
+    }
+}
+
+/// 将中转协调的观察点限制在小视图中，避免根工作台的泛型链继续增长。
+private struct MimiRelayConnectionLifecycle: ViewModifier {
+    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
+    @EnvironmentObject private var tailcatExperimentController: TailcatExperimentController
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+
+    func body(content: Content) -> some View {
+        content
+        .onChange(of: appStore.connectionStatus) { _, _ in
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
+        .onChange(of: tailcatExperimentController.relayChoiceRevision) { _, _ in
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
+        .onChange(of: managedConnectionEntitlementStore.status) { _, _ in
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
+        .onChange(of: sessionStore.inFlightConnectionChangeGeneration) { _, operation in
+            if operation == nil { sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore) }
+        }
+        .onChange(of: tailcatExperimentController.state) { _, _ in
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
+        .onChange(of: appStore.activeConnectionProfileID) { _, _ in
+            sessionStore.cancelMimiRelay()
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore)
+        }
     }
 }

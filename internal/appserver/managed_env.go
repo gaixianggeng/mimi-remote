@@ -3,6 +3,8 @@ package appserver
 import (
 	"os"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/systemproxy"
 )
 
 // 受管子进程共用的环境与诊断处理：SSH 传输、共享本地 app-server 和
@@ -46,7 +48,8 @@ func buildManagedEnv(extra map[string]string) []string {
 	for _, key := range order {
 		env = append(env, key+"="+values[key])
 	}
-	return env
+	// Windows 上 Codex 不读系统代理；agentd serve 安装了系统代理中转时由它补上。
+	return systemproxy.ApplyEnvironment(env)
 }
 
 func sanitizeDiagnostic(value string) string {

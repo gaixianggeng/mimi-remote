@@ -538,6 +538,46 @@ final class HarnessSnapshotReplayTests: XCTestCase {
         XCTAssertEqual(reports, [21])
     }
 
+    /// #917：经客户端应用的直播片段同样原地追加，长回复不随已收片段数线性复制。
+    func testLiveChunksThroughClientAppendWithoutCopyingEarlierChunks() async throws {
+        let client = makeClient(
+            snapshot: snapshot(cursor: 20, events: [turnEvent(type: HarnessWireEventType.turnStart, seq: 19, turn: 8)]),
+            coveredSequence: { _ in 20 },
+            reportCoveredSequence: { _, _ in },
+            reconcile: { _, _ in HarnessDurableReconciliation() }
+        )
+        client.connect(sessionID: sessionID, replayBufferedEvents: false)
+        await waitFor { client.journal?.hasOpenedSnapshot == true }
+        XCTAssertNil(client.apply(assistantStream: HarnessAssistantStreamFrame(
+            type: HarnessWireAssistantFrame.start, revision: 1, index: nil, chunk: nil, outcome: nil,
+            attemptId: "attempt-client-append", turn: 8, step: 1, startedAfterSeq: 20
+        )))
+        func chunk(_ index: Int) -> HarnessAssistantStreamFrame {
+            HarnessAssistantStreamFrame(
+                type: HarnessWireAssistantFrame.chunk, revision: index + 2, index: index,
+                chunk: HarnessAssistantChunk(
+                    type: HarnessWireChunkType.textDelta, index: 0, text: "片段\(index)",
+                    blockType: nil, argumentsDelta: nil
+                ),
+                outcome: nil, attemptId: "attempt-client-append", turn: nil, step: nil, startedAfterSeq: nil
+            )
+        }
+        func storage() -> (address: UInt?, count: Int, capacity: Int) {
+            client.journal?.activeAttemptChunkStorage() ?? (nil, 0, 0)
+        }
+        var next = 0
+        repeat {
+            XCTAssertNil(client.apply(assistantStream: chunk(next)))
+            next += 1
+        } while next < 64 || storage().count == storage().capacity
+
+        let before = storage()
+        XCTAssertNil(client.apply(assistantStream: chunk(next)))
+        let after = storage()
+        XCTAssertEqual(after.count, before.count + 1)
+        XCTAssertEqual(after.address, before.address, "容量够用时追加片段不应重新分配并复制前缀")
+    }
+
     private func makeClient(
         snapshot: HarnessSnapshot,
         coveredSequence: @escaping @MainActor (SessionID) -> Int?,

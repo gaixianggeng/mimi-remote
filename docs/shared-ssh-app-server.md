@@ -14,7 +14,7 @@ Mimi App -> agentd 鉴权 WebSocket -> unix:// ---------------------------------
 Mac App：标准 socket 由 launchd 持有 -> GUI 前门 -> 私有 backend socket -> 同一个 Aqua App Server
 ```
 
-OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不枚举、不停止，也不重配这些进程。
+OpenClaw 和不使用 control socket 的普通本地模式继续使用自己的 App Server。agentd 不停止、不重配这些进程，也不连接它们；唯一的只读观察见下文“占用标记”。
 
 ## 配置
 
@@ -252,6 +252,21 @@ Codex `0.155.1` 的 Unix 服务实现可以通过 SIGHUP 停止接纳新的模�
 普通 “This Mac” 模式仍可用于 ChatGPT Desktop 私有的 `codex_app`、Browser 和专用渲染能力，但它不属于共享运行时。不要同时用普通本地模式和 SSH 模式打开同一个活动 Thread。
 
 Thread writer 锁仍然生效。若普通 “This Mac” 模式和共享模式同时恢复同一个活动 Thread，后恢复的一方会明确失败。该限制用于保护历史文件，不能通过取消 writer 锁规避。
+
+### 占用标记
+
+共享 App Server 查不到另一个实例的占用，对被普通 “This Mac” 持有的会话只回 `notLoaded`，看起来和已结束的历史一样。本机 transport 下，agentd 在 `thread/list` 结果上附加 `writerHeldElsewhere`：
+
+- 只有共享实例报告 `notLoaded` 且 `$CODEX_HOME/thread-writer-locks/<id>.lock` 正被某个进程打开时才为 `true`。已加载的会话，锁就在共享实例手里，一律为 `false`。
+- 无法确认（没有 `lsof`、查询超时）时不带这个字段，客户端沿用已知值。SSH 与 Windows 受管模式不做这项检查，客户端靠 `thread/resume` 的明确拒绝得到同样的提示。
+- 只读：不打开、不加锁、不删除锁文件。试探性加锁可能让真正的 writer 抢锁失败。`lsof` 扫全部进程，实测 200 ms 以上，所以只在列表里出现带锁文件的候选时才查询，结果缓存 3 秒并在后台刷新，第一次最多等 350 ms。
+- 只说明占用，不代表正在运行，也不参与授权。锁目录不是公开接口，格式变化时退回“不知道”，不会产生错误结论。
+
+2026-11-03 实测（Codex 0.166.0、ChatGPT.app 26.1027）：
+
+- 最后一个连接退订后，空闲会话约 60 秒释放 writer 并删除锁文件（2 个样本）。
+- 持有 writer 的进程退出后，锁随之释放（用私有 App Server 验证，没有实际退出过 Desktop）。
+- Desktop 切到别的会话后不会释放：经 SSH 主机打开的测试会话切走 45 分钟后仍被持有，普通 “This Mac” 下切走 25 分钟后仍被持有。所以提示用户“退出电脑上的 Codex”，而不是“关闭会话”。
 
 ## 诊断与验收
 

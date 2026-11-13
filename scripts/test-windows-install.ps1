@@ -31,6 +31,16 @@ if ($prepareSource.IndexOf('StopManagedService;') -gt $prepareSource.IndexOf('St
 if ($prepareSource.IndexOf('StopTailcatHelper;') -lt $prepareSource.IndexOf('StopManagedService;')) {
     throw 'Upgrade must let agentd stop the Tailcat helper before checking or force-stopping its image.'
 }
+foreach ($procedure in @('StopManagedService', 'StopTrayApp')) {
+    $start = $source.IndexOf("procedure $procedure;")
+    $body = $source.Substring($start, $source.IndexOf('RaiseException', $start) - $start)
+    if (-not $body.Contains('ExecutableIsReleased(') -or $body.Contains('RenameFile(')) {
+        throw "$procedure must wait for an exclusive open of the image; a rename succeeds while the process still runs."
+    }
+}
+if ($source.IndexOf('function ExecutableIsReleased') -gt $source.IndexOf('procedure StopManagedService;')) {
+    throw 'ExecutableIsReleased must be declared before the stop procedures that call it.'
+}
 $uninstallSource = $source.Substring($source.IndexOf('procedure CurUninstallStepChanged'))
 if ($uninstallSource.IndexOf('StopManagedService;') -gt $uninstallSource.IndexOf('StopTrayApp;')) {
     throw 'Uninstall must stop the managed service gracefully before terminating the shared tray image.'

@@ -8,7 +8,32 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
+
+func TestClaudeAdapterTurnHintsEnvironmentDefaultsOnAndDoesNotAffectLegacyBridge(t *testing.T) {
+	off := false
+	cases := []struct {
+		name      string
+		cfg       config.ClaudeConfig
+		isAdapter bool
+		want      string
+		present   bool
+	}{
+		{name: "adapter omitted defaults on", cfg: config.ClaudeConfig{}, isAdapter: true, want: "true", present: true},
+		{name: "adapter explicit off", cfg: config.ClaudeConfig{TurnHintsEnabled: &off}, isAdapter: true, want: "false", present: true},
+		{name: "legacy bridge receives no injected switch", cfg: config.ClaudeConfig{}, isAdapter: false, present: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, present := claudeBridgeRuntimeEnv(tc.cfg, tc.isAdapter)[claudeAdapterTurnHintsEnv]
+			if value != tc.want || present != tc.present {
+				t.Fatalf("turn hint env mismatch value=%q present=%t", value, present)
+			}
+		})
+	}
+}
 
 // 超大单帧必须被丢弃而不是撕掉连接：正常帧照常返回，超限帧返回 oversize=true 且不残留内容，
 // 其后的正常帧仍能继续读取。这是 Claude 通道断线循环兜底的核心保证。

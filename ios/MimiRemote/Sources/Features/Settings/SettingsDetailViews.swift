@@ -1289,7 +1289,7 @@ struct DefaultModelSettingsView: View {
         let generation = catalogLoadGeneration
         isLoadingCatalog = true
         didLoadCatalog = true
-        await sessionStore.refreshDefaultModelCatalog(
+        await sessionStore.refreshPickerModelCatalog(
             runtimeProviders: displayedRuntimes.map(\.rawValue),
             force: force
         )
@@ -1686,7 +1686,7 @@ struct TailcatExperimentSettingsView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(controller.diagnostics.isEmpty)
+                .disabled(controller.diagnostics.isEmpty && controller.connectionFailures.isEmpty)
                 .settingsRow()
                 .accessibilityIdentifier("settings.experimentalFeatures.copyDiagnostics")
             } header: {
@@ -1700,6 +1700,18 @@ struct TailcatExperimentSettingsView: View {
                 .padding(.top, 8)
             }
             .settingsGroupRowStyle()
+
+            if !controller.connectionFailures.isEmpty {
+                Section {
+                    ForEach(controller.connectionFailures.prefix(5)) { failure in
+                        TailcatConnectionFailureRow(failure: failure, warningTint: tokens.warning)
+                            .settingsRow()
+                    }
+                } header: {
+                    SettingsGroupHeader(title: L10n.text("ui.tailcat_recent_failures_title"))
+                }
+                .settingsGroupRowStyle()
+            }
         }
         .themedSettingsForm(tokens: tokens)
         .settingsDetailPage(tokens: tokens)

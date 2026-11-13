@@ -48,6 +48,7 @@ type ClaudeConfigurationResult struct {
 	ProxyMismatch      bool                       `json:"proxy_mismatch"`
 	Reason             string                     `json:"reason"`
 	Message            string                     `json:"message"`
+	TurnHintsEnabled   bool                       `json:"turn_hints_enabled"`
 	Previous           ClaudeModuleState          `json:"previous"`
 	Applied            ClaudeModuleState          `json:"applied"`
 }
@@ -151,6 +152,11 @@ func ConfigureClaude(
 		Previous:           previousState,
 		Applied:            previousState,
 	}
+	turnHintsState, err := claudeTurnHintsState(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
+	result.TurnHintsEnabled = effectiveClaudeTurnHints(turnHintsState)
 
 	// 启动阶段的 auto 不能覆盖用户已经在设置页做出的明确选择。
 	targetPreference := requested
@@ -343,13 +349,18 @@ func RestoreClaude(configPath string, previous ClaudeConfigurationResult) (Claud
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
+	restoredTurnHintsState, err := claudeTurnHintsState(claudeDocument)
+	if err != nil {
+		return ClaudeConfigurationResult{}, err
+	}
 	return ClaudeConfigurationResult{
 		Enabled: restoredEnabled, Available: restoredEnabled, Preference: restoredPreference,
 		PreviousEnabled: currentEnabled, PreviousPreference: currentPreference,
 		Changed:         changed,
 		RestartRequired: currentEnabled != restoredEnabled || currentBin != restoredBin,
 		ClaudeBin:       restoredBin, Reason: "restored", Message: "已恢复修改前的 Claude 设置。",
-		Previous: currentState, Applied: previous.Previous,
+		TurnHintsEnabled: effectiveClaudeTurnHints(restoredTurnHintsState),
+		Previous:         currentState, Applied: previous.Previous,
 	}, nil
 }
 

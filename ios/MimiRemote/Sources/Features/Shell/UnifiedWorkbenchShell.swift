@@ -8,6 +8,7 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject var themeStore: ThemeStore
     @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
+    @EnvironmentObject var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
@@ -128,6 +129,12 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
                 synchronizeSidebarLifecycle()
+            }
+            .task(id: sessionStore.mimiRelaySetupProfileID) {
+                applyPendingRelaySetup(layout: layout)
+            }
+            .task(id: managedConnectionEntitlementStore.pendingRoute) {
+                applyPendingManagedConnectionRoute(layout: layout)
             }
             .onChange(of: sidebarLifecycleObservations) { _, _ in
                 synchronizeSidebarLifecycle()
@@ -337,12 +344,12 @@ struct UnifiedWorkbenchShell: View {
                         .allowsHitTesting(true)
                         .simultaneousGesture(floatingSidebarDragGesture())
                         .accessibilityHidden(true)
-                        // padding 必须位于 gesture 外层，确保顶部/底部与浮层外边距不进入命中区。
+                        // padding 必须位于 gesture 外层，确保顶部/底部不进入命中区；
+                        // 右侧不再让出浮层外边距，窄条从面板外的间隙跨进行外边距（#993）。
                         .padding(
                             .vertical,
                             WorkbenchSidebarSurfaceMetrics.openDragStripVerticalInset
                         )
-                        .padding(.trailing, WorkbenchSidebarSurfaceMetrics.outerInset)
                 }
             }
         }
@@ -541,7 +548,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     func openConnectionSettings(layout: WorkbenchLayout) {
-        open(layout.usesCompactNavigation ? .devices : .me, layout: layout)
+        open(.devices, layout: layout)
     }
 
     private var settingsModalIsPresented: Bool {
@@ -790,13 +797,9 @@ struct UnifiedWorkbenchShell: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .contentMargins(
-            .trailing,
-            layout.usesFloatingSidebarSurface
-                ? WorkbenchSidebarSurfaceMetrics.openDragStripWidth
-                : 0,
-            for: .scrollContent
-        )
+        // 浮动侧栏的拖动窄条只压行外边距，右侧与左侧一样不留滚动内容边距（#993）。
+        .contentMargins(.trailing, 0, for: .scrollContent)
+        .workbenchSidebarListGlobalFrameReader()
         .environment(\.defaultMinListRowHeight, 40)
         // 覆盖式侧栏可能只按 List 的理想内容高度提案；显式占用剩余空间后列表自行滚动。
         .frame(maxHeight: .infinity)
@@ -956,7 +959,9 @@ struct UnifiedWorkbenchShell: View {
             tokens: tokens,
             usesFloatingSurface: layout.usesFloatingSidebarSurface,
             bottomSafeAreaInset: bottomSafeAreaInset,
-            isMeSelected: navigationState.selection == .me || navigationState.selection == .devices,
+            isMeSelected: navigationState.selection == .me,
+            isDevicesSelected: navigationState.selection == .devices,
+            onOpenDevices: { open(.devices, layout: layout) },
             onOpenSettings: {
                 // “我的”是一级入口，但不覆盖后台保留的会话/工作区恢复路由。
                 open(.me, layout: layout)
@@ -1082,6 +1087,7 @@ struct UnifiedWorkbenchShell: View {
             manageConnections: manageConnections,
             prefersTableDensity: layout.prefersSessionTableDensity,
             usesCompactNavigation: layout.usesCompactNavigation,
+            visibleSessionID: navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation),
             bottomContentMargin: bottomContentMargin
                 ?? (layout.usesCompactNavigation
                     ? WorkbenchPageLayout.defaultCompactBottomChromeClearance

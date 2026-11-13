@@ -75,6 +75,7 @@ export class LiveTurn {
     readonly id: string,
     private readonly threadId: string,
     private readonly emit: Emit,
+    private readonly isMimiTaskProposal?: (proposalId: string) => boolean,
   ) {}
 
   private scoped(params: Record<string, unknown>): Record<string, unknown> {
@@ -205,7 +206,7 @@ export class LiveTurn {
         const item = this.tools.get(id);
         if (!item) continue;
         this.tools.delete(id);
-        this.completed(completeToolItem(item, toolOutput(block)));
+        this.completed(completeToolItem(item, toolOutput(block), this.isMimiTaskProposal));
       } else if (block.type === "text" && typeof block.text === "string" && INTERRUPT_MARKER.test(block.text.trim())) {
         this.interruptMarker = true;
       }

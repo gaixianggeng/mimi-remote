@@ -128,6 +128,26 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 
 	switch method {
 	case "thread/list", "thread/start":
+		if method == "thread/start" {
+			proposal, err := gatewayMimiTaskProposalParam(p.runtimeID, method, params)
+			if err != nil {
+				return err
+			}
+			if proposal != nil {
+				parent, ok := p.allowedThread(proposal.parentThreadID)
+				if !ok || normalizeAppServerRuntimeID(parent.runtimeID) != appServerRuntimeClaudeID {
+					return fmt.Errorf("thread/start.mimiTaskProposal.parentThreadId 未由当前 Claude gateway 连接授权")
+				}
+				if parent.readOnly {
+					return fmt.Errorf("thread/start.mimiTaskProposal.parentThreadId 是只读子会话")
+				}
+				// proposal 在 adapter 内还会按随机 ID 与原 cwd 复验；gateway 先把它绑定到
+				// 本连接已授权的父会话及同一 canonical cwd，不能只相信客户端传入的 cwd。
+				if !scopeOK || parent.scopeID != scope.id || parent.cwd != scope.realPath {
+					return fmt.Errorf("thread/start.cwd 必须精确匹配任务提议父会话的工作目录")
+				}
+			}
+		}
 		if method == "thread/list" {
 			if err := validateGatewayThreadListParams(params); err != nil {
 				return err
@@ -209,6 +229,20 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		// 覆盖缓存的 false，否则接管后 turn/start 仍会被本连接拒绝。
 		if err := p.rememberPendingThreadResponseWithManagedUse(frame.ID, method, cwd, scope.id, validated.pendingManagedWorktreePath); err != nil {
 			return err
+		}
+	case "thread/desktop/open":
+		threadID, ok := gatewayStringParam(params, "threadId")
+		if !ok {
+			return fmt.Errorf("%s.threadId 不能为空", method)
+		}
+		thread, ok := p.allowedThread(threadID)
+		if !ok {
+			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
+		}
+		// 与接管相同不套只读拒写：桌面版已经持有的会话（canAcceptDirectInput=false）再打开只是
+		// 切到前台，终端持有时由适配器拒绝。子会话 / 浏览线程没有可在桌面版继续的 transcript。
+		if thread.readOnly {
+			return fmt.Errorf("%s.threadId 是只读子会话，不能在 Claude 桌面版打开", method)
 		}
 	case "thread/fork":
 		threadID, ok := gatewayStringParam(params, "threadId")
@@ -381,6 +415,31 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 	}
 	return nil
+}
+
+type gatewayMimiTaskProposal struct {
+	id             string
+	parentThreadID string
+}
+
+func gatewayMimiTaskProposalParam(runtimeID string, method string, params map[string]any) (*gatewayMimiTaskProposal, error) {
+	raw, exists := params["mimiTaskProposal"]
+	if !exists {
+		return nil, nil
+	}
+	if normalizeAppServerRuntimeID(runtimeID) != appServerRuntimeClaudeID || method != "thread/start" {
+		return nil, fmt.Errorf("mimiTaskProposal 只允许 Claude thread/start 使用")
+	}
+	object, ok := raw.(map[string]any)
+	if !ok || len(object) != 2 {
+		return nil, fmt.Errorf("thread/start.mimiTaskProposal 必须只包含 id 与 parentThreadId")
+	}
+	id, idOK := object["id"].(string)
+	parentThreadID, parentOK := object["parentThreadId"].(string)
+	if !idOK || !parentOK || id == "" || parentThreadID == "" || id != strings.TrimSpace(id) || parentThreadID != strings.TrimSpace(parentThreadID) || len(id) > 256 || len(parentThreadID) > 256 || strings.ContainsAny(id+parentThreadID, "\x00\r\n") {
+		return nil, fmt.Errorf("thread/start.mimiTaskProposal.id 与 parentThreadId 必须是有效非空字符串")
+	}
+	return &gatewayMimiTaskProposal{id: id, parentThreadID: parentThreadID}, nil
 }
 
 func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
@@ -781,6 +840,8 @@ func rewriteGatewaySafeDefaults(payload []byte, runtimeID string, method string,
 		sanitized = sanitizedGatewayReviewStartParams(params)
 	case "thread/start", "thread/resume", "thread/fork":
 		sanitized = sanitizedGatewayThreadParams(runtimeID, method, params)
+	case "thread/desktop/open":
+		sanitized = copyGatewayParams(params, "threadId")
 	case "thread/takeover":
 		// 历史另走分页接口，接管响应只需要 thread 本体。
 		sanitized = copyGatewayParams(params, "threadId", "cwd")
@@ -1347,6 +1408,11 @@ func sanitizedGatewayInitializeParams(params map[string]any) map[string]any {
 
 func sanitizedGatewayThreadParams(runtimeID string, method string, params map[string]any) map[string]any {
 	safe := copyGatewayParams(params, "cwd", "serviceTier", "personality")
+	if proposal, _ := gatewayMimiTaskProposalParam(runtimeID, method, params); proposal != nil {
+		safe["mimiTaskProposal"] = map[string]any{
+			"id": proposal.id, "parentThreadId": proposal.parentThreadID,
+		}
+	}
 	if method == "thread/resume" || method == "thread/fork" {
 		copyGatewayParam(safe, params, "threadId")
 	}

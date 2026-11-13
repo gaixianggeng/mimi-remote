@@ -7,7 +7,7 @@
 - **会话数据只有一份，归 Claude Code。** 列表、历史、标题都通过 SDK 读取，不再自己解析 transcript，也不保存第二份会话目录。Mimi 里看到的历史与 `claude --resume` 一致：分叉只显示 CLI 继续的那条支线，被 Claude 压缩掉的历史与 CLI 一样不显示。
 - **项目 = Git 仓库。** 按目录查询时，包含同仓库所有 worktree 的会话。
 - **活动时间取最后一条对话消息的时间戳**，不用文件修改时间（#653）。
-- **agentd 接口不变。** 启动参数（`--socket`，Windows 上 `--tcp-listen <回环IP>:<端口>`；`--version`）、`_alleycat/attach` 握手、`_alleycat_seq` 序号和断线重放与旧 bridge 一致，切换只需改 `claude.bridge_bin`。
+- **agentd 接口不变。** 启动参数（`--socket`，Windows 上 `--tcp-listen <回环IP>:<端口>`；`--version`）、`_alleycat/attach` 握手、`_alleycat_seq` 序号和断线重放与旧 bridge 一致，切换只需改 `claude.bridge_bin`。唯一差别：请求的响应不入重放环、不带序号（旧 bridge 会入环但从不补发，#910）。
 - **不碰 Claude 的登录凭据。** 只驱动用户自己安装、未修改的 Claude Code，由用户用自己的账号登录；额度只来自 Claude Code 在会话里自己上报的事件（#660）。
 
 ## 当前阶段

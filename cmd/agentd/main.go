@@ -24,7 +24,6 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
-	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/skip2/go-qrcode"
@@ -92,6 +91,8 @@ func run(args []string) error {
 		return runRuntime(args)
 	case "repair-codex-session":
 		return runCodexSessionRepair(args)
+	case "handoff-command":
+		return runHandoffCommand(args)
 	case "codex-front":
 		return runCodexFront(args)
 	case "doctor":
@@ -103,7 +104,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、handoff-command、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 
@@ -191,6 +192,12 @@ func runServe(args []string) (serveErr error) {
 		defer closeLog()
 	}
 	loggingReady = true
+	// 必须早于 serve 启动受管 Codex app-server：子进程环境在启动时确定。
+	stopSystemProxyRelay, err := startSystemProxyRelay()
+	if err != nil {
+		return err
+	}
+	defer stopSystemProxyRelay()
 	diagnosticlog.Record("service", "started", diagnosticlog.Fields{})
 	err = serve(cfg, registry, checker, diagnostics)
 	if err != nil {
@@ -1079,26 +1086,16 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	listenAddresses := moduleListenAddresses(cfg)
-	listeners := make([]net.Listener, 0, len(listenAddresses))
-	for _, address := range listenAddresses {
-		listener, err := listenModuleAddress(cfg, address)
-		if err != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
-			_ = shutdownServeResources(apiRouter, appServerRuntime)
-			return fmt.Errorf("监听 %s 失败：%w", address, err)
-		}
-		if listener == nil {
-			continue
-		}
-		if cfg.HasNetworkModuleControls() {
-			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))
-		}
-		listeners = append(listeners, listener)
+	listeners, localOnly, err := bindServeListeners(cfg, moduleListenAddresses(cfg), listenModuleAddress)
+	if err != nil {
+		_ = shutdownServeResources(apiRouter, appServerRuntime)
+		return err
 	}
-	maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	if localOnly {
+		log.Print(staleTailscaleListenWarning)
+	} else {
+		maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
+	}
 
 	errCh := make(chan error, len(listeners)+1)
 	for _, listener := range listeners {

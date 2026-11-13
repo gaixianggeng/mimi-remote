@@ -2,6 +2,21 @@ import XCTest
 @testable import MimiRemoteMac
 
 final class AgentModelsTests: XCTestCase {
+    func testTailcatStatusDecodesManagedModeAndTreatsMissingModeAsSelfHosted() throws {
+        let managed = try JSONDecoder().decode(
+            TailcatStatus.self,
+            from: Data(#"{"enabled":true,"running":true,"paired_device_count":0,"mode":"managed","derp_map_url":"https://relay.example/map"}"#.utf8)
+        )
+        XCTAssertTrue(managed.isManagedMode)
+        // 旧版 agentd 不返回 mode。
+        let legacy = try JSONDecoder().decode(
+            TailcatStatus.self,
+            from: Data(#"{"enabled":true,"running":true,"paired_device_count":1}"#.utf8)
+        )
+        XCTAssertFalse(legacy.isManagedMode)
+        XCTAssertNil(legacy.mode)
+    }
+
     func testRuntimeLoginCommandUsesBackendTargetAndSupportsLegacyPayloads() throws {
         let command = "CODEX_HOME='/tmp/shared home' '/tmp/codex tool' login"
         let raw = Data(#"{"id":"codex","title":"Codex","enabled":true,"state":"signed_out","login_command":"CODEX_HOME='/tmp/shared home' '/tmp/codex tool' login"}"#.utf8)

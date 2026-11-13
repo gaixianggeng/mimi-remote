@@ -55,6 +55,8 @@ protocol ManagedConnectionDeviceAPIClient: Sendable {
         signedTransaction: String
     ) async throws -> ManagedConnectionManagementSession
 
+    func createManagementSession(redemptionCode: String) async throws -> ManagedConnectionManagementSession
+
     func listDevices(managementToken: String) async throws -> [ManagedConnectionDevice]
     func removeDevice(id: String, managementToken: String) async throws
 }
@@ -133,13 +135,21 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
         signedAppTransaction: String,
         signedTransaction: String
     ) async throws -> ManagedConnectionManagementSession {
-        var request = jsonRequest(path: "v1/device-management-sessions", method: "POST")
-        request.httpBody = try JSONEncoder().encode(
-            ManagementSessionRequest(
+        try await managementSession(
+            body: ManagementSessionRequest(
                 signedAppTransaction: signedAppTransaction,
                 signedTransaction: signedTransaction
             )
         )
+    }
+
+    func createManagementSession(redemptionCode: String) async throws -> ManagedConnectionManagementSession {
+        try await managementSession(body: RedemptionManagementSessionRequest(redemptionCode: redemptionCode))
+    }
+
+    private func managementSession(body: some Encodable) async throws -> ManagedConnectionManagementSession {
+        var request = jsonRequest(path: "v1/device-management-sessions", method: "POST")
+        request.httpBody = try JSONEncoder().encode(body)
         let payload: ManagementSessionResponse = try await decodedResponse(for: request)
         guard payload.scope == "device:manage" else {
             throw ManagedConnectionDeviceAPIError.invalidResponse
@@ -236,6 +246,20 @@ enum ManagedConnectionDeviceAPIError: LocalizedError, Equatable {
     case invalidResponse
     case rejected(code: String?, deviceType: ManagedConnectionDeviceType?, limit: Int?)
 
+    /// 这里的每条文案都已写明原因，设备页按原文显示，不再换成通用提示。
+    @MainActor
+    static var userFacingMessages: [String] {
+        let codes = ["unauthorized", "device_token_conflict", "installation_id_conflict",
+                     "node_public_key_conflict", "device_not_found", nil]
+        var messages = codes.compactMap { Self.rejected(code: $0, deviceType: nil, limit: nil).errorDescription }
+        messages += [
+            Self.rejected(code: "device_limit_reached", deviceType: .mac, limit: ManagedConnectionDeviceStore.macLimit),
+            Self.rejected(code: "device_limit_reached", deviceType: .mobile, limit: ManagedConnectionDeviceStore.mobileLimit),
+            Self.invalidResponse,
+        ].compactMap(\.errorDescription)
+        return messages
+    }
+
     var rejectionCode: String? {
         guard case .rejected(let code, _, _) = self else { return nil }
         return code
@@ -258,6 +282,9 @@ enum ManagedConnectionDeviceAPIError: LocalizedError, Equatable {
                 return L10n.text("ui.managed_devices_credential_conflict")
             case "installation_id_conflict", "pairing_request_conflict", "pairing_grant_conflict":
                 return L10n.text("ui.managed_devices_pairing_conflict")
+            case "node_public_key_conflict":
+                // 电脑或这台设备的连接身份已登记在另一份托管连接下，跨份不能配对（#959）。
+                return L10n.text("ui.managed_devices_node_owned_by_other_subscription")
             case "device_not_found":
                 return L10n.text("ui.managed_devices_not_found")
             default:
@@ -296,6 +323,10 @@ private struct AuthorizePairingResponse: Decodable {
 
     let pairingSession: PairingSession
     let created: Bool
+}
+
+private struct RedemptionManagementSessionRequest: Encodable {
+    let redemptionCode: String
 }
 
 private struct ManagementSessionRequest: Encodable {

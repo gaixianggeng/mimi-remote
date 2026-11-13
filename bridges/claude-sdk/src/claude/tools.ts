@@ -168,6 +168,35 @@ function subagentLabel(args: Args): string {
   return parts.join(" · ");
 }
 
+/**
+ * 回合提示工具：Claude 桌面版注入的「下一步提示框」与「新任务提议」。
+ * 它们是给用户看的交互卡片，不是执行过程，所以 summary 视图也要保留，客户端按 server/tool 渲染。
+ */
+export function isTurnHintItem(item: ThreadItem): boolean {
+  if (
+    item.type !== "mcpToolCall" ||
+    (item.status !== "completed" && item.status !== "inProgress") ||
+    item.error !== null ||
+    !item.arguments ||
+    typeof item.arguments !== "object" ||
+    Array.isArray(item.arguments)
+  ) {
+    return false;
+  }
+  const args = item.arguments;
+  const hasText = (key: string) => typeof args[key] === "string" && args[key].trim().length > 0;
+  switch (`${item.server}/${item.tool}`) {
+    case "ccd_turn/wrap_up":
+      return hasText("recap") || hasText("ask");
+    case "ccd_session/start_session":
+    case "ccd_session/spawn_task":
+      // start_session 的接受调用只有 proposal_id，不是给用户展示的新提议。
+      return hasText("title");
+    default:
+      return false;
+  }
+}
+
 /** 不在时间线上单独显示的工具：提问由 item/tool/requestUserInput 卡片承载。 */
 export function isHiddenTool(name: string): boolean {
   return name === "AskUserQuestion";
@@ -241,6 +270,27 @@ export interface ToolOutput {
   isError: boolean;
 }
 
+type IsMimiTaskProposal = (proposalId: string) => boolean;
+
+function taskProposalStructuredContent(
+  item: ThreadItem,
+  output: ToolOutput,
+  isMimiTaskProposal: IsMimiTaskProposal | undefined,
+): JsonValue | null {
+  if (item.type !== "mcpToolCall" || item.server !== "ccd_session" || item.tool !== "start_session" || !isMimiTaskProposal) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(output.text) as Record<string, unknown>;
+    const marker = parsed.mimi_task_proposal as Record<string, unknown> | undefined;
+    const proposalId = marker?.proposal_id;
+    if (marker?.version !== 1 || typeof proposalId !== "string" || !isMimiTaskProposal(proposalId)) return null;
+    return { mimi_task_proposal: { version: 1, proposal_id: proposalId } };
+  } catch {
+    return null;
+  }
+}
+
 /** 命令输出在历史里截断，避免单个 item 把分页撑大；完整内容仍在 transcript。 */
 const MAX_OUTPUT_CHARS = 64 * 1024;
 
@@ -249,7 +299,11 @@ function capOutput(text: string): string {
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n…（输出过长，已截断 ${text.length - MAX_OUTPUT_CHARS} 字符）`;
 }
 
-export function completeToolItem(item: ThreadItem, output: ToolOutput): ThreadItem {
+export function completeToolItem(
+  item: ThreadItem,
+  output: ToolOutput,
+  isMimiTaskProposal?: IsMimiTaskProposal,
+): ThreadItem {
   switch (item.type) {
     case "commandExecution":
       return { ...item, status: output.isError ? "failed" : "completed", aggregatedOutput: capOutput(output.text) };
@@ -261,7 +315,11 @@ export function completeToolItem(item: ThreadItem, output: ToolOutput): ThreadIt
         : {
             ...item,
             status: "completed",
-            result: { content: [{ type: "text", text: output.text }], structuredContent: null, _meta: null },
+            result: {
+              content: [{ type: "text", text: output.text }],
+              structuredContent: taskProposalStructuredContent(item, output, isMimiTaskProposal),
+              _meta: null,
+            },
           };
     case "collabAgentToolCall": {
       const states = Object.fromEntries(

@@ -92,12 +92,56 @@ struct PairingTicket: Equatable {
     }
 }
 
+/// 与电脑二维码共用的中转选择。它只表达用户意图，不替代订阅授权。
+enum RelayServiceChoice: String, CaseIterable, Identifiable {
+    case tailcatDefault = "default"
+    case custom
+    case mimi
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default")
+        case .custom: L10n.text("ui.relay_choice_custom")
+        case .mimi: L10n.text("ui.relay_choice_mimi")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .tailcatDefault: L10n.text("ui.relay_choice_default_detail")
+        case .custom: L10n.text("ui.relay_choice_custom_detail")
+        case .mimi: L10n.text("ui.relay_choice_mimi_detail")
+        }
+    }
+
+    static func fromPairingURL(_ url: URL) -> RelayServiceChoice? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.first(where: { $0.name == "transport" })?.value == "tailcat" else { return nil }
+        return items.first(where: { $0.name == "relay_service" })?.value.flatMap(Self.init(rawValue:))
+    }
+}
+
+/// 电脑上选择的中转，以及这台电脑的免费线路是哪一条。
+struct ComputerRelayChoice: Equatable {
+    let relay: RelayServiceChoice
+    let free: RelayServiceChoice?
+}
+
 struct TailcatPairingLink: Equatable {
     let ticket: PairingTicket
     let pairAddress: String
     let managedMacInstallationID: String?
     let managedMacTailcatPublicKey: String?
     let managedPairTailcatPublicKey: String?
+    /// 托管二维码附带的免费配对节点。没开通的设备走它，旧版电脑的二维码没有这个字段。
+    let freePairAddress: String?
+
+    /// 电脑只在托管模式下才写入这三个字段（agentd `tailcat pair`）。带齐了就先走托管授权：
+    /// 中继开启准入后，未登记的身份连不上托管的临时配对节点，直接去连只会等到超时。
+    var isManagedPairing: Bool {
+        managedMacInstallationID != nil && managedMacTailcatPublicKey != nil && managedPairTailcatPublicKey != nil
+    }
 
     @MainActor
     static func parse(_ url: URL) throws -> TailcatPairingLink? {
@@ -130,12 +174,16 @@ struct TailcatPairingLink: Equatable {
               !hasManagedPairPublicKey || hasManagedInstallationID else {
             throw PairingLinkError.unsupportedURL
         }
+        let freePairAddress = components?.queryItems?
+            .first(where: { $0.name == "tailcat_free_pair_address" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return TailcatPairingLink(
             ticket: ticket,
             pairAddress: pairAddress,
             managedMacInstallationID: hasManagedInstallationID ? managedMacInstallationID : nil,
             managedMacTailcatPublicKey: hasManagedPublicKey ? managedMacTailcatPublicKey : nil,
-            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil
+            managedPairTailcatPublicKey: hasManagedPairPublicKey ? managedPairTailcatPublicKey : nil,
+            freePairAddress: (freePairAddress ?? "").isEmpty ? nil : freePairAddress
         )
     }
 }

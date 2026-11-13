@@ -7,19 +7,28 @@ cd "$ROOT_DIR"
 usage() {
   cat <<'EOF'
 用法：
-  bash ./scripts/test-conversation-regressions.sh [--ios-only]
+  bash ./scripts/test-conversation-regressions.sh [--ios-only] [--result-dir <目录>]
 
 默认执行 Go 与 iOS 关键链路回归。--ios-only 供已经由独立 Go 验证覆盖的
 iOS CI / full 验证使用，只跳过 Go 阶段，不改变任何 XCTest selector。
+
+默认成功后仅清理本次自动创建的临时结果目录；失败或取消时保留并输出位置。
+--result-dir 将 core.xcresult 保存到指定目录，无论结果如何都保留，不覆盖已有结果包。
 EOF
 }
 
 ios_only=false
+result_dir=""
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --ios-only)
       ios_only=true
       shift
+      ;;
+    --result-dir)
+      [[ "$#" -ge 2 && -n "$2" ]] || { echo "--result-dir 缺少目录。" >&2; exit 2; }
+      result_dir="$2"
+      shift 2
       ;;
     -h|--help)
       usage
@@ -57,6 +66,9 @@ echo "==> iOS conversation regressions"
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
 # - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
+# - CodexAppServerBufferedReplayTests、CodexAppServerHistoryFeedbackTests：恢复窗口只落最终状态，
+#   同时保留完成内容、游标确认和当前回合的反馈语义（#900）。
+# - NativePromptSuggestionTests：原生建议的轮次/连接隔离、草稿保护和显式接受。
 # - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
 # - ComposerMetadataBudgetTests：输入框组合类型的嵌套层数与值大小，防止真机打开会话时主线程栈溢出（#852）。
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
@@ -69,6 +81,7 @@ echo "==> iOS conversation regressions"
 # - ConversationTimelineProviderPresentationTests：Codex/Claude 默认与详细记录投影、锚点和全文入口。
 # - ConversationScrollStabilityTests：首屏可读交接、手势取消、阅读锚点和显式回到底部。
 # - ConversationTimelineRuntimeRegressionTests：原生 List 在 Codex/Claude/DeepSeek 更新及历史前插后的视口。
+# - ConversationTurnHintTests：Claude Desktop 提示解析、历史/直播一致性与按钮目标失效边界。
 # - SessionListLifecycleCoordinatorTests：滚动冻结、idle 重排和完成/失败 Haptic exactly-once。
 # - SessionListPresentationTests：会话摘要、分支身份、时间格式和紧凑行数策略。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和活动行的关键视觉回归。
@@ -106,7 +119,37 @@ while IFS= read -r skip_arg; do
     quarantine_skip_args+=("$skip_arg")
   fi
 done <<<"$quarantine_output"
-test_result_bundle="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")/core.xcresult"
+owns_result_dir=false
+if [[ -z "$result_dir" ]]; then
+  result_dir="$(mktemp -d "${TMPDIR:-/tmp}/mimi-conversation-tests.XXXXXX")"
+  owns_result_dir=true
+else
+  mkdir -p -- "$result_dir"
+fi
+test_result_bundle="$result_dir/core.xcresult"
+[[ ! -e "$test_result_bundle" && ! -L "$test_result_bundle" ]] || {
+  echo "结果目录里已有 ${test_result_bundle}，请换一个空目录。" >&2
+  exit 2
+}
+
+finish_results() {
+  local exit_status=$?
+  trap - EXIT
+  if [[ "$owns_result_dir" == true && "$exit_status" -eq 0 ]]; then
+    # 只删除本次 mktemp 返回的目录，绝不扫描旧结果或回收调用方指定的目录。
+    if rm -rf -- "$result_dir"; then
+      echo "成功结果已清理：$result_dir"
+    else
+      echo "结果目录清理失败，请检查：$result_dir" >&2
+    fi
+  else
+    echo "结果目录已保留：$result_dir"
+  fi
+  exit "$exit_status"
+}
+trap finish_results EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 test_status=0
 bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -quiet \
@@ -118,6 +161,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
+  -only-testing:MimiRemoteTests/CodexAppServerBufferedReplayTests \
+  -only-testing:MimiRemoteTests/CodexAppServerHistoryFeedbackTests \
+  -only-testing:MimiRemoteTests/NativePromptSuggestionTests \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/ComposerMetadataBudgetTests \
   -only-testing:MimiRemoteTests/WorkbenchShellMetadataBudgetTests \
@@ -148,6 +194,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/HistoryPolicyClassificationTests \
   -only-testing:MimiRemoteTests/ClaudeTakeoverTests \
   -only-testing:MimiRemoteTests/ClaudeReplayCursorTests \
+  -only-testing:MimiRemoteTests/CodexHistoryStreamingTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
   -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
@@ -277,6 +324,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationActivityDetailProjectionTests \
   -only-testing:MimiRemoteTests/ConversationScrollStabilityTests \
   -only-testing:MimiRemoteTests/ConversationTimelineRuntimeRegressionTests \
+  -only-testing:MimiRemoteTests/ConversationTurnHintTests \
   -only-testing:MimiRemoteTests/SessionListLifecycleCoordinatorTests \
   -only-testing:MimiRemoteTests/SessionListPresentationTests \
   -only-testing:MimiRemoteTests/TokenUsageCardSnapshotTests \

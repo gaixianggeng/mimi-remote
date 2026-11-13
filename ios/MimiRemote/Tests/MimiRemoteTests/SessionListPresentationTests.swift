@@ -1256,6 +1256,41 @@ final class SessionListPresentationTests: XCTestCase {
         )
     }
 
+    /// 被电脑上的 Codex 占着时不能和普通历史一样省略状态：用户会以为会话已结束且能直接继续。
+    /// 也不能归到进行中：共享 App Server 看不到另一个实例里的回合。
+    func testSessionHeldElsewhereShowsItsOwnStatusInsteadOfHistory() {
+        var session = makeSession(id: "held")
+        let history = session.displayStatus(foregroundActivity: nil)
+        XCTAssertEqual(history.title, L10n.text("ui.history"))
+        // 行内省略的状态才交给 VoiceOver，所以这里能反映状态是否显示在行内。
+        func hiddenStatusAnnouncement(_ status: AgentSessionDisplayStatus) -> String {
+            SessionIndexRow.accessibilityValue(
+                status: status,
+                sessionStatus: session.status,
+                isUnread: false,
+                showsNeutralHistoryStatus: false
+            )
+        }
+        XCTAssertEqual(hiddenStatusAnnouncement(history), history.title, "普通历史默认省略")
+
+        session.writerHeldElsewhere = true
+        let held = session.displayStatus(foregroundActivity: nil)
+        XCTAssertEqual(held.title, L10n.text("ui.session_open_on_computer"))
+        XCTAssertEqual(held.tone, .neutral)
+        XCTAssertFalse(held.showsSpinner)
+        XCTAssertEqual(hiddenStatusAnnouncement(held), "", "占用状态必须显示在行内")
+        XCTAssertFalse(session.isRunning)
+        XCTAssertEqual(session.activityState, .idle)
+
+        session.writerHeldElsewhere = false
+        XCTAssertEqual(session.displayStatus(foregroundActivity: nil).title, L10n.text("ui.history"))
+
+        // 真正在这边跑的回合优先：标记滞后时不能把进行中的会话说成“电脑上已打开”。
+        session.writerHeldElsewhere = true
+        session.status = SessionStatus.running.rawValue
+        XCTAssertEqual(session.displayStatus(foregroundActivity: nil).title, L10n.text("ui.running"))
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",

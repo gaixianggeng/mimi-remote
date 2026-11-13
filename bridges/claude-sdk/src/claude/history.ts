@@ -6,7 +6,7 @@ import type { Turn } from "../protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator, notificationTurnId } from "./itemIds.ts";
-import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
+import { completeToolItem, isHiddenTool, isTurnHintItem, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 
 /** SDK SessionMessage 中本模块用到的字段。 */
 export interface HistoryMessage {
@@ -143,6 +143,8 @@ export interface TranslateOptions {
    * 显示为进行中而不是中断；但不把这一轮合成为进行中，回合状态只由本适配器的 turn 决定。
    */
   holderActive?: boolean;
+  /** 只有 adapter Overlay 记录过的随机 ID 才能把任务卡标成 Mimi 可开启来源。 */
+  isMimiTaskProposal?: (proposalId: string) => boolean;
 }
 
 export function messagesToTurns(messages: readonly HistoryMessage[], options: TranslateOptions): Turn[] {
@@ -182,7 +184,7 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
         const target = toolIndex.get(String(result.tool_use_id ?? ""));
         if (!target) continue;
         const item = target.turn.items[target.index]!;
-        target.turn.items[target.index] = completeToolItem(item, toolOutput(result));
+        target.turn.items[target.index] = completeToolItem(item, toolOutput(result), options.isMimiTaskProposal);
         target.turn.completedAt = seconds(message.timestamp) ?? target.turn.completedAt;
       }
       const rest = typeof blocks === "string" ? blocks : blocks.filter((block) => block.type !== "tool_result");
@@ -263,11 +265,14 @@ export function messagesToTurns(messages: readonly HistoryMessage[], options: Tr
   });
 }
 
-/** summary 视图只保留对话文本，工具过程由 thread/items/list 按 turn 补齐。 */
+/**
+ * summary 视图只保留对话文本，工具过程由 thread/items/list 按 turn 补齐。
+ * 回合提示（下一步提示框、新任务提议）是给用户的交互，和对话文本一样留在首屏。
+ */
 export function summarizeTurn(turn: Turn): Turn {
   return {
     ...turn,
     itemsView: "summary",
-    items: turn.items.filter((item) => item.type === "userMessage" || item.type === "agentMessage"),
+    items: turn.items.filter((item) => item.type === "userMessage" || item.type === "agentMessage" || isTurnHintItem(item)),
   };
 }

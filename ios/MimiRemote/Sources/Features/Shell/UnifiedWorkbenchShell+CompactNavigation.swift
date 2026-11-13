@@ -236,3 +236,27 @@ extension UnifiedWorkbenchShell {
     }
 
 }
+
+extension UnifiedWorkbenchShell {
+    /// 兑换链接可能在首次连接时打开，那时工作台还不存在；工作台出现后再把用户带到下一步（#949）。
+    func applyPendingManagedConnectionRoute(layout: WorkbenchLayout) {
+        guard let route = managedConnectionEntitlementStore.consumePendingRoute() else { return }
+        // 兑换链接只对内置连接算选择了 Mimi；Tailscale、局域网保留原线路。
+        if route == .connectComputer, let profile = sessionStore.appStore.activeConnectionProfile,
+           profile.connectionRoute.usesTailcat {
+            sessionStore.tailcatExperimentController?.selectRelayService(.mimi, profileID: profile.id)
+            sessionStore.reconcileMimiRelay(managedConnectionEntitlementStore, retry: true)
+        }
+        openConnectionSettings(layout: layout)
+        settingsNavigation.devicePath = [.managedConnection]
+    }
+
+    func applyPendingRelaySetup(layout: WorkbenchLayout) {
+        guard let profileID = sessionStore.mimiRelaySetupProfileID else { return }
+        sessionStore.mimiRelaySetupProfileID = nil
+        guard profileID == sessionStore.appStore.activeConnectionProfileID,
+              ManagedConnectionSubscriptionView.isEntryVisible else { return }
+        openConnectionSettings(layout: layout)
+        settingsNavigation.devicePath = [.managedConnection]
+    }
+}

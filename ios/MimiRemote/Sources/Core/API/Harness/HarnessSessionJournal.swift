@@ -244,6 +244,10 @@ struct HarnessSessionJournal: Equatable {
             // 没收到 start 就先来 chunk。**不猜** attemptId，也不新建一个假 attempt。
             return .missingStart
         }
+        // 先取走再写回：期间 attempt 独占 chunks，追加时不会把已收的全部片段复制一遍（#917）。
+        // 拒绝路径同样原样写回。
+        activeAttempt = nil
+        defer { activeAttempt = attempt }
         // 同一 attemptId 才能接上；换 id 说明这是另一条流。
         if let frameAttempt = frame.attemptId, frameAttempt != attempt.attemptID {
             return .attemptMismatch(expected: attempt.attemptID, actual: frameAttempt)
@@ -269,7 +273,6 @@ struct HarnessSessionJournal: Equatable {
         }
         if let revision = frame.revision { attempt.lastRevision = revision }
         attempt.chunks.append(frame)
-        activeAttempt = attempt
         return nil
     }
 

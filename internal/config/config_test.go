@@ -160,6 +160,18 @@ func TestLoadReadsClaudeLegacyBridgeSwitch(t *testing.T) {
 	}
 }
 
+func TestClaudeTurnHintsDefaultOnWithExplicitOptOut(t *testing.T) {
+	cfg := DefaultClaudeConfig()
+	if !cfg.TurnHintsAreEnabled() || cfg.TurnHintsEnabled != nil {
+		t.Fatalf("旧配置省略开关时应默认开启：%+v", cfg)
+	}
+	off := false
+	cfg.TurnHintsEnabled = &off
+	if cfg.TurnHintsAreEnabled() {
+		t.Fatal("显式关闭必须生效")
+	}
+}
+
 func TestValidateRejectsEmptyToken(t *testing.T) {
 	cfg := defaults()
 	cfg.Projects = []ProjectConfig{{ID: "demo", Name: "demo", Path: t.TempDir()}}

@@ -14,9 +14,15 @@ import (
 // tailcatTrayStatus 只读取 agentd tailcat status 的公开字段，不读取配置、连接地址或私钥。
 type tailcatTrayStatus struct {
 	Enabled           bool   `json:"enabled"`
+	Mode              string `json:"mode"`
+	DERPMapURL        string `json:"derp_map_url"`
 	Running           bool   `json:"running"`
 	PairedDeviceCount int    `json:"paired_device_count"`
 	Error             string `json:"error"`
+}
+
+func (s tailcatTrayStatus) managed() bool {
+	return s.Mode == "managed"
 }
 
 func (s tailcatTrayStatus) ready() bool {
@@ -29,6 +35,8 @@ func (s tailcatTrayStatus) title() string {
 		return "未开启"
 	case !s.Running:
 		return "需要处理"
+	case s.managed():
+		return fmt.Sprintf("Mimi 中转已启用 · %d 台设备", s.PairedDeviceCount)
 	default:
 		return fmt.Sprintf("运行中 · %d 台设备", s.PairedDeviceCount)
 	}
@@ -52,6 +60,14 @@ func tailcatToggleArguments(enable bool) []string {
 	action := "disable"
 	if enable {
 		action = "enable"
+	}
+	return []string{"tailcat", action, "--json"}
+}
+
+func tailcatManagedArguments(managed bool) []string {
+	action := "exit-managed"
+	if managed {
+		action = "enter-managed"
 	}
 	return []string{"tailcat", action, "--json"}
 }
@@ -98,6 +114,21 @@ func confirmTailcatState(status tailcatTrayStatus, enable bool) error {
 	return nil
 }
 
+// setTailcatManaged 同样以回读为准：命令成功但模式没有变化时，不能告诉用户已切换。
+func (c *agentController) setTailcatManaged(ctx context.Context, managed bool) (tailcatTrayStatus, error) {
+	if _, err := c.runCommand(ctx, tailcatManagedArguments(managed)...); err != nil {
+		return tailcatTrayStatus{}, err
+	}
+	status, err := c.tailcatStatus(ctx)
+	if err != nil {
+		return tailcatTrayStatus{}, fmt.Errorf("无法回读 Tailcat 状态：%w", err)
+	}
+	if status.managed() != managed {
+		return status, errors.New("agentd 回读显示连接模式没有变化，请刷新状态后重试")
+	}
+	return status, nil
+}
+
 func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, error) {
 	payload, err := c.runCommand(ctx, tailcatPairingArguments()...)
 	if err != nil {
@@ -115,10 +146,21 @@ func (c *agentController) tailcatPairing(ctx context.Context) (pairingInfo, erro
 	return result, nil
 }
 
+func tailcatManagedMenuLabel(status tailcatTrayStatus) string {
+	if status.managed() {
+		return "中转服务：Mimi 中转"
+	}
+	return "中转服务：" + status.relayTitle()
+}
+
+func tailcatManagedMenuEnabled(service agentStatus, hasTailcat bool, tailcatErr error, busy bool) bool {
+	return !busy && service.ServiceOK && hasTailcat && tailcatErr == nil
+}
+
 func tailcatToggleConfirmation(enable bool) (string, string, uint32) {
 	if enable {
 		return "开启 Tailcat？",
-			"Tailcat 是实验性的内置连接：手机不装 Tailscale、电脑不开局域网也能扫码连接。\r\n\r\n" +
+			"内置连接（Tailcat）免费可用，无需另外安装联网工具。Mimi 全部功能免费。\r\n\r\n" +
 				"连接先经 DERP 中继发现对端，网络允许时改为端到端加密直连，否则继续经中继转发。默认中继由 Tailscale 运营。" +
 				"Tailcat 只发起出站连接，不新增 Windows 防火墙规则。",
 			mbYesNo | mbIconInfo
@@ -196,6 +238,34 @@ func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr
 		if enable && notifyWindow != 0 {
 			procPostMessageW.Call(notifyWindow, wmPanelTailcatEnabled, 0, 0)
 		}
+	}()
+}
+
+func (a *trayApplication) showRelayServiceInfo() {
+	a.showControlPanel()
+	if a.panel != nil {
+		a.panel.chooseRelayService()
+	}
+}
+
+func (a *trayApplication) setTailcatForPairing(window uintptr) {
+	if !a.beginBusy() {
+		return
+	}
+	go func() {
+		ctx, cancel := actionContext()
+		status, err := a.controller.setTailcat(ctx, true)
+		cancel()
+		if err == nil {
+			a.storeTailcat(status, nil)
+		}
+		a.refreshStatus()
+		a.endBusy()
+		if err != nil {
+			a.showError(err)
+			return
+		}
+		procPostMessageW.Call(window, wmPanelTailcatEnabled, 0, 0)
 	}()
 }
 

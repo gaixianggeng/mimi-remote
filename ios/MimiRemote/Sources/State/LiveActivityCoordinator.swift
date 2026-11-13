@@ -95,6 +95,31 @@ final class LiveActivityCoordinator: ObservableObject {
         self.providerClientFactory = providerClientFactory
         self.system = system
         self.isToggleOn = LiveActivityPreferences.isToggleOn(in: defaults)
+        // 第一次对账要等连上电脑才跑；在那之前设置页也得如实显示，不能先写成「已开启」（#1004）。
+        self.availability = Self.initialAvailability(
+            isToggleOn: isToggleOn,
+            isEffective: LiveActivityPreferences.isEffective(in: defaults),
+            hasRevocationBacklog: ticketStore.loadBacklog() != nil,
+            hasStartTicket: ticketStore.load()?.start != nil,
+            systemAllowsActivities: system.activitiesEnabled()
+        )
+    }
+
+    /// 启动时、还没和电脑对账前的状态，口径与 `reconcileBinding` / `drainBacklog` 一致：
+    /// 关闭时有没撤销完的票据算「关闭尚未完成」；开启且本机已有 push-to-start 票据算就绪。
+    nonisolated static func initialAvailability(
+        isToggleOn: Bool,
+        isEffective: Bool,
+        hasRevocationBacklog: Bool,
+        hasStartTicket: Bool,
+        systemAllowsActivities: Bool
+    ) -> Availability {
+        guard isEffective else {
+            if hasRevocationBacklog { return .disablePending }
+            return isToggleOn ? .requiresNotifications : .off
+        }
+        guard systemAllowsActivities else { return .systemDisabled }
+        return hasStartTicket ? .ready : .pending
     }
 
     static var isSupportedPlatform: Bool {

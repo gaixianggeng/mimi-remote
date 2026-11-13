@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/managed"
@@ -53,6 +56,8 @@ func runManagedHost(arguments []string) error {
 	stateDir := flags.String("state-dir", "", "Tailcat 私有状态目录")
 	controlPath := flags.String("control", "", "agentd 控制 socket")
 	derpMapURL := flags.String("derpmap-url", "", "可选 DERP Map URL")
+	freeNode := flags.Bool("free-node", false, "稳定节点走托管中继时，另起免费节点供没开通的设备使用")
+	freeDERPMapURL := flags.String("free-derpmap-url", "", "免费节点的 DERP Map URL；空值使用 Tailcat 默认中继")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -65,12 +70,33 @@ func runManagedHost(arguments []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	return managed.RunUntilCanceled(ctx, managed.Config{
-		TargetAddr:  *target,
-		RemotePort:  uint16(*port),
-		StateDir:    *stateDir,
-		ControlPath: *controlPath,
-		DERPMapURL:  *derpMapURL,
+		TargetAddr:     *target,
+		RemotePort:     uint16(*port),
+		StateDir:       *stateDir,
+		ControlPath:    *controlPath,
+		DERPMapURL:     *derpMapURL,
+		FreeNode:       *freeNode,
+		FreeDERPMapURL: *freeDERPMapURL,
+		Events:         newHostEventWriter(os.Stderr),
 	})
+}
+
+// hostEventLinePrefix 标记 stderr 上的结构化事件，由 agentd 按白名单解析后落盘。
+// 改动时同步 internal/tailcatevents。
+const hostEventLinePrefix = "mimi-tailcat-event "
+
+// newHostEventWriter 串行写入，避免并发事件交错成一行。写失败只丢事件，不影响连接。
+func newHostEventWriter(output io.Writer) func(tunnel.HostEvent) {
+	var mu sync.Mutex
+	return func(event tunnel.HostEvent) {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = io.WriteString(output, hostEventLinePrefix+string(encoded)+"\n")
+	}
 }
 
 func runClientKey(arguments []string) error {

@@ -15,6 +15,8 @@ struct ConversationTimelineItemBuilder {
         var result: [ConversationTimelineItem] = []
         var pendingFileIDs: [UUID] = []
         var pendingFileTurnID: TurnID?
+        var pendingTurnHints: [ConversationMessage] = []
+        var pendingHintTurnID: TurnID?
         var index = messages.startIndex
 
         func flushFileChanges() {
@@ -23,11 +25,32 @@ struct ConversationTimelineItemBuilder {
             pendingFileIDs.removeAll()
         }
 
+        func flushTurnHints() {
+            guard !pendingTurnHints.isEmpty else { return }
+            // 文件入口也是本轮结果，必须先于「下一步」卡片展示。
+            flushFileChanges()
+            result.append(contentsOf: pendingTurnHints.map { .message($0) })
+            pendingTurnHints.removeAll()
+            pendingHintTurnID = nil
+        }
+
         while index < messages.endIndex {
             let message = messages[index]
             // 缺失 turnID 也不能把文件入口接到下一段已知轮次之后。
             if message.role == .user || message.turnID != pendingFileTurnID {
                 flushFileChanges()
+            }
+            // 只在明确相同的回合内延后；用户消息和缺失 ID 都是边界，不能猜测旧记录所属轮次。
+            if message.role == .user || message.turnID != pendingHintTurnID {
+                flushTurnHints()
+            }
+            if message.role != .user, message.activityPayload?.turnHint?.kind == .nextStep,
+               let turnID = message.turnID, !turnID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // wrap_up 后仍可能继续输出正文，保留原始身份并在每次投影时将卡片留在本轮底部。
+                pendingHintTurnID = turnID
+                pendingTurnHints.append(message)
+                index += 1
+                continue
             }
             guard isProcessMessage(message) else {
                 result.append(.message(message))
@@ -71,11 +94,14 @@ struct ConversationTimelineItemBuilder {
         }
         // 失败、中断或没有最终答复时，文件结果仍有入口，不依赖模型一定给出 final。
         flushFileChanges()
+        flushTurnHints()
         return result
     }
 
     private static func isProcessMessage(_ message: ConversationMessage) -> Bool {
         guard message.role != .user else { return false }
+        // 回合提示沿用 tool activity 的协议投影，但必须作为独立卡片留在主时间线。
+        if message.activityPayload?.turnHint != nil { return false }
         switch message.kind {
         case .plan:
             // turn/plan/updated 是执行步骤；独立 plan item 是交给用户阅读的完整计划。

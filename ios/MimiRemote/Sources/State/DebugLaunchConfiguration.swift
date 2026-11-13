@@ -38,7 +38,10 @@ struct DebugLaunchConfiguration {
             isDisplayNameCustomized: true,
             lastSuccessfulAt: Date(),
             installationID: "debug-store-primary-installation",
-            hostPlatform: .apple
+            hostPlatform: .apple,
+            // 中转页只有内置连接才有内容，UI 测试要走真实的 Mimi 入口。
+            connectionRoute: ProcessInfo.processInfo.arguments.contains("--debug-store-route-tailcat")
+                ? .customTailcat : nil
         )
         let secondaryProfile = ConnectionProfile(
             id: "debug-store-secondary",

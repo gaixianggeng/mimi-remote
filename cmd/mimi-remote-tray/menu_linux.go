@@ -85,6 +85,8 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 			{ID: 114, Separator: true},
 			{ID: 115, Label: "启用 Tailcat…", Action: "tailcat-enable", Enabled: fresh && s.Status.ServiceOK && s.HasTailcat && s.TailcatError == "" && !s.Tailcat.Enabled},
 			{ID: 116, Label: "关闭 Tailcat…", Action: "tailcat-disable", Enabled: fresh && s.Status.ServiceOK && s.HasTailcat && s.TailcatError == "" && s.Tailcat.Enabled},
+			{ID: 117, Label: "改用 Mimi 中转…", Action: "tailcat-enter-managed", Enabled: fresh && s.Status.ServiceOK && s.HasTailcat && s.TailcatError == "" && s.Tailcat.Mode != "managed"},
+			{ID: 118, Label: "停用 Mimi 中转…", Action: "tailcat-exit-managed", Enabled: fresh && s.Status.ServiceOK && s.HasTailcat && s.TailcatError == "" && s.Tailcat.Mode == "managed"},
 		}},
 		linuxMenuItem{ID: 113, Label: "诊断与日志", Enabled: true, Children: []linuxMenuItem{
 			{ID: 104, Label: "运行诊断…", Action: "doctor", Enabled: available},
@@ -111,6 +113,9 @@ func (s linuxTraySnapshot) tailcatTitle() string {
 	}
 	if !s.Tailcat.Running {
 		return "需要处理"
+	}
+	if s.Tailcat.Mode == "managed" {
+		return fmt.Sprintf("运行中 · Mimi 中转 · %d 台已配对", s.Tailcat.PairedDeviceCount)
 	}
 	return fmt.Sprintf("运行中 · %d 台已配对", s.Tailcat.PairedDeviceCount)
 }

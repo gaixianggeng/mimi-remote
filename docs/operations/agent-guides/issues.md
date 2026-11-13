@@ -62,11 +62,11 @@
   - 当前 Issue 内的小修正：更新原 Issue 并在当前 Codex 任务中继续，不新建 Issue 或任务。
   - 可独立验收、需要独立分支或 PR：创建独立 Issue。
   - 范围较大、包含多个独立结果：先创建一个父 Issue 或提出拆分建议；创建多个子 Issue 前先让用户确认拆分方案。
-- 默认同时最多保持 2 张独立 Issue 为 `In Progress`。准备开始第三张时，先指出当前进行中的任务并让用户决定暂停或继续。
+- 默认同时最多保持 5 张独立 Issue 为 `In Progress`。仅汇总子任务的父 Issue 不重复计数；父项若有独立实现工作，则按独立 Issue 计数。准备开始第六张时，先指出当前进行中的任务并让用户决定暂停或继续。
 
 ### 开发、PR 与完成状态
 
-- 一张正在执行的 Issue 对应一个主要 Codex 任务和一个主要 Worktree；不要为同一 Issue 的分析、实现、测试和修正反复开启新任务。
+- 一张正在执行的 Issue 对应一个主要 Codex 任务和一个主要 Worktree；同一 Worktree 同时只允许一个执行者写入，不并发覆盖他人的修改。不要为同一 Issue 的分析、实现、测试和修正反复开启新任务。
 - 新问题分支使用 `codex/gh-<GitHub编号>-<简短英文描述>`。迁移问题已有的 `codex/mim-...` 分支与 Worktree 继续复用，不因迁移重建。
 - PR 描述必须用 `Refs #<GitHub编号>` 关联问题；迁移问题可保留原 `MIM-编号` 标题。默认不使用 `Fixes` / `Closes`，避免 PR 合并后在发布或清理完成前自动关闭 Issue。
 - 开始实现时使用 `status: In Progress`；PR 创建、等待测试或等待合并时使用 `status: Verify`。达到下面的 Done 条件后，移除状态标签并以 completed 原因关闭 Issue；取消或重复以 not planned 原因关闭，并说明原因。

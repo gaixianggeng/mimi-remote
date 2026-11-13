@@ -14,7 +14,6 @@ const (
 	liveActivityMinInterval = 5 * time.Second
 	// 合并后延迟发出的更新不再有调用方等待，单独限定投递时长。
 	liveActivityFlushTimeout = 15 * time.Second
-	maxCoalescerEntries      = 4096
 )
 
 type liveActivityJob struct {
@@ -176,6 +175,9 @@ type activityCoalescer struct {
 	schedule func(time.Duration, func())
 	flush    func(liveActivityJob)
 	entries  map[string]*activityEntry
+	// 最近一次清扫的时刻与次数；清扫节奏与限速表相同（#915）。
+	lastSweep time.Time
+	sweeps    int
 }
 
 type activityEntry struct {
@@ -257,11 +259,14 @@ func (c *activityCoalescer) fire(activityID string) {
 	c.flush(*job)
 }
 
-// evictLocked 让合并状态有界：只清理窗口已过、没有待发更新的活动。
+// evictLocked 让合并状态有界：只清理窗口已过、没有待发更新的活动。有待发更新或计时器的活动
+// 一律保留，表满时新活动照常加入，宁可多占内存也不丢最后一次更新。
 func (c *activityCoalescer) evictLocked(now time.Time) {
-	if len(c.entries) < maxCoalescerEntries {
+	if len(c.entries) < stateSweepThreshold || now.Sub(c.lastSweep) < stateSweepInterval {
 		return
 	}
+	c.lastSweep = now
+	c.sweeps++
 	for id, entry := range c.entries {
 		if entry.pending == nil && !entry.scheduled && now.Sub(entry.lastSent) >= c.interval {
 			delete(c.entries, id)

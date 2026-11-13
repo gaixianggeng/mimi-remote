@@ -143,6 +143,11 @@ extension AppStore {
 
     var savedFallbackConnectionRoute: ConnectionProfileRoute? {
         guard let profile = activeConnectionProfile else { return nil }
+        // Tailcat 二维码中的回环地址仅用于签名，不是另一条已配对的局域网线路。
+        if profile.connectionRoute.usesTailcat {
+            guard let host = URLComponents(string: profile.endpoint)?.host?.lowercased(),
+                  host != "localhost", host != "::1", host != "[::1]", !host.hasPrefix("127.") else { return nil }
+        }
         return .configuredValue(
             endpoint: profile.endpoint,
             tailscaleDNSName: profile.tailscaleDNSName

@@ -18,6 +18,11 @@ on:
         required: false
         default: "Nightly Internal TestFlight"
         type: string
+      enable_managed_connection:
+        description: "显示尚未开放的托管连接入口；仅限内部测试，带入口的构建不得提交 App Store 审核（#887）"
+        required: false
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -74,6 +79,11 @@ on:
         required: true
         default: "Internal TestFlight 正式候选：使用稳定 macOS 26 与 Xcode 26.6 重新归档。"
         type: string
+      enable_managed_connection:
+        description: "显示尚未开放的托管连接入口；仅限内部测试，带入口的构建不得提交 App Store 审核（#887）"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -228,6 +238,34 @@ jobs:
         # 根模块 Go 与共享契约由独立 Go CI 覆盖；这里已单独验证 Tailcat module。
         run: bash ./scripts/test-conversation-regressions.sh --ios-only
 
+      - name: Run image recovery UI regressions
+        # 普通 XCTest 宿主没有可操作的 SwiftUI 元素树；这两项必须真实点击图片卡。
+        # 仍通过统一入口持有固定 M5 租约，不连接真实 agentd 或读取用户文件。
+        env:
+          SCHEME: MimiRemotePhysicalUITests
+        run: |
+          bash ./scripts/ios-dev.sh test -quiet \
+            -resultBundlePath "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            -collect-test-diagnostics never -testLanguage zh-Hans -testRegion CN \
+            -only-testing:MimiRemoteUITests/ConversationImageRecoveryUITests
+          xcrun xcresulttool get test-results summary \
+            --path "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            > "$RUNNER_TEMP/conversation-image-recovery.json"
+          python3 - "$RUNNER_TEMP/conversation-image-recovery.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          assert result["totalTestCount"] == result["passedTests"] == 2, result
+          PY
+
+      - name: Preserve image recovery UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conversation-image-recovery
+          path: ${{ runner.temp }}/conversation-image-recovery.*
+          if-no-files-found: ignore
+          retention-days: 7
+
       # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时
       # 才额外启动一次英文系统环境，避免每个 PR/main 都承担第二次 Simulator 启动。
       - name: Run English localization smoke
@@ -261,6 +299,7 @@ jobs:
       # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
       IOS_ASC_BUILD_NUMBER_MODE: shadow
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
+      IOS_MANAGED_CONNECTION_ENTRY: ${{ inputs.enable_managed_connection && 'YES' || 'NO' }}
     steps:
       - name: Checkout clean release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

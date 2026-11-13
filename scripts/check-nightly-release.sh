@@ -122,6 +122,19 @@ dedup_run = steps(plan).fetch(dedup_index).fetch("run")
   'value["uploaded"] == true'
 ].each { |needle| fail_check("Nightly evidence 绑定缺少 #{needle}") unless dedup_run.include?(needle) }
 [
+  'actions/workflows/ios-ci.yml/runs?head_sha=${source_sha}&event=workflow_dispatch&branch=main&per_page=100&page=${manual_page}',
+  'actions/runs/${run_id}/jobs?filter=all&per_page=100&page=${jobs_page}',
+  'run["head_sha"] == ENV.fetch("SOURCE_SHA")',
+  'run.dig("head_repository", "full_name") == ENV.fetch("GITHUB_REPOSITORY")',
+  'run["path"] == ".github/workflows/ios-ci.yml"',
+  'run["event"] == "workflow_dispatch" && run["status"] == "completed"',
+  'job["run_id"].to_s == ENV.fetch("EXPECTED_RUN_ID")',
+  'job["head_sha"] == ENV.fetch("SOURCE_SHA")',
+  'job["name"] == "app-store-release"',
+  'step["name"] == "Archive, audit, upload, and distribute build"',
+  'step["conclusion"] == "success"'
+].each { |needle| fail_check("Nightly 手动内部上传去重缺少 #{needle}") unless dedup_run.include?(needle) }
+[
   'run["conclusion"] == "success"', 'run["head_branch"] == "main"',
   'run["head_sha"] != source_sha', 'per_page=100&page=${baseline_page}',
   'if [[ "$should_publish" == "true" ]]; then',
@@ -182,6 +195,10 @@ fail_check("Nightly publish 必须只在需要发布且凭据预检成功时执�
 publish_with = publish.fetch("with")
 fail_check("Nightly publish source_ref 必须来自 plan SHA") unless publish_with["source_ref"].to_s.include?("needs.plan.outputs.source_sha")
 fail_check("Nightly publish 必须显式启用 reusable TestFlight") unless publish_with["publish_internal_testflight"] == true
+fail_check("Nightly publish 必须带 Mimi 中转入口（#997）") unless publish_with["enable_managed_connection"] == true
+ios_dispatch_entry = triggers(ios, ios_path).dig("workflow_dispatch", "inputs", "enable_managed_connection")
+fail_check("ios-ci 手动 dispatch 的托管入口必须默认关闭，避免提交审核的构建带入口（#887）") unless
+  ios_dispatch_entry.is_a?(Hash) && ios_dispatch_entry["default"] == false
 fail_check("Nightly publish What to Test 必须来自 plan") unless publish_with["what_to_test"].to_s.include?("needs.plan.outputs.what_to_test")
 fail_check("Nightly publish 必须使用 secrets: inherit") unless publish["secrets"] == "inherit"
 fail_check("Nightly final 必须 always 聚合 plan、发布凭据预检和 publish") unless
@@ -233,6 +250,10 @@ fail_check("iOS CI 必须把 TestFlight release 与普通 regression concurrency
   concurrency_group == expected_group
 fail_check("iOS CI 只能取消普通回归，不能取消 TestFlight 上传") unless
   cancel_expression == expected_cancel_expression
+upload_step = step(app, "Archive, audit, upload, and distribute build")
+fail_check("手动发布去重依赖内部上传步骤，不得改成空操作或可忽略失败") unless
+  upload_step["run"] == "bash ./scripts/ios_testflight_ci.sh" &&
+    !upload_step["if"] && !upload_step["continue-on-error"]
 evidence = step(app, "Write Nightly TestFlight evidence")
 artifact = step(app, "Upload Nightly TestFlight evidence")
 fail_check("Nightly evidence 只能由显式 reusable publish input 生成") unless
@@ -371,6 +392,118 @@ self_test() {
   MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null
   ruby "$test_root/scripts/generate-nightly-what-to-test.rb" --self-test >/dev/null
 
+  # 执行真实 plan shell 并替换 Actions API，验证去重结果而不触发签名或上传。
+  ruby - "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root" <<'RUBY'
+require "json"
+require "yaml"
+require "open3"
+require "fileutils"
+workflow_path, test_root = ARGV
+plan_step = YAML.safe_load(File.read(workflow_path), aliases: true)
+  .fetch("jobs").fetch("plan").fetch("steps").find { |item| item["id"] == "plan" }
+plan_path = File.join(test_root, "plan.sh")
+File.write(plan_path, plan_step.fetch("run"))
+bin_dir = File.join(test_root, "bin")
+FileUtils.mkdir_p(bin_dir)
+curl_path = File.join(bin_dir, "curl")
+File.write(curl_path, <<'MOCK')
+#!/usr/bin/env ruby
+require "json"
+require "uri"
+url = URI(ARGV.last)
+query = URI.decode_www_form(url.query.to_s).to_h
+fixture = JSON.parse(File.read(ENV.fetch("PLAN_FIXTURE")))
+File.open(ENV.fetch("PLAN_API_LOG"), "a") { |file| file.puts(url.request_uri) }
+page = query.fetch("page", "1").to_i - 1
+response = case url.path
+when %r{/workflows/nightly.yml/runs\z}
+  { workflow_runs: query.key?("head_sha") ? fixture.fetch("nightly_runs", []) : [] }
+when %r{/workflows/ios-ci.yml/runs\z}
+  abort "fixture API failure" if fixture["api_failure"]
+  { workflow_runs: fixture.fetch("manual_pages", [[]])[page] || [] }
+when %r{/runs/42/jobs\z}
+  { jobs: fixture.fetch("job_pages", [[]])[page] || [] }
+else
+  abort "Unexpected fixture API: #{url.request_uri}"
+end
+puts JSON.generate(response)
+MOCK
+FileUtils.chmod(0755, curl_path)
+sha = `git rev-parse HEAD`.strip
+run = {
+  "id" => 42, "head_sha" => sha, "head_branch" => "main",
+  "head_repository" => { "full_name" => "gaixianggeng/mimi-remote" },
+  "path" => ".github/workflows/ios-ci.yml", "event" => "workflow_dispatch",
+  "status" => "completed", "conclusion" => "success"
+}
+job = {
+  "name" => "app-store-release", "run_id" => 42, "head_sha" => sha,
+  "steps" => [{ "name" => "Archive, audit, upload, and distribute build", "conclusion" => "success" }]
+}
+check_plan = lambda do |name, expected, fixture, force = false|
+  case_dir = File.join(test_root, name)
+  FileUtils.mkdir_p(case_dir)
+  fixture_path = File.join(case_dir, "fixture.json")
+  output_path = File.join(case_dir, "output")
+  api_log = File.join(case_dir, "api.log")
+  File.write(fixture_path, JSON.generate(fixture))
+  env = {
+    "PATH" => "#{bin_dir}:#{ENV.fetch('PATH')}", "PLAN_FIXTURE" => fixture_path,
+    "PLAN_API_LOG" => api_log, "RUNNER_TEMP" => case_dir,
+    "GITHUB_OUTPUT" => output_path, "GITHUB_REPOSITORY" => "gaixianggeng/mimi-remote",
+    "GITHUB_RUN_ID" => "99", "SOURCE_SHA" => sha, "FORCE_PUBLISH" => force.to_s,
+    "GH_TOKEN" => "fixture-token"
+  }
+  stdout, stderr, status = Open3.capture3(env, "bash", plan_path)
+  output = File.exist?(output_path) ? File.read(output_path) : ""
+  if expected == :failure
+    abort "#{name}: API 失败后不得继续发布" if status.success? || output.include?("should_publish=")
+  else
+    abort "#{name}: plan 结果错误\n#{stdout}\n#{stderr}" unless
+      status.success? && output.lines.include?("should_publish=#{expected}\n")
+    if expected == false
+      abort "#{name}: 缺少跳过原因" unless stdout.include?("同一 commit")
+      abort "#{name}: 跳过后仍查询基线" if File.read(api_log).lines.any? { |line|
+        line.include?("/nightly.yml/runs?") && !line.include?("head_sha=")
+      }
+    end
+    if force
+      calls = File.read(api_log)
+      abort "force_publish 不得查询发布去重 API" if calls.include?("/ios-ci.yml/runs") || calls.include?("head_sha=")
+    end
+  end
+end
+uploaded = { "manual_pages" => [[run]], "job_pages" => [[job]] }
+check_plan.call("manual_uploaded", false, uploaded)
+check_plan.call("new_commit", true, uploaded.merge("manual_pages" => [[run.merge("head_sha" => "0" * 40)]]))
+check_plan.call("manual_tests_only", true, uploaded.merge("job_pages" => [[]]))
+failed_job = job.merge("steps" => [{ "name" => "Archive, audit, upload, and distribute build", "conclusion" => "failure" }])
+check_plan.call("upload_failed", true, uploaded.merge("job_pages" => [[failed_job]]))
+check_plan.call("cleanup_failed_after_upload", false, uploaded.merge("manual_pages" => [[run.merge("conclusion" => "failure")]]))
+{
+  "push_run" => { "event" => "push" },
+  "other_branch" => { "head_branch" => "feature" },
+  "other_workflow" => { "path" => ".github/workflows/external.yml" },
+  "fork_run" => { "head_repository" => { "full_name" => "example/fork" } },
+  "unfinished_run" => { "status" => "in_progress" }
+}.each do |name, changes|
+  check_plan.call(name, true, uploaded.merge("manual_pages" => [[run.merge(changes)]]))
+end
+{
+  "wrong_job_run" => { "run_id" => 43 },
+  "wrong_job_sha" => { "head_sha" => "0" * 40 },
+  "other_release_job" => { "name" => "external-release" }
+}.each do |name, changes|
+  check_plan.call(name, true, uploaded.merge("job_pages" => [[job.merge(changes)]]))
+end
+check_plan.call("manual_pagination", false, uploaded.merge("manual_pages" => [Array.new(100) { run.merge("event" => "push") }, [run]]))
+check_plan.call("jobs_pagination", false, uploaded.merge("job_pages" => [Array.new(100) { job.merge("name" => "regression") }, [job]]))
+check_plan.call("force_publish", true, uploaded, true)
+check_plan.call("manual_api_failure", :failure, { "api_failure" => true })
+check_plan.call("previous_nightly", false, { "nightly_runs" => [{ "id" => 41, "head_sha" => sha, "conclusion" => "success" }] })
+puts "Nightly plan 行为回归通过：手动上传、新提交、失败/无上传、来源绑定、分页、强制发布和 API 失败。"
+RUBY
+
   expect_failure() {
     if MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null 2>&1; then
       fail "self-test 变体本应失败但通过。"
@@ -399,6 +532,14 @@ self_test() {
   }
   mutate_nightly 'artifact["name"] == "nightly-testflight-#{sha}"' 'artifact["name"]'
   mutate_nightly 'if [[ "$should_publish" == "true" ]]; then' 'if true; then'
+  mutate_nightly 'run["head_sha"] == ENV.fetch("SOURCE_SHA")' 'true'
+  mutate_nightly 'run.dig("head_repository", "full_name") == ENV.fetch("GITHUB_REPOSITORY")' 'true'
+  mutate_nightly 'run["path"] == ".github/workflows/ios-ci.yml"' 'true'
+  mutate_nightly 'run["event"] == "workflow_dispatch" && run["status"] == "completed"' 'true'
+  mutate_nightly 'job["run_id"].to_s == ENV.fetch("EXPECTED_RUN_ID")' 'true'
+  mutate_nightly 'job["head_sha"] == ENV.fetch("SOURCE_SHA")' 'true'
+  mutate_nightly 'job["name"] == "app-store-release"' 'true'
+  mutate_nightly 'step["conclusion"] == "success"' 'true'
   mutate_nightly 'artifact["expired"] == false' 'artifact["expired"] != true'
   mutate_nightly 'workflow_run["id"].to_s == run_id' 'workflow_run["id"]'
   mutate_nightly 'workflow_run["head_sha"] == sha' 'workflow_run["head_sha"]'
@@ -424,6 +565,7 @@ self_test() {
     ' "$test_root/.github/workflows/ios-ci.yml" "$old_value" "$new_value"
     expect_failure
   }
+  mutate_ios 'run: bash ./scripts/ios_testflight_ci.sh' 'run: echo bypass-upload'
   mutate_ios "&& 'release' || 'regression'" "&& 'regression' || 'regression'"
   mutate_ios '${{ !(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store)) }}' '${{ false }}'
   mutate_ios '!(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store))' '!inputs.publish_internal_testflight'

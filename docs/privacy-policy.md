@@ -1,6 +1,6 @@
 # Mimi Remote 隐私政策 / Privacy Policy
 
-生效日期 / Effective date：2026-10-21
+生效日期 / Effective date：2026-11-12
 
 ## 中文
 
@@ -39,6 +39,8 @@ App 内置 Tailcat 客户端。Tailcat 是 Tailscale 发布的开源点对点连
 
 Mimi 托管连接（Mimi Managed Connection）让不在同一 Wi-Fi 的设备连接自己的电脑，无需安装其他联网工具。它包含开发者运营的控制面（核验订阅和管理设备授权的服务）与 DERP 中继。
 
+目前只在 TestFlight 内测中提供，可以通过内测兑换码或测试购买开通。使用兑换码时，App 把兑换码发送给控制面并保存在设备 Keychain 中；控制面只保存兑换码的 SHA-256 散列、备注批次、到期、撤销和首次使用时间，不记录使用者身份。控制面与中继部署在中国大陆的云服务器上。
+
 购买、恢复购买和刷新权益时，App 向控制面发送 Apple 签名的 App 交易与订阅交易数据。控制面验证签名后保存 App 交易标识的 SHA-256 散列、订阅商品与交易标识、购买环境、权益状态、到期与撤销时间，以及状态更新和签名时间。Apple 订阅通知还会留下通知标识、类型、子类型、签名时间与处理结果，用于更新权益和防止重复处理。购买与扣款由 Apple 处理；开发者不接收支付卡资料或 Apple ID 登录凭据。
 
 同一 Apple ID 可以恢复订阅权益。恢复购买不恢复或同步电脑连接地址、Tailcat 私钥或 `agentd` Token；新手机或平板需要对每台电脑重新接入。
@@ -47,7 +49,7 @@ Mimi 托管连接（Mimi Managed Connection）让不在同一 Wi-Fi 的设备连
 
 为诊断连接可用性，App 发送随机事件编号、连接路径、成功或失败、耗时区间、粗粒度错误分类、适用时的中继区域代码和 App 版本。控制面记录接收时间；事件记录不保存订阅编号、设备编号或 IP 地址。中继区域代码表示中继位置，不是设备定位。事件按 30 天保留窗口每日清理，超过窗口的记录在下一次清理时删除。
 
-数据连接使用 Tailcat，通过 WireGuard 端到端加密。能直连时点对点传输，否则由 Mimi 运营的 DERP 中继转发。中继无法读取内容，但会处理双方 IP 地址、连接公钥、连接时间和流量大小。官方中继只接受有效订阅下已登记并获授权的设备节点，包括有效配对期间的临时节点。
+数据连接使用 Tailcat，通过 WireGuard 端到端加密。能直连时点对点传输，否则由 Mimi 运营的 DERP 中继转发。中继无法读取内容，但会处理双方 IP 地址、连接公钥、连接时间和流量大小。官方中继只接受有效订阅或有效内测兑换码下已登记并获授权的设备节点，包括有效配对期间的临时节点。
 
 控制面应用关闭常规请求日志，但会记录服务错误用于排障。目前订阅、设备、配对、节点归属、授权凭据散列和 Apple 通知记录没有按时间自动清理的机制。凭据与配对授权的有效期只限制其使用，不代表到期后删除历史记录。
 
@@ -71,7 +73,7 @@ Mimi 托管连接（Mimi Managed Connection）让不在同一 Wi-Fi 的设备连
 
 #### 锁屏与灵动岛实时活动
 
-实时活动默认开启，并跟随消息通知：消息通知关闭时，实时活动不会启动或更新。也可以在 App 设置里单独关闭。开启后：
+实时活动默认关闭，需要在 App 设置里手动开启；它跟随消息通知，消息通知关闭时实时活动不会启动或更新。开启后：
 
 - 发送给通知服务的只有：系统为实时活动分配的推送 Token（同样换成加密的推送凭据，由电脑保存）、状态枚举（运行中、待你处理、已完成、失败）、运行中与待你处理的会话数、本轮开始时间，以及电脑与会话的匿名短标签。
 - 会话标题、项目名和电脑名从设备上的本机缓存读取，只在本机显示，不发送给通知服务或 Apple。
@@ -140,6 +142,8 @@ The app includes a Tailcat client. Tailcat is an open-source peer-to-peer connec
 
 Mimi Managed Connection lets your devices connect to your own computer when they are on different Wi-Fi networks, without installing another networking tool. It includes a developer-operated control service for subscription verification and device authorization, and a DERP relay.
 
+It is currently offered only in the TestFlight beta, through a beta redemption code or a test purchase. When a code is used, the app sends it to the control plane and keeps it in the device Keychain. The control plane stores only its SHA-256 hash, a batch label, and its expiry, revocation, and first-use times, and does not record who used it. The control plane and relay run on cloud servers in mainland China.
+
 When purchasing, restoring purchases, or refreshing entitlements, the app sends Apple-signed app and subscription transaction data to the control service. After verifying the signatures, the service stores a SHA-256 hash of the app transaction identifier, subscription product and transaction identifiers, purchase environment, entitlement status, expiry and revocation times, and state update and signature times. Apple subscription notifications also produce records of notification identifiers, types, subtypes, signature times, and processing outcomes to update entitlements and prevent duplicate processing. Apple handles purchases and billing; the developer does not receive payment card details or Apple ID sign-in credentials.
 
 You can restore subscription entitlements with the same Apple ID. Restoring purchases does not restore or sync computer connection addresses, Tailcat private keys, or `agentd` tokens. A new phone or tablet must connect to each computer again.
@@ -172,7 +176,7 @@ Turning the switch off immediately stops automatic local task notifications and 
 
 #### Lock Screen and Dynamic Island Live Activities
 
-Live Activities are on by default and follow message notifications: when message notifications are off, Live Activities neither start nor update. You can also turn them off separately in the app. When enabled:
+Live Activities are off by default; you can turn them on in the app. They follow message notifications: when message notifications are off, Live Activities neither start nor update. When enabled:
 
 - What the notification service receives: the push tokens the system assigns for Live Activities (also exchanged for encrypted push credentials that your computer stores), the status as a fixed enum (running, needs you, completed, or failed), the number of running sessions and of sessions waiting for you, the start time of the current round, and anonymous short tags for the computer and the session.
 - Session titles, project names, and computer names are read from a cache on your device and shown only there. They are not sent to the notification service or to Apple.
