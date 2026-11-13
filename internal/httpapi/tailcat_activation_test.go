@@ -210,3 +210,70 @@ func TestTailcatActivationExpiredResultCannotBeReused(t *testing.T) {
 		t.Fatalf("expired result returned %d", response.Code)
 	}
 }
+
+func TestTailcatActivationRollbackAfterControlPlaneRejection(t *testing.T) {
+	for _, alreadyManaged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "free", true: "already-managed"}[alreadyManaged], func(t *testing.T) {
+			server, sidecar, _ := newLinkTestServer(t)
+			if alreadyManaged {
+				sidecar.status.Mode = config.TailcatModeManaged
+			}
+			id := uuid.NewString()
+			started := httptest.NewRecorder()
+			server.handler.ServeHTTP(started, authedRequest(t, http.MethodPost, tailcatActivationPath, map[string]string{"request_id": id}))
+			server.router.tailcatActivation.wg.Wait()
+			if sidecar.status.Mode != config.TailcatModeManaged {
+				t.Fatal("activation did not select Mimi")
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				response := httptest.NewRecorder()
+				server.handler.ServeHTTP(response, authedRequest(t, http.MethodPost, tailcatActivationPath+"/"+id+"/rollback", nil))
+				if response.Code != http.StatusOK {
+					t.Fatalf("rollback: %d %s", response.Code, response.Body.String())
+				}
+			}
+			if (sidecar.status.Mode == config.TailcatModeManaged) != alreadyManaged {
+				t.Fatalf("wrong restored mode: %s", sidecar.status.Mode)
+			}
+			if !sidecar.status.Enabled || !sidecar.status.Running {
+				t.Fatal("rollback stopped original connection")
+			}
+		})
+	}
+}
+
+func TestTailcatActivationRollbackCannotOverrideLaterPairing(t *testing.T) {
+	server, sidecar, _ := newLinkTestServer(t)
+	id := uuid.NewString()
+	server.handler.ServeHTTP(httptest.NewRecorder(), authedRequest(t, http.MethodPost, tailcatActivationPath, map[string]string{"request_id": id}))
+	server.router.tailcatActivation.wg.Wait()
+	sidecar.status.PairPublicKey = "nodekey:" + strings.Repeat("e", 64)
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, authedRequest(t, http.MethodPost, tailcatActivationPath+"/"+id+"/rollback", nil))
+	if response.Code != http.StatusConflict || sidecar.status.Mode != config.TailcatModeManaged {
+		t.Fatalf("late rollback changed newer pairing: %d", response.Code)
+	}
+	unauthorized := httptest.NewRecorder()
+	server.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, tailcatActivationPath+"/"+id+"/rollback", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("rollback without Bearer: %d", unauthorized.Code)
+	}
+}
+
+func TestTailcatActivationCanRollBackWhilePairingIsPending(t *testing.T) {
+	server, sidecar, _ := newLinkTestServer(t)
+	entered := make(chan struct{})
+	sidecar.pairHook = func(ctx context.Context) error { close(entered); <-ctx.Done(); return ctx.Err() }
+	id := uuid.NewString()
+	server.handler.ServeHTTP(httptest.NewRecorder(), authedRequest(t, http.MethodPost, tailcatActivationPath, map[string]string{"request_id": id}))
+	<-entered
+	response := httptest.NewRecorder()
+	server.handler.ServeHTTP(response, authedRequest(t, http.MethodPost, tailcatActivationPath+"/"+id+"/rollback", nil))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("pending rollback: %d", response.Code)
+	}
+	server.router.tailcatActivation.wg.Wait()
+	if sidecar.status.Mode == config.TailcatModeManaged || !sidecar.status.Enabled {
+		t.Fatal("cancelled activation did not restore original route")
+	}
+}

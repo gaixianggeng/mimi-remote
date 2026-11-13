@@ -66,6 +66,14 @@ struct ManagedConnectionUpgradeContext {
         guard isCurrent(in: appStore) else { throw CancellationError() }
     }
 
+    func rollbackRelayActivation(requestID: UUID, appStore: AppStore) async {
+        // 配对准备可能重建本地代理端口；只在原主机快照仍有效时使用刷新后的 endpoint。
+        let endpoint = isCurrent(in: appStore) ? appStore.connectionEndpoint : client.endpoint
+        let cleanupClient = AgentAPIClient(endpoint: endpoint, token: client.token)
+        // 清理不随用户取消启用而取消；旧版电脑没有回滚接口时仍保留原来的失败处理。
+        await Task { @MainActor in try? await cleanupClient.rollbackManagedRelay(requestID: requestID) }.value
+    }
+
     func requestRelayActivation(requestID: UUID, appStore: AppStore) async throws -> ManagedPairingLinkResponse {
         try checkCurrent(in: appStore)
         let result = try await client.activateManagedRelay(requestID: requestID)

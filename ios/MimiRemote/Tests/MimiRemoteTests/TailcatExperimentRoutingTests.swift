@@ -457,6 +457,26 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.store.activeConnectionProfile?.connectionRoute, .managedTailcat)
     }
 
+    func testRollbackAfterHostSwitchUsesOriginalComputerAndCredential() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store)
+        let context = try ManagedConnectionUpgradeContext(appStore: fixture.store,
+            client: AgentAPIClient(endpoint: fixture.store.connectionEndpoint, token: "token-a"))
+        try await seedUpgradeProfile(fixture.store, id: "mac-b", endpoint: "http://192.168.1.21:8787")
+        ManagedUpgradeURLProtocol.configure { $0.respond(body: #"{"state":"rolled_back"}"#) }
+
+        let task = Task { await context.rollbackRelayActivation(requestID: UUID(), appStore: fixture.store) }
+        task.cancel()
+        await task.value
+
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.count, 1, "取消启用后仍需发出清理请求")
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.first?.url?.host, "192.168.1.20")
+        XCTAssertEqual(ManagedUpgradeURLProtocol.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer token-a")
+    }
+
     func testUpgradeConfirmationUsesOriginalClientAndStopsAfterSwitchingAwayAndBack() async throws {
         let fixture = try makeControllerFixture(startResults: [])
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }

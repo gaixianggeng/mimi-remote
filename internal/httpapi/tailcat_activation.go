@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/google/uuid"
 )
 
@@ -24,9 +23,14 @@ type tailcatActivationResult struct {
 }
 
 type tailcatActivationOperation struct {
-	result  tailcatActivationResult
-	expires time.Time
-	cancel  context.CancelFunc
+	result            tailcatActivationResult
+	expires           time.Time
+	cancel            context.CancelFunc
+	previous          tailcatStatus
+	activated         tailcatStatus
+	rollingBack       bool
+	rollbackRequested bool
+	rolledBack        bool
 }
 
 // 只保存本机短期操作。重启后客户端重新发起即可；不新增持久任务系统。
@@ -50,6 +54,10 @@ func (s *tailcatActivationStore) close() {
 func (r *Router) tailcatActivationHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s := &r.tailcatActivation
+	if strings.HasSuffix(req.URL.Path, "/rollback") {
+		r.tailcatActivationRollbackHandler(w, req)
+		return
+	}
 	if req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, tailcatActivationPath+"/") {
 		id := strings.TrimPrefix(req.URL.Path, tailcatActivationPath+"/")
 		s.mu.Lock()
@@ -123,9 +131,29 @@ func (r *Router) tailcatActivationHandler(w http.ResponseWriter, req *http.Reque
 		defer s.wg.Done()
 		defer cancel()
 		defer r.tailcatControlMu.Unlock()
+		var previous, activated tailcatStatus
+		if r.tailcat != nil {
+			previous = r.tailcat.Status(ctx)
+		}
 		result, failure := r.activateTailcatRelay(ctx)
+		if failure == nil && r.tailcat != nil {
+			activated = r.tailcat.Status(ctx)
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		op.previous, op.activated = previous, activated
+		if op.rollbackRequested && failure == nil {
+			// 取消可能在辅助程序切换已完成、结果尚未发布之间到达。
+			s.mu.Unlock()
+			rollbackErr := r.restoreTailcatActivation(ctx, previous)
+			s.mu.Lock()
+			code, message := "tailcat_activation_rolled_back", "未启用中转，已恢复原连接"
+			if rollbackErr != nil {
+				code, message = "tailcat_activation_rollback_failed", "恢复原连接设置失败，请在电脑上检查"
+			}
+			op.rolledBack = rollbackErr == nil
+			failure = &tailcatActionFailure{status: http.StatusConflict, code: code, err: errors.New(message)}
+		}
 		if failure != nil {
 			op.result.State, op.result.Code, op.result.Message = "failed", failure.code, failure.err.Error()
 		} else {
@@ -143,17 +171,7 @@ func (r *Router) activateTailcatRelay(ctx context.Context) (tailcatManagedPairin
 	if failure == nil || r.tailcat == nil || r.managedPairing == nil {
 		return result, failure
 	}
-	// 新启用失败要恢复本次改动；已经在用中转的电脑不因一次二维码失败而被全局停用。
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer cancel()
-	var rollbackErr error
-	if previous.Mode != config.TailcatModeManaged && r.tailcat.Status(cleanup).Mode == config.TailcatModeManaged {
-		_, rollbackErr = r.managedPairing.ConfigureMode(cleanup, false)
-	}
-	if !previous.Enabled && r.tailcat.Status(cleanup).Enabled {
-		_, configErr := agentsetup.ConfigureTailcat(r.configPath, false)
-		rollbackErr = errors.Join(rollbackErr, configErr, r.tailcat.Stop(cleanup))
-	}
+	rollbackErr := r.restoreTailcatActivation(ctx, previous)
 	if rollbackErr != nil {
 		failure = &tailcatActionFailure{status: http.StatusServiceUnavailable, code: "tailcat_activation_rollback_failed",
 			err: errors.New("启用未完成，恢复原连接设置失败，请在电脑上检查")}

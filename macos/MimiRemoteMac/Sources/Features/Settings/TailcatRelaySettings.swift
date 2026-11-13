@@ -60,7 +60,13 @@ struct TailcatRelayPicker: View {
         }
         .pickerStyle(.menu)
         .disabled(!store.canChangeTailcat || isApplying)
-        .task { await store.refreshTailcatStatus() }
+        .task {
+            // 手机也能切换电脑线路；只在控件可见时刷新，页面离开后由 SwiftUI 取消。
+            while !Task.isCancelled {
+                await store.refreshTailcatStatus()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .confirmationDialog(
             "更换中转服务？",
             isPresented: Binding(get: { pendingMode != nil }, set: { if !$0 { pendingMode = nil } }),

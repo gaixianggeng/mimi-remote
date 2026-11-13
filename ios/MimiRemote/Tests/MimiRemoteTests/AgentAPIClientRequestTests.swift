@@ -100,6 +100,9 @@ final class AgentAPIClientRequestTests: XCTestCase {
         let criticalJourney = try criticalJourneyContractFixture()
 
         let contracts: [RESTRequestContract] = [
+            .init("rollback relay", path: "/api/tailcat/managed-pairing-operations/30000000-0000-4000-8000-000000000001/rollback", method: "POST", timeout: 15, json: [:]) { client in
+                try await client.rollbackManagedRelay(requestID: UUID(uuidString: "30000000-0000-4000-8000-000000000001")!)
+            },
             .init("health", path: "/healthz", method: "GET", requiresAuth: false) { client in
                 _ = try await client.health()
             },

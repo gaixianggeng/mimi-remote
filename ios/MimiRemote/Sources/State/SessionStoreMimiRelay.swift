@@ -216,11 +216,11 @@ extension SessionStore {
             mimiRelayNotice = L10n.text("ui.relay_activating")
             mimiRelay.task = Task { @MainActor in
                 defer { finishMimiRelay(operationID) }
+                let requestID = controller.relayActivationRequestID(profileID: context.profile.id)
                 do {
                     if context.profile.connectionRoute == .customTailcat {
                         try await controller.preserveFreeRoute(appStore: appStore)
                     }
-                    let requestID = controller.relayActivationRequestID(profileID: context.profile.id)
                     let link = try await context.requestRelayActivation(requestID: requestID, appStore: appStore)
                     guard let url = URL(string: link.pairURL) else { throw AgentAPIError.invalidResponse }
                     _ = try await applyManagedPairingURL(url, upgrading: context)
@@ -229,8 +229,10 @@ extension SessionStore {
                     mimiRelayNotice = L10n.text("ui.relay_enabled")
                     _ = await refreshAfterConnectionCommit(maxWait: 10)
                 } catch is CancellationError {
+                    await context.rollbackRelayActivation(requestID: requestID, appStore: appStore)
                     return
                 } catch {
+                    await context.rollbackRelayActivation(requestID: requestID, appStore: appStore)
                     guard context.isCurrent(in: appStore), !Task.isCancelled else { return }
                     if appStore.acceptsCredentialInvalidation(error) {
                         appStore.markCredentialsInvalid()
