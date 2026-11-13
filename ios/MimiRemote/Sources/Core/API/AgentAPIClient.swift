@@ -594,6 +594,14 @@ struct AgentAPIClient {
         throw URLError(.timedOut)
     }
 
+    func rollbackManagedRelay(requestID: UUID) async throws {
+        struct Response: Decodable { let state: String }
+        let _: Response = try await request(
+            path: "/api/tailcat/managed-pairing-operations/" + requestID.uuidString + "/rollback",
+            method: "POST", body: Data("{}".utf8), timeout: 15
+        )
+    }
+
     /// 电脑上选择的中转。旧版电脑没有这个接口，调用方按没有选择信息处理。
     func tailcatRelayChoice() async throws -> ComputerRelayChoice {
         struct Response: Decodable { let relay_service: String; let free_relay_service: String }
