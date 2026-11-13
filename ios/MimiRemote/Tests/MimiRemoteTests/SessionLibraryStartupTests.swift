@@ -67,6 +67,61 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id])
     }
 
+    func testEveryWorkspaceDirectoryLoadsBeforeGlobalDiscovery() async {
+        let workspaces = ["one", "two", "three"].map { AgentWorkspace(project: makeProject(id: $0)) }
+        let expectedIDs = [workspaces[1], workspaces[0], workspaces[2]].flatMap { [$0.id, $0.id] }
+        var client: MockSessionStoreClient!
+        client = MockSessionStoreClient(
+            projects: workspaces.map(\.project), sessions: [],
+            runtimeChannelAvailability: ["codex": true, "claude": true],
+            controlledGlobalSessionsByRuntimeHandler: { _, _, _ in
+                XCTAssertEqual(client.requestedWorkspaceIDs, expectedIDs,
+                               "全部目录首屏必须早于任一全局发现请求")
+                XCTAssertEqual(client.requestedWorkspaceRuntimes, ["claude", "codex", "codex", "claude", "codex", "claude"])
+                return SessionsPage(sessions: [])
+            }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = workspaces
+        store.sessionLibraryPriorityScope = store.workspaceDirectoryScopeKey(for: workspaces[1], runtimeProvider: "claude")
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(client.requestedWorkspaceIDs, expectedIDs, "顺序前移不能增加目录请求")
+        XCTAssertEqual(client.requestedControlledGlobalRuntimes, RuntimeFeatureSupport.runtimeProviders)
+    }
+
+    func testDirectoryResultFromNonPriorityWorkspaceSurvivesGlobalPruning() async {
+        let priority = AgentWorkspace(project: makeProject(id: "pruning-priority"))
+        let other = AgentWorkspace(project: makeProject(id: "pruning-other"))
+        let fresh = makeSession(id: "other-fresh", projectID: other.id, title: "仍存在", status: "history", source: "claude")
+        let deleted = makeSession(id: "other-deleted", projectID: other.id, title: "已删除", status: "history", source: "claude")
+        let client = MockSessionStoreClient(
+            projects: [priority.project, other.project], sessions: [],
+            workspacePages: [other.id: SessionsPage(sessions: [fresh])],
+            runtimeChannelAvailability: ["codex": true, "claude": true],
+            controlledGlobalSessionsHandler: { _, _ in SessionsPage(sessions: []) }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [priority, other]
+        store.sessions = [fresh, deleted]
+        store.controlledGlobalSessionIDs = [fresh.id, deleted.id]
+        store.sessionLibraryPriorityScope = store.workspaceDirectoryScopeKey(for: priority, runtimeProvider: "codex")
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(store.openedWorkspaceSessionLibrarySessions.map(\.id), [fresh.id])
+        XCTAssertFalse(store.sessions.contains { $0.id == deleted.id })
+        XCTAssertTrue(store.controlledGlobalSessionIDs.isEmpty)
+        XCTAssertEqual(client.requestedWorkspaceIDs, [priority.id, priority.id, other.id, other.id])
+    }
+
     func testBrowsedWorkspaceAndRuntimeLoadBeforeGlobalDiscoveryWithoutExtraRequests() async {
         let first = AgentWorkspace(project: makeProject(id: "priority-first"))
         let browsed = AgentWorkspace(project: makeProject(id: "priority-browsed"))
@@ -75,7 +130,7 @@ extension ConversationDataFlowTests {
             projects: [first.project, browsed.project], sessions: [],
             runtimeChannelAvailability: ["codex": true, "claude": true],
             controlledGlobalSessionsByRuntimeHandler: { _, _, _ in
-                XCTAssertEqual(Array(client.requestedWorkspaceIDs.prefix(2)), [browsed.id, browsed.id],
+                XCTAssertEqual(client.requestedWorkspaceIDs, [browsed.id, browsed.id, first.id, first.id],
                                "先确认当前浏览工作区的归属，不能等全局扫描结束")
                 XCTAssertEqual(client.requestedWorkspaceRuntimes.first, "claude",
                                "当前渠道不能排在其他渠道之后")

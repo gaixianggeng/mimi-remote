@@ -1066,25 +1066,29 @@ extension SessionStore {
             return
         }
 
-        // 先确认浏览来源的目录归属，才能立即展示它；只移动原有补查，不重复请求。
+        // 所有工作区先确认目录归属，浏览来源优先；只移动原有补查，不重复请求。
         let priorityScope = sessionLibraryPriorityScope
         let priorityWorkspace = workspaces.first { workspace in
             priorityScope?.hostScope == hostScope
                 && priorityScope?.workspaceID == workspace.id
                 && priorityScope?.workspacePath == standardizedSessionListPath(workspace.path)
         }
-        var priorityDirectorySessionIDs: Set<SessionID> = []
-        if let priorityWorkspace {
+        let orderedWorkspaces = (priorityWorkspace.map { [$0] } ?? [])
+            + workspaces.filter { $0.id != priorityWorkspace?.id }
+        var directoryPhaseSessionIDs: Set<SessionID> = []
+        for workspace in orderedWorkspaces {
+            guard appStore.activeHostScope == hostScope,
+                  appStore.connectionGeneration == generation, !Task.isCancelled else { return }
             let outcome = await refreshDirectoryScopedSessionLibrary(
-                workspace: priorityWorkspace,
+                workspace: workspace,
                 consistency: consistency,
                 restartFromFirst: authoritative,
-                preferredRuntimeProvider: priorityScope?.runtimeProvider,
+                preferredRuntimeProvider: workspace.id == priorityWorkspace?.id ? priorityScope?.runtimeProvider : nil,
                 client: client,
                 hostScope: hostScope,
                 generation: generation
             )
-            priorityDirectorySessionIDs = outcome.fetchedSessionIDs
+            directoryPhaseSessionIDs.formUnion(outcome.fetchedSessionIDs)
             succeededRequestCount += outcome.succeededRequestCount
         }
         guard appStore.activeHostScope == hostScope,
@@ -1210,9 +1214,9 @@ extension SessionStore {
                     }
                     return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
                 }
-                // 全局发现资格仍撤销；刚由精确目录返回的行继续按工作区展示。
+                // 全局发现资格仍撤销；本轮任一工作区精确目录返回的行继续按工作区展示。
                 // 目录补查前移后必须保留这份结果，不能再请求一次来恢复它。
-                let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(priorityDirectorySessionIDs)
+                let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(directoryPhaseSessionIDs)
                 if !revokedSessionIDs.isEmpty {
                     removeWorkspaceDirectorySessionIDs(Set(revokedSessionIDs))
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
@@ -1242,21 +1246,7 @@ extension SessionStore {
             }
         }
 
-        guard !workspaces.isEmpty else { return }
-        // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
-        // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
-        for workspace in workspaces where workspace.id != priorityWorkspace?.id {
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            let outcome = await refreshDirectoryScopedSessionLibrary(
-                workspace: workspace,
-                consistency: consistency,
-                restartFromFirst: authoritative,
-                client: client,
-                hostScope: hostScope,
-                generation: generation
-            )
-            succeededRequestCount += outcome.succeededRequestCount
-        }
+
     }
 
     private func publishControlledGlobalSessions(_ discovered: [AgentSession], ids: Set<SessionID>) {
