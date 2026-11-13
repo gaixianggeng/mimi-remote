@@ -252,6 +252,8 @@ final class ForegroundRecoveryHistoryOrderingTests: XCTestCase {
             webSocketFactory: { socket },
             sessionListSleep: sessionListSleep
         )
+        // 本夹具从已加载过的会话回前台；首屏计时不能占用只用于列表退避的睡眠门闩。
+        store.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         store.selectedProjectID = project.id
         return Fixture(session: session, listPage: listPage, client: client, socket: socket, store: store)
     }
