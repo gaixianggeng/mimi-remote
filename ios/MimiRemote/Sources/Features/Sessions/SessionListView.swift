@@ -106,8 +106,15 @@ enum SessionListPresentationState: Equatable {
         errorMessage: String?,
         connectionStatus: ConnectionStatus,
         hasLoadedWorkspaceCatalog: Bool = false,
-        isEstablishingConnection: Bool = false
+        isEstablishingConnection: Bool = false,
+        awaitsInitialSessionLibrary: Bool = false
     ) -> Self {
+        // 首次连接主渠道往往先到；短暂等待其余目录首屏，计时器保证三秒内放行。
+        if awaitsInitialSessionLibrary, case .connected = connectionStatus,
+           !isFiltering, !isNetworkUnavailable,
+           (errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return .loading
+        }
         guard !hasVisibleSessions else { return .content }
 
         // 预热窗口内的 preflight 失败与列表失败都只是本轮尝试的结果，不是给用户的结论。
@@ -674,7 +681,12 @@ struct SessionListView: View {
     }
 
     private func makePresentationState(hasVisibleSessions: Bool) -> SessionListPresentationState {
-        SessionListPresentationState.resolve(
+#if DEBUG
+        let skipsInitialLibraryGate = sessionStore.isDebugWorkbenchUISeedActive
+#else
+        let skipsInitialLibraryGate = false
+#endif
+        return SessionListPresentationState.resolve(
             hasVisibleSessions: hasVisibleSessions,
             // sidebarProjects 只包含 rememberWorkspace 记录的已打开目录，不包含后端候选项目。
             hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
@@ -685,7 +697,11 @@ struct SessionListView: View {
             errorMessage: sessionStore.userFacingErrorMessage,
             connectionStatus: appStore.connectionStatus,
             hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope,
-            isEstablishingConnection: sessionStore.isEstablishingConnection
+            isEstablishingConnection: sessionStore.isEstablishingConnection,
+            awaitsInitialSessionLibrary: selectedWorkspaceID == "all"
+                && !skipsInitialLibraryGate
+                && !sessionStore.recentWorkspaces.isEmpty
+                && !sessionStore.settledInitialSessionLibraryProfileIDs.contains(appStore.activeHostScope.profileID)
         )
     }
 

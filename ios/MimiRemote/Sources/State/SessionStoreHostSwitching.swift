@@ -246,6 +246,7 @@ extension SessionStore {
     }
 
     private func purgeConnectionProfileData(profileID: String) {
+        forgetInitialSessionLibrary(profileID: profileID)
         // Profile 已删除后不再保留事务锁；token 同时失效，迟到请求不会重新写回已清理的偏好。
         discardSessionArchiveMutationState(profileID: profileID)
         hostWarmSnapshotCache.remove(profileID: profileID)
