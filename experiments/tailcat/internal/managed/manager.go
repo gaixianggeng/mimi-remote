@@ -568,6 +568,7 @@ func (m *Manager) startControl() error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", m.statusHandler)
+	mux.HandleFunc("/node-ownership-proof", m.nodeOwnershipHandler)
 	mux.HandleFunc("/pair", m.pairHandler)
 	mux.HandleFunc("/allow", m.allowHandler)
 	mux.HandleFunc("/managed-clients", m.managedClientsHandler)
