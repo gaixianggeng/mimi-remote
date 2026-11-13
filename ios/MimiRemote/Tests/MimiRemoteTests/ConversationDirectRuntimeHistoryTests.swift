@@ -1513,23 +1513,26 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(verifiedListRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
         transportResponse(transport, id: verifiedListRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         await refreshTask.value
+        let libraryRequestCount = try await finishDirectInitialSessionLibraryRefresh(
+            store: store, transport: transport, after: 4
+        )
         XCTAssertEqual(store.selectedProjectID, project.id)
 
         let sendTask = Task { await store.sendPrompt("帮我验收 direct Store") }
-        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let modelList = try decodeAppServerRequest(threadMessages[4])
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5 + libraryRequestCount)
+        let modelList = try decodeAppServerRequest(threadMessages[4 + libraryRequestCount])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-store-default","name":"Store Default","provider":"openai","isDefault":true}]}}"#)
 
-        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let threadStart = try decodeAppServerRequest(threadStartMessages[5])
+        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6 + libraryRequestCount)
+        let threadStart = try decodeAppServerRequest(threadStartMessages[5 + libraryRequestCount])
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertNil(threadStart.params?.objectValue?["model"]?.stringValue)
         XCTAssertNil(threadStart.params?.objectValue?["modelProvider"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7)
-        let turnStart = try decodeAppServerRequest(turnMessages[6])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7 + libraryRequestCount)
+        let turnStart = try decodeAppServerRequest(turnMessages[6 + libraryRequestCount])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["model"]?.stringValue, "gpt-store-default")
         let collaborationMode = try XCTUnwrap(turnStart.params?.objectValue?["collaborationMode"]?.objectValue)
@@ -1539,7 +1542,7 @@ extension ConversationDataFlowTests {
         // 新线程首轮由本地回显和 buffered event replay 承接，不能在 rollout 尚未就绪时
         // 追加 thread/read；若未来回归到旧行为，先响应请求让 sendTask 能退出，再给出明确断言。
         for _ in 0..<20 {
-            if (await transport.sentMessages()).count > 7 {
+            if (await transport.sentMessages()).count > 7 + libraryRequestCount {
                 break
             }
             try await Task.sleep(nanoseconds: 10_000_000)
@@ -1637,8 +1640,12 @@ extension ConversationDataFlowTests {
         let listMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let listRequest = try decodeAppServerRequest(listMessages[2])
         XCTAssertEqual(listRequest.method, "thread/list")
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: listRequest.id)),"result":{"data":[{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
+        let listResult = #"{"data":[{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"历史 idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}],"nextCursor":null,"backwardsCursor":null}"#
+        transportResponse(transport, id: listRequest.id, result: listResult)
         await refreshTask.value
+        let libraryRequestCount = try await finishDirectInitialSessionLibraryRefresh(
+            store: store, transport: transport, after: 3, result: listResult, responseIsEmpty: false
+        )
 
         let historySession = try XCTUnwrap(store.filteredSessions.first)
         XCTAssertEqual(historySession.id, "thr_idle_history")
@@ -1656,13 +1663,13 @@ extension ConversationDataFlowTests {
         XCTAssertFalse(requestsAfterOpen.contains { $0.method == "thread/resume" })
 
         let sendTask = Task { await store.sendPrompt("继续排查") }
-        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let modelList = try decodeAppServerRequest(resumeMessages[4])
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 5 + libraryRequestCount)
+        let modelList = try decodeAppServerRequest(resumeMessages[4 + libraryRequestCount])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-history-default","name":"History Default","provider":"openai","isDefault":true}]}}"#)
 
-        let resumeRequestMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let resumeRequest = try decodeAppServerRequest(resumeRequestMessages[5])
+        let resumeRequestMessages = try await waitForFakeAppServerMessages(transport, count: 6 + libraryRequestCount)
+        let resumeRequest = try decodeAppServerRequest(resumeRequestMessages[5 + libraryRequestCount])
         XCTAssertEqual(resumeRequest.method, "thread/resume")
         XCTAssertEqual(resumeRequest.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertNil(resumeRequest.params?.objectValue?["model"]?.stringValue)
@@ -1673,15 +1680,15 @@ extension ConversationDataFlowTests {
         )
         transport.enqueue(#"{"id":\#(try jsonFragment(for: resumeRequest.id)),"error":{"code":-32080,"message":"thread/resume history response 过大，gateway 已阻断；请降低 limit/itemsView 或改用分页读取","data":{"reason":"history_response_too_large","method":"thread/resume","itemsView":"summary"}}}"#)
 
-        let fallbackResumeMessages = try await waitForFakeAppServerMessages(transport, count: 7)
-        let fallbackResume = try decodeAppServerRequest(fallbackResumeMessages[6])
+        let fallbackResumeMessages = try await waitForFakeAppServerMessages(transport, count: 7 + libraryRequestCount)
+        let fallbackResume = try decodeAppServerRequest(fallbackResumeMessages[6 + libraryRequestCount])
         XCTAssertEqual(fallbackResume.method, "thread/resume")
         XCTAssertEqual(fallbackResume.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertNil(fallbackResume.params?.objectValue?["initialTurnsPage"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: fallbackResume.id)),"result":{"thread":{"id":"thr_idle_history","sessionId":"thr_idle_history","preview":"继续排查","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490302,"status":{"type":"idle"},"path":null,"cwd":"/tmp/direct-history","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"历史 idle","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 8)
-        let turnStart = try decodeAppServerRequest(turnMessages[7])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 8 + libraryRequestCount)
+        let turnStart = try decodeAppServerRequest(turnMessages[7 + libraryRequestCount])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["threadId"]?.stringValue, "thr_idle_history")
         XCTAssertEqual(turnStart.params?.objectValue?["clientUserMessageId"]?.stringValue?.isEmpty, false)
