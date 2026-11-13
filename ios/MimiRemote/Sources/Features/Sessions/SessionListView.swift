@@ -194,6 +194,12 @@ struct SessionListView: View {
         // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
         // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
         let visibleSessions = self.visibleSessions
+        let projectLabels = SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: visibleSessions,
+            workspaces: sessionStore.recentWorkspaces,
+            selectedWorkspaceID: selectedWorkspaceID,
+            usesWideIPadRow: usesWideIPadRow
+        )
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
         let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
@@ -215,7 +221,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
                         families: familyPartition.active,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
 
@@ -223,7 +230,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
                         families: familyPartition.pinned,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
 
@@ -231,7 +239,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         families: group.families,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
             } else if !presentationState.showsCenteredLoading {
@@ -640,6 +649,10 @@ struct SessionListView: View {
         )
     }
 
+    private var usesWideIPadRow: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
+    }
+
     private func makeLifecycleInput(visibleSessions: [AgentSession]) -> SessionListLifecycleInput {
         SessionListLifecycleInput(
             membership: SessionListMembership(sessions: visibleSessions),
@@ -824,12 +837,14 @@ struct SessionListView: View {
     private func sessionSection(
         title: String,
         families: [SessionFamily],
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        projectLabels: [String: String]
     ) -> some View {
         Section {
             sessionRows(
                 families,
-                tokens: tokens
+                tokens: tokens,
+                projectLabels: projectLabels
             )
         } header: {
             Text(title)
@@ -851,13 +866,13 @@ struct SessionListView: View {
     @ViewBuilder
     private func sessionRows(
         _ families: [SessionFamily],
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        projectLabels: [String: String]
     ) -> some View {
         SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
             let session = row.session
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
-            let usesWideIPadRow = UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -875,13 +890,9 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    projectIdentity: SessionListPresentation.projectIdentityToDisplay(
-                        session.project,
-                        selectedWorkspaceID: selectedWorkspaceID,
-                        openedWorkspaceCount: sessionStore.recentWorkspaces.count
-                    ),
+                    projectIdentity: projectLabels[session.projectID],
                     leadingSlot: .runtimeIcon,
-                    // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
+                    // iPad 宽列保留普通摘要；窄屏只在搜索命中时显示第二行。
                     showsSessionPreview: usesWideIPadRow
                 )
                 .contentShape(Rectangle())
