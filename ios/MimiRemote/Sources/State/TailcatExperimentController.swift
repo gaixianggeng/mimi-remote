@@ -773,6 +773,7 @@ final class TailcatExperimentController: ObservableObject {
         } else {
             resolvedProfileTarget = profileTarget
         }
+        let nodeProofClient = try? appStore.client()
         let previousEnabled = isEnabled
         let previousAddress = address
         let previousActiveProfileID = appStore.activeConnectionProfileID
@@ -809,6 +810,7 @@ final class TailcatExperimentController: ObservableObject {
                         link,
                         clientKey: clientKey,
                         privateKey: privateKey,
+                        proofClient: nodeProofClient,
                         appStore: appStore,
                         generation: operationGeneration
                     )
@@ -909,6 +911,7 @@ final class TailcatExperimentController: ObservableObject {
         _ link: TailcatPairingLink,
         clientKey: String,
         privateKey: String,
+        proofClient: AgentAPIClient?,
         appStore: AppStore,
         generation operationGeneration: UInt64
     ) async throws -> PairingClaimResponse {
@@ -925,7 +928,26 @@ final class TailcatExperimentController: ObservableObject {
                 macInstallationID: macInstallationID,
                 macTailcatPublicKey: macTailcatPublicKey,
                 pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
-                mobileTailcatPublicKey: clientKey
+                mobileTailcatPublicKey: clientKey,
+                proveNodeOwnership: { [self] challenge in
+                    try ensureCurrent(operationGeneration)
+                    guard let proofClient else {
+                        throw ManagedConnectionDeviceAPIError.rejected(code: "node_public_key_conflict", deviceType: nil, limit: nil)
+                    }
+                    let endpoint: String
+                    if appStore.activeConnectionProfile?.connectionRoute.usesTailcat == true {
+                        endpoint = await runtime.currentEndpoint() ?? proofClient.endpoint
+                    } else {
+                        endpoint = proofClient.endpoint
+                    }
+                    let host = try await AgentAPIClient(endpoint: endpoint, token: proofClient.token).nodeOwnershipProof(
+                        challenge: challenge, macKey: macTailcatPublicKey, pairingMacKey: pairingMacTailcatPublicKey
+                    )
+                    try ensureCurrent(operationGeneration)
+                    return ManagedNodeOwnershipProof(challengeId: challenge.challengeId,
+                        mobile: try ManagedNodeOwnership.mobileProof(privateKey: privateKey, publicKey: clientKey, challenge: challenge),
+                        mac: host.mac, pairingMac: host.pairingMac)
+                }
             )
         } catch ManagedConnectionDeviceStoreError.subscriptionRequired {
             throw TailcatPairingError.managedConnectionRequired

@@ -50,6 +50,9 @@ protocol ManagedConnectionDeviceAPIClient: Sendable {
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession
 
+    func nodeOwnershipChallenge(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedNodeOwnershipChallenge
+    func authorizePairing(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedConnectionPairingSession
+
     func createManagementSession(
         signedAppTransaction: String,
         signedTransaction: String
@@ -59,6 +62,16 @@ protocol ManagedConnectionDeviceAPIClient: Sendable {
 
     func listDevices(managementToken: String) async throws -> [ManagedConnectionDevice]
     func removeDevice(id: String, managementToken: String) async throws
+}
+
+extension ManagedConnectionDeviceAPIClient {
+    func nodeOwnershipChallenge(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedNodeOwnershipChallenge {
+        throw ManagedConnectionDeviceAPIError.invalidResponse
+    }
+
+    func authorizePairing(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedConnectionPairingSession {
+        throw ManagedConnectionDeviceAPIError.invalidResponse
+    }
 }
 
 struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
@@ -102,21 +115,22 @@ struct LiveManagedConnectionDeviceAPIClient: ManagedConnectionDeviceAPIClient {
         pairingMacTailcatPublicKey: String,
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession {
-        var request = jsonRequest(
-            path: "v1/pairing-sessions/authorize",
-            method: "POST",
-            bearerToken: deviceToken
-        )
-        request.httpBody = try JSONEncoder().encode(
-            AuthorizePairingRequest(
-                requestId: requestID,
-                macInstallationId: macInstallationID,
-                mobileTailcatPublicKey: mobileTailcatPublicKey,
-                macTailcatPublicKey: macTailcatPublicKey,
-                pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
-                managedPairingGrant: managedPairingGrant
-            )
-        )
+        try await authorizePairing(deviceToken: deviceToken, request: ManagedPairingOwnershipRequest(
+            requestId: requestID, macInstallationId: macInstallationID,
+            mobileTailcatPublicKey: mobileTailcatPublicKey, macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey, managedPairingGrant: managedPairingGrant
+        ))
+    }
+
+    func nodeOwnershipChallenge(deviceToken: String, request payload: ManagedPairingOwnershipRequest) async throws -> ManagedNodeOwnershipChallenge {
+        var request = jsonRequest(path: "v1/pairing-sessions/ownership-challenge", method: "POST", bearerToken: deviceToken)
+        request.httpBody = try JSONEncoder().encode(payload)
+        return try await decodedResponse(for: request)
+    }
+
+    func authorizePairing(deviceToken: String, request payload: ManagedPairingOwnershipRequest) async throws -> ManagedConnectionPairingSession {
+        var request = jsonRequest(path: "v1/pairing-sessions/authorize", method: "POST", bearerToken: deviceToken)
+        request.httpBody = try JSONEncoder().encode(payload)
         let payload: AuthorizePairingResponse = try await decodedResponse(for: request)
         guard let macSlot = ManagedConnectionPairingSession.MacSlot(
             rawValue: payload.pairingSession.macSlot
@@ -303,15 +317,6 @@ private struct RegisterDeviceRequest: Encodable {
 private struct RegisterDeviceResponse: Decodable {
     let device: DeviceResponse
     let created: Bool
-}
-
-private struct AuthorizePairingRequest: Encodable {
-    let requestId: String
-    let macInstallationId: String
-    let mobileTailcatPublicKey: String
-    let macTailcatPublicKey: String
-    let pairingMacTailcatPublicKey: String
-    let managedPairingGrant: String
 }
 
 private struct AuthorizePairingResponse: Decodable {
