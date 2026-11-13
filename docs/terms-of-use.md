@@ -4,7 +4,7 @@
 
 ## 中文
 
-运营者为 App Store 公示的销售方「相庚 盖」。联系邮箱：`gaixg94@gmail.com`。
+运营者为苏州盖庚科技有限公司（Suzhou Gaigeng Technology Co., Ltd）。联系邮箱：`gaixg94@gmail.com`。
 
 ### 目标
 
@@ -47,7 +47,7 @@ Codex、Claude Code、DeepSeek Harness、Tailscale、Tailcat、GitHub、MCP Serv
 
 ## English
 
-The operator is the developer shown as the App Store seller, “相庚 盖”, for Mimi Remote. Contact: `gaixg94@gmail.com`.
+The operator is Suzhou Gaigeng Technology Co., Ltd (苏州盖庚科技有限公司). Contact: `gaixg94@gmail.com`.
 
 ### Purpose
 

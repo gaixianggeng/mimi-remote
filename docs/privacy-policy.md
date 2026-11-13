@@ -105,7 +105,7 @@ Mimi 中转（Mimi Relay）让不在同一 Wi-Fi 的设备连接自己的电脑�
 
 如果未来加入账号、云同步、其他遥测、崩溃上报或远程推送正文，本政策和 App Store 隐私披露会在功能上线前同步更新。
 
-运营者为 App Store 公示的销售方「相庚 盖」。隐私问题和数据请求请联系：`gaixg94@gmail.com`
+运营者为苏州盖庚科技有限公司（Suzhou Gaigeng Technology Co., Ltd）。隐私问题和数据请求请联系：`gaixg94@gmail.com`
 
 ## English
 
@@ -210,4 +210,4 @@ Connect only to computers you own or are authorized to use. Protect connection t
 
 If accounts, cloud sync, other telemetry, crash reporting, or remote notification content are introduced, this policy and the App Store privacy disclosure will be updated before those features are released.
 
-Operator: the developer shown as the App Store seller, “相庚 盖”, for Mimi Remote. Privacy and data requests: `gaixg94@gmail.com`
+Operator: Suzhou Gaigeng Technology Co., Ltd (苏州盖庚科技有限公司). Privacy and data requests: `gaixg94@gmail.com`
