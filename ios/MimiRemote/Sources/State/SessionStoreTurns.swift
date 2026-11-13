@@ -1863,8 +1863,8 @@ extension SessionStore {
             }
             return
         }
-        let didReconcileFullHistory = await recoveryHistory?.value ?? false
-        if didReconcileFullHistory,
+        let didReconcileHistorySnapshot = await recoveryHistory?.value ?? false
+        if didReconcileHistorySnapshot,
            !Task.isCancelled,
            !isAppInBackground,
            recoveryGeneration == recoveryHistoryGeneration,
@@ -1887,12 +1887,12 @@ extension SessionStore {
               let session = sessionsByID[reconnectSessionID] else {
             return
         }
-        // 完整历史已成功落地时只回放状态；若历史读取失败，必须 full replay，不能再次静默
+        // 首屏已对账时合并旧状态，Item 明细继续按需补齐；读取失败仍需 full replay，不能静默
         // 丢掉 detached 期间的 assistant/process 内容。
         connectWebSocket(
             session,
             isReconnectAttempt: true,
-            replayBufferedEvents: !didReconcileFullHistory,
+            replayBufferedEvents: !didReconcileHistorySnapshot,
             allowNonRunning: true
         )
     }
