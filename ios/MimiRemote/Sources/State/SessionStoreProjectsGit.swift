@@ -1066,6 +1066,8 @@ extension SessionStore {
             return
         }
 
+        let primaryRuntimeProvider = try? await primarySessionRuntimeProvider(client: client)
+
         // 所有工作区先确认目录归属，浏览来源优先；只移动原有补查，不重复请求。
         let priorityScope = sessionLibraryPriorityScope
         let priorityWorkspace = workspaces.first { workspace in
@@ -1084,6 +1086,7 @@ extension SessionStore {
                 consistency: consistency,
                 restartFromFirst: authoritative,
                 preferredRuntimeProvider: workspace.id == priorityWorkspace?.id ? priorityScope?.runtimeProvider : nil,
+                primaryRuntimeProvider: primaryRuntimeProvider,
                 client: client,
                 hostScope: hostScope,
                 generation: generation

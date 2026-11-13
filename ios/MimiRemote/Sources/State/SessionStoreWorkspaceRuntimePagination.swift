@@ -145,6 +145,7 @@ extension SessionStore {
         consistency: SessionListConsistency,
         restartFromFirst: Bool = false,
         preferredRuntimeProvider: String? = nil,
+        primaryRuntimeProvider: String? = nil,
         client: any SessionStoreAPIClient,
         hostScope: HostScope,
         generation: Int
@@ -156,8 +157,11 @@ extension SessionStore {
         for runtimeProvider in orderedRuntimes {
             if runtimeProvider != "codex",
                (try? await client.runtimeChannelAvailable(runtimeProvider: runtimeProvider)) != true { continue }
-            // 一个渠道已有数据不能代表整个工作区已加载；只复用选中项目里同渠道的投影。
+            // 只有选中工作区的主渠道由 15 秒前台轮询维护，可以复用；
+            // 其他渠道没有别的刷新来源，每轮都必须查询。主渠道未知时也不能跳过。
             if consistency == .fastIndexed, workspace.id == selectedProjectID,
+               let primaryRuntimeProvider,
+               Self.normalizedRuntimeProvider(runtimeProvider) == Self.normalizedRuntimeProvider(primaryRuntimeProvider),
                !directoryScopedSessions(workspaceID: workspace.id, runtimeProvider: runtimeProvider).isEmpty {
                 continue
             }

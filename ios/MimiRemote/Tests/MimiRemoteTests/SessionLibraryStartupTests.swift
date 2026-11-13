@@ -122,6 +122,54 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedWorkspaceIDs, [priority.id, priority.id, other.id, other.id])
     }
 
+    func testSelectedWorkspaceNonPrimaryRuntimeRefreshesEveryFastRound() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "selected-mixed"))
+        let codex = makeSession(id: "selected-codex", projectID: workspace.id, title: "Codex", status: "history", source: "codex")
+        let claude = makeSession(id: "selected-claude", projectID: workspace.id, title: "Claude", status: "history", source: "claude")
+        let newClaude = makeSession(id: "new-claude", projectID: workspace.id, title: "新会话", status: "history", source: "claude")
+        let client = MockSessionStoreClient(
+            projects: [workspace.project], sessions: [],
+            workspacePages: [workspace.id: SessionsPage(sessions: [claude, newClaude])],
+            runtimeChannelAvailability: ["codex": true, "claude": true],
+            controlledGlobalSessionsHandler: { _, _ in SessionsPage(sessions: []) }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.selectedProjectID = workspace.id
+        store.sessions = [codex, claude]
+        store.recordWorkspaceDirectorySessionPage([codex], in: workspace, runtimeProvider: "codex", replacing: true)
+        store.recordWorkspaceDirectorySessionPage([claude], in: workspace, runtimeProvider: "claude", replacing: true)
+
+        await store.refreshSessionLibraryIndex()
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id, workspace.id])
+        XCTAssertEqual(client.requestedWorkspaceRuntimes, ["claude", "claude"])
+        XCTAssertTrue(store.openedWorkspaceSessionLibrarySessions.contains { $0.id == newClaude.id })
+    }
+
+    func testUnknownPrimaryRuntimeDoesNotSkipCachedSelectedDirectory() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "unknown-primary"))
+        let client = MockSessionStoreClient(
+            projects: [workspace.project], sessions: [], runtimeChannelAvailability: [:]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.selectedProjectID = workspace.id
+        store.sessions = [makeSession(id: "cached", projectID: workspace.id, title: "已有会话", status: "history", source: "codex")]
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id])
+        XCTAssertEqual(client.requestedWorkspaceRuntimes, ["codex"])
+    }
+
     func testBrowsedWorkspaceAndRuntimeLoadBeforeGlobalDiscoveryWithoutExtraRequests() async {
         let first = AgentWorkspace(project: makeProject(id: "priority-first"))
         let browsed = AgentWorkspace(project: makeProject(id: "priority-browsed"))
