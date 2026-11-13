@@ -976,21 +976,19 @@ struct InitialConnectionSettingsSections: View {
     @ViewBuilder
     private func firstConnectionGuideSections(tokens: ThemeTokens) -> some View {
         // 新用户可能先点了兑换链接：告诉他结果和下一步，配对后工作台会接着带他走完。
-        if ManagedConnectionSubscriptionView.isEntryVisible {
-            if managedConnectionEntitlementStore.isRedemptionEntitlement {
-                Section {
-                    Label(L10n.text("ui.managed_redemption_first_connection"), systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(tokens.success)
-                        .accessibilityIdentifier("settings.firstConnection.redeemed")
-                }
-                .settingsGroupRowStyle()
-            } else if let message = managedConnectionEntitlementStore.redemptionErrorMessage {
-                Section {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(tokens.warning)
-                }
-                .settingsGroupRowStyle()
+        if managedConnectionEntitlementStore.isRedemptionEntitlement {
+            Section {
+                Label(L10n.text("ui.managed_redemption_first_connection"), systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(tokens.success)
+                    .accessibilityIdentifier("settings.firstConnection.redeemed")
             }
+            .settingsGroupRowStyle()
+        } else if let message = managedConnectionEntitlementStore.redemptionErrorMessage {
+            Section {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(tokens.warning)
+            }
+            .settingsGroupRowStyle()
         }
         Section {
             SettingsExternalLinkRow(
@@ -1084,13 +1082,11 @@ struct InitialConnectionSettingsSections: View {
             manualConnectionRow(tokens: tokens)
 
             // 不把开通混进必做的扫码步骤；有邀请码的人直接进输入页，不经过还没有内容的中转页。
-            if ManagedConnectionSubscriptionView.isEntryVisible {
-                NavigationLink(value: SettingsDestination.managedConnection) {
-                    ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
-                }
-                .settingsStandardListRow()
-                .accessibilityIdentifier("settings.firstConnection.invite")
+            NavigationLink(value: SettingsDestination.managedConnection) {
+                ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
             }
+            .settingsStandardListRow()
+            .accessibilityIdentifier("settings.firstConnection.invite")
             SettingsExternalLinkRow(
                 title: L10n.text("ui.usage_help"),
                 systemImage: "questionmark.circle",
@@ -1377,7 +1373,6 @@ struct InitialConnectionSettingsSections: View {
 
     private var showsManagedConnectionLANHint: Bool {
         // 入口不可见时不读订阅状态：快照与默认 Release 构建都不注入、也不需要它。
-        guard ManagedConnectionSubscriptionView.isEntryVisible else { return false }
         let connectionFailed: Bool
         if case .failed = appStore.connectionStatus, displayErrorMessage != nil {
             connectionFailed = true
@@ -1586,8 +1581,7 @@ struct InitialConnectionSettingsSections: View {
             onSubmit: { rawValue, intent in
                 // 「扫电脑」入口扫到另一台设备出示的邀请码：按系统相机打开链接处理，
                 // 后续启用和跳转由工作台统一完成，不报成配对失败（#989）。
-                if ManagedConnectionSubscriptionView.isEntryVisible,
-                   let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+                if let url = URL(string: rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
                    let link = ManagedRedemptionLink(url: url) {
                     await managedConnectionEntitlementStore.redeemFromLink(link)
                     return managedConnectionEntitlementStore.redemptionScanResult
@@ -1772,7 +1766,7 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            if RelayServiceChoice.fromPairingURL(url) == .mimi, ManagedConnectionSubscriptionView.isEntryVisible {
+            if RelayServiceChoice.fromPairingURL(url) == .mimi {
                 if !wasConfigured || qrScannerPresentation.intent == nil {
                     // 粘贴没有扫码 Cover，不会触发 onDismiss。由工作台接续开通，
                     // 也覆盖首台电脑建立后首次连接页被替换的情况。

@@ -1,10 +1,10 @@
-# Mimi 托管连接 App 隐私填写依据
+# Mimi 中转 App 隐私填写依据
 
 更新日期：2026-10-21
 
 ## 目标
 
-按 App Store Connect「App 隐私」问卷核对 Mimi 托管连接新增的数据。本页是提交依据，不代表已修改 App Store Connect，也不替代对已有推送服务的复核。全 App 不能继续填写“开发者不收集数据”。
+按 App Store Connect「App 隐私」问卷核对 Mimi 中转新增的数据。本页是提交依据，不代表已修改 App Store Connect，也不替代对已有推送服务的复核。全 App 不能继续填写“开发者不收集数据”。
 
 ## 方案
 

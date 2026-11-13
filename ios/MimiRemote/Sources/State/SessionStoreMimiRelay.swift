@@ -35,8 +35,7 @@ extension SessionStore {
             status: entitlements.status, grant: entitlements.currentGrant, now: Date()
         )
         if tailcatExperimentController?.relayServiceChoice(profileID: profile.id) == .mimi,
-           Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true),
-           ManagedConnectionSubscriptionView.isEntryVisible {
+           Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true) {
             let key = profile.id + ":" + (entitlements.currentGrant?.entitlement.id ?? "")
             guard mimiRelay.attemptKey != key else { return }
             mimiRelay.attemptKey = key
@@ -78,7 +77,7 @@ extension SessionStore {
     /// 读取电脑上选择的中转：页面据此显示实际线路；电脑改选 Mimi 时手机跟随，已开通的会自动启用。
     /// 回到前台、重连和打开中转页时检查，其余连接变化最多 5 秒查一次。
     func syncComputerRelayChoice(force: Bool = false) {
-        guard mimiRelay.computerChoiceTask == nil, ManagedConnectionSubscriptionView.isEntryVisible, !isAppInBackground,
+        guard mimiRelay.computerChoiceTask == nil, !isAppInBackground,
               let controller = tailcatExperimentController,
               let profile = appStore.activeConnectionProfile, profile.connectionRoute.usesTailcat,
               appStore.connectionStatus.isConnected else { return }

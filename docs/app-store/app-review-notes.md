@@ -2,7 +2,7 @@
 
 Mimi Remote is a native developer-tool client for a computer owned by, or explicitly authorized for use by, the user.
 
-This submission includes the optional Mimi Managed Connection auto-renewable subscription. The app and computer software remain free and open source. Local-network, Tailscale, and self-hosted Tailcat connections remain free.
+This submission includes the optional Mimi Relay auto-renewable subscription. The app and computer software remain free and open source. Local-network, Tailscale, and self-hosted Tailcat connections remain free.
 
 The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or model subscriptions, or host project data. Code execution occurs only on the configured host. Managed connection uses developer-operated subscription and device authorization services and, when direct connectivity is unavailable, a relay for end-to-end encrypted traffic. The developer cannot read prompts, source code, conversations, or file contents. The control service processes Apple-signed purchase evidence, device identifiers and public keys, dedicated managed authorization credentials, and coarse connection results. It does not receive host access tokens or private keys. Message notifications use a separate developer-operated push service that receives APNs routing data, anonymous tags, and fixed event types. See the Privacy Policy for retention and deletion details.
 
@@ -14,7 +14,7 @@ The GitHub link on the Connection screen points to this project's public Release
 
 - Public App Store metadata uses neutral feature descriptions. Current screenshots show recognizable Runtime names and icons only where they appear in the real App UI, so users can identify the compatible host-side CLI they selected.
 - Mimi Remote is an independent third-party client and does not claim affiliation with or endorsement by OpenAI, Anthropic, or other Runtime providers.
-- The iOS app has no ChatGPT/OpenAI sign-in, API-key field, model subscription, or hosted model endpoint. Its in-app purchase pays only for Mimi Managed Connection, not model access or usage credits.
+- The iOS app has no ChatGPT/OpenAI sign-in, API-key field, model subscription, or hosted model endpoint. Its in-app purchase pays only for Mimi Relay, not model access or usage credits.
 - On iOS 26 and later, voice input defaults to live on-device transcription. Existing saved selections are preserved. Users may select Codex transcription, which sends a recording directly to their configured host and uses their own host-side Codex session; older iOS versions use this mode. The Mimi Remote developer never receives recordings in either mode.
 - Compatible command-line developer runtimes are installed, configured, and authenticated by the user on the host computer. Mimi Remote does not provide or resell access to those tools.
 
@@ -43,17 +43,19 @@ Please use manual connection because normal QR tickets expire after 10 minutes a
 
 ## Subscription and managed connection review
 
-1. Use Apple's Sandbox purchase environment. Open Settings → Mimi Managed Connection. No Mimi account or developer-issued login is required; approve any Apple authentication prompt using the review Sandbox environment.
-2. Check the monthly and annual plans, localized prices, billing periods, renewal disclosure, Terms of Use, and Privacy Policy links. Product identifiers: `com.gaixianggeng.mimi.managed.monthly` and `com.gaixianggeng.mimi.managed.annual`. Production prices are ¥18 / US$2.99 monthly and ¥128 / US$19.99 annually; other regions use Apple's converted prices. Both plans offer a 7-day trial once per Apple ID within the group. Family Sharing is off; there is no lifetime purchase.
+1. Use Apple's Sandbox purchase environment. Open Settings → Mimi Relay. No Mimi account or developer-issued login is required; approve any Apple authentication prompt using the review Sandbox environment.
+2. Check the monthly and annual plans, localized prices, billing periods, renewal disclosure, Terms of Use, and Privacy Policy links. Product identifiers: `com.gaixianggeng.mimi.managed.monthly` and `com.gaixianggeng.mimi.managed.annual`. Subscriptions are offered only in the mainland China App Store at ¥18 monthly and ¥128 annually. In another storefront, the app explains this limit and offers free connections; no subscription purchase is offered there. Both plans offer a 7-day trial once per Apple ID within the group. Family Sharing is off; there is no lifetime purchase.
 3. Purchase either plan in Sandbox and confirm that the app shows the entitlement and expiry. Sandbox renewal and trial durations are accelerated and do not match production durations. The submitted app and subscription verification service must both support the review Sandbox environment.
 4. Tap Restore Purchases on the same page using the same Apple ID. Confirm that the entitlement returns without another purchase. On a new phone or tablet, only entitlements restore; addresses, private keys, and host access tokens do not sync. Reconnect to each computer separately.
-5. To test the managed data connection, use a Mac running the Mimi companion app with a sample workspace. Enable Mimi Managed Connection on the computer, display a fresh pairing QR code, and scan it through Connect Computer on the subscription page. Keep the computer awake and both devices online. The manual HTTPS Endpoint above alone does not test this feature.
+5. To test the managed data connection, use a Mac running the Mimi companion app with a sample workspace. Enable Mimi Relay on the computer, display a fresh pairing QR code, and scan it through Connect Computer on the subscription page. Keep the computer awake and both devices online. The manual HTTPS Endpoint above alone does not test this feature.
 6. Open the device list on the same subscription page. After pairing, confirm that the computer and mobile device appear, with limits of 3 computers and 5 phones or tablets. Remove a device, confirm its removal, and refresh the list to verify that its slot is released. Pair again to authorize it again. Removal revokes access; it does not erase registration history or delete sample files.
 7. Open the system subscription management screen to test cancellation of renewal. Removing a device or uninstalling the app does not cancel the subscription. Expiry or revocation ends managed authorization and also makes current in-app device management unavailable; remove test devices before expiry. Free connection methods remain available.
 
-Managed connection demonstration video: `<MANAGED_CONNECTION_REVIEW_VIDEO_URL>`
+### Review access outside the mainland China storefront
 
-The video must show Sandbox purchase, Restore Purchases, computer setup and QR pairing, a connection across different networks, and device-list removal. Replace this placeholder with a reviewer-accessible video before submission. Do not put Sandbox credentials or real endpoints in this repository.
+A dedicated review redemption code is supplied privately in App Store Connect → App Review Information and in the subscription review notes. Open Settings → Mimi Relay, enter that code, and use the review computer details supplied in the same private notes. This enables review of device registration, pairing and relay access without buying from an unsupported storefront. It does not replace mainland China Sandbox testing of purchase, trial, restoration, expiry and refund.
+
+Any demonstration video and review computer access details are supplied privately through App Store Connect. The repository does not contain review codes, access tokens, private endpoints or reviewer credentials. Before submission, verify that those private details are current and that both subscription review screenshots are attached.
 
 ## Network and security model
 
