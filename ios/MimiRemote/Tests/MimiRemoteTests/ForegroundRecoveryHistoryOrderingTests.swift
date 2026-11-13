@@ -6,6 +6,69 @@ import XCTest
 /// 列表落地之后，晚到的列表快照不能盖掉状态点读。
 @MainActor
 final class ForegroundRecoveryHistoryOrderingTests: XCTestCase {
+    func testForegroundResumeWithPendingDetailsDoesNotReplayCoveredLifecycle() async {
+        for runtime in ["claude", "codex"] {
+            let fixture = makeFixture(status: SessionStatus.running.rawValue, runtimeProvider: runtime)
+            await enterBackgroundWithSelectedSession(fixture)
+            var idle = fixture.session
+            idle.status = SessionStatus.idle.rawValue
+            fixture.client.pointReadSession = idle
+            fixture.client.listPage = SessionsPage(sessions: [idle])
+            let messages = recoveredHistoryPage().messages
+            fixture.client.historyPage = HistoryMessagesPage(
+                messages: messages,
+                itemContinuations: [HistoryTurnItemsContinuation(
+                    turnID: "recovered", turn: ["id": .string("recovered"), "status": .string("completed")],
+                    turnIndex: 0, itemOffset: 0, cursor: nil, pageLimit: 50,
+                    threadIsActive: false, isLatestTurn: true, hasVisibleUserMessageBefore: false
+                )],
+                turnStates: [HistoryTurnState(id: "recovered", lifecycle: .completed)]
+            )
+
+            await fixture.store.resumeFromForeground()
+            await waitUntil("详情补齐已发出") { fixture.client.blockedHistoryItemsCount == 1 }
+
+            XCTAssertTrue(hasRecoveredAnswer(fixture.store, fixture.session.id))
+            XCTAssertEqual(fixture.store.historyLoadedQualityBySessionID[fixture.session.id], .enriching)
+            XCTAssertEqual(fixture.socket.replayBufferedEventsByConnect.last, false,
+                           "\(runtime)：首屏已对账，详情补齐不能让旧生命周期重新直播")
+            XCTAssertFalse(fixture.store.sessionsByID[fixture.session.id]?.isRunning ?? true)
+
+            fixture.client.releaseBlockedHistoryItems(HistoryTurnItemsPage(
+                messages: messages, itemIDs: ["rollout:recovered"], continuation: nil
+            ))
+            await waitUntil("详情补齐完成") {
+                fixture.store.historyLoadedQualityBySessionID[fixture.session.id] == .full
+            }
+            XCTAssertTrue(hasRecoveredAnswer(fixture.store, fixture.session.id), "过程补齐后仍保留最终正文")
+        }
+    }
+
+    func testFailedHistoryRecoveryKeepsFullReplayFallback() async {
+        let fixture = makeFixture(status: SessionStatus.idle.rawValue)
+        await enterBackgroundWithSelectedSession(fixture)
+        fixture.client.historyError = URLError(.networkConnectionLost)
+
+        await fixture.store.resumeFromForeground()
+
+        XCTAssertEqual(fixture.socket.replayBufferedEventsByConnect.last, true,
+                       "历史读取失败仍需补回离线期间的内容")
+    }
+
+    func testIncompleteHistoryNoticeKeepsFullReplayFallback() async {
+        let fixture = makeFixture(status: SessionStatus.idle.rawValue)
+        await enterBackgroundWithSelectedSession(fixture)
+        fixture.client.historyPage = HistoryMessagesPage(
+            messages: recoveredHistoryPage().messages, notice: "历史内容尚不完整"
+        )
+
+        await fixture.store.resumeFromForeground()
+
+        XCTAssertEqual(fixture.store.historyLoadedQualityBySessionID[fixture.session.id], .summary)
+        XCTAssertEqual(fixture.socket.replayBufferedEventsByConnect.last, true,
+                       "缺少完整快照且没有补齐任务时不能省略内容回放")
+    }
+
     func testRecoveryHistoryLandsWhileCodexListIsStillPending() async {
         let fixture = makeFixture(status: SessionStatus.idle.rawValue)
         let client = fixture.client
@@ -164,16 +227,17 @@ final class ForegroundRecoveryHistoryOrderingTests: XCTestCase {
 
     private func makeFixture(
         status: String,
+        runtimeProvider: String = "claude",
         sessionListSleep: @escaping (UInt64) async -> Void = { _ in }
     ) -> Fixture {
         let project = makeProject(id: "proj_gh790_foreground")
         let session = makeSession(
-            id: "claude_gh790_selected",
+            id: "\(runtimeProvider)_gh790_selected",
             projectID: project.id,
             title: "Claude 会话",
             status: status,
-            source: "claude",
-            runtimeProvider: "claude"
+            source: runtimeProvider,
+            runtimeProvider: runtimeProvider
         )
         let listPage = SessionsPage(sessions: [session])
         let client = ForegroundRecoveryOrderingClient(projects: [project], listPage: listPage)
@@ -257,6 +321,7 @@ private final class ForegroundRecoveryOrderingClient: SessionStoreAPIClient {
         CodexHistoryMessage(id: "rollout:initial", role: "assistant", content: "离开前的回答", createdAt: Date(timeIntervalSince1970: 10))
     ])
     var blocksHistory = false
+    var historyError: Error?
     var pointReadSession: AgentSession?
     private(set) var completedListCount = 0
     private(set) var listFailureCount = 0
@@ -265,9 +330,11 @@ private final class ForegroundRecoveryOrderingClient: SessionStoreAPIClient {
     private(set) var pointReadCount = 0
     private var blockedLists: [CheckedContinuation<SessionsPage, Error>] = []
     private var blockedHistory: [CheckedContinuation<Void, Never>] = []
+    private var blockedHistoryItems: [CheckedContinuation<HistoryTurnItemsPage, Error>] = []
 
     var blockedListCount: Int { blockedLists.count }
     var blockedHistoryCount: Int { blockedHistory.count }
+    var blockedHistoryItemsCount: Int { blockedHistoryItems.count }
 
     init(projects: [AgentProject], listPage: SessionsPage) {
         self.projectsResult = projects
@@ -286,6 +353,19 @@ private final class ForegroundRecoveryOrderingClient: SessionStoreAPIClient {
         let continuations = blockedHistory
         blockedHistory = []
         continuations.forEach { $0.resume() }
+    }
+
+    func releaseBlockedHistoryItems(_ page: HistoryTurnItemsPage) {
+        let continuations = blockedHistoryItems
+        blockedHistoryItems = []
+        continuations.forEach { $0.resume(returning: page) }
+    }
+
+    func historyTurnItemsPage(
+        sessionID: SessionID,
+        continuation: HistoryTurnItemsContinuation
+    ) async throws -> HistoryTurnItemsPage {
+        try await withCheckedThrowingContinuation { blockedHistoryItems.append($0) }
     }
 
     func projects() async throws -> [AgentProject] {
@@ -334,6 +414,7 @@ private final class ForegroundRecoveryOrderingClient: SessionStoreAPIClient {
 
     func messagesPage(sessionID: String, before: String?, limit: Int?) async throws -> HistoryMessagesPage {
         historyRequestCount += 1
+        if let historyError { throw historyError }
         if blocksHistory {
             await withCheckedContinuation { blockedHistory.append($0) }
         }

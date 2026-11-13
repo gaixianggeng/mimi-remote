@@ -1353,7 +1353,7 @@ extension SessionStore {
         if let reconnectSessionID,
            selectedSessionID == reconnectSessionID,
            let session = sessionsByID[reconnectSessionID] {
-            let didReconcileFullHistory = await reconcileHistoryForRecovery(
+            let didReconcileHistorySnapshot = await reconcileHistoryForRecovery(
                 sessionID: reconnectSessionID,
                 generation: recoveryGeneration
             )
@@ -1367,7 +1367,7 @@ extension SessionStore {
             connectWebSocket(
                 sessionsByID[reconnectSessionID] ?? session,
                 isReconnectAttempt: true,
-                replayBufferedEvents: !didReconcileFullHistory,
+                replayBufferedEvents: !didReconcileHistorySnapshot,
                 allowNonRunning: true
             )
         }
