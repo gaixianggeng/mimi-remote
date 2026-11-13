@@ -45247,8 +45247,8 @@
     "ui.managed_devices_node_owned_by_other_subscription": {
       "comment": "Managed pairing rejected: the computer or device node key belongs to another subscription.",
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "This computer is registered under a different Mimi Relay subscription than this device, so they can’t pair directly. Scan with a device turned on with the same code, or contact us to move it." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑已登记在另一份 Mimi 中转服务下，和这台设备开通的不是同一份，不能直接配对。请用同一份兑换码开通的设备扫码，或联系我们迁移。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "This device could not move to the new Mimi Relay entitlement. Update Mimi on your computer, connect using the saved free route, and try again. If needed, reset the built-in connection on the computer and scan again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台设备的连接身份无法迁移。请先更新电脑端 Mimi，再用原来的免费线路连接并重试；仍失败时，在电脑上重置内置连接后重新扫码。" } }
       }
     },
     "ui.tailcat_pairing_managed_connection_required": {

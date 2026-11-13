@@ -144,6 +144,49 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         XCTAssertNil(rotated.registeredDeviceID)
     }
 
+    func testNodeConflictObtainsBoundProofAndRetriesOnce() async throws {
+        let fixture = await makeFixture()
+        await fixture.api.requireOwnershipProof()
+        var proofCalls = 0
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001", macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair", mobileTailcatPublicKey: "nodekey:mobile",
+            proveNodeOwnership: { challenge in
+                proofCalls += 1
+                return ManagedNodeOwnershipProof(challengeId: challenge.challengeId, mobile: "mobile-proof", mac: "mac-proof", pairingMac: "pair-proof")
+            }
+        )
+        let request = await fixture.api.lastOwnershipRequest
+        let authorizationCount = await fixture.api.authorizationCount
+        XCTAssertEqual(proofCalls, 1)
+        XCTAssertEqual(authorizationCount, 2)
+        XCTAssertEqual(request?.nodeOwnershipProof?.mac, "mac-proof")
+        XCTAssertEqual(request?.mobileTailcatPublicKey, "nodekey:mobile")
+    }
+
+    func testChangingEntitlementDoesNotReuseOldPairingSession() async throws {
+        let fixture = await makeFixture()
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001", macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair", mobileTailcatPublicKey: "nodekey:mobile"
+        )
+        let newGrant = ManagedConnectionEntitlementGrant(
+            entitlement: ManagedConnectionEntitlement(id: "new-entitlement", productID: ManagedConnectionProductID.betaRedemption,
+                status: .active, expiresAt: now.addingTimeInterval(3600)),
+            token: "new-token-that-is-long-enough", tokenExpiresAt: now.addingTimeInterval(600)
+        )
+        await fixture.entitlementAPI.setRedemptionGrant(newGrant)
+        await fixture.entitlementStore.redeem(code: "MIMI-TEST-CODE")
+        await fixture.api.failNextRegistrationWithCredentialConflict()
+        _ = try await fixture.store.authorizeManagedPairing(
+            macInstallationID: "20000000-0000-4000-8000-000000000001", macTailcatPublicKey: "nodekey:mac",
+            pairingMacTailcatPublicKey: "nodekey:pair", mobileTailcatPublicKey: "nodekey:mobile"
+        )
+        let count = await fixture.api.authorizationCount
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(fixture.identity.rotatedDeviceIDs, ["mobile-device-id"])
+    }
+
     func testManagedPairingRegistersMobileAndReusesAuthorizationDuringRetry() async throws {
         let fixture = await makeFixture()
 
@@ -493,7 +536,8 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
         api: MIM260DeviceAPIFake,
         identity: MIM260IdentityFake,
         entitlementStore: ManagedConnectionEntitlementStore,
-        storeKit: MIM260StoreKitFake
+        storeKit: MIM260StoreKitFake,
+        entitlementAPI: MIM260EntitlementAPIFake
     ) {
         let storeKit = MIM260StoreKitFake(evidence: Self.evidence)
         let entitlementAPI = MIM260EntitlementAPIFake(grant: grant)
@@ -521,7 +565,7 @@ final class ManagedConnectionDeviceStoreTests: XCTestCase {
             },
             makeToken: { Self.token(byte: 4) }
         )
-        return (store, api, identity, entitlementStore, storeKit)
+        return (store, api, identity, entitlementStore, storeKit, entitlementAPI)
     }
 
     private var grant: ManagedConnectionEntitlementGrant {
@@ -678,6 +722,9 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
     private(set) var managementSessionCount = 0
     private(set) var listManagementTokens: [String] = []
     private(set) var removeManagementTokens: [String] = []
+    private var needsOwnershipProof = false
+    private var nextCredentialConflict = false
+    private(set) var lastOwnershipRequest: ManagedPairingOwnershipRequest?
     private var registrationFailure: ManagedConnectionDeviceAPIError?
     private var removalFailure: ManagedConnectionDeviceAPIError?
     private var listFailures: [ManagedConnectionDeviceAPIError?] = []
@@ -689,6 +736,22 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
 
     init(now: Date) {
         self.now = now
+    }
+
+    func requireOwnershipProof() { needsOwnershipProof = true }
+    func failNextRegistrationWithCredentialConflict() { nextCredentialConflict = true }
+
+    func nodeOwnershipChallenge(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedNodeOwnershipChallenge {
+        ManagedNodeOwnershipChallenge(challengeId: "10000000-0000-4000-8000-000000000001", challengePublicKey: "challenge-key", expiresAt: now.addingTimeInterval(120))
+    }
+
+    func authorizePairing(deviceToken: String, request: ManagedPairingOwnershipRequest) async throws -> ManagedConnectionPairingSession {
+        lastOwnershipRequest = request
+        needsOwnershipProof = false
+        return try await authorizePairing(deviceToken: deviceToken, requestID: request.requestId,
+            macInstallationID: request.macInstallationId, mobileTailcatPublicKey: request.mobileTailcatPublicKey,
+            macTailcatPublicKey: request.macTailcatPublicKey, pairingMacTailcatPublicKey: request.pairingMacTailcatPublicKey,
+            managedPairingGrant: request.managedPairingGrant)
     }
 
     func setRegistrationFailure(_ error: ManagedConnectionDeviceAPIError) {
@@ -739,6 +802,10 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         registrationCount += 1
         lastRegisteredInstallationID = installationID
         lastRegisteredDeviceToken = deviceToken
+        if nextCredentialConflict {
+            nextCredentialConflict = false
+            throw ManagedConnectionDeviceAPIError.rejected(code: "device_token_conflict", deviceType: nil, limit: nil)
+        }
         if let registrationFailure { throw registrationFailure }
         return ManagedConnectionDeviceRegistration(
             device: ManagedConnectionDevice(
@@ -760,6 +827,7 @@ private actor MIM260DeviceAPIFake: ManagedConnectionDeviceAPIClient {
         managedPairingGrant: String
     ) async throws -> ManagedConnectionPairingSession {
         authorizationCount += 1
+        if needsOwnershipProof { throw ManagedConnectionDeviceAPIError.rejected(code: "node_public_key_conflict", deviceType: nil, limit: nil) }
         lastAuthorizedRequest = AuthorizedRequest(
             requestID: requestID,
             mobileKey: mobileTailcatPublicKey,
