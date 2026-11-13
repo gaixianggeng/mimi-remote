@@ -1598,9 +1598,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                         )
                     )
                 ),
-                named: scenario.name,
-                // 仅用于 #1015 的固定 CI 重录；回填五张基线时移除。
-                record: .all
+                named: scenario.name
             )
         }
     }
