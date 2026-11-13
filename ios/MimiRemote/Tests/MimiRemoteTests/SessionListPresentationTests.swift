@@ -584,26 +584,32 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
     }
 
-    func testProjectIdentityOnlyShowsForMinorityProject() {
-        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", " codex ", "mimi"]), "codex")
-        XCTAssertEqual(SessionListPresentation.dominantIdentity(["codex", "codex"]), "codex")
-        XCTAssertNil(SessionListPresentation.dominantIdentity(["codex", "mimi"]))
-        XCTAssertNil(SessionListPresentation.dominantIdentity([]))
-        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" codex ", dominant: "codex"))
-        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay(" mimi ", dominant: "codex"), "mimi")
-        XCTAssertEqual(SessionListPresentation.projectIdentityToDisplay("mimi", dominant: nil), "mimi")
-        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(" ", dominant: nil))
+    func testProjectIdentityShowsEveryProjectOnlyWhenBrowsingMultipleWorkspaces() {
+        for name in [" codex ", " mimi "] {
+            XCTAssertEqual(
+                SessionListPresentation.projectIdentityToDisplay(
+                    name, selectedWorkspaceID: "all", openedWorkspaceCount: 2
+                ),
+                name.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        for (selection, count) in [("all", 1), ("all", 0), ("codex", 2)] {
+            XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(
+                "codex", selectedWorkspaceID: selection, openedWorkspaceCount: count
+            ))
+        }
+        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(
+            " ", selectedWorkspaceID: "all", openedWorkspaceCount: 2
+        ))
         XCTAssertEqual(
             SessionIndexRow.librarySupportingText(
-                projectIdentity: "mimi",
                 searchSnippet: " matched token ",
                 ordinaryPreview: "ordinary preview"
             ),
-            "mimi · matched token"
+            "matched token"
         )
         XCTAssertEqual(
             SessionIndexRow.librarySupportingText(
-                projectIdentity: nil,
                 searchSnippet: "matched token",
                 ordinaryPreview: ""
             ),
@@ -611,7 +617,6 @@ final class SessionListPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             SessionIndexRow.librarySupportingText(
-                projectIdentity: nil,
                 searchSnippet: nil,
                 ordinaryPreview: ""
             ),

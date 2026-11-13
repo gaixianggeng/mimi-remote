@@ -344,22 +344,15 @@ enum SessionListPresentation {
         return displayBranch
     }
 
-    /// 会话库把占多数的项目视作页面默认身份，只让少数项目显示文字。
-    /// 平票时各项目仍有区分价值；空列表没有默认身份。
-    static func dominantIdentity(_ values: [String]) -> String? {
-        let normalized = values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard let mostCommon = Dictionary(grouping: normalized, by: { $0 })
-            .max(by: { $0.value.count < $1.value.count }),
-            mostCommon.value.count * 2 > normalized.count
-        else { return nil }
-        return mostCommon.key
-    }
-
-    static func projectIdentityToDisplay(_ value: String, dominant: String?) -> String? {
+    static func projectIdentityToDisplay(
+        _ value: String,
+        selectedWorkspaceID: String,
+        openedWorkspaceCount: Int
+    ) -> String? {
+        // 跨工作区混排时每行都需要归属，不能让多数项目依靠用户猜测。
+        guard selectedWorkspaceID == "all", openedWorkspaceCount > 1 else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty || normalized == dominant ? nil : normalized
+        return normalized.isEmpty ? nil : normalized
     }
 
     static func normalizedBranch(_ branch: String?) -> String? {
