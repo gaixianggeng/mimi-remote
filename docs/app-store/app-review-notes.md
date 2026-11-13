@@ -20,11 +20,13 @@ The GitHub link on the Connection screen points to this project's public Release
 
 ## Review credentials
 
-Use the isolated review environment below. These credentials are created only for App Review and can access only a disposable sample repository.
+A reviewer can use a Mac running the free companion app and a disposable sample repository. If the developer supplies a separate review computer, put its access and availability dates only in App Store Connect → App Review Information. These public template fields must be replaced privately before use:
 
 - Endpoint: `<REVIEW_HTTPS_ENDPOINT>`
 - Access token: `<REVIEW_ACCESS_TOKEN>`
-- Environment availability: `<START_DATE_UTC>` through `<END_DATE_UTC>`
+- Availability: `<START_DATE_UTC>` through `<END_DATE_UTC>`
+
+Do not publish a real access token or private endpoint in this repository.
 
 Please use manual connection because normal QR tickets expire after 10 minutes and are not suitable for a long-lived review environment. A QR ticket can be reused only during that window.
 
@@ -32,7 +34,7 @@ Please use manual connection because normal QR tickets expire after 10 minutes a
 
 1. Launch Mimi Remote.
 2. Choose manual connection on the Connection screen.
-3. Enter the Endpoint and Access token above, then connect.
+3. Enter the Endpoint and Access token from App Review Information, then connect.
 4. Open the `Mimi Review Sample` workspace.
 5. Open the prepared session, or create a new coding session.
 6. Send a prompt such as `Summarize this sample project without changing files.`
@@ -47,13 +49,13 @@ Please use manual connection because normal QR tickets expire after 10 minutes a
 2. Check the monthly and annual plans, localized prices, billing periods, renewal disclosure, Terms of Use, and Privacy Policy links. Product identifiers: `com.gaixianggeng.mimi.managed.monthly` and `com.gaixianggeng.mimi.managed.annual`. Subscriptions are offered only in the mainland China App Store at ¥18 monthly and ¥128 annually. In another storefront, the app explains this limit and offers free connections; no subscription purchase is offered there. Both plans offer a 7-day trial once per Apple ID within the group. Family Sharing is off; there is no lifetime purchase.
 3. Purchase either plan in Sandbox and confirm that the app shows the entitlement and expiry. Sandbox renewal and trial durations are accelerated and do not match production durations. The submitted app and subscription verification service must both support the review Sandbox environment.
 4. Tap Restore Purchases on the same page using the same Apple ID. Confirm that the entitlement returns without another purchase. On a new phone or tablet, only entitlements restore; addresses, private keys, and host access tokens do not sync. Reconnect to each computer separately.
-5. To test the managed data connection, use a Mac running the Mimi companion app with a sample workspace. Enable Mimi Relay on the computer, display a fresh pairing QR code, and scan it through Connect Computer on the subscription page. Keep the computer awake and both devices online. The manual HTTPS Endpoint above alone does not test this feature.
+5. To test the managed data connection, use a Mac running the Mimi companion app with a sample workspace. Enable Mimi Relay on the computer, display a fresh pairing QR code, and scan it through Connect Computer on the subscription page. Keep the computer awake and both devices online. A manual HTTPS connection alone does not test the relay path.
 6. Open the device list on the same subscription page. After pairing, confirm that the computer and mobile device appear, with limits of 3 computers and 5 phones or tablets. Remove a device, confirm its removal, and refresh the list to verify that its slot is released. Pair again to authorize it again. Removal revokes access; it does not erase registration history or delete sample files.
 7. Open the system subscription management screen to test cancellation of renewal. Removing a device or uninstalling the app does not cancel the subscription. Expiry or revocation ends managed authorization and also makes current in-app device management unavailable; remove test devices before expiry. Free connection methods remain available.
 
 ### Review access outside the mainland China storefront
 
-A dedicated review redemption code is supplied privately in App Store Connect → App Review Information and in the subscription review notes. Open Settings → Mimi Relay, enter that code, and use the review computer details supplied in the same private notes. This enables review of device registration, pairing and relay access without buying from an unsupported storefront. It does not replace mainland China Sandbox testing of purchase, trial, restoration, expiry and refund.
+A dedicated review redemption code is supplied privately in App Store Connect → App Review Information and in the subscription review notes. Open Settings → Mimi Relay, enter that code, and connect to a Mac running the companion app. Use a disposable sample repository. If a developer-hosted review computer is available, its details are supplied separately in those private notes. This enables review of device registration, pairing and relay access without buying from an unsupported storefront. It does not replace mainland China Sandbox testing of purchase, trial, restoration, expiry and refund.
 
 Any demonstration video and review computer access details are supplied privately through App Store Connect. The repository does not contain review codes, access tokens, private endpoints or reviewer credentials. Before submission, verify that those private details are current and that both subscription review screenshots are attached.
 

@@ -1081,9 +1081,9 @@ struct InitialConnectionSettingsSections: View {
 
             manualConnectionRow(tokens: tokens)
 
-            // 不把开通混进必做的扫码步骤；有邀请码的人直接进输入页，不经过还没有内容的中转页。
+            // 中转是扫码之外的可选服务，可以购买订阅，也可以输入邀请码。
             NavigationLink(value: SettingsDestination.managedConnection) {
-                ConnectionRowLabel(title: L10n.text("ui.relay_have_invite"), systemImage: "ticket")
+                ConnectionRowLabel(title: L10n.text("ui.managed_subscription_title"), systemImage: "network")
             }
             .settingsStandardListRow()
             .accessibilityIdentifier("settings.firstConnection.invite")
