@@ -25,7 +25,7 @@ struct ManagedConnectionSubscriptionView: View {
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     var deviceOwnerAuthenticator: any DeviceOwnerAuthenticating = SystemDeviceOwnerAuthenticator()
 
-    /// 页面先给要做的事（开通），介绍和隐私放在后面：看这一页的人多半手里已经有邀请码。
+    /// 页面先展示订阅或兑换入口，服务介绍与隐私说明放在后面。
     /// 打开这一页不改变线路；完成开通或点「启用」才算选择了 Mimi。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)

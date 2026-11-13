@@ -1372,7 +1372,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private var showsManagedConnectionLANHint: Bool {
-        // 入口不可见时不读订阅状态：快照与默认 Release 构建都不注入、也不需要它。
+        // 已开通中转但局域网连接失败时，提示可以改用现有中转权益。
         let connectionFailed: Bool
         if case .failed = appStore.connectionStatus, displayErrorMessage != nil {
             connectionFailed = true

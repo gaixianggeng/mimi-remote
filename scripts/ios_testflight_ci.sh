@@ -26,7 +26,6 @@ case "$IOS_ASC_BUILD_NUMBER_MODE" in
   *) fail "IOS_ASC_BUILD_NUMBER_MODE must be off, shadow or enforce" ;;
 esac
 
-
 run_asc_build_number_shadow() {
   local phase="$1"
   local local_build="$2"
@@ -97,7 +96,6 @@ esac
 if [[ "$IOS_TESTFLIGHT_UPLOAD" == "1" ]]; then
   require_env TESTFLIGHT_BETA_GROUP_ID
   [[ -n "$TESTFLIGHT_WHATS_NEW" ]] || fail "TESTFLIGHT_WHATS_NEW is required"
-
 fi
 [[ -f "$PROJECT/project.pbxproj" ]] || fail "Xcode project not found: $PROJECT"
 [[ -f "$ROOT_DIR/scripts/ios_asc_build_number_preflight.rb" ]] || fail "missing build-number preflight"
