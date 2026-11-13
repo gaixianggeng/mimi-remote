@@ -303,6 +303,9 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/tailcat/free-route", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatFreeRouteHandler)),
 	))
+	mux.Handle("/api/tailcat/node-ownership-proof", tailcatPairingAuth.Middleware(
+		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatNodeOwnershipHandler)),
+	))
 	mux.Handle("/api/tailcat/relay-choice", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatRelayChoiceHandler)),
 	))

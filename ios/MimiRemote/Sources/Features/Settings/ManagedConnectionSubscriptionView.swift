@@ -91,6 +91,7 @@ struct ManagedConnectionSubscriptionView: View {
                     addDeviceSection
                 }
                 ManagedConnectionDeviceListSection()
+                if entitlementStore.isRedemptionEntitlement { redemptionSection }
             } else if !isChecking {
                 if showsProducts {
                     productsSection

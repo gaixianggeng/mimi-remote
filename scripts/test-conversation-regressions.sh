@@ -351,6 +351,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/TailcatLocalEndpointProbeTests \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
   -only-testing:MimiRemoteTests/ProtocolContractTests \
+  -only-testing:MimiRemoteTests/ManagedNodeOwnershipTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementAPIClientTests \
   -only-testing:MimiRemoteTests/ManagedConnectionStoreKitClientTests \

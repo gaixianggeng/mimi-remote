@@ -476,6 +476,20 @@ struct AgentAPIClient {
         self.session = session
     }
 
+    func nodeOwnershipProof(challenge: ManagedNodeOwnershipChallenge, macKey: String, pairingMacKey: String) async throws -> ManagedHostNodeOwnershipProof {
+        struct Body: Encodable {
+            let challengeId: String
+            let challengePublicKey: String
+            let macTailcatPublicKey: String
+            let pairingMacTailcatPublicKey: String
+        }
+        return try await request(
+            path: "/api/tailcat/node-ownership-proof", method: "POST",
+            body: JSONEncoder().encode(Body(challengeId: challenge.challengeId, challengePublicKey: challenge.challengePublicKey,
+                macTailcatPublicKey: macKey, pairingMacTailcatPublicKey: pairingMacKey))
+        )
+    }
+
     func health(timeout: TimeInterval = 20) async throws -> HealthResponse {
         try await request(
             path: "/healthz",

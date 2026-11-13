@@ -14,7 +14,28 @@ protocol ManagedConnectionPairingAuthorizing: AnyObject {
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization
 
+    func authorizeManagedPairing(
+        macInstallationID: String,
+        macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
+        mobileTailcatPublicKey: String,
+        proveNodeOwnership: ManagedNodeOwnershipProver?
+    ) async throws -> ManagedConnectionPairingAuthorization
+
     func didCompleteManagedPairing(_ authorization: ManagedConnectionPairingAuthorization)
+}
+
+extension ManagedConnectionPairingAuthorizing {
+    func authorizeManagedPairing(
+        macInstallationID: String,
+        macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
+        mobileTailcatPublicKey: String,
+        proveNodeOwnership: ManagedNodeOwnershipProver?
+    ) async throws -> ManagedConnectionPairingAuthorization {
+        try await authorizeManagedPairing(macInstallationID: macInstallationID, macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey, mobileTailcatPublicKey: mobileTailcatPublicKey)
+    }
 }
 
 @MainActor
@@ -52,6 +73,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     private let makeToken: () throws -> String
     private var managementSession: CachedManagementSession?
     private var pendingPairing: PendingPairingAuthorization?
+    private var registeredEntitlementID: String?
 
     init(
         entitlementStore: ManagedConnectionEntitlementStore,
@@ -127,6 +149,18 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         pairingMacTailcatPublicKey: String,
         mobileTailcatPublicKey: String
     ) async throws -> ManagedConnectionPairingAuthorization {
+        try await authorizeManagedPairing(macInstallationID: macInstallationID, macTailcatPublicKey: macTailcatPublicKey,
+            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey, mobileTailcatPublicKey: mobileTailcatPublicKey,
+            proveNodeOwnership: nil)
+    }
+
+    func authorizeManagedPairing(
+        macInstallationID: String,
+        macTailcatPublicKey: String,
+        pairingMacTailcatPublicKey: String,
+        mobileTailcatPublicKey: String,
+        proveNodeOwnership: ManagedNodeOwnershipProver?
+    ) async throws -> ManagedConnectionPairingAuthorization {
         let identity = try await ensureMobileDeviceRegistered()
         let pending = try reusableOrNewPendingPairing(
             macInstallationID: macInstallationID,
@@ -138,15 +172,25 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
             return ManagedConnectionPairingAuthorization(sessionID: session.id, grant: pending.grant)
         }
 
-        let session = try await api.authorizePairing(
-            deviceToken: identity.deviceToken,
-            requestID: pending.requestID,
-            macInstallationID: macInstallationID,
-            mobileTailcatPublicKey: mobileTailcatPublicKey,
-            macTailcatPublicKey: macTailcatPublicKey,
-            pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
-            managedPairingGrant: pending.grant
-        )
+        let session: ManagedConnectionPairingSession
+        do {
+            session = try await api.authorizePairing(
+                deviceToken: identity.deviceToken, requestID: pending.requestID,
+                macInstallationID: macInstallationID, mobileTailcatPublicKey: mobileTailcatPublicKey,
+                macTailcatPublicKey: macTailcatPublicKey, pairingMacTailcatPublicKey: pairingMacTailcatPublicKey,
+                managedPairingGrant: pending.grant
+            )
+        } catch let error as ManagedConnectionDeviceAPIError where error.rejectionCode == "node_public_key_conflict" {
+            guard let proveNodeOwnership else { throw error }
+            var request = ManagedPairingOwnershipRequest(
+                requestId: pending.requestID, macInstallationId: macInstallationID,
+                mobileTailcatPublicKey: mobileTailcatPublicKey, macTailcatPublicKey: macTailcatPublicKey,
+                pairingMacTailcatPublicKey: pairingMacTailcatPublicKey, managedPairingGrant: pending.grant
+            )
+            let challenge = try await api.nodeOwnershipChallenge(deviceToken: identity.deviceToken, request: request)
+            request.nodeOwnershipProof = try await proveNodeOwnership(challenge)
+            session = try await api.authorizePairing(deviceToken: identity.deviceToken, request: request)
+        }
         pendingPairing?.session = session
         return ManagedConnectionPairingAuthorization(sessionID: session.id, grant: pending.grant)
     }
@@ -157,9 +201,10 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
         Task { await refreshDevices() }
     }
 
-    private func ensureMobileDeviceRegistered() async throws -> ManagedConnectionMobileIdentity {
+    private func ensureMobileDeviceRegistered(allowCredentialRotation: Bool = true) async throws -> ManagedConnectionMobileIdentity {
         let identity = try identityStore.loadOrCreate()
         let grant = try await validEntitlementGrant()
+        reconcileEntitlement(grant.entitlement.id)
         do {
             let result = try await api.registerMobileDevice(
                 entitlementToken: grant.token,
@@ -172,9 +217,15 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
                 deviceToken: identity.deviceToken,
                 registeredDeviceID: result.device.id
             )
+        } catch let error as ManagedConnectionDeviceAPIError where error.rejectionCode == "device_token_conflict" {
+            // 换权益时设备 Token 仍属于旧权益。只轮换凭证，保留安装 ID 和连接私钥供后续证明。
+            guard allowCredentialRotation, let deviceID = identity.registeredDeviceID else { throw error }
+            try identityStore.rotateCredentialAfterRevocation(deviceID: deviceID)
+            return try await ensureMobileDeviceRegistered(allowCredentialRotation: false)
         } catch let error as ManagedConnectionDeviceAPIError where error.rejectionCode == "unauthorized" {
             await entitlementStore.refreshEntitlement()
             let refreshedGrant = try await validEntitlementGrant(refreshIfMissing: false)
+            reconcileEntitlement(refreshedGrant.entitlement.id)
             let result = try await api.registerMobileDevice(
                 entitlementToken: refreshedGrant.token,
                 installationID: identity.installationID,
@@ -187,6 +238,14 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
                 registeredDeviceID: result.device.id
             )
         }
+    }
+
+    private func reconcileEntitlement(_ id: String) {
+        guard registeredEntitlementID != id else { return }
+        // 换码或转订阅后，旧配对会话和设备管理凭证仍属于原权益，不能跨权益复用。
+        registeredEntitlementID = id
+        pendingPairing = nil
+        managementSession = nil
     }
 
     private func validEntitlementGrant(
@@ -211,6 +270,7 @@ final class ManagedConnectionDeviceStore: ObservableObject, ManagedConnectionPai
     }
 
     private func validManagementToken() async throws -> String {
+        if let id = entitlementStore.currentGrant?.entitlement.id { reconcileEntitlement(id) }
         if let redemptionCode = entitlementStore.managementRedemptionCode {
             let productID = ManagedConnectionProductID.betaRedemption
             if let managementSession, managementSession.productID == productID,
