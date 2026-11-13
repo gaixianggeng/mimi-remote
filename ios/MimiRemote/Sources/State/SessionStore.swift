@@ -521,6 +521,8 @@ final class SessionStore: ObservableObject {
     var missingRunningSessionReconciliationTasksByID: [SessionID: Task<Void, Never>] = [:]
     var lastSessionLibraryIndexRefreshAt: Date?
     var sessionLibraryIndexRefreshJob: SessionLibraryIndexRefreshJob?
+    /// 浏览工作区与已打开会话的项目不同；后台补齐只按当前 Host 的浏览来源排序。
+    var sessionLibraryPriorityScope: WorkspaceDirectorySessionScopeKey?
     var sessionSearchTask: Task<Void, Never>?
     var sessionSearchLoadMoreTask: Task<Void, Never>?
     var sessionSearchGeneration = 0
