@@ -230,39 +230,6 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertTrue(shows(dismissedAgo: snooze))
     }
 
-    func testManagedConnectionEntryOnlyOpensForExplicitBuildFlagOrDebugArgument() {
-        let argument = ManagedConnectionSubscriptionView.debugEntryLaunchArgument
-
-        // App Store 提交构建：Info.plist 展开为空或 NO，Release 不读取调试参数。
-        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
-            infoPlistValue: "",
-            launchArguments: [argument],
-            allowsDebugLaunchArgument: false
-        ))
-        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
-            infoPlistValue: "NO",
-            launchArguments: [],
-            allowsDebugLaunchArgument: true
-        ))
-        XCTAssertFalse(ManagedConnectionSubscriptionView.isEntryVisible(
-            infoPlistValue: nil,
-            launchArguments: [],
-            allowsDebugLaunchArgument: false
-        ))
-        // 内部 TestFlight 构建显式写入 YES。
-        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
-            infoPlistValue: "YES",
-            launchArguments: [],
-            allowsDebugLaunchArgument: false
-        ))
-        // Debug 启动参数保持原行为，供 UI 测试打开入口。
-        XCTAssertTrue(ManagedConnectionSubscriptionView.isEntryVisible(
-            infoPlistValue: "",
-            launchArguments: [argument],
-            allowsDebugLaunchArgument: true
-        ))
-    }
-
     func testOneTapManagedUpgradeOffersAllConnectedFreeRoutes() {
         for route in [ConnectionProfileRoute.lan, .tailscale, .https] {
             XCTAssertTrue(ManagedConnectionDevicesView.canUpgradeCurrentComputer(route: route, connected: true))
@@ -745,6 +712,11 @@ final class TailcatExperimentRoutingTests: XCTestCase {
     }
 
     func testConcurrentManagedPreparationEmitsOneConnectionEvent() async throws {
+        // 本例只验证并发上报次数；诊断不能访问可能被 CI 占用的真实回环端口。
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TailcatUnavailableHealthURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
         let reporter = ManagedConnectionEventReporterStub()
         let reported = expectation(description: "one managed event")
         reporter.onReport = { reported.fulfill() }
@@ -752,7 +724,8 @@ final class TailcatExperimentRoutingTests: XCTestCase {
             startResults: [.success("http://127.0.0.1:49152")],
             blockedStartCall: 1,
             managedProfile: true,
-            managedConnectionEventReporter: reporter
+            managedConnectionEventReporter: reporter,
+            agentAPISession: session
         )
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
 

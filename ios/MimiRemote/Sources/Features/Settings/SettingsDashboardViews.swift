@@ -129,9 +129,7 @@ struct ConnectionSettingsView: View {
                 onChooseManualConnection: {
                     qrScannerPresentation.chooseManualConnection(for: intent)
                 },
-                onOpenManagedConnection: ManagedConnectionSubscriptionView.isEntryVisible
-                    ? { qrScannerPresentation.openManagedConnection() }
-                    : nil,
+                onOpenManagedConnection: { qrScannerPresentation.openManagedConnection() },
                 onCode: { rawValue in
                     await qrScannerPresentation.submit(rawValue, intent: intent)
                 }
@@ -232,9 +230,7 @@ struct AddComputerView: View {
                 onChooseManualConnection: {
                     qrScannerPresentation.chooseManualConnection(for: intent)
                 },
-                onOpenManagedConnection: ManagedConnectionSubscriptionView.isEntryVisible
-                    ? { qrScannerPresentation.openManagedConnection() }
-                    : nil,
+                onOpenManagedConnection: { qrScannerPresentation.openManagedConnection() },
                 onCode: { rawValue in
                     await qrScannerPresentation.submit(rawValue, intent: intent)
                 }

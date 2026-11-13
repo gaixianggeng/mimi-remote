@@ -91,6 +91,7 @@ echo "==> iOS conversation regressions"
 # - HostSwitchSlowHandshakeTests：一台电脑握手挂起时可改选或取消，连续切换可用，提交后的请求不继承预热剩余时间（#801）。
 # - DoctorDiagnosticsTests：结构化 Doctor 响应、HTTP 错误和向后兼容。
 # - ProtocolContractTests：iOS/agentd 当前、上一版和明确不兼容的版本窗口。
+# - ConnectionSettingsSnapshotTests 的首启页：固定环境检查常显购买入口在紧凑、宽屏和深色下的布局。
 # - ManagedConnectionEntitlementStoreTests、ManagedConnectionEntitlementAPIClientTests、
 #   ManagedConnectionStoreKitClientTests：订阅状态机、服务端授权契约和 StoreKit 适配。
 # - LocalizationTests：日常单次 XCTest 内覆盖双语资源和 App 内显式语言切换。
@@ -352,6 +353,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/DoctorDiagnosticsTests \
   -only-testing:MimiRemoteTests/ProtocolContractTests \
   -only-testing:MimiRemoteTests/ManagedNodeOwnershipTests \
+  -only-testing:MimiRemoteTests/ConnectionSettingsSnapshotTests/testUnconfiguredConnectionSettingsOnCompactWidth \
+  -only-testing:MimiRemoteTests/ConnectionSettingsSnapshotTests/testUnconfiguredConnectionSettingsOnWideWidth \
+  -only-testing:MimiRemoteTests/ConnectionSettingsSnapshotTests/testUnconfiguredConnectionSettingsOnWideWidthInDarkAppearance \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementStoreTests \
   -only-testing:MimiRemoteTests/ManagedConnectionEntitlementAPIClientTests \
   -only-testing:MimiRemoteTests/ManagedConnectionStoreKitClientTests \

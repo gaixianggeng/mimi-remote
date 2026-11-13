@@ -657,7 +657,6 @@ struct MimiRemoteApp: App {
                     }
                     if let link = ManagedRedemptionLink(url: url) {
                         // 入口关闭的构建里没有兑换码这回事，链接也不能绕过开关。
-                        guard ManagedConnectionSubscriptionView.isEntryVisible else { return }
                         Task { @MainActor in
                             await managedConnectionEntitlementStore.redeemFromLink(link)
                         }

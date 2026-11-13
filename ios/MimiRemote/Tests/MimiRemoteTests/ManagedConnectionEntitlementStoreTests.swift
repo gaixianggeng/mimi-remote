@@ -236,10 +236,6 @@ final class ManagedConnectionEntitlementStoreTests: XCTestCase {
         XCTAssertEqual(fixture.store.pendingRoute, .redemption)
     }
 
-    func testPurchaseOptionsStayHiddenDuringBeta() {
-        XCTAssertFalse(ManagedConnectionSubscriptionView.showsPurchaseOptions)
-    }
-
     // MARK: - 转给另一台设备（#989）
 
     private final class AuthenticatorFake: DeviceOwnerAuthenticating {

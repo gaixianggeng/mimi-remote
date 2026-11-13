@@ -23,6 +23,8 @@ final class LocalWebSocketServer: @unchecked Sendable {
 
     /// 每次被接受连接时递增。用于断言"确实又连了一次"。
     private var _acceptedConnectionCount = 0
+    /// HTTP 升级响应发送完成后才允许测试推送 WebSocket 帧。
+    private var _upgradedConnectionCount = 0
     /// 每条已接受的连接上收到的客户端文本帧。
     private var _receivedTexts: [String] = []
     /// 当前活连接，用于服务端主动断开以模拟链路故障。
@@ -36,6 +38,11 @@ final class LocalWebSocketServer: @unchecked Sendable {
     var receivedTexts: [String] {
         lock.lock(); defer { lock.unlock() }
         return _receivedTexts
+    }
+
+    var upgradedConnectionCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _upgradedConnectionCount
     }
 
     /// 实际绑定的端口。做成计算属性：`init` 里要在 `newConnectionHandler` 中捕获 self，
@@ -122,8 +129,13 @@ final class LocalWebSocketServer: @unchecked Sendable {
             ].joined(separator: "\r\n")
             connection.send(
                 content: Data(response.utf8),
-                completion: .contentProcessed { [weak self] _ in
-                    self?.readFrames(connection)
+                completion: .contentProcessed { [weak self] error in
+                    guard let self, error == nil else { return }
+                    // TCP accept 早于升级握手；此时才可发送帧，避免帧抢在 101 响应前面。
+                    self.lock.lock()
+                    self._upgradedConnectionCount += 1
+                    self.lock.unlock()
+                    self.readFrames(connection)
                 }
             )
         }
