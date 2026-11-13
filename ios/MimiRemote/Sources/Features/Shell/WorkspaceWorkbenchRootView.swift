@@ -85,7 +85,21 @@ struct WorkspaceWorkbenchRootView: View {
             ),
             appearanceStore: workspaceAppearanceStore,
             initialWorkspaceID: browseSelection.workspaceID,
-            onWorkspaceSelectionChange: { browseSelection.record($0) }
+            onWorkspaceSelectionChange: {
+                browseSelection.record($0)
+                prioritizeSessionLibrary(workspaceID: $0)
+            }
+        )
+        .onAppear { prioritizeSessionLibrary(workspaceID: browseSelection.workspaceID) }
+        .onChange(of: selectedRuntime) { _, _ in
+            prioritizeSessionLibrary(workspaceID: browseSelection.workspaceID)
+        }
+    }
+
+    private func prioritizeSessionLibrary(workspaceID: String?) {
+        guard let workspaceID, let workspace = sessionStore.workspacesByID[workspaceID] else { return }
+        sessionStore.sessionLibraryPriorityScope = sessionStore.workspaceDirectoryScopeKey(
+            for: workspace, runtimeProvider: selectedRuntime.runtimeProvider
         )
     }
 

@@ -1059,20 +1059,35 @@ extension SessionStore {
         }
         // 全局“最近历史”以 8 条为基础，并有界补入派生只读会话；“进行中”不能沿用数量限制。
         // 每个工作区读取标准 20 条轻量索引，不加载消息正文，在可见性和弱网成本间取 MVP 平衡。
-        let workspaces = recentWorkspaces.filter { workspace in
-            if authoritative {
-                return true
-            }
-            // 当前工作区已经由 refreshAll/轮询维护完整首屏时，会话库直接复用本地投影。
-            // 再发一次相同 thread/list 只会重复占用 gateway 预算。
-            return !(workspace.id == selectedProjectID && !sessions(forProjectID: workspace.id).isEmpty)
-        }
+        let workspaces = recentWorkspaces
         let consistency: SessionListConsistency = authoritative ? .authoritative : .fastIndexed
         guard let client = try? clientFactory() else {
             return
         }
 
-        // 先用最多 4 页、每页 50 条的有界全局发现补齐外部 Worktree。
+        // 先确认浏览来源的目录归属，才能立即展示它；只移动原有补查，不重复请求。
+        let priorityScope = sessionLibraryPriorityScope
+        let priorityWorkspace = workspaces.first { workspace in
+            priorityScope?.hostScope == hostScope
+                && priorityScope?.workspaceID == workspace.id
+                && priorityScope?.workspacePath == standardizedSessionListPath(workspace.path)
+        }
+        var priorityDirectorySessionIDs: Set<SessionID> = []
+        if let priorityWorkspace {
+            priorityDirectorySessionIDs = await refreshDirectoryScopedSessionLibrary(
+                workspace: priorityWorkspace,
+                consistency: consistency,
+                restartFromFirst: authoritative,
+                preferredRuntimeProvider: priorityScope?.runtimeProvider,
+                client: client,
+                hostScope: hostScope,
+                generation: generation
+            )
+        }
+        guard appStore.activeHostScope == hostScope,
+              appStore.connectionGeneration == generation, !Task.isCancelled else { return }
+
+        // 再用最多 4 页、每页 50 条的有界全局发现补齐外部 Worktree。
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
         // iOS 只消费 opaque cursor，不接触上游全局 cursor。
         //
@@ -1184,13 +1199,16 @@ extension SessionStore {
                     sessions.map { ($0.id, Self.normalizedRuntimeProvider($0.runtimeProvider)) },
                     uniquingKeysWith: { first, _ in first }
                 )
-                let revokedSessionIDs = controlledIDsBeforeTraversal.filter { sessionID in
+                let revokedGlobalSessionIDs = controlledIDsBeforeTraversal.filter { sessionID in
                     guard let runtime = runtimeBySessionID[sessionID],
                           completedRuntimes.contains(runtime) else {
                         return false
                     }
                     return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
                 }
+                // 全局发现资格仍撤销；刚由精确目录返回的行继续按工作区展示。
+                // 目录补查前移后必须保留这份结果，不能再请求一次来恢复它。
+                let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(priorityDirectorySessionIDs)
                 if !revokedSessionIDs.isEmpty {
                     removeWorkspaceDirectorySessionIDs(Set(revokedSessionIDs))
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
@@ -1212,7 +1230,7 @@ extension SessionStore {
                     }
                 }
                 let retainedFromUnsettledRuntimes = controlledIDsBeforeTraversal
-                    .subtracting(revokedSessionIDs)
+                    .subtracting(revokedGlobalSessionIDs)
                 let settledIDs = discoveredSessionIDs.union(retainedFromUnsettledRuntimes)
                 if controlledGlobalSessionIDs != settledIDs {
                     controlledGlobalSessionIDs = settledIDs
@@ -1223,7 +1241,7 @@ extension SessionStore {
         guard !workspaces.isEmpty else { return }
         // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
-        for workspace in workspaces {
+        for workspace in workspaces where workspace.id != priorityWorkspace?.id {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
             await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
