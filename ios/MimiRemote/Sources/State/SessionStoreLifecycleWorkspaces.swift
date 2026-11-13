@@ -612,6 +612,15 @@ extension SessionStore {
         defer { isLoading = false }
         let hostScope = appStore.activeHostScope
         let connectionGeneration = appStore.connectionGeneration
+        var hostDidRespond = false
+        defer {
+            if hostDidRespond,
+               appStore.activeHostScope == hostScope,
+               appStore.connectionGeneration == connectionGeneration {
+                // 连接刚被证明可用：立即补会话库，节流仍由 IfStale 负责。
+                Task { @MainActor [weak self] in await self?.refreshSessionLibraryIndexIfStale() }
+            }
+        }
         let requestedSelectionLease = currentSelectionLease()
         let requestedProjectID = requestedSelectionLease.projectID
         var foregroundLease = requestedSelectionLease
@@ -625,6 +634,7 @@ extension SessionStore {
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
+            hostDidRespond = true
             didObserveHost = true
             recordCarStatusHostObservation(at: sessionListNow())
             setProjectsIfChanged(fetchedProjects)

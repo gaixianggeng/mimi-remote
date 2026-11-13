@@ -4,6 +4,69 @@ import Combine
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testFailedLibraryRefreshDoesNotStartThrottleWindow() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "failed-library"))
+        let client = MockSessionStoreClient(
+            projects: [workspace.project], sessions: [],
+            workspaceSessionsError: [workspace.id: MockError.unimplemented],
+            controlledGlobalSessionsByRuntimeHandler: { _, _, _ in throw MockError.unimplemented }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertNil(store.lastSessionLibraryIndexRefreshAt)
+        let initialRequests = client.requestedControlledGlobalRuntimes.count
+        await store.refreshSessionLibraryIndexIfStale()
+        XCTAssertEqual(client.requestedControlledGlobalRuntimes.count, initialRequests * 2)
+    }
+
+    func testSuccessfulLibraryRefreshStartsThrottleWindow() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "successful-library"))
+        let client = MockSessionStoreClient(
+            projects: [workspace.project], sessions: [],
+            controlledGlobalSessionsByRuntimeHandler: { _, _, _ in throw MockError.unimplemented }
+        )
+        var now = Date(timeIntervalSince1970: 100)
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }, sessionListNow: { now }
+        )
+        store.recentWorkspaces = [workspace]
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(store.lastSessionLibraryIndexRefreshAt, now)
+        let requests = client.requestedWorkspaceIDs
+        let globalRequests = client.requestedControlledGlobalRuntimes
+        now = now.addingTimeInterval(29)
+        await store.refreshSessionLibraryIndexIfStale()
+        XCTAssertEqual(client.requestedWorkspaceIDs, requests)
+        XCTAssertEqual(client.requestedControlledGlobalRuntimes, globalRequests)
+    }
+
+    func testRefreshAllKicksSessionLibraryIndexAfterHostResponds() async {
+        let workspace = AgentWorkspace(project: makeProject(id: "host-responded"))
+        let client = MockSessionStoreClient(projects: [workspace.project], sessions: [])
+        let appStore = makeIsolatedAppStore()
+        let store = SessionStore(
+            appStore: appStore, conversationStore: ConversationStore(), logStore: LogStore(),
+            recentWorkspaceStore: makeRecentWorkspaceStore(workspaces: [workspace], endpoint: appStore.endpoint),
+            clientFactory: { client }
+        )
+
+        // 没有选中工作区的提前返回也必须触发补查。
+        await store.refreshAll()
+        for _ in 0..<100 where client.requestedWorkspaceIDs.isEmpty { await Task.yield() }
+        if let job = store.sessionLibraryIndexRefreshJob { await job.task.value }
+
+        XCTAssertEqual(client.requestedWorkspaceIDs, [workspace.id])
+    }
+
     func testBrowsedWorkspaceAndRuntimeLoadBeforeGlobalDiscoveryWithoutExtraRequests() async {
         let first = AgentWorkspace(project: makeProject(id: "priority-first"))
         let browsed = AgentWorkspace(project: makeProject(id: "priority-browsed"))

@@ -1052,8 +1052,9 @@ extension SessionStore {
         // 后台没有可用的 Runtime bundle；被取消的遍历也不算刷新过，回前台的轮询才会从首页重走（#792）。
         guard appStore.activeHostScope == hostScope, !isAppInBackground else { return }
         let generation = appStore.connectionGeneration
+        var succeededRequestCount = 0
         defer {
-            if appStore.activeHostScope == hostScope, !Task.isCancelled {
+            if appStore.activeHostScope == hostScope, !Task.isCancelled, succeededRequestCount > 0 {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
@@ -1074,7 +1075,7 @@ extension SessionStore {
         }
         var priorityDirectorySessionIDs: Set<SessionID> = []
         if let priorityWorkspace {
-            priorityDirectorySessionIDs = await refreshDirectoryScopedSessionLibrary(
+            let outcome = await refreshDirectoryScopedSessionLibrary(
                 workspace: priorityWorkspace,
                 consistency: consistency,
                 restartFromFirst: authoritative,
@@ -1083,6 +1084,8 @@ extension SessionStore {
                 hostScope: hostScope,
                 generation: generation
             )
+            priorityDirectorySessionIDs = outcome.fetchedSessionIDs
+            succeededRequestCount += outcome.succeededRequestCount
         }
         guard appStore.activeHostScope == hostScope,
               appStore.connectionGeneration == generation, !Task.isCancelled else { return }
@@ -1138,6 +1141,7 @@ extension SessionStore {
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
                         discoveredSessions.append(contentsOf: page.sessions)
                         pageCountByRuntime[runtimeProvider, default: 0] += 1
+                        succeededRequestCount += 1
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor,
@@ -1243,7 +1247,7 @@ extension SessionStore {
         // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
         for workspace in workspaces where workspace.id != priorityWorkspace?.id {
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            await refreshDirectoryScopedSessionLibrary(
+            let outcome = await refreshDirectoryScopedSessionLibrary(
                 workspace: workspace,
                 consistency: consistency,
                 restartFromFirst: authoritative,
@@ -1251,6 +1255,7 @@ extension SessionStore {
                 hostScope: hostScope,
                 generation: generation
             )
+            succeededRequestCount += outcome.succeededRequestCount
         }
     }
 

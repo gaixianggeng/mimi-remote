@@ -1,5 +1,11 @@
 import Foundation
 
+struct DirectoryScopedLibraryRefreshOutcome {
+    var fetchedSessionIDs: Set<SessionID> = []
+    /// 只有真正取得目录响应才计数；原生 deepseek 协调器不计入。
+    var succeededRequestCount = 0
+}
+
 extension SessionStore {
     func availableSessionRuntimeProviders(
         client: any SessionStoreAPIClient
@@ -142,8 +148,8 @@ extension SessionStore {
         client: any SessionStoreAPIClient,
         hostScope: HostScope,
         generation: Int
-    ) async -> Set<SessionID> {
-        var fetchedSessionIDs: Set<SessionID> = []
+    ) async -> DirectoryScopedLibraryRefreshOutcome {
+        var outcome = DirectoryScopedLibraryRefreshOutcome()
         let runtimes = RuntimeFeatureSupport.runtimeProviders
         let orderedRuntimes = runtimes.filter { $0 == preferredRuntimeProvider }
             + runtimes.filter { $0 != preferredRuntimeProvider }
@@ -155,7 +161,7 @@ extension SessionStore {
                !directoryScopedSessions(workspaceID: workspace.id, runtimeProvider: runtimeProvider).isEmpty {
                 continue
             }
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return fetchedSessionIDs }
+            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return outcome }
             // deepseek 由原生通道承接时走协调器：它管代次、single-flight 与失败保留旧页。
             // 未启用时这段完全不参与，下面照旧走既有 app-server 路径。
             if isNativeHarnessDirectoryEnabled,
@@ -164,7 +170,7 @@ extension SessionStore {
                     workspace: workspace,
                     hostScope: hostScope
                 )
-                fetchedSessionIDs.formUnion(directoryScopedSessions(
+                outcome.fetchedSessionIDs.formUnion(directoryScopedSessions(
                     workspaceID: workspace.id, runtimeProvider: runtimeProvider
                 ).map(\.id))
                 continue
@@ -177,8 +183,9 @@ extension SessionStore {
                 client: client,
                 hostScope: hostScope
             )
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return fetchedSessionIDs }
-            fetchedSessionIDs.formUnion((result.page?.sessions ?? []).filter {
+            if result.page != nil { outcome.succeededRequestCount += 1 }
+            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return outcome }
+            outcome.fetchedSessionIDs.formUnion((result.page?.sessions ?? []).filter {
                 Self.normalizedRuntimeProvider($0.runtimeProvider ?? $0.source) == runtimeProvider
             }.map(\.id))
             mergeSessionLibraryPages(
@@ -189,7 +196,7 @@ extension SessionStore {
                 restartsFromFirst: restartFromFirst
             )
         }
-        return fetchedSessionIDs
+        return outcome
     }
 
     /// 工作区详情按 Runtime 独立分页。Codex 首屏复用 canonical single-flight，
