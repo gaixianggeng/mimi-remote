@@ -9,6 +9,12 @@ namespace MimiRemote.App;
 
 public sealed partial class MainWindow
 {
+    private TextBlock? connectionState;
+    private ComboBox? relayChoice;
+    private TextBox? relayAddress;
+    private bool relayEdited;
+    private bool relaySyncing;
+
     private void RenderOverview()
     {
         var summary = new StackPanel { Spacing = 12 };
@@ -114,10 +120,12 @@ public sealed partial class MainWindow
 
     private void RenderConnection()
     {
+        relayEdited = false;
         RenderNetworkModules();
         var content = new StackPanel { Spacing = 16 };
         content.Children.Add(Text("内置连接", 24));
-        content.Children.Add(Text(tailcat?.Running == true ? "运行中" : "尚未运行"));
+        connectionState = Text("");
+        content.Children.Add(connectionState);
         content.Children.Add(Text("无需额外安装联网工具。优先使用端到端加密直连，无法直连时通过中转连接。"));
         content.Children.Add(Action(tailcat?.Enabled == true ? "关闭内置连接" : "开启内置连接", async () =>
         {
@@ -142,7 +150,14 @@ public sealed partial class MainWindow
             PlaceholderText = "https://relay.example.com/derpmap.json",
             Visibility = choice.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed
         };
-        choice.SelectionChanged += (_, _) => address.Visibility = choice.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        relayChoice = choice;
+        relayAddress = address;
+        choice.SelectionChanged += (_, _) =>
+        {
+            address.Visibility = choice.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+            if (!relaySyncing) { relayEdited = true; }
+        };
+        address.TextChanged += (_, _) => { if (!relaySyncing) { relayEdited = true; } };
         relay.Children.Add(choice);
         relay.Children.Add(address);
         relay.Children.Add(Text("Mimi 中转：已开通的手机会自动切换，没开通的手机继续走免费线路。"));
@@ -162,6 +177,22 @@ public sealed partial class MainWindow
             Notice.IsOpen = true;
         }));
         Body.Children.Add(Card(relay));
+        UpdateConnectionControls();
+    }
+
+    private void UpdateConnectionControls()
+    {
+        if (connectionState is not null)
+        {
+            connectionState.Text = tailcat?.Running == true
+                ? "运行中 · " + (tailcat.Choice == "mimi" ? "Mimi 中转" : tailcat.Choice == "custom" ? "自建中转" : "默认中转")
+                : "尚未运行";
+        }
+        if (relayEdited || relayChoice is null || relayAddress is null) { return; }
+        relaySyncing = true;
+        relayChoice.SelectedIndex = tailcat?.Choice switch { "custom" => 1, "mimi" => 2, _ => 0 };
+        relayAddress.Text = tailcat?.Choice == "custom" ? tailcat.DerpMapUrl : "";
+        relaySyncing = false;
     }
 
     private void RenderDiagnostics()

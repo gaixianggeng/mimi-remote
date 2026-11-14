@@ -11,5 +11,6 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <ProjectReference Include="../../src/MimiRemote.Core/MimiRemote.Core.csproj" />
     <None Include="../../../contracts/host-cli/*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../contracts/harness-native/fixtures/rpc/session-list.json" Link="fixtures/harness-session-list.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

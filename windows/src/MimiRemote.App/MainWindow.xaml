@@ -4,7 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid x:Name="Root">
         <NavigationView x:Name="Navigation" IsSettingsVisible="False" PaneDisplayMode="Auto"
-            IsBackButtonVisible="Collapsed" OpenPaneLength="210" SelectionChanged="Navigate">
+            IsBackButtonVisible="Collapsed" OpenPaneLength="210" SelectionChanged="Navigate"
+            HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
             <NavigationView.PaneHeader>
                 <StackPanel Margin="16,24,0,20" Spacing="4">
                     <TextBlock Text="Mimi Remote" FontSize="22" FontWeight="SemiBold"/>
@@ -12,6 +13,7 @@
                 </StackPanel>
             </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
+                <NavigationViewItem Content="会话" Tag="sessions" Icon="Message"/>
                 <NavigationViewItem Content="概览" Tag="overview" Icon="Home"/>
                 <NavigationViewItem Content="首次设置" Tag="setup" Icon="Folder"/>
                 <NavigationViewItem Content="连接手机" Tag="pair" Icon="CellPhone"/>
@@ -20,8 +22,8 @@
                 <NavigationViewItem Content="诊断与日志" Tag="diagnostics" Icon="Repair"/>
                 <NavigationViewItem Content="设置" Tag="settings" Icon="Setting"/>
             </NavigationView.MenuItems>
-            <Grid x:Name="ContentHost">
-            <Grid Width="{Binding ActualWidth, ElementName=ContentHost}" MaxWidth="906"
+            <Grid x:Name="ContentHost" SizeChanged="ContentHostResized">
+            <Grid x:Name="ContentColumn" MaxWidth="906"
                 HorizontalAlignment="Center" Padding="28,24" RowSpacing="16">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -41,6 +43,7 @@
                     HorizontalContentAlignment="Stretch">
                     <StackPanel x:Name="Body" Spacing="16" HorizontalAlignment="Stretch"/>
                 </ScrollViewer>
+                <Grid x:Name="SessionsHost" Grid.Row="2" Visibility="Collapsed"/>
             </Grid>
             </Grid>
         </NavigationView>

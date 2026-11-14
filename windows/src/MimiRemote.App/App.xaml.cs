@@ -25,7 +25,7 @@ public sealed partial class App : Application, IDisposable
         {
             var pair = activation.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch &&
                 launch.Arguments.Contains("--pair", StringComparison.Ordinal);
-            window?.DispatcherQueue.TryEnqueue(() => window.ShowPage(pair ? "pair" : "overview"));
+            window?.DispatcherQueue.TryEnqueue(() => { if (pair) { window.ShowPage("pair"); } else { window.ShowHome(); } });
         };
         window = new MainWindow(preview);
         window.Closed += (_, _) => Dispose();

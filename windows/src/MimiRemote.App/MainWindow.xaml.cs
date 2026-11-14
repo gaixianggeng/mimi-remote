@@ -16,7 +16,10 @@ public sealed partial class MainWindow : Window, IDisposable
     private bool busy;
     private bool quitting;
     private bool disposed;
-    private string page = "overview";
+    private string page = "sessions";
+    private readonly SessionsPage sessionsPage;
+    private readonly DispatcherTimer connectionTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private bool windowActive;
     private TrayIcon? tray;
     private DateTimeOffset? pairExpiry;
     private Image? pairImage;
@@ -27,6 +30,36 @@ public sealed partial class MainWindow : Window, IDisposable
     {
         this.preview = preview;
         InitializeComponent();
+        if (preview)
+        {
+            var arguments = Environment.GetCommandLineArgs();
+            if (arguments.Contains("--debug-dark", StringComparer.Ordinal)) { Root.RequestedTheme = ElementTheme.Dark; }
+            else if (arguments.Contains("--debug-light", StringComparer.Ordinal)) { Root.RequestedTheme = ElementTheme.Light; }
+        }
+        sessionsPage = new SessionsPage(preview);
+        SessionsHost.Children.Add(sessionsPage);
+        Activated += async (_, args) =>
+        {
+            windowActive = args.WindowActivationState != WindowActivationState.Deactivated;
+            sessionsPage.SetActive(page == "sessions" && windowActive && AppWindow.IsVisible);
+            if (windowActive && page == "sessions") { await ExecuteAsync(RefreshAsync); }
+        };
+        AppWindow.Changed += (_, args) =>
+        {
+            if (args.DidVisibilityChange) { sessionsPage.SetActive(page == "sessions" && windowActive && AppWindow.IsVisible); }
+        };
+        connectionTimer.Tick += async (_, _) =>
+        {
+            if (!preview && page == "connection" && windowActive && AppWindow.IsVisible && !busy)
+            {
+                await ExecuteAsync(async () =>
+                {
+                    tailcat = await RequireClient().ReadAsync<TailcatStatus>(["tailcat", "status", "--json"], lifetime.Token);
+                    UpdateConnectionControls();
+                });
+            }
+        };
+        connectionTimer.Start();
         Title = preview ? "Mimi Remote · 界面预览" : "Mimi Remote";
         SystemBackdrop = new MicaBackdrop();
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1040, 760));
@@ -65,12 +98,12 @@ public sealed partial class MainWindow : Window, IDisposable
         pairingTimer.Start();
         if (!preview) { InitializeNotifications(); }
         Navigation.SelectedItem = Navigation.MenuItems.OfType<NavigationViewItem>().First(item => (string)item.Tag ==
-            (!preview && (!preferences.SetupCompleted || !File.Exists(DesktopPreferences.ConfigPath)) ? "setup" : "overview"));
+            (!preview && (!preferences.SetupCompleted || !File.Exists(DesktopPreferences.ConfigPath)) ? "setup" : "sessions"));
     }
 
     public void InitializeTray()
     {
-        try { tray = new TrayIcon(this, () => ShowPage("overview"), () => ShowPage("pair"), Quit); }
+        try { tray = new TrayIcon(this, ShowHome, () => ShowPage("pair"), Quit); }
         catch (InvalidOperationException error) { ShowError(error.Message); }
     }
 
@@ -80,6 +113,8 @@ public sealed partial class MainWindow : Window, IDisposable
         disposed = true;
         lifetime.Cancel();
         pairingTimer.Stop();
+        connectionTimer.Stop();
+        sessionsPage.Dispose();
         tray?.Dispose();
         DisposeNotifications();
         updates.Dispose();
@@ -101,6 +136,8 @@ public sealed partial class MainWindow : Window, IDisposable
         Navigation.SelectedItem = selected ?? Navigation.MenuItems[0];
     }
 
+    public void ShowHome() => ShowPage(!preview && (!preferences.SetupCompleted || !File.Exists(DesktopPreferences.ConfigPath)) ? "setup" : "sessions");
+
     public void HideToTray()
     {
         if (tray is not null) { AppWindow.Hide(); }
@@ -111,12 +148,15 @@ public sealed partial class MainWindow : Window, IDisposable
         if (args.SelectedItem is not NavigationViewItem item) { return; }
         ClearPairing();
         page = (string)item.Tag;
+        sessionsPage.SetActive(page == "sessions" && windowActive && AppWindow.IsVisible);
         PageTitle.Text = (string)item.Content;
         Render();
         await ExecuteAsync(RefreshAsync);
     }
 
     private async void RefreshClicked(object sender, RoutedEventArgs args) => await ExecuteAsync(RefreshAsync);
+
+    private void ContentHostResized(object sender, SizeChangedEventArgs args) => ContentColumn.Width = args.NewSize.Width;
 
     private async Task RefreshAsync()
     {
@@ -143,15 +183,16 @@ public sealed partial class MainWindow : Window, IDisposable
         {
             if (page == "setup" && !File.Exists(DesktopPreferences.ConfigPath)) { return; }
             var agent = RequireClient();
-            host = await agent.ReadAsync<HostStatus>(["status", "--json", "--runtime"], lifetime.Token);
+            host = await agent.ReadAsync<HostStatus>(page == "sessions" ? ["status", "--json"] : ["status", "--json", "--runtime"], lifetime.Token);
             tailcat = null;
-            if (host.ServiceOk)
+            if (host.ServiceOk && page != "sessions")
             {
                 try { tailcat = await agent.ReadAsync<TailcatStatus>(["tailcat", "status", "--json"], lifetime.Token); }
                 catch (InvalidOperationException error) { ShowError(error.Message); }
             }
         }
         Render();
+        if (page == "sessions") { await sessionsPage.RefreshAsync(host); }
     }
 
     private AgentClient RequireClient() => client ?? throw new InvalidOperationException(
@@ -227,6 +268,11 @@ public sealed partial class MainWindow : Window, IDisposable
     {
         ClearPairing();
         Body.Children.Clear();
+        var sessions = page == "sessions";
+        ContentColumn.MaxWidth = sessions ? 1120 : 906;
+        SessionsHost.Visibility = sessions ? Visibility.Visible : Visibility.Collapsed;
+        PageScroll.Visibility = sessions ? Visibility.Collapsed : Visibility.Visible;
+        if (sessions) { return; }
         switch (page)
         {
             case "pair": RenderPairing(); break;
