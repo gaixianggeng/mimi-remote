@@ -142,19 +142,8 @@ struct TailcatRelayPicker: View {
         isApplying = true
         Task {
             defer { isApplying = false }
-            if mode == .mimi {
-                await store.setTailcatManagedMode(true)
-                guard store.tailcatError == nil, store.tailcatIsManaged else { return }
-            } else {
-                // 先退出 Mimi 的配置，再保存用户选择；每一步都依据 agentd 回读，失败即停止。
-                if store.tailcatIsManaged {
-                    await store.setTailcatManagedMode(false)
-                    guard store.tailcatError == nil, !store.tailcatIsManaged else { return }
-                }
-                await store.configureTailcatDERPMap(url)
-                guard store.tailcatError == nil else { return }
-            }
-            if !store.tailcatEnabled { await store.setTailcatEnabled(true) }
+            let choice = mode == .tailcatDefault ? "default" : mode.rawValue
+            await store.setTailcatRelay(choice, url: url)
             guard store.tailcatError == nil, store.tailcatEnabled else { return }
             await onApplied()
         }
