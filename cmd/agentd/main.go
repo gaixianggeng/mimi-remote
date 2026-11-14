@@ -87,6 +87,8 @@ func run(args []string) error {
 		return runTailcat(args)
 	case "network":
 		return runNetwork(args)
+	case "workspace":
+		return runWorkspace(args)
 	case "runtime":
 		return runRuntime(args)
 	case "repair-codex-session":
@@ -104,7 +106,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、runtime、repair-codex-session、handoff-command、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、workspace、runtime、repair-codex-session、handoff-command、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 

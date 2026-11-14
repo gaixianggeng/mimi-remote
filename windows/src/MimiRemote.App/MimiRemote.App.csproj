@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>MimiRemote.App</RootNamespace>
+    <AssemblyName>MimiRemote</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <!-- 非打包 + 自包含：用户不需要单独安装 Windows App Runtime，
+         代价是运行库随安装包分发，LICENSE 需要 GPLv3 第 7 节附加许可。 -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- 非打包应用也要生成 resources.pri，否则 XamlControlsResources 加载失败会直接崩溃。 -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 只引用界面和自包含部署需要的组件，避免把未使用的 AI/ML、Widgets、Search 打入预览包。 -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.6.5" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="2.6.5" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <ProjectReference Include="../MimiRemote.Core/MimiRemote.Core.csproj" />
+    <Content Include="../../../packaging/windows/mimi-remote.ico" Link="mimi-remote.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

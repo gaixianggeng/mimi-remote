@@ -260,89 +260,48 @@ func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte
 }
 
 func (c *agentController) openLogsTerminal() error {
-	cmd, err := c.openTerminal("服务日志", "logs", "-n", "200")
+	// 不打开 cmd：日志本来就是一串文本，用系统默认程序打开 agentd.log
+	// 既能滚动查看，也不会在用户面前多出一个终端窗口。
+	logPath, err := managedLogPath()
 	if err != nil {
 		return err
 	}
-	go func() {
-		_ = cmd.Wait()
-	}()
-	return nil
+	if _, err := os.Stat(logPath); err != nil {
+		return fmt.Errorf("日志文件尚未生成：%s", logPath)
+	}
+	return shellOpenPath(logPath)
 }
 
-func (c *agentController) openTerminal(title string, args ...string) (*terminalProcess, error) {
-	// A console process started with os/exec by a windowless tray inherits
-	// unusable standard handles and exits immediately. ShellExecuteEx gives
-	// cmd.exe an independent interactive console; SEE_MASK_NOCLOSEPROCESS lets
-	// us wait for the terminal used by interactive log viewing.
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return nil, fmt.Errorf("定位终端临时目录失败：%w", err)
+func managedLogPath() (string, error) {
+	localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if localAppData == "" {
+		cacheDir, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("定位日志目录失败：%w", err)
+		}
+		localAppData = cacheDir
 	}
-	terminalDir := filepath.Join(cacheDir, "Mimi Remote", "terminals")
-	if err := os.MkdirAll(terminalDir, 0o700); err != nil {
-		return nil, fmt.Errorf("创建终端临时目录失败：%w", err)
-	}
-	script, err := os.CreateTemp(terminalDir, "mimi-remote-*.cmd")
-	if err != nil {
-		return nil, fmt.Errorf("创建%s终端脚本失败：%w", title, err)
-	}
-	scriptPath := script.Name()
+	return filepath.Join(localAppData, "Mimi Remote", "logs", "agentd.log"), nil
+}
 
-	command := `"` + c.agentPath + `"`
-	if len(args) > 0 {
-		command += " " + strings.Join(args, " ")
-	}
-	contents := strings.Join([]string{
-		"@echo off",
-		"chcp 65001 >nul",
-		"title Mimi Remote - " + title,
-		command,
-		"echo.",
-		"echo 可以关闭此窗口。",
-	}, "\r\n") + "\r\n"
-	if _, err := script.WriteString(contents); err != nil {
-		_ = script.Close()
-		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("写入%s终端脚本失败：%w", title, err)
-	}
-	if err := script.Close(); err != nil {
-		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("关闭%s终端脚本失败：%w", title, err)
-	}
-
-	commandPrompt := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
+func shellOpenPath(path string) error {
+	// 托盘没有控制台，ShellExecuteEx 让资源管理器自己挑默认程序打开文件。
 	verb, _ := syscall.UTF16PtrFromString("open")
-	file, err := syscall.UTF16PtrFromString(commandPrompt)
+	file, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
-		_ = os.Remove(scriptPath)
-		return nil, err
-	}
-	parameters, err := syscall.UTF16PtrFromString(`/D /K call "` + scriptPath + `"`)
-	if err != nil {
-		_ = os.Remove(scriptPath)
-		return nil, err
-	}
-	directory, err := syscall.UTF16PtrFromString(filepath.Dir(c.agentPath))
-	if err != nil {
-		_ = os.Remove(scriptPath)
-		return nil, err
+		return err
 	}
 	info := shellExecuteInfo{
-		Size:       uint32(unsafe.Sizeof(shellExecuteInfo{})),
-		Mask:       seeMaskNoCloseProcess,
-		Verb:       verb,
-		File:       file,
-		Parameters: parameters,
-		Directory:  directory,
-		Show:       swShowNormal,
+		Size: uint32(unsafe.Sizeof(shellExecuteInfo{})),
+		Verb: verb,
+		File: file,
+		Show: swShowNormal,
 	}
 	result, _, launchErr := procTrayShellExecuteExW.Call(uintptr(unsafe.Pointer(&info)))
-	if result == 0 || info.Process == 0 {
-		_ = os.Remove(scriptPath)
-		return nil, fmt.Errorf("打开%s终端失败：%v", title, launchErr)
+	if result == 0 {
+		return fmt.Errorf("打开日志失败：%v", launchErr)
 	}
-	return &terminalProcess{handle: info.Process, scriptPath: scriptPath}, nil
+	return nil
 }
 
 func trayLogf(format string, args ...any) {

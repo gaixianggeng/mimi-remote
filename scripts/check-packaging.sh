@@ -41,6 +41,8 @@ for required_file in \
   scripts/build-windows-installer.ps1 \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
+  scripts/test-windows-agent-host.ps1 \
+  scripts/test-windows-app.ps1 \
   scripts/install-linux.sh \
   scripts/install-linux-tray.sh \
   scripts/test-install-linux-tray.sh \
@@ -304,3 +306,6 @@ grep -Fq 'replace_existing_artifacts' docs/install-upgrade-rollback.md \
   || fail "运维文档没有说明 Release/tap 部分失败的恢复边界。"
 
 echo "Packaging 门禁通过：Homebrew、systemd、Codex Skill 与本地发布入口保持一致。"
+
+grep -Fq 'global-json-file: windows/global.json' .github/workflows/release.yml \
+  || fail "Windows Release 必须显式安装 windows/global.json 固定的 .NET SDK。"
