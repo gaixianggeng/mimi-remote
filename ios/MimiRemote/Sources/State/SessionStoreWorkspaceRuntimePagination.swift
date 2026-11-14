@@ -7,6 +7,14 @@ struct DirectoryScopedLibraryRefreshOutcome {
 }
 
 extension SessionStore {
+    /// “全部”对应 CLI 的 --all；只有具体工作区才需要精确目录成员确认。
+    /// 全局条目已由 gateway 裁剪授权，不能再用“是否打开过该目录”将它隐藏。
+    func sessionLibrarySessions(workspaceID: String) -> [AgentSession] {
+        workspaceID == "all"
+            ? sessionLibrarySessions
+            : openedWorkspaceSessionLibrarySessions.filter { $0.projectID == workspaceID }
+    }
+
     func availableSessionRuntimeProviders(
         client: any SessionStoreAPIClient
     ) async -> [String] {

@@ -159,6 +159,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -testLanguage zh-Hans \
   -testRegion CN \
   ${quarantine_skip_args[@]+"${quarantine_skip_args[@]}"} \
+  -only-testing:MimiRemoteTests/SessionLibraryScopeTests \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
   -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
