@@ -122,6 +122,36 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(client.requestedWorkspaceIDs, [priority.id, priority.id, other.id, other.id])
     }
 
+    func testReusedSelectedDirectorySurvivesGlobalPruningWithoutExtraRequests() async {
+        let priority = AgentWorkspace(project: makeProject(id: "cached-priority"))
+        let selected = AgentWorkspace(project: makeProject(id: "cached-selected"))
+        let cached = makeSession(id: "cached-valid", projectID: selected.id, title: "目录中仍存在", status: "history", source: "codex")
+        let deleted = makeSession(id: "cached-deleted", projectID: selected.id, title: "目录中已删除", status: "history", source: "codex")
+        let client = MockSessionStoreClient(
+            projects: [priority.project, selected.project], sessions: [],
+            controlledGlobalSessionsHandler: { _, _ in SessionsPage(sessions: []) }
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(), conversationStore: ConversationStore(), logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [priority, selected]
+        store.selectedProjectID = selected.id
+        store.sessions = [cached, deleted]
+        store.controlledGlobalSessionIDs = [cached.id, deleted.id]
+        store.recordWorkspaceDirectorySessionPage([cached], in: selected, runtimeProvider: "codex", replacing: true)
+        store.sessionLibraryPriorityScope = store.workspaceDirectoryScopeKey(for: priority, runtimeProvider: "codex")
+
+        await store.refreshSessionLibraryIndex()
+
+        XCTAssertEqual(store.openedWorkspaceSessionLibrarySessions.map(\.id), [cached.id])
+        XCTAssertEqual(store.directoryScopedSessions(workspaceID: selected.id, runtimeProvider: "codex").map(\.id), [cached.id])
+        XCTAssertFalse(store.sessions.contains { $0.id == deleted.id }, "未被目录确认的旧行仍须删除")
+        XCTAssertTrue(store.controlledGlobalSessionIDs.isEmpty, "目录复用不能保留已撤销的全局资格")
+        XCTAssertEqual(client.requestedWorkspaceIDs, [priority.id], "保护复用行不能补发目录请求")
+        XCTAssertEqual(client.requestedWorkspaceRuntimes, ["codex"])
+    }
+
     func testSelectedWorkspaceNonPrimaryRuntimeRefreshesEveryFastRound() async {
         let workspace = AgentWorkspace(project: makeProject(id: "selected-mixed"))
         let codex = makeSession(id: "selected-codex", projectID: workspace.id, title: "Codex", status: "history", source: "codex")

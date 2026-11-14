@@ -161,9 +161,13 @@ extension SessionStore {
             // 其他渠道没有别的刷新来源，每轮都必须查询。主渠道未知时也不能跳过。
             if consistency == .fastIndexed, workspace.id == selectedProjectID,
                let primaryRuntimeProvider,
-               Self.normalizedRuntimeProvider(runtimeProvider) == Self.normalizedRuntimeProvider(primaryRuntimeProvider),
-               !directoryScopedSessions(workspaceID: workspace.id, runtimeProvider: runtimeProvider).isEmpty {
-                continue
+               Self.normalizedRuntimeProvider(runtimeProvider) == Self.normalizedRuntimeProvider(primaryRuntimeProvider) {
+                let cached = directoryScopedSessions(workspaceID: workspace.id, runtimeProvider: runtimeProvider)
+                if !cached.isEmpty {
+                    // 复用也是本轮目录依据；否则后续全局撤权会误删这些仍有效的行。
+                    outcome.fetchedSessionIDs.formUnion(cached.map(\.id))
+                    continue
+                }
             }
             guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return outcome }
             // deepseek 由原生通道承接时走协调器：它管代次、single-flight 与失败保留旧页。

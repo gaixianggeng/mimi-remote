@@ -1235,7 +1235,7 @@ extension SessionStore {
                     }
                     return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
                 }
-                // 全局发现资格仍撤销；本轮任一工作区精确目录返回的行继续按工作区展示。
+                // 全局发现资格仍撤销；本轮目录返回或主渠道复用的行继续按工作区展示。
                 // 目录补查前移后必须保留这份结果，不能再请求一次来恢复它。
                 let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(directoryPhaseSessionIDs)
                 if !revokedSessionIDs.isEmpty {
