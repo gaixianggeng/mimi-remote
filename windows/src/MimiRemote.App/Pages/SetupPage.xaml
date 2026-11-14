@@ -1,0 +1,17 @@
+<local:ClientPage x:Class="MimiRemote.App.Pages.SetupPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="14" Padding="0,0,0,20">
+            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+            <toolkit:SettingsCard Header="代码目录" Description="Mimi 在这里发现项目，并允许已配对的手机浏览。"/>
+            <TextBlock Text="使用 Codex 或 Claude 前，请先在电脑上安装并登录；也可以连接运行中的 DeepSeek Harness。" TextWrapping="Wrap"/>
+            <TextBox Header="代码目录" Text="{x:Bind ViewModel.Root, Mode=TwoWay}"/>
+            <Button Content="选择文件夹…" Command="{x:Bind ViewModel.PickCommand}"/>
+            <TextBlock Text="已有配置时只更新目录，保留配对和内置连接身份。目录变更需要短暂重启服务。" TextWrapping="Wrap"/>
+            <Button Content="完成设置并连接手机" Command="{x:Bind ViewModel.FinishCommand}" IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClientPage>

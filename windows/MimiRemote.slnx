@@ -1,4 +1,6 @@
 <Solution>
   <Project Path="src/MimiRemote.AgentHost/MimiRemote.AgentHost.csproj" />
   <Project Path="tests/MimiRemote.AgentHost.Tests/MimiRemote.AgentHost.Tests.csproj" />
+  <Project Path="src/MimiRemote.Core/MimiRemote.Core.csproj" />
+  <Project Path="tests/MimiRemote.Core.Tests/MimiRemote.Core.Tests.csproj" />
 </Solution>

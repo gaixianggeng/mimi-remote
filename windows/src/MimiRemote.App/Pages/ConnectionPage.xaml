@@ -1,0 +1,48 @@
+<local:ClientPage xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls" x:Class="MimiRemote.App.Pages.ConnectionPage">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="14" Padding="0,0,0,20">
+            <StackPanel Spacing="8">
+                <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+                <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+                <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+            </StackPanel>
+            <toolkit:SettingsCard Header="内置连接" Description="{x:Bind ViewModel.ConnectionState, Mode=OneWay}">
+                <Button Content="{x:Bind ViewModel.ToggleTitle, Mode=OneWay}" Command="{x:Bind ViewModel.ToggleCommand}"/>
+            </toolkit:SettingsCard>
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Relay.IsIdle, Mode=OneWay}" Header="中转服务" Description="优先直连，无法直连时通过中转连接。" IsExpanded="True">
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="12" Padding="0">
+                            <ComboBox Header="选择中转" SelectedIndex="{x:Bind ViewModel.Choice, Mode=TwoWay}" HorizontalAlignment="Stretch">
+                                <x:String>默认 Tailcat 自带</x:String>
+                                <x:String>自建中转</x:String>
+                                <x:String>Mimi 中转</x:String>
+                            </ComboBox>
+                            <TextBox Header="DERP Map HTTPS 地址" Text="{x:Bind ViewModel.Address, Mode=TwoWay}" Visibility="{x:Bind ViewModel.Custom, Mode=OneWay}" PlaceholderText="https://relay.example.com/derpmap.json"/>
+                            <TextBlock Text="Mimi 中转：已开通的手机会自动切换，没开通的继续走免费线路。" TextWrapping="Wrap"/>
+                            <Button Content="应用中转设置" Command="{x:Bind ViewModel.ApplyRelayCommand}"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
+            <InfoBar IsOpen="{x:Bind ViewModel.Relay.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Relay.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Relay.Failed), Mode=OneWay}"/>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.Relay.IsBusy, Mode=OneWay}"/>
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Network.IsIdle, Mode=OneWay}" Header="其他连接方式" Description="Tailscale 需要在电脑和手机上安装并登录。" IsExpanded="True">
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard Header="允许 Tailscale 连接">
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.Tailscale, Mode=TwoWay}" IsEnabled="{x:Bind ViewModel.NetworkAvailable, Mode=OneWay}" AutomationProperties.Name="允许 Tailscale 连接"/>
+                    </toolkit:SettingsCard>
+                    <toolkit:SettingsCard Header="允许局域网连接">
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.Lan, Mode=TwoWay}" IsEnabled="{x:Bind ViewModel.NetworkAvailable, Mode=OneWay}" AutomationProperties.Name="允许局域网连接"/>
+                    </toolkit:SettingsCard>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="12" Padding="0">
+                            <Button Content="应用连接方式" Command="{x:Bind ViewModel.ApplyNetworkCommand}" IsEnabled="{x:Bind ViewModel.NetworkAvailable, Mode=OneWay}"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
+            <InfoBar IsOpen="{x:Bind ViewModel.Network.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Network.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Network.Failed), Mode=OneWay}"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClientPage>

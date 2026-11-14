@@ -1,0 +1,29 @@
+<Window x:Class="MimiRemote.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <TitleBar x:Name="WindowTitleBar" Title="Mimi Remote" IsBackButtonVisible="True" BackRequested="BackRequested"/>
+        <NavigationView x:Name="Navigation" Grid.Row="1" IsSettingsVisible="False" OpenPaneLength="210"
+            IsBackButtonVisible="Collapsed" SelectionChanged="Navigate"
+            HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="会话" Tag="sessions" Icon="Message"/>
+                <NavigationViewItem Content="概览" Tag="overview" Icon="Home"/>
+                <NavigationViewItem Content="首次设置" Tag="setup" Icon="Folder"/>
+                <NavigationViewItem Content="连接手机" Tag="pair" Icon="CellPhone"/>
+                <NavigationViewItem Content="连接" Tag="connection" Icon="World"/>
+                <NavigationViewItem Content="AI 助手" Tag="assistants" Icon="Contact"/>
+                <NavigationViewItem Content="诊断与日志" Tag="diagnostics" Icon="Repair"/>
+                <NavigationViewItem Content="设置" Tag="settings" Icon="Setting"/>
+            </NavigationView.MenuItems>
+            <Grid x:Name="ContentHost" SizeChanged="ContentHostResized">
+                <Grid x:Name="ContentColumn" MaxWidth="1120" HorizontalAlignment="Center" Padding="28,20,28,24">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
+                    <Frame x:Name="ContentFrame" Grid.Row="1" Navigated="FrameNavigated" CacheSize="8"/>
+                </Grid>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>
