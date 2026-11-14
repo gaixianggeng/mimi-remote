@@ -1931,6 +1931,8 @@ struct ConversationActivityPayload: Codable, Hashable {
     let commandPresentationKind: ConversationCommandPresentationKind?
     let toolPresentationKind: ConversationToolPresentationKind?
     let turnHint: ConversationTurnHint?
+    let asyncQuestion: CodexAsyncQuestion?
+    let questionReply: CodexAsyncQuestionReply?
 
     enum CodingKeys: String, CodingKey {
         case category
@@ -1949,6 +1951,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         case commandPresentationKind = "command_presentation_kind"
         case toolPresentationKind = "tool_presentation_kind"
         case turnHint = "turn_hint"
+        case asyncQuestion = "async_question"
+        case questionReply = "question_reply"
     }
 
     init(
@@ -1967,7 +1971,9 @@ struct ConversationActivityPayload: Codable, Hashable {
         historyOutputID: String? = nil,
         commandPresentationKind: ConversationCommandPresentationKind? = nil,
         toolPresentationKind: ConversationToolPresentationKind? = nil,
-        turnHint: ConversationTurnHint? = nil
+        turnHint: ConversationTurnHint? = nil,
+        asyncQuestion: CodexAsyncQuestion? = nil,
+        questionReply: CodexAsyncQuestionReply? = nil
     ) {
         self.category = category
         self.displayTitle = displayTitle
@@ -1985,6 +1991,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         self.commandPresentationKind = commandPresentationKind
         self.toolPresentationKind = toolPresentationKind
         self.turnHint = turnHint
+        self.asyncQuestion = asyncQuestion
+        self.questionReply = questionReply
     }
 
     init(from decoder: Decoder) throws {
@@ -2014,6 +2022,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             toolPresentationKind = nil
         }
         turnHint = try? container.decodeIfPresent(ConversationTurnHint.self, forKey: .turnHint)
+        asyncQuestion = try container.decodeIfPresent(CodexAsyncQuestion.self, forKey: .asyncQuestion)
+        questionReply = try container.decodeIfPresent(CodexAsyncQuestionReply.self, forKey: .questionReply)
     }
 
     init?(item: [String: CodexAppServerJSONValue]) {
@@ -2263,6 +2273,8 @@ struct ConversationActivityPayload: Codable, Hashable {
             && lhs.historyOutputID == rhs.historyOutputID
             && lhs.commandPresentationKind == rhs.commandPresentationKind
             && lhs.toolPresentationKind == rhs.toolPresentationKind
+            && lhs.asyncQuestion == rhs.asyncQuestion
+            && lhs.questionReply == rhs.questionReply
     }
 
     func hash(into hasher: inout Hasher) {
@@ -2280,6 +2292,8 @@ struct ConversationActivityPayload: Codable, Hashable {
         hasher.combine(historyOutputID)
         hasher.combine(commandPresentationKind)
         hasher.combine(toolPresentationKind)
+        hasher.combine(asyncQuestion)
+        hasher.combine(questionReply)
     }
 
     private var commandSummaryText: String {

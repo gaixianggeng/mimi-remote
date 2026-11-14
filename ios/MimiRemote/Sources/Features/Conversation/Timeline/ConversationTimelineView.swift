@@ -298,6 +298,10 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
+        case .message(let message) where message.activityPayload?.asyncQuestion != nil:
+            ConversationAsyncQuestionCard(message: message, layout: layout, sessionID: displayedSessionID)
+        case .message(let message) where message.activityPayload?.needsDesktopWorktreeNotice == true:
+            ConversationDesktopWorktreeNotice(message: message, layout: layout)
         case .message(let message) where message.activityPayload?.turnHint != nil:
             if let hint = message.activityPayload?.turnHint {
                 ConversationTurnHintCard(
