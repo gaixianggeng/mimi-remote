@@ -489,7 +489,7 @@ struct SessionIndexRow: View {
     var isUnread = false
     let density: SessionIndexRowDensity
     var searchSnippet: String? = nil
-    /// 会话库跨项目时才传入需要显示的项目名；不改变工作区中的单项目行。
+    /// 会话库 iPad 宽列跨项目时才传入右轨标签；不改变工作区中的单项目行。
     var projectIdentity: String? = nil
     /// 详细行可选的 Git 分支；为 nil 时身份槽按调用方指定的规则回退。
     var branch: String? = nil
@@ -497,7 +497,7 @@ struct SessionIndexRow: View {
     var identityFallback: SessionIndexRowIdentityFallback = .project
     /// 前导槽承载什么。会话 tab 与工作区都传 `.runtimeIcon`；`.state` 留给旧式详细行。
     var leadingSlot: SessionIndexRowLeadingSlot = .state
-    /// 会话 tab 只在宽屏保留普通摘要；窄屏仅为搜索命中和跨项目身份增加第二行。
+    /// 会话 tab 只在 iPad 宽列保留普通摘要；窄屏仅为搜索命中增加第二行。
     var showsSessionPreview = false
     /// `.state` 槽在无状态时是否画灰环兜底；工作区总览关闭它来降低重复噪声。
     var showsIdleStateGlyph = false
@@ -609,7 +609,7 @@ struct SessionIndexRow: View {
 
             VStack(alignment: .leading, spacing: density.contentSpacing) {
                 titleLine(tokens: tokens)
-                if !isSessionLibrary || showsSessionPreview || !librarySupportingText.isEmpty {
+                if !isSessionLibrary || showsSessionPreview || !librarySupportingText.isEmpty || showsProjectRail {
                     metadataLine(tokens: tokens)
                 }
 
@@ -654,19 +654,6 @@ struct SessionIndexRow: View {
             Spacer(minLength: 12)
 
             if isSessionLibrary {
-                if let projectIdentity {
-                    Text(projectIdentity)
-                        .font(themeStore.uiFont(size: metadataPointSize))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(tokens.selectionFill, in: Capsule())
-                        // 标题优先，项目名有界截断，时间与状态仍保留自己的位置。
-                        .frame(minWidth: 32, maxWidth: density == .table ? 160 : 96, alignment: .trailing)
-                        .accessibilityHidden(true)
-                }
                 // 单行里没有第二行可放状态：需要处理或仍在运行时，状态文字占据时间的位置；
                 // 提醒、只看等标记跟在它前面。普通历史行照常显示时间。
                 stableStateIcons(tokens: tokens)
@@ -690,18 +677,43 @@ struct SessionIndexRow: View {
         }
     }
 
+    /// 只有会话库 iPad 宽列才画项目右轨；密度再兜一次底，防止调用方传错。
+    private var showsProjectRail: Bool {
+        guard isSessionLibrary, density == .table, !dynamicTypeSize.isAccessibilitySize,
+              let projectIdentity else { return false }
+        return !projectIdentity.isEmpty
+    }
+
     @ViewBuilder
     private func sessionLibraryPreviewLine(tokens: ThemeTokens) -> some View {
-        if !librarySupportingText.isEmpty {
-            Text(librarySupportingText)
-                .font(themeStore.uiFont(size: previewPointSize))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(
-                    dynamicTypeSize.isAccessibilitySize ? nil : (searchSnippet?.isEmpty == false ? 2 : 1)
-                )
-                .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
+        if showsProjectRail, let projectIdentity {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                if !librarySupportingText.isEmpty {
+                    libraryPreviewText(tokens: tokens)
+                }
+                Spacer(minLength: 12)
+                Text(projectIdentity)
+                    .font(themeStore.uiFont(size: metadataPointSize, weight: .medium))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .frame(width: density.identityColumnWidth, alignment: .trailing)
+                    .accessibilityHidden(true)
+            }
+        } else if !librarySupportingText.isEmpty {
+            libraryPreviewText(tokens: tokens)
         }
+    }
+
+    private func libraryPreviewText(tokens: ThemeTokens) -> some View {
+        Text(librarySupportingText)
+            .font(themeStore.uiFont(size: previewPointSize))
+            .foregroundStyle(tokens.secondaryText)
+            .lineLimit(
+                dynamicTypeSize.isAccessibilitySize ? nil : (searchSnippet?.isEmpty == false ? 2 : 1)
+            )
+            .truncationMode(.tail)
+            .fixedSize(horizontal: false, vertical: dynamicTypeSize.isAccessibilitySize)
     }
 
     private var librarySupportingText: String {
@@ -720,7 +732,7 @@ struct SessionIndexRow: View {
     ) -> String {
         let snippet = searchSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let preview = snippet.isEmpty ? ordinaryPreview : snippet
-        // 项目已在标题行独立展示，不再为了项目名增加第二行。
+        // 项目名只在 iPad 宽列第二行右侧展示，不并入摘要文字。
         return preview.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

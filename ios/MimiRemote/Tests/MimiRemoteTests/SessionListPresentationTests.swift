@@ -584,23 +584,84 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertNil(SessionListPresentation.branchToDisplay(" ", among: ["main", "feature/login"]))
     }
 
-    func testProjectIdentityShowsEveryProjectOnlyWhenBrowsingMultipleWorkspaces() {
-        for name in [" codex ", " mimi "] {
-            XCTAssertEqual(
-                SessionListPresentation.projectIdentityToDisplay(
-                    name, selectedWorkspaceID: "all", openedWorkspaceCount: 2
-                ),
-                name.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-        }
-        for (selection, count) in [("all", 1), ("all", 0), ("codex", 2)] {
-            XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(
-                "codex", selectedWorkspaceID: selection, openedWorkspaceCount: count
-            ))
-        }
-        XCTAssertNil(SessionListPresentation.projectIdentityToDisplay(
-            " ", selectedWorkspaceID: "all", openedWorkspaceCount: 2
-        ))
+    func testSessionLibraryProjectLabelsHiddenOutsideWideIPadRows() {
+        let sessions = [
+            makeSession(id: "a", projectID: "first", project: "app"),
+            makeSession(id: "b", projectID: "second", project: "web")
+        ]
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: sessions, workspaces: [], selectedWorkspaceID: "all", usesWideIPadRow: false
+        ), [:])
+    }
+
+    func testSessionLibraryProjectLabelsRequireAllWorkspacesAndMultipleVisibleProjects() {
+        let first = makeSession(id: "a", projectID: "first", project: " app ")
+        let second = makeSession(id: "b", projectID: "second", project: "web")
+        let workspaces = [
+            AgentWorkspace(id: "first", name: "app", path: "/tmp/work/app"),
+            AgentWorkspace(id: "second", name: "web", path: "/tmp/work/web")
+        ]
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: [first, second], workspaces: workspaces,
+            selectedWorkspaceID: "first", usesWideIPadRow: true
+        ), [:])
+        // 打开多个工作区不等于当前筛选结果中有多个项目。
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: [first, first], workspaces: workspaces,
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), [:])
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: [first, first, second], workspaces: workspaces,
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), ["first": "app", "second": "web"])
+    }
+
+    func testSessionLibraryProjectLabelsDisambiguateSameNamedProjects() {
+        let sessions = [
+            makeSession(id: "a", projectID: "work", project: " app "),
+            makeSession(id: "b", projectID: "personal", project: "app"),
+            makeSession(id: "c", projectID: "web", project: "web")
+        ]
+        let workspaces = [
+            AgentWorkspace(id: "work", name: "app", path: "/tmp/work/app"),
+            AgentWorkspace(id: "personal", name: "app", path: "/tmp/personal/app"),
+            AgentWorkspace(id: "web", name: "web", path: "/tmp/work/web")
+        ]
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: sessions + [sessions[0]], workspaces: workspaces,
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), ["work": "work/app", "personal": "personal/app", "web": "web"])
+        // 缺工作区或路径不足两段时仍保留项目名，不凭空生成路径。
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: sessions,
+            workspaces: [AgentWorkspace(id: "work", name: "app", path: "/app")],
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), ["work": "app", "personal": "app", "web": "web"])
+    }
+
+    func testSessionLibraryProjectLabelsSkipBlankNames() {
+        let blank = makeSession(id: "blank", projectID: "blank", project: " \n\t ")
+        let first = makeSession(id: "a", projectID: "first", project: "app")
+        let second = makeSession(id: "b", projectID: "second", project: "web")
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: [blank, first], workspaces: [],
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), [:])
+        XCTAssertEqual(SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: [blank, first, second], workspaces: [],
+            selectedWorkspaceID: "all", usesWideIPadRow: true
+        ), ["first": "app", "second": "web"])
+    }
+
+    func testProjectPathSuffix() {
+        XCTAssertEqual(SessionListPresentation.projectPathSuffix("/tmp/a/b"), "a/b")
+        XCTAssertNil(SessionListPresentation.projectPathSuffix("/b"))
+        XCTAssertEqual(SessionListPresentation.projectPathSuffix("/tmp/a/b/"), "a/b")
+        XCTAssertEqual(SessionListPresentation.projectPathSuffix("//tmp//a//b//"), "a/b")
+        XCTAssertNil(SessionListPresentation.projectPathSuffix(""))
+    }
+
+    func testSessionLibrarySupportingTextKeepsSearchSnippetAndEmptyPreview() {
         XCTAssertEqual(
             SessionIndexRow.librarySupportingText(
                 searchSnippet: " matched token ",

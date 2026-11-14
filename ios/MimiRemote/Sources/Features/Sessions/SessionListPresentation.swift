@@ -344,15 +344,43 @@ enum SessionListPresentation {
         return displayBranch
     }
 
-    static func projectIdentityToDisplay(
-        _ value: String,
+    /// 「会话」页 iPad 宽列第二行右侧的项目标签：projectID → 显示文字。
+    /// 返回空字典表示整页都不显示项目名。
+    static func sessionLibraryProjectLabels(
+        visibleSessions: [AgentSession],
+        workspaces: [AgentWorkspace],
         selectedWorkspaceID: String,
-        openedWorkspaceCount: Int
-    ) -> String? {
-        // 跨工作区混排时每行都需要归属，不能让多数项目依靠用户猜测。
-        guard selectedWorkspaceID == "all", openedWorkspaceCount > 1 else { return nil }
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? nil : normalized
+        usesWideIPadRow: Bool
+    ) -> [String: String] {
+        guard usesWideIPadRow, selectedWorkspaceID == "all" else { return [:] }
+
+        var namesByProjectID: [String: String] = [:]
+        for session in visibleSessions {
+            let name = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, namesByProjectID[session.projectID] == nil else { continue }
+            namesByProjectID[session.projectID] = name
+        }
+        guard namesByProjectID.count > 1 else { return [:] }
+
+        // 按项目而非会话计数，同一项目有多条会话不构成同名冲突。
+        let nameCounts = namesByProjectID.values.reduce(into: [String: Int]()) {
+            $0[$1, default: 0] += 1
+        }
+        return namesByProjectID.reduce(into: [:]) { labels, entry in
+            let (projectID, name) = entry
+            if nameCounts[name, default: 0] > 1,
+               let workspace = workspaces.first(where: { $0.id == projectID }) {
+                labels[projectID] = projectPathSuffix(workspace.path) ?? name
+            } else {
+                labels[projectID] = name
+            }
+        }
+    }
+
+    static func projectPathSuffix(_ path: String) -> String? {
+        let components = path.split(separator: "/")
+        guard components.count >= 2 else { return nil }
+        return components.suffix(2).joined(separator: "/")
     }
 
     static func normalizedBranch(_ branch: String?) -> String? {
