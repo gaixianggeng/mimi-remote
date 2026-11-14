@@ -22,6 +22,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw '.NET format failed.' }
         & $dotnet test MimiRemote.slnx -c Release --no-restore
         if ($LASTEXITCODE -ne 0) { throw '.NET tests failed.' }
+        & $dotnet restore src/MimiRemote.App/MimiRemote.App.csproj -p:Platform=x64 --locked-mode
+        if ($LASTEXITCODE -ne 0) { throw 'Native client restore failed.' }
+        & $dotnet format src/MimiRemote.App/MimiRemote.App.csproj --verify-no-changes --no-restore
+        if ($LASTEXITCODE -ne 0) { throw 'Native client format failed.' }
+        & $dotnet build src/MimiRemote.App/MimiRemote.App.csproj -c Release -p:Platform=x64 --no-restore
+        if ($LASTEXITCODE -ne 0) { throw 'Native client build failed.' }
         & $dotnet publish src/MimiRemote.AgentHost/MimiRemote.AgentHost.csproj -c Release -o $hostOutput --no-restore
         if ($LASTEXITCODE -ne 0) { throw 'Native AOT publish failed.' }
     } finally { Pop-Location }

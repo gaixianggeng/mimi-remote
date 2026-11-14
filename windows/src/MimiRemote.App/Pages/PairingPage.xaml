@@ -1,0 +1,17 @@
+<local:ClientPage x:Class="MimiRemote.App.Pages.PairingPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="14" Padding="0,0,0,20">
+            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+            <TextBlock Text="在手机端添加电脑时扫描二维码。这里只显示已启用的连接方式。" TextWrapping="Wrap"/>
+            <ComboBox Header="连接方式" ItemsSource="{x:Bind ViewModel.Networks}" DisplayMemberPath="Title"
+                SelectedItem="{x:Bind ViewModel.Network, Mode=TwoWay}" HorizontalAlignment="Stretch"/>
+            <Button Content="生成二维码" Command="{x:Bind ViewModel.GenerateCommand}"/>
+            <Image Source="{x:Bind ViewModel.Image, Mode=OneWay}" Width="280" Height="280" HorizontalAlignment="Left" AutomationProperties.Name="短期配对二维码"/>
+            <TextBlock Text="{x:Bind ViewModel.Note, Mode=OneWay}" TextWrapping="Wrap"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClientPage>
