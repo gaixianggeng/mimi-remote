@@ -126,6 +126,22 @@ extension ConversationQuestionReplyTests {
         XCTAssertFalse(ConversationActivityPayload(category: .toolCall, displayTitle: "codex_app.create_worktree", status: "failed", toolName: "other.create_worktree").needsDesktopWorktreeNotice)
     }
 
+    func testCompletedAsyncQuestionCanBeAnsweredWithoutRunningSocket() throws {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let conversations = ConversationStore()
+        let session = makeSession(id: "idle-async", projectID: "project", title: "Idle", status: "idle", source: "codex")
+        let store = SessionStore(appStore: appStore, conversationStore: conversations, logStore: LogStore(), clientFactory: {
+            MockSessionStoreClient(projects: [], sessions: [session])
+        })
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        let question = try parsedAsyncQuestion()
+        let message = ConversationMessage(role: .assistant, content: "问题", activityPayload: question.activityPayload, turnLifecycle: .completed)
+        XCTAssertNil(store.webSocket)
+        XCTAssertTrue(store.canAnswerAsyncQuestion(message, sessionID: session.id), "空闲会话通过既有新回合路径回答，不要求先有运行中的 Socket")
+    }
+
     func testAsyncAnswerUsesGuidanceAndRejectsDuplicateSubmission() async throws {
         let project = makeProject(id: "async-project")
         let running = makeSession(id: "async-session", projectID: project.id, title: "Async", status: "running", source: "codex", activeTurnID: "turn-async")
@@ -159,6 +175,7 @@ extension ConversationQuestionReplyTests {
         XCTAssertEqual(echo.kind, .questionReply)
         XCTAssertEqual(echo.content, "iPhone\n备注")
         XCTAssertEqual(echo.userDelivery, .guided)
+        XCTAssertEqual(store.selectedSession?.preview, "iPhone")
         XCTAssertFalse(store.canAnswerAsyncQuestion(message, sessionID: running.id), "未确认的本地答复阻止重复提交")
 
         var secondItem = asyncQuestionItem

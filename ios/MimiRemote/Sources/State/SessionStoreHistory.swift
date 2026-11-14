@@ -3259,7 +3259,9 @@ extension SessionStore {
         // 只入本地队列、尚未派发的消息不登记：下一个完成事件属于正在运行的那一轮，
         // 等队列真正派发时这里会再被调用一次。
         if source == .localUser, isDispatching { appReviewPrompt?.recordTurnSubmitted(sessionID: sessionID) }
-        let preview = rawPreview
+        // 异步答复的传输信封只发给 Agent；会话列表与时间线一样只展示答案。
+        let displayPreview = CodexAsyncQuestionReply(text: rawPreview)?.displayText ?? rawPreview
+        let preview = displayPreview
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isNewline)
             .first

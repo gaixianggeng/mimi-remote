@@ -20,9 +20,9 @@ extension SessionStore {
               !isProtocolReadOnlySession(session),
               session.allowsDirectInput,
               canControlSession(session),
-              connectedSessionID == sessionID,
-              connectedHostScope == appStore.activeHostScope,
-              webSocket != nil, webSocketStatus == .connected,
+              (!session.isRunning || (connectedSessionID == sessionID
+                  && connectedHostScope == appStore.activeHostScope
+                  && webSocket != nil && webSocketStatus == .connected)),
               connectionTermination == nil, !appStore.requiresRePairing, !isNetworkUnavailable,
               let question = message.activityPayload?.asyncQuestion else { return false }
         let progress = CodexAsyncQuestionProgress.make(
