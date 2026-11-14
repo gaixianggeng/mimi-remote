@@ -79,6 +79,7 @@ assert_scope macos_runner false false false true false scripts/test-macos-app.sh
 assert_scope release true false false false false scripts/check-release-artifacts.sh
 assert_scope release_source true false false false false scripts/check-release-source.sh
 assert_scope windows_release true false false false false scripts/build-windows-installer.ps1
+assert_scope host_cli_contract true false false true false contracts/host-cli/relay-cases.json
 assert_scope ios_release false true false false false scripts/ios_testflight_ci.sh
 assert_scope ios_asc_pin false true false false false config/release/ios-asc-cli.env
 assert_scope ios_asc_test false true false false false scripts/test-ios-asc-cli.sh
@@ -120,6 +121,24 @@ assert_scope mixed true true true false true \
   Cargo.lock \
   docs/support.md
 
+assert_windows_scope() {
+  local expected="$1"
+  shift
+  local paths="$test_root/windows.paths"
+  printf '%s\0' "$@" > "$paths"
+  local result
+  result="$(bash ./scripts/ci-pr-scope.sh --paths-file "$paths")"
+  printf '%s\n' "$result" | grep -Fqx "windows=$expected" || fail "Windows scope 分类错误：$*"
+}
+assert_windows_scope true windows/src/MimiRemote.AgentHost/Program.cs
+assert_windows_scope true packaging/windows/register-service.ps1
+assert_windows_scope true scripts/test-windows-agent-host.ps1
+assert_windows_scope true scripts/build-windows-installer.ps1
+assert_windows_scope true scripts/publish-windows-client.ps1
+assert_windows_scope true scripts/copy-windows-client-notices.ps1
+assert_windows_scope true contracts/host-cli/relay-cases.json
+assert_windows_scope false internal/httpapi/router.go
+
 ruby <<'RUBY'
 require "yaml"
 
@@ -157,11 +176,12 @@ expected_calls = {
   "ios" => "./.github/workflows/ios-ci.yml",
   "rust" => "./.github/workflows/claude-bridge-ci.yml",
   "macos" => "./.github/workflows/macos-ci.yml",
+  "windows" => "./.github/workflows/windows-ci.yml",
   "docs" => "./.github/workflows/docs-ci.yml",
 }
 jobs = gate.fetch("jobs")
 scope_job = jobs.fetch("scope")
-expected_scope_outputs = %w[go ios rust macos docs]
+expected_scope_outputs = %w[go ios rust macos windows docs]
 unless scope_job.fetch("outputs").keys.sort == expected_scope_outputs.sort
   abort("PR Gate 自检失败：Change scope 输出集合不完整。")
 end
@@ -194,11 +214,11 @@ abort("PR Gate 自检失败：最终 check 名称必须为 PR Gate。") unless f
 unless final_gate["if"].to_s.include?("always()")
   abort("PR Gate 自检失败：最终聚合 job 必须在上游失败或跳过时仍执行。")
 end
-expected_needs = %w[scope codex-protocol repository-safety go ios rust macos docs]
+expected_needs = %w[scope codex-protocol repository-safety go ios rust macos windows docs]
 unless Array(final_gate["needs"]).sort == expected_needs.sort
   abort("PR Gate 自检失败：最终聚合 job 的 needs 不完整。")
 end
-%w[MACOS_REQUIRED MACOS_RESULT DOCS_REQUIRED DOCS_RESULT].each do |name|
+%w[MACOS_REQUIRED MACOS_RESULT WINDOWS_REQUIRED WINDOWS_RESULT DOCS_REQUIRED DOCS_RESULT].each do |name|
   unless final_gate.to_s.include?(name)
     abort("PR Gate 自检失败：最终聚合缺少 #{name} 判断。")
   end

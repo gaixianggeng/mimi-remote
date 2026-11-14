@@ -51,3 +51,7 @@ docs/ios-markdown-rendering-design.md
 /logs/
 *.log
 *.tmp
+
+# .NET 构建输出（windows/ 工程）；锁文件需要提交，因此不忽略 packages.lock.json。
+windows/**/bin/
+windows/**/obj/
