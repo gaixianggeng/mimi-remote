@@ -71,6 +71,7 @@ struct WorkspaceWorkbenchRootView: View {
     let isPhone: Bool
     let onManageConnections: () -> Void
     let onOpenSession: (AgentSession) -> Void
+    var onOpenAllSessions: (() -> Void)? = nil
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
     @Binding var browseSelection: WorkspaceBrowseSelectionState
 
@@ -79,6 +80,7 @@ struct WorkspaceWorkbenchRootView: View {
             selectedSessionRuntime: $selectedRuntime,
             onStartSession: startSession,
             onOpenSession: onOpenSession,
+            onOpenAllSessions: onOpenAllSessions,
             manageConnections: manageConnections,
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: usesCompactNavigation

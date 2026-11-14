@@ -1,6 +1,38 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.workspace_current_directory_sessions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing sessions in this directory."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅显示当前目录的会话。"
+          }
+        }
+      }
+    },
+    "ui.view_all_sessions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View all sessions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看全部会话"
+          }
+        }
+      }
+    },
     "ui.managed_transfer_code_unavailable": {
       "comment": "Shown when this device has no saved invite code to show, e.g. after reinstalling.",
       "localizations": {

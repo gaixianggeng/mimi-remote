@@ -48,6 +48,7 @@ struct UnifiedWorkbenchShell: View {
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
     @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
+    @State private var allSessionsRequestID: UUID?
     @State private var sessionHistory = WorkbenchSessionHistory()
     @State private var isSessionJumpPanelPresented = false
 
@@ -1074,6 +1075,7 @@ struct UnifiedWorkbenchShell: View {
             : nil
 
         return SessionListView(
+            allSessionsRequestID: $allSessionsRequestID,
             onNewSession: { source in
                 presentSheet(.newSession, source: source)
             },
@@ -1106,6 +1108,10 @@ struct UnifiedWorkbenchShell: View {
             onOpenSession: { session in
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
+            },
+            onOpenAllSessions: {
+                allSessionsRequestID = UUID()
+                open(.sessions, layout: layout)
             },
             selectedRuntime: Binding(
                 get: {
