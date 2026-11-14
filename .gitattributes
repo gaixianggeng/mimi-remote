@@ -1,4 +1,6 @@
 # 保证 Windows CI checkout 后的 Go 源码仍使用 gofmt 期望的 LF。
 *.go text eol=lf
+*.cs text eol=lf
+*.xaml text eol=lf
 go.mod text eol=lf
 go.sum text eol=lf

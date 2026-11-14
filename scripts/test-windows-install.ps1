@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$RepositoryRoot)
 $ErrorActionPreference = 'Stop'
 $RepositoryRoot = if ($RepositoryRoot) { $RepositoryRoot } else { Join-Path $PSScriptRoot '..' }
@@ -24,6 +24,12 @@ foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mi
 if ($source.Contains('no longer supports Windows as the agentd host') -or $source.Contains('function InitializeSetup(): Boolean')) {
     throw 'Windows installer must not reject the supported local host path before installation.'
 }
+# #975 回归门禁：安装链路不得再出现可见控制台入口。
+foreach ($forbidden in @('SW_SHOW', '{cmd}')) {
+    if ($source.Contains($forbidden)) { throw "Installer source must not contain a console entry point: $forbidden" }
+}
+if (-not $source.Contains('mimi-agent-host.exe')) { throw 'Installer must ship the no-window agent host.' }
+if (-not $source.Contains('-HostPath ')) { throw 'Installer must register the scheduled task against the agent host.' }
 $prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'), $source.IndexOf('procedure CurStepChanged') - $source.IndexOf('function PrepareToInstall'))
 if ($prepareSource.IndexOf('StopManagedService;') -gt $prepareSource.IndexOf('StopTrayApp;')) {
     throw 'Upgrade must stop the managed service gracefully before terminating the shared tray image.'
@@ -56,7 +62,7 @@ if ($postInstallSource.IndexOf('ConfigurePrivateLanFirewallRule(True)') -gt $pos
     throw 'Unsafe inbound rules must be repaired before the upgraded scheduled task is registered or started.'
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
-foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $AgentPath', 'serve --managed-service --log-file', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
+foreach ($expected in @('New-ScheduledTaskTrigger -AtLogOn', 'New-ScheduledTaskPrincipal', '-LogonType Interactive', '-RunLevel Limited', 'New-ScheduledTaskAction -Execute $HostPath', '--log-file `"$LogPath`"', 'ExecutionTimeLimit ([TimeSpan]::Zero)', 'Stop-ScheduledTask -TaskName $TaskName', "State -in @('Running', 'Queued')", 'Scheduled task did not stop within 10 seconds')) {
     if (-not $registerSource.Contains($expected)) { throw "Task registration script is missing required policy: $expected" }
 }
 $registerBytes = [IO.File]::ReadAllBytes($register)
@@ -82,9 +88,9 @@ $assignment = $ast.Find({
         $node.Left.Extent.Text -eq '$action'
 }, $true)
 if (-not $assignment -or
-    -not $assignment.Right.Extent.Text.Contains('$AgentPath') -or
-    -not $assignment.Right.Extent.Text.Contains('--managed-service')) {
-    [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the direct managed-service action.')
+    -not $assignment.Right.Extent.Text.Contains('$HostPath') -or
+    -not $assignment.Right.Extent.Text.Contains('--log-file')) {
+    [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the no-window host action.')
     exit 1
 }
 '@
@@ -107,7 +113,8 @@ $firewallSource = Get-Content -LiteralPath $firewall -Raw
 foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateNetwork')", 'Get-NetConnectionProfile', 'Get-UnmanagedInboundAllowRules', 'Remove-UnmanagedInboundAllowRules', '-Profile Private', '-RemoteAddress LocalSubnet', '-Program $AgentPath', 'Get-NetFirewallApplicationFilter', 'Get-NetFirewallAddressFilter')) {
     if (-not $firewallSource.Contains($expected)) { throw "Firewall script is missing required policy: $expected" }
 }
-if ($source -match '(?m)^\[InstallDelete\]$') { throw 'Installer must not delete user configuration/log directories on normal uninstall.' }
+if ($source.Contains('[InstallDelete]')) { throw 'Installer must preserve the blanket InstallDelete prohibition.' }
+if (-not $source.Contains("DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'))")) { throw 'Upgrade must remove the legacy log shortcut explicitly.' }
 foreach ($script in @($register, $firewall, $signing, $build, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }
 $buildSource = Get-Content -LiteralPath $build -Raw
 if (-not $buildSource.Contains('target-feature=+crt-static')) { throw 'Windows release bridge must use a static Rust CRT.' }
