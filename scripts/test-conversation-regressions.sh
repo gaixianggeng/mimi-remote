@@ -196,6 +196,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ClaudeReplayCursorTests \
   -only-testing:MimiRemoteTests/CodexHistoryStreamingTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCodexAppServerFakeSmokeCoversThreadTurnAndApproval \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCLIUnmaterializedThreadHasEmptyFirstHistoryPage \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCLIEmptyHistoryCompatibilityPreservesOtherErrorsAndOlderPageFailures \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testCLICrossRepositoryApprovalSupportsOnceAndDeclineWithNumericRequestID \
   -only-testing:MimiRemoteTests/NewSessionBufferedReplyTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSessionStoreConsumesDirectAppServerEventsWithoutMobileProtocolConversion \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSharedLocalOpeningIdleThreadResumesToValidateWriter \
