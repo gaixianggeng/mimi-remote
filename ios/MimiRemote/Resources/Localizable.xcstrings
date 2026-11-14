@@ -1,6 +1,118 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.async_question_option": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        }
+      }
+    },
+    "ui.async_question_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent questions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 提问"
+          }
+        }
+      }
+    },
+    "ui.async_question_answer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答"
+          }
+        }
+      }
+    },
+    "ui.async_question_answered": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answered or skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回答或跳过"
+          }
+        }
+      }
+    },
+    "ui.async_question_control_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect and switch to control mode to answer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接会话并切换到控制模式后可回答。"
+          }
+        }
+      }
+    },
+    "ui.desktop_worktree_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desktop worktree operation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desktop 工作树操作"
+          }
+        }
+      }
+    },
+    "ui.desktop_worktree_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Desktop handles this operation. If it asks for repository access, confirm on your computer. This Desktop authorization cannot be transferred to Mimi. Command approvals for Codex sessions controlled by Mimi can be handled in the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此操作由 Codex Desktop 处理。如果出现仓库授权，请在电脑上确认。此 Desktop 授权无法转交 Mimi。由 Mimi 控制的 Codex 会话，其命令审批可在 App 内处理。"
+          }
+        }
+      }
+    },
     "ui.managed_transfer_code_unavailable": {
       "comment": "Shown when this device has no saved invite code to show, e.g. after reinstalling.",
       "localizations": {

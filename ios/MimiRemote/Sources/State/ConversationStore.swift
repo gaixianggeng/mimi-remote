@@ -353,17 +353,19 @@ final class ConversationStore: ObservableObject {
         userDelivery: UserMessageDelivery? = nil,
         createdAt: Date? = nil
     ) {
+        let reply = CodexAsyncQuestionReply(text: text)
+        let displayText = reply?.displayText ?? text
         let scopedSessionID = scopedSessionID(for: sessionID)
         if let clientMessageID,
            var list = messagesByScopedSessionID[scopedSessionID],
            let index = messageIndex(clientMessageID: clientMessageID, sessionID: sessionID) {
-            let didChange = list[index].content != text ||
+            let didChange = list[index].content != displayText ||
                 list[index].sendStatus != sendStatus ||
                 (turnPayload != nil && list[index].turnPayload != turnPayload)
             guard didChange else {
                 return
             }
-            list[index].content = text
+            list[index].content = displayText
             list[index].sendStatus = sendStatus
             list[index].turnPayload = turnPayload ?? list[index].turnPayload
             list[index].userDelivery = userDelivery ?? list[index].userDelivery
@@ -376,10 +378,12 @@ final class ConversationStore: ObservableObject {
                 stableID: clientMessageID,
                 clientMessageID: clientMessageID,
                 role: .user,
-                content: text,
+                kind: reply == nil ? .message : .questionReply,
+                content: displayText,
                 createdAt: createdAt ?? Date(),
                 sendStatus: sendStatus,
                 turnPayload: turnPayload,
+                activityPayload: reply?.activityPayload,
                 userDelivery: userDelivery
             ),
             sessionID: sessionID,

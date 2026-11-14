@@ -381,6 +381,7 @@ final class SessionStore: ObservableObject {
     var selectionGeneration: UInt64 = 0 {
         didSet { clearSessionCreationLoading() }
     }
+    @Published var asyncQuestionSubmissions: Set<AsyncQuestionSubmissionKey> = []
     var webSocketConnectionGeneration = 0
     /// 单调递增的重连租约。attempt 会在 reset 后从 1 重新开始，不能单独作为异步任务身份。
     var webSocketReconnectGeneration: UInt64 = 0
