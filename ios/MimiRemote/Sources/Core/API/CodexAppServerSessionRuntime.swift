@@ -1388,16 +1388,29 @@ actor CodexAppServerSessionRuntime {
             shouldRefresh: contextsBySessionID[sessionID] == nil
         )
         var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
-        let result = try await sendRecoveringFromStaleInitialization(
-            builder.threadTurnsList(
-                threadID: sessionID,
-                cursor: cursor,
-                limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
-                sortDirection: "desc",
-                itemsView: "summary"
-            ),
-            timeout: longRunningRequestTimeout
-        )
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                builder.threadTurnsList(
+                    threadID: sessionID,
+                    cursor: cursor,
+                    limit: Self.threadTurnPageLimit(forMessageLimit: limit, loadMode: loadMode),
+                    sortDirection: "desc",
+                    itemsView: "summary"
+                ),
+                timeout: longRunningRequestTimeout
+            )
+        } catch {
+            // CLI 0.167 在首条用户消息之前尚未落盘。这个明确的空历史结果不能阻塞首轮发送；
+            // 仅接受当前 Codex 会话的第一页，其他历史读取错误仍交给原错误流程。
+            guard runtimeProvider == "codex", cursor == nil,
+                  case CodexAppServerConnectionError.appServer(let failure) = error,
+                  failure.code == -32600,
+                  failure.message == "thread \(sessionID) is not materialized yet; thread/turns/list is unavailable before first user message" else {
+                throw error
+            }
+            result = .object(["data": .array([]), "nextCursor": .null])
+        }
         guard let object = result?.objectValue else {
             throw AgentAPIError.invalidResponse
         }
