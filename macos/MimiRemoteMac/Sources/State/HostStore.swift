@@ -849,38 +849,36 @@ final class HostStore {
     }
 
     func configureTailcatDERPMap(_ derpMapURL: String) async {
-        guard !isBusy, owner == .macApp else {
-            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingTailcat = true
-        tailcatStatusRequestSequence &+= 1
-        tailcatError = nil
-        invalidateModulePairing()
-        tailcatNotice = nil
-        let wasEnabled = tailcatEnabled
-        defer {
-            isUpdatingTailcat = false
-            isBusy = false
-        }
-        do {
-            tailcatStatus = try await agent.configureTailcatDERPMap(derpMapURL)
-            if pairingNetwork == .tailcat {
-                pairing = nil
-                pairingNetwork = .tailscale
-            }
-            tailcatNotice = wasEnabled
-                ? "中转已更新，请在手机上重新扫码。"
-                : "中转配置已保存，开启内置连接后生效。"
-        } catch {
-            tailcatError = error.localizedDescription
+        await applyTailcatConfiguration(notice: tailcatEnabled
+            ? "中转已更新，请在手机上重新扫码。" : "中转配置已保存，开启内置连接后生效。") {
+            try await agent.configureTailcatDERPMap(derpMapURL)
         }
     }
 
-    /// 进入或退出 Mimi 托管连接（#896）。两个方向都会重建 Tailcat 身份并让旧二维码失效，
-    /// 所以与修改中继一样清掉当前 Tailcat 配对码。
     func setTailcatManagedMode(_ managed: Bool) async {
+        let notice = managed
+            ? (tailcatEnabled
+                ? "本机已启用 Mimi 中转。已开通的手机可使用中转，免费连接继续可用。"
+                : "本机已准备好 Mimi 中转，开启内置连接后生效。")
+            : "本机已停用 Mimi 中转。手机会尝试免费备用线路；旧设备可能需要重新扫码。"
+        await applyTailcatConfiguration(notice: notice) {
+            try await agent.setTailcatManagedMode(managed)
+        }
+    }
+
+    func setTailcatRelay(_ choice: String, url: String) async {
+        await applyTailcatConfiguration(notice: !tailcatEnabled
+            ? "中转配置已保存，开启内置连接后生效。"
+            : choice == "mimi" ? "本机已启用 Mimi 中转。已开通的手机自动跟随，免费连接继续可用。"
+            : "中转已更新，请在手机上重新扫码。") {
+            try await agent.setTailcatRelay(choice, url)
+        }
+    }
+
+    // 共用 UI 更新边界；模式、身份与中继的事务由 agentd 一次完成。
+    private func applyTailcatConfiguration(
+        notice: String, operation: () async throws -> TailcatStatus
+    ) async {
         guard !isBusy, owner == .macApp else {
             tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
             return
@@ -891,24 +889,17 @@ final class HostStore {
         tailcatError = nil
         invalidateModulePairing()
         tailcatNotice = nil
-        let wasEnabled = tailcatEnabled
         defer {
             isUpdatingTailcat = false
             isBusy = false
         }
         do {
-            tailcatStatus = try await agent.setTailcatManagedMode(managed)
+            tailcatStatus = try await operation()
             if pairingNetwork == .tailcat {
                 pairing = nil
                 pairingNetwork = .tailscale
             }
-            if managed {
-                tailcatNotice = wasEnabled
-                    ? "本机已启用 Mimi 中转。已开通的手机可使用中转，免费连接继续可用。"
-                    : "本机已准备好 Mimi 中转，开启内置连接后生效。"
-            } else {
-                tailcatNotice = "本机已停用 Mimi 中转。手机会尝试免费备用线路；旧设备可能需要重新扫码。"
-            }
+            tailcatNotice = notice
         } catch {
             tailcatError = error.localizedDescription
         }

@@ -32,7 +32,9 @@ type fakeTailcatSidecar struct {
 	resetCtxErr    error
 	configureCalls int
 	configuredURL  string
-	operationErr   error
+	// 真实 sidecar 写完中继后会反映到状态里；需要验证回读的测试打开它。
+	configureApplies bool
+	operationErr     error
 }
 
 type fakeManagedPairingService struct {
@@ -45,6 +47,12 @@ type fakeManagedPairingService struct {
 	syncCtxErr   error
 	resetCtxErr  error
 	operationErr error
+	modeCalls    int
+	modeManaged  bool
+	// 真实控制器切换模式后会反映到 sidecar 状态；需要验证回读的测试挂这个钩子。
+	onConfigureMode  func(managed bool)
+	relayCalls       int
+	onConfigureRelay func(context.Context, string) (tailcatStatus, error)
 }
 
 func (f *fakeManagedPairingService) Start() {}
@@ -114,6 +122,9 @@ func (f *fakeTailcatSidecar) Reset(ctx context.Context) (tailcatStatus, error) {
 func (f *fakeTailcatSidecar) ConfigureDERPMap(_ context.Context, rawURL string) (tailcatStatus, error) {
 	f.configureCalls++
 	f.configuredURL = rawURL
+	if f.configureApplies && f.operationErr == nil {
+		f.status.DERPMapURL = rawURL
+	}
 	return f.status, f.operationErr
 }
 func (f *fakeTailcatSidecar) Close() {}
@@ -419,6 +430,30 @@ func (f *fakeTailcatSidecar) ConfigureMode(_ context.Context, managed bool, comm
 	}
 	return f.status, nil
 }
-func (f *fakeManagedPairingService) ConfigureMode(_ context.Context, _ bool) (tailcatStatus, error) {
+func (f *fakeManagedPairingService) ConfigureMode(_ context.Context, managed bool) (tailcatStatus, error) {
+	f.modeCalls++
+	f.modeManaged = managed
+	if f.onConfigureMode != nil {
+		f.onConfigureMode(managed)
+	}
+	return f.status, f.operationErr
+}
+
+func (f *fakeTailcatSidecar) ConfigureRelay(ctx context.Context, url string, commit func() error) (tailcatStatus, error) {
+	if f.operationErr != nil {
+		return f.status, f.operationErr
+	}
+	if err := commit(); err != nil {
+		return f.status, err
+	}
+	f.status.Mode = "self_hosted"
+	return f.ConfigureDERPMap(ctx, url)
+}
+
+func (f *fakeManagedPairingService) ConfigureRelay(ctx context.Context, url string) (tailcatStatus, error) {
+	f.relayCalls++
+	if f.onConfigureRelay != nil {
+		return f.onConfigureRelay(ctx, url)
+	}
 	return f.status, f.operationErr
 }

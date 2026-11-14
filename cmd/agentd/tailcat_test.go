@@ -117,6 +117,9 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 		}
 	}
 	var stdout, stderr bytes.Buffer
+	if err := runTailcatWithWriters([]string{"tailcat", "relay", "set", "--choice", "mimi", "--config", path, "--json"}, &stdout, &stderr); err != nil || receivedAction != "relay-set" {
+		t.Fatalf("分层中转命令未使用本机控制接口：action=%s err=%v", receivedAction, err)
+	}
 	if err := runTailcatWithWriters([]string{"tailcat", "configure", "--config", path, "--derp-map-url="}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "请先退出托管模式") {
 		t.Fatalf("命令应展示拒绝手动改中继的中文错误：%v", err)
 	}
@@ -174,5 +177,25 @@ func TestTailcatPairOnlyAdvertisesManagedFieldsInManagedMode(t *testing.T) {
 				t.Fatalf("%s 模式的二维码对 %s 的处理不对：%s", tc.mode, field, pairURL)
 			}
 		}
+	}
+}
+
+func TestTailcatRelaySetRequiresChoiceAndRejectsCrossUse(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	for _, args := range [][]string{{"tailcat", "relay", "set"}, {"tailcat", "relay"}, {"tailcat", "relay", "other"}} {
+		if err := runTailcatWithWriters(args, &stdout, &stderr); err == nil {
+			t.Fatalf("缺少 choice 或无效分层命令不能成功：%v", args)
+		}
+	}
+
+	err := runTailcatWithWriters([]string{"tailcat", "relay-set"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--choice") {
+		t.Fatalf("relay-set 缺少 --choice 时必须失败：%v", err)
+	}
+
+	err = runTailcatWithWriters([]string{"tailcat", "enable", "--choice=mimi"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "只适用于 tailcat relay-set") {
+		t.Fatalf("--choice 不能用于其他子命令：%v", err)
 	}
 }

@@ -263,6 +263,19 @@ func (s *tailcatSidecarSupervisor) reconfigure(
 }
 
 func (c *managedPairingController) ConfigureMode(ctx context.Context, managed bool) (tailcatStatus, error) {
+	return c.configureConnection(ctx, func(clearRegistration func() error) (tailcatStatus, error) {
+		return c.tailcat.ConfigureMode(ctx, managed, clearRegistration)
+	})
+}
+
+// 两种入口共用注册快照与失败策略重放，不能先提交退出托管再单独换中继。
+func (c *managedPairingController) ConfigureRelay(ctx context.Context, url string) (tailcatStatus, error) {
+	return c.configureConnection(ctx, func(clearRegistration func() error) (tailcatStatus, error) {
+		return c.tailcat.ConfigureRelay(ctx, url, clearRegistration)
+	})
+}
+
+func (c *managedPairingController) configureConnection(ctx context.Context, apply func(func() error) (tailcatStatus, error)) (tailcatStatus, error) {
 	c.operationMu.Lock()
 	defer c.operationMu.Unlock()
 	if c.stateLoadError != nil {
@@ -270,7 +283,7 @@ func (c *managedPairingController) ConfigureMode(ctx context.Context, managed bo
 	}
 	previous := c.state
 	touched := false
-	status, err := c.tailcat.ConfigureMode(ctx, managed, func() error {
+	status, err := apply(func() error {
 		touched = true
 		return c.saveStateLocked(managedPairingState{Version: 1})
 	})
