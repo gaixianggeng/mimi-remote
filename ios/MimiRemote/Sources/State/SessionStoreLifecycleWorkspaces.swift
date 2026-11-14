@@ -601,6 +601,27 @@ extension SessionStore {
         return true
     }
 
+    func takeOverSession(_ session: AgentSession) {
+        guard !isProtocolReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.read_only"))
+            return
+        }
+        setSessionControlState(.takenOver, sessionID: session.id)
+        if session.id == selectedSessionID, session.isRunning {
+            // 接管前消息区已经由 selectSession/刷新用 thread/read 快照兜底；backlog 走状态级
+            // 回放（completed 内容仍会补播），完整回放会把旧 delta 再直播一遍。
+            connectWebSocket(session, replayBufferedEvents: false)
+        }
+        setStatusMessage(L10n.text("ui.taken_over_to_ipad"))
+    }
+
+    func takeOverSelectedSession() {
+        guard let session = selectedSession else {
+            return
+        }
+        takeOverSession(session)
+    }
+
     func refreshAll(autoAttach: Bool = false) async {
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
@@ -612,6 +633,15 @@ extension SessionStore {
         defer { isLoading = false }
         let hostScope = appStore.activeHostScope
         let connectionGeneration = appStore.connectionGeneration
+        var hostDidRespond = false
+        defer {
+            if hostDidRespond,
+               appStore.activeHostScope == hostScope,
+               appStore.connectionGeneration == connectionGeneration {
+                // 连接刚被证明可用：立即补会话库，节流仍由 IfStale 负责。
+                Task { @MainActor [weak self] in await self?.refreshSessionLibraryIndexIfStale() }
+            }
+        }
         let requestedSelectionLease = currentSelectionLease()
         let requestedProjectID = requestedSelectionLease.projectID
         var foregroundLease = requestedSelectionLease
@@ -625,6 +655,8 @@ extension SessionStore {
             guard connectionGeneration == appStore.connectionGeneration else {
                 return
             }
+            hostDidRespond = true
+            scheduleInitialSessionLibraryGateTimeout(profileID: hostScope.profileID)
             didObserveHost = true
             recordCarStatusHostObservation(at: sessionListNow())
             setProjectsIfChanged(fetchedProjects)

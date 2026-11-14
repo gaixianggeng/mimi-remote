@@ -68,23 +68,26 @@ final class NewSessionBufferedReplyTests: XCTestCase {
         XCTAssertEqual(verifiedListRequest.params?.objectValue?["useStateDbOnly"]?.boolValue, false)
         transportResponse(transport, id: verifiedListRequest.id, result: #"{"data":[],"nextCursor":null}"#)
         await refreshTask.value
+        let libraryRequestCount = try await finishDirectInitialSessionLibraryRefresh(
+            store: store, transport: transport, after: 4
+        )
         XCTAssertEqual(store.selectedProjectID, project.id)
 
         let sendTask = Task { await store.sendPrompt("帮我验收 direct Store") }
-        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5)
-        let modelList = try decodeAppServerRequest(threadMessages[4])
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 5 + libraryRequestCount)
+        let modelList = try decodeAppServerRequest(threadMessages[4 + libraryRequestCount])
         XCTAssertEqual(modelList.method, "model/list")
         transport.enqueue(#"{"id":\#(try jsonFragment(for: modelList.id)),"result":{"models":[{"id":"gpt-store-default","name":"Store Default","provider":"openai","isDefault":true}]}}"#)
 
-        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6)
-        let threadStart = try decodeAppServerRequest(threadStartMessages[5])
+        let threadStartMessages = try await waitForFakeAppServerMessages(transport, count: 6 + libraryRequestCount)
+        let threadStart = try decodeAppServerRequest(threadStartMessages[5 + libraryRequestCount])
         XCTAssertEqual(threadStart.method, "thread/start")
         XCTAssertNil(threadStart.params?.objectValue?["model"]?.stringValue)
         XCTAssertNil(threadStart.params?.objectValue?["modelProvider"])
         transport.enqueue(#"{"id":\#(try jsonFragment(for: threadStart.id)),"result":{"thread":{"id":"thr_store_direct","sessionId":"thr_store_direct","preview":"帮我验收 direct Store","ephemeral":false,"modelProvider":"openai","createdAt":1780490100,"updatedAt":1780490101,"status":{"type":"idle"},"path":null,"cwd":"/tmp/store-direct","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Store 直连","turns":[]}}}"#)
 
-        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7)
-        let turnStart = try decodeAppServerRequest(turnMessages[6])
+        let turnMessages = try await waitForFakeAppServerMessages(transport, count: 7 + libraryRequestCount)
+        let turnStart = try decodeAppServerRequest(turnMessages[6 + libraryRequestCount])
         XCTAssertEqual(turnStart.method, "turn/start")
         XCTAssertEqual(turnStart.params?.objectValue?["model"]?.stringValue, "gpt-store-default")
         let collaborationMode = try XCTUnwrap(turnStart.params?.objectValue?["collaborationMode"]?.objectValue)

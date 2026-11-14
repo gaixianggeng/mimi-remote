@@ -996,6 +996,19 @@ extension SessionStore {
         )
     }
 
+    /// 同一台电脑只启动一次计时；目录失败时也在三秒后放行。
+    func scheduleInitialSessionLibraryGateTimeout(profileID: String) {
+        guard !settledInitialSessionLibraryProfileIDs.contains(profileID),
+              initialSessionLibraryGateTimeoutScheduledProfileIDs.insert(profileID).inserted else { return }
+        let delay = UInt64(initialSessionLibraryGateTimeout * 1_000_000_000)
+        Task { @MainActor [weak self] in
+            await self?.sessionListSleep(delay)
+            // 取消配对会移除计时记录；迟到的计时不能重新放回已删除电脑。
+            guard self?.initialSessionLibraryGateTimeoutScheduledProfileIDs.contains(profileID) == true else { return }
+            self?.settleInitialSessionLibrary(profileID: profileID)
+        }
+    }
+
     /// 为单一全局侧栏加载跨工作区轻量索引。只取 thread/list 首屏，不读取任何消息历史。
     func refreshSessionLibraryIndex(authoritative: Bool = false) async {
         let hostScope = appStore.activeHostScope
@@ -1052,8 +1065,9 @@ extension SessionStore {
         // 后台没有可用的 Runtime bundle；被取消的遍历也不算刷新过，回前台的轮询才会从首页重走（#792）。
         guard appStore.activeHostScope == hostScope, !isAppInBackground else { return }
         let generation = appStore.connectionGeneration
+        var succeededRequestCount = 0
         defer {
-            if appStore.activeHostScope == hostScope, !Task.isCancelled {
+            if appStore.activeHostScope == hostScope, !Task.isCancelled, succeededRequestCount > 0 {
                 lastSessionLibraryIndexRefreshAt = sessionListNow()
             }
         }
@@ -1065,27 +1079,41 @@ extension SessionStore {
             return
         }
 
-        // 先确认浏览来源的目录归属，才能立即展示它；只移动原有补查，不重复请求。
+        scheduleInitialSessionLibraryGateTimeout(profileID: hostScope.profileID)
+        let primaryRuntimeProvider = try? await primarySessionRuntimeProvider(client: client)
+
+        // 所有工作区先确认目录归属，浏览来源优先；只移动原有补查，不重复请求。
         let priorityScope = sessionLibraryPriorityScope
         let priorityWorkspace = workspaces.first { workspace in
             priorityScope?.hostScope == hostScope
                 && priorityScope?.workspaceID == workspace.id
                 && priorityScope?.workspacePath == standardizedSessionListPath(workspace.path)
         }
-        var priorityDirectorySessionIDs: Set<SessionID> = []
-        if let priorityWorkspace {
-            priorityDirectorySessionIDs = await refreshDirectoryScopedSessionLibrary(
-                workspace: priorityWorkspace,
+        let orderedWorkspaces = (priorityWorkspace.map { [$0] } ?? [])
+            + workspaces.filter { $0.id != priorityWorkspace?.id }
+        var directoryPhaseSessionIDs: Set<SessionID> = []
+        for workspace in orderedWorkspaces {
+            guard appStore.activeHostScope == hostScope,
+                  appStore.connectionGeneration == generation, !Task.isCancelled else { return }
+            let outcome = await refreshDirectoryScopedSessionLibrary(
+                workspace: workspace,
                 consistency: consistency,
                 restartFromFirst: authoritative,
-                preferredRuntimeProvider: priorityScope?.runtimeProvider,
+                preferredRuntimeProvider: workspace.id == priorityWorkspace?.id ? priorityScope?.runtimeProvider : nil,
+                primaryRuntimeProvider: primaryRuntimeProvider,
                 client: client,
                 hostScope: hostScope,
                 generation: generation
             )
+            directoryPhaseSessionIDs.formUnion(outcome.fetchedSessionIDs)
+            succeededRequestCount += outcome.succeededRequestCount
         }
         guard appStore.activeHostScope == hostScope,
               appStore.connectionGeneration == generation, !Task.isCancelled else { return }
+
+        if succeededRequestCount > 0 {
+            settleInitialSessionLibrary(profileID: hostScope.profileID)
+        }
 
         // 再用最多 4 页、每页 50 条的有界全局发现补齐外部 Worktree。
         // agentd 返回的每一项都已经过项目、browse_root 与 git common-dir 裁剪；
@@ -1138,6 +1166,7 @@ extension SessionStore {
                         discoveredByRuntime[runtimeProvider, default: []].formUnion(pageSessionIDs)
                         discoveredSessions.append(contentsOf: page.sessions)
                         pageCountByRuntime[runtimeProvider, default: 0] += 1
+                        succeededRequestCount += 1
                         guard page.hasMore,
                               let nextCursor = page.nextCursor,
                               nextCursor != cursor,
@@ -1206,9 +1235,9 @@ extension SessionStore {
                     }
                     return !(discoveredByRuntime[runtime]?.contains(sessionID) ?? false)
                 }
-                // 全局发现资格仍撤销；刚由精确目录返回的行继续按工作区展示。
+                // 全局发现资格仍撤销；本轮目录返回或主渠道复用的行继续按工作区展示。
                 // 目录补查前移后必须保留这份结果，不能再请求一次来恢复它。
-                let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(priorityDirectorySessionIDs)
+                let revokedSessionIDs = revokedGlobalSessionIDs.subtracting(directoryPhaseSessionIDs)
                 if !revokedSessionIDs.isEmpty {
                     removeWorkspaceDirectorySessionIDs(Set(revokedSessionIDs))
                     let retainedSessions = sessions.filter { !revokedSessionIDs.contains($0.id) }
@@ -1238,20 +1267,7 @@ extension SessionStore {
             }
         }
 
-        guard !workspaces.isEmpty else { return }
-        // 全局会话库属于后台发现流量，按工作区串行读取。高负载时宁可逐步补齐侧栏，
-        // 也不让多个 thread/list 与前台 resume/turn 请求同时挤压 app-server。
-        for workspace in workspaces where workspace.id != priorityWorkspace?.id {
-            guard appStore.activeHostScope == hostScope, !Task.isCancelled else { return }
-            await refreshDirectoryScopedSessionLibrary(
-                workspace: workspace,
-                consistency: consistency,
-                restartFromFirst: authoritative,
-                client: client,
-                hostScope: hostScope,
-                generation: generation
-            )
-        }
+
     }
 
     private func publishControlledGlobalSessions(_ discovered: [AgentSession], ids: Set<SessionID>) {

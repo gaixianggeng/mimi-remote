@@ -520,6 +520,10 @@ final class SessionStore: ObservableObject {
     var missingRunningSessionStateByID: [SessionID: MissingRunningSessionState] = [:]
     var missingRunningSessionReconciliationTasksByID: [SessionID: Task<Void, Never>] = [:]
     var lastSessionLibraryIndexRefreshAt: Date?
+    /// 本进程内已完成目录首轮或超时放行的电脑；断连后保留，暖切回不再等待。
+    @Published private(set) var settledInitialSessionLibraryProfileIDs: Set<String> = []
+    var initialSessionLibraryGateTimeoutScheduledProfileIDs: Set<String> = []
+    let initialSessionLibraryGateTimeout: TimeInterval = 3
     var sessionLibraryIndexRefreshJob: SessionLibraryIndexRefreshJob?
     /// 浏览工作区与已打开会话的项目不同；后台补齐只按当前 Host 的浏览来源排序。
     var sessionLibraryPriorityScope: WorkspaceDirectorySessionScopeKey?
@@ -1938,25 +1942,14 @@ final class SessionStore: ObservableObject {
         !session.allowsDirectInput
     }
 
-    func takeOverSession(_ session: AgentSession) {
-        guard !isProtocolReadOnlySession(session) else {
-            setStatusMessage(L10n.text("ui.read_only"))
-            return
-        }
-        setSessionControlState(.takenOver, sessionID: session.id)
-        if session.id == selectedSessionID, session.isRunning {
-            // 接管前消息区已经由 selectSession/刷新用 thread/read 快照兜底；backlog 走状态级
-            // 回放（completed 内容仍会补播），完整回放会把旧 delta 再直播一遍。
-            connectWebSocket(session, replayBufferedEvents: false)
-        }
-        setStatusMessage(L10n.text("ui.taken_over_to_ipad"))
+    func settleInitialSessionLibrary(profileID: String) {
+        guard !settledInitialSessionLibraryProfileIDs.contains(profileID) else { return }
+        settledInitialSessionLibraryProfileIDs.insert(profileID)
     }
 
-    func takeOverSelectedSession() {
-        guard let session = selectedSession else {
-            return
-        }
-        takeOverSession(session)
+    func forgetInitialSessionLibrary(profileID: String) {
+        settledInitialSessionLibraryProfileIDs.remove(profileID)
+        initialSessionLibraryGateTimeoutScheduledProfileIDs.remove(profileID)
     }
 
     func canLoadEarlierHistory(sessionID: SessionID?) -> Bool {
