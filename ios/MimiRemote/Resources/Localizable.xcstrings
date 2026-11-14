@@ -1,6 +1,22 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.async_question_option": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        }
+      }
+    },
     "ui.async_question_title": {
       "localizations": {
         "en": {

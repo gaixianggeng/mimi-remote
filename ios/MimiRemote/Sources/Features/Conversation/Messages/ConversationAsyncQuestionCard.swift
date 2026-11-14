@@ -30,7 +30,7 @@ struct ConversationAsyncQuestionCard: View {
                         Text(item.title)
                             .font(themeStore.uiFont(.body, weight: .medium))
                         ForEach(Array(item.options.enumerated()), id: \.offset) { _, option in
-                            Text("• \(option)")
+                            Text(L10n.format("ui.async_question_option", option))
                                 .font(themeStore.uiFont(.subheadline))
                                 .foregroundStyle(tokens.secondaryText)
                         }
