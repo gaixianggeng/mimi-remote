@@ -254,8 +254,7 @@ extension UnifiedWorkbenchShell {
     func applyPendingRelaySetup(layout: WorkbenchLayout) {
         guard let profileID = sessionStore.mimiRelaySetupProfileID else { return }
         sessionStore.mimiRelaySetupProfileID = nil
-        guard profileID == sessionStore.appStore.activeConnectionProfileID,
-              ManagedConnectionSubscriptionView.isEntryVisible else { return }
+        guard profileID == sessionStore.appStore.activeConnectionProfileID else { return }
         openConnectionSettings(layout: layout)
         settingsNavigation.devicePath = [.managedConnection]
     }

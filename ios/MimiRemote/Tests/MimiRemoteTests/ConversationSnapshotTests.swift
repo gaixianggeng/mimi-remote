@@ -1782,6 +1782,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             conversationStore: conversationStore,
             logStore: LogStore()
         )
+        sessionStore.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let project = AgentProject(

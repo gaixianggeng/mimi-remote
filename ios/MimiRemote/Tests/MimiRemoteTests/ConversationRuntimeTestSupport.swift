@@ -461,6 +461,36 @@ func waitForFakeAppServerMessages(
     return await transport.sentMessages()
 }
 
+/// 直连夹具在 refreshAll 后也会立即补会话库。先完整响应它，后续发送断言仍按精确位置检查。
+/// 单 Runtime API 适配器沿用协议默认实现，三个渠道的全局查询均落到同一 Codex transport。
+@MainActor
+func finishDirectInitialSessionLibraryRefresh(
+    store: SessionStore,
+    transport: FakeCodexAppServerTransport,
+    after startIndex: Int,
+    result: String = #"{"data":[],"nextCursor":null}"#,
+    responseIsEmpty: Bool = true,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws -> Int {
+    let pagesPerRuntime = responseIsEmpty ? 2 : 1
+    let requestCount = RuntimeFeatureSupport.runtimeProviders.count * pagesPerRuntime
+    for offset in 0..<requestCount {
+        let messages = try await waitForFakeAppServerMessages(transport, count: startIndex + offset + 1, file: file, line: line)
+        let request = try decodeAppServerRequest(messages[startIndex + offset])
+        XCTAssertEqual(request.method, "thread/list", file: file, line: line)
+        XCTAssertNil(request.params?.objectValue?["cwd"], file: file, line: line)
+        XCTAssertEqual(request.params?.objectValue?["limit"]?.intValue, 50, file: file, line: line)
+        XCTAssertEqual(request.params?.objectValue?["useStateDbOnly"]?.boolValue,
+                       offset % pagesPerRuntime == 0, file: file, line: line)
+        transportResponse(transport, id: request.id, result: result)
+    }
+    if let job = store.sessionLibraryIndexRefreshJob { await job.task.value }
+    let messageCount = await transport.sentMessages().count
+    XCTAssertEqual(messageCount, startIndex + requestCount, file: file, line: line)
+    return requestCount
+}
+
 func waitForFakeAppServerRequest(
     _ transport: FakeCodexAppServerTransport,
     method: String,

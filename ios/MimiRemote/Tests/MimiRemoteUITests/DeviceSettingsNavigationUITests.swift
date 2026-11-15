@@ -16,11 +16,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         if name.contains("RepairPairingBanner") {
             app.launchArguments.append("--debug-show-repair-banner")
         }
-        if name.contains("ManagedConnection") {
-            app.launchArguments.append("--debug-enable-managed-connection")
-        }
         if name.contains("TailcatRelay") {
-            app.launchArguments += ["--debug-enable-managed-connection", "--debug-store-route-tailcat"]
+            app.launchArguments.append("--debug-store-route-tailcat")
         }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25))

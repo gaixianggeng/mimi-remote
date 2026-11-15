@@ -2,6 +2,8 @@
 
 ## 目标
 
+Mimi 中转入口与购买区在所有构建中显示，订阅只在中国大陆 App Store 提供。已移除旧的发布开关；内部 TestFlight 与提交审核使用同一套界面。提交审核前仍须完成真实 Sandbox 和跨网络验收。
+
 iOS 的日常 Nightly 由 GitHub Actions 每天从最新 `main` 上传 Internal TestFlight；本页的 `git testflight-push` 保留为维护者的本地、手工和恢复入口。它会先推送 `main`、核对远端 SHA，再从该 commit 创建干净 worktree，在本机完成 build number 预检、签名 Archive、上传和 `咪咪 Internal` 分发。
 
 正式 iOS 候选仍通过 iOS CI 手工 dispatch；Mac 和 agentd 正式版本仍由维护者推送 `v*` tag。Windows 安装器由同一个正式 Release workflow 验证并上传。Nightly 不执行 App Store 审核或公开上架。公开二进制、Go/iOS CI 和协议检查继续由 GitHub workflows 负责。

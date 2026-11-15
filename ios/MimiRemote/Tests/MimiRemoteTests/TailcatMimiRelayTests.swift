@@ -282,6 +282,74 @@ extension TailcatExperimentRoutingTests {
         XCTAssertNotNil(sessions.mimiRelayNotice, "用户要能看到这次为什么没启用")
     }
 
+    func testTransportFailureRollbackUsesNewRequestForRetry() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        ManagedUpgradeURLProtocol.configure { request in
+            if request.request.url?.lastPathComponent == "rollback" {
+                request.respond(body: #"{"state":"rolled_back"}"#)
+            } else {
+                // 系统取消传输会直接走 URLError 失败分支，不等待接口的 90 秒断网重试窗口。
+                request.client?.urlProtocol(request, didFailWithError: URLError(.cancelled))
+            }
+        }
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store, endpoint: "http://127.0.0.1:9", dnsName: nil)
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+        sessions.activateMimiRelay()
+        await sessions.mimiRelay.task?.value
+        sessions.activateMimiRelay()
+        await sessions.mimiRelay.task?.value
+
+        let requests = ManagedUpgradeURLProtocol.requests
+        let activations = requests.filter { $0.url?.lastPathComponent == "managed-pairing-operations" }
+        let ids = try activations.map { request -> String in
+            let body = try XCTUnwrap(request.httpBody)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: String])
+            return try XCTUnwrap(payload["request_id"])
+        }
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(Set(ids).count, 2, "传输失败后已回滚的请求不能再次用于启用")
+        XCTAssertEqual(requests.filter { $0.url?.lastPathComponent == "rollback" }.count, 2)
+    }
+
+    func testCancelledActivationClearsRequestWithoutDeletingNextAttempt() async throws {
+        URLProtocol.registerClass(ManagedUpgradeURLProtocol.self)
+        defer { URLProtocol.unregisterClass(ManagedUpgradeURLProtocol.self) }
+        let started = expectation(description: "activation accepted")
+        ManagedUpgradeURLProtocol.configure { request in
+            if request.request.url?.lastPathComponent == "rollback" {
+                request.respond(body: #"{"state":"rolled_back"}"#)
+            } else {
+                started.fulfill()
+            }
+        }
+        let fixture = try makeControllerFixture(startResults: [])
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        try await seedUpgradeProfile(fixture.store, endpoint: "http://127.0.0.1:9", dnsName: nil)
+        let profileID = try XCTUnwrap(fixture.store.activeConnectionProfileID)
+        let oldID = fixture.controller.relayActivationRequestID(profileID: profileID)
+        let sessions = SessionStore(
+            appStore: fixture.store, conversationStore: ConversationStore(), logStore: LogStore(),
+            tailcatExperimentController: fixture.controller
+        )
+        sessions.activateMimiRelay()
+        let task = try XCTUnwrap(sessions.mimiRelay.task)
+        await fulfillment(of: [started], timeout: 3)
+        sessions.cancelMimiRelay()
+        let nextID = fixture.controller.relayActivationRequestID(profileID: profileID)
+        XCTAssertNotEqual(nextID, oldID, "取消后可以立刻启动新操作")
+        await task.value
+
+        XCTAssertEqual(fixture.controller.relayActivationRequestID(profileID: profileID), nextID,
+                       "旧回滚完成后不能清掉新操作")
+        XCTAssertTrue(ManagedUpgradeURLProtocol.requests.contains { $0.url?.path.contains(oldID.uuidString) == true })
+    }
+
     /// 重试会立刻发起启用，必须等电脑的选择查回来，否则电脑刚离开 Mimi 时会被切回去。
     func testPullToRefreshWaitsForComputerChoiceBeforeRetrying() async throws {
         let fixture = try makeControllerFixture(startResults: [], managedProfile: true)

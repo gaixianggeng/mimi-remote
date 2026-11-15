@@ -148,7 +148,10 @@ final class LogStoreTests: XCTestCase {
             .store(in: &cancellables)
 
         store.append("hello", sessionID: sessionID)
-        let didFlush = await waitUntil { store.log(for: sessionID) == "hello" }
+        // 文本和渲染行分两次发布，首轮行解析结束后才开始统计后续空更新。
+        let didFlush = await waitUntil {
+            store.log(for: sessionID) == "hello" && store.lines(for: sessionID).map(\.text) == ["hello"]
+        }
         XCTAssertTrue(didFlush)
         let publishCountAfterVisibleText = publishCount
 

@@ -40,7 +40,7 @@ final class HarnessStreamReconnectTests: XCTestCase {
 
         // 2. 第一代连接：连上、服务端推一帧、客户端读到它。
         try await transport.connect()
-        try await waitFor { server.acceptedConnectionCount == 1 }
+        try await waitFor { server.upgradedConnectionCount == 1 }
         server.send(#"{"type":"item","streamId":"s1","value":{"type":"ready"}}"#)
 
         let first = try await receiveFrame(from: transport)
@@ -53,7 +53,7 @@ final class HarnessStreamReconnectTests: XCTestCase {
         //    这正是原先坏掉的地方——`closed` 是终态，connect() 直接返回，
         //    runtime 却继续把自己标成已连接。
         try await transport.connect()
-        try await waitFor { server.acceptedConnectionCount == 2 }
+        try await waitFor { server.upgradedConnectionCount == 2 }
         XCTAssertEqual(
             server.acceptedConnectionCount, 2,
             "close 之后必须能重新建连，而不是被当成永久退役"
@@ -79,13 +79,13 @@ final class HarnessStreamReconnectTests: XCTestCase {
         defer { Task { await transport.close() } }
 
         try await transport.connect()
-        try await waitFor { server.receivedTexts.isEmpty == false || server.acceptedConnectionCount == 1 }
+        try await waitFor { server.upgradedConnectionCount == 1 }
         try await transport.send(.open(streamID: "s1", endpoint: HarnessWireEndpoint.events, args: nil))
         try await waitFor { server.receivedTexts.count == 1 }
 
         await transport.close()
         try await transport.connect()
-        try await waitFor { server.acceptedConnectionCount == 2 }
+        try await waitFor { server.upgradedConnectionCount == 2 }
         try await transport.send(.open(streamID: "s2", endpoint: HarnessWireEndpoint.events, args: nil))
 
         try await waitFor { server.receivedTexts.count == 2 }

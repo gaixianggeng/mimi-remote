@@ -23,17 +23,17 @@
       "id" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
       "localizations" : [
         {
-          "description" : "Mimi 托管连接订阅",
-          "displayName" : "Mimi 托管连接",
+          "description" : "Mimi 中转订阅",
+          "displayName" : "Mimi 中转",
           "locale" : "zh_CN"
         },
         {
-          "description" : "Mimi Managed Connection subscription",
-          "displayName" : "Mimi Managed Connection",
+          "description" : "Mimi Relay subscription",
+          "displayName" : "Mimi Relay",
           "locale" : "en_US"
         }
       ],
-      "name" : "Mimi Managed Connection",
+      "name" : "Mimi Relay",
       "subscriptions" : [
         {
           "adHocOffers" : [
@@ -53,19 +53,19 @@
           },
           "localizations" : [
             {
-              "description" : "按月使用 Mimi 托管连接",
-              "displayName" : "月度订阅",
+              "description" : "按月使用 Mimi 中转",
+              "displayName" : "Mimi 中转月度订阅",
               "locale" : "zh_CN"
             },
             {
-              "description" : "Monthly access to Mimi Managed Connection",
-              "displayName" : "Monthly",
+              "description" : "Monthly access to Mimi Relay",
+              "displayName" : "Mimi Relay Monthly",
               "locale" : "en_US"
             }
           ],
           "productID" : "com.gaixianggeng.mimi.managed.monthly",
           "recurringSubscriptionPeriod" : "P1M",
-          "referenceName" : "Mimi Managed Monthly",
+          "referenceName" : "Mimi Relay Monthly",
           "subscriptionGroupID" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
           "type" : "RecurringSubscription"
         },
@@ -87,19 +87,19 @@
           },
           "localizations" : [
             {
-              "description" : "按年使用 Mimi 托管连接",
-              "displayName" : "年度订阅",
+              "description" : "按年使用 Mimi 中转",
+              "displayName" : "Mimi 中转年度订阅",
               "locale" : "zh_CN"
             },
             {
-              "description" : "Annual access to Mimi Managed Connection",
-              "displayName" : "Annual",
+              "description" : "Annual access to Mimi Relay",
+              "displayName" : "Mimi Relay Annual",
               "locale" : "en_US"
             }
           ],
           "productID" : "com.gaixianggeng.mimi.managed.annual",
           "recurringSubscriptionPeriod" : "P1Y",
-          "referenceName" : "Mimi Managed Annual",
+          "referenceName" : "Mimi Relay Annual",
           "subscriptionGroupID" : "AEB6B1B4-75BA-4DC7-81A4-BE8BAEA78F41",
           "type" : "RecurringSubscription"
         }

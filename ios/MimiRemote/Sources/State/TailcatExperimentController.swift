@@ -1319,13 +1319,15 @@ final class TailcatExperimentController: ObservableObject {
            let created = saved["created"] as? Date, now().timeIntervalSince(created) < 540,
            let raw = saved["id"] as? String, let id = UUID(uuidString: raw) { return id }
         let id = UUID()
-        // 只保存非敏感的幂等请求标识。退后台或重启后可领取原操作结果，避免重复启用。
+        // 只保存非敏感的幂等请求标识。进程意外退出后可领取原操作结果，避免重复启用。
         defaults.set(["id": id.uuidString, "created": now()], forKey: key)
         return id
     }
 
-    func clearRelayActivationRequest(profileID: String) {
-        defaults.removeObject(forKey: "mimi.relayActivation." + profileID)
+    func clearRelayActivationRequest(profileID: String, matching requestID: UUID? = nil) {
+        let key = "mimi.relayActivation." + profileID
+        if let requestID, defaults.dictionary(forKey: key)?["id"] as? String != requestID.uuidString { return }
+        defaults.removeObject(forKey: key)
     }
 
     func hasFreeRoute(profileID: String) -> Bool {

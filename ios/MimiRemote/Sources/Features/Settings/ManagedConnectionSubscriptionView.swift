@@ -2,36 +2,6 @@ import StoreKit
 import SwiftUI
 
 struct ManagedConnectionSubscriptionView: View {
-    static let entryInfoPlistKey = "MimiManagedConnectionEntry"
-    static let debugEntryLaunchArgument = "--debug-enable-managed-connection"
-
-    static var isEntryVisible: Bool {
-#if DEBUG
-        let allowsDebugLaunchArgument = true
-#else
-        let allowsDebugLaunchArgument = false
-#endif
-        return isEntryVisible(
-            infoPlistValue: Bundle.main.object(forInfoDictionaryKey: entryInfoPlistKey),
-            launchArguments: ProcessInfo.processInfo.arguments,
-            allowsDebugLaunchArgument: allowsDebugLaunchArgument
-        )
-    }
-
-    /// 托管连接尚未在 App Store 开放（#887）。只有发布脚本显式写入 Info.plist 的内部
-    /// TestFlight 构建，或带启动参数的 Debug 构建才显示入口。不按运行时 Sandbox
-    /// 环境判断：审核设备同样处于 Sandbox，那样会把未开放的付费页露给审核。
-    static func isEntryVisible(
-        infoPlistValue: Any?,
-        launchArguments: [String],
-        allowsDebugLaunchArgument: Bool
-    ) -> Bool {
-        if (infoPlistValue as? String) == "YES" {
-            return true
-        }
-        return allowsDebugLaunchArgument && launchArguments.contains(debugEntryLaunchArgument)
-    }
-
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var entitlementStore: ManagedConnectionEntitlementStore
@@ -55,11 +25,7 @@ struct ManagedConnectionSubscriptionView: View {
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     var deviceOwnerAuthenticator: any DeviceOwnerAuthenticating = SystemDeviceOwnerAuthenticator()
 
-    /// 内测阶段只用兑换码开通。TestFlight 购买不收费，又会显示价格和扣款说明，所以先收起购买入口；
-    /// 正式开放时改回 true（#949）。
-    static let showsPurchaseOptions = false
-
-    /// 页面先给要做的事（开通），介绍和隐私放在后面：看这一页的人多半手里已经有邀请码。
+    /// 页面先展示订阅或兑换入口，服务介绍与隐私说明放在后面。
     /// 打开这一页不改变线路；完成开通或点「启用」才算选择了 Mimi。
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -91,11 +57,12 @@ struct ManagedConnectionSubscriptionView: View {
                     addDeviceSection
                 }
                 ManagedConnectionDeviceListSection()
-                if entitlementStore.isRedemptionEntitlement { redemptionSection }
-            } else if !isChecking {
-                if showsProducts {
+                if entitlementStore.isRedemptionEntitlement {
                     productsSection
+                    redemptionSection
                 }
+            } else if !isChecking {
+                productsSection
                 redemptionSection
                 serviceSection
             }
@@ -561,10 +528,6 @@ struct ManagedConnectionSubscriptionView: View {
         }
     }
 
-    private var showsProducts: Bool {
-        Self.showsPurchaseOptions && !entitlementStore.isRedemptionEntitlement
-    }
-
     /// 大字号下单行标题会折行，上下要留白，否则文字贴到分隔线上。
     private var wrappedRowPadding: CGFloat {
         dynamicTypeSize.isAccessibilitySize ? 10 : 0
@@ -684,7 +647,7 @@ struct ManagedConnectionSubscriptionView: View {
                 .accessibilityIdentifier("settings.managedSubscription.getCode")
             }
         } header: {
-            sectionHeader(title: L10n.text("ui.managed_redemption_title"), isFirst: !showsProducts)
+            sectionHeader(title: L10n.text("ui.managed_redemption_title"), isFirst: false)
         } footer: {
             if let message = entitlementStore.redemptionErrorMessage {
                 Text(message)
@@ -808,14 +771,12 @@ struct ManagedConnectionSubscriptionView: View {
 
     private var moreInformationSection: some View {
         Section {
-            if Self.showsPurchaseOptions {
-                Button(L10n.text("ui.restore_purchases")) {
-                    Task { restoreResult = await entitlementStore.restorePurchases() }
-                }
-                .settingsRow()
-                .disabled(entitlementStore.isBusy)
-                .accessibilityIdentifier("settings.managedSubscription.restore")
+            Button(L10n.text("ui.restore_purchases")) {
+                Task { restoreResult = await entitlementStore.restorePurchases() }
             }
+            .settingsRow()
+            .disabled(entitlementStore.isBusy)
+            .accessibilityIdentifier("settings.managedSubscription.restore")
             NavigationLink {
                 ManagedConnectionPrivacyView()
             } label: {

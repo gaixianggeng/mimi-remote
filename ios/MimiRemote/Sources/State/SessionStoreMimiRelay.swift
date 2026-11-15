@@ -35,8 +35,7 @@ extension SessionStore {
             status: entitlements.status, grant: entitlements.currentGrant, now: Date()
         )
         if tailcatExperimentController?.relayServiceChoice(profileID: profile.id) == .mimi,
-           Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true),
-           ManagedConnectionSubscriptionView.isEntryVisible {
+           Self.shouldAutomaticallyActivateRelay(route: profile.connectionRoute, connected: connected, entitled: entitled, selectedMimi: true) {
             let key = profile.id + ":" + (entitlements.currentGrant?.entitlement.id ?? "")
             guard mimiRelay.attemptKey != key else { return }
             mimiRelay.attemptKey = key
@@ -78,7 +77,7 @@ extension SessionStore {
     /// 读取电脑上选择的中转：页面据此显示实际线路；电脑改选 Mimi 时手机跟随，已开通的会自动启用。
     /// 回到前台、重连和打开中转页时检查，其余连接变化最多 5 秒查一次。
     func syncComputerRelayChoice(force: Bool = false) {
-        guard mimiRelay.computerChoiceTask == nil, ManagedConnectionSubscriptionView.isEntryVisible, !isAppInBackground,
+        guard mimiRelay.computerChoiceTask == nil, !isAppInBackground,
               let controller = tailcatExperimentController,
               let profile = appStore.activeConnectionProfile, profile.connectionRoute.usesTailcat,
               appStore.connectionStatus.isConnected else { return }
@@ -191,6 +190,10 @@ extension SessionStore {
         mimiRelay.computerChoiceTask?.cancel()
         mimiRelay.computerChoiceTask = nil
         mimiRelay.computerChoiceCheckedAt = nil
+        if let profileID = mimiRelay.profileID {
+            // 回滚后的操作已终止；立刻重试必须使用新编号，不能重新领取旧失败结果。
+            tailcatExperimentController?.clearRelayActivationRequest(profileID: profileID)
+        }
         mimiRelay.task?.cancel()
         mimiRelay.task = nil
         mimiRelay.operationID = nil
@@ -216,28 +219,30 @@ extension SessionStore {
             mimiRelayNotice = L10n.text("ui.relay_activating")
             mimiRelay.task = Task { @MainActor in
                 defer { finishMimiRelay(operationID) }
+                let requestID = controller.relayActivationRequestID(profileID: context.profile.id)
+                // 回滚也会终止操作，包括传输失败；迟到的清理只能移除自己的编号。
+                defer { controller.clearRelayActivationRequest(profileID: context.profile.id, matching: requestID) }
                 do {
                     if context.profile.connectionRoute == .customTailcat {
                         try await controller.preserveFreeRoute(appStore: appStore)
                     }
-                    let requestID = controller.relayActivationRequestID(profileID: context.profile.id)
                     let link = try await context.requestRelayActivation(requestID: requestID, appStore: appStore)
                     guard let url = URL(string: link.pairURL) else { throw AgentAPIError.invalidResponse }
                     _ = try await applyManagedPairingURL(url, upgrading: context)
-                    controller.clearRelayActivationRequest(profileID: context.profile.id)
                     guard appStore.activeConnectionProfileID == context.profile.id, !Task.isCancelled else { return }
                     mimiRelayNotice = L10n.text("ui.relay_enabled")
                     _ = await refreshAfterConnectionCommit(maxWait: 10)
                 } catch is CancellationError {
+                    await context.rollbackRelayActivation(requestID: requestID, appStore: appStore)
                     return
                 } catch {
+                    await context.rollbackRelayActivation(requestID: requestID, appStore: appStore)
                     guard context.isCurrent(in: appStore), !Task.isCancelled else { return }
                     if appStore.acceptsCredentialInvalidation(error) {
                         appStore.markCredentialsInvalid()
                         return
                     }
                     if !(error is URLError) {
-                        controller.clearRelayActivationRequest(profileID: context.profile.id)
                         // 被明确拒绝就放弃这次选择。手机发起的启用会把电脑切到 Mimi，
                         // 留着选择，每次回前台都会再失败并再切一次；用户可以随时点启用重试。
                         abandonMimiSelection(profileID: context.profile.id, controller: controller)

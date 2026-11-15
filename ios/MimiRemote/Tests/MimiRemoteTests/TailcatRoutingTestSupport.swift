@@ -443,6 +443,18 @@ final class ManagedUpgradeURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// 并发事件测试只需要健康探测结束，不依赖本机随机端口是否碰巧有服务。
+final class TailcatUnavailableHealthURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+
+    override func stopLoading() {}
+}
+
 @MainActor
 extension TailcatExperimentRoutingTests {
     func makeControllerFixture(
@@ -454,7 +466,8 @@ extension TailcatExperimentRoutingTests {
         managedAddress: String? = "tailcat:managed-mac",
         bridgeAvailable: Bool = true,
         managedConnectionEventReporter: (any ManagedConnectionEventReporting)? = nil,
-        routeProbe: ConnectionRouteProbe? = nil
+        routeProbe: ConnectionRouteProbe? = nil,
+        agentAPISession: URLSession = .shared
     ) throws -> (
         controller: TailcatExperimentController,
         runtime: TailcatExperimentRuntimeStub,
@@ -496,7 +509,8 @@ extension TailcatExperimentRoutingTests {
             defaults: defaults,
             tokenStore: tokenStore,
             prefersLocalConnection: false,
-            routeProbe: routeProbe ?? { _, _, _ in }
+            routeProbe: routeProbe ?? { _, _, _ in },
+            agentAPISession: agentAPISession
         )
         let controller = TailcatExperimentController(
             appStore: store,

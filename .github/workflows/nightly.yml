@@ -368,7 +368,6 @@ jobs:
       publish_internal_testflight: true
       # Nightly 只进内部组，默认带 Mimi 中转入口，测试者自动更新也不会丢入口（#997）。
       # 带入口的构建不得提交 App Store 审核（#887）；提交审核走 ios-ci 手动 dispatch，默认不带入口。
-      enable_managed_connection: true
       what_to_test: ${{ needs.plan.outputs.what_to_test }}
     secrets: inherit
 

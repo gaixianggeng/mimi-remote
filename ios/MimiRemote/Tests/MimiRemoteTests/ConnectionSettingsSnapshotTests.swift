@@ -217,6 +217,11 @@ final class ConnectionSettingsSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .environmentObject(fixture.themeStore)
         .environmentObject(fixture.tailcatController)
         .environmentObject(fixture.lockScreenApprovalStore)
+        // 入口常显后，首次配置页也读取权益状态；快照使用独立状态对象。
+        .environmentObject(ManagedConnectionEntitlementStore(
+            storeKit: LiveManagedConnectionStoreKitClient(),
+            entitlementAPI: LiveManagedConnectionEntitlementAPIClient()
+        ))
         .environment(\.colorScheme, colorScheme)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
         .frame(width: width, height: height)

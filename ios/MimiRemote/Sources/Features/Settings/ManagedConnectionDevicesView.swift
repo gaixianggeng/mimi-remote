@@ -87,13 +87,11 @@ struct ManagedConnectionDevicesView: View {
         .task {
             sessionStore.syncComputerRelayChoice(force: true)
             // 启动时只刷新已有权益。这一页要显示开通状态，还没查过就在这里补一次。
-            guard ManagedConnectionSubscriptionView.isEntryVisible,
-                  case .loading = entitlementStore.status else { return }
+            guard case .loading = entitlementStore.status else { return }
             await entitlementStore.load()
         }
         .task {
             // 停留在这一页时也要跟上电脑的改动；离开页面时任务随之取消，退到后台时查询自己会跳过。
-            guard ManagedConnectionSubscriptionView.isEntryVisible else { return }
             await SessionStore.repeatUntilCancelled(every: Self.computerChoicePollInterval) {
                 sessionStore.syncComputerRelayChoice(force: true)
             }
@@ -293,7 +291,6 @@ struct ManagedConnectionDevicesView: View {
 
     /// 没有电脑时也要能走到开通：先拿到邀请码、再连电脑是合法顺序，这一页不能是死路。
     private var showsMimiSection: Bool {
-        guard ManagedConnectionSubscriptionView.isEntryVisible else { return false }
         return currentRoute?.usesTailcat ?? true
     }
 

@@ -2807,16 +2807,18 @@ extension SessionStore {
         guard generation == recoveryHistoryGeneration else {
             return false
         }
-        // full 因大小策略自动降级为 economy 时 loadHistory 仍会返回 true，但 summary
-        // 不能证明 detached 期间的 assistant/process 内容已经完整对账，必须保留全量 replay。
-        let didLoadFullHistory = didLoad && historyLoadedQualityBySessionID[sessionID] == .full
+        // full 首屏的状态已对账时，未完成的 Item 明细由既有分页任务继续补齐；
+        // 不能把 enriching 当作读取失败，否则正文先出现后又逐条回放旧生命周期。
+        // summary 没有完整基线，仍须保留内容回放，不能静默丢掉离线输出。
+        let quality = historyLoadedQualityBySessionID[sessionID]
+        let didLoadHistorySnapshot = didLoad && (quality == .full || quality == .enriching)
         reconciledRecoveryGenerationBySessionID[sessionID] = generation
-        recoveryHistorySucceededBySessionID[sessionID] = didLoadFullHistory
-        if didLoadFullHistory, reconcilesSessionState, let refreshed = sessionsByID[sessionID] {
+        recoveryHistorySucceededBySessionID[sessionID] = didLoadHistorySnapshot
+        if didLoadHistorySnapshot, reconcilesSessionState, let refreshed = sessionsByID[sessionID] {
             // 历史内容和 thread 状态是两个权威面；随后再校准一次状态，清除陈旧 running。
             await reconcileSessionStateAfterHistoryRefresh(refreshed)
         }
-        return didLoadFullHistory
+        return didLoadHistorySnapshot
     }
 
     static func replacingSessions(_ current: [AgentSession], with fresh: [AgentSession], projectID: String?) -> [AgentSession] {

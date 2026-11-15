@@ -106,8 +106,15 @@ enum SessionListPresentationState: Equatable {
         errorMessage: String?,
         connectionStatus: ConnectionStatus,
         hasLoadedWorkspaceCatalog: Bool = false,
-        isEstablishingConnection: Bool = false
+        isEstablishingConnection: Bool = false,
+        awaitsInitialSessionLibrary: Bool = false
     ) -> Self {
+        // 首次连接主渠道往往先到；短暂等待其余目录首屏，计时器保证三秒内放行。
+        if awaitsInitialSessionLibrary, case .connected = connectionStatus,
+           !isFiltering, !isNetworkUnavailable,
+           (errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            return .loading
+        }
         guard !hasVisibleSessions else { return .content }
 
         // 预热窗口内的 preflight 失败与列表失败都只是本轮尝试的结果，不是给用户的结论。
@@ -194,7 +201,12 @@ struct SessionListView: View {
         // 同一轮 body 求值内复用同一份轻量索引投影，避免每个 Section 的条件和内容
         // 访问都重新触发全量 filter / merge / sort。生命周期输入仍由当前快照驱动。
         let visibleSessions = self.visibleSessions
-        let dominantProject = SessionListPresentation.dominantIdentity(visibleSessions.map(\.project))
+        let projectLabels = SessionListPresentation.sessionLibraryProjectLabels(
+            visibleSessions: visibleSessions,
+            workspaces: sessionStore.recentWorkspaces,
+            selectedWorkspaceID: selectedWorkspaceID,
+            usesWideIPadRow: usesWideIPadRow
+        )
         let sessionPartition = makeSessionPartition(visibleSessions: visibleSessions)
         let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
@@ -216,8 +228,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
                         families: familyPartition.active,
-                        dominantProject: dominantProject,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
 
@@ -225,8 +237,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: L10n.text("ui.pinned"),
                         families: familyPartition.pinned,
-                        dominantProject: dominantProject,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
 
@@ -234,8 +246,8 @@ struct SessionListView: View {
                     sessionSection(
                         title: dateBucketTitle(group.bucket),
                         families: group.families,
-                        dominantProject: dominantProject,
-                        tokens: tokens
+                        tokens: tokens,
+                        projectLabels: projectLabels
                     )
                 }
             } else if !presentationState.showsCenteredLoading {
@@ -644,6 +656,10 @@ struct SessionListView: View {
         )
     }
 
+    private var usesWideIPadRow: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
+    }
+
     private func makeLifecycleInput(visibleSessions: [AgentSession]) -> SessionListLifecycleInput {
         SessionListLifecycleInput(
             membership: SessionListMembership(sessions: visibleSessions),
@@ -678,7 +694,12 @@ struct SessionListView: View {
     }
 
     private func makePresentationState(hasVisibleSessions: Bool) -> SessionListPresentationState {
-        SessionListPresentationState.resolve(
+#if DEBUG
+        let skipsInitialLibraryGate = sessionStore.isDebugWorkbenchUISeedActive
+#else
+        let skipsInitialLibraryGate = false
+#endif
+        return SessionListPresentationState.resolve(
             hasVisibleSessions: hasVisibleSessions,
             // sidebarProjects 只包含 rememberWorkspace 记录的已打开目录，不包含后端候选项目。
             hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
@@ -689,7 +710,11 @@ struct SessionListView: View {
             errorMessage: sessionStore.userFacingErrorMessage,
             connectionStatus: appStore.connectionStatus,
             hasLoadedWorkspaceCatalog: sessionStore.loadedWorkspaceCatalogScope == appStore.activeHostScope,
-            isEstablishingConnection: sessionStore.isEstablishingConnection
+            isEstablishingConnection: sessionStore.isEstablishingConnection,
+            awaitsInitialSessionLibrary: selectedWorkspaceID == "all"
+                && !skipsInitialLibraryGate
+                && !sessionStore.recentWorkspaces.isEmpty
+                && !sessionStore.settledInitialSessionLibraryProfileIDs.contains(appStore.activeHostScope.profileID)
         )
     }
 
@@ -828,14 +853,14 @@ struct SessionListView: View {
     private func sessionSection(
         title: String,
         families: [SessionFamily],
-        dominantProject: String?,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        projectLabels: [String: String]
     ) -> some View {
         Section {
             sessionRows(
                 families,
-                dominantProject: dominantProject,
-                tokens: tokens
+                tokens: tokens,
+                projectLabels: projectLabels
             )
         } header: {
             Text(title)
@@ -857,14 +882,13 @@ struct SessionListView: View {
     @ViewBuilder
     private func sessionRows(
         _ families: [SessionFamily],
-        dominantProject: String?,
-        tokens: ThemeTokens
+        tokens: ThemeTokens,
+        projectLabels: [String: String]
     ) -> some View {
         SessionHierarchyForEach(families: families, expansion: sessionStore.sessionHierarchyExpansion) { row, _ in
             let session = row.session
             let foregroundActivity = sessionStore.foregroundActivity(for: session.id)
             let isUnread = sessionStore.isHistorySessionUnread(session)
-            let usesWideIPadRow = UIDevice.current.userInterfaceIdiom == .pad && rowDensity == .table
 
             Button {
                 dismissSessionSearchKeyboard()
@@ -882,14 +906,9 @@ struct SessionListView: View {
                     isUnread: isUnread,
                     density: rowDensity,
                     searchSnippet: sessionStore.sessionSearchSnippet(for: session.id),
-                    // iPhone 普通行保持单行；iPad 大字与 Mac Catalyst 仍需项目名区分会话。
-                    projectIdentity: UIDevice.current.userInterfaceIdiom != .phone && selectedWorkspaceID == "all"
-                        ? SessionListPresentation.projectIdentityToDisplay(
-                            session.project,
-                            dominant: dominantProject
-                        ) : nil,
+                    projectIdentity: projectLabels[session.projectID],
                     leadingSlot: .runtimeIcon,
-                    // iPad 宽列保留普通摘要；窄屏只在搜索命中或跨项目时显示第二行。
+                    // iPad 宽列保留普通摘要；窄屏只在搜索命中时显示第二行。
                     showsSessionPreview: usesWideIPadRow
                 )
                 .contentShape(Rectangle())
