@@ -291,6 +291,7 @@
 		76170D1C6A062582FBB87B0B /* MimiCarStatusWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 29E380F56E6FE63E8C13897A /* MimiCarStatusWidget.appex */; platformFilters = (ios, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		76CE769D2951CF9CEBE6B3FF /* testSessionLibraryDensityAndAccessibilityLayouts.ipad-pro-1366-dark-contrast.png in Resources */ = {isa = PBXBuildFile; fileRef = 62EF5C12067114B2EBC4FE68 /* testSessionLibraryDensityAndAccessibilityLayouts.ipad-pro-1366-dark-contrast.png */; };
 		76DD6A7B8D4D93D4385A615D /* AssistantTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02BA631A94730FC521FE15F6 /* AssistantTextNormalizer.swift */; };
+		7713F432E411393503A06F8C /* SessionLibraryScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BCB54BC8481A3B9351E454 /* SessionLibraryScopeTests.swift */; };
 		771616207476529848290515 /* testIdleConflictCardIPhone390Light.1.png in Resources */ = {isa = PBXBuildFile; fileRef = E80A51824E5D09051C48036F /* testIdleConflictCardIPhone390Light.1.png */; };
 		7776937DB51195A21EC1A222 /* CodexHistoryStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E581CAA0860D13F723B1DA2C /* CodexHistoryStreamingTests.swift */; };
 		778713C0BD81DDD4E2FE601D /* RuntimeCatalogRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6286EA8D97C589B35C871FD /* RuntimeCatalogRefreshTests.swift */; };
@@ -794,6 +795,7 @@
 		2210B237FCEF112D24D2B687 /* privacy-policy.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = "privacy-policy.md"; path = "../../../docs/privacy-policy.md"; sourceTree = "<group>"; };
 		224DF99AA12F1A2C7C14E2BF /* ComposerStatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerStatusViews.swift; sourceTree = "<group>"; };
 		227C1DE8EDDE47B3D71468AA /* testTimelineWaitingHintsShareLiveStatusStyle.loading-completed.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "testTimelineWaitingHintsShareLiveStatusStyle.loading-completed.png"; sourceTree = "<group>"; };
+		22BCB54BC8481A3B9351E454 /* SessionLibraryScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionLibraryScopeTests.swift; sourceTree = "<group>"; };
 		2328266C2B65106940564667 /* testMixedActivityAndImageConversationRendering.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testMixedActivityAndImageConversationRendering.1.png; sourceTree = "<group>"; };
 		233AE0B96962A815BEDC6A7C /* testInfoToastOnWideDark.1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = testInfoToastOnWideDark.1.png; sourceTree = "<group>"; };
 		2351F1688FF3ABEC56C4CC8C /* ConversationActivityDetailProjectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationActivityDetailProjectionTests.swift; sourceTree = "<group>"; };
@@ -1685,6 +1687,7 @@
 				3CA71746A2760A053B9AE6A8 /* SessionHierarchyPresentationTests.swift */,
 				B2173423324C16138F4BBA05 /* SessionHierarchySnapshotTests.swift */,
 				725DE3C38CDE8277C4231043 /* SessionHistoryReadStateTests.swift */,
+				22BCB54BC8481A3B9351E454 /* SessionLibraryScopeTests.swift */,
 				18AF5C5FFC9DF5EDC0B3C8A3 /* SessionLibraryStartupTests.swift */,
 				347A38B609AE9F5CCBD52029 /* SessionListLifecycleCoordinatorTests.swift */,
 				3E5219F30FB1F37F4EE868FF /* SessionListPresentationTests.swift */,
@@ -2965,6 +2968,7 @@
 				88A0DB9C0BD8A15C58257C9B /* SessionHierarchyPresentationTests.swift in Sources */,
 				3E2732CDBA8B047898B542DE /* SessionHierarchySnapshotTests.swift in Sources */,
 				6C99A69FE0D71F6624176A72 /* SessionHistoryReadStateTests.swift in Sources */,
+				7713F432E411393503A06F8C /* SessionLibraryScopeTests.swift in Sources */,
 				95E58ED34246B1C5A5074D3E /* SessionLibraryStartupTests.swift in Sources */,
 				26FD0EEAC5360C26BD0CF2D0 /* SessionListLifecycleCoordinatorTests.swift in Sources */,
 				8CF275290562942710A21717 /* SessionListPresentationTests.swift in Sources */,
