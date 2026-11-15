@@ -39,7 +39,7 @@ public sealed class LocalSessionSource : IDesktopSessionSource, IDisposable
         {
             throw new InvalidDataException("电脑服务尚未提供可用的本机地址。");
         }
-        return uri.IsDefaultPort ? 8787 : uri.Port;
+        return uri.Port;
     }
 
     public async Task<SessionCatalog> CatalogAsync(CancellationToken token)

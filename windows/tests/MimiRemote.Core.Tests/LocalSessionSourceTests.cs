@@ -107,7 +107,11 @@ public sealed class LocalSessionSourceTests
 
     [Theory]
     [InlineData("http://100.64.0.1:9876", 9876)]
-    [InlineData("http://host.invalid", 8787)]
+    [InlineData("http://host.invalid:8787", 8787)]
+    [InlineData("http://host.invalid", 80)]
+    [InlineData("http://127.0.0.1:80", 80)]
+    [InlineData("https://host.invalid", 443)]
+    [InlineData("https://127.0.0.1:443", 443)]
     public void 服务地址只提取端口并且不会作为远程请求目标(string endpoint, int port) =>
         Assert.Equal(port, LocalSessionSource.Port(endpoint));
 

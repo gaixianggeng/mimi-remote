@@ -36,15 +36,20 @@ public sealed class ConnectionViewModel : ClientPageViewModel
         ApplyRelayCommand = new AsyncRelayCommand(() => Relay.RunAsync(ApplyRelayAsync));
         ToggleCommand = new AsyncRelayCommand(() => Relay.RunAsync(ToggleAsync));
         ApplyNetworkCommand = new AsyncRelayCommand(() => Network.RunAsync(ApplyNetworkAsync));
-        timer.Tick += async (_, _) =>
+        timer.Tick += async (_, _) => await PollAsync();
+    }
+    internal async Task PollAsync()
+    {
+        if (!Active || polling || Relay.IsBusy || Context.Preview) { return; }
+        polling = true;
+        try { await ReadTailcatAsync(); }
+        catch (OperationCanceledException) when (Lifetime.IsCancellationRequested) { }
+        catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException or System.Text.Json.JsonException
+            or System.ComponentModel.Win32Exception or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            if (!Active || polling || Relay.IsBusy || Context.Preview) { return; }
-            polling = true;
-            try { await ReadTailcatAsync(); }
-            catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException or System.Text.Json.JsonException)
-            { Report("暂时无法更新连接状态：" + error.Message, true); }
-            finally { polling = false; }
-        };
+            if (!Lifetime.IsCancellationRequested) { Report("暂时无法更新连接状态：" + error.Message, true); }
+        }
+        finally { polling = false; }
     }
     protected override void OnActiveChanged() { if (Active) { timer.Start(); } else { timer.Stop(); } }
     protected override async Task RefreshAsync(bool force)
