@@ -214,6 +214,9 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testPartialAnswerAllowsMoreItemsUntilTurnCompleted \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testAgentMessageWithoutPhaseKeepsLegacyMessageProjection \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDirectIdleHistorySessionSendsThroughResumePath \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testActiveTurnConflictKeepsSessionAndPendingInputAlive \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testBootstrapHonorsThreadListRetryAfterBeforeRetrying \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testWorkspaceManualRefreshWaitsOutCooldownAndFetchesFreshPage \
   -only-testing:MimiRemoteTests/WriterConflictForkStoreTests \
   -only-testing:MimiRemoteTests/ForkOnWriterConflictProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testSteerTurnSurvivesLastObserverLeavingWhileThreadResumeIsPending \
