@@ -174,6 +174,8 @@ final class LocalCompletionSupersededTests: XCTestCase {
             webSocketFactory: { MockWebSocketClient() }
         )
         await store.refreshAll(autoAttach: false)
+        // 首屏列表固定返回旧 completed 快照；先收敛后台补拉，再注入电脑端的新回合事件。
+        await store.refreshSessionLibraryIndex()
         store.takeOverSession(completed)
         await store.selectSession(completed)
         observeLocalCompletion(of: completed, turnID: "turn-ipad", in: store)
