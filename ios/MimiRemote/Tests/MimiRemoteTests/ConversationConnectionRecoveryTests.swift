@@ -1003,6 +1003,8 @@ extension ConversationDataFlowTests {
             }
         )
 
+        // 此处只验证列表冷却；首屏展示计时由 SessionLibraryStartupTests 独立覆盖。
+        store.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         await store.bootstrap()
 
         XCTAssertEqual(client.sessionsPageCallCount, 2)
@@ -1088,6 +1090,8 @@ extension ConversationDataFlowTests {
                 now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
             }
         )
+        // 首屏展示计时不能推进专用于 gateway 冷却窗口的假时钟。
+        store.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         store.selectedProjectID = project.id
 
         await store.refreshAll(autoAttach: false)
