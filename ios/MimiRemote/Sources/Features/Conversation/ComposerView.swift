@@ -57,8 +57,9 @@ struct ComposerView: View {
     @State var isComposerTextComposing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @State var composerTextFocusRequestID: UUID?
-    // 收起状态只服务 iPad 的显式操作；iPhone 始终保留可直接编辑的一行输入。
+    // 收起状态服务 iPad 的显式操作，以及提问卡片内联输入框聚焦时的自动让位。
     @State var isComposerCollapsed: Bool
+    @State var isExternalQuestionFieldEditing = false
     @State var activeSkillQuery: ComposerSkillQuery?
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
@@ -350,6 +351,16 @@ struct ComposerView: View {
     func composerScopeObservers(_ content: AnyView) -> some View {
         content
         .onReceive(Self.clipboardRefreshPublisher) { _ in refreshClipboardImageAvailability() }
+        .onReceive(NotificationCenter.default.publisher(for: .agentQuestionInputFocusDidChange)) { notification in
+            if let focused = notification.userInfo?["isFocused"] as? Bool {
+                isExternalQuestionFieldEditing = focused
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            if isExternalQuestionFieldEditing {
+                isExternalQuestionFieldEditing = false
+            }
+        }
         .onChange(of: activeComposerDraftScope, initial: true) { _, _ in refreshClipboardImageAvailability() }
         .onChange(of: availableWidth, initial: true) { _, width in
             guard let width else { return }

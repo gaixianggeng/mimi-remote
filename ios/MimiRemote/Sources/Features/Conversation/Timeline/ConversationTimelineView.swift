@@ -195,9 +195,6 @@ struct ConversationTimelineView: View {
                     allowsTopUnderlap: allowsTopUnderlap,
                     deepensTopEdge: deepensTopScrollEdge
                 )
-                .simultaneousGesture(TapGesture().onEnded {
-                    KeyboardDismissal.dismiss()
-                })
                 // 是否贴近底部用滚动几何实时判断，只在贴底时跟随流式输出，
                 // 用户上翻历史时不会被尾部更新甩回底部。
                 .onScrollGeometryChange(for: ConversationTimelineScrollMetrics.self) { geometry in
@@ -272,7 +269,6 @@ struct ConversationTimelineView: View {
             action: anchorFrameRecorder(),
             bindView: anchorViewBinder()
         ))
-        .simultaneousGesture(TapGesture().onEnded { KeyboardDismissal.dismiss() })
         .frame(minHeight: item.isActivityStep ? 0 : systemMinimumRowContentHeight(insets: layout.messageRowInsets))
         .id(item.id)
         // List 行属性必须位于自定义 modifier 外层，否则 SwiftUI 会恢复默认分隔线和 inset。
@@ -298,6 +294,10 @@ struct ConversationTimelineView: View {
         crossSessionOriginMessageID: UUID?
     ) -> some View {
         switch item {
+        case .message(let message) where message.activityPayload?.asyncQuestion != nil:
+            ConversationAsyncQuestionCard(message: message, layout: layout, sessionID: displayedSessionID)
+        case .message(let message) where message.activityPayload?.needsDesktopWorktreeNotice == true:
+            ConversationDesktopWorktreeNotice(message: message, layout: layout)
         case .message(let message) where message.activityPayload?.turnHint != nil:
             if let hint = message.activityPayload?.turnHint {
                 ConversationTurnHintCard(
@@ -851,9 +851,10 @@ private struct ConversationTimelineScrollViewLocator: UIViewRepresentable {
         uiView.resolveIfNeeded()
     }
 
-    final class LocatorView: UIView {
+    final class LocatorView: UIView, UIGestureRecognizerDelegate {
         var onResolve: ((UIScrollView) -> Void)?
         private weak var resolvedScrollView: UIScrollView?
+        private weak var installedDismissTapGesture: UITapGestureRecognizer?
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
@@ -873,11 +874,46 @@ private struct ConversationTimelineScrollViewLocator: UIViewRepresentable {
                         return
                     }
                     resolvedScrollView = scrollView
+                    installDismissTapGestureIfNeeded(on: scrollView)
                     onResolve?(scrollView)
                     return
                 }
                 ancestor = view.superview
             }
+        }
+
+        private func installDismissTapGestureIfNeeded(on scrollView: UIScrollView) {
+            if let existing = installedDismissTapGesture, existing.view === scrollView {
+                return
+            }
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleBackgroundTap))
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delaysTouchesEnded = false
+            recognizer.delegate = self
+            scrollView.addGestureRecognizer(recognizer)
+            installedDismissTapGesture = recognizer
+        }
+
+        @objc private func handleBackgroundTap() {
+            KeyboardDismissal.dismiss()
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var current: UIView? = touch.view
+            while let view = current, view !== resolvedScrollView {
+                if let textField = view as? UITextField, textField.isEnabled {
+                    return false
+                }
+                if let textView = view as? UITextView, textView.isEditable {
+                    return false
+                }
+                if let control = view as? UIControl, control.isEnabled {
+                    return false
+                }
+                current = view.superview
+            }
+            return true
         }
     }
 }
