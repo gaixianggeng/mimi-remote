@@ -568,7 +568,7 @@ struct WorkspaceRuntimePopoverPicker: View {
                         .foregroundStyle(tokens.tertiaryText)
                         .lineLimit(1)
 
-                    Text("· \(L10n.text("ui.runtime_retry_hint"))")
+                    Text(L10n.text("ui.runtime_retry_hint"))
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.tertiaryText)
                         .lineLimit(1)
