@@ -174,6 +174,10 @@ struct SessionListView: View {
     @ScaledMetric(relativeTo: .subheadline) private var searchFieldGlyphSize: CGFloat = 14
     /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
@@ -1143,7 +1147,11 @@ struct SessionListView: View {
         if let onNewSession {
             onNewSession(source)
         } else {
-            Task { await sessionStore.startNewSession() }
+            let preferred = WorkspaceSessionRuntimeChoice.resolvedPreferred(
+                preferredRawValue: preferredRuntimeRawValue,
+                enabledRawValue: enabledRuntimesRawValue
+            )
+            Task { await sessionStore.startNewSession(runtimeProvider: preferred.runtimeProvider) }
         }
     }
 

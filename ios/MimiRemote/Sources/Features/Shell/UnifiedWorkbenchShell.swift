@@ -46,9 +46,10 @@ struct UnifiedWorkbenchShell: View {
     @State private var relatedSubagentParentID: SessionID?
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
     private var preferredWorkspaceRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledWorkspaceRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @State private var workspaceRuntimeSelection = WorkspaceRuntimeSelectionState()
     @State private var workspaceBrowseSelection = WorkspaceBrowseSelectionState()
-    @State private var allSessionsRequestID: UUID?
     @State private var sessionHistory = WorkbenchSessionHistory()
     @State private var isSessionJumpPanelPresented = false
 
@@ -149,6 +150,13 @@ struct UnifiedWorkbenchShell: View {
             }
             .onChange(of: preferredWorkspaceRuntimeRawValue) { _, _ in
                 workspaceRuntimeSelection.reset()
+            }
+            .onChange(of: enabledWorkspaceRuntimesRawValue) { _, newValue in
+                let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: newValue)
+                if let manual = workspaceRuntimeSelection.manualRuntime,
+                   !enabledSet.contains(manual) {
+                    workspaceRuntimeSelection.reset()
+                }
             }
             .onChange(of: proposedLayout.usesCompactNavigation) { _, _ in
                 layoutModeCommitGate.request {
@@ -1075,7 +1083,6 @@ struct UnifiedWorkbenchShell: View {
             : nil
 
         return SessionListView(
-            allSessionsRequestID: $allSessionsRequestID,
             onNewSession: { source in
                 presentSheet(.newSession, source: source)
             },
@@ -1109,15 +1116,17 @@ struct UnifiedWorkbenchShell: View {
                 // 选择会话和切换路由由同一个入口发起，避免 selectedSessionID 的回调再次 open。
                 openSession(session, source: .workspaces, layout: layout)
             },
-            onOpenAllSessions: {
-                allSessionsRequestID = UUID()
-                open(.sessions, layout: layout)
-            },
             selectedRuntime: Binding(
                 get: {
                     workspaceRuntimeSelection.resolvedRuntime(
-                        preferredRuntime: .stored(preferredWorkspaceRuntimeRawValue),
-                        availableRuntimeProviders: sessionStore.availableRuntimeProviders
+                        preferredRuntime: WorkspaceSessionRuntimeChoice.resolvedPreferred(
+                            preferredRawValue: preferredWorkspaceRuntimeRawValue,
+                            enabledRawValue: enabledWorkspaceRuntimesRawValue
+                        ),
+                        availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                        enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                            from: enabledWorkspaceRuntimesRawValue
+                        )
                     )
                 },
                 set: { workspaceRuntimeSelection.manualRuntime = $0 }

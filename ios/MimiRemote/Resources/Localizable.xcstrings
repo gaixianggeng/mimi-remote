@@ -686,6 +686,23 @@
         }
       }
     },
+    "ui.default_model_reasoning_dynamic_footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reasoning effort options adjust automatically to match the selected model."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推理强度选项会根据上方所选模型的支持范围动态调整。"
+          }
+        }
+      }
+    },
     "ui.default_model_unconfirmed": {
       "extractionState": "manual",
       "localizations": {
@@ -699,6 +716,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "型号未确认"
+          }
+        }
+      }
+    },
+    "ui.enabled_runtimes_footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabled models appear in Workspaces and New Session. At least one model must stay enabled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启的模型将在工作区和新建会话中显示；至少需保留 1 个开启的模型。"
           }
         }
       }

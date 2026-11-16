@@ -23,6 +23,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @ScaledMetric(relativeTo: .footnote) private var compactActionFontSize: CGFloat = 13
     @State private var isLoadingMoreSessions = false
 
@@ -43,7 +45,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let onLoadMoreSessions: () async -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
-    var onOpenAllSessions: (() -> Void)? = nil
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -142,19 +143,6 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             if showsStatusLine {
                 statusLine
                     .padding(.bottom, 2)
-            }
-
-            if selectedRuntime == .codex, let onOpenAllSessions {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.workspace_current_directory_sessions"))
-                        .foregroundStyle(tokens.secondaryText)
-                    Button(L10n.text("ui.view_all_sessions"), action: onOpenAllSessions)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(tokens.accent)
-                        .padding(.vertical, 8)
-                        .accessibilityIdentifier("workspace.viewAllSessions")
-                }
-                .font(themeStore.uiFont(.caption))
             }
 
             if sessionLoadState.isLoading, !hasInitialSessionContent {
@@ -491,7 +479,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .disabled(!selectedRuntime.isAvailable(in: availableRuntimeProviders))
+        .disabled(
+            !selectedRuntime.isAvailable(
+                in: availableRuntimeProviders,
+                enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                    from: enabledRuntimesRawValue
+                )
+            )
+        )
         .shadow(
             color: isFloating
                 ? tokens.primaryActionShadow
