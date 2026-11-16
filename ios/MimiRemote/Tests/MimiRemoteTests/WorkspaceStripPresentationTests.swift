@@ -475,6 +475,26 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         XCTAssertEqual(guardLast.preferredRawValue, "claude")
     }
 
+    func testWorkspaceRuntimeCreationChoicesExcludeKnownUnavailableChannels() {
+        let enabledOnlyClaude: Set<WorkspaceSessionRuntimeChoice> = [.claude]
+        XCTAssertTrue(
+            WorkspaceSessionRuntimeChoice.available(
+                runtimeProviders: ["codex"],
+                enabledRuntimes: enabledOnlyClaude
+            ).isEmpty
+        )
+
+        // 创建入口没有可用项时，工作区仍能展示用户偏好的通道，并保持新建按钮不可用。
+        let state = WorkspaceRuntimeSelectionState()
+        let displayedRuntime = state.resolvedRuntime(
+            preferredRuntime: .claude,
+            availableRuntimeProviders: ["codex"],
+            enabledRuntimes: enabledOnlyClaude
+        )
+        XCTAssertEqual(displayedRuntime, .claude)
+        XCTAssertFalse(displayedRuntime.isAvailable(in: ["codex"], enabledRuntimes: enabledOnlyClaude))
+    }
+
     func testWorkspaceRuntimeFilteringHonorsEnabledRuntimes() {
         let enabledOnlyCodexAndClaude: Set<WorkspaceSessionRuntimeChoice> = [.codex, .claude]
 

@@ -140,21 +140,17 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     ///
     /// 先按用户在「模型设置」中打开的通道过滤；在已开启的模型里：
     /// 若主机一个通道都没报可用，则回退到首个已启用模型（优先 codex），避免选择器变成空列表。
-    /// 但主机明确给出了可用集合时，不再特殊照顾未在集合里的通道，
-    /// 保证真正能用的通道顶上来（`testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable`）。
+    /// 主机已上报通道时，只返回已启用且实际可用的交集；空集合用于阻止新建不可用通道的会话。
+    /// 工作区展示的兜底由 WorkspaceRuntimeSelectionState 保留，不向创建入口提供虚假的可用项。
     static func available(
         runtimeProviders: Set<String>,
         enabledRuntimes: Set<Self> = Set(allCases)
     ) -> [Self] {
         let enabledOrdered = allCases.filter { enabledRuntimes.contains($0) }
         let candidates = enabledOrdered.isEmpty ? allCases : enabledOrdered
-        let usable = candidates.filter {
+        return candidates.filter {
             isAvailable($0, in: runtimeProviders, enabledCandidates: candidates)
         }
-        if !usable.isEmpty {
-            return usable
-        }
-        return [candidates.first ?? .codex]
     }
 
     func isAvailable(
