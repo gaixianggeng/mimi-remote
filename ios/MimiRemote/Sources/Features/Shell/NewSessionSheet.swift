@@ -8,7 +8,11 @@ struct NewSessionSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("newSession.lastWorkspaceID") private var lastWorkspaceID = ""
-    @AppStorage("newSession.lastRuntime") private var lastRuntimeID = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage("newSession.lastRuntime") private var lastRuntimeID = ""
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @State private var selectedWorkspaceID = ""
     @State private var isCreating = false
     @State private var didLeaveSheetForCreation = false
@@ -106,6 +110,16 @@ struct NewSessionSheet: View {
         .onChange(of: sessionStore.availableRuntimeProviders) { _, _ in
             normalizeRuntimeSelection()
         }
+        .onChange(of: preferredRuntimeRawValue) { _, newValue in
+            lastRuntimeID = WorkspaceSessionRuntimeChoice.resolvedPreferred(
+                preferredRawValue: newValue,
+                enabledRawValue: enabledRuntimesRawValue
+            ).rawValue
+            normalizeRuntimeSelection()
+        }
+        .onChange(of: enabledRuntimesRawValue) { _, _ in
+            normalizeRuntimeSelection()
+        }
         .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
             guard isCreating,
                   let sessionID,
@@ -174,7 +188,7 @@ struct NewSessionSheet: View {
                 .accessibilityIdentifier("newSession.runtime")
             } else if let onlyChoice = choices.first {
                 HStack(spacing: 12) {
-                    RuntimeBrandMarkIcon(mark: choices[0].brandMark, size: 16)
+                    RuntimeBrandMarkIcon(mark: onlyChoice.brandMark, size: 16)
                         .frame(width: 36, height: 36)
                         .background(tokens.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
@@ -314,7 +328,13 @@ struct NewSessionSheet: View {
     private func normalizeRuntimeSelection() {
         let choices = runtimeChoices
         guard choices.contains(where: { $0.rawValue == lastRuntimeID }) else {
-            if let first = choices.first {
+            let preferred = WorkspaceSessionRuntimeChoice.resolvedPreferred(
+                preferredRawValue: preferredRuntimeRawValue,
+                enabledRawValue: enabledRuntimesRawValue
+            )
+            if choices.contains(preferred) {
+                lastRuntimeID = preferred.rawValue
+            } else if let first = choices.first {
                 lastRuntimeID = first.rawValue
             }
             return
@@ -340,7 +360,10 @@ struct NewSessionSheet: View {
 
     private var runtimeChoices: [WorkspaceSessionRuntimeChoice] {
         WorkspaceSessionRuntimeChoice.available(
-            runtimeProviders: sessionStore.availableRuntimeProviders
+            runtimeProviders: sessionStore.availableRuntimeProviders,
+            enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                from: enabledRuntimesRawValue
+            )
         )
     }
 

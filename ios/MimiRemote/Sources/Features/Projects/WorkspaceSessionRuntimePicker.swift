@@ -7,9 +7,75 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case deepseek
 
     static let preferenceKey = "workspace.preferredRuntime"
+    static let enabledRuntimesPreferenceKey = "workspace.enabledRuntimes"
+    static let defaultEnabledRuntimesRawValue = allCases.map(\.rawValue).joined(separator: ",")
 
     static func stored(_ rawValue: String?) -> Self {
         rawValue.flatMap(Self.init(rawValue:)) ?? .codex
+    }
+
+    /// 解析用户在模型设置中勾选启用的模型列表，始终保持 `allCases` 的稳定顺序，
+    /// 且至少保留一个启用项（全空或异常值时回退到默认全开，避免工作区无模型可用）。
+    static func enabledRuntimes(from rawValue: String?) -> [Self] {
+        guard let rawValue else { return allCases }
+        let tokens = Set(
+            rawValue
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        let resolved = allCases.filter { tokens.contains($0.rawValue) }
+        return resolved.isEmpty ? allCases : resolved
+    }
+
+    static func enabledRuntimeSet(from rawValue: String?) -> Set<Self> {
+        Set(enabledRuntimes(from: rawValue))
+    }
+
+    static func encodeEnabledRuntimes(_ choices: some Sequence<Self>) -> String {
+        let set = Set(choices)
+        let ordered = allCases.filter { set.contains($0) }
+        let normalized = ordered.isEmpty ? [Self.codex] : ordered
+        return normalized.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func isEnabled(_ choice: Self, in rawValue: String?) -> Bool {
+        enabledRuntimeSet(from: rawValue).contains(choice)
+    }
+
+    /// 结合「已启用模型」解析当前优先使用的模型；若原先的优先项已被关闭，则自动落到第一个已启用项。
+    static func resolvedPreferred(
+        preferredRawValue: String?,
+        enabledRawValue: String?
+    ) -> Self {
+        let enabled = enabledRuntimes(from: enabledRawValue)
+        let preferred = stored(preferredRawValue)
+        if enabled.contains(preferred) {
+            return preferred
+        }
+        return enabled.first ?? .codex
+    }
+
+    /// 切换某个模型的启用开关，返回归一化后的 `(enabledRawValue, preferredRawValue)`。
+    /// 若用户尝试关闭唯一剩余的已启用模型，则保持原状不变。
+    static func updatingEnabledState(
+        for choice: Self,
+        isEnabled: Bool,
+        enabledRawValue: String?,
+        preferredRawValue: String?
+    ) -> (enabledRawValue: String, preferredRawValue: String) {
+        var current = enabledRuntimeSet(from: enabledRawValue)
+        if isEnabled {
+            current.insert(choice)
+        } else if current.count > 1 {
+            current.remove(choice)
+        }
+        let nextEnabledRaw = encodeEnabledRuntimes(current)
+        let nextPreferred = resolvedPreferred(
+            preferredRawValue: preferredRawValue,
+            enabledRawValue: nextEnabledRaw
+        )
+        return (nextEnabledRaw, nextPreferred.rawValue)
     }
 
     var id: String { rawValue }
@@ -72,25 +138,43 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 
     /// 该 runtime 现在是否可选。
     ///
-    /// codex 是**兜底项**：主机一个通道都没报可用时仍然提供它，避免选择器变成空列表
-    /// 或未选中态。但主机明确给出了可用集合时，codex 不再特殊——它也要在集合里才算
-    /// 可用，否则"codex 被关掉、只剩 claude"的主机仍会提供 codex，
-    /// 真正能用的 claude 顶不上来（main 上 `testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable`
-    /// 钉住的就是这条）。
-    static func available(runtimeProviders: Set<String>) -> [Self] {
-        let usable = allCases.filter { isAvailable($0, in: runtimeProviders) }
-        return usable.isEmpty ? [.codex] : usable
+    /// 先按用户在「模型设置」中打开的通道过滤；在已开启的模型里：
+    /// 若主机一个通道都没报可用，则回退到首个已启用模型（优先 codex），避免选择器变成空列表。
+    /// 但主机明确给出了可用集合时，不再特殊照顾未在集合里的通道，
+    /// 保证真正能用的通道顶上来（`testWorkspaceRuntimePreferenceFallsBackToClaudeWhenCodexIsUnavailable`）。
+    static func available(
+        runtimeProviders: Set<String>,
+        enabledRuntimes: Set<Self> = Set(allCases)
+    ) -> [Self] {
+        let enabledOrdered = allCases.filter { enabledRuntimes.contains($0) }
+        let candidates = enabledOrdered.isEmpty ? allCases : enabledOrdered
+        let usable = candidates.filter {
+            isAvailable($0, in: runtimeProviders, enabledCandidates: candidates)
+        }
+        if !usable.isEmpty {
+            return usable
+        }
+        return [candidates.first ?? .codex]
     }
 
-    func isAvailable(in runtimeProviders: Set<String>) -> Bool {
-        Self.isAvailable(self, in: runtimeProviders)
+    func isAvailable(
+        in runtimeProviders: Set<String>,
+        enabledRuntimes: Set<Self> = Set(allCases)
+    ) -> Bool {
+        let enabledOrdered = Self.allCases.filter { enabledRuntimes.contains($0) }
+        let candidates = enabledOrdered.isEmpty ? Self.allCases : enabledOrdered
+        guard candidates.contains(self) else { return false }
+        return Self.isAvailable(self, in: runtimeProviders, enabledCandidates: candidates)
     }
 
     private static func isAvailable(
         _ choice: Self,
-        in runtimeProviders: Set<String>
+        in runtimeProviders: Set<String>,
+        enabledCandidates: [Self]
     ) -> Bool {
-        if runtimeProviders.isEmpty { return choice == .codex }
+        if runtimeProviders.isEmpty {
+            return choice == (enabledCandidates.first ?? .codex)
+        }
         return runtimeProviders.contains(choice.runtimeProvider)
     }
 
@@ -98,9 +182,12 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     /// 不能一直挂着「点击重新检查」等用户手动点；真正关闭的通道重探后仍不可用（#777）。
     static func recheckUnavailable(
         in runtimeProviders: Set<String>,
+        enabledRuntimes: Set<Self> = Set(allCases),
         using retry: (Self) async -> Bool
     ) async {
-        for choice in allCases where !choice.isAvailable(in: runtimeProviders) {
+        let enabledOrdered = allCases.filter { enabledRuntimes.contains($0) }
+        let candidates = enabledOrdered.isEmpty ? allCases : enabledOrdered
+        for choice in candidates where !choice.isAvailable(in: runtimeProviders, enabledRuntimes: Set(candidates)) {
             guard !Task.isCancelled else { return }
             _ = await retry(choice)
         }
@@ -113,6 +200,8 @@ struct WorkspaceRuntimePicker: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @Namespace private var selectionNamespace
     @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
@@ -120,13 +209,113 @@ struct WorkspaceRuntimePicker: View {
     let availableRuntimeProviders: Set<String>
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
 
+    private var enabledChoices: [WorkspaceSessionRuntimeChoice] {
+        WorkspaceSessionRuntimeChoice.enabledRuntimes(from: enabledRuntimesRawValue)
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let choices = enabledChoices
+        let enabledSet = Set(choices)
 
+        Group {
+            if choices.count == 1, let onlyChoice = choices.first {
+                singleChoiceBadge(
+                    choice: onlyChoice,
+                    enabledSet: enabledSet,
+                    tokens: tokens
+                )
+            } else {
+                multiChoiceStrip(
+                    choices: choices,
+                    enabledSet: enabledSet,
+                    tokens: tokens
+                )
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.text("ui.runtime_provider"))
+        .accessibilityIdentifier("workspace.sessions.runtimePicker")
+        .task(id: enabledRuntimesRawValue) {
+            await WorkspaceSessionRuntimeChoice.recheckUnavailable(
+                in: availableRuntimeProviders,
+                enabledRuntimes: enabledSet,
+                using: onRetryUnavailable
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func singleChoiceBadge(
+        choice: WorkspaceSessionRuntimeChoice,
+        enabledSet: Set<WorkspaceSessionRuntimeChoice>,
+        tokens: ThemeTokens
+    ) -> some View {
+        let isAvailable = choice.isAvailable(
+            in: availableRuntimeProviders,
+            enabledRuntimes: enabledSet
+        )
+        let label = HStack(spacing: 6) {
+            if retryingRuntime == choice {
+                ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+            } else {
+                RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+            }
+
+            Text(choice.listTitle)
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(isAvailable ? tokens.secondaryText : tokens.tertiaryText)
+        .opacity(isAvailable ? 0.9 : 0.56)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 32)
+        .frame(
+            minWidth: WorkbenchChromeIconMetrics.minimumHitTarget,
+            minHeight: WorkbenchChromeIconMetrics.minimumHitTarget
+        )
+        .contentShape(Rectangle())
+
+        // 只开启一个模型时不再包双层分段胶囊外轨；可用时保持安静展示，暂不可用时允许单击重探。
+        if isAvailable {
+            label
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(choice.listTitle)
+                .accessibilityAddTraits(.isSelected)
+                .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
+        } else {
+            Button {
+                guard retryingRuntime == nil else { return }
+                retryingRuntime = choice
+                Task {
+                    let recovered = await onRetryUnavailable(choice)
+                    if recovered { select(choice) }
+                    retryingRuntime = nil
+                }
+            } label: {
+                label
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .disabled(retryingRuntime != nil)
+            .accessibilityLabel(choice.listTitle)
+            .accessibilityHint(L10n.text("ui.runtime_retry_hint"))
+            .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
+        }
+    }
+
+    private func multiChoiceStrip(
+        choices: [WorkspaceSessionRuntimeChoice],
+        enabledSet: Set<WorkspaceSessionRuntimeChoice>,
+        tokens: ThemeTokens
+    ) -> some View {
         HStack(spacing: 0) {
-            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
+            ForEach(choices) { choice in
                 let isSelected = selection == choice
-                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
+                let isAvailable = choice.isAvailable(
+                    in: availableRuntimeProviders,
+                    enabledRuntimes: enabledSet
+                )
 
                 Button {
                     if isAvailable {
@@ -226,16 +415,6 @@ struct WorkspaceRuntimePicker: View {
                 )
                 .padding(.vertical, 4)
         }
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(L10n.text("ui.runtime_provider"))
-        .accessibilityIdentifier("workspace.sessions.runtimePicker")
-        .task {
-            await WorkspaceSessionRuntimeChoice.recheckUnavailable(
-                in: availableRuntimeProviders,
-                using: onRetryUnavailable
-            )
-        }
     }
 
     private func select(_ choice: WorkspaceSessionRuntimeChoice) {
@@ -256,6 +435,8 @@ struct WorkspaceRuntimePicker: View {
 struct WorkspaceRuntimePopoverPicker: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
 
     @Binding var selection: WorkspaceSessionRuntimeChoice
     let availableRuntimeProviders: Set<String>
@@ -264,53 +445,160 @@ struct WorkspaceRuntimePopoverPicker: View {
     @State private var isPresented = false
     @State private var retryingRuntime: WorkspaceSessionRuntimeChoice?
 
+    private var enabledChoices: [WorkspaceSessionRuntimeChoice] {
+        WorkspaceSessionRuntimeChoice.enabledRuntimes(from: enabledRuntimesRawValue)
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let choices = enabledChoices
+        let enabledSet = Set(choices)
 
-        Button {
-            isPresented = true
-        } label: {
-            HStack(spacing: 6) {
-                RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
+        Group {
+            if choices.count == 1, let onlyChoice = choices.first {
+                singleChoiceHeader(
+                    choice: onlyChoice,
+                    enabledSet: enabledSet,
+                    tokens: tokens
+                )
+            } else {
+                Button {
+                    isPresented = true
+                } label: {
+                    HStack(spacing: 6) {
+                        RuntimeBrandMarkIcon(mark: selection.brandMark, size: 14)
 
-                Text(selection.listTitle)
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .foregroundStyle(tokens.primaryText)
-                    .lineLimit(1)
+                        Text(selection.listTitle)
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
+                            .foregroundStyle(tokens.primaryText)
+                            .lineLimit(1)
 
-                Image(systemName: "chevron.down")
-                    .font(themeStore.uiFont(size: 10, weight: .semibold))
-                    .foregroundStyle(tokens.tertiaryText)
-            }
-            // 与会话行同一个水平内边距：品牌标记与分组标题、会话标题落在同一条左边线上。
-            // 窄屏才显示这一行，因此取紧凑密度。
-            .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
-            // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
-            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(L10n.text("ui.runtime_provider"))
-        .accessibilityValue(selection.listTitle)
-        .accessibilityIdentifier("workspace.sessions.runtimePicker")
-        .popover(isPresented: $isPresented, arrowEdge: .top) {
-            popoverContent(tokens: tokens)
-                .presentationCompactAdaptation(.popover)
-                .task {
-                    await WorkspaceSessionRuntimeChoice.recheckUnavailable(
-                        in: availableRuntimeProviders,
-                        using: onRetryUnavailable
-                    )
+                        Image(systemName: "chevron.down")
+                            .font(themeStore.uiFont(size: 10, weight: .semibold))
+                            .foregroundStyle(tokens.tertiaryText)
+                    }
+                    // 与会话行同一个水平内边距：品牌标记与分组标题、会话标题落在同一条左边线上。
+                    // 窄屏才显示这一行，因此取紧凑密度。
+                    .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
+                    // 视觉高度保持在标题量级，透明命中层仍满足 44pt。
+                    .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.text("ui.runtime_provider"))
+                .accessibilityValue(selection.listTitle)
+                .accessibilityIdentifier("workspace.sessions.runtimePicker")
+                .popover(isPresented: $isPresented, arrowEdge: .top) {
+                    popoverContent(tokens: tokens, choices: choices, enabledSet: enabledSet)
+                        .presentationCompactAdaptation(.popover)
+                        .task {
+                            await WorkspaceSessionRuntimeChoice.recheckUnavailable(
+                                in: availableRuntimeProviders,
+                                enabledRuntimes: enabledSet,
+                                using: onRetryUnavailable
+                            )
+                        }
+                }
+            }
+        }
+        .onChange(of: choices.count) { _, count in
+            if count <= 1, isPresented {
+                isPresented = false
+            }
+        }
+        .task(id: enabledRuntimesRawValue) {
+            await WorkspaceSessionRuntimeChoice.recheckUnavailable(
+                in: availableRuntimeProviders,
+                enabledRuntimes: enabledSet,
+                using: onRetryUnavailable
+            )
         }
     }
 
-    private func popoverContent(tokens: ThemeTokens) -> some View {
+    @ViewBuilder
+    private func singleChoiceHeader(
+        choice: WorkspaceSessionRuntimeChoice,
+        enabledSet: Set<WorkspaceSessionRuntimeChoice>,
+        tokens: ThemeTokens
+    ) -> some View {
+        let isAvailable = choice.isAvailable(
+            in: availableRuntimeProviders,
+            enabledRuntimes: enabledSet
+        )
+
+        // 用户只开启了 1 个模型时不再弹出单条目气泡：可用时作为静态标题对齐展示，
+        // 暂不可用时直接行内点按重新检查。
+        if isAvailable {
+            HStack(spacing: 6) {
+                RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+
+                Text(choice.listTitle)
+                    .font(themeStore.uiFont(.footnote, weight: .medium))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
+            .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(L10n.text("ui.runtime_provider"))
+            .accessibilityValue(choice.listTitle)
+            .accessibilityIdentifier("workspace.sessions.runtimePicker")
+        } else {
+            Button {
+                guard retryingRuntime == nil else { return }
+                retryingRuntime = choice
+                Task {
+                    let recovered = await onRetryUnavailable(choice)
+                    if recovered {
+                        selection = choice
+                    }
+                    retryingRuntime = nil
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    if retryingRuntime == choice {
+                        ProgressView().controlSize(.mini).frame(width: 14, height: 14)
+                    } else {
+                        RuntimeBrandMarkIcon(mark: choice.brandMark, size: 14)
+                            .opacity(0.5)
+                    }
+
+                    Text(choice.listTitle)
+                        .font(themeStore.uiFont(.footnote, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+
+                    Text("· \(L10n.text("ui.runtime_retry_hint"))")
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, SessionIndexRowDensity.compact.horizontalPadding)
+                .frame(minHeight: WorkbenchChromeIconMetrics.minimumHitTarget, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(retryingRuntime != nil)
+            .accessibilityLabel(L10n.text("ui.runtime_provider"))
+            .accessibilityValue(choice.listTitle)
+            .accessibilityHint(L10n.text("ui.runtime_retry_hint"))
+            .accessibilityIdentifier("workspace.sessions.runtimePicker")
+        }
+    }
+
+    private func popoverContent(
+        tokens: ThemeTokens,
+        choices: [WorkspaceSessionRuntimeChoice],
+        enabledSet: Set<WorkspaceSessionRuntimeChoice>
+    ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 始终列出全部 Runtime；暂不可用的那个允许点击重探，
+            // 只展示用户已开启的 Runtime；暂不可用的那个允许点击重探，
             // 不能让首次网络失败把筛选器锁死到 App 重启。
-            ForEach(WorkspaceSessionRuntimeChoice.allCases) { choice in
-                let isAvailable = choice.isAvailable(in: availableRuntimeProviders)
+            ForEach(choices) { choice in
+                let isAvailable = choice.isAvailable(
+                    in: availableRuntimeProviders,
+                    enabledRuntimes: enabledSet
+                )
 
                 Button {
                     if isAvailable {
@@ -343,7 +631,7 @@ struct WorkspaceRuntimePopoverPicker: View {
                 )
                 .accessibilityIdentifier("workspace.sessions.runtime.\(choice.rawValue)")
 
-                if choice != WorkspaceSessionRuntimeChoice.allCases.last {
+                if choice != choices.last {
                     Divider()
                         .padding(.leading, 42)
                 }
