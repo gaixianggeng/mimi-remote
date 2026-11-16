@@ -252,6 +252,7 @@ struct WorkspaceRootView: View {
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
+    let onOpenAllSessions: (() -> Void)?
     let manageConnections: (() -> Void)?
     let embedsNavigationStack: Bool
     // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
@@ -286,6 +287,7 @@ struct WorkspaceRootView: View {
         selectedSessionRuntime: Binding<WorkspaceSessionRuntimeChoice>,
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
+        onOpenAllSessions: (() -> Void)? = nil,
         manageConnections: (() -> Void)? = nil,
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
@@ -296,6 +298,7 @@ struct WorkspaceRootView: View {
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
+        self.onOpenAllSessions = onOpenAllSessions
         self.manageConnections = manageConnections
         self.embedsNavigationStack = embedsNavigationStack
         self.onCatalogRefreshEvent = onCatalogRefreshEvent
@@ -1121,7 +1124,8 @@ struct WorkspaceRootView: View {
             },
             onOpenSession: { session in
                 onOpenSession(session)
-            }
+            },
+            onOpenAllSessions: onOpenAllSessions
         )
     }
 
