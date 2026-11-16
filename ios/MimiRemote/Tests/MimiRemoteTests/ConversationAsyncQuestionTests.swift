@@ -5,7 +5,7 @@ import XCTest
 extension ConversationQuestionReplyTests {
     private var asyncQuestionItem: [String: Any] {
         ["type": "agentMessage", "id": "async-question", "text": "请选择", "delivery": "async", "phase": "final_answer",
-         "questions": [["title": "使用什么设备？", "options": ["iPad", "iPhone"]], ["title": "补充说明"]]]
+         "questions": [["title": "使用什么设备？", "options": ["iPad", "iPhone"]], ["title": "补充说明", "options": NSNull()]]]
     }
 
     private func parsedAsyncQuestion() throws -> CodexAsyncQuestion {
@@ -15,6 +15,13 @@ extension ConversationQuestionReplyTests {
     func testAsyncQuestionRequiresStructuredDeliveryAndValidQuestions() throws {
         let question = try parsedAsyncQuestion()
         XCTAssertEqual(question.questions.map(\.options), [["iPad", "iPhone"], []])
+        var omittedOptionsItem = asyncQuestionItem
+        omittedOptionsItem["questions"] = [["title": "补充说明"]]
+        omittedOptionsItem.removeValue(forKey: "delivery")
+        XCTAssertEqual(
+            CodexAsyncQuestion(item: try XCTUnwrap(QuestionReplyFixture.jsonValue(omittedOptionsItem).objectValue))?.questions.map(\.options),
+            [[]]
+        )
         for (key, value) in [("delivery", "sync" as Any), ("id", "" as Any), ("questions", [["title": "bad", "options": [42]]] as Any)] {
             var item = asyncQuestionItem
             item[key] = value
@@ -67,6 +74,9 @@ extension ConversationQuestionReplyTests {
         XCTAssertEqual(reply.answers.map(\.answer), ["iPhone\n内容含有 \"引号\"\n和换行", nil])
         let remaining = try XCTUnwrap(CodexAsyncQuestionReply(text: question.replyText(answers: ["1": ["说明"]], indices: [1])))
         XCTAssertEqual(remaining.answers.map(\.questionIndex), [1])
+        let fullRequest = question.request(sessionID: "thread", turnID: nil)
+        XCTAssertEqual(fullRequest.questions.map(\.question), ["使用什么设备？", "补充说明"])
+        XCTAssertEqual(fullRequest.questions.map(\.isOther), [true, true])
         XCTAssertEqual(question.request(sessionID: "thread", turnID: nil, answeredIndices: [0]).questions.map(\.id), ["1"])
     }
 
@@ -191,5 +201,33 @@ extension ConversationQuestionReplyTests {
         XCTAssertFalse(switchAccepted)
         XCTAssertEqual(conversations.messages(for: running.id).count, beforeSwitch, "切换会话后不得创建答复")
         XCTAssertTrue(store.asyncQuestionSubmissions.isEmpty)
+    }
+
+    func testStepByStepQuestionDraftSupportsSingleSelectExclusivityAndPerStepSkip() throws {
+        let question = try parsedAsyncQuestion()
+        let request = question.request(sessionID: "thread", turnID: nil)
+        let firstQuestion = try XCTUnwrap(request.questions.first)
+        let secondQuestion = try XCTUnwrap(request.questions.last)
+
+        var draft = PendingUserInputDraft()
+        draft.toggleOption("iPad", for: firstQuestion)
+        XCTAssertTrue(draft.hasAnswer(for: firstQuestion))
+        XCTAssertEqual(draft.answerPayload(for: request), ["0": ["iPad"]])
+
+        // 单选题输入自定义回复时自动清掉预设项，再点预设项又会清掉自定义文本。
+        draft.setFreeformAnswer("Mac", for: firstQuestion)
+        XCTAssertEqual(draft.answerPayload(for: request), ["0": ["Mac"]])
+        draft.toggleOption("iPhone", for: firstQuestion)
+        XCTAssertEqual(draft.answerPayload(for: request), ["0": ["iPhone"]])
+
+        // 第二步填写备注后选择“跳过当前步”，应保留第一步答案且将第二步留空跳过。
+        draft.setFreeformAnswer("phone1020", for: secondQuestion)
+        XCTAssertEqual(draft.answerPayload(for: request), ["0": ["iPhone"], "1": ["phone1020"]])
+        draft.clearAnswer(for: secondQuestion.id)
+        XCTAssertEqual(draft.answerPayload(for: request), ["0": ["iPhone"]])
+        let reply = try XCTUnwrap(CodexAsyncQuestionReply(
+            text: question.replyText(answers: draft.answerPayload(for: request), indices: [0, 1])
+        ))
+        XCTAssertEqual(reply.answers.map(\.answer), ["iPhone", nil])
     }
 }

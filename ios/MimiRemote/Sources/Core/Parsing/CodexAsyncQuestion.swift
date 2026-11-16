@@ -11,8 +11,9 @@ struct CodexAsyncQuestion: Codable, Hashable {
     let questions: [Question]
 
     init?(item: [String: CodexAppServerJSONValue]) {
+        let delivery = item["delivery"]
         guard item["type"] == .string("agentMessage"),
-              item["delivery"] == .string("async"),
+              delivery == nil || delivery == .null || delivery == .string("async"),
               case .string(let itemID)? = item["id"], !itemID.isEmpty,
               let entries = item["questions"]?.arrayValue, !entries.isEmpty else { return nil }
         var questions: [Question] = []
@@ -21,7 +22,7 @@ struct CodexAsyncQuestion: Codable, Hashable {
                   case .string(let title)? = object["title"],
                   !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let options: [String]
-            if let raw = object["options"] {
+            if let raw = object["options"], raw != .null {
                 guard let values = raw.arrayValue,
                       values.allSatisfy({ if case .string = $0 { true } else { false } }) else { return nil }
                 options = values.compactMap(\.stringValue)
@@ -46,7 +47,11 @@ struct CodexAsyncQuestion: Codable, Hashable {
             questions: questions.enumerated().compactMap { index, question in
                 guard !answeredIndices.contains(index) else { return nil }
                 return AgentUserInputQuestion(
-                    id: String(index), header: "", question: question.title, isOther: true, isSecret: false,
+                    id: String(index),
+                    header: "",
+                    question: question.title,
+                    isOther: true,
+                    isSecret: false,
                     options: question.options.map { AgentUserInputOption(label: $0, description: nil) }
                 )
             }

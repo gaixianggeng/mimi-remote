@@ -81,6 +81,38 @@
         }
       }
     },
+    "ui.question_custom_reply_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Or write your own reply"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "或自行撰写回复"
+          }
+        }
+      }
+    },
+    "ui.question_reply_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reply…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复…"
+          }
+        }
+      }
+    },
     "ui.desktop_worktree_title": {
       "localizations": {
         "en": {
