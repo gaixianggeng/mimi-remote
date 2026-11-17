@@ -356,10 +356,13 @@ private struct FileUploadJobRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            // 这两枚按钮的 .frame 只排布局，命中区仍取自 label 真正绘制的字形；
+            // .plain 不画背景补不上这块面积，必须显式声明交互形状。
             if job.phase == .failed, job.canRetry {
                 Button(action: onRetry) {
                     Image(systemName: "arrow.clockwise")
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.text("ui.try_again"))
@@ -367,6 +370,7 @@ private struct FileUploadJobRow: View {
             Button(action: onCancel) {
                 Image(systemName: "xmark.circle.fill")
                     .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(tokens.secondaryText)
@@ -1058,7 +1062,10 @@ struct AddContentPanel: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(tokens.tertiaryText)
+                        // .frame 只排布局，命中区仍取自 label 真正绘制的字形；
+                        // .plain 不画背景补不上这块面积，必须显式声明交互形状。
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.text("ui.clear_search"))
