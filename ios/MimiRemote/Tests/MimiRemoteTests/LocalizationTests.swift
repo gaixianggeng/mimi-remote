@@ -560,7 +560,15 @@ final class LocalizationTests: XCTestCase {
             "ui.waiting_for_mac_assistant_to_return_check_results",
             "ui.workspaces_on_this_mac_appear_as_soon_as",
             "ui.pairing_qr_expired_refresh_windows",
-            "ui.pairing_qr_expired_refresh_linux"
+            "ui.pairing_qr_expired_refresh_linux",
+            "ui.connection_conditional_tailscale_guidance",
+            "ui.connection_credentials_saved_load_failed_https",
+            "ui.connection_credentials_saved_load_failed_lan",
+            "ui.connection_credentials_saved_load_failed_tailcat",
+            "ui.connection_failure_guidance_custom_tailcat",
+            "ui.connection_failure_guidance_https",
+            "ui.connection_failure_guidance_lan",
+            "ui.connection_failure_guidance_managed_tailcat"
         ]
 
         for key in keys {
