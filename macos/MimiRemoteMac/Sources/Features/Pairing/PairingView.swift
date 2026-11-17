@@ -48,6 +48,9 @@ struct PairingView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 560)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            pairingFooter
+        }
         // macOS 26 的玻璃材质留给窗口 chrome 和操作控件，二维码内容层保持安静、稳定。
         .containerBackground(for: .window) {
             PairingWindowBackdrop()
@@ -72,7 +75,7 @@ struct PairingView: View {
             refreshPairing(network: network)
         }
         .onChange(of: store.availablePairingNetworks) { _, networks in
-            if !isRefreshing, let first = networks.first, !networks.contains(selectedNetwork) {
+            if !isRefreshing, !isApplyingRelay, let first = networks.first, !networks.contains(selectedNetwork) {
                 selectedNetwork = first
             }
             restorePairingIfNeeded()
@@ -85,6 +88,15 @@ struct PairingView: View {
         }
         .onChange(of: isRefreshing) { _, refreshing in
             if !refreshing { restorePairingIfNeeded() }
+        }
+        .onChange(of: isApplyingRelay) { _, applying in
+            if !applying {
+                if selectedNetwork == .tailcat, store.tailcatError != nil {
+                    refreshPairing(network: .tailcat)
+                } else {
+                    restorePairingIfNeeded()
+                }
+            }
         }
         .onChange(of: store.pairing?.network) { _, network in
             if let network, network != selectedNetwork {
@@ -136,17 +148,6 @@ struct PairingView: View {
                         .padding(.top, showsEndpoint ? 8 : 0)
                 }
 
-                if pairing.network == .tailcat {
-                    // 中转服务放在二维码下方的配置区，不再悬在页面主标题上方。
-                    TailcatRelayPicker(store: store, showsCaption: false, isApplying: $isApplyingRelay) {
-                        isRefreshing = true
-                        await store.refreshPairing(network: .tailcat)
-                        isRefreshing = false
-                    }
-                    .disabled(isRefreshing)
-                    .padding(.top, 12)
-                }
-
                 if !visibleWarnings.isEmpty {
                     PairingWarningList(warnings: visibleWarnings)
                         .padding(.top, 12)
@@ -168,22 +169,38 @@ struct PairingView: View {
                 contentOverflows = overflows
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PairingActionBar(
-                didCopy: didCopyPairingLink,
-                isRefreshing: isRefreshing,
-                copy: { copyPairingLink(pairing.pairURL) },
-                refresh: { refreshPairing() }
-            )
-            .frame(width: Self.columnWidth)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 10)
-            .padding(.bottom, 16)
-            // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
-            .background(alignment: .top) {
-                if contentOverflows {
-                    PairingScrollEdge()
+    }
+
+    private var pairingFooter: some View {
+        VStack(spacing: 12) {
+            if selectedNetwork == .tailcat {
+                // 配置不依赖二维码存在，更换失败后仍可查看错误、修改中转。
+                TailcatRelayPicker(store: store, showsCaption: false, isApplying: $isApplyingRelay) {
+                    isRefreshing = true
+                    await store.refreshPairing(network: .tailcat)
+                    isRefreshing = false
                 }
+                .disabled(isRefreshing)
+                .accessibilityElement(children: .contain)
+            }
+            if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network),
+               (store.canPair && !store.isBusy) || isRefreshing {
+                PairingActionBar(
+                    didCopy: didCopyPairingLink,
+                    isRefreshing: isRefreshing,
+                    copy: { copyPairingLink(pairing.pairURL) },
+                    refresh: { refreshPairing() }
+                )
+            }
+        }
+        .frame(width: Self.columnWidth)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 10)
+        .padding(.bottom, 16)
+        // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
+        .background(alignment: .top) {
+            if contentOverflows {
+                PairingScrollEdge()
             }
         }
     }
