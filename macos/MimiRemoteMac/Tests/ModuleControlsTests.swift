@@ -169,6 +169,70 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertNil(store.claudeError)
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
+
+    func testSelectingLANInPairingPickerEnablesLANAndGeneratesQRCode() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: true, lan: false)
+        fixture.succeedOnPair = true
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(store.availablePairingNetworks, [.tailscale])
+
+        await store.refreshPairingFromPicker(.localNetwork)
+
+        XCTAssertTrue(store.lanEnabled)
+        XCTAssertEqual(store.availablePairingNetworks, [.tailscale, .localNetwork])
+        XCTAssertEqual(store.pairing?.network, .localNetwork)
+        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testUnavailableLANReportsSpecificReasonInsteadOfGenericNoConnectionError() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: true, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+
+        await store.refreshPairing(network: .localNetwork)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(store.lastError, "局域网已关闭，请先在连接方式中明确启用。")
+
+        fixture.lanAvailable = false
+        await store.setLANEnabled(true)
+        await store.refreshPairing(network: .localNetwork)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(store.lastError, "未检测到可用的局域网 IPv4，请确认这台 Mac 已连接 Wi-Fi 或以太网。")
+    }
+
+    func testPairingViewPresentationHidesTailcatLoopbackEndpointAndDuplicateWarning() {
+        let tailcat = PairingInfo(
+            endpoint: "http://127.0.0.1:8787",
+            network: .tailcat,
+            pairURL: "mimiremote://pair?transport=tailcat",
+            expiresAt: "2026-11-17T14:00:00Z",
+            warnings: ["Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。"]
+        )
+        let lan = PairingInfo(
+            endpoint: "http://192.168.31.20:8787",
+            network: .localNetwork,
+            pairURL: "mimiremote://pair?network=lan",
+            expiresAt: "2026-11-17T14:00:00Z",
+            warnings: ["仅用于受信任的局域网；仍需 Mimi 配对鉴权"]
+        )
+
+        XCTAssertFalse(PairingView.showsEndpoint(for: tailcat))
+        XCTAssertTrue(PairingView.showsEndpoint(for: lan))
+        XCTAssertEqual(PairingView.visibleWarnings(for: tailcat, lastError: nil), [])
+        XCTAssertEqual(PairingView.visibleWarnings(for: tailcat, lastError: "刷新异常"), ["刷新异常"])
+        XCTAssertEqual(
+            PairingView.visibleWarnings(for: lan, lastError: nil),
+            ["仅用于受信任的局域网；仍需 Mimi 配对鉴权"]
+        )
+        XCTAssertEqual(
+            TailcatRelayPresentation.pairingCaption(mode: .mimi, derpMapURL: ""),
+            TailcatRelayPresentation.mimiPairingNote
+        )
+    }
 }
 
 private final class ModuleFixture: @unchecked Sendable {
@@ -179,6 +243,8 @@ private final class ModuleFixture: @unchecked Sendable {
     private var claudeOnDisk: Bool
     private var ts: Bool
     private var lan: Bool
+    private var _lanAvailable = true
+    private var _succeedOnPair = false
     private var pendingCodex: Bool?
     private var pendingClaude: Bool?
     private var pendingNetwork: NetworkConfigurationResult?
@@ -192,6 +258,14 @@ private final class ModuleFixture: @unchecked Sendable {
     private var _failNetworkRestore = false
     /// 失败收尾时状态不可确认，用于区分"读到真实状态"和"只能进入降级态"两条出口。
     private var _failStatusReads = false
+    var lanAvailable: Bool {
+        get { lock.withLock { _lanAvailable } }
+        set { lock.withLock { _lanAvailable = newValue } }
+    }
+    var succeedOnPair: Bool {
+        get { lock.withLock { _succeedOnPair } }
+        set { lock.withLock { _succeedOnPair = newValue } }
+    }
     var failNetworkRestore: Bool {
         get { lock.withLock { _failNetworkRestore } }
         set { lock.withLock { _failNetworkRestore = newValue } }
@@ -239,7 +313,7 @@ private final class ModuleFixture: @unchecked Sendable {
                         ),
                         moduleStatus: AgentModuleStatus(codexEnabled: codex, claudeEnabled: claude,
                                                        tailscaleEnabled: ts, lanEnabled: lan,
-                                                       tailscaleAvailable: true, lanAvailable: true))
+                                                       tailscaleAvailable: true, lanAvailable: _lanAvailable))
         }
     }
     func apply() {
@@ -284,9 +358,16 @@ private final class ModuleFixture: @unchecked Sendable {
                 }
             },
             setLANAccess: { _ in throw ModuleTestError.unexpected },
-            pair: { _ in
+            pair: { network in
                 self.lock.withLock { self._pairCalls += 1 }
-                throw ModuleTestError.unexpected
+                guard self.succeedOnPair else { throw ModuleTestError.unexpected }
+                return PairingInfo(
+                    endpoint: network == .localNetwork ? "http://192.168.31.10:8787" : "http://100.64.0.1:8787",
+                    network: network,
+                    pairURL: "mimiremote://pair?network=\(network.rawValue)",
+                    expiresAt: "2026-11-17T14:00:00Z",
+                    warnings: []
+                )
             },
             configureDeepSeek: { _, _ in
                 DeepSeekConfigurationResult(
