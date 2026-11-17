@@ -998,13 +998,17 @@ extension ConversationDataFlowTests {
             clientFactory: { client },
             sessionListNow: { now },
             sessionListSleep: { nanoseconds in
+                XCTAssertEqual(client.sessionsPageCallCount, 1, "冷却窗口结束前不能再次请求列表")
                 requestedSleeps.append(nanoseconds)
                 now = now.addingTimeInterval(Double(nanoseconds) / 1_000_000_000)
+                await Task.yield()
             }
         )
 
         // 此处只验证列表冷却；首屏展示计时由 SessionLibraryStartupTests 独立覆盖。
         store.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
+        // refreshAll 会异步补查会话库；隔离该独立请求来源，避免它抢先消耗重试结果。
+        store.lastSessionLibraryIndexRefreshAt = now
         await store.bootstrap()
 
         XCTAssertEqual(client.sessionsPageCallCount, 2)
