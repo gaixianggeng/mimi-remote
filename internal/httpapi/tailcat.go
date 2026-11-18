@@ -164,9 +164,9 @@ func (r *Router) setTailcatRelay(ctx context.Context, choice, rawURL string) (ta
 		relayURL = normalized
 	}
 
-	wasEnabled := r.tailcat.Status(ctx).Enabled
+	previous := r.tailcat.Status(ctx)
 	// 已有托管控制器时由它保护注册与身份回滚；旧入口继续保留兼容。
-	if choice == "mimi" || r.tailcat.Status(ctx).Mode == config.TailcatModeManaged {
+	if choice == "mimi" || previous.Mode == config.TailcatModeManaged {
 		if r.managedPairing == nil {
 			return tailcatStatus{}, &tailcatActionFailure{
 				status: http.StatusServiceUnavailable,
@@ -197,12 +197,6 @@ func (r *Router) setTailcatRelay(ctx context.Context, choice, rawURL string) (ta
 		}
 	}
 
-	if wasEnabled {
-		if failure := r.enableTailcat(ctx); failure != nil {
-			return tailcatStatus{}, failure
-		}
-	}
-
 	status := r.tailcat.Status(ctx)
 	if (choice == "mimi" && status.Mode != config.TailcatModeManaged) ||
 		(choice != "mimi" && (status.Mode == config.TailcatModeManaged || status.DERPMapURL != relayURL)) {
@@ -211,6 +205,12 @@ func (r *Router) setTailcatRelay(ctx context.Context, choice, rawURL string) (ta
 			code:   "tailcat_relay_not_applied",
 			err:    errors.New("中转配置尚未生效，请刷新后重试"),
 		}
+	}
+	if status.Enabled && status.Running && r.managedPairing != nil {
+		// The configuration transaction owns process and switch state. Resync the policy
+		// without calling enable, whose start-failure rollback would disable the connection.
+		r.managedPairing.Start()
+		_ = r.managedPairing.Sync(ctx)
 	}
 	return status, nil
 }
