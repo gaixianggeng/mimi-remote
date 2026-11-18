@@ -42,8 +42,21 @@ struct ClaudeSlashCommand: Hashable, Identifiable {
 /// 只有内置命令；完全访问还包含用户与项目的技能和命令。
 struct ClaudeSlashCommandCatalogKey: Hashable {
     let hostScope: HostScope
+    let runtimeProvider: String
     let cwd: String
     let fullAccess: Bool
+
+    init(
+        hostScope: HostScope,
+        runtimeProvider: String = "claude",
+        cwd: String,
+        fullAccess: Bool
+    ) {
+        self.hostScope = hostScope
+        self.runtimeProvider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        self.cwd = cwd
+        self.fullAccess = fullAccess
+    }
 }
 
 struct ClaudeSlashCommandCatalogState: Equatable {

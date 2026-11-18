@@ -197,10 +197,10 @@ is_rust_source_path() {
   return 1
 }
 
-# 基于 Claude Agent SDK 的 TypeScript 适配器（#655），与 Rust bridge 分开验证。
+# 基于 Claude Agent SDK 及共享 appserver-kit 的 TypeScript 适配器，与 Rust bridge 分开验证。
 is_claude_sdk_source_path() {
   case "$1" in
-    bridges/claude-sdk/*|scripts/check-claude-sdk-adapter.sh)
+    bridges/appserver-kit/*|bridges/claude-sdk/*|scripts/check-claude-sdk-adapter.sh)
       return 0
       ;;
   esac

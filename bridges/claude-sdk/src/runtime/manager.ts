@@ -3,7 +3,7 @@
 // 订阅了同一会话的每个连接（例如 iPad 与 iPhone）都收到事件和审批；谁先答复以谁为准，
 // 其余连接收到 serverRequest/resolved。
 import { randomUUID } from "node:crypto";
-import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
+import type { RateLimitSnapshot } from "@mimi/appserver-kit/protocol/codex/v2/RateLimitSnapshot.ts";
 import { notificationFrame, type OutboundFrame } from "../rpc/frames.ts";
 import type { Session } from "../session/session.ts";
 import { errorText, logger } from "../util/logging.ts";

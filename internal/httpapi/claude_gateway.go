@@ -802,6 +802,10 @@ func claudeBridgeDebugLine(line string) bool {
 // captureClaudeBridgeStderr 把 bridge 的 stderr 分流：详细记录窗口内全部写进本机调试日志；
 // debug / trace 行只进调试日志，其余照旧进标准日志。
 func captureClaudeBridgeStderr(stderr io.Reader, sensitiveValues []string) {
+	captureResidentAdapterStderr("claude-bridge", "claude bridge", stderr, sensitiveValues)
+}
+
+func captureResidentAdapterStderr(debugComponent string, label string, stderr io.Reader, sensitiveValues []string) {
 	scanner := bufio.NewScanner(stderr)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
@@ -809,13 +813,13 @@ func captureClaudeBridgeStderr(stderr io.Reader, sensitiveValues []string) {
 		if line == "" {
 			continue
 		}
-		debuglog.Printf("claude-bridge", "%s", line)
+		debuglog.Printf(debugComponent, "%s", line)
 		if !claudeBridgeDebugLine(line) {
-			log.Printf("claude bridge stderr: %s", line)
+			log.Printf("%s stderr: %s", strings.ToLower(label), line)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("claude bridge stderr scanner error err=%v", err)
+		log.Printf("%s stderr scanner error err=%v", strings.ToLower(label), err)
 		// 超长行让 Scanner 停下后也要继续排空管道，否则 bridge 写 stderr 会被阻塞。
 		_, _ = io.Copy(io.Discard, stderr)
 	}

@@ -19,7 +19,7 @@ import { createTurnHandlers } from "./handlers/turns.ts";
 import { isHolderWorking } from "./runtime/holders.ts";
 import { ThreadManager, type ManagerOptions } from "./runtime/manager.ts";
 import { unavailableRateLimits } from "./runtime/rateLimits.ts";
-import type { InitializeResponse } from "./protocol/codex/InitializeResponse.ts";
+import type { InitializeResponse } from "@mimi/appserver-kit/protocol/codex/InitializeResponse.ts";
 import { Router, type Handler, type Logger } from "./server/router.ts";
 import { logger } from "./util/logging.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION, MINIMUM_CLAUDE_CODE_VERSION, USER_AGENT } from "./version.ts";

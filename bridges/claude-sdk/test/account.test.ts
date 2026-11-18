@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import type { App } from "../src/app.ts";
 import { catalogModels, fallbackModels, ModelCatalog, modelVersionTitle } from "../src/claude/models.ts";
-import type { RateLimitSnapshot } from "../src/protocol/codex/v2/RateLimitSnapshot.ts";
+import type { RateLimitSnapshot } from "@mimi/appserver-kit/protocol/codex/v2/RateLimitSnapshot.ts";
 import { rateLimitSnapshot } from "../src/runtime/rateLimits.ts";
 import { Session } from "../src/session/session.ts";
 

@@ -140,10 +140,14 @@ func (c *claudeBridgeRPC) write(ctx context.Context, payload any) error {
 // dialClaudeBridgeRPC 打开一条面向 resident bridge 的内部连接。bridge 未运行时直接
 // 报错，调用方按"跳过本次任务"处理，不会为了内部任务去拉起 bridge。
 func (r *Router) dialClaudeBridgeRPC(ctx context.Context) (*claudeBridgeRPC, error) {
-	if r == nil || r.claudeBridge == nil {
-		return nil, errors.New("Claude bridge 未配置")
+	return dialResidentAdapterRPC(ctx, r.claudeBridge, "Claude bridge")
+}
+
+func dialResidentAdapterRPC(ctx context.Context, supervisor *claudeBridgeSupervisor, displayName string) (*claudeBridgeRPC, error) {
+	if supervisor == nil {
+		return nil, errors.New(displayName + " 未配置")
 	}
-	conn, _, err := r.claudeBridge.dial()
+	conn, _, err := supervisor.dial()
 	if err != nil {
 		return nil, err
 	}

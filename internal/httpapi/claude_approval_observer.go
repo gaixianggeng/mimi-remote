@@ -35,6 +35,7 @@ const (
 
 type claudeApprovalObserver struct {
 	router     *Router
+	runtimeID  string
 	sessionKey string
 	conn       net.Conn
 	writeMu    *sync.Mutex
@@ -52,9 +53,45 @@ type claudeApprovalObserver struct {
 	pending map[string]string
 }
 
+func (o *claudeApprovalObserver) effectiveRuntimeID() string {
+	if o != nil {
+		if normalized := normalizeAppServerRuntimeID(o.runtimeID); normalized != "" && o.runtimeID != "" {
+			return normalized
+		}
+		if o.policy != nil && o.policy.runtimeID != "" {
+			return normalizeAppServerRuntimeID(o.policy.runtimeID)
+		}
+	}
+	return appServerRuntimeClaudeID
+}
+
+func residentObserverMapKey(runtimeID string, sessionKey string) string {
+	trimmed := strings.TrimSpace(sessionKey)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := normalizeAppServerRuntimeID(runtimeID)
+	if normalized == "" || normalized == appServerRuntimeClaudeID {
+		return trimmed
+	}
+	return normalized + "\x00" + trimmed
+}
+
 // startClaudeApprovalObserver 在客户端断开后接管 bridge 连接。返回 false 表示
 // 没有接管（未启用推送、无待审批线索或已达上限），调用方按原样关闭连接。
 func (r *Router) startClaudeApprovalObserver(
+	sessionKey string,
+	conn net.Conn,
+	writeMu *sync.Mutex,
+	reader *bufio.Reader,
+	policy *appServerGatewayPolicy,
+	expectedEpoch uint64,
+) bool {
+	return r.startResidentApprovalObserver(appServerRuntimeClaudeID, sessionKey, conn, writeMu, reader, policy, expectedEpoch)
+}
+
+func (r *Router) startResidentApprovalObserver(
+	runtimeID string,
 	sessionKey string,
 	conn net.Conn,
 	writeMu *sync.Mutex,
@@ -73,6 +110,7 @@ func (r *Router) startClaudeApprovalObserver(
 	}
 	observer := &claudeApprovalObserver{
 		router:      r,
+		runtimeID:   normalizeAppServerRuntimeID(runtimeID),
 		sessionKey:  sessionKey,
 		conn:        conn,
 		writeMu:     writeMu,
@@ -111,20 +149,21 @@ func (r *Router) installClaudeApprovalObserver(observer *claudeApprovalObserver,
 	if r == nil || observer == nil || strings.TrimSpace(observer.sessionKey) == "" {
 		return nil, false
 	}
+	mapKey := residentObserverMapKey(observer.effectiveRuntimeID(), observer.sessionKey)
 	r.claudeObserverMu.Lock()
 	defer r.claudeObserverMu.Unlock()
-	if r.claudeObserversClosing || r.claudeObserverEpochs == nil || r.claudeObserverEpochs[observer.sessionKey] != expectedEpoch {
+	if r.claudeObserversClosing || r.claudeObserverEpochs == nil || r.claudeObserverEpochs[mapKey] != expectedEpoch {
 		return nil, false
 	}
 	if r.claudeObservers == nil {
 		r.claudeObservers = map[string]*claudeApprovalObserver{}
 	}
-	existing := r.claudeObservers[observer.sessionKey]
+	existing := r.claudeObservers[mapKey]
 	if existing == nil && len(r.claudeObservers) >= claudeObserverMax {
 		return nil, false
 	}
 	observer.epoch = expectedEpoch
-	r.claudeObservers[observer.sessionKey] = observer
+	r.claudeObservers[mapKey] = observer
 	return existing, true
 }
 
@@ -132,16 +171,21 @@ func (r *Router) installClaudeApprovalObserver(observer *claudeApprovalObserver,
 // 到同一个 bridge 会话并拿到 serverRequest/replay。
 // 返回值是这条前台连接独占的代际；只有持有该代际的断线 handler 才能安装 observer。
 func (r *Router) stopClaudeApprovalObserver(sessionKey string) uint64 {
-	if strings.TrimSpace(sessionKey) == "" {
+	return r.stopResidentApprovalObserver(appServerRuntimeClaudeID, sessionKey)
+}
+
+func (r *Router) stopResidentApprovalObserver(runtimeID string, sessionKey string) uint64 {
+	mapKey := residentObserverMapKey(runtimeID, sessionKey)
+	if mapKey == "" {
 		return 0
 	}
 	r.claudeObserverMu.Lock()
 	if r.claudeObserverEpochs == nil {
 		r.claudeObserverEpochs = map[string]uint64{}
 	}
-	r.claudeObserverEpochs[sessionKey]++
-	epoch := r.claudeObserverEpochs[sessionKey]
-	observer := r.claudeObservers[sessionKey]
+	r.claudeObserverEpochs[mapKey]++
+	epoch := r.claudeObserverEpochs[mapKey]
+	observer := r.claudeObservers[mapKey]
 	r.claudeObserverMu.Unlock()
 	if observer != nil {
 		observer.close("client_reattached")
@@ -150,20 +194,33 @@ func (r *Router) stopClaudeApprovalObserver(sessionKey string) uint64 {
 }
 
 func (r *Router) releaseClaudeApprovalObserverEpoch(sessionKey string, epoch uint64) {
-	if strings.TrimSpace(sessionKey) == "" || epoch == 0 {
+	r.releaseResidentApprovalObserverEpoch(appServerRuntimeClaudeID, sessionKey, epoch)
+}
+
+func (r *Router) releaseResidentApprovalObserverEpoch(runtimeID string, sessionKey string, epoch uint64) {
+	mapKey := residentObserverMapKey(runtimeID, sessionKey)
+	if mapKey == "" || epoch == 0 {
 		return
 	}
 	r.claudeObserverMu.Lock()
 	defer r.claudeObserverMu.Unlock()
-	if r.claudeObserverEpochs[sessionKey] == epoch && r.claudeObservers[sessionKey] == nil {
-		delete(r.claudeObserverEpochs, sessionKey)
+	if r.claudeObserverEpochs[mapKey] == epoch && r.claudeObservers[mapKey] == nil {
+		delete(r.claudeObserverEpochs, mapKey)
 	}
 }
 
 func (r *Router) claudeApprovalObserverFor(sessionKey string) *claudeApprovalObserver {
+	return r.residentApprovalObserverFor(appServerRuntimeClaudeID, sessionKey)
+}
+
+func (r *Router) residentApprovalObserverFor(runtimeID string, sessionKey string) *claudeApprovalObserver {
+	mapKey := residentObserverMapKey(runtimeID, sessionKey)
+	if mapKey == "" {
+		return nil
+	}
 	r.claudeObserverMu.Lock()
 	defer r.claudeObserverMu.Unlock()
-	return r.claudeObservers[sessionKey]
+	return r.claudeObservers[mapKey]
 }
 
 func (o *claudeApprovalObserver) pump(ctx context.Context) {
@@ -226,7 +283,7 @@ func (o *claudeApprovalObserver) observe(payload []byte) {
 		_, known := o.pending[requestID]
 		o.pending[requestID] = threadID
 		if !known {
-			o.router.notifyPendingApproval("claude", o.sessionKey, threadID, o.policy.threadRouteFacts(threadID), requestID, method)
+			o.router.notifyPendingApproval(o.effectiveRuntimeID(), o.sessionKey, threadID, o.policy.threadRouteFacts(threadID), requestID, method)
 		}
 		o.mu.Unlock()
 		return
@@ -270,7 +327,7 @@ func (o *claudeApprovalObserver) notifyPendingIfCurrent(requestID string, thread
 		return
 	}
 	o.router.notifyPendingApproval(
-		"claude",
+		o.effectiveRuntimeID(),
 		o.sessionKey,
 		threadID,
 		o.policy.threadRouteFacts(threadID),
@@ -295,7 +352,7 @@ func (o *claudeApprovalObserver) forgetResolved(params json.RawMessage) {
 		o.mu.Lock()
 		delete(o.pending, requestID)
 		o.mu.Unlock()
-		o.router.resolveApprovalNotifications("claude", o.sessionKey, requestID)
+		o.router.resolveApprovalNotifications(o.effectiveRuntimeID(), o.sessionKey, requestID)
 	}
 }
 
@@ -313,7 +370,7 @@ func (o *claudeApprovalObserver) forgetPendingForThread(threadID string) {
 	}
 	o.mu.Unlock()
 	for _, requestID := range forgotten {
-		o.router.resolveApprovalNotifications("claude", o.sessionKey, requestID)
+		o.router.resolveApprovalNotifications(o.effectiveRuntimeID(), o.sessionKey, requestID)
 	}
 }
 
@@ -323,20 +380,21 @@ func (o *claudeApprovalObserver) submit(ctx context.Context, payload []byte) err
 	if policyErr != nil {
 		return errors.New(policyErr.message)
 	}
+	mapKey := residentObserverMapKey(o.effectiveRuntimeID(), o.sessionKey)
 	// generation 检查与 runtime 写入共用 map 锁。replacement 要先取得同一把锁，
 	// 因此新 observer 发布后，旧对象不可能再越过这里写入旧 bridge。
 	o.router.claudeObserverMu.Lock()
 	defer o.router.claudeObserverMu.Unlock()
-	if current := o.router.claudeObservers[o.sessionKey]; current != o {
+	if current := o.router.claudeObservers[mapKey]; current != o {
 		rollback()
-		return errors.New("Claude 会话观察已被替换")
+		return errors.New("会话观察已被替换")
 	}
 	o.mu.Lock()
 	closed := o.closed
 	o.mu.Unlock()
 	if closed || o.writeMu == nil {
 		rollback()
-		return errors.New("Claude 会话观察已结束")
+		return errors.New("会话观察已结束")
 	}
 	o.writeMu.Lock()
 	defer o.writeMu.Unlock()
@@ -399,17 +457,19 @@ func (o *claudeApprovalObserver) close(reason string) {
 	}
 	_ = o.conn.Close()
 	o.policy.close()
+	runtimeID := o.effectiveRuntimeID()
+	mapKey := residentObserverMapKey(runtimeID, o.sessionKey)
 	o.router.claudeObserverMu.Lock()
 	wasCurrent := false
 	inherited := map[string]struct{}{}
-	if current, ok := o.router.claudeObservers[o.sessionKey]; ok && current == o {
-		delete(o.router.claudeObservers, o.sessionKey)
-		if o.router.claudeObserverEpochs[o.sessionKey] == o.epoch {
-			delete(o.router.claudeObserverEpochs, o.sessionKey)
+	if current, ok := o.router.claudeObservers[mapKey]; ok && current == o {
+		delete(o.router.claudeObservers, mapKey)
+		if o.router.claudeObserverEpochs[mapKey] == o.epoch {
+			delete(o.router.claudeObserverEpochs, mapKey)
 		}
 		wasCurrent = true
 	} else if reason == "observer_replaced" {
-		if current := o.router.claudeObservers[o.sessionKey]; current != nil {
+		if current := o.router.claudeObservers[mapKey]; current != nil {
 			current.mu.Lock()
 			for requestID := range current.pending {
 				inherited[requestID] = struct{}{}
@@ -420,15 +480,15 @@ func (o *claudeApprovalObserver) close(reason string) {
 	o.router.claudeObserverMu.Unlock()
 	if wasCurrent {
 		// 当前 generation 结束意味着没人能再代替用户回答任何请求。
-		o.router.resolveApprovalNotifications("claude", o.sessionKey, "")
+		o.router.resolveApprovalNotifications(runtimeID, o.sessionKey, "")
 	} else if reason == "observer_replaced" {
 		// 被替换 generation 只撤销当前 generation 没有继承的旧请求。
 		for _, requestID := range pending {
 			if _, ok := inherited[requestID]; !ok {
-				o.router.resolveApprovalNotifications("claude", o.sessionKey, requestID)
+				o.router.resolveApprovalNotifications(runtimeID, o.sessionKey, requestID)
 			}
 		}
 	}
-	log.Printf("claude approval observer 结束 session=%s reason=%s",
-		sanitizeGatewayDiagnostic(o.sessionKey), reason)
+	log.Printf("%s approval observer 结束 session=%s reason=%s",
+		runtimeID, sanitizeGatewayDiagnostic(o.sessionKey), reason)
 }

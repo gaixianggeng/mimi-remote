@@ -1,10 +1,10 @@
 // SDK 的 getSessionMessages 已经给出与 `claude --resume` 一致的消息序列（主链、
 // 压缩处理、排队消息、并行工具结果都由 SDK 决定）。这里只负责把它切成 turn、
 // 映射成 Codex item，不再自行判断哪些消息该显示。
-import type { ThreadItem } from "../protocol/codex/v2/ThreadItem.ts";
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
-import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
-import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator, notificationTurnId } from "./itemIds.ts";
 import { completeToolItem, isHiddenTool, isTurnHintItem, toolUseItem, unfinishedToolItem, type ToolOutput } from "./tools.ts";
 

@@ -288,408 +288,6 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
     }
 }
 
-/// 会话属于哪个 Runtime 与连接、端点和 Token 无关。AppStore 按连接档案各持有一份，
-/// 跨 bundle 重建（回后台清凭据、Tailcat 换端口、切路由）沿用；只用锁保护，可跨 actor 读。
-final class AppServerRuntimeRouteStore: @unchecked Sendable {
-    private var lock = NSLock()
-    private var runtimeBySessionID: [SessionID: String] = [:]
-
-    /// 同一档案换用候选 bundle 时，把旧表已知的路由带进新表（只补缺）。
-    func rememberMissing(from other: AppServerRuntimeRouteStore) {
-        guard other !== self else { return }
-        other.lock.lock()
-        let known = other.runtimeBySessionID
-        other.lock.unlock()
-        lock.lock()
-        defer { lock.unlock() }
-        for (sessionID, runtime) in known where runtimeBySessionID[sessionID] == nil {
-            runtimeBySessionID[sessionID] = runtime
-        }
-    }
-
-    func removeAll() {
-        lock.lock()
-        runtimeBySessionID.removeAll()
-        lock.unlock()
-    }
-
-    /// 用本地已知会话（列表缓存、恢复快照）补齐缺失的路由（#784）。网络学到的路由优先，
-    /// 这里不覆盖；provider 与 source 都认不出 Runtime 时跳过，不替未知会话写成 Codex。
-    func rememberMissing(_ sessions: [AgentSession]) {
-        let knownRuntimes: Set<String> = ["codex", "claude", "deepseek"]
-        lock.lock()
-        defer { lock.unlock() }
-        for session in sessions where runtimeBySessionID[session.id] == nil {
-            if let explicit = session.runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !explicit.isEmpty {
-                runtimeBySessionID[session.id] = CodexAppServerSessionRuntime.normalizedRuntimeProvider(explicit)
-                continue
-            }
-            let source = session.source.trimmingCharacters(in: .whitespacesAndNewlines)
-            let sourceRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(source)
-            if !source.isEmpty, knownRuntimes.contains(sourceRuntime) {
-                runtimeBySessionID[session.id] = sourceRuntime
-            }
-        }
-    }
-
-    func remember(_ session: AgentSession) {
-        remember(runtimeProvider: session.runtimeProvider, source: session.source, for: session.id)
-    }
-
-    func remember(_ sessions: [AgentSession]) {
-        for session in sessions {
-            remember(session)
-        }
-    }
-
-    func remember(_ runtimeProvider: String?, for sessionID: SessionID) {
-        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
-        lock.lock()
-        runtimeBySessionID[sessionID] = runtime.isEmpty ? "codex" : runtime
-        lock.unlock()
-    }
-
-    func remember(runtimeProvider: String?, source: String?, for sessionID: SessionID) {
-        if let explicit = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
-            // 显式 provider 即使未知也要保留，让后续请求安全失败，不能误投到 Codex。
-            remember(explicit, for: sessionID)
-            return
-        }
-        let sourceRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(source)
-        let knownRuntimes: Set<String> = ["codex", "claude", "deepseek"]
-        remember(knownRuntimes.contains(sourceRuntime) ? sourceRuntime : "codex", for: sessionID)
-    }
-
-    func runtimeProvider(for sessionID: SessionID) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return runtimeBySessionID[sessionID]
-    }
-
-    func remove(sessionID: SessionID) {
-        lock.lock()
-        runtimeBySessionID.removeValue(forKey: sessionID)
-        lock.unlock()
-    }
-}
-
-final class AppServerRuntimeBundle {
-    /// 原生通道承接的 runtime ID。沿用既有 `deepseek`，不新建 `deepseek-native`，
-    /// 以免切断既有路由、收藏与通知身份。
-    static let nativeRuntimeProvider = "deepseek"
-    static let nativeHarnessProtocol = "harness_native_v1"
-
-    let codex: CodexAppServerSessionRuntime
-    let claude: CodexAppServerSessionRuntime
-    /// 原生 Harness 接缝。正式 App 总是注入；测试可留空，此时 `deepseek` 显式失败，
-    /// 不会回退到任何 actor。
-    let harness: HarnessSessionClient?
-    /// 默认每个 bundle 一份；App 内由 AppStore 传入跨 bundle 沿用的那份（#784）。
-    let routes: AppServerRuntimeRouteStore
-
-    init(
-        endpoint: String,
-        token: String,
-        harnessFactory: HarnessSessionClientFactory? = nil,
-        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
-    ) {
-        codex = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "codex")
-        claude = CodexAppServerSessionRuntime(endpoint: endpoint, token: token, runtimeProvider: "claude")
-        let native = harnessFactory?(endpoint, token)
-        harness = native
-        self.routes = routes
-        installThreadRuntimeOwnerLookup()
-    }
-
-    /// 快速切换已经拿到 config，候选 Runtime 必须复用它，不能在提交后再次请求
-    /// `/api/app-server/config`。Codex 连接在 prepare 阶段初始化；Claude 按实际使用延迟建连。
-    /// `requestTimeout` 是提交后长期使用的请求超时，默认与普通 Runtime 一致；预热时限
-    /// 只交给 `prepareForHostActivation(handshakeTimeout:)`（#801）。
-    init(
-        endpoint: String,
-        token: String,
-        requestTimeout: TimeInterval = 20,
-        preparedConfig: CodexAppServerConfigResponse,
-        harnessFactory: HarnessSessionClientFactory? = nil,
-        // 两个入参解决的是不同问题，都要留：preparedConfig 是「已经拿到的那份快照」，
-        // configProvider 是「快照失效后去哪再取」。默认 provider 只回 preparedConfig，
-        // 因此快速切换链路仍然不会重新打一次 /api/app-server/config。
-        configProvider suppliedConfigProvider: (() async throws -> CodexAppServerConfigResponse)? = nil,
-        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore(),
-        transportFactory: (() -> CodexAppServerTransport)? = nil
-    ) {
-        let configProvider = suppliedConfigProvider ?? { preparedConfig }
-        let transportFactory = transportFactory ?? { URLSessionCodexAppServerTransport() }
-        codex = CodexAppServerSessionRuntime(
-            endpoint: endpoint,
-            token: token,
-            runtimeProvider: "codex",
-            transportFactory: transportFactory,
-            requestTimeout: requestTimeout,
-            initialConfig: preparedConfig,
-            configProvider: configProvider
-        )
-        claude = CodexAppServerSessionRuntime(
-            endpoint: endpoint,
-            token: token,
-            runtimeProvider: "claude",
-            transportFactory: transportFactory,
-            requestTimeout: requestTimeout,
-            initialConfig: preparedConfig,
-            configProvider: configProvider
-        )
-        let native = harnessFactory?(endpoint, token)
-        harness = native
-        self.routes = routes
-        installThreadRuntimeOwnerLookup()
-    }
-
-    init(
-        codexRuntime: CodexAppServerSessionRuntime,
-        claudeRuntime: CodexAppServerSessionRuntime,
-        harness: HarnessSessionClient? = nil,
-        routes: AppServerRuntimeRouteStore = AppServerRuntimeRouteStore()
-    ) {
-        codex = codexRuntime
-        claude = claudeRuntime
-        self.harness = harness
-        self.routes = routes
-        installThreadRuntimeOwnerLookup()
-    }
-
-    /// 重新授权翻列表前先问路由表：已知属于另一个 Runtime 的会话不会出现在本通道的列表里（#784）。
-    private func installThreadRuntimeOwnerLookup() {
-        let routes = routes
-        let lookup: @Sendable (SessionID) -> String? = { routes.runtimeProvider(for: $0) }
-        Task { [codex, claude] in
-            await codex.setThreadRuntimeOwnerLookup(lookup)
-            await claude.setThreadRuntimeOwnerLookup(lookup)
-        }
-    }
-
-    /// 列表级实时更新：两个 Runtime 对没有被页面订阅的会话收到权威快照时交给同一个观察者（#683）。
-    func setSessionIndexObserver(_ observer: (@Sendable (AgentSession) -> Void)?) {
-        Task { [codex, claude] in
-            await codex.setSessionIndexObserver(observer)
-            await claude.setSessionIndexObserver(observer)
-        }
-    }
-
-    /// 该 provider 是否由原生客户端承接；不是则返回 `nil`。
-    func nativeClient(for provider: String?) -> HarnessSessionClient? {
-        guard let harness else { return nil }
-        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
-        return normalized == Self.nativeRuntimeProvider ? harness : nil
-    }
-
-    func nativeClient(forSessionID sessionID: SessionID) -> HarnessSessionClient? {
-        nativeClient(for: routes.runtimeProvider(for: sessionID))
-    }
-
-    func runtime(for provider: String?) throws -> CodexAppServerSessionRuntime {
-        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider)
-        switch normalized {
-        case "codex":
-            return codex
-        case "claude":
-            return claude
-        case "deepseek":
-            // agentd 的 `/api/app-server` 已删除 deepseek 翻译层，`runtime=deepseek` 不再存在；
-            // deepseek 只能由原生通道承接。调用方必须改走 `nativeClient(for:)`；这里无论原生
-            // 是否注入都显式失败，绝不回退到任何 actor 假装 native，也不静默走错协议。
-            throw HarnessNativeUnavailableError.routedNatively(runtimeProvider: normalized)
-        default:
-            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-        }
-    }
-
-    func runtime(forSessionID sessionID: SessionID) throws -> CodexAppServerSessionRuntime {
-        try runtime(for: routes.runtimeProvider(for: sessionID))
-    }
-
-    static func preferredAvailableRuntimeProvider(in config: CodexAppServerConfigResponse) -> String? {
-        let codexChannel = config.channels.first {
-            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
-                CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
-        }
-        if codexChannel?.gatewayAvailable == true
-            || (config.channels.isEmpty && config.runtime.gatewayAvailable) {
-            // `runtime` 是旧 agentd 只有单一 Codex 通道时的兼容字段。现代配置只要
-            // 给了 channels，就以显式列表为准；否则“仅启用 Harness”仍会误选 Codex。
-            return "codex"
-        }
-        return config.channels.lazy
-            .filter(\.gatewayAvailable)
-            .map { CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.provider) }
-            .first { !$0.isEmpty }
-    }
-
-    static func nativeHarnessChannel(
-        in config: CodexAppServerConfigResponse
-    ) -> CodexAppServerChannelMetadata? {
-        config.channels.first {
-            CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id)
-                == nativeRuntimeProvider
-        }
-    }
-
-    static func nativeHarnessIsConfigured(
-        in config: CodexAppServerConfigResponse
-    ) throws -> Bool {
-        guard let channel = nativeHarnessChannel(in: config),
-              channel.enabled != false else { return false }
-        guard channel.type == "harness_native",
-              channel.protocolName == nativeHarnessProtocol else {
-            throw HarnessNativeUnavailableError.agentdUpgradeRequired
-        }
-        return channel.gatewayAvailable
-    }
-
-    /// 两个 Runtime 共享同一份 channels 快照。记录安装快照时各自丢弃配置的次数，
-    /// 任一 Runtime 后来丢过配置（断线、换代、daemon 重载）就说明这份快照不再可信。
-    private struct ConfigGeneration: Equatable {
-        var codex: UInt64
-        var claude: UInt64
-    }
-
-    private let configLock = NSLock()
-    private var sharedConfig: CodexAppServerConfigResponse?
-    private var installedGeneration: ConfigGeneration?
-    private var configRefreshTask: Task<CodexAppServerConfigResponse, Error>?
-
-    private func currentConfigGeneration() async -> ConfigGeneration {
-        let codexSequence = await codex.configInvalidationSequence
-        let claudeSequence = await claude.configInvalidationSequence
-        return ConfigGeneration(codex: codexSequence, claude: claudeSequence)
-    }
-
-    private func cachedConfigIfStillValid() async -> CodexAppServerConfigResponse? {
-        let generation = await currentConfigGeneration()
-        let snapshot = await codex.configSnapshot()
-        return configLock.withLock {
-            guard let installedGeneration else {
-                // 首次查询直接复用 preparedConfig / initialConfig 带来的快照，快速切换链路
-                // 不能为了建立基线再发一次 /api/app-server/config。但只有两个 Runtime 都还
-                // 没丢过配置时才允许这样做：否则这份快照可能来自另一个 Runtime 的旧缓存，
-                // 正是本类要修的情况。这类现场强制真读一次。
-                guard generation == ConfigGeneration(codex: 0, claude: 0), let snapshot else {
-                    return nil
-                }
-                self.installedGeneration = generation
-                sharedConfig = snapshot
-                return snapshot
-            }
-            guard installedGeneration == generation, let sharedConfig else { return nil }
-            return sharedConfig
-        }
-    }
-
-    /// 能力判断的唯一入口。先确认共享快照仍然有效，失效时通过一次有界、可合并的
-    /// 配置请求重建，避免「只有 Claude 连接过」时 Codex 缓存的旧 channels 一直生效。
-    func currentConfiguration() async throws -> CodexAppServerConfigResponse {
-        if let cached = await cachedConfigIfStillValid() { return cached }
-        return try await readConfiguration()
-    }
-
-    /// 显式能力刷新（Mac 端切换 Agent、用户强制刷新）必须读到新的服务端配置，
-    /// 不能因为共享快照还有效就复用旧 channels。
-    func refreshConfiguration() async throws {
-        _ = try await readConfiguration()
-    }
-
-    func channelAvailable(runtimeProvider: String) async throws -> Bool {
-        Self.channelAvailable(runtimeProvider: runtimeProvider, in: try await currentConfiguration())
-    }
-
-    /// 把“用户启用 + agentd 原生能力”与后续 Harness 健康探测分开。
-    func nativeHarnessConfigured() async throws -> Bool {
-        try Self.nativeHarnessIsConfigured(in: try await currentConfiguration())
-    }
-
-    static func channelAvailable(
-        runtimeProvider raw: String,
-        in config: CodexAppServerConfigResponse
-    ) -> Bool {
-        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
-        if runtime == "codex" {
-            let channel = config.channels.first {
-                CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.runtimeID ?? $0.id) == "codex" ||
-                    CodexAppServerSessionRuntime.normalizedRuntimeProvider($0.provider) == "codex"
-            }
-            return channel?.gatewayAvailable
-                ?? (config.channels.isEmpty && config.runtime.gatewayAvailable)
-        }
-        return config.channels.contains { channel in
-            (CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
-                CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.provider) == runtime) &&
-                channel.gatewayAvailable
-        }
-    }
-
-    /// 读取一次配置并把同一份快照同步给两个 Runtime。并发调用合并到同一次请求，
-    /// 不给每个布尔查询各发一次 `/api/app-server/config`。
-    ///
-    /// 快照的有效代次取自**读取完成之后**的失效计数：请求进行期间任一端丢过配置，
-    /// 就说明这份响应可能与 daemon 当前的渠道状态不一致，不能当成有效快照。
-    @discardableResult
-    func readConfiguration() async throws -> CodexAppServerConfigResponse {
-        if let inFlight = configLock.withLock({ configRefreshTask }) {
-            return try await inFlight.value
-        }
-        let basis = await currentConfigGeneration()
-        let task = Task { try await codex.ensureConfig(forceRefresh: true) }
-        configLock.withLock { configRefreshTask = task }
-        let refreshed: CodexAppServerConfigResponse
-        do {
-            refreshed = try await task.value
-        } catch {
-            configLock.withLock {
-                if configRefreshTask == task { configRefreshTask = nil }
-            }
-            throw error
-        }
-        await claude.installConfigSnapshot(refreshed)
-        // 只有全程没有发生配置失效时，这份响应才可以被当成有效快照缓存。
-        // 读取期间任一端断开过，就要等下一次查询重新读取 daemon 的当前渠道。
-        let settled = await currentConfigGeneration() == basis ? basis : nil
-        configLock.withLock {
-            installedGeneration = settled
-            sharedConfig = refreshed
-            if configRefreshTask == task { configRefreshTask = nil }
-        }
-        return refreshed
-    }
-
-    func prepareForHostActivation(handshakeTimeout: TimeInterval? = nil) async throws {
-        let config = try await currentConfiguration()
-        guard let preferred = Self.preferredAvailableRuntimeProvider(in: config) else {
-            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-        }
-        if preferred == Self.nativeRuntimeProvider {
-            guard harness != nil else {
-                throw HarnessNativeUnavailableError.agentdUpgradeRequired
-            }
-            guard try Self.nativeHarnessIsConfigured(in: config) else {
-                throw HarnessNativeUnavailableError.agentdUpgradeRequired
-            }
-            // 原生客户端按需建连。这里只确认“用户已启用 + agentd 支持 native-v1”；
-            // Harness 当前健康状态由 channelAvailable 的真实 RPC 决定。离线不阻止连接
-            // agentd，也不把协议改回 app-server。
-            return
-        }
-        try await runtime(for: preferred).prepareForHostActivation(handshakeTimeout: handshakeTimeout)
-    }
-
-    func shutdownForHostSwitch() async {
-        await harness?.shutdownForHostSwitch()
-        await codex.shutdownForHostSwitch()
-        await claude.shutdownForHostSwitch()
-    }
-}
-
-/// 各 Runtime 共用一个路由 facade，但列表请求始终显式落到单一 Runtime。
-/// 不在客户端合并多条 opaque cursor 流，避免重新引入跨 Runtime 排序状态机。
 final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient {
     private let bundle: AppServerRuntimeBundle
     private let codexClient: CodexAppServerSessionAPIClient
@@ -764,11 +362,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 firstError = error
             }
         }
-        let secondaryRuntimes: [(provider: String, runtime: CodexAppServerSessionRuntime?)] = [
-            ("claude", bundle.claude),
-            // deepseek 没有 Codex actor：只由原生通道承接，上面走 nativeClient(for:) 分支。
-            ("deepseek", nil)
-        ]
+        let secondaryRuntimes = bundle.secondaryRuntimeEntries
         for secondary in secondaryRuntimes {
             do {
                 let secondaryOptions: [CodexAppServerModelOption]
@@ -816,10 +410,16 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
-        guard try await bundle.channelAvailable(runtimeProvider: "claude") else {
+        try await runtimeSlashCommands(runtimeProvider: "claude", cwd: cwd, sandboxMode: sandboxMode, forceReload: forceReload)
+    }
+
+    func runtimeSlashCommands(runtimeProvider: String, cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
+        guard bundle.nativeClient(for: runtimeProvider) == nil,
+              try await bundle.channelAvailable(runtimeProvider: runtimeProvider) else {
             throw ClaudeSlashCommandCatalogError.unsupported
         }
-        return try await bundle.claude.slashCommands(cwd: cwd, sandboxMode: sandboxMode, forceReload: forceReload)
+        return try await bundle.runtime(for: runtimeProvider)
+            .slashCommands(cwd: cwd, sandboxMode: sandboxMode, forceReload: forceReload)
     }
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
@@ -996,10 +596,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             firstError = error
             unavailable.append("codex")
         }
-        let secondaryRuntimes: [(String, CodexAppServerSessionRuntime?)] = [
-            // deepseek 没有 Codex actor：只由原生通道承接，循环里走 nativeClient(for:) 分支。
-            ("claude", bundle.claude), ("deepseek", nil)
-        ]
+        let secondaryRuntimes = bundle.secondaryRuntimeEntries
         for (provider, runtime) in secondaryRuntimes {
             try Task.checkCancellation()
             do {
@@ -1011,7 +608,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 } else {
                     guard let runtime else { continue }
                     guard try await runtime.channelAvailable(runtimeProvider: provider) else { continue }
-                    page = provider == "claude"
+                    page = RuntimeFeatureSupport.usesGlobalThreadListSearch(for: provider)
                         ? try await runtime.globalThreadListSearchPage(query: query, limit: limit)
                         : try await runtime.searchSessions(query: query, cursor: nil, limit: limit)
                 }

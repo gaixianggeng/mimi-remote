@@ -2,7 +2,7 @@
 // 技能提到开头（让 CLI 当命令执行），提及写成 `@名称`，图片转 base64 图片块；只有一段文本时用字符串。
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { SKILL_PLUGIN_NAME } from "../claude/skillPlugin.ts";
 

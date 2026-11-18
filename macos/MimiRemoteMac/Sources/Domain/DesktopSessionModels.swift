@@ -18,7 +18,14 @@ enum SessionRuntime: String, CaseIterable, Identifiable, Sendable {
     /// 缺失时按「已关闭」处理会让列表时有时无（#991 实机走查）。真关闭时网关会返回明确原因。
     static func enabled(in modules: AgentModuleStatus?) -> [SessionRuntime] {
         guard let modules else { return allCases }
-        return allCases.filter { $0 == .codex ? modules.codexEnabled : modules.claudeEnabled }
+        return allCases.filter { $0.isEnabled(in: modules) }
+    }
+
+    func isEnabled(in modules: AgentModuleStatus) -> Bool {
+        switch self {
+        case .codex: modules.codexEnabled
+        case .claude: modules.claudeEnabled
+        }
     }
 
     var brandMark: RuntimeBrandMark {
@@ -26,6 +33,18 @@ enum SessionRuntime: String, CaseIterable, Identifiable, Sendable {
         case .codex: .openAI
         case .claude: .claude
         }
+    }
+
+    /// 对应助手的独立桌面版去处；仅支持终端交接的运行时返回 nil。
+    var desktopOpenTarget: SessionOpenTarget? {
+        switch self {
+        case .codex: .codexDesktop
+        case .claude: .claudeDesktop
+        }
+    }
+
+    var openTargetPreferenceKey: String {
+        "sessions.openTarget.\(rawValue)"
     }
 }
 

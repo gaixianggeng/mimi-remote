@@ -5,6 +5,10 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2023"],
     "types": ["bun"],
+    "baseUrl": ".",
+    "paths": {
+      "@mimi/appserver-kit/*": ["../appserver-kit/src/*"]
+    },
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -15,5 +19,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "scripts"]
+  "include": ["src", "test", "scripts", "../appserver-kit/src"]
 }

@@ -69,13 +69,13 @@ enum SessionOpenTarget: Hashable, Sendable {
         }
     }
 
-    /// 这类会话的菜单里列哪些去处。桌面版总是列出（没装时灰显并说明），终端只列装着的。
+    /// 这类会话的菜单里列哪些去处。若有对应桌面版总是列出（没装时灰显并说明），终端只列装着的。
     static func candidates(for runtime: SessionRuntime, installedBundleIDs: Set<String>) -> [SessionOpenTarget] {
-        let desktop: SessionOpenTarget = runtime == .codex ? .codexDesktop : .claudeDesktop
+        let desktops = [runtime.desktopOpenTarget].compactMap { $0 }
         let terminals = TerminalApp.allCases
             .filter { installedBundleIDs.contains($0.bundleID) }
             .map(SessionOpenTarget.terminal)
-        return [desktop] + terminals
+        return desktops + terminals
     }
 
     /// 「打开」左半边用的去处：上次选的还在就用它，否则用第一个装着的。

@@ -5,12 +5,12 @@ import Observation
 @MainActor
 @Observable
 final class HostStore {
-    private(set) var lifecycle: HostLifecycleState = .loading
-    private(set) var owner: ServiceOwner = .none
-    private(set) var status: AgentStatus?
-    private(set) var doctor: AgentDoctorResults?
-    private(set) var pairing: PairingInfo?
-    private(set) var pairingNetwork: PairingNetwork = .tailscale
+    var lifecycle: HostLifecycleState = .loading
+    var owner: ServiceOwner = .none
+    var status: AgentStatus?
+    var doctor: AgentDoctorResults?
+    var pairing: PairingInfo?
+    var pairingNetwork: PairingNetwork = .tailscale
     private(set) var recentLogs: [String] = []
     private(set) var diagnosticsStatus: AgentDiagnosticsStatus?
     private(set) var diagnosticsStatusError: String?
@@ -29,35 +29,35 @@ final class HostStore {
     private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
-    private(set) var claudeConfiguration: ClaudeConfigurationResult?
+    var claudeConfiguration: ClaudeConfigurationResult?
     var claudeTurnHintsConfiguration: ClaudeTurnHintsConfigurationResult?
     var isUpdatingClaude = false
     var claudeError: String?
-    private(set) var deepSeekConfiguration: DeepSeekConfigurationResult?
-    private(set) var isUpdatingDeepSeek = false
-    private(set) var deepSeekError: String?
-    private(set) var tailcatStatus: TailcatStatus?
-    private(set) var isUpdatingTailcat = false
-    private(set) var tailcatError: String?
-    private(set) var tailcatNotice: String?
-    private(set) var isUpdatingLAN = false
-    private(set) var lanError: String?
-    private(set) var codexError: String?
+    var deepSeekConfiguration: DeepSeekConfigurationResult?
+    var isUpdatingDeepSeek = false
+    var deepSeekError: String?
+    var tailcatStatus: TailcatStatus?
+    var isUpdatingTailcat = false
+    var tailcatError: String?
+    var tailcatNotice: String?
+    var isUpdatingLAN = false
+    var lanError: String?
+    var codexError: String?
     private(set) var codexSessionRepairNotice: String?
-    private(set) var networkError: String?
-    private(set) var networkErrorModule: HostModuleID?
-    private(set) var updatingModule: HostModuleID?
+    var networkError: String?
+    var networkErrorModule: HostModuleID?
+    var updatingModule: HostModuleID?
     private(set) var photosAccess: PhotosAccessState = .notDetermined
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
     private(set) var startingDetail: String?
     var lastError: String?
-    @ObservationIgnored private var pairingRefreshGeneration = 0
-    @ObservationIgnored private var tailcatStatusRequestSequence: UInt64 = 0
+    @ObservationIgnored var pairingRefreshGeneration = 0
+    @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
     /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
     /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
-    @ObservationIgnored private var isAwaitingServiceStart = false
+    @ObservationIgnored var isAwaitingServiceStart = false
 
     var canRestoreHomebrew: Bool {
         owner == .macApp && homebrew.installedAgentBinary() != nil
@@ -97,7 +97,7 @@ final class HostStore {
     private var lastReadinessCommandSuccessAt: Date?
     private var readinessFailureStartedAt: Date?
     // 每次开始 agent.status() 都先分配单调序号，只允许最新请求落地。
-    private var statusRequestSequence: UInt64 = 0
+    var statusRequestSequence: UInt64 = 0
 
     init(
         agent: AgentCommandClient,
@@ -564,378 +564,6 @@ final class HostStore {
         }
     }
 
-    func setLANEnabled(_ enabled: Bool) async {
-        await setNetworkModule(.localNetwork, enabled: enabled)
-    }
-
-    func setTailscaleEnabled(_ enabled: Bool) async {
-        await setNetworkModule(.tailscale, enabled: enabled)
-    }
-
-    func setCodexEnabled(_ enabled: Bool) async {
-        guard canChangeModules else { return }
-        isBusy = true
-        updatingModule = .codex
-        codexError = nil
-        invalidateModulePairing()
-        defer { updatingModule = nil; isBusy = false }
-        do {
-            let result = try await agent.configureCodex(enabled ? "enabled" : "disabled")
-            guard result.enabled == enabled, !enabled || result.available else {
-                codexError = result.message
-                return
-            }
-            do {
-                if result.restartRequired || status?.moduleStatus?.codexEnabled != enabled {
-                    try await reloadMacAgentForConfigurationChange()
-                }
-                try await confirmAppliedModules(codexEnabled: enabled)
-            } catch {
-                let cause = error.localizedDescription
-                if result.changed {
-                    do {
-                        let restored = try await agent.restoreCodex(result)
-                        try await reloadMacAgentForConfigurationChange()
-                        try await confirmAppliedModules(codexEnabled: restored.enabled)
-                        codexError = "更新 Codex 失败：\(cause)。已恢复修改前设置。"
-                    } catch {
-                        codexError = "更新 Codex 失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
-                    }
-                } else { codexError = cause }
-                await settleModuleChangeFailure(codexError ?? cause)
-            }
-        } catch {
-            codexError = error.localizedDescription
-            await settleModuleChangeFailure(error.localizedDescription)
-        }
-    }
-
-    private func setNetworkModule(_ network: PairingNetwork, enabled: Bool) async {
-        let module: HostModuleID = network == .tailscale ? .tailscale : .lan
-        guard canChangeModule(module) else { return }
-        isBusy = true
-        updatingModule = module
-        isUpdatingLAN = network == .localNetwork
-        networkError = nil
-        networkErrorModule = updatingModule
-        lanError = nil
-        invalidateModulePairing()
-        defer { updatingModule = nil; isUpdatingLAN = false; isBusy = false }
-        do {
-            let result = try await agent.configureNetwork(network, enabled)
-            do {
-                if result.restartRequired || status?.moduleStatus?.lanEnabled != result.lanEnabled ||
-                    status?.moduleStatus?.tailscaleEnabled != result.tailscaleEnabled {
-                    try await reloadMacAgentForConfigurationChange()
-                }
-                try await confirmAppliedModules(network: result)
-            } catch {
-                let cause = error.localizedDescription
-                if result.changed {
-                    do {
-                        let restored = try await agent.restoreNetwork(result)
-                        try await reloadMacAgentForConfigurationChange()
-                        try await confirmAppliedModules(network: restored)
-                        networkError = "更新连接失败：\(cause)。已恢复修改前设置。"
-                    } catch {
-                        networkError = "更新连接失败：\(cause)。自动恢复未完成：\(error.localizedDescription)"
-                    }
-                } else { networkError = cause }
-                await settleModuleChangeFailure(networkError ?? cause)
-            }
-        } catch {
-            networkError = error.localizedDescription
-            await settleModuleChangeFailure(error.localizedDescription)
-        }
-        lanError = networkError
-    }
-
-    /// 模块变更失败后的统一收尾。`reloadMacAgentForConfigurationChange()` 会把生命周期
-    /// 置为 `.starting`，而后续服务管理操作可能直接抛错；`defer` 只清 isBusy/updatingModule，
-    /// 于是界面会停在“正在启动”，所有模块 Toggle 继续被禁用。
-    ///
-    /// 这里做一次有界核对：能读到可信的当前状态就交给常规状态落地；读不到就进入明确的
-    /// 失败态并保留恢复入口。不得为了让开关可用而直接写成 `.ready` —— 退出启动中不等于
-    /// 宣称服务健康。
-    func settleModuleChangeFailure(_ detail: String) async {
-        guard lifecycle == .starting else { return }
-        // 能读到可信状态时，apply() 已按真实 serviceOK/processOK 落地；服务明确不可用
-        // 就沿用那份更严重的状态。配置可能已改变且恢复未完成，不能因为进程还活着就把
-        // 这次失败收敛成"服务可用"。
-        let applied: AgentStatus? = (try? await fetchAndApplyLatestStatus()) ?? nil
-        if applied != nil, status?.serviceOK == false { return }
-        // 状态不可确认时同样既不能留在 .starting（界面假装还在启动），也不能写成 .ready。
-        lifecycle = .degraded(detail)
-    }
-
-    private func confirmAppliedModules(codexEnabled: Bool? = nil, network: NetworkConfigurationResult? = nil) async throws {
-        for attempt in 0..<3 {
-            if let current = try await fetchAndApplyLatestStatus(), let modules = current.moduleStatus,
-               current.serviceOK,
-               codexEnabled == nil || modules.codexEnabled == codexEnabled,
-               network == nil || (modules.lanEnabled == network?.lanEnabled &&
-                                  modules.tailscaleEnabled == network?.tailscaleEnabled) {
-                return
-            }
-            if attempt < 2 { try await Task.sleep(for: .milliseconds(300)) }
-        }
-        throw AgentClientError.commandFailed("运行中的 agentd 尚未确认模块设置，请检查版本并重启服务。")
-    }
-
-    func invalidateModulePairing() {
-        pairingRefreshGeneration &+= 1
-        statusRequestSequence &+= 1
-        pairing = nil
-    }
-
-    func setClaudeEnabled(_ enabled: Bool) async {
-        guard !isBusy, owner == .macApp else {
-            claudeError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingClaude = true
-        claudeError = nil
-        invalidateModulePairing()
-        defer {
-            isUpdatingClaude = false
-            isBusy = false
-        }
-
-        do {
-            let preference: ClaudeActivationPreference = enabled ? .enabled : .disabled
-            let result = try await agent.configureClaude(preference, nil)
-            claudeConfiguration = result
-            guard !enabled || result.enabled else {
-                claudeError = result.message
-                return
-            }
-            do {
-                if result.restartRequired || status?.moduleStatus?.claudeEnabled != result.enabled {
-                    try await reloadMacAgentForConfigurationChange()
-                }
-                try await waitForClaudeRuntime(enabled: result.enabled)
-            } catch {
-                let updateError = error
-                if result.changed {
-                    let rolledBack = await rollbackClaudeConfiguration(result)
-                    let rollbackDetail = rolledBack
-                        ? "已恢复修改前的 Claude 设置。"
-                        : "自动恢复也失败，请打开诊断后重试。"
-                    claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription) \(rollbackDetail)"
-                } else {
-                    claudeError = "更新 Claude 设置失败：\(updateError.localizedDescription)"
-                }
-                await settleModuleChangeFailure(claudeError ?? updateError.localizedDescription)
-            }
-        } catch {
-            claudeError = error.localizedDescription
-            await settleModuleChangeFailure(error.localizedDescription)
-        }
-    }
-
-    func inspectDeepSeek() async {
-        guard owner == .macApp, !isUpdatingDeepSeek, !isBusy else { return }
-        isUpdatingDeepSeek = true
-        defer { isUpdatingDeepSeek = false }
-        do {
-            let result = try await agent.configureDeepSeek(.inspect, nil)
-            deepSeekConfiguration = result
-            deepSeekError = result.enabled && !result.available ? result.message : nil
-        } catch {
-            deepSeekError = error.localizedDescription
-        }
-    }
-
-    func configureDeepSeek(_ action: DeepSeekConfigurationAction, startupURL: String? = nil) async {
-        guard canChangeDeepSeek, !isUpdatingDeepSeek else { return }
-        isBusy = true
-        isUpdatingDeepSeek = true
-        deepSeekError = nil
-        defer {
-            isUpdatingDeepSeek = false
-            isBusy = false
-        }
-        do {
-            let result = try await agent.configureDeepSeek(action, startupURL)
-            deepSeekConfiguration = result
-            // 最新的直接检查失败优先于 runtime-status 的旧缓存，避免仍显示“已连接”。
-            deepSeekError = result.enabled && !result.available ? result.message : nil
-            if result.restartRequired {
-                do {
-                    try await reloadMacAgentForConfigurationChange(fastRestart: true)
-                } catch {
-                    // 配置已提交但服务未加载时必须明确区分，不能把预检成功显示为已连接。
-                    deepSeekError = "配置已保存，但 agentd 重新加载失败。请重试启动服务。\(error.localizedDescription)"
-                    fail(error)
-                    return
-                }
-            }
-            await refreshMacAgentStatus()
-            if runtimeStatusNeedsFollowUp { scheduleRuntimeStatusFollowUp() }
-        } catch {
-            deepSeekError = error.localizedDescription
-        }
-    }
-
-    /// 模块开关的入口：开启走自动发现连接，关闭复用 `.disabled`。
-    /// Harness 的启动与停止不归 Mimi 管，所以这里只改 agentd 侧的一段连接配置。
-    func setDeepSeekEnabled(_ enabled: Bool) async {
-        await configureDeepSeek(enabled ? .connect : .disabled)
-    }
-
-    private func reconcileDeepSeekConfigurationAtLaunch() async -> Bool {
-        do {
-            // 只刷新已启用的托管连接，检测到 Harness 不代表同意启用。开机时它可能还没换好凭据，可用性交给会自愈的 agentd 运行态。
-            let result = try await agent.configureDeepSeek(.refresh, nil)
-            deepSeekConfiguration = result
-            deepSeekError = nil
-            return result.restartRequired
-        } catch {
-            deepSeekError = "DeepSeek 自动检测失败：\(error.localizedDescription)"
-            return false
-        }
-    }
-
-    func refreshTailcatStatus() async {
-        await refreshTailcatStatus(allowDuringUpdate: false)
-    }
-
-    private func refreshTailcatStatus(allowDuringUpdate: Bool) async {
-        guard owner == .macApp, allowDuringUpdate || !isUpdatingTailcat else { return }
-        let generation = pairingRefreshGeneration
-        tailcatStatusRequestSequence &+= 1
-        let requestSequence = tailcatStatusRequestSequence
-        do {
-            let current = try await agent.tailcatStatus()
-            guard generation == pairingRefreshGeneration,
-                  requestSequence == tailcatStatusRequestSequence else { return }
-            tailcatStatus = current
-            if !isUpdatingTailcat { tailcatError = nil }
-            if current.error != nil || !current.running { tailcatNotice = nil }
-        } catch {
-            guard generation == pairingRefreshGeneration,
-                  requestSequence == tailcatStatusRequestSequence else { return }
-            tailcatError = error.localizedDescription
-        }
-    }
-
-    func setTailcatEnabled(_ enabled: Bool) async {
-        guard !isBusy, owner == .macApp else {
-            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingTailcat = true
-        tailcatStatusRequestSequence &+= 1
-        tailcatError = nil
-        invalidateModulePairing()
-        tailcatNotice = nil
-        defer {
-            isUpdatingTailcat = false
-            isBusy = false
-        }
-        do {
-            tailcatStatus = try await agent.setTailcatEnabled(enabled)
-            if !enabled, pairingNetwork == .tailcat {
-                pairing = nil
-                pairingNetwork = .tailscale
-            }
-        } catch {
-            let updateError = error.localizedDescription
-            await refreshTailcatStatus(allowDuringUpdate: true)
-            tailcatError = updateError
-        }
-    }
-
-    func configureTailcatDERPMap(_ derpMapURL: String) async {
-        guard !isBusy, owner == .macApp else {
-            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingTailcat = true
-        tailcatStatusRequestSequence &+= 1
-        tailcatError = nil
-        invalidateModulePairing()
-        tailcatNotice = nil
-        let wasEnabled = tailcatEnabled
-        defer {
-            isUpdatingTailcat = false
-            isBusy = false
-        }
-        do {
-            tailcatStatus = try await agent.configureTailcatDERPMap(derpMapURL)
-            if pairingNetwork == .tailcat {
-                pairing = nil
-                pairingNetwork = .tailscale
-            }
-            tailcatNotice = wasEnabled
-                ? "中转已更新，请在手机上重新扫码。"
-                : "中转配置已保存，开启内置连接后生效。"
-        } catch {
-            tailcatError = error.localizedDescription
-        }
-    }
-
-    /// 进入或退出 Mimi 托管连接（#896）。两个方向都会重建 Tailcat 身份并让旧二维码失效，
-    /// 所以与修改中继一样清掉当前 Tailcat 配对码。
-    func setTailcatManagedMode(_ managed: Bool) async {
-        guard !isBusy, owner == .macApp else {
-            tailcatError = "请先启动并接管 Mimi Remote Mac 服务。"
-            return
-        }
-        isBusy = true
-        isUpdatingTailcat = true
-        tailcatStatusRequestSequence &+= 1
-        tailcatError = nil
-        invalidateModulePairing()
-        tailcatNotice = nil
-        let wasEnabled = tailcatEnabled
-        defer {
-            isUpdatingTailcat = false
-            isBusy = false
-        }
-        do {
-            tailcatStatus = try await agent.setTailcatManagedMode(managed)
-            if pairingNetwork == .tailcat {
-                pairing = nil
-                pairingNetwork = .tailscale
-            }
-            if managed {
-                tailcatNotice = wasEnabled
-                    ? "本机已启用 Mimi 中转。已开通的手机可使用中转，免费连接继续可用。"
-                    : "本机已准备好 Mimi 中转，开启内置连接后生效。"
-            } else {
-                tailcatNotice = "本机已停用 Mimi 中转。手机会尝试免费备用线路；旧设备可能需要重新扫码。"
-            }
-        } catch {
-            tailcatError = error.localizedDescription
-        }
-    }
-
-    func resetTailcat() async {
-        guard !isBusy, owner == .macApp, tailcatEnabled else { return }
-        isBusy = true
-        isUpdatingTailcat = true
-        tailcatStatusRequestSequence &+= 1
-        tailcatError = nil
-        invalidateModulePairing()
-        tailcatNotice = nil
-        defer {
-            isUpdatingTailcat = false
-            isBusy = false
-        }
-        do {
-            tailcatStatus = try await agent.resetTailcat()
-            if pairingNetwork == .tailcat {
-                pairing = nil
-            }
-        } catch {
-            tailcatError = error.localizedDescription
-        }
-    }
-
     func restartService() async {
         guard !isBusy, owner == .macApp else { return }
         isBusy = true
@@ -1216,22 +844,6 @@ final class HostStore {
         }
     }
 
-    /// 启动检测只在 Mac App owner 上执行；auto 会尊重配置中已经记录的显式开关。
-    private func reconcileClaudeConfigurationAtLaunch() async -> Bool {
-        do {
-            let result = try await agent.configureClaude(.automatic, nil)
-            claudeConfiguration = result
-            claudeError = result.available || result.preference == .disabled
-                ? nil
-                : result.message
-            return result.restartRequired
-        } catch {
-            // Claude 预检失败不能阻止 Mac 控制面启动。
-            claudeError = "Claude 自动检测失败：\(error.localizedDescription)"
-            return false
-        }
-    }
-
     func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
         try validateMacAgentConfiguration()
         lifecycle = .starting
@@ -1260,53 +872,6 @@ final class HostStore {
         }
         owner = .macApp
         try await registerMacAgentAndWaitForReady()
-    }
-
-    func waitForClaudeRuntime(enabled: Bool) async throws {
-        isAwaitingServiceStart = true
-        defer { isAwaitingServiceStart = false }
-        for attempt in 0..<12 {
-            try Task.checkCancellation()
-            if let current = try? await fetchAndApplyLatestStatus() {
-                if let runtime = current.runtimeStatus?.runtimes.first(where: {
-                    $0.id.caseInsensitiveCompare("claude") == .orderedSame
-                }) {
-                    if !enabled, !runtime.enabled || runtime.state == .disabled {
-                        return
-                    }
-                    if enabled {
-                        switch runtime.state {
-                        case .connected, .available:
-                            return
-                        case .signedOut:
-                            throw ClaudeRuntimeControlError.signedOut
-                        case .unavailable where runtime.reason != "refresh_in_progress":
-                            throw ClaudeRuntimeControlError.unavailable
-                        case .disabled:
-                            throw ClaudeRuntimeControlError.disabled
-                        case .unavailable:
-                            break
-                        }
-                    }
-                }
-            }
-            if attempt < 11 {
-                try await Task.sleep(for: .seconds(1))
-            }
-        }
-        throw ClaudeRuntimeControlError.timedOut(enabled: enabled)
-    }
-
-    private func rollbackClaudeConfiguration(_ changed: ClaudeConfigurationResult) async -> Bool {
-        do {
-            let restored = try await agent.restoreClaude(changed)
-            claudeConfiguration = restored
-            try await reloadMacAgentForConfigurationChange()
-            try await waitForClaudeRuntime(enabled: restored.enabled)
-            return true
-        } catch {
-            return false
-        }
     }
 
     private func waitForMacAgentReady() async throws {
@@ -1459,7 +1024,7 @@ final class HostStore {
         )
     }
 
-    private func refreshMacAgentStatus(preserveStateOnCommandFailure: Bool = false, now: Date = Date()) async {
+    func refreshMacAgentStatus(preserveStateOnCommandFailure: Bool = false, now: Date = Date()) async {
         switch services.agentStatus() {
         case .enabled:
             do {
@@ -1571,7 +1136,7 @@ final class HostStore {
         return true
     }
 
-    private func fetchAndApplyLatestStatus() async throws -> AgentStatus? {
+    func fetchAndApplyLatestStatus() async throws -> AgentStatus? {
         let sequence = nextStatusRequestSequence()
         let current = try await agent.status()
         return applyStatusResponse(current, sequence: sequence) ? current : nil
@@ -1745,7 +1310,7 @@ final class HostStore {
         lifecycle = .degraded("进程存活，但 Codex 服务状态暂时无法确认")
     }
 
-    private func scheduleRuntimeStatusFollowUp() {
+    func scheduleRuntimeStatusFollowUp() {
         guard runtimeStatusFollowUpTask == nil else { return }
         runtimeStatusFollowUpTask = Task { [weak self] in
             guard let self else { return }
@@ -1785,12 +1350,12 @@ final class HostStore {
         }
     }
 
-    private var runtimeStatusNeedsFollowUp: Bool {
+    var runtimeStatusNeedsFollowUp: Bool {
         status?.runtimeStatus?.refreshing == true
             || status?.runtimeStatus?.hasRetryableFailure == true
     }
 
-    private func fail(_ error: Error) {
+    func fail(_ error: Error) {
         lastError = error.localizedDescription
         lifecycle = .failed(error.localizedDescription)
         startingDetail = nil
@@ -1802,198 +1367,4 @@ final class HostStore {
         }
     }
 
-#if DEBUG
-    static func preview(_ lifecycle: HostLifecycleState) -> HostStore {
-        let check = AgentCheck(name: "codex", ok: true, level: "", message: "Codex CLI 可执行", fix: nil)
-        let doctor = AgentDoctorResults(ok: true, version: "0.1.0", listen: "mimi-demo.local:8787", checks: [check])
-        let status = AgentStatus(
-            processOK: true,
-            serviceOK: true,
-            processError: nil,
-            serviceError: nil,
-            version: "0.1.0+mac.240",
-            serverVersion: "0.1.0+mac.240",
-            endpoint: "http://mimi-demo.local:8787",
-            configPath: "~/Library/Application Support/mimi-remote/config.json",
-            projects: 12,
-            doctorOK: true,
-            doctor: doctor,
-            pairExpires: nil,
-            runtimeStatus: AgentRuntimeStatusSnapshot(
-                checkedAt: ISO8601DateFormatter().string(from: Date()),
-                runtimes: [
-                    AgentRuntimeStatus(
-                        id: "codex",
-                        title: "Codex",
-                        enabled: true,
-                        state: .connected,
-                        version: "0.146.0-alpha.3.1",
-                        startedAt: ISO8601DateFormatter().string(
-                            from: Date().addingTimeInterval(-49 * 60 * 60)
-                        ),
-                        authMode: "chatgpt",
-                        planType: "plus",
-                        reason: nil,
-                        rateLimits: AgentRuntimeRateLimits(
-                            limitID: "codex",
-                            limitName: "Codex",
-                            planType: "plus",
-                            reachedType: nil,
-                            availability: "available",
-                            unavailableReason: nil,
-                            primary: AgentRuntimeRateLimitWindow(
-                                usedPercent: 62,
-                                windowDurationMins: 300,
-                                resetsAt: Int64(Date().addingTimeInterval(80 * 60).timeIntervalSince1970)
-                            ),
-                            secondary: AgentRuntimeRateLimitWindow(
-                                usedPercent: 31,
-                                windowDurationMins: 10_080,
-                                resetsAt: Int64(Date().addingTimeInterval(4 * 24 * 60 * 60).timeIntervalSince1970)
-                            ),
-                            hasCredits: true,
-                            creditsUnlimited: false,
-                            creditBalance: "12.34"
-                        )
-                    ),
-                    AgentRuntimeStatus(
-                        id: "claude",
-                        title: "Claude",
-                        enabled: true,
-                        state: .connected,
-                        version: "0.2.6",
-                        startedAt: ISO8601DateFormatter().string(
-                            from: Date().addingTimeInterval(-7.5 * 60 * 60)
-                        ),
-                        authMode: "oauth",
-                        planType: "pro",
-                        reason: nil,
-                        rateLimits: AgentRuntimeRateLimits(
-                            limitID: "claude",
-                            limitName: "Claude",
-                            planType: "pro",
-                            reachedType: nil,
-                            availability: "available",
-                            unavailableReason: nil,
-                            primary: AgentRuntimeRateLimitWindow(
-                                usedPercent: 24,
-                                windowDurationMins: 300,
-                                resetsAt: Int64(Date().addingTimeInterval(3 * 60 * 60).timeIntervalSince1970)
-                            ),
-                            secondary: AgentRuntimeRateLimitWindow(
-                                usedPercent: 48,
-                                windowDurationMins: 10_080,
-                                resetsAt: Int64(Date().addingTimeInterval(5 * 24 * 60 * 60).timeIntervalSince1970)
-                            ),
-                            hasCredits: nil,
-                            creditsUnlimited: nil,
-                            creditBalance: nil
-                        )
-                    ),
-                ]
-            )
-        )
-        let agent = AgentCommandClient(
-            configExists: { lifecycle != .notConfigured },
-            setup: { _ in PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
-            status: { status },
-            readiness: { status },
-            statusAt: { _ in status },
-            doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
-            configureClaude: { preference, restoreEnabled in
-                let enabled = restoreEnabled ?? (preference != .disabled)
-                return ClaudeConfigurationResult(
-                    enabled: enabled,
-                    available: enabled,
-                    preference: preference,
-                    previousEnabled: true,
-                    previousPreference: .enabled,
-                    changed: false,
-                    restartRequired: false,
-                    reason: enabled ? "ready" : "disabled_by_user",
-                    message: enabled
-                        ? "已检测到 Claude Code 和兼容的 Claude bridge。"
-                        : "Claude Code 模块已关闭。"
-                )
-            },
-            setLANAccess: { enabled in
-                NetworkConfigurationResult(
-                    lanEnabled: enabled,
-                    changed: false,
-                    restartRequired: false
-                )
-            },
-            pair: { network in
-                let endpoint = network == .localNetwork ? "http://192.168.31.20:8787" : status.endpoint
-                return PairingInfo(
-                    endpoint: endpoint,
-                    pairURL: "mimiremote://pair?pair_sig=preview-\(network.rawValue)",
-                    expiresAt: "10 分钟后",
-                    warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
-                )
-            },
-            version: { status.version },
-            diagnosticsStatus: {
-                AgentDiagnosticsStatus(
-                    enabled: true,
-                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(12 * 60)),
-                    currentBytes: 18_432,
-                    previousBytes: 64_128,
-                    totalBytes: 82_560,
-                    maxTotalBytes: 10 * 1_048_576,
-                    retentionDays: 7
-                )
-            },
-            setDetailedDiagnostics: { enabled in
-                AgentDiagnosticsStatus(
-                    enabled: enabled,
-                    expiresAt: enabled
-                        ? ISO8601DateFormatter().string(from: Date().addingTimeInterval(15 * 60))
-                        : nil,
-                    currentBytes: 18_432,
-                    previousBytes: 64_128, totalBytes: 82_560,
-                    maxTotalBytes: 10 * 1_048_576, retentionDays: 7
-                )
-            },
-            clearDiagnostics: {
-                AgentDiagnosticsStatus(
-                    enabled: false, expiresAt: nil, currentBytes: 0, previousBytes: 0,
-                    totalBytes: 0, maxTotalBytes: 10 * 1_048_576, retentionDays: 7
-                )
-            }
-        )
-        let services = ServiceManagementClient(
-            agentStatus: { .enabled },
-            agentConfigurationError: { nil },
-            isAgentRegistrationCurrent: { true },
-            markAgentRegistrationCurrent: {},
-            registerAgent: {},
-            unregisterAgent: {},
-            agentLaunchFailure: { nil },
-            mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
-            openLoginItemsSettings: {}
-        )
-        let homebrew = HomebrewServiceClient(
-            isLoaded: { lifecycle == .migrationRequired }, installedAgentBinary: { nil },
-            start: {}, stop: {}
-        )
-        let store = HostStore(
-            agent: agent,
-            services: services,
-            homebrew: homebrew,
-            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
-            logs: AgentLogClient(
-                recentLines: { _ in [#"{"stage":"request","outcome":"failed","operation":"status"}"#] },
-                exportLines: { [#"{"stage":"request","outcome":"failed","operation":"status"}"#] }
-            )
-        )
-        store.lifecycle = lifecycle
-        if lifecycle != .notConfigured {
-            store.status = status
-            store.doctor = doctor
-            store.owner = lifecycle == .migrationRequired ? .homebrew : .macApp
-        }
-        return store
-    }
-#endif
 }

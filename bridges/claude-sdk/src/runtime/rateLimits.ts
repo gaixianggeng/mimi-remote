@@ -6,8 +6,8 @@
 //   allowed_warning 只是接近阈值。
 // - 额度只来自 Claude Code 在会话里自己上报的事件：不读取 Claude 的登录凭据，也不另外查询
 //   额度接口（#660）。适配器启动后、还没跑过回合时没有数据。
-import type { RateLimitSnapshot } from "../protocol/codex/v2/RateLimitSnapshot.ts";
-import type { RateLimitWindow } from "../protocol/codex/v2/RateLimitWindow.ts";
+import type { RateLimitSnapshot } from "@mimi/appserver-kit/protocol/codex/v2/RateLimitSnapshot.ts";
+import type { RateLimitWindow } from "@mimi/appserver-kit/protocol/codex/v2/RateLimitWindow.ts";
 
 const WINDOW_MINUTES: Record<string, number> = {
   five_hour: 300,

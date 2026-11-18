@@ -300,10 +300,15 @@ struct ConversationTimelineView: View {
             ConversationDesktopWorktreeNotice(message: message, layout: layout)
         case .message(let message) where message.activityPayload?.turnHint != nil:
             if let hint = message.activityPayload?.turnHint {
+                let presentation = SessionRuntimePresentation(
+                    runtimeProvider: sessionStore.selectedSession?.runtimeProvider ?? "claude",
+                    source: sessionStore.selectedSession?.source ?? "claude"
+                )
                 ConversationTurnHintCard(
                     hint: hint,
                     layout: layout,
                     canAct: canActOnTurnHint(message),
+                    runtimePresentation: presentation,
                     onAction: { action in
                         startTurnHintAction(action, from: message)
                     }

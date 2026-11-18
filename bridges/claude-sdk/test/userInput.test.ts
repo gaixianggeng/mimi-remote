@@ -1,7 +1,7 @@
 // UserInput[] → Claude 消息内容。CLI 只在消息以 `/名称` 开头时展开技能；内容数组只检查最后一个块
 // （以 Claude Code 2.1.294 / 2.1.296 / 2.1.301 + 脚本化模型端点实测）。
 import { describe, expect, test } from "bun:test";
-import type { UserInput } from "../src/protocol/codex/v2/UserInput.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { qualifySkillCommand, type SkillCheck, toClaudeContent } from "../src/runtime/userInput.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

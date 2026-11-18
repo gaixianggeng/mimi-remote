@@ -5,7 +5,7 @@
 // - 顺序为 Fable > Opus > Sonnet > Haiku，家族内版本降序，同版本优先 1M 上下文；
 // - 目录拿不到时退回 opus / sonnet / haiku 三个别名，由 CLI 自己解析。
 import { query as sdkQuery, type ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { Model } from "../protocol/codex/v2/Model.ts";
+import type { Model } from "@mimi/appserver-kit/protocol/codex/v2/Model.ts";
 import { logger } from "../util/logging.ts";
 
 /** 协议认识的思考强度；CLI 给出的其他档位不转发，客户端不知道怎么展示。 */

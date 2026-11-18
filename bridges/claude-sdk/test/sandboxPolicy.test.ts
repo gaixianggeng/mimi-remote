@@ -4,7 +4,7 @@ import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/
 import os from "node:os";
 import path from "node:path";
 import type { Options, Query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { UserInput } from "../src/protocol/codex/v2/UserInput.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { executionPolicyFor, sandboxOptions } from "../src/runtime/sandboxPolicy.ts";
 import { runSettingsFor } from "../src/runtime/settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "../src/runtime/threadRuntime.ts";

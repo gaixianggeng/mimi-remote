@@ -8,6 +8,7 @@ struct ConversationTurnHintCard: View {
     let hint: ConversationTurnHint
     let layout: ConversationLayout
     let canAct: Bool
+    var runtimePresentation = SessionRuntimePresentation(runtimeProvider: "claude", source: "claude")
     /// 同步返回 Task，保证调用方在异步调度前捕获 host/session/turn/connection。
     let onAction: (ConversationTurnHint.UserAction) -> Task<Bool, Never>?
 
@@ -30,7 +31,7 @@ struct ConversationTurnHintCard: View {
                     Spacer(minLength: 0)
 
                     AgentRequestRuntimeIcon(
-                        presentation: SessionRuntimePresentation(runtimeProvider: "claude", source: "claude"),
+                        presentation: runtimePresentation,
                         size: 26
                     )
                 }

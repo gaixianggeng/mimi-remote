@@ -3,7 +3,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { claudeConfigDir } from "../claude/transcripts.ts";
-import type { ThreadStatus } from "../protocol/codex/v2/ThreadStatus.ts";
+import type { ThreadStatus } from "@mimi/appserver-kit/protocol/codex/v2/ThreadStatus.ts";
 
 export interface SessionHolder {
   pid: number;
