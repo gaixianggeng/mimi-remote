@@ -28,7 +28,7 @@ cp -- scripts/test-windows-desktop-relogin.ps1 "$job_dir/oem/WinUiLogonProbe.ps1
 printf '%s\r\n' \
   '@echo off' \
   'set MIMI_WIN_LOGON_ACCEPTANCE=gh979-desktop-oem-v1' \
-  "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\OEM\\WinUiLogonProbe.ps1 -InstallerPath C:\\OEM\\Mimi-Remote-Setup.exe -ResultPath C:\\OEM\\result.json -ResultPort COM1 -ExpectedBuild $EXPECTED_WIN_BUILD" \
+  "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\OEM\\WinUiLogonProbe.ps1 -InstallerPath C:\\OEM\\Mimi-Remote-Setup.exe -ResultPath C:\\OEM\\result.json -ResultPort COM2 -ExpectedBuild $EXPECTED_WIN_BUILD" \
   > "$job_dir/oem/install.bat"
 
 curl --fail --silent --show-error --location --retry 2 --max-time 900 \
@@ -47,7 +47,7 @@ docker run --detach --name "$container" --network none --device /dev/kvm \
   --env BOOT_MODE=windows_secure --env AUTOLOGIN=Y \
   --env USERNAME=MimiFixture --env "PASSWORD=$(openssl rand -hex 14)" \
   --env CPU_CORES=3 --env RAM_SIZE=8G --env DISK_SIZE=64G \
-  --env SERIAL=file:/storage/relogin.serial --env 'ARGUMENTS=-nic none' \
+  --env SERIAL=mon:stdio --env 'ARGUMENTS=-nic none -serial file:/storage/relogin.serial' \
   --volume "$job_dir/custom.iso:/custom.iso:ro" --volume "$job_dir/oem:/oem:ro" \
   --volume "$job_dir/storage:/storage" "$image"
 
