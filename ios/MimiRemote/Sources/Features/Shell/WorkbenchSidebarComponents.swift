@@ -534,6 +534,8 @@ struct WorkbenchSidebarFooter: View {
                         .font(themeStore.uiFont(.subheadline, weight: .medium))
                         .padding(.horizontal, 12)
                         .frame(height: 44)
+                        // .plain 与未选中态的 .clear 外层背景不会给 label 补出整枚胶囊命中区。
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(isDevicesSelected ? tokens.accentText : tokens.secondaryText)
@@ -586,6 +588,7 @@ struct WorkbenchSidebarFooter: View {
         compactMeButtonLabel
             .padding(.horizontal, 12)
             .frame(height: 44)
+            .contentShape(Capsule())
     }
 
     private var compactMeButtonLabel: some View {

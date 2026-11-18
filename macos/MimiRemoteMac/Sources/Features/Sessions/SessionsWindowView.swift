@@ -29,13 +29,15 @@ struct SessionsWindowView: View {
             filterBar
             noticeBar
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .frame(minWidth: 560, minHeight: 420)
             .navigationTitle("会话")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        Task { await reload() }
+                        Task { await manualReload() }
                     } label: {
                         Label("刷新", systemImage: "arrow.clockwise")
                     }
@@ -46,6 +48,17 @@ struct SessionsWindowView: View {
             }
             .searchable(text: $store.query, placement: .toolbar, prompt: "搜索会话或项目")
             .task(id: loadKey) { await reload() }
+            .alert(
+                "没能完成",
+                isPresented: Binding(get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
+            ) {
+                Button("好") { store.actionError = nil }
+            } message: {
+                Text(store.actionError ?? "")
+            }
+            .sheet(isPresented: $showsSharedSetup) {
+                CodexSharedSetupView()
+            }
     }
 
     private var filterBar: some View {
@@ -73,9 +86,9 @@ struct SessionsWindowView: View {
     /// 读取失败的说明放在内容外面：列表为空或搜索无结果时也要看得到原因。
     @ViewBuilder
     private var noticeBar: some View {
-        if store.phase == .loaded, !store.notices.isEmpty {
+        if store.phase == .loaded, !store.visibleNotices.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(store.notices, id: \.self) { notice in
+                ForEach(store.visibleNotices, id: \.self) { notice in
                     Label(notice, systemImage: "exclamationmark.triangle")
                 }
             }
@@ -101,33 +114,82 @@ struct SessionsWindowView: View {
             } description: {
                 Text(message)
             } actions: {
-                Button("重试") { Task { await reload() } }
+                Button("重试") { Task { await manualReload() } }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loaded:
-            // 空页也可能带着后续页（子任务或网关裁掉的条目占满了前几页），
-            // 所以空状态里同样要能继续加载，不能把唯一的入口藏起来。
-            if store.sessions.isEmpty {
-                ContentUnavailableView {
-                    Label("还没有会话", systemImage: "bubble.left.and.bubble.right")
-                } description: {
-                    Text(store.hasMore
-                        ? "最近的记录里没有可显示的会话，可以继续读取更早的。"
-                        : "在手机或电脑上开始一段 Codex 或 Claude 对话后，会出现在这里。")
-                } actions: {
-                    if store.hasMore { loadMoreButton }
-                }
-            } else if store.isEmptyAfterFiltering {
-                ContentUnavailableView {
-                    Label("没有匹配的会话", systemImage: "magnifyingglass")
-                } description: {
-                    Text(store.hasMore
-                        ? "已读取的会话里没有匹配的，更早的会话还没有读取。"
-                        : "换个关键词或助手试试。")
-                } actions: {
-                    if store.hasMore { loadMoreButton }
-                }
+            if let emptyState = store.emptyState {
+                emptyStateView(emptyState)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 sessionList
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func emptyStateView(_ emptyState: SessionsStore.EmptyState) -> some View {
+        switch emptyState {
+        case .runtimeDisabled(let runtime):
+            let presentation = RuntimeDisabledPresentation.resolve(for: runtime, host: host)
+            let isUpdating = runtime == .claude ? host.isUpdatingClaude : (host.updatingModule == .codex)
+            ContentUnavailableView {
+                Label(presentation.title, systemImage: "exclamationmark.bubble")
+            } description: {
+                Text(presentation.description)
+            } actions: {
+                HStack(spacing: 8) {
+                    Button(isUpdating ? "正在启用…" : presentation.primaryButtonTitle) {
+                        Task { await enableRuntime(runtime) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isUpdating || !host.canChangeModule(runtime == .claude ? .claude : .codex))
+
+                    if presentation.showsClaudeLoginActions {
+                        Button("复制登录命令") {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(presentation.loginCommand, forType: .string)
+                        }
+                        Button("打开终端") {
+                            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+            }
+        case .runtimeFailed(let runtime, let message):
+            ContentUnavailableView {
+                Label("暂时读不到 \(runtime.title) 会话", systemImage: "exclamationmark.bubble")
+            } description: {
+                Text(message)
+            } actions: {
+                Button("重试") { Task { await manualReload() } }
+            }
+        case .noSessions(let runtime, let hasMore):
+            // 空页也可能带着后续页（子任务或网关裁掉的条目占满了前几页），
+            // 所以空状态里同样要能继续加载，不能把唯一的入口藏起来。
+            let title = runtime.map { "还没有 \($0.title) 会话" } ?? "还没有会话"
+            let runtimeText = runtime?.title ?? "Codex 或 Claude"
+            ContentUnavailableView {
+                Label(title, systemImage: "bubble.left.and.bubble.right")
+            } description: {
+                Text(hasMore
+                    ? "最近的记录里没有可显示的\(runtime.map { " \($0.title)" } ?? "")会话，可以继续读取更早的。"
+                    : "在手机或电脑上开始一段 \(runtimeText) 对话后，会出现在这里。")
+            } actions: {
+                if hasMore { loadMoreButton }
+            }
+        case .noMatches(let hasMore):
+            ContentUnavailableView {
+                Label("没有匹配的会话", systemImage: "magnifyingglass")
+            } description: {
+                Text(hasMore
+                    ? "已读取的会话里没有匹配的，更早的会话还没有读取。"
+                    : "换个关键词或助手试试。")
+            } actions: {
+                if hasMore { loadMoreButton }
             }
         }
     }
@@ -164,17 +226,6 @@ struct SessionsWindowView: View {
                     .padding(.vertical, 8)
                     .background(.bar)
             }
-        }
-        .alert(
-            "没能完成",
-            isPresented: Binding(get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
-        ) {
-            Button("好") { store.actionError = nil }
-        } message: {
-            Text(store.actionError ?? "")
-        }
-        .sheet(isPresented: $showsSharedSetup) {
-            CodexSharedSetupView()
         }
     }
 
@@ -313,6 +364,91 @@ struct SessionsWindowView: View {
         installedApps = SessionOpenApps.installedBundleIDs()
         let endpoint = host.status?.processOK == true ? host.status?.endpoint : nil
         await store.reload(endpoint: endpoint, runtimes: enabledRuntimes)
+    }
+
+    private func manualReload() async {
+        if let runtime = store.filter.singleRuntime,
+           runtime == .claude,
+           !enabledRuntimes.contains(.claude),
+           host.claudeConfiguration?.preference != .disabled,
+           host.canChangeModule(.claude)
+        {
+            await enableRuntime(.claude)
+            return
+        }
+        await host.refreshIfNeeded()
+        await reload()
+    }
+
+    private func enableRuntime(_ runtime: SessionRuntime) async {
+        switch runtime {
+        case .codex:
+            await host.setCodexEnabled(true)
+        case .claude:
+            await host.setClaudeEnabled(true)
+        }
+        await reload()
+    }
+}
+
+/// 助手未启用时的标题、原因说明与动作按钮（#1039）。
+struct RuntimeDisabledPresentation: Equatable {
+    let title: String
+    let description: String
+    let primaryButtonTitle: String
+    let showsClaudeLoginActions: Bool
+    let loginCommand: String
+
+    @MainActor
+    static func resolve(for runtime: SessionRuntime, host: HostStore) -> RuntimeDisabledPresentation {
+        switch runtime {
+        case .claude:
+            let errorText = host.claudeError?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let configMessage = host.claudeConfiguration?.enabled == false
+                ? host.claudeConfiguration?.message.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+            let reason = host.claudeConfiguration?.reason
+            let signedOut = reason == "claude_signed_out"
+                || reason == "claude_auth_status_failed"
+                || host.runtime(for: .claude)?.state == .signedOut
+                || (errorText?.contains("登录") == true)
+            let detail: String
+            if let errorText, !errorText.isEmpty {
+                detail = errorText
+            } else if let configMessage, !configMessage.isEmpty {
+                detail = configMessage
+            } else if signedOut {
+                detail = "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
+            } else {
+                detail = "Claude 通道当前已关闭。开启后可在这里查看并打开 Claude 会话。"
+            }
+            let loginCommand = host.runtime(for: .claude)?.effectiveLoginCommand ?? "claude"
+            return RuntimeDisabledPresentation(
+                title: "Claude 尚未启用",
+                description: detail,
+                primaryButtonTitle: signedOut ? "重新检测并启用" : "启用 Claude",
+                showsClaudeLoginActions: signedOut,
+                loginCommand: loginCommand
+            )
+        case .codex:
+            let errorText = host.codexError?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let guidance = MenuRuntimePresentation.codexUnavailableGuidance(for: host.runtime(for: .codex))
+            let detail: String
+            if let errorText, !errorText.isEmpty {
+                detail = errorText
+            } else if let guidance, !guidance.isEmpty {
+                detail = guidance
+            } else {
+                detail = "Codex 通道当前已关闭。开启后可在这里查看并打开 Codex 会话。"
+            }
+            return RuntimeDisabledPresentation(
+                title: "Codex 尚未启用",
+                description: detail,
+                primaryButtonTitle: "启用 Codex",
+                showsClaudeLoginActions: false,
+                loginCommand: "codex login"
+            )
+        }
     }
 }
 

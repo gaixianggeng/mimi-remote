@@ -95,7 +95,17 @@ final class LocalizationTests: XCTestCase {
             ("ui.custom_tailcat", "Built-in connection · Free", "内置连接 · 免费"),
             ("ui.personalization", "Appearance & Personalization", "外观与个性化"),
             ("ui.advanced_and_development", "Advanced & Development", "高级与开发"),
-            ("ui.about_and_legal", "About & Legal", "关于与法律")
+            ("ui.about_and_legal", "About & Legal", "关于与法律"),
+            (
+                "ui.enabled_runtimes_footer",
+                "Enabled models appear in Workspaces and New Session. At least one model must stay enabled.",
+                "开启的模型将在工作区和新建会话中显示；至少需保留 1 个开启的模型。"
+            ),
+            (
+                "ui.default_model_reasoning_dynamic_footer",
+                "Reasoning effort options adjust automatically to match the selected model.",
+                "推理强度选项会根据上方所选模型的支持范围动态调整。"
+            )
         ]
 
         for (key, english, simplifiedChinese) in expectedValues {

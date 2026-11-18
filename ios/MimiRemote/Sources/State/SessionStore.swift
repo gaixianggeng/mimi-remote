@@ -381,6 +381,7 @@ final class SessionStore: ObservableObject {
     var selectionGeneration: UInt64 = 0 {
         didSet { clearSessionCreationLoading() }
     }
+    @Published var asyncQuestionSubmissions: Set<AsyncQuestionSubmissionKey> = []
     var webSocketConnectionGeneration = 0
     /// 单调递增的重连租约。attempt 会在 reset 后从 1 重新开始，不能单独作为异步任务身份。
     var webSocketReconnectGeneration: UInt64 = 0
@@ -1669,7 +1670,7 @@ final class SessionStore: ObservableObject {
         return sessionsMatchingSearch(sortedSessionsForList(merged))
     }
 
-    /// 受控全局发现继续保留 canonical 会话；会话 Tab 只消费目录查询确认属于已打开工作区的投影。
+    /// 具体工作区和侧栏使用目录查询确认过的投影；全部会话保留受控全局发现的结果。
     var openedWorkspaceSessionLibrarySessions: [AgentSession] {
         sessionLibrarySessions.compactMap(sessionAlignedToOpenedWorkspace)
     }

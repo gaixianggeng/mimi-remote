@@ -8,8 +8,8 @@ import Foundation
 /// 不进入时间线。跳过的问题（答案缺失、为 null 或空白）仍属于答复，显示为“已跳过”。
 /// 只有包装残缺、JSON 结构无法解析、正文中讨论标签、附带其他内容，或没有任何一项能
 /// 关联到异步提问时，才保持普通用户消息，不能误吞用户真实输入。
-struct CodexAsyncQuestionReply: Equatable {
-    struct Answer: Equatable {
+struct CodexAsyncQuestionReply: Codable, Hashable {
+    struct Answer: Codable, Hashable {
         /// 对应提问 `agentMessage` 的 Item ID（即 `request_user_input_async` 的 call id）。
         let questionItemID: String?
         /// 同一次提问中第几个问题；旧载荷缺失时为 nil。

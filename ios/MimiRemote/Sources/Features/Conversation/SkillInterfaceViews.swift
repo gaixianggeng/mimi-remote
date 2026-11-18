@@ -232,7 +232,10 @@ struct SkillSelectionContent: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(tokens.tertiaryText)
+                        // .frame 只排布局，命中区仍取自 label 真正绘制的字形；
+                        // .plain 不画背景补不上这块面积，必须显式声明交互形状。
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(L10n.text("ui.clear_search"))
