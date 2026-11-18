@@ -53,13 +53,18 @@ func RestoreWorkspace(path string, previous WorkspaceConfigurationResult) (Works
 	if err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
-	if !reflect.DeepEqual(workspaceState(doc), previous.Applied) {
+	if !reflect.DeepEqual(workspaceState(doc), compactWorkspaceState(previous.Applied)) {
 		return WorkspaceConfigurationResult{}, fmt.Errorf("代码目录已被其他操作修改，未覆盖新的设置；请刷新后重试")
 	}
 	return commitWorkspace(doc, previous.Previous)
 }
 
 func workspaceState(doc moduleDocument) WorkspaceState {
+	return compactWorkspaceState(WorkspaceState{ScanRoots: doc.document["scan_roots"], BrowseRoots: doc.document["browse_roots"]})
+}
+
+// CLI JSON is indented for display; indentation in its raw values does not change the roots.
+func compactWorkspaceState(state WorkspaceState) WorkspaceState {
 	compact := func(raw json.RawMessage) json.RawMessage {
 		if raw == nil {
 			return nil
@@ -70,11 +75,12 @@ func workspaceState(doc moduleDocument) WorkspaceState {
 		}
 		return buffer.Bytes()
 	}
-	return WorkspaceState{ScanRoots: compact(doc.document["scan_roots"]), BrowseRoots: compact(doc.document["browse_roots"])}
+	return WorkspaceState{ScanRoots: compact(state.ScanRoots), BrowseRoots: compact(state.BrowseRoots)}
 }
 
 func commitWorkspace(doc moduleDocument, after WorkspaceState) (WorkspaceConfigurationResult, error) {
 	before := workspaceState(doc)
+	after = compactWorkspaceState(after)
 	changed := !reflect.DeepEqual(before, after)
 	if changed {
 		for key, raw := range map[string]json.RawMessage{"scan_roots": after.ScanRoots, "browse_roots": after.BrowseRoots} {
