@@ -69,7 +69,7 @@
 
 ## 开发
 
-需要 Bun（版本见 `.bun-version`）。
+需要 Bun（版本见 `.bun-version`）。Windows 安装包的 x64 baseline 运行时由 `.bun-version-windows` 单独固定。
 
 ```bash
 cd bridges/claude-sdk
