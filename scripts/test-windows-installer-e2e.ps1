@@ -301,6 +301,7 @@ Assert-Install 'Upgrade to snapshot' '1.1.15-acceptance' $true
 Assert-Identity
 Assert-DesktopIdle $legacy
 Assert-NativePayload
+& (Join-Path $PSScriptRoot 'test-claude-adapter-windows.ps1') -AdapterPath (Join-Path $install 'mimi-claude-adapter.exe')
 Assert-WorkspaceRollback
 Assert-NativeTray
 

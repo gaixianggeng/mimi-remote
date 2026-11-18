@@ -29,7 +29,7 @@ jobs:
       - name: Read Bun version
         id: bun
         shell: pwsh
-        run: '"version=$((Get-Content bridges/claude-sdk/.bun-version -Raw).Trim())" >> $env:GITHUB_OUTPUT'
+        run: '"version=$((Get-Content bridges/claude-sdk/.bun-version-windows -Raw).Trim())" >> $env:GITHUB_OUTPUT'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v${{ steps.bun.outputs.version }}/bun-windows-x64-baseline.zip
