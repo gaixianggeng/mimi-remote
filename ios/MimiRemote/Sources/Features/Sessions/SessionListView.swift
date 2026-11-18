@@ -174,6 +174,10 @@ struct SessionListView: View {
     @ScaledMetric(relativeTo: .subheadline) private var searchFieldGlyphSize: CGFloat = 14
     /// 底部浮着 Tab 栏时新建留在顶栏，否则改用右下角浮起按钮。
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
+    private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @StateObject private var lifecycleCoordinator = SessionListLifecycleCoordinator()
     @State private var selectedWorkspaceID = "all"
     @State private var selectedStatus: SessionLibraryStatusFilter = .all
@@ -185,6 +189,7 @@ struct SessionListView: View {
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
 
+    @Binding var allSessionsRequestID: UUID?
     var onNewSession: ((NewSessionPresentationSource?) -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
     var onOpenWorkspaces: (() -> Void)?
@@ -195,6 +200,30 @@ struct SessionListView: View {
     var visibleSessionID: SessionID?
     var bottomContentMargin: CGFloat = 16
     var newSessionPresentationNamespace: Namespace.ID?
+
+    init(
+        allSessionsRequestID: Binding<UUID?> = .constant(nil),
+        onNewSession: ((NewSessionPresentationSource?) -> Void)? = nil,
+        onSelectSession: ((AgentSession) -> Void)? = nil,
+        onOpenWorkspaces: (() -> Void)? = nil,
+        manageConnections: (() -> Void)? = nil,
+        prefersTableDensity: Bool = false,
+        usesCompactNavigation: Bool = false,
+        visibleSessionID: SessionID? = nil,
+        bottomContentMargin: CGFloat = 16,
+        newSessionPresentationNamespace: Namespace.ID? = nil
+    ) {
+        _allSessionsRequestID = allSessionsRequestID
+        self.onNewSession = onNewSession
+        self.onSelectSession = onSelectSession
+        self.onOpenWorkspaces = onOpenWorkspaces
+        self.manageConnections = manageConnections
+        self.prefersTableDensity = prefersTableDensity
+        self.usesCompactNavigation = usesCompactNavigation
+        self.visibleSessionID = visibleSessionID
+        self.bottomContentMargin = bottomContentMargin
+        self.newSessionPresentationNamespace = newSessionPresentationNamespace
+    }
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -431,6 +460,14 @@ struct SessionListView: View {
                 isForeground: false
             )
         }
+        .onChange(of: allSessionsRequestID, initial: true) { _, requestID in
+            guard requestID != nil else { return }
+            selectedWorkspaceID = "all"
+            selectedStatus = .all
+            sessionStore.sessionSearchQuery = ""
+            // 请求只消费一次；宽屏返回列表重建时，不能再次清除用户后续设置的筛选。
+            allSessionsRequestID = nil
+        }
         .onChange(of: scenePhase) { _, phase in
             sessionStore.updateNativeHarnessDirectoryVisibility(
                 isListVisible: isNativeDirectoryListVisible,
@@ -608,9 +645,8 @@ struct SessionListView: View {
 
     private var visibleSessions: [AgentSession] {
         let now = Date()
-        return sessionStore.openedWorkspaceSessionLibrarySessions.filter { session in
-            (selectedWorkspaceID == "all" || session.projectID == selectedWorkspaceID) &&
-                selectedStatus.includes(session, now: now)
+        return sessionStore.sessionLibrarySessions(workspaceID: selectedWorkspaceID).filter { session in
+            selectedStatus.includes(session, now: now)
         }
     }
 
@@ -1111,7 +1147,11 @@ struct SessionListView: View {
         if let onNewSession {
             onNewSession(source)
         } else {
-            Task { await sessionStore.startNewSession() }
+            let preferred = WorkspaceSessionRuntimeChoice.resolvedPreferred(
+                preferredRawValue: preferredRuntimeRawValue,
+                enabledRawValue: enabledRuntimesRawValue
+            )
+            Task { await sessionStore.startNewSession(runtimeProvider: preferred.runtimeProvider) }
         }
     }
 

@@ -23,6 +23,8 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @ScaledMetric(relativeTo: .footnote) private var compactActionFontSize: CGFloat = 13
     @State private var isLoadingMoreSessions = false
 
@@ -477,7 +479,14 @@ struct WorkspaceDetailView<StatusLine: View>: View {
             }
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .disabled(!selectedRuntime.isAvailable(in: availableRuntimeProviders))
+        .disabled(
+            !selectedRuntime.isAvailable(
+                in: availableRuntimeProviders,
+                enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                    from: enabledRuntimesRawValue
+                )
+            )
+        )
         .shadow(
             color: isFloating
                 ? tokens.primaryActionShadow

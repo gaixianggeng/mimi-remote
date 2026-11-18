@@ -2678,6 +2678,8 @@ extension ConversationDataFlowTests {
         )
 
         await store.refreshAll(autoAttach: false)
+        // 首屏会话库会后台回写 history；先收敛它，再构造实时事件留下的冲突现场。
+        await store.refreshSessionLibraryIndex()
         await store.selectSession(history)
         // 模拟列表状态已经陈旧为 history，但实时事件留下的补充问题仍在本地。
         // 这种不一致正是 active_turn 冲突恢复不能覆盖的现场状态。
@@ -2687,6 +2689,7 @@ extension ConversationDataFlowTests {
         }
         let sendTask = Task { await store.sendPrompt("这条不能覆盖旧任务") }
         await client.waitForCreateRequestCount(1)
+        XCTAssertEqual(store.selectedSession?.pendingUserInput, pendingInput, "冲突应答前必须保留实时问题，不能被夹具的首屏快照覆盖")
         client.resolveCreate(with: .failure(
             CodexAppServerSessionRuntimeError.activeTurnConflict(
                 session: authoritative,

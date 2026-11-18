@@ -696,6 +696,7 @@ struct CodexAppServerEventProjector {
             // Codex 0.149.1 在 userMessage item/started 的 item.clientId 回传客户端 ID。
             // shared queue 只用这个精确字段确认 receipt，不根据 turn/started 猜 FIFO。
             return completedUserMessageEvent(params: params, metadata: metadata)
+                ?? startedAsyncQuestionEvent(params: params, metadata: metadata)
                 ?? startedProcessItemEvent(params: params, metadata: metadata)
                 ?? itemContextEvent(params: params, metadata: metadata)
         case "item/completed":
@@ -834,6 +835,13 @@ struct CodexAppServerEventProjector {
         sequenceClock.next(for: sessionID ?? "__appserver_global__")
     }
 
+    private mutating func startedAsyncQuestionEvent(
+        params: [String: CodexAppServerJSONValue], metadata: AgentEventMetadata
+    ) -> AgentEvent? {
+        guard let item = params["item"]?.objectValue, CodexAsyncQuestion(item: item) != nil else { return nil }
+        return completedAgentMessageEvent(params: params, metadata: metadata)
+    }
+
     private mutating func completedAgentMessageEvent(
         params: [String: CodexAppServerJSONValue],
         metadata: AgentEventMetadata
@@ -848,7 +856,9 @@ struct CodexAppServerEventProjector {
                 agentMessageKindByItemID.removeValue(forKey: itemID)
             }
         }
-        let text = firstString(in: item, keys: ["text", "content"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let question = CodexAsyncQuestion(item: item)
+        let rawText = firstString(in: item, keys: ["text", "content"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = rawText.isEmpty ? (question?.displayText ?? "") : rawText
         guard !text.isEmpty else {
             return nil
         }
@@ -872,6 +882,7 @@ struct CodexAppServerEventProjector {
             role: .assistant,
             kind: kind,
             content: text,
+            activityPayload: question?.activityPayload,
             createdAt: Date(),
             seq: metadata.seq,
             revision: metadata.revision ?? 0,
@@ -937,6 +948,7 @@ struct CodexAppServerEventProjector {
             role: .user,
             kind: questionReply == nil ? .message : .questionReply,
             content: questionReply?.displayText ?? content,
+            activityPayload: questionReply?.activityPayload,
             createdAt: Date(),
             seq: metadata.seq,
             revision: metadata.revision ?? 0,

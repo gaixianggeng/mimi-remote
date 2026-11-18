@@ -18,13 +18,22 @@ struct ConversationTurnHintCard: View {
     var body: some View {
         if !interaction.isDismissed {
             let tokens = themeStore.tokens(for: colorScheme)
-            VStack(alignment: .leading, spacing: 8) {
-                Label(
-                    hint.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
-                    systemImage: hint.kind == .taskProposal ? "arrow.up.right.square" : "arrow.turn.down.right"
-                )
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.secondaryText)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Label(
+                        hint.kind == .taskProposal ? L10n.text("ui.turn_hint_task_proposal") : L10n.text("ui.turn_hint_next_step"),
+                        systemImage: hint.kind == .taskProposal ? "arrow.up.right.square" : "arrow.turn.down.right"
+                    )
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
+
+                    Spacer(minLength: 0)
+
+                    AgentRequestRuntimeIcon(
+                        presentation: SessionRuntimePresentation(runtimeProvider: "claude", source: "claude"),
+                        size: 26
+                    )
+                }
 
                 switch hint.kind {
                 case .nextStep:
@@ -44,12 +53,11 @@ struct ConversationTurnHintCard: View {
                     .accessibilityIdentifier("conversation.turnHint.dismiss")
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(16)
             .frame(maxWidth: layout.runtimeCardMaxWidth, alignment: .leading)
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(tokens.border, lineWidth: 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,24 +71,22 @@ struct ConversationTurnHintCard: View {
         if let recap = hint.recap {
             Text(recap)
                 .font(themeStore.uiFont(.subheadline))
-                .foregroundStyle(tokens.primaryText)
+                .foregroundStyle(tokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
         if let question = hint.question {
             Text(question)
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .font(themeStore.uiFont(.body, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, hint.recap == nil ? 0 : 2)
         }
         if !hint.actions.isEmpty {
-            // 宽度不够时竖排，按钮文案不截断。
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { actionButtons(tokens: tokens) }
-                VStack(alignment: .leading, spacing: 8) { actionButtons(tokens: tokens) }
+            VStack(alignment: .leading, spacing: 8) {
+                actionButtons(tokens: tokens)
             }
-            .padding(.top, 4)
+            .padding(.top, 2)
         }
     }
 
@@ -88,24 +94,17 @@ struct ConversationTurnHintCard: View {
     private func actionButtons(tokens: ThemeTokens) -> some View {
         ForEach(Array(hint.actions.enumerated()), id: \.offset) { index, action in
             let isEnabled = interaction.canSubmit(cardCanAct: canAct)
-            Button {
+            let isSelected = interaction.isSelected(actionIndex: index)
+            AgentQuestionOptionRow(
+                index: index,
+                label: action.label,
+                description: nil,
+                isSelected: isSelected,
+                isDisabled: !isEnabled
+            ) {
                 submit(.reply(action), index: index)
-            } label: {
-                Text(action.label)
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .lineLimit(1)
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 36)
-                    .foregroundStyle(index == 0 ? Color.white : tokens.primaryText)
-                    .background(
-                        index == 0 ? AnyShapeStyle(tokens.accent) : AnyShapeStyle(tokens.selectionFill),
-                        in: Capsule()
-                    )
-                    .contentShape(Capsule())
             }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .opacity(isEnabled || interaction.isSelected(actionIndex: index) ? 1 : 0.45)
+            .opacity(isEnabled || isSelected ? 1 : 0.45)
             .accessibilityHint(Text(action.message))
             .accessibilityIdentifier("conversation.turnHint.action.\(index)")
         }
@@ -115,7 +114,7 @@ struct ConversationTurnHintCard: View {
     private func proposalContent(tokens: ThemeTokens) -> some View {
         if let title = hint.title {
             Text(title)
-                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .font(themeStore.uiFont(.body, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -140,12 +139,12 @@ struct ConversationTurnHintCard: View {
                 submit(.startTask, index: 0)
             } label: {
                 Label(L10n.text("ui.turn_hint_start_task"), systemImage: "arrow.up.right.square")
-                    .font(themeStore.uiFont(.subheadline, weight: .medium))
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 36)
-                    .foregroundStyle(Color.white)
-                    .background(tokens.accent, in: Capsule())
-                    .contentShape(Capsule())
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 40)
+                    .foregroundStyle(tokens.primaryActionForeground)
+                    .background(tokens.primaryAction, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled)

@@ -491,6 +491,8 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 	// 离开旧 sink 的写入，后续帧照常交给新连接。
 	const sentinel = `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thread-1","turnId":"turn-sentinel"}}`
 	var initElapsed time.Duration
+	// 是否应答由帧证明；0 也是合法耗时，不能同时拿它当作“未应答”标记。
+	sawInitialize := false
 	approvals := 0
 	sawSentinel := false
 	deadline := time.Now().Add(10 * time.Second)
@@ -512,6 +514,7 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 		}
 		switch {
 		case string(frame.ID) == `"init-2"` && frame.Method == "":
+			sawInitialize = true
 			initElapsed = time.Since(start)
 			if err := writer.write(sentinel); err != nil {
 				t.Fatal(err)
@@ -523,7 +526,7 @@ func TestCodexGatewayBrokerReconnectIsNotBlockedByStaleSinkWrite(t *testing.T) {
 		}
 	}
 
-	if initElapsed == 0 || initElapsed > time.Second {
+	if !sawInitialize || initElapsed > time.Second {
 		t.Fatalf("新连接的 initialize 应在 1 秒内本地应答，got=%s", initElapsed)
 	}
 	select {

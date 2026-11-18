@@ -326,7 +326,7 @@ final class HostStore {
         guard !isBusy else { return }
         guard canPair else {
             pairing = nil
-            lastError = pairingUnavailableReason
+            lastError = pairingUnavailableReason(for: network ?? .automatic)
             return
         }
         pairingRefreshGeneration &+= 1
@@ -357,7 +357,7 @@ final class HostStore {
         if status?.moduleStatus != nil || status?.moduleStatusState == .unavailable {
             if selection == .automatic { selection = availablePairingNetworks.first ?? .automatic }
             guard canPair, availablePairingNetworks.contains(selection) else {
-                throw AgentClientError.commandFailed(pairingUnavailableReason)
+                throw AgentClientError.commandFailed(pairingUnavailableReason(for: selection))
             }
         }
         switch selection {
