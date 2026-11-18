@@ -1401,7 +1401,10 @@ struct RelatedSessionConversationView: View {
             if showsCloseButton {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
+                        // .frame 只排布局，命中区仍取自 label 真正绘制的字形；
+                        // 这里没有任何按钮样式画背景，只能显式声明交互形状。
                         .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityLabel(L10n.text("ui.close"))
             }

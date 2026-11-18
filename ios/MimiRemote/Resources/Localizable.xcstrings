@@ -1,6 +1,150 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "ui.async_question_option": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "• %@"
+          }
+        }
+      }
+    },
+    "ui.async_question_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent questions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent 提问"
+          }
+        }
+      }
+    },
+    "ui.async_question_answer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回答"
+          }
+        }
+      }
+    },
+    "ui.async_question_answered": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Answered or skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已回答或跳过"
+          }
+        }
+      }
+    },
+    "ui.async_question_control_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect and switch to control mode to answer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接会话并切换到控制模式后可回答。"
+          }
+        }
+      }
+    },
+    "ui.question_custom_reply_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Or write your own reply"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "或自行撰写回复"
+          }
+        }
+      }
+    },
+    "ui.question_reply_placeholder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reply…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回复…"
+          }
+        }
+      }
+    },
+    "ui.desktop_worktree_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desktop worktree operation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desktop 工作树操作"
+          }
+        }
+      }
+    },
+    "ui.desktop_worktree_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Desktop handles this operation. If it asks for repository access, confirm on your computer. This Desktop authorization cannot be transferred to Mimi. Command approvals for Codex sessions controlled by Mimi can be handled in the app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此操作由 Codex Desktop 处理。如果出现仓库授权，请在电脑上确认。此 Desktop 授权无法转交 Mimi。由 Mimi 控制的 Codex 会话，其命令审批可在 App 内处理。"
+          }
+        }
+      }
+    },
     "ui.managed_transfer_code_unavailable": {
       "comment": "Shown when this device has no saved invite code to show, e.g. after reinstalling.",
       "localizations": {
@@ -542,6 +686,23 @@
         }
       }
     },
+    "ui.default_model_reasoning_dynamic_footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reasoning effort options adjust automatically to match the selected model."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "推理强度选项会根据上方所选模型的支持范围动态调整。"
+          }
+        }
+      }
+    },
     "ui.default_model_unconfirmed": {
       "extractionState": "manual",
       "localizations": {
@@ -555,6 +716,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "型号未确认"
+          }
+        }
+      }
+    },
+    "ui.enabled_runtimes_footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabled models appear in Workspaces and New Session. At least one model must stay enabled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开启的模型将在工作区和新建会话中显示；至少需保留 1 个开启的模型。"
           }
         }
       }
@@ -47826,6 +48004,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接电脑后会自动配置 Mimi 中转。也可以扫描电脑上的新二维码。"
+          }
+        }
+      }
+    },
+    "ui.workspace_current_directory_sessions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing sessions in this directory."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅显示当前目录的会话。"
+          }
+        }
+      }
+    },
+    "ui.view_all_sessions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View all sessions"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看全部会话"
           }
         }
       }

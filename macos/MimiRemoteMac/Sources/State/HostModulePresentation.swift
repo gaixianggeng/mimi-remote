@@ -53,7 +53,9 @@ extension HostStore {
     }
     var canPair: Bool {
         status?.serviceOK == true && (codexEnabled || claudeEnabled || deepSeekEnabled)
-            && (!availablePairingNetworks.isEmpty || (tailcatStatus != nil && canChangeTailcat))
+            && (!availablePairingNetworks.isEmpty
+                || (tailcatStatus != nil && canChangeTailcat)
+                || (status?.moduleStatus?.lanAvailable == true && canChangeModule(.lan)))
     }
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }
@@ -72,11 +74,54 @@ extension HostStore {
         return networks
     }
     var pairingUnavailableReason: String {
+        pairingUnavailableReason(for: .automatic)
+    }
+    func pairingUnavailableReason(for selection: PairingNetwork) -> String {
         if !(codexEnabled || claudeEnabled || deepSeekEnabled) {
             return "全部 AI 编程助手已关闭。请先启用至少一个助手。"
         }
+        switch selection {
+        case .localNetwork:
+            if let lanError, !lanError.isEmpty { return lanError }
+        case .tailscale:
+            if let error = moduleError(.tailscale), !error.isEmpty { return error }
+        case .tailcat:
+            if let error = moduleError(.tailcat), !error.isEmpty { return error }
+        case .automatic:
+            break
+        }
         if status?.serviceOK != true { return "Mac 服务尚未就绪，请先启动或修复服务。" }
+        if status?.moduleStatusState == .unavailable {
+            return "正在确认连接方式状态，请稍后刷新。"
+        }
+        switch selection {
+        case .localNetwork:
+            if !lanEnabled { return "局域网已关闭，请先在连接方式中明确启用。" }
+            if status?.moduleStatus?.lanAvailable == false {
+                return "未检测到可用的局域网 IPv4，请确认这台 Mac 已连接 Wi-Fi 或以太网。"
+            }
+        case .tailscale:
+            if !tailscaleEnabled { return "Tailscale 已关闭，请先在菜单栏「连接方式」中开启。" }
+            if status?.moduleStatus?.tailscaleAvailable == false {
+                return "未检测到 Tailscale 地址，请先安装、登录并连接 Tailscale。"
+            }
+        case .tailcat:
+            if !tailcatEnabled { return "内置连接尚未开启，请重试或前往设置开启。" }
+            if tailcatStatus?.running != true { return "内置连接正在启动，请稍后重试。" }
+        case .automatic:
+            break
+        }
         return "没有可用的连接方式。请开启并连接 Tailscale、局域网或 Tailcat 后再配对。"
+    }
+    /// 配对窗口里用户显式切换连接方式或点击重试：选内置连接或同一局域网即授权开启对应连接方式，
+    /// 不再要求退回菜单栏手动打开开关；自动模式（`.automatic`）不静默扩大监听范围。
+    func refreshPairingFromPicker(_ targetNetwork: PairingNetwork) async {
+        if targetNetwork == .tailcat, !tailcatEnabled, canChangeTailcat {
+            await setTailcatEnabled(true)
+        } else if targetNetwork == .localNetwork, !lanEnabled, canChangeModule(.lan) {
+            await setLANEnabled(true)
+        }
+        await refreshPairing(network: targetNetwork)
     }
     func runtime(for module: HostModuleID) -> AgentRuntimeStatus? {
         guard module.isAgent else { return nil }

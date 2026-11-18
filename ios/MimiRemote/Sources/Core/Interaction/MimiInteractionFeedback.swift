@@ -118,6 +118,12 @@ enum MimiMotion: CaseIterable {
 ///
 /// 本样式只拥有 pressed 状态。Focus 继续由 FocusState/系统 focus effect 表达，Hover 继续使用
 /// hoverEffect，避免自建状态机与系统输入竞争；视觉优先级固定为 pressed > focused > hovered > resting。
+///
+/// 注意：本样式只做 scaleEffect + opacity，不画背景，因此它不会给按钮补出任何命中区。
+/// Button 的命中区始终取自 label 真正绘制的内容，`.frame(width: 44, height: 44)` 只是布局框——
+/// 图标按钮若不额外声明 `.contentShape(...)` 或自带 `.background(...)`，可点面积就只有图标字形那么大。
+/// `.plain` / `.borderless` 同理；`.bordered` / `.borderedProminent` 由系统画背景，无需再补。
+/// 回归由 `ComposerTouchTargetSourceTests` 兜底。
 struct MimiPressButtonStyle: ButtonStyle {
     let reduceMotion: Bool
 

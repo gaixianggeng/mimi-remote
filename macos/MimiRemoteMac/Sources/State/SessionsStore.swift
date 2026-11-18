@@ -35,6 +35,25 @@ final class SessionsStore {
             case .claude: runtime == .claude
             }
         }
+
+        var singleRuntime: SessionRuntime? {
+            switch self {
+            case .all: nil
+            case .codex: .codex
+            case .claude: .claude
+            }
+        }
+    }
+
+    enum EmptyState: Equatable {
+        /// 选中的助手未启用（例如 Claude 未登录或已在菜单栏关闭）。
+        case runtimeDisabled(SessionRuntime)
+        /// 选中的助手已启用，但本次读取失败。
+        case runtimeFailed(SessionRuntime, String)
+        /// 还没有会话（nil 表示「全部」下两类助手都没有会话）。
+        case noSessions(SessionRuntime?, hasMore: Bool)
+        /// 输入了搜索词后没有匹配结果。
+        case noMatches(hasMore: Bool)
     }
 
     /// 首次加载每个 runtime 最多取的页数（每页 50 条，子任务过滤后通常剩一半）。
@@ -46,6 +65,9 @@ final class SessionsStore {
     /// 部分 runtime 读不到时的说明；全部失败时改用 `.failed`。
     private(set) var notices: [String] = []
     private(set) var hasMore = false
+    private(set) var loadedRuntimes: Set<SessionRuntime> = []
+    private(set) var runtimeFailures: [SessionRuntime: String] = [:]
+    private(set) var hasMoreByRuntime: [SessionRuntime: Bool] = [:]
     private(set) var isRefreshing = false
     /// 正在交接的会话；同一时间只处理一条，避免连点开出多个窗口。
     private(set) var workingSessionID: String?
@@ -127,6 +149,38 @@ final class SessionsStore {
         phase == .loaded && !sessions.isEmpty && visibleSections.isEmpty
     }
 
+    /// 列表为空时区分「助手未启用」「单助手读取失败」「还没有该助手的会话」与「搜索无匹配」。
+    var emptyState: EmptyState? {
+        guard phase == .loaded, visibleSections.isEmpty else { return nil }
+        let hasQuery = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let runtime = filter.singleRuntime {
+            if !loadedRuntimes.contains(runtime) {
+                return .runtimeDisabled(runtime)
+            }
+            if let failure = runtimeFailures[runtime] {
+                return .runtimeFailed(runtime, failure)
+            }
+            if !hasQuery {
+                return .noSessions(runtime, hasMore: hasMoreByRuntime[runtime] ?? false)
+            }
+            return .noMatches(hasMore: hasMore)
+        }
+        if sessions.isEmpty, !hasQuery {
+            return .noSessions(nil, hasMore: hasMore)
+        }
+        return .noMatches(hasMore: hasMore)
+    }
+
+    /// 顶部提示条只展示与当前筛选相关、且没有被主内容区单独承接的读取失败。
+    var visibleNotices: [String] {
+        guard phase == .loaded else { return [] }
+        return SessionRuntime.allCases.compactMap { runtime in
+            guard filter.includes(runtime), let failure = runtimeFailures[runtime] else { return nil }
+            if emptyState == .runtimeFailed(runtime, failure) { return nil }
+            return "暂时读不到 \(runtime.title) 会话：\(failure)"
+        }
+    }
+
     /// endpoint 为空说明服务没在运行；runtimes 是电脑上已启用的助手。
     func reload(endpoint: String?, runtimes: [SessionRuntime]) async {
         pageBudget = Self.initialPageBudget
@@ -141,12 +195,29 @@ final class SessionsStore {
     private func load(endpoint: String?, runtimes: [SessionRuntime]) async {
         generation += 1
         let current = generation
+        let requestedRuntimes = Set(runtimes)
         guard let endpoint, let port = LocalGatewayClient.port(fromEndpoint: endpoint) else {
-            apply(sessions: [], notices: [], hasMore: false, phase: .failed("Mimi 服务没有运行。启动服务后再打开。"))
+            apply(
+                sessions: [],
+                notices: [],
+                hasMore: false,
+                loadedRuntimes: requestedRuntimes,
+                runtimeFailures: [:],
+                hasMoreByRuntime: [:],
+                phase: .failed("Mimi 服务没有运行。启动服务后再打开。")
+            )
             return
         }
         guard !runtimes.isEmpty else {
-            apply(sessions: [], notices: [], hasMore: false, phase: .failed("Codex 和 Claude 都已关闭，在菜单栏打开后再试。"))
+            apply(
+                sessions: [],
+                notices: [],
+                hasMore: false,
+                loadedRuntimes: [],
+                runtimeFailures: [:],
+                hasMoreByRuntime: [:],
+                phase: .failed("Codex 和 Claude 都已关闭，在菜单栏打开后再试。")
+            )
             return
         }
         // 已有内容时保留列表，只显示刷新状态，避免每次刷新整窗闪成加载页。
@@ -190,30 +261,61 @@ final class SessionsStore {
         var merged: [DesktopSession] = []
         var notices: [String] = []
         var failures: [String] = []
+        var runtimeFailures: [SessionRuntime: String] = [:]
+        var hasMoreByRuntime: [SessionRuntime: Bool] = [:]
         var hasMore = false
         for runtime in runtimes {
             let outcome = outcomes.first { $0.runtime == runtime }
             if let listing = outcome?.listing {
                 merged += listing.sessions
+                hasMoreByRuntime[runtime] = listing.hasMore
                 hasMore = hasMore || listing.hasMore
             } else {
                 // 缺失也按失败处理并说明原因，不能悄悄显示成「没有会话」。
                 let message = outcome?.errorMessage ?? "没有收到结果。"
                 failures.append(message)
+                runtimeFailures[runtime] = message
                 notices.append("暂时读不到 \(runtime.title) 会话：\(message)")
             }
         }
         if failures.count == runtimes.count {
-            apply(sessions: [], notices: [], hasMore: false, phase: .failed(failures.first ?? "无法读取会话。"))
+            apply(
+                sessions: [],
+                notices: [],
+                hasMore: false,
+                loadedRuntimes: requestedRuntimes,
+                runtimeFailures: runtimeFailures,
+                hasMoreByRuntime: [:],
+                phase: .failed(failures.first ?? "无法读取会话。")
+            )
         } else {
-            apply(sessions: merged, notices: notices, hasMore: hasMore, phase: .loaded)
+            apply(
+                sessions: merged,
+                notices: notices,
+                hasMore: hasMore,
+                loadedRuntimes: requestedRuntimes,
+                runtimeFailures: runtimeFailures,
+                hasMoreByRuntime: hasMoreByRuntime,
+                phase: .loaded
+            )
         }
     }
 
-    private func apply(sessions: [DesktopSession], notices: [String], hasMore: Bool, phase: Phase) {
+    private func apply(
+        sessions: [DesktopSession],
+        notices: [String],
+        hasMore: Bool,
+        loadedRuntimes: Set<SessionRuntime>,
+        runtimeFailures: [SessionRuntime: String],
+        hasMoreByRuntime: [SessionRuntime: Bool],
+        phase: Phase
+    ) {
         self.sessions = sessions
         self.notices = notices
         self.hasMore = hasMore
+        self.loadedRuntimes = loadedRuntimes
+        self.runtimeFailures = runtimeFailures
+        self.hasMoreByRuntime = hasMoreByRuntime
         self.phase = phase
         isRefreshing = false
     }

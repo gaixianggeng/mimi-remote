@@ -10,6 +10,8 @@ struct ConnectionSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
     private var preferredRuntimeRawValue = WorkspaceSessionRuntimeChoice.codex.rawValue
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     // 重命名 sheet 与扫码 Cover 同样必须由当前显示的连接页持有：紧凑布局把这一页
     // push 进导航栈后，设置根层已经不在被呈现的层级里，挂在那里的 presenter 不会呈现。
@@ -65,26 +67,12 @@ struct ConnectionSettingsView: View {
                         .accessibilityIdentifier("settings.lockScreenApproval")
                     }
 
-                    // 与「我的」页语言同一种选择行：标题一行、选项胶囊一行，选项文字与标题文字对齐。
-                    // 说明不再占一行（三行太重），交给旁白读。
-                    // 选项取 allCases，新增 Runtime 自动出现在这一行，不必再改这里。
-                    SettingsChoiceRow(
-                        title: L10n.text("ui.preferred_runtime"),
-                        // 选的是在电脑终端里跑的编程代理（Codex、Claude Code、DeepSeek），用终端图标；
-                        // 星光读成「AI 功能」，和这一行的含义对不上。
-                        systemImage: "terminal",
-                        options: WorkspaceSessionRuntimeChoice.allCases,
-                        selection: preferredRuntimeBinding
-                    )
-                    .settingsRow()
-                    .accessibilityHint(L10n.text("ui.preferred_runtime_description"))
-                    .accessibilityIdentifier("settings.preferredRuntime")
-
-                    // 模型目录来自当前连接的电脑，和「优先使用」同属电脑上的编程代理设置（#871）。
-                    // 三个 runtime 的模型 + 档位拼在一行会被截断成一串噪音，详情页已经平铺开了，这里只做入口。
+                    // 模型启用开关、优先使用与各通道默认模型/推理强度已统一收进二级页面，
+                    // 首页仅保留单行入口并外显当前优先使用的模型摘要。
                     NavigationLink(value: SettingsDestination.defaultModels) {
                         ConnectionRowLabel(
                             title: L10n.text("ui.default_model"),
+                            value: preferredRuntimeSummary,
                             systemImage: "cpu"
                         )
                     }
@@ -168,11 +156,11 @@ struct ConnectionSettingsView: View {
         return showsAddComputerEntry ? "ui.mac_connection" : "ui.connect_computer"
     }
 
-    private var preferredRuntimeBinding: Binding<WorkspaceSessionRuntimeChoice> {
-        Binding(
-            get: { .stored(preferredRuntimeRawValue) },
-            set: { preferredRuntimeRawValue = $0.rawValue }
-        )
+    private var preferredRuntimeSummary: String {
+        WorkspaceSessionRuntimeChoice.resolvedPreferred(
+            preferredRawValue: preferredRuntimeRawValue,
+            enabledRawValue: enabledRuntimesRawValue
+        ).choiceTitle
     }
 
     private var profileRenameRouteBinding: Binding<ConnectionProfileRenameRoute?> {

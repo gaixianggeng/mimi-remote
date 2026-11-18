@@ -40,14 +40,32 @@ struct TailcatRelayPicker: View {
             changeAddressButton
             statusLine
         } else {
-            // 配对窗口里和连接方式共用一行高度，控件并排，切换选项时二维码不会被顶下去。
-            VStack(spacing: 4) {
+            // 配对窗口里放在二维码下方的配置卡片中，左标题右菜单，展开选项时不遮挡顶部图标。
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    picker
-                        .fixedSize()
+                    Text("中转服务")
+                        .font(.subheadline.weight(.medium))
+                    Spacer(minLength: 8)
                     changeAddressButton
+                        .controlSize(.small)
+                    picker
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .fixedSize()
                 }
+                Text(TailcatRelayPresentation.pairingCaption(mode: currentMode, derpMapURL: store.tailcatDERPMapURL))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 statusLine
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             }
         }
     }
@@ -219,6 +237,15 @@ enum TailcatRelayPresentation {
     }
 
     static let mimiPairingNote = "已开通的手机直接用上 Mimi 中转，没开通的先走免费线路。"
+
+    static func pairingCaption(mode: TailcatRelayMode, derpMapURL: String) -> String {
+        switch mode {
+        case .tailcatDefault, .custom:
+            caption(mode: mode, derpMapURL: derpMapURL)
+        case .mimi:
+            mimiPairingNote
+        }
+    }
 
     static let selfHostedSteps = [
         "在有公网域名的服务器上部署 derper。",
