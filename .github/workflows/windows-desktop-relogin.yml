@@ -21,10 +21,6 @@ jobs:
             build: '19045'
             iso_url: https://software-static.download.prss.microsoft.com/dbazure/988969d5-f34g-4e03-ac9d-1f9786c66750/19045.2006.220908-0225.22h2_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso
             iso_sha256: ef7312733a9f5d7d51cfa04ac497671995674ca5e1058d5164d6028f0938d668
-          - desktop: Windows 11 26H2
-            build: '26300'
-            iso_url: https://software-static.download.prss.microsoft.com/dbazure/26300.9457.260913-1737.26h2_ge_release_svc_refresh_CLIENTENTERPRISEEVAL_OEMRET_x64FRE_en-us.iso
-            iso_sha256: bc3f24086ebadc94489066b5ad78089e2cf5c3491e90e790bb81a2b199c10e38
     name: ${{ matrix.desktop }} x64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

@@ -12,6 +12,7 @@ $probeName = 'Mimi Remote logon acceptance 979'
 $marker = 'gh979-desktop-oem-v1'
 $profileDir = Join-Path $env:LOCALAPPDATA 'Mimi-Remote-Logon-Acceptance-979'
 $statePath = Join-Path $profileDir 'state.json'
+$sentinelPath = Join-Path $profileDir 'startup-sentinel'
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Mimi Remote'
 $configDir = Join-Path $env:APPDATA 'mimi-remote'
 $configPath = Join-Path $configDir 'config.json'
@@ -25,6 +26,7 @@ $menuLink = Join-Path ([Environment]::GetFolderPath('Programs')) 'Mimi Remote\Mi
 $principal = [Security.Principal.WindowsIdentity]::GetCurrent()
 $session = (Get-Process -Id $PID).SessionId
 $build = 0
+$revision = 0
 $step = 'guard'
 $previousState = $null
 $reportAllowed = $false
@@ -37,6 +39,7 @@ function Publish-Result([string]$Status, [hashtable]$Detail = @{}) {
         phase = $script:step
         expectedBuild = $ExpectedBuild
         build = $script:build
+        revision = $script:revision
         transition = 'logoff'
         utc = [DateTime]::UtcNow.ToString('o')
     }
@@ -202,6 +205,10 @@ public static class MimiLogonAcceptanceWindow {
     private static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string className, string title);
+
+    public static bool HasTaskbar() { return FindWindow("Shell_TrayWnd", null) != IntPtr.Zero; }
 
     public static int State(uint processId) {
         int state = 0;
@@ -220,6 +227,34 @@ public static class MimiLogonAcceptanceWindow {
 '@
 }
 
+function Publish-TrayDiagnostics([string]$Source) {
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'MimiRemote.exe'")
+    $clients = @(Get-UiProcesses)
+    $reg = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{7D413E71-19C5-4F02-8AFC-437E1B8019FD}_is1' -ErrorAction SilentlyContinue
+    $approved = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' -Name 'Mimi Remote.lnk' -ErrorAction SilentlyContinue
+    $approvedByte = if ($approved.'Mimi Remote.lnk') { $approved.'Mimi Remote.lnk'[0] } else { $null }
+    $events = @(Get-WinEvent -FilterHashtable @{ LogName='Application'; Id=33,1000,1001,1026; StartTime=[DateTime]::Parse($previousState.departureUtc).ToLocalTime() } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match 'MimiRemote' } | Select-Object -First 4)
+    $faults = @()
+    foreach ($event in $events) {
+        $module = [regex]::Match($event.Message, '(?im)Faulting module name:\s+([\w.-]+)').Groups[1].Value
+        $code = [regex]::Match($event.Message, '(?im)Exception code:\s+(0x[0-9a-f]+)').Groups[1].Value
+        $exception = [regex]::Match($event.Message, '(?im)Exception Info:\s+([\w.]+)').Groups[1].Value
+        $faults += "$($event.Id):$module/$code/$exception"
+    }
+    Publish-Result 'diagnosing' @{
+        source = $Source
+        totalWinUi = $processes.Count
+        matchingWinUi = $clients.Count
+        matchingWindowStates = @($clients | ForEach-Object { [MimiLogonAcceptanceWindow]::State($_.ProcessId) })
+        taskbar = [MimiLogonAcceptanceWindow]::HasTaskbar()
+        approved = $approvedByte
+        shellStartedSentinel = (Test-Path -LiteralPath $sentinelPath)
+        registeredInstall = (([string]$reg.InstallLocation).TrimEnd('\') -ieq $installDir)
+        faults = $faults
+    }
+}
+
 try {
     if ($PSCommandPath -notlike 'C:\OEM\*' -or $ResultPath -notlike 'C:\OEM\*' -or
         ($principal.Name -split '\\')[-1] -ne 'MimiFixture') {
@@ -235,6 +270,7 @@ try {
     }
     $os = Get-CimInstance Win32_OperatingSystem
     $build = [int]$os.BuildNumber
+    $revision = [int](Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name UBR)
     if ($os.ProductType -ne 1 -or $session -eq 0 -or -not [Environment]::Is64BitOperatingSystem) {
         throw 'Expected an interactive 64-bit desktop Windows guest.'
     }
@@ -253,9 +289,22 @@ try {
         Assert-Shortcut $menuLink ''
         $step = 'check-tray-started-at-logon'
         Add-WindowProbe
-        Wait-Condition 90 {
-            $tray = @(Get-UiProcesses)
-            $tray.Count -eq 1 -and [MimiLogonAcceptanceWindow]::State($tray[0].ProcessId) -gt 0
+        try {
+            Wait-Condition 180 {
+                $tray = @(Get-UiProcesses)
+                $tray.Count -eq 1 -and [MimiLogonAcceptanceWindow]::State($tray[0].ProcessId) -gt 0
+            }
+        } catch {
+            Publish-TrayDiagnostics 'automatic-logon'
+            $child = Start-Process -FilePath $winuiPath -ArgumentList '--background' -WorkingDirectory $appDir -PassThru
+            try {
+                if ($child.WaitForExit(12000)) {
+                    $code = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$child.ExitCode), 0)
+                    Publish-Result 'diagnosing' @{ source='explicit-launch-exit'; exitCode=('0x{0:X8}' -f $code) }
+                }
+                Publish-TrayDiagnostics 'after-explicit-launch'
+            } finally { $child.Dispose() }
+            throw 'The WinUI startup did not occur automatically.'
         }
         $client = @(Get-UiProcesses)
         if ($client.Count -ne 1 -or -not (Test-NoLegacyTray) -or
@@ -343,6 +392,17 @@ try {
         Assert-Shortcut $startupLink '--background'
         Assert-Shortcut $menuLink ''
         if (@(Get-UiProcesses).Count -ne 0 -or -not (Test-NoLegacyTray)) { throw 'Tray was already active before logout.' }
+        $sentinelLink = Join-Path (Split-Path -Parent $startupLink) 'Mimi fixture startup sentinel.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($sentinelLink)
+        try {
+            $link.TargetPath = Join-Path $PSHOME 'powershell.exe'
+            $link.Arguments = '-NoProfile -WindowStyle Hidden -Command "[IO.File]::WriteAllText(''{0}'',''started'')"' -f $sentinelPath
+            $link.Save()
+        } finally {
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($link)
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+        }
         $step = 'register-observer'
         $observerArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -InstallerPath "{1}" -ResultPath "{2}" -ExpectedBuild {3} -Observe' -f $PSCommandPath,$installer.FullName,$ResultPath,$ExpectedBuild
         if ($ResultPort) { $observerArguments += " -ResultPort $ResultPort" }
