@@ -180,25 +180,6 @@ struct SessionActionMenuContent: View {
     @ViewBuilder
     private func claudeComputerHandoffMenu(_ handoff: ClaudeComputerHandoffDetails) -> some View {
         Menu {
-            if handoff.canOpenInDesktop {
-                Button {
-                    Task { await sessionStore.openClaudeSessionInDesktop(session) }
-                } label: {
-                    Label(
-                        L10n.text(
-                            handoff.isAlreadyInDesktop
-                                ? "ui.switch_to_claude_desktop"
-                                : "ui.open_in_claude_desktop"
-                        ),
-                        systemImage: "macwindow"
-                    )
-                }
-                .disabled(session.isRunning || handoff.isOpeningInDesktop)
-                .accessibilityIdentifier("sessionActions.claudeHandoff.openDesktop")
-
-                Divider()
-            }
-
             Button {
                 sessionStore.copyClaudeTerminalRecoveryCommand(handoff, isRunning: session.isRunning)
             } label: {
@@ -219,9 +200,6 @@ struct SessionActionMenuContent: View {
         }
         .menuOrder(.fixed)
         .accessibilityIdentifier("sessionActions.claudeHandoff")
-        .task(id: session.id) {
-            await sessionStore.refreshClaudeDesktopOpenSupportIfNeeded(for: session)
-        }
     }
 
     @ViewBuilder

@@ -396,19 +396,4 @@ extension CodexAppServerSessionRuntime {
             return false
         }
     }
-
-    // MARK: - 在电脑 Claude 桌面版打开（#726）
-
-    func supportsThreadDesktopOpen() async throws -> Bool {
-        let config = try await ensureConfig()
-        return runtimeSupportsMethod("thread/desktop/open", in: config)
-    }
-
-    func openThreadInDesktop(sessionID: SessionID) async throws -> CodexAppServerThreadDesktopOpenResult {
-        let request = CodexAppServerRequestBuilder(allowlistedProjects: []).threadDesktopOpen(threadID: sessionID)
-        let result = try await sendRecoveringFromStaleInitialization(request)
-        // 适配器已关闭自身常驻进程并交给桌面版，下次回到手机订阅时必须重新 thread/resume 获取最新持有态。
-        threadsResumedOnConnection.remove(sessionID)
-        return CodexAppServerThreadDesktopOpenResult(result: result)
-    }
 }

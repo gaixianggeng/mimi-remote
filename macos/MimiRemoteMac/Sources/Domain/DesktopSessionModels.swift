@@ -216,24 +216,6 @@ enum DesktopSessionGrouping {
 
 /// 每条会话能做的交接操作（#991）。规则集中在这里，界面只负责展示。
 enum DesktopSessionActions {
-    enum Primary: Equatable {
-        case openInClaudeDesktop
-        /// 桌面版已经开着这条会话，只把窗口切过去。
-        case bringClaudeDesktopForward
-        /// 回合还在跑：桌面版接手会让 Mimi 让出进程，正在跑的回合会被打断。
-        case waitForTurn
-    }
-
-    static func primary(for session: DesktopSession) -> Primary? {
-        guard session.runtime == .claude else { return nil }
-        switch session.holder {
-        case .claudeDesktop: return .bringClaudeDesktopForward
-        case .claudeTerminal, .otherClaudeProcess: return nil
-        case .otherCodexProcess, nil: break
-        }
-        return session.activity == .idle || session.activity == .failed ? .openInClaudeDesktop : .waitForTurn
-    }
-
     /// 不能在终端继续的原因；nil 表示可以。
     static func terminalUnavailableReason(for session: DesktopSession) -> String? {
         guard !session.cwd.isEmpty else { return "读不到这条会话的工作目录。" }

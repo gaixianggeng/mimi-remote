@@ -584,9 +584,6 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var takeOverThreadHandler: ((String) async throws -> CodexAppServerThreadTakeoverResult)?
     var sessionSupportsThreadTakeoverResult = false
     var sessionSupportsThreadTakeoverError: Error?
-    var openThreadInDesktopHandler: ((String) async throws -> CodexAppServerThreadDesktopOpenResult)?
-    var sessionSupportsThreadDesktopOpenResult = false
-    var sessionSupportsThreadDesktopOpenError: Error?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -2273,19 +2270,5 @@ extension MockSessionStoreClient {
             throw sessionSupportsThreadTakeoverError
         }
         return sessionSupportsThreadTakeoverResult
-    }
-
-    func openThreadInDesktop(threadID: String) async throws -> CodexAppServerThreadDesktopOpenResult {
-        guard let openThreadInDesktopHandler else {
-            throw AgentAPIError.invalidResponse
-        }
-        return try await openThreadInDesktopHandler(threadID)
-    }
-
-    func sessionSupportsThreadDesktopOpen(sessionID: String) async throws -> Bool {
-        if let sessionSupportsThreadDesktopOpenError {
-            throw sessionSupportsThreadDesktopOpenError
-        }
-        return sessionSupportsThreadDesktopOpenResult
     }
 }

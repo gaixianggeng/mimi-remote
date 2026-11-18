@@ -3,7 +3,7 @@ import XCTest
 
 final class SessionOpenTargetTests: XCTestCase {
     private let allApps: Set<String> = [
-        SessionOpenTarget.codexDesktopBundleID, SessionOpenTarget.claudeDesktopBundleID,
+        SessionOpenTarget.codexDesktopBundleID,
         TerminalApp.ghostty.bundleID, TerminalApp.herdr.bundleID, TerminalApp.terminal.bundleID,
     ]
 
@@ -13,14 +13,19 @@ final class SessionOpenTargetTests: XCTestCase {
                        updatedAt: nil, activity: activity, holder: holder)
     }
 
-    func testCandidatesListDesktopFirstAndOnlyInstalledTerminals() {
+    func testCandidatesListDesktopForCodexAndOnlyInstalledTerminalsForClaude() {
         XCTAssertEqual(
             SessionOpenTarget.candidates(for: .codex, installedBundleIDs: allApps),
             [.codexDesktop, .terminal(.ghostty), .terminal(.herdr), .terminal(.terminal)]
         )
         XCTAssertEqual(
             SessionOpenTarget.candidates(for: .claude, installedBundleIDs: [TerminalApp.terminal.bundleID]),
-            [.claudeDesktop, .terminal(.terminal)]
+            [.terminal(.terminal)]
+        )
+        XCTAssertEqual(
+            SessionOpenTarget.candidates(for: .claude, installedBundleIDs: []),
+            [.terminal(.terminal)],
+            "Claude 至少保底系统终端"
         )
     }
 
@@ -28,7 +33,7 @@ final class SessionOpenTargetTests: XCTestCase {
         let candidates = SessionOpenTarget.candidates(for: .codex, installedBundleIDs: allApps)
         XCTAssertEqual(SessionOpenTarget.preferred(stored: "terminal.ghostty", candidates: candidates, installedBundleIDs: allApps), .terminal(.ghostty))
         XCTAssertEqual(SessionOpenTarget.preferred(stored: "", candidates: candidates, installedBundleIDs: allApps), .codexDesktop)
-        // 记住的是 Claude 桌面版或已卸载的终端时，退回第一个装着的。
+        // 记住的是旧版 Claude 桌面版或已卸载的终端时，退回第一个装着的。
         XCTAssertEqual(SessionOpenTarget.preferred(stored: "desktop.claude", candidates: candidates, installedBundleIDs: allApps), .codexDesktop)
         let onlyTerminal: Set<String> = [TerminalApp.terminal.bundleID]
         XCTAssertEqual(
@@ -43,9 +48,10 @@ final class SessionOpenTargetTests: XCTestCase {
     }
 
     func testStorageValueRoundTrips() {
-        for target in [SessionOpenTarget.codexDesktop, .claudeDesktop, .terminal(.ghostty), .terminal(.herdr), .terminal(.terminal)] {
+        for target in [SessionOpenTarget.codexDesktop, .terminal(.ghostty), .terminal(.herdr), .terminal(.terminal)] {
             XCTAssertEqual(SessionOpenTarget(storageValue: target.storageValue), target)
         }
+        XCTAssertNil(SessionOpenTarget(storageValue: "desktop.claude"))
         XCTAssertNil(SessionOpenTarget(storageValue: "terminal.unknown"))
     }
 
@@ -53,13 +59,12 @@ final class SessionOpenTargetTests: XCTestCase {
         XCTAssertNil(SessionOpenTarget.codexDesktop.unavailableReason(for: session(.codex, activity: .running), installedBundleIDs: allApps),
                      "Codex 桌面版不看占用状态，直接打开")
         XCTAssertNotNil(SessionOpenTarget.codexDesktop.unavailableReason(for: session(.codex), installedBundleIDs: []))
-        XCTAssertNil(SessionOpenTarget.claudeDesktop.unavailableReason(for: session(.claude), installedBundleIDs: allApps))
-        XCTAssertEqual(SessionOpenTarget.claudeDesktop.unavailableReason(for: session(.claude, activity: .running), installedBundleIDs: allApps),
-                       "这一轮结束后才能打开。")
-        XCTAssertEqual(SessionOpenTarget.claudeDesktop.unavailableReason(for: session(.claude, holder: .claudeTerminal), installedBundleIDs: allApps),
+        XCTAssertNil(SessionOpenTarget.terminal(.ghostty).unavailableReason(for: session(.claude), installedBundleIDs: allApps))
+        XCTAssertEqual(SessionOpenTarget.terminal(.ghostty).unavailableReason(for: session(.claude, activity: .running), installedBundleIDs: allApps),
+                       "这一轮结束后才能在终端继续。")
+        XCTAssertEqual(SessionOpenTarget.terminal(.ghostty).unavailableReason(for: session(.claude, holder: .claudeTerminal), installedBundleIDs: allApps),
                        "这条会话已经在终端里打开。")
         XCTAssertNotNil(SessionOpenTarget.terminal(.ghostty).unavailableReason(for: session(.codex, cwd: ""), installedBundleIDs: allApps))
-        XCTAssertEqual(SessionOpenTarget.claudeDesktop.buttonTitle(for: session(.claude, holder: .claudeDesktop)), "前往")
         XCTAssertEqual(SessionOpenTarget.terminal(.ghostty).buttonTitle(for: session(.claude, holder: .claudeDesktop)), "打开")
     }
 

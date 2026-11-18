@@ -79,32 +79,11 @@ final class SessionsStore {
     private static let log = Logger(subsystem: "com.gaixianggeng.mimi.mac", category: "sessions")
 
     private let source: any DesktopSessionSource
-    private let refreshDelay: Duration
     private var pageBudget = SessionsStore.initialPageBudget
     private var generation = 0
 
-    init(source: any DesktopSessionSource = LocalGatewayClient(), refreshDelay: Duration = .seconds(2)) {
+    init(source: any DesktopSessionSource = LocalGatewayClient()) {
         self.source = source
-        self.refreshDelay = refreshDelay
-    }
-
-    /// 在 Claude 桌面版打开（或切到已打开的窗口）。桌面版接手后占用状态会变，稍后刷新列表。
-    func openInClaudeDesktop(_ session: DesktopSession, endpoint: String?, runtimes: [SessionRuntime]) async {
-        guard session.runtime == .claude, workingSessionID == nil else { return }
-        guard let endpoint, let port = LocalGatewayClient.port(fromEndpoint: endpoint) else {
-            actionError = "Mimi 服务没有运行。"
-            return
-        }
-        workingSessionID = session.id
-        defer { workingSessionID = nil }
-        do {
-            _ = try await source.openInClaudeDesktop(threadID: session.threadID, cwd: session.cwd, port: port)
-        } catch {
-            actionError = error.localizedDescription
-            return
-        }
-        try? await Task.sleep(for: refreshDelay)
-        await load(endpoint: endpoint, runtimes: runtimes)
     }
 
     /// 让 agentd 生成命令，再交给终端打开。

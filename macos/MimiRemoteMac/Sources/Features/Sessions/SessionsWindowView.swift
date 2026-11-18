@@ -280,8 +280,6 @@ struct SessionsWindowView: View {
             if session.runtime == .codex { codexOpenTarget = target.storageValue } else { claudeOpenTarget = target.storageValue }
         }
         switch target {
-        case .claudeDesktop:
-            Task { await store.openInClaudeDesktop(session, endpoint: host.status?.endpoint, runtimes: enabledRuntimes) }
         case .codexDesktop:
             Task { await openInCodexDesktop(session) }
         case .terminal(let app):

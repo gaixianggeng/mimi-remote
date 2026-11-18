@@ -1360,15 +1360,13 @@ final class ClaudeTakeoverTests: XCTestCase {
             updatedAt: nil
         )
         let macDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: claudeSession))
-        XCTAssertTrue(macDetails.canOpenInDesktop)
-        XCTAssertFalse(macDetails.isAlreadyInDesktop)
         XCTAssertEqual(
             macDetails.terminalCommand,
             "cd '/Users/dev/my repo' && claude --resume '11111111-1111-4111-8111-111111111111'"
         )
         XCTAssertEqual(macDetails.slashResumeCommand, "/resume 11111111-1111-4111-8111-111111111111")
 
-        // 第三方网关下的 claude-desktop-3p 也按桌面版持有方识别（#991 实测）。
+        // 第三方网关下的 claude-desktop-3p 也按桌面版持有方识别（#991 实测），被电脑持有时仍可复制恢复命令。
         var desktopHeld = claudeSession
         desktopHeld.canAcceptDirectInput = false
         desktopHeld.claudeOwner = ClaudeSessionOwner(
@@ -1378,9 +1376,9 @@ final class ClaudeTakeoverTests: XCTestCase {
             pid: 9001
         )
         XCTAssertEqual(desktopHeld.claudeOwner?.displayName, L10n.text("ui.claude_owner_desktop"))
-        XCTAssertEqual(fixture.store.claudeComputerHandoffDetails(for: desktopHeld)?.isAlreadyInDesktop, true)
+        XCTAssertNotNil(fixture.store.claudeComputerHandoffDetails(for: desktopHeld))
 
-        // Windows 主机隐藏「在 Claude 桌面版打开」，终端恢复命令使用 PowerShell。
+        // Windows 主机终端恢复命令使用 PowerShell。
         _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
             endpoint: "http://100.64.0.11:8787",
             token: "win-token",
@@ -1402,7 +1400,6 @@ final class ClaudeTakeoverTests: XCTestCase {
             updatedAt: nil
         )
         let winDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: winSession))
-        XCTAssertFalse(winDetails.canOpenInDesktop)
         XCTAssertEqual(
             winDetails.terminalCommand,
             #"Set-Location -LiteralPath 'C:\Work\O''Brien' -ErrorAction Stop; claude --resume 'win-sess-1'"#
@@ -1478,71 +1475,5 @@ final class ClaudeTakeoverTests: XCTestCase {
         fixture.store.copyClaudeSlashResumeCommand(details, isRunning: true)
         XCTAssertEqual(UIPasteboard.general.string, "/resume thr_copy_1")
         XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_command_copied_active_turn_warning"))
-    }
-
-    func testOpenClaudeSessionInDesktopHandlesSuccessSwitchAndStructuredFailures() async throws {
-        let fixture = await makeHeldStore(id: "claude_desktop_open", supportsTakeover: true)
-        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
-            endpoint: fixture.appStore.endpoint,
-            token: "test-token",
-            installationID: "install-mac",
-            hostPlatform: .apple
-        ))
-        var session = fixture.held
-        session.canAcceptDirectInput = true
-        session.claudeOwner = nil
-
-        // 旧主机未声明 thread/desktop/open 时提示更新并隐藏桌面版菜单项。
-        fixture.client.sessionSupportsThreadDesktopOpenResult = false
-        let unsupportedResult = await fixture.store.openClaudeSessionInDesktop(session)
-        XCTAssertFalse(unsupportedResult)
-        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_open_upgrade_required"))
-        XCTAssertEqual(fixture.store.claudeComputerHandoffDetails(for: session)?.canOpenInDesktop, false)
-
-        // 支持 thread/desktop/open 的 Mac 主机：首次打开与切换已有窗口。
-        fixture.store.claudeDesktopOpenSupport = nil
-        fixture.client.sessionSupportsThreadDesktopOpenResult = true
-        var openedThreadIDs: [String] = []
-        fixture.client.openThreadInDesktopHandler = { threadID in
-            openedThreadIDs.append(threadID)
-            return CodexAppServerThreadDesktopOpenResult(opened: true, titleWritten: true, alreadyInDesktop: false, desktopVersion: "5.1231.0")
-        }
-        let opened = await fixture.store.openClaudeSessionInDesktop(session)
-        XCTAssertTrue(opened)
-        XCTAssertEqual(openedThreadIDs, [session.id])
-        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_opened_readonly_notice"))
-
-        fixture.client.openThreadInDesktopHandler = { _ in
-            CodexAppServerThreadDesktopOpenResult(opened: true, alreadyInDesktop: true)
-        }
-        let switched = await fixture.store.openClaudeSessionInDesktop(session)
-        XCTAssertTrue(switched)
-        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_switched_notice"))
-
-        // 结构化失败原因映射。
-        let cases: [(String, String)] = [
-            ("turn_active", "ui.claude_desktop_open_turn_active"),
-            ("held_elsewhere", "ui.claude_desktop_open_held_elsewhere"),
-            ("not_installed", "ui.claude_desktop_open_not_installed"),
-            ("outdated", "ui.claude_desktop_open_outdated"),
-            ("open_failed", "ui.claude_desktop_open_failed"),
-            ("unsupported_platform", "ui.claude_desktop_open_unsupported_platform"),
-        ]
-        for (reason, expectedKey) in cases {
-            fixture.client.openThreadInDesktopHandler = { _ in
-                throw CodexAppServerConnectionError.appServer(CodexAppServerError(
-                    code: -32602,
-                    message: "desktop open rejected",
-                    data: .object([
-                        "accepted": .bool(false),
-                        "reason": .string(reason),
-                        "retryable": .bool(reason != "unsupported_platform"),
-                    ])
-                ))
-            }
-            let ok = await fixture.store.openClaudeSessionInDesktop(session)
-            XCTAssertFalse(ok)
-            XCTAssertEqual(fixture.store.statusMessage, L10n.text(expectedKey), "reason=\(reason)")
-        }
     }
 }

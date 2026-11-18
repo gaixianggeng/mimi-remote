@@ -233,14 +233,6 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.supportsThreadTakeover()
     }
 
-    func openThreadInDesktop(threadID: String) async throws -> CodexAppServerThreadDesktopOpenResult {
-        try await runtime.openThreadInDesktop(sessionID: threadID)
-    }
-
-    func sessionSupportsThreadDesktopOpen(sessionID: String) async throws -> Bool {
-        try await runtime.supportsThreadDesktopOpen()
-    }
-
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
         try await runtime.unsubscribeThread(threadID: threadID)
     }
@@ -1217,14 +1209,6 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
 
     func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
         try await bundle.runtime(forSessionID: sessionID).supportsThreadTakeover()
-    }
-
-    func openThreadInDesktop(threadID: String) async throws -> CodexAppServerThreadDesktopOpenResult {
-        try await bundle.runtime(forSessionID: threadID).openThreadInDesktop(sessionID: threadID)
-    }
-
-    func sessionSupportsThreadDesktopOpen(sessionID: String) async throws -> Bool {
-        try await bundle.runtime(forSessionID: sessionID).supportsThreadDesktopOpen()
     }
 
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus? {
