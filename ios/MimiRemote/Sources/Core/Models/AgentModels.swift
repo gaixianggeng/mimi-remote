@@ -375,12 +375,17 @@ struct ClaudeSessionOwner: Codable, Hashable, Sendable {
         status == "busy" || status == "shell"
     }
 
+    /// 桌面版配置第三方模型网关时登记为 `claude-desktop-3p`（#991），按前缀识别。
+    var isDesktop: Bool {
+        entrypoint?.hasPrefix("claude-desktop") == true
+    }
+
     /// 给用户看的持有方名称。`entrypoint` 是 Claude Code 写进登记文件的固定值。
     var displayName: String {
         switch entrypoint {
         case "cli":
             return L10n.text("ui.claude_owner_terminal")
-        case "claude-desktop":
+        case let value? where value.hasPrefix("claude-desktop"):
             return L10n.text("ui.claude_owner_desktop")
         case "claude-vscode":
             return L10n.text("ui.claude_owner_vscode")

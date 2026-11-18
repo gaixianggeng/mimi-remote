@@ -6,14 +6,8 @@ struct DesktopSessionListing: Equatable, Sendable {
     let hasMore: Bool
 }
 
-/// 在 Claude 桌面版打开的结果。`alreadyInDesktop` 表示桌面版本来就开着，只是切到前台。
-struct ClaudeDesktopOpenResult: Equatable, Sendable {
-    let alreadyInDesktop: Bool
-}
-
 protocol DesktopSessionSource: Sendable {
     func listSessions(runtime: SessionRuntime, port: Int, pageBudget: Int) async throws -> DesktopSessionListing
-    func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult
 }
 
 enum LocalGatewayError: LocalizedError, Equatable {
@@ -105,45 +99,6 @@ struct LocalGatewayClient: DesktopSessionSource {
             pages += 1
         } while cursor != nil && pages < max(1, pageBudget)
         return DesktopSessionListing(sessions: sessions, hasMore: cursor != nil)
-    }
-
-    static let authorizationPageLimit = 200
-
-    /// 在会话目录里逐页列，直到见到目标会话。列表里「加载更早的会话」能翻到多深，这里就要能找多深；
-    /// 上限只防服务端游标出错时死循环。
-    static func authorizeThread(
-        _ threadID: String,
-        cwd: String,
-        list: (_ params: [String: Any]) async throws -> [String: Any]
-    ) async throws -> Bool {
-        var cursor: String?
-        var pages = 0
-        repeat {
-            var params = threadListParams(cursor: cursor)
-            params["cwd"] = cwd
-            params["sourceKinds"] = nil
-            let result = try await list(params)
-            let items = result["data"] as? [[String: Any]] ?? []
-            if items.contains(where: { ($0["id"] as? String) == threadID }) { return true }
-            cursor = (result["nextCursor"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            pages += 1
-        } while cursor != nil && pages < authorizationPageLimit
-        return false
-    }
-
-    /// 先在会话所在目录列一次，让网关授权这条会话，再请求适配器打开桌面版。
-    /// 网关只允许对本连接见过的会话执行操作，新连接必须先列出它。
-    func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult {
-        let channel = try await connect(runtime: .claude, port: port)
-        defer { channel.close() }
-        let found = try await Self.authorizeThread(threadID, cwd: cwd) { params in
-            try await channel.call("thread/list", params: params)
-        }
-        guard found else {
-            throw LocalGatewayError.connectionFailed("找不到这条会话，刷新列表后再试。")
-        }
-        let result = try await channel.call("thread/desktop/open", params: ["threadId": threadID])
-        return ClaudeDesktopOpenResult(alreadyInDesktop: result["alreadyInDesktop"] as? Bool ?? false)
     }
 
     private func connect(runtime: SessionRuntime, port: Int) async throws -> LocalJSONRPCChannel {

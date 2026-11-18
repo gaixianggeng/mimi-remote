@@ -493,7 +493,9 @@ extension SessionStore {
                     persist: false
                 )
             }
-            if appStore.notificationRoutingProfileID == key.profileID {
+            // 失败提示必须和成功提示走同一条 Host 归属判定：只比 Profile 不够，同一 Profile
+            // 重新绑定到另一台安装身份后，旧连接的失败不能写进当前 Host 的错误 UI。
+            if canApplySessionArchiveMutation(mutation, key: key) {
                 setSessionArchiveError(archived: shouldArchive, error: error)
             }
             return false

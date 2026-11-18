@@ -1,5 +1,5 @@
 Mimi Remote is licensed under the GNU General Public License version 3 with
-the additional permission below.
+the additional permissions below.
 
 Additional permission under GNU GPL version 3 section 7:
 
@@ -10,6 +10,16 @@ GNU GPL version 3. This permission is limited to conflicts created by
 distribution, installation, and use through those store channels, and
 does not otherwise waive or alter any requirement of the GNU GPL version
 3.
+
+Additional permission under GNU GPL version 3 section 7:
+
+If you modify this Program, or any covered work, by linking or combining
+it with unmodified Microsoft Windows App SDK runtime components, the
+licensors of this Program grant you additional permission to convey the
+resulting work for use on Microsoft Windows. The Microsoft components
+remain governed by their own license terms. This permission does not
+otherwise waive or alter the requirements of the GNU GPL version 3 for
+this Program or other covered code.
 
                     GNU GENERAL PUBLIC LICENSE
                        Version 3, 29 June 2007

@@ -159,25 +159,38 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 		t.Fatalf("未判定完的页必须给出重取本页的 cursor，不能让客户端当作遍历结束：%s", list)
 	}
 
-	// 后台判定完成后，重取同一页（首页不带上游 cursor）应完整返回。
-	time.Sleep(gitDelay)
-	retry, err := json.Marshal(map[string]any{"id": 3, "method": "thread/list", "params": map[string]any{"limit": 50, "cursor": retryCursor}})
-	if err != nil {
-		t.Fatal(err)
+	// 注入延迟结束不等于后台 Git 已退出并写入缓存（Windows 启动进程尤其慢）。
+	// 按客户端协议重取未判定页，直到确实完成，而不是把固定 sleep 当完成信号。
+	deadline := time.Now().Add(10 * time.Second)
+	for requestID := 3; ; requestID++ {
+		retry, err := json.Marshal(map[string]any{"id": requestID, "method": "thread/list", "params": map[string]any{"limit": 50, "cursor": retryCursor}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, retry); err != nil {
+			t.Fatal(err)
+		}
+		if upstreamRetry := <-received; bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
+			t.Fatalf("重取首页不能带 cursor 发给上游：%s", upstreamRetry)
+		}
+		complete := readGatewayRaw(t, conn)
+		cursor, unsettled := globalListResponseCursor(t, complete)
+		if !unsettled {
+			if !bytes.Contains(complete, []byte(`"thread-29"`)) {
+				t.Fatalf("判定完成后重取本页应完整返回：%s", complete)
+			}
+			break
+		}
+		if cursor == "" || bytes.Contains(complete, []byte(`"thread-0"`)) {
+			t.Fatalf("未完成的页必须保留有效重试 cursor，且不能放行未判定会话：%s", complete)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待后台 Git 判定完成超时：%s", complete)
+		}
+		retryCursor = cursor
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, retry); err != nil {
-		t.Fatal(err)
-	}
-	if upstreamRetry := <-received; bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
-		t.Fatalf("重取首页不能带 cursor 发给上游：%s", upstreamRetry)
-	}
-	complete := readGatewayRaw(t, conn)
-	if !bytes.Contains(complete, []byte(`"thread-29"`)) {
-		t.Fatalf("判定完成后重取本页应完整返回：%s", complete)
-	}
-	if cursor, ok := globalListResponseCursor(t, complete); ok {
-		t.Fatalf("完整判定的末页应原样结束遍历：cursor=%q", cursor)
-	}
+
 }
 
 func TestGlobalThreadListGitTimeoutKeepsPageUnsettled(t *testing.T) {

@@ -18,33 +18,24 @@ struct PairingView: View {
     static let columnWidth: CGFloat = 340
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 10) {
             PairingNetworkPicker(
                 selection: $selectedNetwork,
                 isRefreshing: isRefreshing || store.isBusy,
                 networks: [.tailcat, .tailscale, .localNetwork]
-            ) {
-                // 中转只属于内置连接，所以和连接方式放在同一处，选中后二维码就地更新。
-                TailcatRelayPicker(store: store, showsCaption: false, isApplying: $isApplyingRelay) {
-                    isRefreshing = true
-                    await store.refreshPairing(network: .tailcat)
-                    isRefreshing = false
-                }
-                .controlSize(.small)
-                .disabled(isRefreshing)
-            }
-            .padding(.top, 20)
+            )
+            .padding(.top, 14)
             Group {
-                if !store.canPair || store.isBusy {
+                if (!store.canPair || store.isBusy) && !isRefreshing {
                     PairingUnavailableState(
                         title: "配对暂不可用",
-                        description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason,
+                        description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason(for: selectedNetwork),
                         isRetrying: isRefreshing || store.isBusy,
-                        retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: .automatic) } }
+                        retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: selectedNetwork) } }
                     )
                 } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
                     pairingContent(pairing)
-                } else if let error = store.lastError {
+                } else if !isRefreshing, let error = store.lastError {
                     PairingUnavailableState(
                         title: "暂时无法生成二维码",
                         description: error,
@@ -57,6 +48,9 @@ struct PairingView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 560)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            pairingFooter
+        }
         // macOS 26 的玻璃材质留给窗口 chrome 和操作控件，二维码内容层保持安静、稳定。
         .containerBackground(for: .window) {
             PairingWindowBackdrop()
@@ -64,9 +58,12 @@ struct PairingView: View {
         .task {
             await store.refreshIfNeeded()
             await store.refreshTailcatStatus()
-            if let network = store.pairing?.network, selectedNetwork != network {
+            if let network = store.pairing?.network, store.availablePairingNetworks.contains(network), selectedNetwork != network {
                 suppressNextNetworkChange = true
                 selectedNetwork = network
+            } else if let first = store.availablePairingNetworks.first, !store.availablePairingNetworks.contains(selectedNetwork) {
+                suppressNextNetworkChange = true
+                selectedNetwork = first
             }
             restorePairingIfNeeded()
         }
@@ -78,7 +75,7 @@ struct PairingView: View {
             refreshPairing(network: network)
         }
         .onChange(of: store.availablePairingNetworks) { _, networks in
-            if let first = networks.first, !networks.contains(selectedNetwork) {
+            if !isRefreshing, !isApplyingRelay, let first = networks.first, !networks.contains(selectedNetwork) {
                 selectedNetwork = first
             }
             restorePairingIfNeeded()
@@ -92,6 +89,15 @@ struct PairingView: View {
         .onChange(of: isRefreshing) { _, refreshing in
             if !refreshing { restorePairingIfNeeded() }
         }
+        .onChange(of: isApplyingRelay) { _, applying in
+            if !applying {
+                if selectedNetwork == .tailcat, store.tailcatError != nil {
+                    refreshPairing(network: .tailcat)
+                } else {
+                    restorePairingIfNeeded()
+                }
+            }
+        }
         .onChange(of: store.pairing?.network) { _, network in
             if let network, network != selectedNetwork {
                 suppressNextNetworkChange = true
@@ -103,41 +109,54 @@ struct PairingView: View {
         }
     }
 
+    static func showsEndpoint(for pairing: PairingInfo) -> Bool {
+        guard pairing.network != .tailcat else { return false }
+        return !pairing.endpoint.isEmpty
+    }
+
+    static func visibleWarnings(for pairing: PairingInfo, lastError: String?) -> [String] {
+        // 内置连接的有效期已由二维码下方的倒计时胶囊展示，不再重复渲染静态实验提示框挤压页面。
+        let filtered = pairing.warnings.filter { warning in
+            !(pairing.network == .tailcat && warning.hasPrefix("Tailcat 是邀请实验"))
+        }
+        return filtered + [lastError].compactMap { $0 }
+    }
+
     private func pairingContent(_ pairing: PairingInfo) -> some View {
-        let visibleWarnings = pairing.warnings + [store.lastError].compactMap { $0 }
+        let visibleWarnings = Self.visibleWarnings(for: pairing, lastError: store.lastError)
+        let showsEndpoint = Self.showsEndpoint(for: pairing)
         return ScrollView {
             VStack(spacing: 0) {
-                PairingIntroduction(
-                    relayNote: pairing.network == .tailcat && store.tailcatIsManaged
-                        ? TailcatRelayPresentation.mimiPairingNote : nil
-                )
-                .padding(.bottom, 20)
+                PairingIntroduction()
+                    .padding(.bottom, 14)
 
                 PairingCodeCard(value: pairing.pairURL, isRefreshing: isRefreshing)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 12)
 
-                // 地址只用于排查，不是这一页要用户读的内容。
-                Text(pairing.endpoint)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                if showsEndpoint {
+                    // 地址只用于排查，不是这一页要用户读的内容。
+                    Text(pairing.endpoint)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
 
                 if !pairing.expiresAt.isEmpty {
                     PairingExpiryStatus(rawValue: pairing.expiresAt)
-                        .padding(.top, 10)
+                        .padding(.top, showsEndpoint ? 8 : 0)
                 }
 
                 if !visibleWarnings.isEmpty {
                     PairingWarningList(warnings: visibleWarnings)
-                        .padding(.top, 16)
+                        .padding(.top, 12)
                 }
             }
             .frame(width: Self.columnWidth)
             .frame(maxWidth: .infinity)
-            .padding(.top, 26)
-            .padding(.bottom, 18)
+            .padding(.top, 8)
+            .padding(.bottom, contentOverflows ? 22 : 12)
         }
         .scrollBounceBehavior(.basedOnSize)
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -150,22 +169,38 @@ struct PairingView: View {
                 contentOverflows = overflows
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PairingActionBar(
-                didCopy: didCopyPairingLink,
-                isRefreshing: isRefreshing,
-                copy: { copyPairingLink(pairing.pairURL) },
-                refresh: { refreshPairing() }
-            )
-            .frame(width: Self.columnWidth)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 14)
-            .padding(.bottom, 18)
-            // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
-            .background(alignment: .top) {
-                if contentOverflows {
-                    PairingScrollEdge()
+    }
+
+    private var pairingFooter: some View {
+        VStack(spacing: 12) {
+            if selectedNetwork == .tailcat {
+                // 配置不依赖二维码存在，更换失败后仍可查看错误、修改中转。
+                TailcatRelayPicker(store: store, showsCaption: false, isApplying: $isApplyingRelay) {
+                    isRefreshing = true
+                    await store.refreshPairing(network: .tailcat)
+                    isRefreshing = false
                 }
+                .disabled(isRefreshing)
+                .accessibilityElement(children: .contain)
+            }
+            if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network),
+               (store.canPair && !store.isBusy) || isRefreshing {
+                PairingActionBar(
+                    didCopy: didCopyPairingLink,
+                    isRefreshing: isRefreshing,
+                    copy: { copyPairingLink(pairing.pairURL) },
+                    refresh: { refreshPairing() }
+                )
+            }
+        }
+        .frame(width: Self.columnWidth)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 10)
+        .padding(.bottom, 16)
+        // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
+        .background(alignment: .top) {
+            if contentOverflows {
+                PairingScrollEdge()
             }
         }
     }
@@ -206,11 +241,7 @@ struct PairingView: View {
         let targetNetwork = network ?? selectedNetwork
         isRefreshing = true
         Task {
-            // 选内置连接即授权开启 Tailcat，不再要求用户绕到高级设置。
-            if targetNetwork == .tailcat, !store.tailcatEnabled, store.canChangeTailcat {
-                await store.setTailcatEnabled(true)
-            }
-            await store.refreshPairing(network: targetNetwork)
+            await store.refreshPairingFromPicker(targetNetwork)
             // A superseded request may finish with no QR. Its remembered route
             // must not replace the user's current, available selection.
             if let network = store.pairing?.network, network != selectedNetwork {
@@ -223,21 +254,19 @@ struct PairingView: View {
 }
 
 private struct PairingIntroduction: View {
-    var relayNote: String?
-
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             Image(systemName: "iphone.and.arrow.forward")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 50, height: 50)
+                .frame(width: 44, height: 44)
                 .background(Circle().fill(Color.accentColor.gradient))
                 .shadow(color: Color.accentColor.opacity(0.3), radius: 10, y: 4)
                 .accessibilityHidden(true)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 Text("扫描二维码")
-                    .font(.system(size: 26, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                     // 大字号里字距要收紧，否则标题看起来是散的。
                     .tracking(-0.5)
 
@@ -249,30 +278,20 @@ private struct PairingIntroduction: View {
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 300)
-
-                if let relayNote {
-                    Text(relayNote)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 300)
-                }
+                    .frame(maxWidth: 320)
             }
         }
         .accessibilityElement(children: .combine)
     }
 }
 
-private struct PairingNetworkPicker<TailcatDetail: View>: View {
+private struct PairingNetworkPicker: View {
     @Binding var selection: PairingNetwork
     let isRefreshing: Bool
     let networks: [PairingNetwork]
-    @ViewBuilder let tailcatDetail: () -> TailcatDetail
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Picker("连接方式", selection: $selection) {
                 ForEach(networks) { network in
                     Text(network == .localNetwork ? "同一局域网" : network == .tailcat ? "内置连接" : "Tailscale")
@@ -286,19 +305,12 @@ private struct PairingNetworkPicker<TailcatDetail: View>: View {
             .disabled(isRefreshing)
             .accessibilityHint("选择用于生成配对二维码的连接网络")
 
-            // 说明和中转选择共用一行固定高度，切换网络时二维码不会上下跳。
-            Group {
-                if selection == .tailcat {
-                    tailcatDetail()
-                } else {
-                    Label(hint, systemImage: hintSymbol)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .contentTransition(.opacity)
-                        .id(selection)
-                }
-            }
-            .frame(minHeight: 24)
+            Label(hint, systemImage: hintSymbol)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+                .id(selection)
+                .frame(minHeight: 18)
         }
         .accessibilityElement(children: .contain)
     }
@@ -334,16 +346,16 @@ private struct PairingCodeCard: View {
 
     var body: some View {
         // 二维码底板固定为白色：扫码对比度不跟随外观模式，深色模式下也要能扫。
-        QRCodeView(value: value, size: 240)
-            .padding(16)
-            .background(.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        QRCodeView(value: value, size: 216)
+            .padding(14)
+            .background(.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .strokeBorder(.black.opacity(0.06), lineWidth: 1)
             }
             .overlay {
                 if isRefreshing {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
                         .fill(.white.opacity(0.7))
                         .overlay {
                             ProgressView()

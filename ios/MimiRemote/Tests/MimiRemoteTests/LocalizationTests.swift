@@ -568,7 +568,11 @@ final class LocalizationTests: XCTestCase {
             "ui.connection_failure_guidance_custom_tailcat",
             "ui.connection_failure_guidance_https",
             "ui.connection_failure_guidance_lan",
-            "ui.connection_failure_guidance_managed_tailcat"
+            "ui.connection_failure_guidance_managed_tailcat",
+            "ui.claude_command_copied_active_turn_warning",
+            "ui.claude_slash_resume_command_copied",
+            "ui.continue_on_computer",
+            "ui.copy_claude_slash_resume_command"
         ]
 
         for key in keys {

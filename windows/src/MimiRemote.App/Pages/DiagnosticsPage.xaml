@@ -1,0 +1,18 @@
+<local:ClientPage x:Class="MimiRemote.App.Pages.DiagnosticsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="14" Padding="0,0,0,20">
+            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+            <TextBlock Text="检查服务、运行环境与连接。结果显示在窗口内。" TextWrapping="Wrap"/>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="运行诊断" Command="{x:Bind ViewModel.DoctorCommand}"/>
+                <Button Content="读取最近日志" Command="{x:Bind ViewModel.LogsCommand}"/>
+            </StackPanel>
+            <TextBox Header="诊断结果" Text="{x:Bind ViewModel.Output, Mode=OneWay}" IsReadOnly="True" AcceptsReturn="True"
+                TextWrapping="Wrap" MinHeight="300" MaxHeight="700" FontFamily="Cascadia Mono"/>
+        </StackPanel>
+    </ScrollViewer>
+</local:ClientPage>

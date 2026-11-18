@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- GUI 子系统：不创建窗口，也不让系统在启动时分配可见控制台。
+         WinExe 是否真的落到 PE 子系统 2，由 scripts/check-windows-host-subsystem.ps1 验证。 -->
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>mimi-agent-host</AssemblyName>
+    <RootNamespace>MimiRemote.AgentHost</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 宿主只做进程托管，不需要任何第三方 NuGet。 -->
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MimiRemote.AgentHost.Tests" />
+  </ItemGroup>
+
+</Project>

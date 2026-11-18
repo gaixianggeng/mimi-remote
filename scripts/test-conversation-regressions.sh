@@ -71,6 +71,7 @@ echo "==> iOS conversation regressions"
 # - NativePromptSuggestionTests：原生建议的轮次/连接隔离、草稿保护和显式接受。
 # - ComposerAutocompleteTests：输入框 `/` 命令与 `$` 技能补全的触发、替换范围和排序。
 # - ComposerMetadataBudgetTests：输入框组合类型的嵌套层数与值大小，防止真机打开会话时主线程栈溢出（#852）。
+# - ComposerTouchTargetSourceTests：44pt 按钮 label 必须声明 contentShape/background 或使用系统画底样式，防止图标字形缩水命中区。
 # - ClaudeSlashCommandCatalogTests：Claude 会话 `/` 菜单命令目录的解析、请求与按键缓存。
 # - ClaudeReplayCursorTests：Claude 常驻会话按已完成条目推进重连游标，长回合重开不再整轮重放（#873）。
 # - ConversationDataFlowTests 的精确方法：只保留配对后的会话、流式事件、恢复、
@@ -168,6 +169,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/NativePromptSuggestionTests \
   -only-testing:MimiRemoteTests/ComposerAutocompleteTests \
   -only-testing:MimiRemoteTests/ComposerMetadataBudgetTests \
+  -only-testing:MimiRemoteTests/ComposerTouchTargetSourceTests \
   -only-testing:MimiRemoteTests/WorkbenchShellMetadataBudgetTests \
   -only-testing:MimiRemoteTests/ClaudeSlashCommandCatalogTests \
   -only-testing:MimiRemoteTests/DeepSeekComposerPolicyTests \
@@ -322,6 +324,7 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchivePendingPreferenceSaveAndRestartKeepCommittedStateUntilSuccess \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testConnectionClearKeepsArchivePendingAndStaleHostFailureRollsBackPersistedProfile \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleHostArchiveSuccessKeepsOldProfileCommitAndDoesNotPolluteCurrentProfile \
+  -only-testing:MimiRemoteTests/ConversationDataFlowTests/testStaleInstallationArchiveFailureRollsBackProfileStateWithoutCurrentHostError \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveLateSuccessAfterSwitchingBackRestoresMemoryAndDurableState \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testDeletedProfileIgnoresLateArchiveSuccessWithoutResurrectingPreferences \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests/testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin \

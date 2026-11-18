@@ -15,6 +15,14 @@ extension HealthClient {
         }
     )
 
+    private static let directSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.timeoutIntervalForResource = 1.5
+        return URLSession(configuration: configuration)
+    }()
+
     private static func request(endpoint: String, useLoopback: Bool) async -> Bool {
         guard var components = URLComponents(string: endpoint),
               let port = components.port
@@ -33,7 +41,7 @@ extension HealthClient {
         var request = URLRequest(url: url)
         request.timeoutInterval = 1.5
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await directSession.data(for: request)
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false
