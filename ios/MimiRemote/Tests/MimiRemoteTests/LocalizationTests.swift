@@ -560,7 +560,11 @@ final class LocalizationTests: XCTestCase {
             "ui.waiting_for_mac_assistant_to_return_check_results",
             "ui.workspaces_on_this_mac_appear_as_soon_as",
             "ui.pairing_qr_expired_refresh_windows",
-            "ui.pairing_qr_expired_refresh_linux"
+            "ui.pairing_qr_expired_refresh_linux",
+            "ui.claude_command_copied_active_turn_warning",
+            "ui.claude_slash_resume_command_copied",
+            "ui.continue_on_computer",
+            "ui.copy_claude_slash_resume_command"
         ]
 
         for key in keys {

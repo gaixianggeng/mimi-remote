@@ -156,22 +156,10 @@ final class LocalGatewayClientTests: XCTestCase {
 final class SessionsStoreTests: XCTestCase {
     private struct FakeSource: DesktopSessionSource {
         var results: [SessionRuntime: Result<DesktopSessionListing, LocalGatewayError>]
-        var openResult: Result<ClaudeDesktopOpenResult, LocalGatewayError> = .success(ClaudeDesktopOpenResult(alreadyInDesktop: false))
-        var opened: OpenLog? = nil
 
         func listSessions(runtime: SessionRuntime, port: Int, pageBudget: Int) async throws -> DesktopSessionListing {
             try results[runtime, default: .failure(.invalidResponse)].get()
         }
-
-        func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult {
-            opened?.append("\(threadID)@\(cwd):\(port)")
-            return try openResult.get()
-        }
-    }
-
-    final class OpenLog: @unchecked Sendable {
-        private(set) var entries: [String] = []
-        func append(_ entry: String) { entries.append(entry) }
     }
 
     private func listing(_ runtime: SessionRuntime, ids: [String], hasMore: Bool = false) -> DesktopSessionListing {
@@ -229,33 +217,8 @@ final class SessionsStoreTests: XCTestCase {
         XCTAssertTrue(store.sessions.isEmpty)
     }
 
-    func testOpenInClaudeDesktopCallsSourceThenRefreshes() async {
-        let log = OpenLog()
-        let claude = DesktopSession(threadID: "k1", runtime: .claude, title: "k1", projectName: "p", cwd: "/repo",
-                                    updatedAt: Date(), activity: .idle, holder: nil)
-        let store = SessionsStore(source: FakeSource(results: [
-            .claude: .success(DesktopSessionListing(sessions: [claude], hasMore: false)),
-        ], opened: log), refreshDelay: .zero)
-        await store.openInClaudeDesktop(claude, endpoint: "http://127.0.0.1:9000", runtimes: [.claude])
-        XCTAssertEqual(log.entries, ["k1@/repo:9000"])
-        XCTAssertNil(store.actionError)
-        XCTAssertNil(store.workingSessionID)
-        XCTAssertEqual(store.phase, .loaded, "打开后刷新列表以更新占用状态")
-    }
-
-    func testOpenInClaudeDesktopFailureIsShown() async {
-        let claude = DesktopSession(threadID: "k1", runtime: .claude, title: "k1", projectName: "p", cwd: "/repo",
-                                    updatedAt: nil, activity: .idle, holder: nil)
-        let store = SessionsStore(source: FakeSource(results: [:], openResult: .failure(
-            .requestRejected(code: -32602, reason: "not_installed", message: "Claude Desktop is not installed")
-        )), refreshDelay: .zero)
-        await store.openInClaudeDesktop(claude, endpoint: "http://127.0.0.1:8787", runtimes: [.claude])
-        XCTAssertEqual(store.actionError, "这台电脑上没有安装 Claude 桌面版。")
-        XCTAssertNil(store.workingSessionID)
-    }
-
     func testOpenInCodexDesktopOpensOrShowsError() async {
-        let store = SessionsStore(source: FakeSource(results: [:]), refreshDelay: .zero)
+        let store = SessionsStore(source: FakeSource(results: [:]))
         let codex = DesktopSession(threadID: "c1", runtime: .codex, title: "c1", projectName: "p", cwd: "/repo",
                                    updatedAt: nil, activity: .running, holder: .otherCodexProcess)
         var opened: [String] = []
@@ -268,7 +231,7 @@ final class SessionsStoreTests: XCTestCase {
     }
 
     func testContinueInTerminalLaunchesGeneratedCommandOrExplains() async {
-        let store = SessionsStore(source: FakeSource(results: [:]), refreshDelay: .zero)
+        let store = SessionsStore(source: FakeSource(results: [:]))
         let codex = DesktopSession(threadID: "c1", runtime: .codex, title: "c1", projectName: "p", cwd: "/repo",
                                    updatedAt: nil, activity: .running, holder: nil)
         var launched: [TerminalHandoffCommand] = []
@@ -365,17 +328,6 @@ final class DesktopSessionActionsTests: XCTestCase {
         XCTAssertEqual(DesktopSessionParser.holder(from: ["claudeOwner": ["entrypoint": "claude-desktop-3p"]], runtime: .claude), .claudeDesktop)
     }
 
-    func testPrimaryActionOnlyForClaudeAndRespectsTurnsAndHolders() {
-        XCTAssertNil(DesktopSessionActions.primary(for: session(.codex)), "Codex 桌面版交接在下一步")
-        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude)), .openInClaudeDesktop)
-        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .failed)), .openInClaudeDesktop)
-        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .running)), .waitForTurn)
-        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, activity: .waitingForApproval)), .waitForTurn)
-        XCTAssertEqual(DesktopSessionActions.primary(for: session(.claude, holder: .claudeDesktop)), .bringClaudeDesktopForward)
-        XCTAssertNil(DesktopSessionActions.primary(for: session(.claude, holder: .claudeTerminal)))
-        XCTAssertNil(DesktopSessionActions.primary(for: session(.claude, holder: .otherClaudeProcess)))
-    }
-
     func testTerminalRules() {
         XCTAssertNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex)))
         XCTAssertNil(DesktopSessionActions.terminalUnavailableReason(for: session(.codex, activity: .running)), "Codex 终端与 Mimi 可同时使用")
@@ -407,29 +359,6 @@ final class DesktopSessionActionsTests: XCTestCase {
         XCTAssertFalse(script.contains("bad-key"), "变量名不合规的直接丢掉")
         let exportLine = script.range(of: "export CLAUDE_CONFIG_DIR")!.lowerBound
         XCTAssertLessThan(exportLine, script.range(of: "exec ")!.lowerBound, "要在启动命令之前生效")
-    }
-
-    func testAuthorizationKeepsPagingUntilTheSessionIsFound() async throws {
-        var calls = 0
-        let found = try await LocalGatewayClient.authorizeThread("target", cwd: "/repo") { params in
-            calls += 1
-            XCTAssertEqual(params["cwd"] as? String, "/repo")
-            let isLast = calls == 9
-            return [
-                "data": [["id": isLast ? "target" : "other-\(calls)"]],
-                "nextCursor": isLast ? "" : "c\(calls)",
-            ]
-        }
-        XCTAssertTrue(found, "超过 6 页的旧会话也要能打开")
-        XCTAssertEqual(calls, 9)
-
-        calls = 0
-        let missing = try await LocalGatewayClient.authorizeThread("target", cwd: "/repo") { _ in
-            calls += 1
-            return ["data": [], "nextCursor": "same"]
-        }
-        XCTAssertFalse(missing)
-        XCTAssertEqual(calls, LocalGatewayClient.authorizationPageLimit, "游标出错时不能死循环")
     }
 
     func testHandoffArgumentsAndFriendlyErrors() {
@@ -466,10 +395,6 @@ final class SessionsStoreOutcomeTests: XCTestCase {
                 threadID: runtime.rawValue, runtime: runtime, title: runtime.rawValue, projectName: "p", cwd: "/p",
                 updatedAt: Date(), activity: .idle, holder: nil
             )], hasMore: false)
-        }
-
-        func openInClaudeDesktop(threadID: String, cwd: String, port: Int) async throws -> ClaudeDesktopOpenResult {
-            ClaudeDesktopOpenResult(alreadyInDesktop: false)
         }
     }
 
