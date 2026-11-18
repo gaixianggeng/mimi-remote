@@ -150,6 +150,7 @@ extension CodexAppServerSessionRuntime {
                     role: "user",
                     kind: .questionReply,
                     content: reply.displayText,
+                    activityPayload: reply.activityPayload,
                     createdAt: itemCreatedAt ?? estimatedAt ?? startedAt ?? itemCompletedAt ?? completedAt,
                     clientMessageID: item["clientId"]?.stringValue,
                     turnID: turnID,
@@ -200,7 +201,9 @@ extension CodexAppServerSessionRuntime {
                 isTimestampFallback: completed == nil && itemCreatedAt == nil && estimatedAt != nil
             )
         case "agentMessage":
-            let rawText = item["text"]?.stringValue ?? ""
+            let question = CodexAsyncQuestion(item: item)
+            let rawText = (item["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                ? (item["text"]?.stringValue ?? "") : (question?.displayText ?? "")
             let trimmedText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             let isStreaming = liveSnapshotUpdatedAt != nil
             // 进行中的快照是后续 delta 的正文前缀，末尾空白也属于正文，不能提前裁掉。
@@ -210,10 +213,10 @@ extension CodexAppServerSessionRuntime {
             }
             if item["phase"]?.stringValue == "commentary" {
                 // commentary 是面向用户的阶段性正文，不是内部 reasoning。
-                return CodexHistoryMessage(id: messageID, role: "assistant", kind: .commentary, content: text, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, sendStatus: isStreaming ? .sending : .confirmed, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
+                return CodexHistoryMessage(id: messageID, role: "assistant", kind: .commentary, content: text, activityPayload: question?.activityPayload, createdAt: processCreatedAt, updatedAt: liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, sendStatus: isStreaming ? .sending : .confirmed, timelineOrdinal: timelineOrdinal, isTimestampFallback: processTimestampIsFallback)
             }
             let completed = itemCompletedAt ?? completedAt
-            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, createdAt: completed ?? itemCreatedAt ?? estimatedAt ?? startedAt, updatedAt: completed ?? liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, sendStatus: isStreaming ? .sending : .confirmed, timelineOrdinal: timelineOrdinal, isTimestampFallback: completed == nil && itemCreatedAt == nil && estimatedAt != nil)
+            return CodexHistoryMessage(id: messageID, role: "assistant", content: text, activityPayload: question?.activityPayload, createdAt: completed ?? itemCreatedAt ?? estimatedAt ?? startedAt, updatedAt: completed ?? liveSnapshotUpdatedAt, turnID: turnID, itemID: itemID, sendStatus: isStreaming ? .sending : .confirmed, timelineOrdinal: timelineOrdinal, isTimestampFallback: completed == nil && itemCreatedAt == nil && estimatedAt != nil)
         case "plan":
             guard let payload = ConversationActivityPayload(item: item) else {
                 return nil

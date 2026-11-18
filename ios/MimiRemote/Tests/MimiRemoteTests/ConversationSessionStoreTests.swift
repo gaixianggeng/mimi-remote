@@ -1351,6 +1351,12 @@ extension ConversationDataFlowTests {
         )
         let gate = SessionArchiveResponseGate()
         let appStore = makeIsolatedAppStore()
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "token-a",
+            profileTarget: .newProfile(id: "mac-a", displayName: "Mac A"),
+            installationID: "installation-a"
+        ))
         let preferences = makeSessionListPreferenceStore()
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1391,6 +1397,11 @@ extension ConversationDataFlowTests {
             installationID: "installation-b"
         ))
         XCTAssertNotEqual(appStore.activeHostScope, oldHostScope)
+        XCTAssertNotEqual(
+            appStore.notificationRoutingProfileID,
+            oldProfileID,
+            "断言前提：必须真的切到另一个 Profile，否则下面的 Host 归属检查会失去意义"
+        )
         store.clearConnectionData()
         XCTAssertTrue(
             store.pendingSessionArchiveMutationKeys.contains(oldKey),
@@ -1423,6 +1434,12 @@ extension ConversationDataFlowTests {
         )
         let gate = SessionArchiveResponseGate()
         let appStore = makeIsolatedAppStore()
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "token-a",
+            profileTarget: .newProfile(id: "mac-a", displayName: "Mac A"),
+            installationID: "installation-a"
+        ))
         let preferences = makeSessionListPreferenceStore()
         let client = MockSessionStoreClient(
             projects: [project],
@@ -1452,6 +1469,11 @@ extension ConversationDataFlowTests {
             installationID: "installation-c"
         ))
         let currentProfileID = appStore.notificationRoutingProfileID
+        XCTAssertNotEqual(
+            currentProfileID,
+            oldProfileID,
+            "断言前提：必须真的切到另一个 Profile，否则下面的 Host 隔离检查会失去意义"
+        )
         store.clearConnectionData()
         XCTAssertTrue(store.pendingSessionArchiveMutationKeys.contains(oldKey))
 
@@ -1469,6 +1491,77 @@ extension ConversationDataFlowTests {
             "旧 Host 成功不能污染当前 Profile"
         )
         XCTAssertNil(store.errorMessage)
+    }
+
+    func testStaleInstallationArchiveFailureRollsBackProfileStateWithoutCurrentHostError() async throws {
+        let appStore = makeIsolatedAppStore()
+        // 旧连接尚未绑定安装身份，归档请求属于 unbound scope。
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.40:8787",
+            token: "token-rebind",
+            profileTarget: .newProfile(id: "mac-rebind", displayName: "待绑定 Mac")
+        ))
+
+        let project = makeProject(id: "proj_archive_rebind")
+        let session = makeSession(
+            id: "session_archive_rebind",
+            projectID: project.id,
+            title: "重绑安装身份",
+            status: "history",
+            source: "codex"
+        )
+        let gate = SessionArchiveResponseGate()
+        let preferences = makeSessionListPreferenceStore()
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [session],
+            sessionArchiveHandler: { id, archived in
+                try await gate.response(id: id, archived: archived)
+            }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionListPreferenceStore: preferences,
+            clientFactory: { client }
+        )
+        store.sessions = [session]
+        store.toggleSessionPinned(session)
+        let profileID = appStore.notificationRoutingProfileID
+        let oldInstallationID = appStore.activeHostScope.installationID
+
+        let task = Task { await store.setSessionArchivedRemote(session, archived: true) }
+        await gate.waitForRequestCount(1)
+
+        // 同一个 Profile 被绑定到真正的安装身份：Profile 没变，Host 已经换人。
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.40:8787",
+            token: "token-rebind",
+            profileTarget: .existingProfile(id: "mac-rebind"),
+            installationID: "installation-rebind"
+        ))
+        XCTAssertEqual(appStore.notificationRoutingProfileID, profileID)
+        XCTAssertNotEqual(appStore.activeHostScope.installationID, oldInstallationID)
+
+        await gate.fail(
+            id: session.id,
+            archived: true,
+            error: AgentAPIError.server(status: 500, message: "stale installation failure")
+        )
+        let result = await task.value
+
+        XCTAssertFalse(result)
+        XCTAssertNil(
+            store.errorMessage,
+            "旧安装身份的失败不能写进当前 Host UI；成功路径同样只在安装身份一致时才提示"
+        )
+        // Profile 命名空间没变，乐观状态仍必须回滚到 committed before。
+        XCTAssertFalse(store.isSessionArchived(session.id))
+        XCTAssertTrue(store.isSessionPinned(session.id))
+        let rolledBack = preferences.load(profileID: profileID)
+        XCTAssertFalse(rolledBack.archivedSessionIDs.contains(session.id))
+        XCTAssertTrue(rolledBack.pinnedSessionIDs.contains(session.id))
     }
 
     func testArchiveOldTokenCannotClearNewPendingAndPendingArchiveBlocksPin() async {

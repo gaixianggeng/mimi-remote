@@ -6,6 +6,8 @@ struct ProjectSidebarView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
+    private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
     @State private var isPresentingOpenWorkspace = false
     @State private var isPresentingWorktreeManager = false
     @State private var worktreeManagerRootProjectID = ""
@@ -105,6 +107,9 @@ struct ProjectSidebarView: View {
                         showsDisclosure: showsSessions,
                         showsSessionActions: showsSessions,
                         availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+                        enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                            from: enabledRuntimesRawValue
+                        ),
                         themeRenderKey: themeRenderKey,
                         onToggle: {
                             Task {
@@ -357,43 +362,77 @@ struct ProjectSidebarView: View {
     @ViewBuilder
     private func sidebarNewSessionMenu(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
         if let project = primarySessionProject(projects: projects) {
-            Menu {
-                ForEach(WorkspaceSessionRuntimeChoice.available(
-                    runtimeProviders: sessionStore.availableRuntimeProviders
-                )) { runtime in
-                    Button {
-                        Task {
-                            await sessionStore.startNewSession(
-                                in: project,
-                                runtimeProvider: runtime.runtimeProvider
-                            )
-                        }
-                    } label: {
-                        Label(runtime.title, systemImage: runtime.actionSystemImage)
-                    }
-                }
-            } label: {
-                ViewThatFits(in: .horizontal) {
-                    Label(L10n.text("ui.new_session"), systemImage: "plus")
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                    Image(systemName: "plus")
-                        .frame(width: 34, height: 34)
-                        .accessibilityLabel(L10n.text("ui.new_session"))
-                }
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
-                .foregroundStyle(tokens.accent)
-                .background(tokens.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(tokens.accent.opacity(0.26), lineWidth: 1)
-                }
+            let enabledSet = WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                from: enabledRuntimesRawValue
+            )
+            let choices = WorkspaceSessionRuntimeChoice.available(
+                runtimeProviders: sessionStore.availableRuntimeProviders,
+                enabledRuntimes: enabledSet
+            )
+            let hasUsableRuntime = choices.contains {
+                $0.isAvailable(
+                    in: sessionStore.availableRuntimeProviders,
+                    enabledRuntimes: enabledSet
+                )
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            // 空集合表示连 Codex 基线通道都不可用；这个菜单就只剩一个空壳。
-            .disabled(sessionStore.availableRuntimeProviders.isEmpty)
-            .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+
+            if choices.count == 1, let onlyChoice = choices.first {
+                // 只开启单个模型时一步直建，省去多余的单选项二级菜单。
+                Button {
+                    Task {
+                        await sessionStore.startNewSession(
+                            in: project,
+                            runtimeProvider: onlyChoice.runtimeProvider
+                        )
+                    }
+                } label: {
+                    sidebarNewSessionLabel(tokens: tokens)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasUsableRuntime || sessionStore.availableRuntimeProviders.isEmpty)
+                .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+                .accessibilityValue(onlyChoice.title)
+            } else {
+                Menu {
+                    ForEach(choices) { runtime in
+                        Button {
+                            Task {
+                                await sessionStore.startNewSession(
+                                    in: project,
+                                    runtimeProvider: runtime.runtimeProvider
+                                )
+                            }
+                        } label: {
+                            Label(runtime.title, systemImage: runtime.actionSystemImage)
+                        }
+                    }
+                } label: {
+                    sidebarNewSessionLabel(tokens: tokens)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                // 空集合表示连基线通道都尚未就绪；这个菜单就只剩一个空壳。
+                .disabled(!hasUsableRuntime || sessionStore.availableRuntimeProviders.isEmpty)
+                .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+            }
+        }
+    }
+
+    private func sidebarNewSessionLabel(tokens: ThemeTokens) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Label(L10n.text("ui.new_session"), systemImage: "plus")
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+            Image(systemName: "plus")
+                .frame(width: 34, height: 34)
+                .accessibilityLabel(L10n.text("ui.new_session"))
+        }
+        .font(themeStore.uiFont(size: 13, weight: .semibold))
+        .foregroundStyle(tokens.accent)
+        .background(tokens.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tokens.accent.opacity(0.26), lineWidth: 1)
         }
     }
 
@@ -1510,6 +1549,7 @@ private struct ProjectRow: View, Equatable {
     let showsDisclosure: Bool
     let showsSessionActions: Bool
     let availableRuntimeProviders: Set<String>
+    let enabledRuntimes: Set<WorkspaceSessionRuntimeChoice>
     let themeRenderKey: SidebarThemeRenderKey
     let onToggle: () -> Void
     let onNewSession: (WorkspaceSessionRuntimeChoice) -> Void
@@ -1528,6 +1568,7 @@ private struct ProjectRow: View, Equatable {
             && lhs.showsDisclosure == rhs.showsDisclosure
             && lhs.showsSessionActions == rhs.showsSessionActions
             && lhs.availableRuntimeProviders == rhs.availableRuntimeProviders
+            && lhs.enabledRuntimes == rhs.enabledRuntimes
             // 主题切换只通过轻量 key 打破行缓存，避免移除 .equatable() 导致长列表回退。
             && lhs.themeRenderKey == rhs.themeRenderKey
     }
@@ -1576,7 +1617,8 @@ private struct ProjectRow: View, Equatable {
                 if showsSessionActions {
                     // 会话在创建瞬间就绑定 runtime，事后无法切换通道；菜单里保留显式通道选择。
                     ForEach(WorkspaceSessionRuntimeChoice.available(
-                        runtimeProviders: availableRuntimeProviders
+                        runtimeProviders: availableRuntimeProviders,
+                        enabledRuntimes: enabledRuntimes
                     )) { runtime in
                         Button {
                             onNewSession(runtime)

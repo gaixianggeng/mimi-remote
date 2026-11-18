@@ -439,4 +439,103 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             )
         )
     }
+
+    func testEnabledRuntimesParsingPreservesOrderAndGuardsLastEnabled() {
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.enabledRuntimes(from: nil),
+            [.codex, .claude, .deepseek]
+        )
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.enabledRuntimes(from: ""),
+            [.codex, .claude, .deepseek]
+        )
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.enabledRuntimes(from: "deepseek,codex"),
+            [.codex, .deepseek]
+        )
+
+        // 关闭 Codex 后，「优先使用」自动回落到首个已开启的 Claude。
+        let disabledCodex = WorkspaceSessionRuntimeChoice.updatingEnabledState(
+            for: .codex,
+            isEnabled: false,
+            enabledRawValue: "codex,claude",
+            preferredRawValue: "codex"
+        )
+        XCTAssertEqual(disabledCodex.enabledRawValue, "claude")
+        XCTAssertEqual(disabledCodex.preferredRawValue, "claude")
+
+        // 只剩最后一个开启的模型时，禁止继续关闭。
+        let guardLast = WorkspaceSessionRuntimeChoice.updatingEnabledState(
+            for: .claude,
+            isEnabled: false,
+            enabledRawValue: disabledCodex.enabledRawValue,
+            preferredRawValue: disabledCodex.preferredRawValue
+        )
+        XCTAssertEqual(guardLast.enabledRawValue, "claude")
+        XCTAssertEqual(guardLast.preferredRawValue, "claude")
+    }
+
+    func testWorkspaceRuntimeCreationChoicesExcludeKnownUnavailableChannels() {
+        let enabledOnlyClaude: Set<WorkspaceSessionRuntimeChoice> = [.claude]
+        XCTAssertTrue(
+            WorkspaceSessionRuntimeChoice.available(
+                runtimeProviders: ["codex"],
+                enabledRuntimes: enabledOnlyClaude
+            ).isEmpty
+        )
+
+        // 创建入口没有可用项时，工作区仍能展示用户偏好的通道，并保持新建按钮不可用。
+        let state = WorkspaceRuntimeSelectionState()
+        let displayedRuntime = state.resolvedRuntime(
+            preferredRuntime: .claude,
+            availableRuntimeProviders: ["codex"],
+            enabledRuntimes: enabledOnlyClaude
+        )
+        XCTAssertEqual(displayedRuntime, .claude)
+        XCTAssertFalse(displayedRuntime.isAvailable(in: ["codex"], enabledRuntimes: enabledOnlyClaude))
+    }
+
+    func testWorkspaceRuntimeFilteringHonorsEnabledRuntimes() {
+        let enabledOnlyCodexAndClaude: Set<WorkspaceSessionRuntimeChoice> = [.codex, .claude]
+
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.available(
+                runtimeProviders: ["codex", "claude", "deepseek"],
+                enabledRuntimes: enabledOnlyCodexAndClaude
+            ),
+            [.codex, .claude]
+        )
+
+        // 当用户只开启了 Claude 且主机尚未上报通道时，兜底项应为首个已开启模型 Claude，且其可用性为 true。
+        let enabledOnlyClaude: Set<WorkspaceSessionRuntimeChoice> = [.claude]
+        XCTAssertEqual(
+            WorkspaceSessionRuntimeChoice.available(
+                runtimeProviders: [],
+                enabledRuntimes: enabledOnlyClaude
+            ),
+            [.claude]
+        )
+        XCTAssertTrue(
+            WorkspaceSessionRuntimeChoice.claude.isAvailable(
+                in: [],
+                enabledRuntimes: enabledOnlyClaude
+            )
+        )
+        XCTAssertFalse(
+            WorkspaceSessionRuntimeChoice.codex.isAvailable(
+                in: [],
+                enabledRuntimes: enabledOnlyClaude
+            )
+        )
+
+        let state = WorkspaceRuntimeSelectionState(manualRuntime: .deepseek)
+        XCTAssertEqual(
+            state.resolvedRuntime(
+                preferredRuntime: .deepseek,
+                availableRuntimeProviders: ["codex", "claude", "deepseek"],
+                enabledRuntimes: enabledOnlyCodexAndClaude
+            ),
+            .codex
+        )
+    }
 }

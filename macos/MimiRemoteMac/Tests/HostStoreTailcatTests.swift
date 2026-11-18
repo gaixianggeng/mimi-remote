@@ -4,6 +4,75 @@ import XCTest
 
 /// Tailcat 中继、托管模式与状态刷新的 HostStore 用例（#896 从 HostStoreTests 拆出，复用其 makeStore）。
 extension HostStoreTests {
+    func testPairingRecoversAfterCustomRelayFailure() async {
+        await assertPairingAfterRelayFailure(managed: false, recoveryFails: false)
+    }
+
+    func testPairingRecoversAfterManagedRelayFailure() async {
+        await assertPairingAfterRelayFailure(managed: true, recoveryFails: false)
+    }
+
+    func testRelayFailureKeepsConfigurationAvailableWhenQRCodeRecoveryAlsoFails() async {
+        for managed in [false, true] {
+            await assertPairingAfterRelayFailure(managed: managed, recoveryFails: true)
+        }
+    }
+
+    private func assertPairingAfterRelayFailure(managed: Bool, recoveryFails: Bool) async {
+        let pairCalls = CallCounter()
+        let relayError = "测试中转配置失败"
+        let tailcat = TailcatStatus(
+            enabled: true, running: true, version: nil,
+            derpMapURL: nil, pairedDeviceCount: 0, error: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            pair: { _ in
+                let call = pairCalls.increment()
+                if call > 1, recoveryFails {
+                    throw AgentClientError.commandFailed("测试二维码暂不可用")
+                }
+                return PairingInfo(
+                    endpoint: "http://127.0.0.1:8787", network: .tailcat,
+                    pairURL: "mimiremote://pair?transport=tailcat&request=\(call)",
+                    expiresAt: "10 分钟后失效", warnings: []
+                )
+            },
+            tailcatStatus: { tailcat },
+            configureTailcatDERPMap: { _ in throw AgentClientError.commandFailed(relayError) },
+            setTailcatManagedMode: { _ in throw AgentClientError.commandFailed(relayError) }
+        )
+        await store.bootstrap()
+        await store.refreshTailcatStatus()
+        await store.refreshPairing(network: .tailcat)
+        XCTAssertNotNil(store.pairing)
+
+        if managed {
+            await store.setTailcatManagedMode(true)
+        } else {
+            await store.configureTailcatDERPMap("https://relay.example/map.json")
+        }
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(store.tailcatError, relayError)
+        XCTAssertTrue(store.canChangeTailcat)
+
+        await store.refreshPairingFromPicker(.tailcat)
+
+        XCTAssertEqual(pairCalls.current, 2)
+        XCTAssertEqual(store.tailcatError, relayError, "恢复二维码不能吞掉中转配置错误")
+        XCTAssertTrue(store.canChangeTailcat)
+        XCTAssertFalse(store.isBusy)
+        if recoveryFails {
+            XCTAssertNil(store.pairing)
+            XCTAssertEqual(store.lastError, "测试二维码暂不可用")
+        } else {
+            XCTAssertEqual(store.pairing?.network, .tailcat)
+            XCTAssertEqual(store.pairing?.pairURL, "mimiremote://pair?transport=tailcat&request=2")
+            XCTAssertNil(store.lastError)
+        }
+    }
+
     func testConfiguringTailcatRelayUpdatesStatusAndClearsOldPairing() async {
         let events = EventRecorder()
         let defaultStatus = TailcatStatus(

@@ -600,7 +600,7 @@ extension ComposerView {
     }
 
     var usesCollapsedIPadComposer: Bool {
-        isComposerCollapsed && canCollapseIPadComposer
+        (isComposerCollapsed || isExternalQuestionFieldEditing) && canCollapseIPadComposer
     }
 
     var collapsedComposerText: String {
@@ -614,6 +614,10 @@ extension ComposerView {
     }
 
     func expandComposer() {
+        if isExternalQuestionFieldEditing {
+            isExternalQuestionFieldEditing = false
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
         isComposerCollapsed = false
         // 焦点请求只服务于这一次“点开输入框”；UITextView 消费后会清空 token，
         // 后续因附件或语音状态重建完整输入框时不会再次误弹键盘。
