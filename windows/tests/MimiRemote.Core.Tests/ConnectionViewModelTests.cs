@@ -29,16 +29,19 @@ public sealed class ConnectionViewModelTests
         Assert.False(model.Failed);
     }
 
-    [Fact]
-    public async Task 进程启动失败显示提示且下一轮仍可恢复()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task 进程启动失败或空状态显示提示且下一轮仍可恢复(bool emptyStatus)
     {
         var context = new ClientContext();
-        context.Agent.ReadTailcat = _ => throw new Win32Exception("找不到 agentd");
+        const string reason = "无法读取 agentd 状态";
+        context.Agent.ReadTailcat = _ => throw (emptyStatus ? new InvalidDataException(reason) : new Win32Exception(reason));
         using var model = new ConnectionViewModel(context);
         await model.SetActiveAsync(true);
         await model.PollAsync();
         Assert.True(model.Failed);
-        Assert.Contains("找不到 agentd", model.Notice);
+        Assert.Contains(reason, model.Notice);
         context.Agent.ReadTailcat = _ => Task.FromResult(new TailcatStatus { Enabled = true, Running = true });
         await model.PollAsync();
         Assert.Equal("内置连接运行中", model.ConnectionState);

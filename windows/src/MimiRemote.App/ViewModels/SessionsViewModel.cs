@@ -31,19 +31,33 @@ public sealed class SessionsViewModel : ClientPageViewModel
     }
     private string summary = "";
     private string empty = "正在连接电脑服务…";
+    private string directoryNotice = "";
     private bool hasMore;
     private bool loading;
     public string Summary { get => summary; private set => SetProperty(ref summary, value); }
     public string Empty { get => empty; private set => SetProperty(ref empty, value); }
+    public string DirectoryNotice
+    {
+        get => directoryNotice;
+        private set
+        {
+            if (SetProperty(ref directoryNotice, value)) { OnPropertyChanged(nameof(HasDirectoryNotice)); }
+        }
+    }
+    public bool HasDirectoryNotice => DirectoryNotice.Length > 0;
     public bool HasMore { get => hasMore; private set => SetProperty(ref hasMore, value); }
-    public bool Loading { get => loading; private set => SetProperty(ref loading, value); }
+    public bool Loading
+    {
+        get => loading;
+        private set { if (SetProperty(ref loading, value)) { MoreCommand.NotifyCanExecuteChanged(); } }
+    }
     public IAsyncRelayCommand MoreCommand { get; }
     public SessionsViewModel(ClientContext context) : base(context)
     {
         runtime = Runtimes[0];
         project = Projects[0];
         MoreCommand = new AsyncRelayCommand(() => RunAsync(async () =>
-        { if (store is not null) { await store.RefreshAsync(more: true, token: Lifetime.Token); } }));
+        { if (store is not null) { await store.RefreshAsync(more: true, token: Lifetime.Token); } }), () => !Loading);
         timer.Tick += async (_, _) =>
         {
             if (Active && store is not null && !store.Loading) { await store.RefreshAsync(token: Lifetime.Token, firstPage: true); }
@@ -64,7 +78,13 @@ public sealed class SessionsViewModel : ClientPageViewModel
         {
             var host = await Context.ReadStatusAsync(force: force, token: Lifetime.Token);
             if (!Active) { return; }
-            if (!host.ServiceOk) { Report("电脑服务尚未就绪，请在概览中启动服务。已有记录可能过期。", true); return; }
+            if (!host.ServiceOk)
+            {
+                Report("电脑服务尚未就绪。请在“概览”中启动服务，再刷新。", true);
+                if (Groups.Count == 0) { Empty = "电脑服务未运行"; }
+                return;
+            }
+            NoticeOpen = false;
             var currentPort = LocalSessionSource.Port(host.Endpoint);
             if (source is null || currentPort != port)
             {
@@ -87,8 +107,6 @@ public sealed class SessionsViewModel : ClientPageViewModel
     {
         if (store is null) { return; }
         Loading = store.Loading;
-        HasMore = store.HasMore;
-        if (store.Notices.Count > 0) { Report(string.Join("\n", store.Notices), true); }
         var selectedRuntime = Runtime?.Id ?? "all";
         var selectedProject = Project?.Cwd ?? "";
         updating = true;
@@ -108,7 +126,9 @@ public sealed class SessionsViewModel : ClientPageViewModel
     {
         if (store is null) { return; }
         var now = DateTimeOffset.Now;
-        var rows = store.Sessions.Where(row => (Runtime?.Id is null or "all" || row.Runtime == Runtime.Id) && row.Matches(Query)).ToArray();
+        var selectedRuntime = Runtime?.Id is null or "all" ? null : Runtime.Id;
+        var availableRows = store.Sessions.Where(row => selectedRuntime is null || row.Runtime == selectedRuntime).ToArray();
+        var rows = availableRows.Where(row => row.Matches(Query)).ToArray();
         var sections = DesktopSessionParsing.Sections(rows, now).ToArray();
         foreach (var group in Groups.Where(group => !sections.Any(section => section.Title == group.Title)).ToArray()) { Groups.Remove(group); }
         for (var index = 0; index < sections.Length; index++)
@@ -119,12 +139,35 @@ public sealed class SessionsViewModel : ClientPageViewModel
             else if (Groups.IndexOf(group) != index) { Groups.Move(Groups.IndexOf(group), index); }
             Reconcile(group, section.Sessions.Select(row => new SessionRow(row, now)), row => row.Session.Key);
         }
-        Empty = rows.Length > 0 ? "" : store.Loading ? "正在读取会话…"
-            : !store.Loaded ? "正在连接电脑服务…" : store.Catalog?.Runtimes.Count == 0 ? "尚未启用 AI 助手，请在“AI 助手”中设置。"
-            : Query.Length > 0 || Runtime?.Id != "all" ? "没有匹配的已加载会话。" : "还没有会话。在手机或电脑上开始对话后，会显示在这里。";
-        Summary = $"{rows.Length} 条已加载会话" + (store.HasMore ? " · 还有更早记录" : "")
-            + (Query.Length > 0 ? " · 搜索仅限已加载记录" : "")
+        HasMore = store.HasMoreFor(selectedRuntime);
+        var searching = !string.IsNullOrWhiteSpace(Query);
+        var failedRuntimes = store.RuntimeFailures.Where(pair => selectedRuntime is null || pair.Key == selectedRuntime).ToArray();
+        var hasStaleRows = store.CatalogFailure is not null ? availableRows.Length > 0
+            : availableRows.Any(row => store.RuntimeFailures.ContainsKey(row.Runtime));
+        DirectoryNotice = DirectoryMessage(store.CatalogFailure, failedRuntimes, hasStaleRows);
+        Empty = rows.Length > 0 ? "" : EmptyMessage(store, selectedRuntime, searching, failedRuntimes.Length > 0);
+        Summary = $"{rows.Length} 条已加载会话" + (HasMore ? " · 还有更早记录" : "")
+            + (searching ? " · 搜索仅限已加载记录" : "")
             + (store.LastUpdated is { } updated ? $" · 更新于 {updated:HH:mm:ss}" : "");
+    }
+
+    private static string DirectoryMessage(string? catalogFailure, KeyValuePair<string, string>[] failures, bool hasRows)
+    {
+        var message = catalogFailure is not null
+            ? $"无法更新会话目录：{catalogFailure}"
+            : string.Join("\n", failures.Select(pair => $"暂时无法读取 {SessionsStore.Title(pair.Key)} 会话：{pair.Value}"));
+        return message.Length > 0 && hasRows ? message + " 已保留上次读取的会话。" : message;
+    }
+
+    private string EmptyMessage(SessionsStore directory, string? runtime, bool searching, bool hasFailure)
+    {
+        if (directory.Loading) { return "正在读取会话…"; }
+        if (directory.CatalogFailure is not null || hasFailure) { return "请刷新重试。"; }
+        if (!directory.Loaded) { return "正在连接电脑服务…"; }
+        if (directory.Catalog?.Runtimes.Count == 0) { return "尚未启用 AI 助手，请在“AI 助手”中设置。"; }
+        if (searching) { return "没有匹配的已加载会话。"; }
+        if (HasMore) { return "当前页没有可显示的会话，可以加载更多。"; }
+        return runtime is null ? "开始对话后，会话会显示在这里。" : $"暂无 {SessionsStore.Title(runtime)} 会话。";
     }
     private static void Reconcile<T>(ObservableCollection<T> items, IEnumerable<T> target, Func<T, string> key)
     {

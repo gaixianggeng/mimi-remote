@@ -32,7 +32,7 @@ public class PageState : ObservableObject
         IsBusy = true;
         try { await operation(); }
         catch (OperationCanceledException) { }
-        catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException or ArgumentException
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException or TimeoutException or ArgumentException
             or System.Text.Json.JsonException or System.Net.Http.HttpRequestException or System.Net.WebSockets.WebSocketException
             or UnauthorizedAccessException or System.Security.SecurityException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException)
         { Report(error.Message, true); }

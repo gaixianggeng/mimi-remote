@@ -33,7 +33,7 @@ try {
     $previousToolchain = $env:GOTOOLCHAIN
     try {
         $env:GOTOOLCHAIN = "go$goVersion"
-        & go build -trimpath -ldflags "-s -w -X main.version=preview-$($commit.Substring(0, 8))" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
+        & go build -trimpath -ldflags "-s -w -X main.version=devel-$($commit.Substring(0, 8))" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
         if ($LASTEXITCODE -ne 0) { throw 'Preview CLI build failed.' }
     } finally { $env:GOTOOLCHAIN = $previousToolchain }
     & (Join-Path $PSScriptRoot 'check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'MimiRemote.exe') -Expected GUI

@@ -44,7 +44,7 @@ public sealed class ConnectionViewModel : ClientPageViewModel
         polling = true;
         try { await ReadTailcatAsync(); }
         catch (OperationCanceledException) when (Lifetime.IsCancellationRequested) { }
-        catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException or System.Text.Json.JsonException
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException or TimeoutException or System.Text.Json.JsonException
             or System.ComponentModel.Win32Exception or UnauthorizedAccessException or System.Security.SecurityException)
         {
             if (!Lifetime.IsCancellationRequested) { Report("暂时无法更新连接状态：" + error.Message, true); }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace MimiRemote.Core;
 
@@ -15,15 +16,27 @@ public sealed class AgentClient(string executable) : IAgentCommand
 
     public static string FindExecutable()
     {
+        var installed = FindInstallDirectory();
+        var defaultInstall = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
         string[] candidates =
         [
+            Path.Combine(installed ?? defaultInstall, "agentd.exe"),
+            Path.Combine(defaultInstall, "agentd.exe"),
             Path.Combine(AppContext.BaseDirectory, "agentd.exe"),
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "agentd.exe")),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "Mimi Remote", "agentd.exe"),
         ];
         return candidates.FirstOrDefault(File.Exists)
             ?? throw new FileNotFoundException("未找到 agentd.exe。请先安装 Mimi Remote 电脑端，然后重新打开此窗口。");
+    }
+
+    private static string? FindInstallDirectory()
+    {
+        if (!OperatingSystem.IsWindows()) { return null; }
+        // Use the installed CLI for service operations so PID and firewall path checks match the scheduled task.
+        const string uninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{7D413E71-19C5-4F02-8AFC-437E1B8019FD}_is1";
+        using var key = Registry.CurrentUser.OpenSubKey(uninstallKey);
+        var path = key?.GetValue("InstallLocation") as string;
+        return Path.IsPathFullyQualified(path ?? "") ? path : null;
     }
 
     public async Task<T> ReadAsync<T>(string[] arguments, CancellationToken cancellationToken = default)

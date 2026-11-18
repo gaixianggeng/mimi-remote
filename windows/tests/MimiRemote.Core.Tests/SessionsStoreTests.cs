@@ -35,7 +35,8 @@ public sealed class SessionsStoreTests
         fail = true;
         await store.RefreshAsync();
         Assert.Equal(2, store.Sessions.Count);
-        Assert.Contains("Claude", Assert.Single(store.Notices), StringComparison.Ordinal);
+        Assert.Equal("暂时离线", store.RuntimeFailures["claude"]);
+        Assert.Single(store.RuntimeFailures);
         Assert.NotNull(store.LastUpdated);
     }
 
@@ -93,7 +94,7 @@ public sealed class SessionsStoreTests
         source.CatalogFailure = true;
         await store.RefreshAsync();
         Assert.Single(store.Sessions);
-        Assert.Single(store.Notices);
+        Assert.Equal("目录请求失败", store.CatalogFailure);
     }
 
     [Fact]
@@ -113,11 +114,56 @@ public sealed class SessionsStoreTests
         await loading;
         Assert.False(store.Loading);
         Assert.Empty(store.Sessions);
-        Assert.Empty(store.Notices);
+        Assert.Empty(store.RuntimeFailures);
+        Assert.Null(store.CatalogFailure);
+    }
+
+    [Fact]
+    public async Task 首屏刷新保留已覆盖的页且渠道失败不会继承其他渠道的续页()
+    {
+        var incremental = false;
+        var source = new Source(["codex", "claude"], (runtime, _, _, _) =>
+        {
+            if (incremental && runtime == "claude") { throw new IOException("暂时离线"); }
+            return Task.FromResult(new DesktopSessionPage(incremental ? [Row(runtime, "new")] : [Row(runtime, "new"), Row(runtime, "old")], incremental || runtime == "claude"));
+        });
+        using var store = new SessionsStore(source);
+        await store.RefreshAsync();
+        Assert.True(store.HasMore);
+        Assert.False(store.HasMoreFor("codex"));
+
+        incremental = true;
+        await store.RefreshAsync(firstPage: true);
+        Assert.False(store.HasMoreFor("codex"));
+        Assert.True(store.HasMoreFor("claude"));
+        Assert.Single(store.RuntimeFailures);
+        Assert.Equal(4, store.Sessions.Count);
+
+        source.Runtimes = ["codex"];
+        await store.RefreshAsync(firstPage: true);
+        Assert.False(store.HasMore);
+        Assert.Empty(store.RuntimeFailures);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task 首屏没有保持排序位置的旧行时可以继续加载填补间隔(bool movedEarlierRow)
+    {
+        var original = Row("codex", "old");
+        var updated = original with { ThreadId = movedEarlierRow ? "old" : "new", UpdatedAt = DateTimeOffset.UnixEpoch.AddMinutes(1) };
+        var source = new Source(["codex"], (_, _, budget, _) => Task.FromResult(budget == 1
+            ? new DesktopSessionPage([updated], true) : new DesktopSessionPage([original], false)));
+        using var store = new SessionsStore(source);
+        await store.RefreshAsync();
+        Assert.False(store.HasMore);
+        await store.RefreshAsync(firstPage: true);
+        Assert.True(store.HasMoreFor("codex"));
+        Assert.Equal(movedEarlierRow ? 1 : 2, store.Sessions.Count);
     }
 
     private static DesktopSession Row(string runtime, string id) =>
-        new(runtime, id, id, "repo", @"C:\repo", DateTimeOffset.Now, SessionActivity.Idle);
+        new(runtime, id, id, "repo", @"C:\repo", DateTimeOffset.UnixEpoch, SessionActivity.Idle);
 
     private sealed class Source(string[] runtimes,
         Func<string, string?, int, CancellationToken, Task<DesktopSessionPage>> read) : IDesktopSessionSource

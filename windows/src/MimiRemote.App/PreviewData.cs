@@ -11,7 +11,7 @@ internal static class PreviewData
         Projects = 4,
         ServiceOk = true,
         ProcessOk = true,
-        ModuleStatus = new ModuleStatus { CodexEnabled = true, ClaudeEnabled = true, TailscaleEnabled = true, LanEnabled = true },
+        ModuleStatus = new ModuleStatus { CodexEnabled = true, ClaudeEnabled = true, TailscaleEnabled = true, LanEnabled = true, TailscaleAvailable = true, LanAvailable = true },
         RuntimeStatus = new RuntimeStatus
         {
             Runtimes = [

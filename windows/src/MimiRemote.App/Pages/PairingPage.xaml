@@ -6,11 +6,15 @@
             <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
             <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
             <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
-            <TextBlock Text="在手机端添加电脑时扫描二维码。这里只显示已启用的连接方式。" TextWrapping="Wrap"/>
+            <TextBlock Text="在手机端添加电脑时扫描二维码。这里只显示已就绪的连接方式。" TextWrapping="Wrap"/>
             <ComboBox Header="连接方式" ItemsSource="{x:Bind ViewModel.Networks}" DisplayMemberPath="Title"
                 SelectedItem="{x:Bind ViewModel.Network, Mode=TwoWay}" HorizontalAlignment="Stretch"/>
-            <Button Content="生成二维码" Command="{x:Bind ViewModel.GenerateCommand}"/>
-            <Image Source="{x:Bind ViewModel.Image, Mode=OneWay}" Width="280" Height="280" HorizontalAlignment="Left" AutomationProperties.Name="短期配对二维码"/>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="生成二维码" Command="{x:Bind ViewModel.GenerateCommand}"/>
+                <Button Content="管理连接方式" Command="{x:Bind ViewModel.OpenConnectionCommand}"/>
+            </StackPanel>
+            <Image Source="{x:Bind ViewModel.Image, Mode=OneWay}" Width="280" Height="280" HorizontalAlignment="Center"
+                Visibility="{x:Bind ViewModel.HasImage, Mode=OneWay}" AutomationProperties.Name="短期配对二维码"/>
             <TextBlock Text="{x:Bind ViewModel.Note, Mode=OneWay}" TextWrapping="Wrap"/>
         </StackPanel>
     </ScrollViewer>
