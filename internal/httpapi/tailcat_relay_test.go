@@ -17,7 +17,7 @@ import (
 func newRelayTestServer(t *testing.T) testServer {
 	t.Helper()
 	server := newTestServer(t)
-	// enableTailcat 会持久化开关，测试必须在临时目录准备自己的配置。
+	// Use a disposable config so a regression cannot change the current user's switch.
 	server.router.configPath = filepath.Join(t.TempDir(), "config.json")
 	raw, err := json.Marshal(server.router.cfg)
 	if err != nil {
@@ -51,8 +51,8 @@ func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 		if fake.configureCalls != 0 {
 			t.Fatalf("Mimi 中转不能写自定义中继：%d", fake.configureCalls)
 		}
-		if fake.startCalls == 0 {
-			t.Fatal("切换后必须开启 sidecar")
+		if fake.startCalls != 0 || managed.syncCalls != 1 {
+			t.Fatal("中转事务已负责启动，切换后应只同步策略")
 		}
 	})
 
@@ -114,6 +114,19 @@ func TestTailcatRelaySetRoutesEachChoice(t *testing.T) {
 			t.Fatalf("默认中继必须显式写空地址：calls=%d url=%q", fake.configureCalls, fake.configuredURL)
 		}
 	})
+}
+
+func TestTailcatRelaySetSameChoiceKeepsEnabledOfflineConnection(t *testing.T) {
+	server := newRelayTestServer(t)
+	fake := &fakeTailcatSidecar{status: tailcatStatus{Mode: config.TailcatModeSelfHosted, Enabled: true}}
+	server.router.tailcat = fake
+	status, failure := server.router.setTailcatRelay(context.Background(), "default", "")
+	if failure != nil {
+		t.Fatal(failure.err)
+	}
+	if !status.Enabled || status.Running || fake.startCalls != 0 || fake.stopCalls != 0 {
+		t.Fatalf("保存相同中转不得重启或关闭已有连接：status=%+v starts=%d stops=%d", status, fake.startCalls, fake.stopCalls)
+	}
 }
 
 func TestTailcatRelaySetPreservesDisabledState(t *testing.T) {
