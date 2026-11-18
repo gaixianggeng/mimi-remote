@@ -45,6 +45,15 @@ func TestWorkspaceCLIChangesRootsWithoutDisclosingToken(t *testing.T) {
 	if err != nil || len(updated.ScanRoots) != 1 || updated.Auth.Token != "workspace-cli-private" {
 		t.Fatalf("workspace was not applied safely: %v", err)
 	}
+	transaction := stdout.String()
+	stdout.Reset()
+	if err := runWorkspaceWithWriters([]string{"workspace", "--config", path, "--restore-state", transaction, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("cannot restore the workspace from the CLI's JSON output: %v", err)
+	}
+	restored, err := config.Load(path)
+	if err != nil || len(restored.ScanRoots) != 0 || len(restored.BrowseRoots) != 0 || restored.Auth.Token != "workspace-cli-private" {
+		t.Fatalf("CLI rollback did not preserve the previous configuration: %v", err)
+	}
 	if err := runWorkspaceWithWriters([]string{"workspace", "--root", root, "--restore-state", "{}"}, &stdout, &stderr); err == nil {
 		t.Fatal("ambiguous mutation accepted")
 	}
