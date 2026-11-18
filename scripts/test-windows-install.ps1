@@ -28,6 +28,9 @@ if ($source.Contains('no longer supports Windows as the agentd host') -or $sourc
 foreach ($forbidden in @('SW_SHOW', '{cmd}')) {
     if ($source.Contains($forbidden)) { throw "Installer source must not contain a console entry point: $forbidden" }
 }
+if ($source -match '\bExec\s*\(' -or -not $source.Contains('ExecAndCaptureOutput(')) {
+    throw 'Installer must run console commands through the no-console capture helper.'
+}
 if (-not $source.Contains('mimi-agent-host.exe')) { throw 'Installer must ship the no-window agent host.' }
 if (-not $source.Contains('-HostPath ')) { throw 'Installer must register the scheduled task against the agent host.' }
 $prepareSource = $source.Substring($source.IndexOf('function PrepareToInstall'), $source.IndexOf('procedure CurStepChanged') - $source.IndexOf('function PrepareToInstall'))
