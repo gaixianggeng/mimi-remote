@@ -102,6 +102,23 @@ function Assert-Identity {
     if ((Get-FileHash -LiteralPath $identityPath).Hash -ne $identityHash) { throw 'The installation identity changed.' }
 }
 
+function Assert-WorkspaceRollback {
+    $previous = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $selected = Join-Path $out 'second project'
+    New-Item -ItemType Directory -Path $selected | Out-Null
+    $transaction = & $exe workspace --root $selected --json | Out-String
+    if ($LASTEXITCODE -ne 0 -or -not ($transaction | ConvertFrom-Json).changed) { throw 'Workspace change did not apply.' }
+    & $exe workspace --restore-state $transaction --json | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'The original workspace transaction output could not be restored.' }
+    $restored = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    if (($restored.scan_roots | ConvertTo-Json -Compress) -cne ($previous.scan_roots | ConvertTo-Json -Compress) -or
+        ($restored.browse_roots | ConvertTo-Json -Compress) -cne ($previous.browse_roots | ConvertTo-Json -Compress) -or
+        $restored.auth.token -cne $token) {
+        throw 'Workspace rollback changed the saved roots or credential.'
+    }
+    Write-Host 'Installed CLI workspace rollback passed using the original formatted JSON output.'
+}
+
 Invoke-Installer $old 'Install baseline'
 Assert-Install 'Install baseline' '1.1.14' $false
 $identityHash = (Get-FileHash -LiteralPath $identityPath).Hash
@@ -109,6 +126,7 @@ $identityHash = (Get-FileHash -LiteralPath $identityPath).Hash
 Invoke-Installer $new 'Upgrade to snapshot'
 Assert-Install 'Upgrade to snapshot' '1.1.15-acceptance' $true
 Assert-Identity
+Assert-WorkspaceRollback
 
 Invoke-Installer $old 'Roll back to baseline'
 Assert-Install 'Roll back to baseline' '1.1.14' $false
