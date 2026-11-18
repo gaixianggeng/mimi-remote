@@ -63,7 +63,11 @@ is_excluded() {
     .git/*|vendor/*|*/vendor/*|*/Pods/*|*/Carthage/*|*/SourcePackages/*|*/DerivedData/*|*/.build/*|*/build/*|*/__Snapshots__/*)
       return 0
       ;;
-    *.pb.go|*.gen.go|*_generated.go|*.generated.swift|*/Generated*.swift)
+    # .NET 的编译输出和 XAML 生成代码不是手写源码，不能计入体积门禁。
+    */obj/*|*/bin/*)
+      return 0
+      ;;
+    *.pb.go|*.gen.go|*_generated.go|*.generated.swift|*/Generated*.swift|*.g.cs|*.g.i.cs)
       return 0
       ;;
     *)
@@ -80,7 +84,7 @@ while IFS= read -r -d '' source_file; do
 
   limit=$PRODUCTION_LIMIT
   case "$relative_path" in
-    *_test.go|*/Tests/*|*Tests.swift|*TestSupport.swift)
+    *_test.go|*/Tests/*|*Tests.swift|*TestSupport.swift|*/tests/*|*Tests.cs)
       limit=$TEST_LIMIT
       ;;
   esac
@@ -97,7 +101,7 @@ while IFS= read -r -d '' source_file; do
 
   printf '源码体积超限：%s (%s 行，上限 %s)\n' "$relative_path" "$line_count" "$limit" >&2
   failed=1
-done < <(find "$ROOT_DIR" -type f \( -name '*.swift' -o -name '*.go' \) -print0)
+done < <(find "$ROOT_DIR" -type f \( -name '*.swift' -o -name '*.go' -o -name '*.cs' -o -name '*.xaml' \) -print0)
 
 if (( failed != 0 )); then
   printf '请按职责拆分文件；确需例外时，在 scripts/check-source-size.sh 中写明精确路径和原因。\n' >&2

@@ -295,6 +295,59 @@ final class SessionsStoreTests: XCTestCase {
         guard case .failed(let noRuntime) = store.phase else { return XCTFail("助手全关应提示") }
         XCTAssertTrue(noRuntime.contains("都已关闭"))
     }
+
+    func testEmptyStateDistinguishesDisabledFailedNoSessionsAndSearchMismatch() async {
+        // 1. Claude 未启用（仅请求了 Codex）：切换到 Claude 不应误报「没有匹配的会话」。
+        let disabledStore = SessionsStore(source: FakeSource(results: [
+            .codex: .success(listing(.codex, ids: ["c1"])),
+        ]))
+        await disabledStore.reload(endpoint: "http://127.0.0.1:8787", runtimes: [.codex])
+        XCTAssertNil(disabledStore.emptyState)
+        disabledStore.filter = .claude
+        XCTAssertEqual(disabledStore.emptyState, .runtimeDisabled(.claude))
+        disabledStore.query = "keyword"
+        XCTAssertEqual(disabledStore.emptyState, .runtimeDisabled(.claude))
+
+        // 2. Claude 已启用但尚无会话（Codex 有会话且有更多页）：未搜索时切换到 Claude 应提示「还没有 Claude 会话」且不借用 Codex 的 hasMore。
+        let emptyClaudeStore = SessionsStore(source: FakeSource(results: [
+            .codex: .success(listing(.codex, ids: ["c1"], hasMore: true)),
+            .claude: .success(listing(.claude, ids: [], hasMore: false)),
+        ]))
+        await emptyClaudeStore.reload(endpoint: "http://127.0.0.1:8787", runtimes: [.codex, .claude])
+        emptyClaudeStore.filter = .claude
+        XCTAssertEqual(emptyClaudeStore.emptyState, .noSessions(.claude, hasMore: false))
+        emptyClaudeStore.query = "login"
+        XCTAssertEqual(emptyClaudeStore.emptyState, .noMatches(hasMore: true))
+
+        // 3. Claude 读取失败（Codex 正常）：切换到 Claude 时由空状态直接展示失败原因，顶部提示条不重复展示。
+        let failedClaudeStore = SessionsStore(source: FakeSource(results: [
+            .codex: .success(listing(.codex, ids: ["c1"])),
+            .claude: .failure(.runtimeUnavailable("Claude Code runtime 未启用")),
+        ]))
+        await failedClaudeStore.reload(endpoint: "http://127.0.0.1:8787", runtimes: [.codex, .claude])
+        XCTAssertEqual(failedClaudeStore.visibleNotices, ["暂时读不到 Claude 会话：Claude Code runtime 未启用"])
+        failedClaudeStore.filter = .codex
+        XCTAssertEqual(failedClaudeStore.visibleNotices, [])
+        failedClaudeStore.filter = .claude
+        XCTAssertEqual(failedClaudeStore.emptyState, .runtimeFailed(.claude, "Claude Code runtime 未启用"))
+        XCTAssertEqual(failedClaudeStore.visibleNotices, [])
+    }
+
+    func testRuntimeDisabledPresentationUsesClaudeLoginErrorOrDefaultMessage() {
+        let store = HostStore.preview(.ready)
+        store.claudeError = "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。"
+        let signedOut = RuntimeDisabledPresentation.resolve(for: .claude, host: store)
+        XCTAssertEqual(signedOut.title, "Claude 尚未启用")
+        XCTAssertEqual(signedOut.description, "已检测到 Claude Code，但尚未登录。请先在 Claude Code 中完成登录。")
+        XCTAssertEqual(signedOut.primaryButtonTitle, "重新检测并启用")
+        XCTAssertTrue(signedOut.showsClaudeLoginActions)
+
+        store.claudeError = nil
+        let manualOff = RuntimeDisabledPresentation.resolve(for: .claude, host: store)
+        XCTAssertEqual(manualOff.title, "Claude 尚未启用")
+        XCTAssertEqual(manualOff.primaryButtonTitle, "启用 Claude")
+        XCTAssertFalse(manualOff.showsClaudeLoginActions)
+    }
 }
 
 final class DesktopSessionActionsTests: XCTestCase {
