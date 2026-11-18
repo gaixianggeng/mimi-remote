@@ -66,9 +66,10 @@ public sealed class PageStateTests
         Assert.Equal(expected, ClientBuild.Parse(version).CanCheckUpdates);
 
     [Theory]
-    [InlineData(true, true, false)]
-    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
     [InlineData(false, true, true)]
-    public void 后台启动不在旧托盘旁弹出窗口(bool background, bool legacy, bool expected) =>
-        Assert.Equal(expected, ClientStartup.ShouldLaunch(background, legacy));
+    [InlineData(false, false, true)]
+    public void 登录后台启动只适用于已安装客户端(bool background, bool installed, bool expected) =>
+        Assert.Equal(expected, ClientStartup.ShouldLaunch(background, installed));
 }

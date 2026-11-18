@@ -3,7 +3,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
-    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <TargetPlatformMinVersion>10.0.19045.0</TargetPlatformMinVersion>
     <RootNamespace>MimiRemote.App</RootNamespace>
     <AssemblyName>MimiRemote</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -14,7 +14,7 @@
          代价是运行库随安装包分发，LICENSE 需要 GPLv3 第 7 节附加许可。 -->
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <!-- 非打包应用也要生成 resources.pri，否则 XamlControlsResources 加载失败会直接崩溃。 -->
+    <!-- 非打包应用也要生成 MimiRemote.pri，否则 XamlControlsResources 无法加载。 -->
     <EnableMsixTooling>true</EnableMsixTooling>
     <SelfContained>true</SelfContained>
     <Nullable>enable</Nullable>

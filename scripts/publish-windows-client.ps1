@@ -1,5 +1,9 @@
-[CmdletBinding()]
-param([string]$OutputDirectory)
+[CmdletBinding(DefaultParameterSetName = 'Preview')]
+param(
+    [Parameter(ParameterSetName = 'Preview')][string]$OutputDirectory,
+    [Parameter(Mandatory, ParameterSetName = 'Installer')][string]$PayloadDirectory,
+    [Parameter(Mandatory, ParameterSetName = 'Installer')][string]$Version
+)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $dotnet = Join-Path $env:ProgramFiles 'dotnet/dotnet.exe'
@@ -12,22 +16,37 @@ try {
         $env:MIMI_DOTNET_ARTIFACTS = (& $bash -c 'cygpath -w "$(bash ./scripts/development-cache-path.sh dotnet)"').Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve shared .NET cache.' }
     }
-    $output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $env:MIMI_DOTNET_ARTIFACTS 'previews' }
-    New-Item -ItemType Directory -Path $output -Force | Out-Null
-    $stage = Join-Path $output ('stage-' + [guid]::NewGuid().ToString('N'))
-    $commit = (& git rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve source commit.' }
-    $dirty = [bool](& git status --porcelain)
+    if ($PayloadDirectory) {
+        $stage = [IO.Path]::GetFullPath($PayloadDirectory)
+        if (Test-Path -LiteralPath $stage) { throw 'Installer client staging requires a new directory.' }
+        $versionArgs = @("-p:Version=$Version", "-p:InformationalVersion=$Version")
+    } else {
+        $output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $env:MIMI_DOTNET_ARTIFACTS 'previews' }
+        New-Item -ItemType Directory -Path $output -Force | Out-Null
+        $stage = Join-Path $output ('stage-' + [guid]::NewGuid().ToString('N'))
+        $versionArgs = @()
+    }
     $project = 'src/MimiRemote.App/MimiRemote.App.csproj'
     Push-Location (Join-Path $root 'windows')
     try {
         & $dotnet restore $project -p:Platform=x64 --locked-mode
         if ($LASTEXITCODE -ne 0) { throw 'Native client restore failed.' }
-        & $dotnet publish $project -c Release -p:Platform=x64 -p:DebugType=None -p:DebugSymbols=false -o $stage --no-restore
+        & $dotnet publish $project -c Release -p:Platform=x64 -p:DebugType=None -p:DebugSymbols=false -o $stage --no-restore @versionArgs
         if ($LASTEXITCODE -ne 0) { throw 'Native client publish failed.' }
         $assets = (& $dotnet msbuild $project -p:Platform=x64 -getProperty:ProjectAssetsFile -verbosity:quiet).Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve NuGet assets.' }
     } finally { Pop-Location }
+    $client = Join-Path $stage 'MimiRemote.exe'
+    & (Join-Path $PSScriptRoot 'check-windows-host-subsystem.ps1') -Path $client -Expected GUI
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'MimiRemote.pri') -PathType Leaf)) { throw 'Native client resources were not published.' }
+    & (Join-Path $PSScriptRoot 'copy-windows-client-notices.ps1') -AssetsPath $assets -Destination $stage
+    if ($PayloadDirectory) {
+        if ((Get-Item -LiteralPath $client).VersionInfo.ProductVersion -cne $Version) { throw 'Native client product version differs from the installer version.' }
+        return
+    }
+    $commit = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve source commit.' }
+    $dirty = [bool](& git status --porcelain)
     $goVersion = [regex]::Match((Get-Content -LiteralPath (Join-Path $root 'go.mod') -Raw), '(?m)^go ([0-9.]+)\s*$').Groups[1].Value
     if (-not $goVersion) { throw 'go.mod does not declare a toolchain version.' }
     $previousToolchain = $env:GOTOOLCHAIN
@@ -36,9 +55,7 @@ try {
         & go build -trimpath -ldflags "-s -w -X main.version=devel-$($commit.Substring(0, 8))" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
         if ($LASTEXITCODE -ne 0) { throw 'Preview CLI build failed.' }
     } finally { $env:GOTOOLCHAIN = $previousToolchain }
-    & (Join-Path $PSScriptRoot 'check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'MimiRemote.exe') -Expected GUI
     & (Join-Path $PSScriptRoot 'check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'agentd.exe') -Expected Console
-    & (Join-Path $PSScriptRoot 'copy-windows-client-notices.ps1') -AssetsPath $assets -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root 'packaging/windows/native-preview-readme.txt') -Destination (Join-Path $stage 'README.txt')
     $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object Extension -ne '.pdb')
     $manifest = [ordered]@{ source_commit = $commit; source_dirty = $dirty; preview = $true; signed = $false; files = @($files | ForEach-Object {

@@ -144,7 +144,6 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$env:RUNNER_TEMP\agentd.exe" ./cmd/agentd
-          go build -trimpath -ldflags "-s -w -H=windowsgui" -o "$env:RUNNER_TEMP\mimi-remote-tray.exe" ./cmd/mimi-remote-tray
 
       - name: Check Windows packaging policy
         shell: pwsh

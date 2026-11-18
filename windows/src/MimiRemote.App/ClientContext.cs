@@ -15,6 +15,7 @@ public sealed class ClientContext : IDisposable
     private int revision;
     private readonly SemaphoreSlim changes = new(1, 1);
     public bool Preview { get; }
+    internal DesktopInstallation? Installation { get; init; }
     internal bool PairAfterSetup { get; set; }
     internal DesktopPreferences Preferences { get; } = DesktopPreferences.Load();
     public Action Quit { get; set; } = () => { };

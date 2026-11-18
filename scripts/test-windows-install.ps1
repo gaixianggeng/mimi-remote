@@ -5,10 +5,12 @@ $RepositoryRoot = if ($RepositoryRoot) { $RepositoryRoot } else { Join-Path $PSS
 $root = (Resolve-Path $RepositoryRoot).Path
 $iss = Join-Path $root 'packaging\windows\mimi-remote.iss'
 $register = Join-Path $root 'packaging\windows\register-service.ps1'
+$desktop = Join-Path $root 'packaging\windows\stop-desktop.ps1'
 $firewall = Join-Path $root 'packaging\windows\configure-firewall.ps1'
 $signing = Join-Path $root 'packaging\windows\sign-authenticode.ps1'
 $icon = Join-Path $root 'packaging\windows\mimi-remote.ico'
 $build = Join-Path $root 'scripts\build-windows-installer.ps1'
+$clientPublish = Join-Path $root 'scripts\publish-windows-client.ps1'
 $check = Join-Path $root 'scripts\check-windows-installer.ps1'
 $releaseWorkflow = Join-Path $root '.github\workflows\release.yml'
 $windowsDocs = @(
@@ -16,10 +18,22 @@ $windowsDocs = @(
     (Join-Path $root 'README.zh-CN.md'),
     (Join-Path $root 'docs\install-upgrade-rollback.md')
 )
-foreach ($path in @($iss, $register, $firewall, $signing, $icon, $build, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
+foreach ($path in @($iss, $register, $desktop, $firewall, $signing, $icon, $build, $clientPublish, $check, $releaseWorkflow) + $windowsDocs) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing required packaging file: $path" } }
 $source = Get-Content -LiteralPath $iss -Raw
-foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'THIRD_PARTY_NOTICES.md', 'StopTailcatHelper', 'fmShareExclusive', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', '{userstartup}\Mimi Remote', 'Parameters: "--show"', 'register-service.ps1', 'configure-firewall.ps1', 'PrivilegesRequired=lowest', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
+foreach ($expected in @('{localappdata}\Programs\Mimi Remote', 'agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-tailcat-experiment.exe', 'THIRD_PARTY_NOTICES.md', 'StopTailcatHelper', 'fmShareExclusive', 'mimi-remote.ico', 'SetupIconFile=mimi-remote.ico', 'UninstallDisplayIcon={app}\mimi-remote.ico', 'IconFilename: "{app}\mimi-remote.ico"', 'register-service.ps1', 'configure-firewall.ps1', 'stop-desktop.ps1', 'PrivilegesRequired=lowest', 'MinVersion=10.0.19045', 'Flags: unchecked', 'GetCustomSetupExitCode', 'PrivateLanFirewallRule', 'PrivateLanNetworkProfileIsReady', 'StopTrayApp', 'ConfigureLANAccess(False)', 'ConfigureLANAccess(True)', 'OutputBaseFilename={#MyOutputBaseFilename}', 'SignTool={#MySignTool}', 'SignedUninstaller=yes', 'SignedUninstaller=no')) {
     if (-not $source.Contains($expected)) { throw "Installer source is missing required policy: $expected" }
+}
+foreach ($expected in @(
+    'Source: "{#SourceDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs',
+    'Source: "{#SourceDir}\stop-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion',
+    'Name: "{userstartup}\Mimi Remote"; Filename: "{app}\app\MimiRemote.exe"; Parameters: "--background"',
+    'Name: "{group}\Mimi Remote"; Filename: "{app}\app\MimiRemote.exe"',
+    'Filename: "{app}\app\MimiRemote.exe"; Parameters: "--pair"'
+)) {
+    if (-not $source.Contains($expected)) { throw "Installer is missing a native client entry: $expected" }
+}
+if ($source.Contains('Source: "{#SourceDir}\mimi-remote-tray.exe"') -or $source.Contains('Filename: "{app}\mimi-remote-tray.exe"')) {
+    throw 'Installer must ship and launch only the WinUI client.'
 }
 if ($source.Contains('no longer supports Windows as the agentd host') -or $source.Contains('function InitializeSetup(): Boolean')) {
     throw 'Windows installer must not reject the supported local host path before installation.'
@@ -42,10 +56,14 @@ if ($prepareSource.IndexOf('StopTailcatHelper;') -lt $prepareSource.IndexOf('Sto
 }
 foreach ($procedure in @('StopManagedService', 'StopTrayApp')) {
     $start = $source.IndexOf("procedure $procedure;")
-    $body = $source.Substring($start, $source.IndexOf('RaiseException', $start) - $start)
+    $body = $source.Substring($start, $source.IndexOf(([string][char]10 + 'end;'), $start) - $start)
     if (-not $body.Contains('ExecutableIsReleased(') -or $body.Contains('RenameFile(')) {
         throw "$procedure must wait for an exclusive open of the image; a rename succeeds while the process still runs."
     }
+}
+$desktopSource = Get-Content -LiteralPath $desktop -Raw
+foreach ($expected in @('app\MimiRemote.exe', 'mimi-remote-tray.exe', '$process.ExecutablePath -notin $images', '$process.SessionId -ne $session')) {
+    if (-not $desktopSource.Contains($expected)) { throw "Desktop shutdown is missing installed-image scoping: $expected" }
 }
 if ($source.IndexOf('function ExecutableIsReleased') -gt $source.IndexOf('procedure StopManagedService;')) {
     throw 'ExecutableIsReleased must be declared before the stop procedures that call it.'
@@ -118,7 +136,7 @@ foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateN
 }
 if ($source.Contains('[InstallDelete]')) { throw 'Installer must preserve the blanket InstallDelete prohibition.' }
 if (-not $source.Contains("DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'))")) { throw 'Upgrade must remove the legacy log shortcut explicitly.' }
-foreach ($script in @($register, $firewall, $signing, $build, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }
+foreach ($script in @($register, $desktop, $firewall, $signing, $build, $clientPublish, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }
 $buildSource = Get-Content -LiteralPath $build -Raw
 if (-not $buildSource.Contains('target-feature=+crt-static')) { throw 'Windows release bridge must use a static Rust CRT.' }
 if (-not $buildSource.Contains('--target=bun-windows-x64-baseline')) { throw 'Windows release must build the Claude adapter with the baseline Bun runtime.' }
@@ -127,13 +145,15 @@ if (-not $buildSource.Contains('/DMySignTool=mimi-authenticode')) { throw 'Relea
 if (-not $buildSource.Contains('[switch]$AllowUnsignedRelease')) { throw 'Unsigned release builds must require an explicit switch.' }
 if (-not $buildSource.Contains("'unsigned-release'")) { throw 'Unsigned release builds must record their signing mode in metadata.' }
 if (-not $buildSource.Contains('Mimi-Remote-Setup-$Version-unsigned')) { throw 'Unsigned release filenames must identify that they are unsigned.' }
-if (-not $buildSource.Contains('-X main.releaseVersion=$Version')) { throw 'Windows tray builds must embed the installer and GitHub Release version.' }
+if (-not $buildSource.Contains('-PayloadDirectory $clientDirectory -Version $Version')) { throw 'The installer must publish the native desktop payload at the release version.' }
+$clientPublishSource = Get-Content -LiteralPath $clientPublish -Raw
+if (-not $clientPublishSource.Contains('-p:InformationalVersion=$Version')) { throw 'WinUI must embed the installer and GitHub Release version.' }
 foreach ($expected in @('experiments\tailcat', "`$env:GOTOOLCHAIN = 'auto'", 'tailcat_version = $tailcatVersion', 'The signed Tailcat helper failed its version probe.', 'THIRD_PARTY_NOTICES.md')) {
     if (-not $buildSource.Contains($expected)) { throw "Windows installer build is missing the bundled Tailcat helper policy: $expected" }
 }
 $checkSource = Get-Content -LiteralPath $check -Raw
 if (-not $checkSource.Contains("'unsigned-release'")) { throw 'Installer validation must recognize unsigned release metadata.' }
-foreach ($expected in @('mimi-tailcat-experiment.exe', '$metadata.tailcat_version -ne $metadata.version', 'THIRD_PARTY_NOTICES.md', '$ExpectedVersion')) {
+foreach ($expected in @('mimi-tailcat-experiment.exe', 'app/MimiRemote.exe', '$metadata.tailcat_version -ne $metadata.version', '$metadata.client_version -ne $metadata.version', 'THIRD_PARTY_NOTICES.md', '$ExpectedVersion')) {
     if (-not $checkSource.Contains($expected)) { throw "Installer validation is missing the bundled Tailcat helper policy: $expected" }
 }
 $releaseSource = Get-Content -LiteralPath $releaseWorkflow -Raw

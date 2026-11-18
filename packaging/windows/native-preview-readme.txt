@@ -10,9 +10,9 @@ may reject the new relay command; the app displays that error in the current pag
 Synthetic UI data is available only when building from source in Debug configuration
 and passing --debug-seed-ui. This Release archive does not include that entry point.
 
-Closing the client does not stop the computer service. A new tray icon is suppressed
-while the previously installed Mimi Remote tray is still running.
-Background activation exits while the legacy tray is running; open the preview manually.
+Open the preview manually to inspect the client. The installed version owns
+login startup and the notification-area icon. Closing the preview leaves the
+computer service running.
 
 This preview is not an installer or an automatic update. Keep your existing installation.
 The complete first-install, upgrade and rollback flows are tracked separately.

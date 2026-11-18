@@ -14,6 +14,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public string ClientVersion => Context.Build.Display;
     public string ServiceVersion { get => serviceVersion; private set => SetProperty(ref serviceVersion, value); }
     public bool Login { get => login; set => SetProperty(ref login, value); }
+    public bool CanConfigureLogin => Context.Installation is not null;
     public bool Notifications { get => notifications; set => SetProperty(ref notifications, value); }
     public bool CanCheckUpdates => Context.Build.CanCheckUpdates && !Context.Preview;
     public string UpdateNote => CanCheckUpdates ? "仅安装通过摘要、Windows 信任链和发布者证书校验的正式版本。" : "开发预览，自动更新将在正式安装版启用。";
@@ -25,12 +26,13 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public IRelayCommand NotifyCommand { get; }
     public SettingsViewModel(ClientContext context) : base(context)
     {
-        login = !context.Preview && DesktopPreferences.LoginEnabled;
+        login = context.Installation is not null && DesktopInstallation.LoginEnabled;
         notifications = context.Preferences.NotificationsEnabled;
         SaveCommand = new AsyncRelayCommand(() => RunAsync(() =>
         {
             if (Context.Preview) { throw new InvalidOperationException("界面预览不会保存设置。"); }
-            DesktopPreferences.LoginEnabled = Login;
+            if (Context.Installation is { } installation && Login != DesktopInstallation.LoginEnabled)
+            { installation.SetLoginEnabled(Login); }
             Context.Preferences.NotificationsEnabled = Notifications;
             Context.Preferences.Save(); Report("设置已保存。"); return Task.CompletedTask;
         }));

@@ -24,6 +24,7 @@ DefaultDirName={localappdata}\Programs\Mimi Remote
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+MinVersion=10.0.19045
 OutputDir={#OutputDir}
 OutputBaseFilename={#MyOutputBaseFilename}
 Compression=lzma2/ultra64
@@ -43,11 +44,12 @@ SignedUninstaller=no
 #endif
 
 [Files]
+Source: "{#SourceDir}\stop-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\agentd.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-agent-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-claude-adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\alleycat-claude-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#SourceDir}\mimi-remote-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\mimi-tailcat-experiment.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -55,14 +57,14 @@ Source: "register-service.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 
 [Icons]
-Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
-Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
+Name: "{userstartup}\Mimi Remote"; Filename: "{app}\app\MimiRemote.exe"; Parameters: "--background"; WorkingDir: "{app}\app"; IconFilename: "{app}\mimi-remote.ico"; Check: DesktopStartupEnabled
+Name: "{group}\Mimi Remote"; Filename: "{app}\app\MimiRemote.exe"; WorkingDir: "{app}\app"; IconFilename: "{app}\mimi-remote.ico"
 
 [Tasks]
 Name: "lanfirewall"; Description: "Allow private LAN access (Private networks / LocalSubnet only)"; Flags: unchecked
 
 [Run]
-Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--pair"; Description: "Launch Mimi Remote in the notification area"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\app\MimiRemote.exe"; Parameters: "--pair"; WorkingDir: "{app}\app"; Description: "Launch Mimi Remote"; Flags: postinstall nowait skipifsilent
 
 [Code]
 const
@@ -70,6 +72,9 @@ const
   FirewallRuleName = 'Mimi Remote agentd (Private LAN)';
   ProductRegistryKey = 'Software\Mimi Remote';
   FirewallMarkerName = 'PrivateLanFirewallRule';
+  DesktopStartupMarker = 'DesktopStartupDisabled';
+  PreviewRunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  PreviewRunValue = 'MimiRemoteNative';
 
 var
   PostInstallFailed: Boolean;
@@ -157,26 +162,51 @@ procedure StopTrayApp;
 var
   ResultCode: Integer;
   Attempt: Integer;
-  TrayPath: String;
+  TrayPath, NativePath, ScriptPath, Parameters: String;
 begin
   TrayPath := ExpandConstant('{app}\mimi-remote-tray.exe');
-  if not FileExists(TrayPath) then
+  NativePath := ExpandConstant('{app}\app\MimiRemote.exe');
+  if not (FileExists(TrayPath) or FileExists(NativePath)) then
     Exit;
-
-  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t', ResultCode);
-  for Attempt := 1 to 30 do begin
-    if ExecutableIsReleased(TrayPath) then
-      Exit;
-    Sleep(100);
+  if IsUninstaller then
+    ScriptPath := ExpandConstant('{app}\stop-desktop.ps1')
+  else begin
+    ExtractTemporaryFile('stop-desktop.ps1');
+    ScriptPath := ExpandConstant('{tmp}\stop-desktop.ps1');
   end;
-
-  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t /f', ResultCode);
+  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
+    Quote(ScriptPath) + ' -InstallPath ' + Quote(AddBackslash(ExpandConstant('{app}')) + '.');
+  if not ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) or
+     (ResultCode <> 0) then begin
+    RaiseException('Unable to stop the installed Mimi Remote client.');
+  end;
   for Attempt := 1 to 50 do begin
-    if ExecutableIsReleased(TrayPath) then
+    if ((not FileExists(TrayPath)) or ExecutableIsReleased(TrayPath)) and
+       ((not FileExists(NativePath)) or ExecutableIsReleased(NativePath)) then
       Exit;
     Sleep(100);
   end;
-  RaiseException('Mimi Remote tray did not stop within 8 seconds.');
+  RaiseException('Mimi Remote client did not stop within 5 seconds.');
+end;
+
+function DesktopStartupEnabled: Boolean;
+var
+  Disabled: Cardinal;
+begin
+  Result := not (RegQueryDWordValue(HKCU, ProductRegistryKey, DesktopStartupMarker, Disabled) and (Disabled = 1));
+end;
+
+procedure FinalizeDesktopMigration;
+var
+  LegacyPath: String;
+begin
+  // A successful upgrade removes the marker the WinUI client uses to detect a downgrade.
+  LegacyPath := ExpandConstant('{app}\mimi-remote-tray.exe');
+  if FileExists(LegacyPath) and not DeleteFile(LegacyPath) then
+    RaiseException('Unable to remove the old Mimi Remote tray.');
+  if not DesktopStartupEnabled then
+    DeleteFile(ExpandConstant('{userstartup}\Mimi Remote.lnk'));
+  RegDeleteValue(HKCU, PreviewRunKey, PreviewRunValue);
 end;
 
 procedure StopAgentHost;
@@ -404,6 +434,7 @@ begin
         RegDeleteKeyIfEmpty(HKCU, ProductRegistryKey);
       end;
     end;
+    FinalizeDesktopMigration;
   end;
 end;
 
@@ -416,6 +447,7 @@ begin
     StopAgentHost;
     StopTailcatHelper;
     StopTrayApp;
+    DeleteFile(ExpandConstant('{userstartup}\Mimi Remote.lnk'));
     RemoveScheduledTask;
     if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and
        (FirewallMarker = 1) then begin

@@ -9,6 +9,8 @@ public sealed partial class App : Application, IDisposable
     public static ClientContext Services { get; private set; } = null!;
     private MainWindow? window;
     private AppInstance? instance;
+    private Mutex? trayOwnership;
+    private FileSystemWatcher? legacyTrayWatcher;
     private bool disposed;
 
     public App() { InitializeComponent(); }
@@ -21,9 +23,9 @@ public sealed partial class App : Application, IDisposable
         preview = arguments.Contains("--debug-seed-ui", StringComparer.Ordinal);
 #endif
         var background = arguments.Contains("--background", StringComparer.Ordinal);
-        var legacyTray = System.Diagnostics.Process.GetProcessesByName("mimi-remote-tray").Length > 0;
-        if (!preview && !ClientStartup.ShouldLaunch(background, legacyTray)) { Exit(); return; }
-        instance = AppInstance.FindOrRegisterForKey(preview ? "MimiRemote.Preview" : "MimiRemote.Native");
+        var installation = preview ? null : DesktopInstallation.Find();
+        if (installation?.LegacyTrayExists == true || !ClientStartup.ShouldLaunch(background, installation is not null)) { Exit(); return; }
+        instance = AppInstance.FindOrRegisterForKey(installation is null ? "MimiRemote.Preview" : "MimiRemote.Installed");
         if (!instance.IsCurrent)
         {
             await instance.RedirectActivationToAsync(AppInstance.GetCurrent().GetActivatedEventArgs());
@@ -38,12 +40,19 @@ public sealed partial class App : Application, IDisposable
                 launch.Arguments.Contains("--pair", StringComparison.Ordinal);
             window?.DispatcherQueue.TryEnqueue(() => { if (pair) { window.ShowPage("pair"); } else { window.ShowHome(); } });
         };
-        Services = new ClientContext(preview);
+        if (installation is not null)
+        {
+            // The old Go tray uses the existence of this mutex as its single-instance check.
+            trayOwnership = new Mutex(false, DesktopInstallation.TrayMutexName, out var created);
+            if (!created) { Dispose(); Exit(); return; }
+        }
+        Services = new ClientContext(preview) { Installation = installation };
         window = new MainWindow(Services);
         window.Closed += (_, _) => Dispose();
-        // During the preview period the installed Go tray remains the only tray icon.
-        if (!preview && !legacyTray)
+        if (installation is not null)
         {
+            WatchForLegacyTray(installation, window);
+            if (installation.LegacyTrayExists) { window.Quit(); return; }
             window.InitializeTray();
         }
         if (Environment.GetCommandLineArgs().Contains("--pair", StringComparer.Ordinal)) { window.ShowPage("pair"); }
@@ -51,11 +60,30 @@ public sealed partial class App : Application, IDisposable
         else { window.Activate(); }
     }
 
+    private void WatchForLegacyTray(DesktopInstallation installation, MainWindow target)
+    {
+        // Older installers leave app\ alone but restore the legacy executable at the root.
+        void Check() => target.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!disposed && installation.LegacyTrayExists) { target.Quit(); }
+        });
+        legacyTrayWatcher = new FileSystemWatcher(installation.DirectoryPath, DesktopInstallation.LegacyTrayName)
+        {
+            NotifyFilter = NotifyFilters.FileName
+        };
+        legacyTrayWatcher.Created += (_, _) => Check();
+        legacyTrayWatcher.Renamed += (_, _) => Check();
+        legacyTrayWatcher.Error += (_, _) => Check();
+        legacyTrayWatcher.EnableRaisingEvents = true;
+    }
+
     public void Dispose()
     {
         if (disposed) { return; }
         disposed = true;
+        legacyTrayWatcher?.Dispose();
         window?.Dispose();
         window = null;
+        trayOwnership?.Dispose();
     }
 }
