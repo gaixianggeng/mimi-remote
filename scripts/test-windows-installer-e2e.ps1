@@ -3,7 +3,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
-    $env:GITHUB_REPOSITORY -ne 'gaixianggeng/mimi-remote' -or $env:GITHUB_REF -ne 'refs/heads/codex/gh-979-installer-acceptance') {
+    $env:GITHUB_REPOSITORY -ne 'gaixianggeng/mimi-remote' -or $env:GITHUB_REF -ne 'refs/heads/codex/gh-979-signing-acceptance' -or
+    $env:MIMI_FIXTURE_THUMBPRINT -notmatch '^[0-9A-F]{40}$') {
     throw 'This test intentionally changes the installed app and task. Run only on the dedicated GitHub-hosted Windows VM.'
 }
 
@@ -13,7 +14,7 @@ $configDir = Join-Path $env:APPDATA 'mimi-remote'
 $out = Join-Path $env:RUNNER_TEMP 'installer-acceptance'
 $oldName = 'Mimi-Remote-Setup-1.1.14-unsigned.exe'
 $old = Join-Path $out $oldName
-$new = Join-Path $out 'Mimi-Remote-Setup-1.1.15-acceptance-unsigned.exe'
+$new = Join-Path $out 'Mimi-Remote-Setup-1.1.15-acceptance.exe'
 $exe = Join-Path $install 'agentd.exe'
 $native = Join-Path $install 'app/MimiRemote.exe'
 $legacy = Join-Path $install 'mimi-remote-tray.exe'
@@ -227,18 +228,30 @@ function Start-LegacyTray {
     Write-Host 'Legacy login and Start menu shortcuts restored. Legacy tray initialized.'
 }
 
+function Assert-FixtureSignatures([string[]]$Paths) {
+    foreach ($path in $Paths) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $path
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $env:MIMI_FIXTURE_THUMBPRINT -or
+            $null -eq $signature.TimeStamperCertificate) {
+            throw "Missing trusted, timestamped fixture signature on $([IO.Path]::GetFileName($path)): $($signature.Status)"
+        }
+    }
+    Write-Host "Verified timestamped fixture signatures for $($Paths.Count) executable(s)."
+}
+
 function Assert-NativePayload {
     if ((Test-Path -LiteralPath $legacy) -or (Get-ItemProperty -LiteralPath $runKey -Name MimiRemoteNative -ErrorAction SilentlyContinue)) {
         throw 'The upgrade retained a legacy tray image or obsolete preview Run entry.'
     }
     $metadata = Get-Content -LiteralPath "$new.metadata.json" -Raw | ConvertFrom-Json -AsHashtable
-    if ($metadata.signing -ne 'unsigned-release' -or (Get-Item -LiteralPath $native).VersionInfo.ProductVersion -ne $metadata.version) {
+    if ($metadata.signing -ne 'authenticode-pfx' -or (Get-Item -LiteralPath $native).VersionInfo.ProductVersion -ne $metadata.version) {
         throw 'The installed desktop version is inconsistent with the release metadata.'
     }
     foreach ($entry in $metadata.payload_sha256.GetEnumerator()) {
         $file = Join-Path $install $entry.Key
         if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Value) { throw "Installed payload differs: $($entry.Key)" }
     }
+    Assert-FixtureSignatures (@($new) + @($metadata.binaries | ForEach-Object { Join-Path $install $_ }))
     Write-Host "Installed payload matches all $($metadata.payload_sha256.Count) manifest hashes."
 }
 
@@ -323,6 +336,7 @@ Write-Host 'Repair preserved the disabled login preference and the Start menu la
 
 $uninstaller = Get-ChildItem -LiteralPath $install -Filter 'unins*.exe' | Select-Object -First 1
 if (-not $uninstaller) { throw 'No uninstaller was registered.' }
+Assert-FixtureSignatures @($uninstaller.FullName)
 Invoke-Installer $uninstaller.FullName 'Uninstall snapshot' -Uninstall
 for ($attempt = 0; $attempt -lt 20 -and (Test-Path -LiteralPath $exe); $attempt++) { Start-Sleep -Milliseconds 250 }
 if ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) -or

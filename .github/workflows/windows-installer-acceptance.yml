@@ -1,8 +1,8 @@
-name: Windows installer isolated acceptance
+name: Windows installer signing fixture
 
 on:
   push:
-    branches: [codex/gh-979-installer-acceptance]
+    branches: [codex/gh-979-signing-acceptance]
 
 permissions:
   contents: read
@@ -33,23 +33,43 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v${{ steps.bun.outputs.version }}/bun-windows-x64-baseline.zip
-      - name: Build and verify unsigned release candidate
+      - name: Verify signing, installation, and rollback with a VM-local fixture certificate
         shell: pwsh
         run: |
-          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Requires an isolated GitHub VM' }
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:GITHUB_REF -ne 'refs/heads/codex/gh-979-signing-acceptance') {
+            throw 'Requires the dedicated GitHub-hosted test VM'
+          }
           choco install innosetup --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
           $env:MIMI_DOTNET_ARTIFACTS = Join-Path $env:RUNNER_TEMP 'dotnet'
           $output = Join-Path $env:RUNNER_TEMP 'installer-acceptance'
-          ./scripts/build-windows-installer.ps1 -Version 1.1.15-acceptance -OutputDirectory $output -AllowUnsignedRelease
-          ./scripts/check-windows-installer.ps1 -InstallerPath (Join-Path $output 'Mimi-Remote-Setup-1.1.15-acceptance-unsigned.exe') -ExpectedVersion 1.1.15-acceptance
-      - name: Install, upgrade, roll back, and uninstall in the disposable VM
-        shell: pwsh
-        run: |
-          try { ./scripts/test-windows-installer-e2e.ps1 }
-          catch {
-            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
-              Where-Object { $_.Message -match 'MimiRemote\.exe|mimi-remote-tray\.exe' } |
-              Select-Object -First 5 -ExpandProperty Message | Write-Host
-            throw
+          $cer = Join-Path $env:RUNNER_TEMP 'mimi-signing-fixture.cer'
+          $pfx = Join-Path $env:RUNNER_TEMP 'mimi-signing-fixture.pfx'
+          $password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+          $fixture = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Mimi Remote CI Signing Fixture' -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(1)
+          $env:MIMI_FIXTURE_THUMBPRINT = $fixture.Thumbprint
+          try {
+            Export-Certificate -Cert $fixture -FilePath $cer | Out-Null
+            Export-PfxCertificate -Cert $fixture -FilePath $pfx -Password (ConvertTo-SecureString $password -AsPlainText -Force) | Out-Null
+            Import-Certificate -FilePath $cer -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+            Write-Host 'Signing certificate is a disposable fixture trusted only inside this VM.'
+            ./scripts/build-windows-installer.ps1 -Version 1.1.15-acceptance -OutputDirectory $output -PfxPath $pfx -PfxPassword $password
+            ./scripts/check-windows-installer.ps1 -InstallerPath (Join-Path $output 'Mimi-Remote-Setup-1.1.15-acceptance.exe') -ExpectedVersion 1.1.15-acceptance -RequireSignature
+            ./scripts/test-windows-installer-e2e.ps1
+          } finally {
+            Remove-Item -LiteralPath $pfx,$cer -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($fixture.Thumbprint)","Cert:\CurrentUser\Root\$($fixture.Thumbprint)" -Force -ErrorAction SilentlyContinue
           }
+  desktop-capacity:
+    if: github.repository == 'gaixianggeng/mimi-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check virtualization and storage on a disposable standard runner
+        run: |
+          if [[ -c /dev/kvm ]]; then
+            sudo -n python3 -c 'import os, fcntl; fd = os.open("/dev/kvm", os.O_RDWR); print("KVM API:", fcntl.ioctl(fd, 0xAE00, 0)); os.close(fd)'
+          else
+            echo 'KVM device is absent.'
+          fi
+          df -BG --output=target,avail "$RUNNER_TEMP" /mnt
