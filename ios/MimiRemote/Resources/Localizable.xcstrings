@@ -8693,6 +8693,74 @@
         }
       }
     },
+    "ui.connection_conditional_tailscale_guidance": {
+      "comment": "Conditional connection failure guidance when the connection route is unknown.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current device cannot find this computer. Confirm that Mimi Remote is running on it. If using the local network, make sure both devices are on the same Wi-Fi; if using Tailscale, make sure it is connected on both devices."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行；如果使用同一局域网，请确认两台设备在同一 Wi-Fi；如果使用 Tailscale，请确认两端都已连接。"
+          }
+        }
+      }
+    },
+    "ui.connection_credentials_saved_load_failed_https": {
+      "comment": "Post-commit guidance when HTTPS credentials are saved but loading workspaces/sessions times out.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection credentials have been saved safely, but the project and session cannot be loaded at this time. Confirm that Mimi Remote is running on your computer and the current network can reach this HTTPS address, then try again without rescanning the QR code."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接凭据已安全保存，但暂时无法加载项目和会话。请确认电脑上的 Mimi Remote 正在运行且当前网络可访问该 HTTPS 地址后重试，无需重新扫码。"
+          }
+        }
+      }
+    },
+    "ui.connection_credentials_saved_load_failed_lan": {
+      "comment": "Post-commit guidance when LAN credentials are saved but loading workspaces/sessions times out.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection credentials have been saved safely, but the project and session cannot be loaded at this time. Confirm that Mimi Remote is running on your computer and both devices are on the same local network, then try again without rescanning the QR code."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接凭据已安全保存，但暂时无法加载项目和会话。请确认电脑上的 Mimi Remote 正在运行且两台设备仍在同一局域网后重试，无需重新扫码。"
+          }
+        }
+      }
+    },
+    "ui.connection_credentials_saved_load_failed_tailcat": {
+      "comment": "Post-commit guidance when Tailcat credentials are saved but loading workspaces/sessions times out.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection credentials have been saved safely, but the project and session cannot be loaded at this time. Confirm that Mimi Remote is running on your computer and both devices have a working network connection, then try again without rescanning the QR code."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接凭据已安全保存，但暂时无法加载项目和会话。请确认电脑上的 Mimi Remote 正在运行且两端网络连接正常后重试，无需重新扫码。"
+          }
+        }
+      }
+    },
     "ui.connection_diagnostics": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -8723,6 +8791,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "连接失败"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_guidance_custom_tailcat": {
+      "comment": "Connection failure guidance when a built-in or self-hosted Tailcat route cannot reach the computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot connect to this computer right now. Confirm that Mimi Remote is running on it, both devices can access the internet, and the selected relay service is available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时连不上这台电脑。请确认电脑上的 Mimi Remote 正在运行、两台设备都能正常上网，且所选中转服务可用。"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_guidance_https": {
+      "comment": "Connection failure guidance when an HTTPS route cannot reach the computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current device cannot connect to this computer right now. Confirm that Mimi Remote is running on it and that the current network can reach this HTTPS address."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备暂时连不上这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且当前网络可以访问该 HTTPS 地址。"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_guidance_lan": {
+      "comment": "Connection failure guidance when a local-network (LAN / Wi-Fi) route cannot reach the computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The current device cannot find this computer. Confirm that Mimi Remote is running on it and that both devices are on the same local network (Wi-Fi)."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且两台设备连接在同一局域网（同一 Wi-Fi）。"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_guidance_managed_tailcat": {
+      "comment": "Connection failure guidance when a Mimi Relay (managed Tailcat) route cannot reach the computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot connect to this computer right now. Confirm that Mimi Remote is running on it and that both devices can access the internet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时连不上这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且两台设备都能正常上网。"
           }
         }
       }

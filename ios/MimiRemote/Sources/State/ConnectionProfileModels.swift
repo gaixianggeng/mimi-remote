@@ -146,13 +146,66 @@ enum ConnectionProfileRoute: String, Codable, Equatable {
         endpoint: String,
         tailscaleDNSName: String? = nil
     ) -> ConnectionProfileRoute {
-        if ConnectionProfile.isTailscaleIPEndpoint(endpoint) || tailscaleDNSName != nil {
+        if ConnectionProfile.isTailscaleIPEndpoint(endpoint) ||
+            ConnectionProfile.normalizedTailscaleDNSName(URLComponents(string: endpoint)?.host) != nil ||
+            tailscaleDNSName != nil {
             return .tailscale
         }
         if URLComponents(string: endpoint)?.scheme?.lowercased() == "https" {
             return .https
         }
         return .lan
+    }
+
+    /// 从用户输入的地址或配对链接中的 endpoint 识别连接类型；地址无效或为空时返回 nil，
+    /// 避免把空输入、格式错误的链接误归类为局域网。
+    static func fromEndpoint(
+        _ rawEndpoint: String?,
+        tailscaleDNSName: String? = nil
+    ) -> ConnectionProfileRoute? {
+        guard let rawEndpoint else { return nil }
+        let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let validated = try? EndpointTransportPolicy.validatedEndpoint(trimmed) else {
+            return nil
+        }
+        return configuredValue(
+            endpoint: validated,
+            tailscaleDNSName: ConnectionProfile.normalizedTailscaleDNSName(tailscaleDNSName)
+        )
+    }
+
+    /// 从配对二维码或连接转移链接识别目标连接类型。
+    static func fromPairingURL(_ url: URL) -> ConnectionProfileRoute? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "mimiremote" else {
+            return nil
+        }
+        let items = components.queryItems ?? []
+        let transport = items.first(where: { $0.name == "transport" })?.value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if transport == "tailcat" {
+            if RelayServiceChoice.fromPairingURL(url) == .mimi {
+                return .managedTailcat
+            }
+            let hasManagedID = !(items.first(where: { $0.name == "managed_mac_installation_id" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            let hasManagedKey = !(items.first(where: { $0.name == "managed_mac_tailcat_public_key" })?.value?
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            return (hasManagedID && hasManagedKey) ? .managedTailcat : .customTailcat
+        }
+        let endpoint = items.first(where: { $0.name == "endpoint" })?.value
+        let tailscaleDNSName = items.first(where: { $0.name == "tailscale_dns_name" })?.value
+        return fromEndpoint(endpoint, tailscaleDNSName: tailscaleDNSName)
+    }
+
+    static func fromPairingInput(_ rawValue: String) -> ConnectionProfileRoute? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed) else {
+            return nil
+        }
+        return fromPairingURL(url)
     }
 
     // 只保留给旧测试和调用点的源码兼容别名；新版持久化永远写入明确类型。
@@ -623,6 +676,35 @@ enum ConnectionProfileError: LocalizedError, Equatable {
             return L10n.text("ui.mac_name_cannot_be_empty")
         case .displayNameTooLong(let maximum):
             return L10n.format("ui.mac_name_can_be_up_to_value_characters", maximum)
+        }
+    }
+
+    static func isUserFacingMessage(_ message: String) -> Bool {
+        let fixedMessages = [
+            Self.notFound,
+            .missingToken,
+            .installationIdentityRequired,
+            .preparedContextExpired,
+            .preparedContextConsumed,
+            .preparedContextMismatch,
+            .cannotDeleteCurrent,
+            .operationInProgress,
+            .invalidDisplayName,
+        ].compactMap(\.errorDescription)
+        if fixedMessages.contains(message) {
+            return true
+        }
+        let sentinel = "\u{0000}"
+        let templates = [
+            L10n.format("ui.mac_installation_identity_mismatch", sentinel),
+            L10n.format("ui.mac_already_saved_as_value", sentinel),
+            L10n.format("ui.mac_name_can_be_up_to_value_characters", sentinel),
+        ]
+        return templates.contains { template in
+            let parts = template.components(separatedBy: sentinel)
+            guard parts.count == 2 else { return false }
+            return message.hasPrefix(parts[0]) && message.hasSuffix(parts[1]) &&
+                message.count > parts[0].count + parts[1].count
         }
     }
 }

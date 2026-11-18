@@ -77,7 +77,9 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var pendingRemovalConfirmation: ConnectionCredentialRemovalConfirmation?
     @Published var isShowingAdvancedManualConnection = false
     @Published var localError: String?
+    @Published var localErrorRoute: ConnectionProfileRoute?
     @Published var addComputerError: String?
+    @Published var addComputerErrorRoute: ConnectionProfileRoute?
     @Published var copyingConnectionProfileID: String?
     @Published var copiedConnectionProfileID: String?
     // 设备首页线路行的探测状态放草稿里，Section 重建或旋转都不丢。
@@ -94,6 +96,7 @@ final class ConnectionSettingsDraft: ObservableObject {
 
     func beginAddingComputer() {
         addComputerError = nil
+        addComputerErrorRoute = nil
     }
 
     /// 旋转只重建页面，不会改变来源值，因此保留用户输入。外部连接切换或凭据更新时，
@@ -119,7 +122,9 @@ final class ConnectionSettingsDraft: ObservableObject {
         pendingRemovalConfirmation = nil
         isShowingAdvancedManualConnection = false
         localError = nil
+        localErrorRoute = nil
         addComputerError = nil
+        addComputerErrorRoute = nil
         return true
     }
 }

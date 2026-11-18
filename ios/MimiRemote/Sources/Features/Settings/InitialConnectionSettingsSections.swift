@@ -37,6 +37,11 @@ enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
         self == .addConnectionProfile
     }
 
+    var isRepair: Bool {
+        if case .repairCurrentProfile = self { return true }
+        return false
+    }
+
     func isValid(activeProfileID: String?) -> Bool {
         switch self {
         case .initialConnection:
@@ -257,28 +262,35 @@ struct InitialConnectionSettingsSections: View {
     }
     private var localError: String? {
         get { draft.localError }
-        nonmutating set { draft.localError = newValue }
+        nonmutating set {
+            draft.localError = newValue
+            if newValue == nil {
+                draft.localErrorRoute = nil
+            }
+        }
     }
     /// 首次连接也渲染在设备页；连接尝试按页面用途写入对应错误，设备管理的迟到结果
     /// 仍写 localError，不能覆盖正在添加电脑时的粘贴或扫码反馈。
     private var connectionAttemptError: String? {
         get { showsAddComputerError ? draft.addComputerError : draft.localError }
         nonmutating set {
-            if showsAddComputerError {
-                draft.addComputerError = newValue
-            } else {
-                draft.localError = newValue
-            }
+            setConnectionAttemptError(newValue, route: nil, forAddComputer: showsAddComputerError)
         }
     }
     private var showsAddComputerError: Bool {
         mode == .addComputer || appStore.connectionProfiles.isEmpty
     }
-    private func setConnectionAttemptError(_ error: String?, forAddComputer: Bool) {
+    private func setConnectionAttemptError(
+        _ error: String?,
+        route: ConnectionProfileRoute? = nil,
+        forAddComputer: Bool
+    ) {
         if forAddComputer {
             draft.addComputerError = error
+            draft.addComputerErrorRoute = error == nil ? nil : route
         } else {
             draft.localError = error
+            draft.localErrorRoute = error == nil ? nil : route
         }
     }
     private var copyingConnectionProfileID: String? {
@@ -336,9 +348,13 @@ struct InitialConnectionSettingsSections: View {
             case .idle:
                 return
             case .connecting:
-                connectionAttemptError = nil
+                setConnectionAttemptError(nil, route: nil, forAddComputer: showsAddComputerError)
             case .failed(let message):
-                connectionAttemptError = message
+                setConnectionAttemptError(
+                    message,
+                    route: sessionStore.lastPairingLinkRoute,
+                    forAddComputer: showsAddComputerError
+                )
                 sessionStore.pairingLinkAttempt = .idle
             }
         }
@@ -375,6 +391,7 @@ struct InitialConnectionSettingsSections: View {
     private func preflightConnectionIfNeeded() async {
         guard probesRouteAutomatically, mode == .deviceHome,
               appStore.isConfigured, !appStore.requiresRePairing else { return }
+        sessionStore.lastPairingLinkRoute = nil
         _ = await appStore.preflightConnection()
     }
 
@@ -405,7 +422,14 @@ struct InitialConnectionSettingsSections: View {
         } else if !model.others.isEmpty {
             // 忘记当前电脑后仍会留下已保存的其它电脑；此时由这一组承接确认弹窗。
             // 没有当前电脑卡片可挂错误行，外部链接配对失败等本页反馈单独成组显示（#959）。
-            if let message = localError.map({ friendlyConnectionMessage($0, honorsActiveConnectionTermination: false) }) {
+            if let message = localError.map({
+                ConnectionFailureGuidance.friendlyMessage(
+                    from: $0,
+                    route: draft.localErrorRoute ?? sessionStore.lastPairingLinkRoute,
+                    activeTermination: nil,
+                    tailcatExperimentEnabled: false
+                )
+            }) {
                 Section {
                     connectionErrorMessageRow(message, tokens: tokens)
                 }
@@ -1421,7 +1445,12 @@ struct InitialConnectionSettingsSections: View {
     /// 还会把新产生的粘贴错误盖掉。设备首页保留全局口径不变，那里两者确实指向同一台电脑。
     private var addComputerErrorMessage: String? {
         guard let raw = draft.addComputerError else { return nil }
-        return friendlyConnectionMessage(raw, honorsActiveConnectionTermination: false)
+        return ConnectionFailureGuidance.friendlyMessage(
+            from: raw,
+            route: draft.addComputerErrorRoute,
+            activeTermination: nil,
+            tailcatExperimentEnabled: false
+        )
     }
 
     private var displayErrorMessage: String? {
@@ -1430,71 +1459,23 @@ struct InitialConnectionSettingsSections: View {
         if localError == nil, sessionStore.isEstablishingConnection {
             return nil
         }
-        guard let raw = appStore.lastError ?? localError else {
+        if let localError {
+            return ConnectionFailureGuidance.friendlyMessage(
+                from: localError,
+                route: draft.localErrorRoute ?? currentConnectionRoute,
+                activeTermination: draft.localErrorRoute == nil ? appStore.connectionTermination : nil,
+                tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled
+            )
+        }
+        guard let raw = appStore.lastError else {
             return nil
         }
-        return friendlyConnectionMessage(raw)
-    }
-
-    /// `honorsActiveConnectionTermination` 为 false 时不把「当前这台电脑凭据失效」的终态
-    /// 盖到传入的错误上。添加电脑页必须关掉它：那条终态属于设备页正在用的那台电脑，
-    /// 一旦生效，用户粘贴一个空剪贴板或扫描一张过期二维码都会收到「访问码已过期」（#557 评审）。
-    private func friendlyConnectionMessage(
-        _ raw: String,
-        honorsActiveConnectionTermination: Bool = true
-    ) -> String {
-        if honorsActiveConnectionTermination, let termination = appStore.connectionTermination {
-            return termination.message
-        }
-        if raw == L10n.text("ui.clipboard_does_not_contain_connection_info") ||
-            HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
-            TailcatPairingError.isUserFacingMessage(raw) {
-            return raw
-        }
-        let lowercased = raw.lowercased()
-        if lowercased.contains("expired") || raw.contains("过期") {
-            // 走到这里时已不知道二维码属于哪台电脑，只能给覆盖各平台的说法。
-            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
-        }
-        if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
-            return L10n.text("ui.this_device_has_not_been_verified_by_mac")
-        }
-        if lowercased.contains("timed out") || lowercased.contains("cannot connect") || raw.contains("无法连接") {
-            if appStore.isTailcatExperimentModeEnabled {
-                return L10n.text("ui.please_check_mac_assistant_and_network_connections")
-            }
-            return L10n.text("ui.the_current_device_cannot_find_this_mac_at")
-        }
-        if raw == L10n.text("ui.the_connection_credentials_have_been_saved_safely_but") ||
-            raw.contains("连接凭据已安全保存") {
-            // Old builds persisted this message in Chinese. Always return the current locale's
-            // copy so an English screen never echoes that legacy raw value.
-            return L10n.text("ui.the_connection_credentials_have_been_saved_safely_but")
-        }
-        let localizedConnectionLinkKeys = [
-            "ui.clipboard_does_not_contain_connection_info",
-            "ui.invalid_connection_link",
-            "ui.the_connection_link_is_missing_the_access_code",
-            "ui.the_link_is_missing_an_address",
-            "ui.the_connection_address_format_is_invalid",
-            "ui.the_connection_address_is_invalid_please_enter_the"
-        ]
-        if localizedConnectionLinkKeys.contains(where: { raw == L10n.text($0) }) || raw.contains("Endpoint") {
-            return raw
-        }
-        if raw.contains("连接链接缺少访问码") {
-            return L10n.text("ui.the_connection_link_is_missing_the_access_code")
-        }
-        if raw.contains("连接链接缺少地址") {
-            return L10n.text("ui.the_link_is_missing_an_address")
-        }
-        if raw.contains("连接地址格式无效") {
-            return L10n.text("ui.the_connection_address_format_is_invalid")
-        }
-        if raw.contains("连接地址") || raw.contains("连接链接") {
-            return L10n.text("ui.invalid_connection_link")
-        }
-        return L10n.text("ui.the_connection_was_not_completed_please_confirm_that")
+        return ConnectionFailureGuidance.friendlyMessage(
+            from: raw,
+            route: sessionStore.lastPairingLinkRoute ?? currentConnectionRoute,
+            activeTermination: appStore.connectionTermination,
+            tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled
+        )
     }
 
     private func loadInitialConnectionIfNeeded() {
@@ -1518,6 +1499,7 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func beginScanningHost() {
+        setConnectionAttemptError(nil, route: nil, forAddComputer: showsAddComputerError)
         let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
             ? .initialConnection
             : .addConnectionProfile
@@ -1600,6 +1582,7 @@ struct InitialConnectionSettingsSections: View {
             localError = L10n.text("ui.the_current_mac_has_changed_please_try_again")
             return
         }
+        setConnectionAttemptError(nil, route: nil, forAddComputer: false)
         pendingManualConnectionIntent = nil
         qrScannerPresentation.request(
             .repairCurrentProfile(expectedProfileID: activeProfileID),
@@ -1645,6 +1628,8 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func switchConnectionProfile(id: String) async {
+        let targetRoute = appStore.connectionProfiles.first(where: { $0.id == id })?.connectionRoute
+        setConnectionAttemptError(nil, route: nil, forAddComputer: false)
         profileOperationID = id
         // 被改选取代的旧切换会晚一步结束，不能清掉新选择的进度。
         defer { if profileOperationID == id { profileOperationID = nil } }
@@ -1653,15 +1638,23 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            guard await refreshCommittedConnection(maxWait: 10, forAddComputer: false) else {
+            guard await refreshCommittedConnection(
+                maxWait: 10,
+                route: currentConnectionRoute ?? targetRoute,
+                forAddComputer: false
+            ) else {
                 return
             }
         } catch is CancellationError {
             // App 退后台或任务被系统取消时不把仍可用的旧连接标成失败。
-            localError = nil
+            setConnectionAttemptError(nil, route: nil, forAddComputer: false)
         } catch {
-            // prepare/commit 失败时 SessionStore 尚未退役旧连接，这里只展示错误。
-            localError = error.localizedDescription
+            // prepare/commit 失败时 SessionStore 尚未退役旧连接，这里只展示目标电脑的错误。
+            let message = ConnectionFailureGuidance.message(
+                for: error,
+                route: targetRoute
+            )
+            setConnectionAttemptError(message, route: targetRoute, forAddComputer: false)
         }
     }
 
@@ -1702,6 +1695,8 @@ struct InitialConnectionSettingsSections: View {
 
     private func save() async {
         let errorBelongsToAddComputer = showsAddComputerError
+        let attemptedRoute = ConnectionProfileRoute.fromEndpoint(endpoint)
+        setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
         isSavingConnection = true
         defer { isSavingConnection = false }
         do {
@@ -1723,16 +1718,28 @@ struct InitialConnectionSettingsSections: View {
             isAddingConnectionProfile = false
             guard await refreshCommittedConnection(
                 maxWait: wasConfigured ? 10 : 45,
+                route: currentConnectionRoute ?? attemptedRoute,
                 forAddComputer: errorBelongsToAddComputer
             ) else {
                 return
             }
         } catch is CancellationError {
-            setConnectionAttemptError(nil, forAddComputer: errorBelongsToAddComputer)
+            setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
         } catch {
-            appStore.connectionStatus = .failed(error.localizedDescription)
-            appStore.lastError = error.localizedDescription
-            setConnectionAttemptError(error.localizedDescription, forAddComputer: errorBelongsToAddComputer)
+            let message = ConnectionFailureGuidance.message(
+                for: error,
+                route: attemptedRoute,
+                tailcatExperimentEnabled: !errorBelongsToAddComputer && appStore.isTailcatExperimentModeEnabled
+            )
+            if !errorBelongsToAddComputer || appStore.activeConnectionProfile == nil {
+                appStore.connectionStatus = .failed(error.localizedDescription)
+                appStore.lastError = error.localizedDescription
+            }
+            setConnectionAttemptError(
+                message,
+                route: attemptedRoute,
+                forAddComputer: errorBelongsToAddComputer
+            )
         }
     }
 
@@ -1741,11 +1748,14 @@ struct InitialConnectionSettingsSections: View {
         intent: ConnectionQRCodeScanIntent
     ) async -> QRCodeScannerSubmissionResult {
         let errorBelongsToAddComputer = showsAddComputerError
+        let attemptedRoute = ConnectionProfileRoute.fromPairingInput(rawValue)
+            ?? (intent.isRepair ? currentConnectionRoute : nil)
+        setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
         isSavingConnection = true
         guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID) else {
             isSavingConnection = false
             let message = L10n.text("ui.the_current_mac_has_changed_please_try_again")
-            setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
+            setConnectionAttemptError(message, route: nil, forAddComputer: errorBelongsToAddComputer)
             return .rejected(message)
         }
         do {
@@ -1781,6 +1791,7 @@ struct InitialConnectionSettingsSections: View {
                 defer { isSavingConnection = false }
                 _ = await refreshCommittedConnection(
                     maxWait: wasConfigured ? 10 : 45,
+                    route: currentConnectionRoute ?? attemptedRoute,
                     forAddComputer: errorBelongsToAddComputer
                 )
             }
@@ -1791,14 +1802,24 @@ struct InitialConnectionSettingsSections: View {
             )
         } catch is CancellationError {
             isSavingConnection = false
-            setConnectionAttemptError(nil, forAddComputer: errorBelongsToAddComputer)
+            setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
         } catch {
             isSavingConnection = false
-            appStore.connectionStatus = .failed(error.localizedDescription)
-            let message = connectionAttemptMessage(for: error, intent: intent)
-            appStore.lastError = message
-            setConnectionAttemptError(message, forAddComputer: errorBelongsToAddComputer)
+            let message = connectionAttemptMessage(
+                for: error,
+                route: attemptedRoute,
+                intent: intent
+            )
+            if !intent.addsConnectionProfile || appStore.activeConnectionProfile == nil {
+                appStore.connectionStatus = .failed(error.localizedDescription)
+                appStore.lastError = message
+            }
+            setConnectionAttemptError(
+                message,
+                route: attemptedRoute,
+                forAddComputer: errorBelongsToAddComputer
+            )
             // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
             if (error as? TailcatPairingError) == .managedConnectionRequired {
                 return .requiresManagedConnection(message)
@@ -1809,26 +1830,41 @@ struct InitialConnectionSettingsSections: View {
 
     /// 二维码在本地就被判定过期，此时还没连上那台电脑。只有「重新配对当前电脑」能确定
     /// 二维码来自哪个平台；首次连接和添加电脑扫的是另一台机器，必须用通用指引（#673）。
-    private func connectionAttemptMessage(for error: Error, intent: ConnectionQRCodeScanIntent) -> String {
-        guard (error as? PairingLinkError) == .expired else {
-            return error.localizedDescription
+    private func connectionAttemptMessage(
+        for error: Error,
+        route: ConnectionProfileRoute?,
+        intent: ConnectionQRCodeScanIntent
+    ) -> String {
+        let repairPlatform: HostPlatform?
+        if case .repairCurrentProfile = intent {
+            repairPlatform = appStore.activeConnectionProfile?.hostPlatform
+        } else {
+            repairPlatform = nil
         }
-        guard case .repairCurrentProfile = intent,
-              let platform = appStore.activeConnectionProfile?.hostPlatform
-        else {
-            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
-        }
-        return platform.pairingQRCodeExpiredGuidance
+        return ConnectionFailureGuidance.message(
+            for: error,
+            route: route,
+            repairPlatform: repairPlatform,
+            tailcatExperimentEnabled: !intent.addsConnectionProfile && appStore.isTailcatExperimentModeEnabled
+        )
     }
 
-    private func refreshCommittedConnection(maxWait: TimeInterval, forAddComputer: Bool) async -> Bool {
+    private func refreshCommittedConnection(
+        maxWait: TimeInterval,
+        route: ConnectionProfileRoute?,
+        forAddComputer: Bool
+    ) async -> Bool {
         let didLoad = await sessionStore.refreshAfterConnectionCommit(maxWait: maxWait)
         if didLoad {
-            setConnectionAttemptError(nil, forAddComputer: forAddComputer)
+            setConnectionAttemptError(nil, route: nil, forAddComputer: forAddComputer)
         } else if Task.isCancelled {
-            setConnectionAttemptError(nil, forAddComputer: forAddComputer)
+            setConnectionAttemptError(nil, route: nil, forAddComputer: forAddComputer)
         } else {
-            setConnectionAttemptError(appStore.lastError ?? sessionStore.errorMessage, forAddComputer: forAddComputer)
+            setConnectionAttemptError(
+                appStore.lastError ?? sessionStore.errorMessage,
+                route: route,
+                forAddComputer: forAddComputer
+            )
         }
         return didLoad
     }
