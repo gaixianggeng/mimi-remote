@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
@@ -132,6 +133,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		checks = append(checks, c.codexAppServerCheck(ctx))
 	}
 	checks = append(checks, c.claudeBridgeCheck(ctx))
+	checks = append(checks, c.agyAdapterCheck(ctx))
 	checks = append(checks, c.deepSeekCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
@@ -501,6 +503,48 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(claudeVersion, capabilities.ClaudeCode.MinimumVersion), Fix: "在终端运行 claude update"}
 	}
 	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude 适配器 %s 可用（Claude Code %s）", version, claudeVersion)}
+}
+
+func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
+	if !c.cfg.Agy.Enabled {
+		return Check{Name: "agy-adapter", OK: true, Message: "Antigravity experimental 通道未启用"}
+	}
+	configuredBin := strings.TrimSpace(c.cfg.Agy.AdapterBin)
+	bin, ok := agybridge.ResolveBinary(configuredBin)
+	if !ok {
+		return Check{Name: "agy-adapter", OK: false, Message: "未找到 mimi-agy-adapter", Fix: agybridge.InstallHint}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	if err != nil {
+		return Check{Name: "agy-adapter", OK: false, Message: "mimi-agy-adapter 未返回标准 --version", Fix: agybridge.InstallHint}
+	}
+	version, ok := agybridge.ParseVersion(string(output))
+	if !ok || !agybridge.IsSupported(version) {
+		return Check{Name: "agy-adapter", OK: false, Message: agybridge.UpgradeMessage(version), Fix: agybridge.InstallHint}
+	}
+	environment := agybridge.BuildEnv(c.cfg.Agy.Env)
+	capabilities, err := agybridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Agy.Args, environment)
+	if err != nil {
+		return Check{Name: "agy-adapter", OK: false, Message: "无法读取 mimi-agy-adapter 的能力声明", Fix: agybridge.InstallHint}
+	}
+	agyBin := strings.TrimSpace(c.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
+	if agyBin == "" {
+		agyBin = "agy"
+	}
+	agyPath, err := claudebridge.LookPathIn(agyBin, environment)
+	var agyVersion string
+	if err == nil {
+		agyVersion, err = agybridge.AgyVersion(ctx, agyPath, environment)
+	}
+	if err != nil {
+		return Check{Name: "agy-adapter", OK: false, Message: fmt.Sprintf("mimi-agy-adapter %s 可用，但未检测到 Antigravity CLI (agy)", version), Fix: "安装 Antigravity CLI 并在终端登录"}
+	}
+	if !capabilities.AgySupported(agyVersion) {
+		return Check{Name: "agy-adapter", OK: false, Message: agybridge.AgyUpgradeMessage(agyVersion, capabilities.Agy.MinimumVersion), Fix: "升级 Antigravity CLI"}
+	}
+	return Check{Name: "agy-adapter", OK: true, Message: fmt.Sprintf("mimi-agy-adapter %s 可用（agy %s）", version, agyVersion)}
 }
 
 func isLoopbackListen(raw string) bool {

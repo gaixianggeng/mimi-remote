@@ -310,7 +310,7 @@ func sanitizedGatewayApproval(params map[string]any, workspaceWrite bool, fullAc
 	if fullAccess {
 		return "never", "user"
 	}
-	if workspaceWrite && normalizePolicyValue(policy) == "onrequest" && reviewer == "auto_review" {
+	if workspaceWrite && normalizePolicyValue(policy) == "onrequest" && (reviewer == "auto_review" || reviewer == "accept_edits") {
 		return "on-request", reviewer
 	}
 	return "on-request", "user"

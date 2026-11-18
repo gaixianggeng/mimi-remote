@@ -9,6 +9,7 @@ struct ModelReasoningGridSelection: Equatable {
 enum ModelReasoningGridKind: Equatable {
     case codex
     case claude
+    case antigravity
     case deepSeek
 }
 
@@ -144,7 +145,7 @@ enum ModelReasoningGridCatalog {
         let fallbackOptions: [CodexAppServerModelOption]
         switch normalizedRuntime {
         case "claude": fallbackOptions = CodexAppServerModelOption.builtInClaudeFallback
-        case "deepseek": fallbackOptions = []
+        case "agy", "deepseek": fallbackOptions = []
         default: fallbackOptions = CodexAppServerModelOption.builtInFallback
         }
         let candidates = runtimeOptions.isEmpty ? fallbackOptions : runtimeOptions
@@ -168,6 +169,7 @@ enum ModelReasoningGridCatalog {
         let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
         let preferred: CodexAppServerReasoningEffort? = switch normalizedRuntime {
         case "claude": .high
+        case "agy": .medium
         case "deepseek": nil
         default: .medium
         }
@@ -199,15 +201,16 @@ enum ModelReasoningGridCatalog {
         options: [CodexAppServerModelOption]
     ) -> ModelReasoningGridLayout {
         let visible = options.filter { !$0.hidden }
-        let runtime = runtimeProvider?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let runtime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
         let kind: ModelReasoningGridKind
         let fallbackOptions: [CodexAppServerModelOption]
         switch runtime {
         case "claude":
             kind = .claude
             fallbackOptions = CodexAppServerModelOption.builtInClaudeFallback
+        case "agy":
+            kind = .antigravity
+            fallbackOptions = []
         case "deepseek":
             kind = .deepSeek
             fallbackOptions = []
@@ -235,7 +238,7 @@ enum ModelReasoningGridCatalog {
         switch kind {
         case .codex: codexStandardEfforts
         case .claude: claudeStandardEfforts
-        case .deepSeek: []
+        case .antigravity, .deepSeek: []
         }
     }
 
@@ -243,7 +246,7 @@ enum ModelReasoningGridCatalog {
         for kind: ModelReasoningGridKind,
         options: [CodexAppServerModelOption]
     ) -> [CodexAppServerReasoningEffort] {
-        guard kind == .deepSeek else { return standardEfforts(for: kind) }
+        guard kind == .deepSeek || kind == .antigravity else { return standardEfforts(for: kind) }
         let declared = Set(options.flatMap(\.supportedReasoningEfforts))
         return CodexAppServerReasoningEffort.allCases.filter { declared.contains($0.rawValue) }
     }
@@ -352,15 +355,16 @@ enum ModelReasoningGridCatalog {
         _ effort: CodexAppServerReasoningEffort,
         kind: ModelReasoningGridKind
     ) -> String {
-        // Codex 沿用产品名 Light；DeepSeek 的原生档位名必须显示为 Low。
-        kind == .deepSeek && effort == .low ? "Low" : effortTitle(effort)
+        // Codex 沿用产品名 Light；Antigravity 与 DeepSeek 的原生档位名显示为 Low。
+        (kind == .deepSeek || kind == .antigravity) && effort == .low ? "Low" : effortTitle(effort)
     }
 
     static func effortTitle(
         _ effort: CodexAppServerReasoningEffort,
         runtimeProvider: String?
     ) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "deepseek"
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        return (normalized == "deepseek" || normalized == "agy")
             && effort == .low ? "Low" : effortTitle(effort)
     }
 
@@ -374,8 +378,8 @@ enum ModelReasoningGridCatalog {
             return false
         }
         let normalizedRuntime = CodexAppServerSessionRuntime.normalizedRuntimeProvider(option.runtimeProvider)
-        let requiresDeclaredEfforts = kind == .claude || kind == .deepSeek
-            || normalizedRuntime == "claude" || normalizedRuntime == "deepseek"
+        let requiresDeclaredEfforts = kind == .claude || kind == .deepSeek || kind == .antigravity
+            || normalizedRuntime == "claude" || normalizedRuntime == "deepseek" || normalizedRuntime == "agy"
         if requiresDeclaredEfforts {
             // 非 Codex runtime 的空数组明确表示该模型不支持原生 reasoning effort。
             return option.supportedReasoningEfforts.contains(effort.rawValue)

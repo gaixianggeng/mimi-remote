@@ -269,6 +269,7 @@ struct ComposerModelSelectionCache {
 enum DefaultModelRuntime: String, CaseIterable, Hashable, Identifiable {
     case codex
     case claude
+    case agy
     case deepseek
 
     var id: String { rawValue }
@@ -288,6 +289,8 @@ enum DefaultModelPreferences {
     static let codexReasoningEffortKey = "composer.defaultModel.codex.reasoningEffort"
     static let claudeModelOptionIDKey = "composer.defaultModel.claude.optionID"
     static let claudeReasoningEffortKey = "composer.defaultModel.claude.reasoningEffort"
+    static let agyModelOptionIDKey = "composer.defaultModel.agy.optionID"
+    static let agyReasoningEffortKey = "composer.defaultModel.agy.reasoningEffort"
     static let deepSeekModelOptionIDKey = "composer.defaultModel.deepseek.optionID"
     static let deepSeekReasoningEffortKey = "composer.defaultModel.deepseek.reasoningEffort"
 
@@ -307,8 +310,8 @@ enum DefaultModelPreferences {
         switch runtime {
         case "claude":
             return CodexAppServerModelOption.builtInClaudeFallback
-        case "deepseek":
-            // Harness 模型目录是唯一事实；回退到 GPT 会让界面显示无法兑现的模型。
+        case "agy", "deepseek":
+            // Antigravity 与 Harness 模型目录以服务端为准；回退到 GPT 会显示无法兑现的模型。
             return []
         default:
             return CodexAppServerModelOption.builtInFallback
@@ -318,6 +321,7 @@ enum DefaultModelPreferences {
     static func modelOptionIDKey(for runtimeProvider: String) -> String {
         switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
         case "claude": claudeModelOptionIDKey
+        case "agy": agyModelOptionIDKey
         case "deepseek": deepSeekModelOptionIDKey
         default: codexModelOptionIDKey
         }
@@ -326,6 +330,7 @@ enum DefaultModelPreferences {
     static func reasoningEffortKey(for runtimeProvider: String) -> String {
         switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
         case "claude": claudeReasoningEffortKey
+        case "agy": agyReasoningEffortKey
         case "deepseek": deepSeekReasoningEffortKey
         default: codexReasoningEffortKey
         }
@@ -569,10 +574,12 @@ struct ComposerDeliverySelectionCache {
 
 enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     case requestApproval
+    case acceptEdits
     case readOnly
     case autoApprove
     case fullAccess
 
+    static let standardModes: [ComposerPermissionMode] = [.requestApproval, .readOnly, .autoApprove, .fullAccess]
     static let defaultStorageKey = "composer.defaultPermissionMode"
     static let defaultMode: ComposerPermissionMode = .fullAccess
 
@@ -601,6 +608,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
             self = .readOnly
         } else if options.sandboxMode == .dangerFullAccess {
             self = .fullAccess
+        } else if options.approvalPolicy == .onRequest, reviewer == Self.acceptEditsReviewer {
+            self = .acceptEdits
         } else if options.approvalPolicy == .onRequest, reviewer == Self.autoReviewer {
             self = .autoApprove
         } else {
@@ -612,6 +621,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .requestApproval:
             return L10n.text("ui.request_approval")
+        case .acceptEdits:
+            return L10n.text("ui.accept_edits")
         case .readOnly:
             return L10n.text("ui.read_only")
         case .autoApprove:
@@ -625,6 +636,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .requestApproval:
             return L10n.text("ui.can_write_to_the_current_workspace_and_be")
+        case .acceptEdits:
+            return L10n.text("ui.accept_edits_detail")
         case .readOnly:
             return L10n.text("ui.do_not_write_files_by_default")
         case .autoApprove:
@@ -638,6 +651,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .requestApproval:
             return "lock.shield"
+        case .acceptEdits:
+            return "pencil.and.outline"
         case .readOnly:
             return "eye"
         case .autoApprove:
@@ -649,7 +664,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
 
     var approvalPolicy: CodexAppServerApprovalPolicy {
         switch self {
-        case .requestApproval, .readOnly, .autoApprove:
+        case .requestApproval, .acceptEdits, .readOnly, .autoApprove:
             return .onRequest
         case .fullAccess:
             return .never
@@ -660,6 +675,8 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .requestApproval, .readOnly, .fullAccess:
             return "user"
+        case .acceptEdits:
+            return Self.acceptEditsReviewer
         case .autoApprove:
             return Self.autoReviewer
         }
@@ -667,9 +684,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
 
     var sandboxMode: CodexAppServerSandboxMode {
         switch self {
-        case .autoApprove:
-            return .workspaceWrite
-        case .requestApproval:
+        case .autoApprove, .acceptEdits, .requestApproval:
             return .workspaceWrite
         case .readOnly:
             return .readOnly
@@ -690,6 +705,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable, Codable {
     }
 
     private static let autoReviewer = "auto_review"
+    private static let acceptEditsReviewer = "accept_edits"
 }
 
 struct ComposerPermissionSelectionSnapshot: Codable, Equatable {

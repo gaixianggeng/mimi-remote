@@ -3498,6 +3498,8 @@ actor CodexAppServerSessionRuntime {
             return "codex"
         case "claude", "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
             return "claude"
+        case "agy", "antigravity", "antigravity_cli", "antigravity-cli", "agy_cli", "agy-cli":
+            return "agy"
         case "deepseek", "deepseek_harness", "deepseek-harness", "deepseek_harness_service", "deepseek-harness-service", "dsh":
             return "deepseek"
         default:

@@ -4,6 +4,7 @@ import SwiftUI
 enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
+    case agy
     case deepseek
 
     static let preferenceKey = "workspace.preferredRuntime"
@@ -88,6 +89,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_claude_short")
+        case .agy:
+            return "Antigravity"
         case .deepseek:
             return "DeepSeek"
         }
@@ -99,6 +102,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.create_a_new_codex_session")
         case .claude:
             return L10n.text("ui.create_a_new_claude_code_session")
+        case .agy:
+            return L10n.text("ui.create_a_new_antigravity_session")
         case .deepseek:
             return "Create a new DeepSeek Harness session"
         }
@@ -110,6 +115,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return .openAI
         case .claude:
             return .claude
+        case .agy:
+            return .antigravity
         case .deepseek:
             return .deepSeek
         }
@@ -119,6 +126,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
         switch self {
         case .codex: "plus.circle"
         case .claude: "sparkles"
+        case .agy: "wand.and.stars"
         case .deepseek: "terminal.fill"
         }
     }
@@ -131,6 +139,8 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
             return L10n.text("ui.runtime_subtitle_codex")
         case .claude:
             return L10n.text("ui.runtime_subtitle_claude")
+        case .agy:
+            return L10n.text("ui.runtime_subtitle_antigravity")
         case .deepseek:
             return "DeepSeek Harness"
         }

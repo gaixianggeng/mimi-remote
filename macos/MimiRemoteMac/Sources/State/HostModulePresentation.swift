@@ -52,7 +52,7 @@ extension HostStore {
         return status.networkStatus?.mode == "tailscale" || status.networkStatus?.allowLAN == true
     }
     var canPair: Bool {
-        status?.serviceOK == true && (codexEnabled || claudeEnabled || deepSeekEnabled)
+        status?.serviceOK == true && (codexEnabled || claudeEnabled || agyEnabled || deepSeekEnabled)
             && (!availablePairingNetworks.isEmpty
                 || (tailcatStatus != nil && canChangeTailcat)
                 || (status?.moduleStatus?.lanAvailable == true && canChangeModule(.lan)))
@@ -77,7 +77,7 @@ extension HostStore {
         pairingUnavailableReason(for: .automatic)
     }
     func pairingUnavailableReason(for selection: PairingNetwork) -> String {
-        if !(codexEnabled || claudeEnabled || deepSeekEnabled) {
+        if !(codexEnabled || claudeEnabled || agyEnabled || deepSeekEnabled) {
             return "全部 AI 编程助手已关闭。请先启用至少一个助手。"
         }
         switch selection {
@@ -168,6 +168,7 @@ extension HostStore {
         switch module {
         case .codex: codexEnabled
         case .claude: claudeEnabled
+        case .agy: agyEnabled
         case .deepseek: deepSeekEnabled
         case .tailscale: tailscaleEnabled
         case .lan: lanEnabled
@@ -178,6 +179,7 @@ extension HostStore {
         switch module {
         case .codex: codexError
         case .claude: claudeError
+        case .agy: agyError
         case .deepseek: deepSeekError
         case .tailscale, .lan:
             networkErrorModule == module ? networkError : nil
@@ -186,6 +188,7 @@ extension HostStore {
     }
     func moduleStateTitle(_ module: HostModuleID) -> String {
         if updatingModule == module || (module == .claude && isUpdatingClaude) ||
+            (module == .agy && isUpdatingAgy) ||
             (module == .tailcat && isUpdatingTailcat) ||
             (module == .deepseek && isUpdatingDeepSeek) { return "正在更新" }
         if moduleError(module) != nil { return "失败" }
@@ -215,6 +218,7 @@ extension HostStore {
         switch module {
         case .codex: await setCodexEnabled(enabled)
         case .claude: await setClaudeEnabled(enabled)
+        case .agy: await setAgyEnabled(enabled)
         case .deepseek: await setDeepSeekEnabled(enabled)
         case .tailscale: await setTailscaleEnabled(enabled)
         case .lan: await setLANEnabled(enabled)

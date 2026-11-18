@@ -410,6 +410,7 @@ func (r *Router) codexRuntimeStartTime() *time.Time {
 func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
 	codexResult := make(chan runtimeAccountStatus, 1)
 	claudeResult := make(chan runtimeAccountStatus, 1)
+	agyResult := make(chan runtimeAccountStatus, 1)
 	deepSeekResult := make(chan runtimeAccountStatus, 1)
 	if r.cfg.DeepSeek.Enabled {
 		go func() {
@@ -423,6 +424,13 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 		defer cancel()
 		codexResult <- r.probeCodexRuntime(probeCtx)
 	}()
+	if r.cfg.Agy.Enabled {
+		go func() {
+			probeCtx, cancel := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
+			defer cancel()
+			agyResult <- r.probeAgyRuntime(probeCtx)
+		}()
+	}
 	go func() {
 		probeCtx, cancel := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
 		defer cancel()
@@ -438,6 +446,9 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 			codex,
 			claude,
 		},
+	}
+	if r.cfg.Agy.Enabled {
+		response.Runtimes = append(response.Runtimes, <-agyResult)
 	}
 	if r.cfg.DeepSeek.Enabled {
 		response.Runtimes = append(response.Runtimes, <-deepSeekResult)
@@ -472,6 +483,16 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 			codex,
 			claude,
 		},
+	}
+	if r.cfg.Agy.Enabled {
+		response.Runtimes = append(response.Runtimes, runtimeAccountStatus{
+			ID:           "agy",
+			Title:        "Antigravity",
+			Enabled:      true,
+			State:        runtimeStateUnavailable,
+			Reason:       "refresh_in_progress",
+			LoginCommand: "agy",
+		})
 	}
 	if r.cfg.DeepSeek.Enabled {
 		response.Runtimes = append(response.Runtimes, runtimeAccountStatus{

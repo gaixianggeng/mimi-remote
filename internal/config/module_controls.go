@@ -7,7 +7,7 @@ import (
 
 func (c CodexConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
-func (c Config) HasEnabledAgent() bool { return c.Codex.IsEnabled() || c.Claude.Enabled }
+func (c Config) HasEnabledAgent() bool { return c.Codex.IsEnabled() || c.Claude.Enabled || c.Agy.Enabled }
 
 // Independent ingress controls are opt-in, so upgrading does not change an
 // existing custom bind. The first explicit network mutation records both intents.
@@ -55,6 +55,7 @@ func (c Config) moduleValidationListen() string {
 type ModuleStatus struct {
 	CodexEnabled       bool `json:"codex_enabled"`
 	ClaudeEnabled      bool `json:"claude_enabled"`
+	AgyEnabled         bool `json:"agy_enabled"`
 	TailscaleEnabled   bool `json:"tailscale_enabled"`
 	LANEnabled         bool `json:"lan_enabled"`
 	TailscaleAvailable bool `json:"tailscale_available"`

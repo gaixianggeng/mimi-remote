@@ -11,6 +11,7 @@ tailcat_output="$bundle_root/Resources/mimi-tailcat-experiment"
 # fallback behind claude.legacy_bridge.
 bridge_output="$bundle_root/Resources/alleycat-claude-bridge"
 adapter_output="$bundle_root/Resources/mimi-claude-adapter"
+agy_adapter_output="$bundle_root/Resources/mimi-agy-adapter"
 launch_agent_output="$bundle_root/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 launch_agent_source="$SRCROOT/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 configuration="${CONFIGURATION:-Debug}"
@@ -278,6 +279,31 @@ fi
 chmod 0755 "$adapter_output"
 log "Claude 适配器已内嵌：archs=${architectures[*]} bun=${bun_version} elapsed=$((SECONDS - adapter_started_at))s"
 
+# --- Antigravity ACP 适配器 --------------------------------------------------
+agy_adapter_root="$project_root/bridges/agy-acp"
+agy_started_at=$SECONDS
+(cd "$agy_adapter_root" && "$bun_binary" install --frozen-lockfile --omit optional >/dev/null)
+agy_adapter_outputs=()
+for architecture in "${architectures[@]}"; do
+  case "$architecture" in
+    arm64) bun_target=bun-darwin-arm64 ;;
+    x86_64) bun_target=bun-darwin-x64 ;;
+  esac
+  agy_adapter_build="$cache_root/agy-adapter/$architecture/mimi-agy-adapter"
+  mkdir -p "$(dirname "$agy_adapter_build")"
+  log "构建 Antigravity 适配器：arch=${architecture} target=${bun_target}"
+  (cd "$agy_adapter_root" && "$bun_binary" build --compile --minify --target="$bun_target" src/main.ts --outfile "$agy_adapter_build" >/dev/null)
+  agy_adapter_outputs+=("$agy_adapter_build")
+done
+
+if [[ ${#agy_adapter_outputs[@]} -eq 1 ]]; then
+  cp "${agy_adapter_outputs[0]}" "$agy_adapter_output"
+else
+  /usr/bin/lipo -create "${agy_adapter_outputs[@]}" -output "$agy_adapter_output"
+fi
+chmod 0755 "$agy_adapter_output"
+log "Antigravity 适配器已内嵌：archs=${architectures[*]} bun=${bun_version} elapsed=$((SECONDS - agy_started_at))s"
+
 entitlements_args=()
 if [[ -n "${CODE_SIGN_ENTITLEMENTS:-}" && -f "$SRCROOT/$CODE_SIGN_ENTITLEMENTS" ]]; then
   entitlements_args=(--entitlements "$SRCROOT/$CODE_SIGN_ENTITLEMENTS")
@@ -297,6 +323,10 @@ if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" && -n "${EXPANDED_CODE_SIGN_IDENTIT
     --entitlements "$SRCROOT/Resources/ClaudeAdapter.entitlements" \
     --options runtime --timestamp=none "$adapter_output"
   /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+    --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+    --entitlements "$SRCROOT/Resources/ClaudeAdapter.entitlements" \
+    --options runtime --timestamp=none "$agy_adapter_output"
+  /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.tailcat \
     --options runtime --timestamp=none "$tailcat_output"
 fi
@@ -306,6 +336,8 @@ fi
 "$bridge_output" --version >/dev/null
 "$adapter_output" --version >/dev/null
 "$adapter_output" --capabilities >/dev/null
+"$agy_adapter_output" --version >/dev/null
+"$agy_adapter_output" --capabilities >/dev/null
 log "内嵌二进制 smoke check 通过"
 
 # This phase runs after Xcode has sealed the bundle, so the binaries it just

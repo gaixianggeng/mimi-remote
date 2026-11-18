@@ -164,6 +164,68 @@ extension HostStore {
         try await waitForManagedRuntime(id: "claude", enabled: enabled)
     }
 
+    func setAgyEnabled(_ enabled: Bool) async {
+        guard !isBusy, owner == .macApp else {
+            agyError = "请先启动并接管 Mimi Remote Mac 服务。"
+            return
+        }
+        isBusy = true
+        isUpdatingAgy = true
+        agyError = nil
+        invalidateModulePairing()
+        defer {
+            isUpdatingAgy = false
+            isBusy = false
+        }
+
+        do {
+            let preference: ClaudeActivationPreference = enabled ? .enabled : .disabled
+            let result = try await agent.configureAgy(preference, nil)
+            agyConfiguration = result
+            guard !enabled || result.enabled else {
+                agyError = result.message
+                return
+            }
+            do {
+                if result.restartRequired || status?.moduleStatus?.agyEnabled != result.enabled {
+                    try await reloadMacAgentForConfigurationChange()
+                }
+                if result.enabled {
+                    try await waitForManagedRuntime(id: "agy", enabled: true)
+                } else {
+                    _ = try? await fetchAndApplyLatestStatus()
+                }
+            } catch {
+                let updateError = error
+                if result.changed {
+                    let rolledBack = await rollbackAgyConfiguration(result)
+                    let rollbackDetail = rolledBack
+                        ? "已恢复修改前的 Antigravity 设置。"
+                        : "自动恢复也失败，请打开诊断后重试。"
+                    agyError = "更新 Antigravity 设置失败：\(updateError.localizedDescription) \(rollbackDetail)"
+                } else {
+                    agyError = "更新 Antigravity 设置失败：\(updateError.localizedDescription)"
+                }
+                await settleModuleChangeFailure(agyError ?? updateError.localizedDescription)
+            }
+        } catch {
+            agyError = error.localizedDescription
+            await settleModuleChangeFailure(error.localizedDescription)
+        }
+    }
+
+    private func rollbackAgyConfiguration(_ previous: AgyConfigurationResult) async -> Bool {
+        do {
+            let restored = try await agent.restoreAgy(previous)
+            agyConfiguration = restored
+            try await reloadMacAgentForConfigurationChange()
+            _ = try? await fetchAndApplyLatestStatus()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// 通用受管运行时状态轮询，供 Claude 及后续常驻适配器运行时（如 Antigravity）复用。
     func waitForManagedRuntime(id runtimeID: String, enabled: Bool) async throws {
         isAwaitingServiceStart = true

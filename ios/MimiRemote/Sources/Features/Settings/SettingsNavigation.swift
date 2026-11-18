@@ -169,7 +169,7 @@ struct SettingsDestinationView: View {
         case .defaultPermissions:
             SettingsOptionListView(
                 title: L10n.text("ui.default_permissions"),
-                options: ComposerPermissionMode.allCases,
+                options: ComposerPermissionMode.standardModes,
                 selection: Binding(
                     get: { ComposerPermissionMode.stored(defaultPermissionModeID) },
                     set: { defaultPermissionModeID = $0.rawValue }

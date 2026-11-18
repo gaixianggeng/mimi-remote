@@ -3,7 +3,7 @@ import Foundation
 /// Harness 首版只接受文本，权限由 Harness 维护；不能沿用 Codex 的输入与沙盒承诺。
 enum RuntimeFeatureSupport {
     /// 经 `/api/app-server/ws?runtime=<id>` 承载的 JSON-RPC 运行时列表（主通道 `codex` 在首位）。
-    static let appServerRuntimeProviders = ["codex", "claude"]
+    static let appServerRuntimeProviders = ["codex", "claude", "agy"]
     /// 经独立原生协议承载的运行时列表。
     static let nativeRuntimeProviders = ["deepseek"]
     static let runtimeProviders = appServerRuntimeProviders + nativeRuntimeProviders
@@ -31,7 +31,14 @@ enum RuntimeFeatureSupport {
     }
 
     static func permissionModes(for provider: String) -> [ComposerPermissionMode] {
-        isDeepSeek(provider) ? [.fullAccess] : ComposerPermissionMode.allCases
+        switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(provider) {
+        case "deepseek":
+            return [.fullAccess]
+        case "agy":
+            return [.requestApproval, .acceptEdits, .autoApprove, .readOnly, .fullAccess]
+        default:
+            return ComposerPermissionMode.standardModes
+        }
     }
 
     static func supportsAttachments(for provider: String) -> Bool { !isDeepSeek(provider) }

@@ -5,6 +5,7 @@ import SwiftUI
 enum RuntimeBrandMark: Equatable {
     case openAI
     case claude
+    case antigravity
     case deepSeek
 
     var assetName: String {
@@ -13,6 +14,8 @@ enum RuntimeBrandMark: Equatable {
             return "OpenAIMonoblossom"
         case .claude:
             return "Claude"
+        case .antigravity:
+            return "Antigravity"
         case .deepSeek:
             // 深度求索官方矢量标记（api-docs.deepseek.com/img/favicon.svg 原件）。
             // 单条 path、自带品牌色 #4D6BFE，无底板，无外部引用。
@@ -39,7 +42,7 @@ enum RuntimeBrandMark: Equatable {
         switch self {
         case .openAI:
             return 969.0 / 1442.0
-        case .claude:
+        case .claude, .antigravity:
             return 1
         case .deepSeek:
             // 官方 viewBox 就是墨迹紧致包围盒（两轴实测 100% 占满），没有留白要补偿。

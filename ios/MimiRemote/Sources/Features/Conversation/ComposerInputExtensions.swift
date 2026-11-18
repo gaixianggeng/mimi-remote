@@ -1057,6 +1057,8 @@ extension ComposerView {
         switch mode {
         case .requestApproval:
             return themeStore.tokens(for: colorScheme).accent
+        case .acceptEdits:
+            return themeStore.tokens(for: colorScheme).accent
         case .readOnly:
             return .secondary
         case .autoApprove:

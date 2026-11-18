@@ -727,6 +727,8 @@ private extension DefaultModelRuntime {
             return "Codex"
         case .claude:
             return "Claude Code"
+        case .agy:
+            return "Antigravity"
         case .deepseek:
             return "DeepSeek Harness"
         }
@@ -738,6 +740,8 @@ private extension DefaultModelRuntime {
             return .openAI
         case .claude:
             return .claude
+        case .agy:
+            return .antigravity
         case .deepseek:
             return .deepSeek
         }

@@ -101,6 +101,7 @@ struct SessionRuntimePresentation: Equatable {
     enum Kind: Equatable {
         case codex
         case claude
+        case antigravity
         case deepSeek
     }
 
@@ -116,6 +117,8 @@ struct SessionRuntimePresentation: Equatable {
         switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) {
         case "claude":
             kind = .claude
+        case "agy":
+            kind = .antigravity
         case "deepseek":
             kind = .deepSeek
         default:
@@ -129,6 +132,8 @@ struct SessionRuntimePresentation: Equatable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_optional")
+        case .antigravity:
+            return "Antigravity"
         case .deepSeek:
             return "DeepSeek"
         }
@@ -140,6 +145,8 @@ struct SessionRuntimePresentation: Equatable {
             return .openAI
         case .claude:
             return .claude
+        case .antigravity:
+            return .antigravity
         case .deepSeek:
             return .deepSeek
         }

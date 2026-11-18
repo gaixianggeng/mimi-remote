@@ -43,6 +43,15 @@ struct AgentCommandClient: Sendable {
     var restoreClaudeTurnHints: @Sendable (ClaudeTurnHintsConfigurationResult) async throws -> ClaudeTurnHintsConfigurationResult = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持 Claude 提示卡设置恢复。")
     }
+    var configureAgy: @Sendable (
+        _ preference: ClaudeActivationPreference,
+        _ restoreEnabled: Bool?
+    ) async throws -> AgyConfigurationResult = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Antigravity 模块控制，请更新并重启服务。")
+    }
+    var restoreAgy: @Sendable (AgyConfigurationResult) async throws -> AgyConfigurationResult = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持 Antigravity 配置恢复。")
+    }
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
@@ -275,6 +284,30 @@ extension AgentCommandClient {
                 return try decode(ClaudeTurnHintsConfigurationResult.self, from: try await execute(
                     binary: binary,
                     arguments: ["runtime", "--restore-claude-turn-hints", payload, "--json"],
+                    timeout: .seconds(60)
+                ))
+            },
+            configureAgy: { preference, restoreEnabled in
+                let binary = try requireEmbeddedBinary()
+                var arguments = ["runtime", "--agy=\(preference.rawValue)", "--json"]
+                if let restoreEnabled {
+                    arguments.append("--restore-enabled=\(restoreEnabled)")
+                }
+                return try decode(AgyConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: arguments,
+                    timeout: .seconds(60)
+                ))
+            },
+            restoreAgy: { previous in
+                let binary = try requireEmbeddedBinary()
+                guard previous.previous != nil, previous.applied != nil else {
+                    throw AgentClientError.commandFailed("缺少原始 Antigravity 配置，不能安全回滚。")
+                }
+                let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
+                return try decode(AgyConfigurationResult.self, from: try await execute(
+                    binary: binary,
+                    arguments: ["runtime", "--restore-agy", payload, "--json"],
                     timeout: .seconds(60)
                 ))
             },

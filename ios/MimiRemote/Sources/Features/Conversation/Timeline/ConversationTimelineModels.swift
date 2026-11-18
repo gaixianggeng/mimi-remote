@@ -3,12 +3,15 @@ import Foundation
 enum ConversationTimelineProvider: String, Equatable {
     case codex
     case claude
+    case agy
     case deepseek
 
     init(runtimeProvider: String?) {
         switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) {
         case Self.claude.rawValue:
             self = .claude
+        case Self.agy.rawValue:
+            self = .agy
         case Self.deepseek.rawValue:
             self = .deepseek
         default:
