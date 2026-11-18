@@ -202,10 +202,15 @@ var
 begin
   // A successful upgrade removes the marker the WinUI client uses to detect a downgrade.
   LegacyPath := ExpandConstant('{app}\mimi-remote-tray.exe');
-  if FileExists(LegacyPath) and not DeleteFile(LegacyPath) then
+  if FileExists(LegacyPath) and not DeleteFile(LegacyPath) then begin
+    PostInstallFailed := True;
     RaiseException('Unable to remove the old Mimi Remote tray.');
-  if not DesktopStartupEnabled then
-    DeleteFile(ExpandConstant('{userstartup}\Mimi Remote.lnk'));
+  end;
+  if (not DesktopStartupEnabled) and FileExists(ExpandConstant('{userstartup}\Mimi Remote.lnk')) and
+     (not DeleteFile(ExpandConstant('{userstartup}\Mimi Remote.lnk'))) then begin
+    PostInstallFailed := True;
+    RaiseException('Unable to remove the disabled Mimi Remote login shortcut.');
+  end;
   RegDeleteValue(HKCU, PreviewRunKey, PreviewRunValue);
 end;
 

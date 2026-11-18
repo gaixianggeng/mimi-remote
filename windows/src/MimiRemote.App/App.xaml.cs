@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Dispatching;
 using Microsoft.Windows.AppLifecycle;
 using MimiRemote.Core;
 
@@ -10,6 +11,8 @@ public sealed partial class App : Application, IDisposable
     private MainWindow? window;
     private AppInstance? instance;
     private Mutex? trayOwnership;
+    private EventWaitHandle? shutdownEvent;
+    private RegisteredWaitHandle? shutdownRegistration;
     private FileSystemWatcher? legacyTrayWatcher;
     private bool disposed;
 
@@ -32,13 +35,14 @@ public sealed partial class App : Application, IDisposable
             Exit();
             return;
         }
+        var dispatcher = DispatcherQueue.GetForCurrentThread();
         instance.Activated += (_, activation) =>
         {
             if (activation.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs backgroundLaunch &&
                 backgroundLaunch.Arguments.Contains("--background", StringComparison.Ordinal)) { return; }
             var pair = activation.Data is Windows.ApplicationModel.Activation.ILaunchActivatedEventArgs launch &&
                 launch.Arguments.Contains("--pair", StringComparison.Ordinal);
-            window?.DispatcherQueue.TryEnqueue(() => { if (pair) { window.ShowPage("pair"); } else { window.ShowHome(); } });
+            dispatcher.TryEnqueue(() => { if (pair) { window?.ShowPage("pair"); } else { window?.ShowHome(); } });
         };
         if (installation is not null)
         {
@@ -51,6 +55,9 @@ public sealed partial class App : Application, IDisposable
         window.Closed += (_, _) => Dispose();
         if (installation is not null)
         {
+            shutdownEvent = new EventWaitHandle(false, EventResetMode.AutoReset, DesktopInstallation.ShutdownEventName);
+            shutdownRegistration = ThreadPool.RegisterWaitForSingleObject(shutdownEvent,
+                (_, _) => dispatcher.TryEnqueue(() => window?.Quit()), null, Timeout.Infinite, executeOnlyOnce: true);
             WatchForLegacyTray(installation, window);
             if (installation.LegacyTrayExists) { window.Quit(); return; }
             window.InitializeTray();
@@ -82,6 +89,8 @@ public sealed partial class App : Application, IDisposable
         if (disposed) { return; }
         disposed = true;
         legacyTrayWatcher?.Dispose();
+        shutdownRegistration?.Unregister(null);
+        shutdownEvent?.Dispose();
         window?.Dispose();
         window = null;
         trayOwnership?.Dispose();
