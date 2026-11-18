@@ -8,7 +8,6 @@ internal sealed class DesktopPreferences
     private static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mimi Remote", "desktop-preferences.json");
     internal static string ConfigPath => Environment.GetEnvironmentVariable("AGENTD_CONFIG") is { Length: > 0 } custom ? custom
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "mimi-remote", "config.json");
-    public bool SetupCompleted { get; set; }
     public bool NotificationsEnabled { get; set; } = true;
 
     internal static DesktopPreferences Load()

@@ -93,6 +93,11 @@ public sealed class SessionsViewModel : ClientPageViewModel
                 port = currentPort;
                 source = new LocalSessionSource(port);
                 Attach(source);
+                if (store is not null && Project is { Cwd.Length: > 0 } currentProject)
+                {
+                    await store.SetScopeAsync(currentProject.Cwd, Lifetime.Token);
+                    return;
+                }
             }
         }
         if (store is null || !force && store.LastUpdated is { } time && DateTimeOffset.Now - time < TimeSpan.FromSeconds(15)) { return; }

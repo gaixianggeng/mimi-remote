@@ -64,7 +64,7 @@ public sealed partial class MainWindow : Window, IDisposable
         };
         Closed += (_, _) => Dispose();
         if (!context.Preview) { InitializeNotifications(); }
-        ShowPage(context.Preview || context.Preferences.SetupCompleted && File.Exists(DesktopPreferences.ConfigPath) ? typeof(SessionsPage) : typeof(SetupPage), false);
+        ShowPage(HomePage, false);
     }
     private void SetMinimumSize(double scale)
     {
@@ -77,8 +77,8 @@ public sealed partial class MainWindow : Window, IDisposable
         catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception or System.Runtime.InteropServices.COMException)
         { AppWindow.Show(); Activate(); }
     }
-    public void ShowHome() => ShowPage(context.Preview || context.Preferences.SetupCompleted && File.Exists(DesktopPreferences.ConfigPath)
-        ? typeof(SessionsPage) : typeof(SetupPage));
+    private Type HomePage => context.Preview || File.Exists(DesktopPreferences.ConfigPath) ? typeof(SessionsPage) : typeof(SetupPage);
+    public void ShowHome() => ShowPage(HomePage);
     public void ShowPage(string route) => ShowPage(Routes.GetValueOrDefault(route, typeof(SessionsPage)));
     public void ShowPage(Type type) => ShowPage(type, true);
     private void ShowPage(Type type, bool show)

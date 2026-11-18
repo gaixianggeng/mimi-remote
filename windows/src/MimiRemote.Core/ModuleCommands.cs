@@ -75,7 +75,7 @@ public sealed class ModuleCommands(IAgentCommand agent)
             if (!status.ServiceOk || !verify(status)) { throw new InvalidOperationException("服务尚未应用新的设置。"); }
             return status;
         }
-        catch (Exception error) when (error is InvalidOperationException or IOException or TimeoutException or OperationCanceledException
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException or TimeoutException or OperationCanceledException
             or JsonException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
             // User cancellation does not cancel the bounded recovery operation.
@@ -85,7 +85,7 @@ public sealed class ModuleCommands(IAgentCommand agent)
                 await agent.RunAsync([.. restore, result, "--json"], recovery.Token).ConfigureAwait(false);
                 await agent.RunAsync(["restart", "--wait", "60s", "--no-pair"], recovery.Token).ConfigureAwait(false);
             }
-            catch (Exception failure) when (failure is InvalidOperationException or IOException or TimeoutException or OperationCanceledException
+            catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException or IOException or TimeoutException or OperationCanceledException
                 or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
             {
                 throw new InvalidOperationException("新设置未生效，自动恢复也未完成。请刷新并运行诊断，勿重复切换。", failure);

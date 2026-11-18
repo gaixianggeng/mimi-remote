@@ -34,8 +34,6 @@ public sealed class SetupViewModel : ClientPageViewModel
                 await Context.Agent.RunAsync(["start", "--wait", "60s", "--no-pair"], Lifetime.Token);
             }
             await new ModuleCommands(Context.Agent).SetWorkspaceAsync(selected, Lifetime.Token);
-            Context.Preferences.SetupCompleted = true;
-            Context.Preferences.Save();
         });
         Context.PairAfterSetup = true;
         Context.Navigate(typeof(Pages.PairingPage));
