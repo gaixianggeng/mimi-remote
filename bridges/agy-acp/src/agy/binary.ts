@@ -1,9 +1,11 @@
+import os from "node:os";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { ErrorCode, RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import { readLines } from "@mimi/appserver-kit/rpc/lines.ts";
 import { logger } from "../util/logging.ts";
 import { AcpClient, type AcpClientOptions, type AcpTransport } from "../acp/client.ts";
+import type { AcpSessionUpdate } from "../acp/types.ts";
 import { MINIMUM_AGY_VERSION, ADAPTER_NAME, ADAPTER_VERSION } from "../version.ts";
 import { resolveAgyDataPaths, sanitizeAgyEnv } from "./env.ts";
 
@@ -199,5 +201,99 @@ export async function startAgyAcpClient(
   } catch (error) {
     await client.close().catch(() => {});
     throw error;
+  }
+}
+
+/**
+ * 供只读目录查询（`session/list`、`session/load` 历史回放、模型与斜杠命令发现）复用的常驻沙盒 `agy acp` 客户端。
+ * `agy acp` 冷启动首次初始化内部服务约需 4-6s，复用常驻连接后 `session/list` 与回放读取均降至 ~10ms 级。
+ */
+export class SharedReadonlyAcp {
+  private client: AcpClient | undefined;
+  private connecting: Promise<AcpClient> | undefined;
+  private disposed = false;
+  private readonly updateListeners = new Set<(sessionId: string, update: AcpSessionUpdate) => void>();
+
+  constructor(
+    private readonly executable: () => string,
+    private readonly spawnTransport: SpawnAgyTransport,
+    private readonly env: () => NodeJS.ProcessEnv = () => process.env,
+  ) {}
+
+  subscribeUpdates(listener: (sessionId: string, update: AcpSessionUpdate) => void): () => void {
+    this.updateListeners.add(listener);
+    return () => {
+      this.updateListeners.delete(listener);
+    };
+  }
+
+  async acquire(): Promise<AcpClient> {
+    if (this.disposed) {
+      throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp has been closed");
+    }
+    if (this.client && !this.client.isClosed) {
+      return this.client;
+    }
+    if (this.connecting) {
+      return this.connecting;
+    }
+    const connectPromise = startAgyAcpClient(
+      this.spawnTransport,
+      {
+        executable: this.executable(),
+        cwd: os.tmpdir(),
+        sandbox: true,
+        env: this.env(),
+      },
+      {
+        onSessionUpdate: (sessionId, update) => {
+          for (const listener of this.updateListeners) {
+            listener(sessionId, update);
+          }
+        },
+        onClose: () => {
+          if (this.client === createdClient) {
+            this.client = undefined;
+          }
+        },
+      },
+    );
+    let createdClient: AcpClient | undefined;
+    this.connecting = connectPromise;
+    try {
+      createdClient = await connectPromise;
+      if (this.disposed) {
+        await createdClient.close().catch(() => {});
+        throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp closed while connecting");
+      }
+      this.client = createdClient;
+      return createdClient;
+    } finally {
+      if (this.connecting === connectPromise) {
+        this.connecting = undefined;
+      }
+    }
+  }
+
+  async use<T>(fn: (client: AcpClient) => Promise<T>): Promise<T> {
+    const client = await this.acquire();
+    try {
+      return await fn(client);
+    } catch (error) {
+      if (client.isClosed && !this.disposed) {
+        const retryClient = await this.acquire();
+        return await fn(retryClient);
+      }
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    this.disposed = true;
+    const current = this.client;
+    this.client = undefined;
+    if (current) {
+      await current.close().catch(() => {});
+    }
   }
 }

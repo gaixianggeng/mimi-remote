@@ -2,7 +2,7 @@ import os from "node:os";
 import type { Model } from "@mimi/appserver-kit/protocol/codex/v2/Model.ts";
 import { errorText, logger } from "../util/logging.ts";
 import type { AcpSessionOpenResult } from "../acp/types.ts";
-import { startAgyAcpClient, type SpawnAgyTransport } from "./binary.ts";
+import { SharedReadonlyAcp } from "./binary.ts";
 
 const KNOWN_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 
@@ -115,26 +115,13 @@ export function catalogAgyModels(openResult: AcpSessionOpenResult): Model[] {
 
 export type DiscoverAgyModels = () => Promise<Model[]>;
 
-export function acpModelDiscovery(
-  agyExecutable: () => string,
-  spawnTransport: SpawnAgyTransport,
-  env: () => NodeJS.ProcessEnv = () => process.env,
-): DiscoverAgyModels {
-  return async () => {
-    const client = await startAgyAcpClient(spawnTransport, {
-      executable: agyExecutable(),
-      cwd: os.tmpdir(),
-      sandbox: true,
-      env: env(),
-    });
-    try {
+export function acpModelDiscovery(sharedAcp: SharedReadonlyAcp): DiscoverAgyModels {
+  return async () =>
+    sharedAcp.use(async (client) => {
       const open = await client.sessionNew(os.tmpdir());
       await client.sessionClose(open.sessionId).catch(() => {});
       return catalogAgyModels(open);
-    } finally {
-      await client.close().catch(() => {});
-    }
-  };
+    });
 }
 
 export interface ModelCatalogOptions {

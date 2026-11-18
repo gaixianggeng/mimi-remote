@@ -2,7 +2,14 @@ import os from "node:os";
 import path from "node:path";
 import type { InitializeResponse } from "@mimi/appserver-kit/protocol/codex/InitializeResponse.ts";
 import { Router, type Handler, type Logger } from "@mimi/appserver-kit/server/router.ts";
-import { AgyVersionGate, defaultProbeAgy, defaultSpawnAgyTransport, type ProbeAgy, type SpawnAgyTransport } from "./agy/binary.ts";
+import {
+  AgyVersionGate,
+  defaultProbeAgy,
+  defaultSpawnAgyTransport,
+  SharedReadonlyAcp,
+  type ProbeAgy,
+  type SpawnAgyTransport,
+} from "./agy/binary.ts";
 import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend } from "./agy/catalog.ts";
 import { acpCommandDiscovery, CommandCatalog, type DiscoverAgyCommands } from "./agy/commands.ts";
 import { defaultAgyExecutable } from "./agy/env.ts";
@@ -66,6 +73,7 @@ export interface App {
   router: Router;
   manager: ThreadManager;
   models: ModelCatalog;
+  close(): Promise<void>;
 }
 
 export function createApp(options: AppOptions): App {
@@ -76,16 +84,17 @@ export function createApp(options: AppOptions): App {
   const agyGate = new AgyVersionGate(agyExecutable, options.probeAgy ?? defaultProbeAgy, env);
   const overlay = new AgyOverlay(path.join(stateDir, "overlay.json"));
   const git = new GitRepoIndex();
-  const backend = options.sessionBackend ?? createAcpSessionBackend(agyExecutable, spawnTransport, env);
+  const sharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env);
+  const backend = options.sessionBackend ?? createAcpSessionBackend(sharedAcp, env);
 
   const models = new ModelCatalog({
-    discover: options.discoverModels ?? acpModelDiscovery(agyExecutable, spawnTransport, env),
+    discover: options.discoverModels ?? acpModelDiscovery(sharedAcp),
     log: options.log,
   });
 
   let managerRef: ThreadManager | undefined;
   const commands = new CommandCatalog({
-    discover: options.discoverCommands ?? acpCommandDiscovery(agyExecutable, spawnTransport, env),
+    discover: options.discoverCommands ?? acpCommandDiscovery(sharedAcp),
     live: (cwd) => managerRef?.liveCommands(cwd),
     log: options.log,
   });
@@ -151,5 +160,8 @@ export function createApp(options: AppOptions): App {
     router: new Router(handlers, options.log),
     manager,
     models,
+    async close() {
+      await Promise.allSettled([manager.closeAll(), sharedAcp.close()]);
+    },
   };
 }

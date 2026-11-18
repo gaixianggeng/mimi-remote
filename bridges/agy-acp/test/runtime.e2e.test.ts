@@ -112,7 +112,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       async close() {
         clientToServer.end();
         await connDone;
-        await app.manager.closeAll();
+        await app.close();
       },
     };
   }

@@ -55,7 +55,7 @@ async function serve(target: ListenTarget): Promise<void> {
   });
   const shutdown = () => {
     server.close();
-    void Promise.allSettled([app.manager.closeAll(), removeSocket()]).finally(() => process.exit(0));
+    void Promise.allSettled([app.close(), removeSocket()]).finally(() => process.exit(0));
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
@@ -71,7 +71,7 @@ async function serve(target: ListenTarget): Promise<void> {
 async function serveStdio(): Promise<void> {
   const { registry, app } = wire();
   await serveConnection(process.stdin, process.stdout, connectionDeps(app, registry));
-  await app.manager.closeAll();
+  await app.close();
 }
 
 async function main(argv: string[]): Promise<void> {

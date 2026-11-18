@@ -1,6 +1,6 @@
 import { errorText, logger } from "../util/logging.ts";
 import type { AcpAvailableCommand } from "../acp/types.ts";
-import { startAgyAcpClient, type SpawnAgyTransport } from "./binary.ts";
+import { SharedReadonlyAcp } from "./binary.ts";
 
 export interface CommandEntry {
   name: string;
@@ -49,44 +49,34 @@ export function catalogAgyCommands(commands: readonly AcpAvailableCommand[]): Co
 
 export type DiscoverAgyCommands = (cwd: string, sandbox: boolean) => Promise<AcpAvailableCommand[]>;
 
-export function acpCommandDiscovery(
-  agyExecutable: () => string,
-  spawnTransport: SpawnAgyTransport,
-  env: () => NodeJS.ProcessEnv = () => process.env,
-): DiscoverAgyCommands {
-  return async (cwd, sandbox) => {
-    let observed: AcpAvailableCommand[] = [];
-    let notifyCommands: (() => void) | undefined;
-    const waitForCommands = new Promise<void>((resolve) => {
-      notifyCommands = resolve;
+export function acpCommandDiscovery(sharedAcp: SharedReadonlyAcp): DiscoverAgyCommands {
+  return async (cwd, _sandbox) =>
+    sharedAcp.use(async (client) => {
+      let observed: AcpAvailableCommand[] = [];
+      let targetSessionId: string | undefined;
+      let notifyCommands: (() => void) | undefined;
+      const waitForCommands = new Promise<void>((resolve) => {
+        notifyCommands = resolve;
+      });
+      const unsubscribe = sharedAcp.subscribeUpdates((sessionId, update) => {
+        if (targetSessionId && sessionId !== targetSessionId) return;
+        if (update.sessionUpdate === "available_commands_update" && Array.isArray(update.availableCommands)) {
+          observed = update.availableCommands;
+          notifyCommands?.();
+        }
+      });
+      try {
+        const open = await client.sessionNew(cwd);
+        targetSessionId = open.sessionId;
+        if (observed.length === 0) {
+          await Promise.race([waitForCommands, new Promise<void>((resolve) => setTimeout(resolve, 800))]);
+        }
+        await client.sessionClose(open.sessionId).catch(() => {});
+        return observed;
+      } finally {
+        unsubscribe();
+      }
     });
-    const client = await startAgyAcpClient(
-      spawnTransport,
-      {
-        executable: agyExecutable(),
-        cwd,
-        sandbox,
-        env: env(),
-      },
-      {
-        onSessionUpdate: (_sessionId, update) => {
-          if (update.sessionUpdate === "available_commands_update" && Array.isArray(update.availableCommands)) {
-            observed = update.availableCommands;
-            notifyCommands?.();
-          }
-        },
-      },
-    );
-    try {
-      const open = await client.sessionNew(cwd);
-      // `agy acp` 在 `session/new` 后异步推送 `available_commands_update`，通常 <150ms 到达。
-      await Promise.race([waitForCommands, new Promise<void>((resolve) => setTimeout(resolve, 800))]);
-      await client.sessionClose(open.sessionId).catch(() => {});
-      return observed;
-    } finally {
-      await client.close().catch(() => {});
-    }
-  };
 }
 
 export interface CommandCatalogOptions {
@@ -102,7 +92,9 @@ export class CommandCatalog {
   constructor(private readonly options: CommandCatalogOptions) {}
 
   observeLiveCommands(cwd: string, commands: AcpAvailableCommand[]): void {
-    this.cache.set(cwd, { commands, fetchedAt: Date.now() });
+    const entry = { commands, fetchedAt: Date.now() };
+    this.cache.set(`full:${cwd}`, entry);
+    this.cache.set(`sandbox:${cwd}`, entry);
   }
 
   async list(cwd: string, sandbox: boolean, forceReload = false): Promise<CommandEntry[]> {

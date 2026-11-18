@@ -1,7 +1,7 @@
 import os from "node:os";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
-import { startAgyAcpClient, type SpawnAgyTransport } from "./binary.ts";
+import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasCliConversationDb } from "./env.ts";
 import type { GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
@@ -27,40 +27,21 @@ export interface AgySessionBackend {
 }
 
 export function createAcpSessionBackend(
-  agyExecutable: () => string,
-  spawnTransport: SpawnAgyTransport,
+  sharedAcp: SharedReadonlyAcp,
   env: () => NodeJS.ProcessEnv = () => process.env,
 ): AgySessionBackend {
   return {
     async listSummaries() {
-      const client = await startAgyAcpClient(spawnTransport, {
-        executable: agyExecutable(),
-        cwd: os.tmpdir(),
-        sandbox: true,
-        env: env(),
-      });
-      try {
-        return await client.sessionList();
-      } finally {
-        await client.close().catch(() => {});
-      }
+      return sharedAcp.use((client) => client.sessionList());
     },
 
     async loadReplay(sessionId: string, cwd: string) {
       const effectiveCwd = cwd.trim() || os.tmpdir();
-      const client = await startAgyAcpClient(spawnTransport, {
-        executable: agyExecutable(),
-        cwd: effectiveCwd,
-        sandbox: true,
-        env: env(),
-      });
-      try {
+      return sharedAcp.use(async (client) => {
         const { updates } = await client.sessionLoadWithReplay(sessionId, effectiveCwd);
         await client.sessionClose(sessionId).catch(() => {});
         return updates;
-      } finally {
-        await client.close().catch(() => {});
-      }
+      });
     },
 
     hasLocalConversation(sessionId: string) {
