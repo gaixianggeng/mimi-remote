@@ -467,3 +467,18 @@ GoReleaser 发布 GitHub 附件和推送 Homebrew tap 不是跨仓库事务。�
 - 配置备份包含长期凭据，默认仅保存在本机 `0700` 目录内；不用 Git 管理，不通过聊天发送。
 - Linux user service 会以当前用户权限访问项目目录和 Codex 配置；不要改成 root system service。
 - 当前没有自动数据库迁移或跨版本降级框架。配置变更继续保持向后兼容；真的出现不兼容格式时，再引入带版本号的迁移，不提前建设复杂升级系统。
+
+
+### Windows 无窗口宿主
+
+计划任务通过同目录的 `mimi-agent-host.exe` 启动 `agentd.exe`。宿主为 GUI 子系统、
+agentd 保留控制台子系统。宿主退出时 Job Object 清理其进程树；客户端退出不停止服务。
+宿主启动失败时检查 `%LOCALAPPDATA%\Mimi Remote\agent-host.last-error.log`（每次覆盖，最多 4 KiB）。
+
+升级清理旧的开始菜单日志快捷方式，配置和配对数据保留。回退到不含宿主的旧安装器后，
+旧版会恢复原计划任务动作，可能留下未被旧版安装器识别的宿主文件；不要手动删除用户配置。
+Windows 10 22H2、Windows 11 默认 Terminal、重新登录和真实手机会话仍需分别走查。
+
+开发验证：在 Windows PowerShell 7 中执行 `./scripts/test-windows-app.ps1`。
+它使用仓库外共享缓存，验证 Native AOT、PE 子系统、退出码、参数转义和隔离子进程树，
+不会停止正在使用的计划任务。窗口阳性对照会短暂显示测试控制台；不可观察时验证失败。

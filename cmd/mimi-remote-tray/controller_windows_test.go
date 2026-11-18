@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -174,5 +175,19 @@ func TestPairingOnNetworkPreservesExplicitSelection(t *testing.T) {
 	controller := &agentController{}
 	if _, err := controller.pairingOnNetwork(context.Background(), "unknown"); err == nil {
 		t.Fatal("accepted unknown network")
+	}
+}
+
+func TestManagedLogPathFollowsAgentdLayout(t *testing.T) {
+	localAppData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localAppData)
+
+	path, err := managedLogPath()
+	if err != nil {
+		t.Fatalf("managedLogPath returned %v", err)
+	}
+	want := filepath.Join(localAppData, "Mimi Remote", "logs", "agentd.log")
+	if path != want {
+		t.Fatalf("managedLogPath = %q, want %q", path, want)
 	}
 }

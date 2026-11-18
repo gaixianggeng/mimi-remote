@@ -44,6 +44,7 @@ SignedUninstaller=no
 
 [Files]
 Source: "{#SourceDir}\agentd.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\mimi-agent-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-claude-adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\alleycat-claude-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-remote-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -56,7 +57,6 @@ Source: "configure-firewall.ps1"; DestDir: "{tmp}"; Flags: dontcopy
 [Icons]
 Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
-Name: "{group}\Mimi Remote Logs"; Filename: "{cmd}"; Parameters: "/k """"{app}\agentd.exe"" logs -n 200"""; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 
 [Tasks]
 Name: "lanfirewall"; Description: "Allow private LAN access (Private networks / LocalSubnet only)"; Flags: unchecked
@@ -79,11 +79,19 @@ begin
   Result := '"' + Value + '"';
 end;
 
+function ExecConsoleHidden(const Filename, Parameters: String; var ResultCode: Integer): Boolean;
+var
+  Output: TExecOutput;
+begin
+  // Inno Setup 6.4+ runs captured console commands without allocating a console.
+  Result := ExecAndCaptureOutput(Filename, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
+end;
+
 procedure RemoveScheduledTask;
 var
   ResultCode: Integer;
 begin
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ' + Quote(TaskName) + ' /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecConsoleHidden(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ' + Quote(TaskName) + ' /f', ResultCode);
 end;
 
 procedure RegisterScheduledTask;
@@ -93,11 +101,11 @@ var
 begin
   ExtractTemporaryFile('register-service.ps1');
   Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-    Quote(ExpandConstant('{tmp}\register-service.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -LogPath ' +
+    Quote(ExpandConstant('{tmp}\register-service.ps1')) + ' -HostPath ' +
+    Quote(ExpandConstant('{app}\mimi-agent-host.exe')) + ' -LogPath ' +
     Quote(ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log')) +
     ' -TaskName ' + Quote(TaskName);
-  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+  if not ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to register the current-user login task (PowerShell could not be started).');
   end;
@@ -132,7 +140,7 @@ begin
   AgentPath := ExpandConstant('{app}\agentd.exe');
   if not FileExists(AgentPath) then
     Exit;
-  Exec(AgentPath, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecConsoleHidden(AgentPath, 'stop', ResultCode);
 
   // schtasks /end returns before Windows has necessarily released the running
   // image, and a rename succeeds even while it is still mapped. Wait until the
@@ -155,20 +163,47 @@ begin
   if not FileExists(TrayPath) then
     Exit;
 
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t', ResultCode);
   for Attempt := 1 to 30 do begin
     if ExecutableIsReleased(TrayPath) then
       Exit;
     Sleep(100);
   end;
 
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-remote-tray.exe" /t /f', ResultCode);
   for Attempt := 1 to 50 do begin
     if ExecutableIsReleased(TrayPath) then
       Exit;
     Sleep(100);
   end;
   RaiseException('Mimi Remote tray did not stop within 8 seconds.');
+end;
+
+procedure StopAgentHost;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+  HostPath: String;
+begin
+  // agentd 优雅退出后宿主会自行返回，先给它时间；仍未退出才强杀。
+  // 宿主带 kill-on-close Job Object，强杀会连带清理 agentd 的进程树。
+  HostPath := ExpandConstant('{app}\mimi-agent-host.exe');
+  if not FileExists(HostPath) then
+    Exit;
+
+  for Attempt := 1 to 50 do begin
+    if ExecutableIsReleased(HostPath) then
+      Exit;
+    Sleep(100);
+  end;
+
+  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-agent-host.exe" /f', ResultCode);
+  for Attempt := 1 to 50 do begin
+    if ExecutableIsReleased(HostPath) then
+      Exit;
+    Sleep(100);
+  end;
+  RaiseException('Mimi Remote agent host did not stop within 10 seconds.');
 end;
 
 procedure StopTailcatHelper;
@@ -189,7 +224,7 @@ begin
       Exit;
     Sleep(100);
   end;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-tailcat-experiment.exe" /t /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  ExecConsoleHidden(ExpandConstant('{sys}\taskkill.exe'), '/im "mimi-tailcat-experiment.exe" /t /f', ResultCode);
   for Attempt := 1 to 50 do begin
     if ExecutableIsReleased(HelperPath) then
       Exit;
@@ -202,13 +237,14 @@ procedure InitializeAndVerifyManagedService;
 var
   ResultCode: Integer;
 begin
-  if not Exec(ExpandConstant('{app}\agentd.exe'), 'up --no-pair --wait 60s', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then begin
+  // 失败时在安装器对话框里给出服务日志位置。
+  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'), 'up --no-pair --wait 60s', ResultCode) then begin
     PostInstallFailed := True;
-    RaiseException('Unable to initialize Mimi Remote after installation.');
+    RaiseException('Unable to initialize Mimi Remote after installation. See ' + ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log') + ' for details.');
   end;
   if ResultCode <> 0 then begin
     PostInstallFailed := True;
-    RaiseException('Mimi Remote did not become ready after installation. Re-run the previous signed installer to roll back.');
+    RaiseException('Mimi Remote did not become ready after installation. Logs: ' + ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log') + '. Re-run the previous signed installer to roll back.');
   end;
 end;
 
@@ -221,9 +257,8 @@ begin
     EnabledValue := 'true'
   else
     EnabledValue := 'false';
-  if not Exec(ExpandConstant('{app}\agentd.exe'),
-    'network --lan-enabled=' + EnabledValue,
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'),
+    'network --lan-enabled=' + EnabledValue, ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to apply the selected Windows LAN access policy.');
   end;
@@ -238,9 +273,8 @@ var
   ResultCode: Integer;
 begin
   SetLANAccessPolicy(Enabled);
-  if not Exec(ExpandConstant('{app}\agentd.exe'),
-    'restart --no-pair --wait 60s',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'),
+    'restart --no-pair --wait 60s', ResultCode) then begin
     PostInstallFailed := True;
     RaiseException('Unable to restart Mimi Remote after applying the Windows LAN access policy.');
   end;
@@ -288,8 +322,7 @@ begin
     Quote(ExpandConstant('{tmp}\configure-firewall.ps1')) + ' -AgentPath ' +
     Quote(ExpandConstant('{app}\agentd.exe')) + ' -RuleName ' +
     Quote(FirewallRuleName) + ' -Mode Validate';
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+  Result := ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) and
     (ResultCode = 0);
 end;
 
@@ -303,8 +336,7 @@ begin
     Quote(ExpandConstant('{tmp}\configure-firewall.ps1')) + ' -AgentPath ' +
     Quote(ExpandConstant('{app}\agentd.exe')) + ' -RuleName ' +
     Quote(FirewallRuleName) + ' -Mode ValidateNetwork';
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and
+  Result := ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) and
     (ResultCode = 0);
 end;
 
@@ -321,6 +353,7 @@ begin
   // Stop agentd gracefully before replacing files. The managed agent owns a
   // kill-on-close Job Object, so an unexpected exit also removes descendants.
   StopManagedService;
+  StopAgentHost;
   StopTailcatHelper;
   StopTrayApp;
   // Keep the existing task registered while files are replaced. The
@@ -335,6 +368,7 @@ var
   FirewallMarker: Cardinal;
 begin
   if CurStep = ssPostInstall then begin
+    DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'));
     // Validate the active network before registering or starting the new
     // service. An upgrade may carry an old allow_lan=true configuration, so
     // starting first would fail with a generic readiness error on Public Wi-Fi.
@@ -379,6 +413,7 @@ var
 begin
   if CurUninstallStep = usUninstall then begin
     StopManagedService;
+    StopAgentHost;
     StopTailcatHelper;
     StopTrayApp;
     RemoveScheduledTask;
@@ -392,4 +427,4 @@ begin
 end;
 
 // Agent configuration and logs deliberately live under %APPDATA% / %LOCALAPPDATA%
-// and are not listed in [InstallDelete], so normal uninstall preserves user state.
+// and are never removed during installation or normal uninstall.

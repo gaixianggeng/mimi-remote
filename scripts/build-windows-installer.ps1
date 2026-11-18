@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^v?\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$')]
@@ -86,6 +86,36 @@ try {
     $env:CGO_ENABLED = '0'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
     & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
     if ($LASTEXITCODE -ne 0) { throw 'go build failed.' }
+    # agentd 必须保持控制台子系统：用户在 PowerShell 里手动排查时要有输出。
+    & (Join-Path $root 'scripts\check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'agentd.exe') -Expected Console
+    # 无窗口宿主：Native AOT 编译成单个 exe，安装目录不必附带 .NET 运行时。
+    # 它必须是 GUI 子系统，否则计划任务启动时又会分到一个可见控制台。
+    $dotnet = Find-Tool 'dotnet' @(
+        "$env:ProgramFiles\dotnet\dotnet.exe",
+        "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe"
+    )
+    $hostProject = Join-Path $root 'windows\src\MimiRemote.AgentHost\MimiRemote.AgentHost.csproj'
+    $hostOutput = Join-Path $work 'host'
+    $bash = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
+    if (-not (Test-Path -LiteralPath $bash)) { $bash = Find-Tool 'bash' @() }
+    $previousArtifacts = $env:MIMI_DOTNET_ARTIFACTS
+    try {
+        if (-not $env:MIMI_DOTNET_ARTIFACTS) {
+            $cachePath = & $bash -c 'cygpath -w "$(bash ./scripts/development-cache-path.sh dotnet)"'
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve shared .NET cache.' }
+            $env:MIMI_DOTNET_ARTIFACTS = $cachePath.Trim()
+        }
+        Push-Location (Join-Path $root 'windows')
+        try {
+            & $dotnet publish $hostProject -c Release -r win-x64 --self-contained true -p:PublishAot=true -o $hostOutput --nologo
+            if ($LASTEXITCODE -ne 0) { throw 'dotnet publish for the agent host failed.' }
+        } finally { Pop-Location }
+    } finally { $env:MIMI_DOTNET_ARTIFACTS = $previousArtifacts }
+    if ($LASTEXITCODE -ne 0) { throw 'dotnet publish for the agent host failed.' }
+    $hostBinary = Join-Path $hostOutput 'mimi-agent-host.exe'
+    if (-not (Test-Path -LiteralPath $hostBinary -PathType Leaf)) { throw "Native AOT did not produce mimi-agent-host.exe: $hostBinary" }
+    Copy-Item -LiteralPath $hostBinary -Destination $stage
+    & (Join-Path $root 'scripts\check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'mimi-agent-host.exe') -Expected GUI
     & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.releaseVersion=$Version" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
     if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }
     # Tailcat 辅助程序是独立 Go module，要求比根 module 更新的工具链。与 .goreleaser.yml 的
@@ -171,11 +201,11 @@ try {
     if (-not (Test-Path -LiteralPath $setup)) { throw "Expected installer was not produced: $setup" }
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     $payloadHashes = [ordered]@{}
-    foreach ($payloadName in @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($payloadName in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
         $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath (Join-Path $stage $payloadName) -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $signingMode = if ($Snapshot) { 'unsigned-snapshot' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
-    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; tailcat_version = $tailcatVersion; binaries = @('agentd.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe'); assets = @('mimi-remote.ico', 'THIRD_PARTY_NOTICES.md'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
+    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; tailcat_version = $tailcatVersion; binaries = @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe'); assets = @('mimi-remote.ico', 'THIRD_PARTY_NOTICES.md'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
     "$hash  $([IO.Path]::GetFileName($setup))" | Set-Content -LiteralPath "$setup.sha256" -Encoding ascii
     Write-Host "Created $setup"
 } finally {
