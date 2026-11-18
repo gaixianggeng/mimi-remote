@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,17 +25,6 @@ func stubGatewayGitCommonDirectory(t *testing.T, stub func(ctx context.Context, 
 	original := gatewayGitCommonDirectory
 	gatewayGitCommonDirectory = stub
 	t.Cleanup(func() { gatewayGitCommonDirectory = original })
-}
-
-func slowGitCommonDirectory(delay time.Duration) func(ctx context.Context, path string) (string, error) {
-	return func(ctx context.Context, path string) (string, error) {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-		return resolveGatewayGitCommonDirectory(ctx, path)
-	}
 }
 
 func hungGitCommonDirectory(ctx context.Context, _ string) (string, error) {
@@ -90,8 +80,23 @@ func TestGlobalThreadListReusesGitOwnershipAcrossResponses(t *testing.T) {
 }
 
 func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
-	const gitDelay = 1500 * time.Millisecond
-	stubGatewayGitCommonDirectory(t, slowGitCommonDirectory(gitDelay))
+	// Exercise replay of the pending page independently of the request-rate limit.
+	originalMaxRequests := appServerGatewayHistoryBudgetMaxRequests
+	appServerGatewayHistoryBudgetMaxRequests = 64
+	t.Cleanup(func() { appServerGatewayHistoryBudgetMaxRequests = originalMaxRequests })
+
+	// Hold Git until the unrelated response arrives, independently of the runner's timing.
+	gitReady := make(chan struct{})
+	releaseGit := sync.OnceFunc(func() { close(gitReady) })
+	defer releaseGit()
+	stubGatewayGitCommonDirectory(t, func(ctx context.Context, path string) (string, error) {
+		select {
+		case <-gitReady:
+			return resolveGatewayGitCommonDirectory(ctx, path)
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
 	browseRoot := t.TempDir()
 	var listPayload []byte
 	upstreamURL, received, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, _ int, payload []byte) {
@@ -125,31 +130,31 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":1,"method":"thread/list","params":{"limit":50}}`)); err != nil {
 		t.Fatal(err)
 	}
-	<-received
+	readUpstreamFrame(t, received)
 	scoped, err := json.Marshal(map[string]any{"id": 2, "method": "thread/list", "params": map[string]any{"cwd": projectDir, "limit": 20}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sentScoped := time.Now()
 	if err := conn.WriteMessage(websocket.TextMessage, scoped); err != nil {
 		t.Fatal(err)
 	}
-	<-received
+	readUpstreamFrame(t, received)
 	var list []byte
-	var scopedElapsed time.Duration
-	for list == nil || scopedElapsed == 0 {
+	scopedReceived := false
+	for list == nil || !scopedReceived {
 		frame := readGatewayRaw(t, conn)
+		var reply appServerGatewayFrame
+		if err := json.Unmarshal(frame, &reply); err != nil || len(reply.Error) > 0 {
+			t.Fatalf("首次列表请求收到错误：decode=%v payload=%s", err, frame)
+		}
 		switch {
 		case bytes.Contains(frame, []byte(`"id":2`)):
-			scopedElapsed = time.Since(sentScoped)
+			scopedReceived = true
 		case bytes.Contains(frame, []byte(`"id":1`)):
 			list = frame
 		default:
 			t.Fatalf("意外的帧：%s", frame)
 		}
-	}
-	if scopedElapsed >= gitDelay {
-		t.Fatalf("Git 判定慢时同连接的作用域列表不能跟着等完：elapsed=%s git=%s", scopedElapsed, gitDelay)
 	}
 	if bytes.Contains(list, []byte(`"thread-0"`)) {
 		t.Fatalf("归属未判定的外部 Worktree 会话不能放行：%s", list)
@@ -159,8 +164,8 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 		t.Fatalf("未判定完的页必须给出重取本页的 cursor，不能让客户端当作遍历结束：%s", list)
 	}
 
-	// 注入延迟结束不等于后台 Git 已退出并写入缓存（Windows 启动进程尤其慢）。
-	// 按客户端协议重取未判定页，直到确实完成，而不是把固定 sleep 当完成信号。
+	// Allow both lookups to settle, then follow the retry cursor until the page is complete.
+	releaseGit()
 	deadline := time.Now().Add(10 * time.Second)
 	for requestID := 3; ; requestID++ {
 		retry, err := json.Marshal(map[string]any{"id": requestID, "method": "thread/list", "params": map[string]any{"limit": 50, "cursor": retryCursor}})
@@ -170,10 +175,14 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 		if err := conn.WriteMessage(websocket.TextMessage, retry); err != nil {
 			t.Fatal(err)
 		}
-		if upstreamRetry := <-received; bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
+		complete := readGatewayRaw(t, conn)
+		var reply appServerGatewayFrame
+		if err := json.Unmarshal(complete, &reply); err != nil || len(reply.Error) > 0 {
+			t.Fatalf("重取首页收到错误：decode=%v payload=%s", err, complete)
+		}
+		if upstreamRetry := readUpstreamFrame(t, received); bytes.Contains(upstreamRetry, []byte(`"cursor"`)) {
 			t.Fatalf("重取首页不能带 cursor 发给上游：%s", upstreamRetry)
 		}
-		complete := readGatewayRaw(t, conn)
 		cursor, unsettled := globalListResponseCursor(t, complete)
 		if !unsettled {
 			if !bytes.Contains(complete, []byte(`"thread-29"`)) {
@@ -190,7 +199,6 @@ func TestGlobalThreadListSlowGitDoesNotHoldOtherResponses(t *testing.T) {
 		retryCursor = cursor
 		time.Sleep(10 * time.Millisecond)
 	}
-
 }
 
 func TestGlobalThreadListGitTimeoutKeepsPageUnsettled(t *testing.T) {
