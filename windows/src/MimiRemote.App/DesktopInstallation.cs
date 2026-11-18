@@ -7,6 +7,7 @@ namespace MimiRemote.App;
 internal sealed class DesktopInstallation(string directory, string executable)
 {
     internal const string TrayMutexName = @"Local\MimiRemoteTray-7D413E71-19C5-4F02-8AFC-437E1B8019FD";
+    internal const string ShutdownEventName = @"Local\MimiRemoteNativeShutdown-7D413E71-19C5-4F02-8AFC-437E1B8019FD";
     internal const string LegacyTrayName = "mimi-remote-tray.exe";
     private const string DesktopKey = @"Software\Mimi Remote";
     private const string StartupDisabledValue = "DesktopStartupDisabled";
