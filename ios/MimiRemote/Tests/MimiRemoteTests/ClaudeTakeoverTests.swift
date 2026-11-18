@@ -1334,4 +1334,215 @@ final class ClaudeTakeoverTests: XCTestCase {
         _ = await store.bootstrap(restoring: SessionRestoreSnapshot(endpoint: appStore.endpoint, session: held))
         return HeldStore(clientFailure: clientFailure, store: store, client: client, appStore: appStore, held: held, sockets: sockets)
     }
+
+    // MARK: - 手机端「在电脑上继续」（#726）
+
+    func testClaudeComputerHandoffEligibilityAndPlatformCommands() async throws {
+        let fixture = await makeHeldStore(id: "claude_handoff_rules", supportsTakeover: true)
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "test-token",
+            installationID: "install-mac",
+            hostPlatform: .apple
+        ))
+
+        let claudeSession = AgentSession(
+            id: "thr_claude_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/Users/dev/my repo",
+            title: "Claude 会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "11111111-1111-4111-8111-111111111111",
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let macDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: claudeSession))
+        XCTAssertTrue(macDetails.canOpenInDesktop)
+        XCTAssertFalse(macDetails.isAlreadyInDesktop)
+        XCTAssertEqual(
+            macDetails.terminalCommand,
+            "cd '/Users/dev/my repo' && claude --resume '11111111-1111-4111-8111-111111111111'"
+        )
+        XCTAssertEqual(macDetails.slashResumeCommand, "/resume 11111111-1111-4111-8111-111111111111")
+
+        // 第三方网关下的 claude-desktop-3p 也按桌面版持有方识别（#991 实测）。
+        var desktopHeld = claudeSession
+        desktopHeld.canAcceptDirectInput = false
+        desktopHeld.claudeOwner = ClaudeSessionOwner(
+            entrypoint: "claude-desktop-3p",
+            kind: "interactive",
+            status: "idle",
+            pid: 9001
+        )
+        XCTAssertEqual(desktopHeld.claudeOwner?.displayName, L10n.text("ui.claude_owner_desktop"))
+        XCTAssertEqual(fixture.store.claudeComputerHandoffDetails(for: desktopHeld)?.isAlreadyInDesktop, true)
+
+        // Windows 主机隐藏「在 Claude 桌面版打开」，终端恢复命令使用 PowerShell。
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.11:8787",
+            token: "win-token",
+            profileTarget: .newProfile(id: "win-host", displayName: "Windows PC"),
+            installationID: "install-win",
+            hostPlatform: .windows
+        ))
+        let winSession = AgentSession(
+            id: "thr_claude_win",
+            projectID: "proj_win",
+            project: "WinRepo",
+            dir: #"C:\Work\O'Brien"#,
+            title: "Win Claude",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "win-sess-1",
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let winDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: winSession))
+        XCTAssertFalse(winDetails.canOpenInDesktop)
+        XCTAssertEqual(
+            winDetails.terminalCommand,
+            #"Set-Location -LiteralPath 'C:\Work\O''Brien' -ErrorAction Stop; claude --resume 'win-sess-1'"#
+        )
+        XCTAssertEqual(winDetails.slashResumeCommand, "/resume win-sess-1")
+
+        // Codex、DeepSeek、缺少目录或只读子会话均不显示该菜单。
+        let codexSession = makeSession(id: "thr_codex", projectID: "proj_1", title: "Codex", status: "history", source: "codex", runtimeProvider: "codex")
+        let deepseekSession = makeSession(id: "thr_ds", projectID: "proj_1", title: "DeepSeek", status: "history", source: "deepseek", runtimeProvider: "deepseek")
+        let emptyDirSession = AgentSession(
+            id: "thr_nodir",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "   ",
+            title: "NoDir",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        var subagentSession = claudeSession
+        subagentSession.isSubagent = true
+        var protocolReadOnlySession = claudeSession
+        protocolReadOnlySession.canAcceptDirectInput = false
+        let localDraftSession = AgentSession(
+            id: "draft_claude_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/Users/dev/my repo",
+            title: "Draft",
+            status: "draft",
+            source: "local",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: codexSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: deepseekSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: emptyDirSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: subagentSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: protocolReadOnlySession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: localDraftSession))
+    }
+
+    func testCopyClaudeComputerCommandsWarnsWhenTurnIsRunning() async throws {
+        let fixture = await makeHeldStore(id: "claude_copy_cmds", supportsTakeover: true)
+        let session = AgentSession(
+            id: "thr_copy_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/tmp/repo",
+            title: "Claude",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let details = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: session))
+
+        fixture.store.copyClaudeTerminalRecoveryCommand(details, isRunning: false)
+        XCTAssertEqual(UIPasteboard.general.string, "cd '/tmp/repo' && claude --resume 'thr_copy_1'")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_recovery_command_copied"))
+
+        fixture.store.copyClaudeSlashResumeCommand(details, isRunning: false)
+        XCTAssertEqual(UIPasteboard.general.string, "/resume thr_copy_1")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_slash_resume_command_copied"))
+
+        fixture.store.copyClaudeSlashResumeCommand(details, isRunning: true)
+        XCTAssertEqual(UIPasteboard.general.string, "/resume thr_copy_1")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_command_copied_active_turn_warning"))
+    }
+
+    func testOpenClaudeSessionInDesktopHandlesSuccessSwitchAndStructuredFailures() async throws {
+        let fixture = await makeHeldStore(id: "claude_desktop_open", supportsTakeover: true)
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: fixture.appStore.endpoint,
+            token: "test-token",
+            installationID: "install-mac",
+            hostPlatform: .apple
+        ))
+        var session = fixture.held
+        session.canAcceptDirectInput = true
+        session.claudeOwner = nil
+
+        // 旧主机未声明 thread/desktop/open 时提示更新并隐藏桌面版菜单项。
+        fixture.client.sessionSupportsThreadDesktopOpenResult = false
+        let unsupportedResult = await fixture.store.openClaudeSessionInDesktop(session)
+        XCTAssertFalse(unsupportedResult)
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_open_upgrade_required"))
+        XCTAssertEqual(fixture.store.claudeComputerHandoffDetails(for: session)?.canOpenInDesktop, false)
+
+        // 支持 thread/desktop/open 的 Mac 主机：首次打开与切换已有窗口。
+        fixture.store.claudeDesktopOpenSupport = nil
+        fixture.client.sessionSupportsThreadDesktopOpenResult = true
+        var openedThreadIDs: [String] = []
+        fixture.client.openThreadInDesktopHandler = { threadID in
+            openedThreadIDs.append(threadID)
+            return CodexAppServerThreadDesktopOpenResult(opened: true, titleWritten: true, alreadyInDesktop: false, desktopVersion: "5.1231.0")
+        }
+        let opened = await fixture.store.openClaudeSessionInDesktop(session)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(openedThreadIDs, [session.id])
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_opened_readonly_notice"))
+
+        fixture.client.openThreadInDesktopHandler = { _ in
+            CodexAppServerThreadDesktopOpenResult(opened: true, alreadyInDesktop: true)
+        }
+        let switched = await fixture.store.openClaudeSessionInDesktop(session)
+        XCTAssertTrue(switched)
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_desktop_switched_notice"))
+
+        // 结构化失败原因映射。
+        let cases: [(String, String)] = [
+            ("turn_active", "ui.claude_desktop_open_turn_active"),
+            ("held_elsewhere", "ui.claude_desktop_open_held_elsewhere"),
+            ("not_installed", "ui.claude_desktop_open_not_installed"),
+            ("outdated", "ui.claude_desktop_open_outdated"),
+            ("open_failed", "ui.claude_desktop_open_failed"),
+            ("unsupported_platform", "ui.claude_desktop_open_unsupported_platform"),
+        ]
+        for (reason, expectedKey) in cases {
+            fixture.client.openThreadInDesktopHandler = { _ in
+                throw CodexAppServerConnectionError.appServer(CodexAppServerError(
+                    code: -32602,
+                    message: "desktop open rejected",
+                    data: .object([
+                        "accepted": .bool(false),
+                        "reason": .string(reason),
+                        "retryable": .bool(reason != "unsupported_platform"),
+                    ])
+                ))
+            }
+            let ok = await fixture.store.openClaudeSessionInDesktop(session)
+            XCTAssertFalse(ok)
+            XCTAssertEqual(fixture.store.statusMessage, L10n.text(expectedKey), "reason=\(reason)")
+        }
+    }
 }

@@ -39,6 +39,10 @@ struct ClaudeSessionRecoveryCommand {
         }
         return "cd \(posixShellQuote(cwd)) && claude --resume \(posixShellQuote(sessionID))"
     }
+
+    static func slashResumeCommand(sessionID: String) -> String {
+        "/resume \(sessionID.trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
 }
 
 struct SessionContextSidebarView: View {
@@ -276,7 +280,13 @@ struct SessionContextSidebarView: View {
                 )
                 Button {
                     UIPasteboard.general.string = details.command
-                    sessionStore.setStatusMessage(L10n.text("ui.claude_recovery_command_copied"))
+                    sessionStore.setStatusMessage(
+                        L10n.text(
+                            session?.isRunning == true
+                                ? "ui.claude_command_copied_active_turn_warning"
+                                : "ui.claude_recovery_command_copied"
+                        )
+                    )
                 } label: {
                     Label(L10n.text("ui.copy_claude_recovery_command"), systemImage: "doc.on.doc")
                         .frame(maxWidth: .infinity, alignment: .leading)

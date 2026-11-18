@@ -1,9 +1,21 @@
 import Foundation
+import UIKit
 
-/// 某台主机的 Claude channel 是否声明 thread/takeover。按主机缓存，切换主机后自然失效。
+/// 某台主机的 Claude channel 是否声明 thread/takeover（或 thread/desktop/open）。按主机缓存，切换主机后自然失效。
 struct ClaudeTakeoverSupport: Equatable {
     let scope: HostScope
     let supported: Bool
+}
+
+/// #726：手机端 Claude 会话「在电脑上继续」菜单所需的信息快照。
+struct ClaudeComputerHandoffDetails: Equatable {
+    let sessionID: String
+    let cwd: String
+    let terminalCommand: String
+    let slashResumeCommand: String
+    let canOpenInDesktop: Bool
+    let isAlreadyInDesktop: Bool
+    let isOpeningInDesktop: Bool
 }
 
 /// 失败原因和禁用条件一起保留，返回会话后仍能解释为什么不能接管。
@@ -186,5 +198,201 @@ extension SessionStore {
             }
         }
         return L10n.format("ui.take_over_failed_value", error.localizedDescription)
+    }
+
+    // MARK: - 在电脑上继续（#726）
+
+    func claudeComputerHandoffDetails(
+        for session: AgentSession,
+        context: SessionContextSnapshot? = nil
+    ) -> ClaudeComputerHandoffDetails? {
+        let resolvedContext = context ?? contextStore.context(for: session.id) ?? session.context
+        let isResolvedSubagent = session.isSubagentThread
+            || resolvedContext?.isSubagent == true
+            || resolvedContext?.parentThreadID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        guard !session.isLocalDraft,
+              !isResolvedSubagent,
+              session.allowsDirectInput || session.isHeldOnComputer else {
+            return nil
+        }
+        let runtimeProvider = Self.firstNonEmptyHandoffValue(
+            session.runtimeProvider,
+            resolvedContext?.environment?.runtimeProvider,
+            session.source
+        )
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude" else {
+            return nil
+        }
+        guard let sessionID = Self.firstNonEmptyHandoffValue(
+            session.appServerSessionID,
+            session.resumeID,
+            resolvedContext?.threadID,
+            session.id
+        ), let cwd = Self.firstNonEmptyHandoffValue(
+            session.dir,
+            resolvedContext?.environment?.cwd
+        ) else {
+            return nil
+        }
+        let hostPlatform = appStore.activeConnectionProfile?.hostPlatform ?? .unknown
+        let explicitlyUnsupported = claudeDesktopOpenSupport?.scope == appStore.activeHostScope
+            && claudeDesktopOpenSupport?.supported == false
+        return ClaudeComputerHandoffDetails(
+            sessionID: sessionID,
+            cwd: cwd,
+            terminalCommand: ClaudeSessionRecoveryCommand.make(
+                sessionID: sessionID,
+                cwd: cwd,
+                hostPlatform: hostPlatform
+            ),
+            slashResumeCommand: ClaudeSessionRecoveryCommand.slashResumeCommand(sessionID: sessionID),
+            canOpenInDesktop: hostPlatform == .apple && !explicitlyUnsupported,
+            isAlreadyInDesktop: session.claudeOwner?.isDesktop == true,
+            isOpeningInDesktop: claudeDesktopOpenInFlightSessionID == session.id
+        )
+    }
+
+    func refreshClaudeDesktopOpenSupportIfNeeded(for session: AgentSession) async {
+        guard appStore.activeConnectionProfile?.hostPlatform == .apple,
+              claudeDesktopOpenSupport?.scope != appStore.activeHostScope else {
+            return
+        }
+        let lease: ProjectsGitHostLease
+        do {
+            lease = try captureProjectsGitHostLease()
+        } catch {
+            return
+        }
+        do {
+            lease.client.rememberRuntimeRoute("claude", forSessionID: session.id)
+            let supported = try await lease.client.sessionSupportsThreadDesktopOpen(sessionID: session.id)
+            try requireCurrentProjectsGitHost(lease)
+            claudeDesktopOpenSupport = ClaudeTakeoverSupport(scope: lease.scope, supported: supported)
+        } catch {
+            return
+        }
+    }
+
+    func copyClaudeTerminalRecoveryCommand(_ details: ClaudeComputerHandoffDetails, isRunning: Bool) {
+        UIPasteboard.general.string = details.terminalCommand
+        setStatusMessage(
+            L10n.text(
+                isRunning
+                    ? "ui.claude_command_copied_active_turn_warning"
+                    : "ui.claude_recovery_command_copied"
+            )
+        )
+    }
+
+    func copyClaudeSlashResumeCommand(_ details: ClaudeComputerHandoffDetails, isRunning: Bool) {
+        UIPasteboard.general.string = details.slashResumeCommand
+        setStatusMessage(
+            L10n.text(
+                isRunning
+                    ? "ui.claude_command_copied_active_turn_warning"
+                    : "ui.claude_slash_resume_command_copied"
+            )
+        )
+    }
+
+    @discardableResult
+    func openClaudeSessionInDesktop(_ session: AgentSession) async -> Bool {
+        guard !session.isRunning else {
+            setStatusMessage(L10n.text("ui.claude_desktop_open_turn_active"))
+            return false
+        }
+        guard claudeDesktopOpenInFlightSessionID == nil else {
+            return false
+        }
+        claudeDesktopOpenInFlightSessionID = session.id
+        defer { claudeDesktopOpenInFlightSessionID = nil }
+
+        let lease: ProjectsGitHostLease
+        do {
+            lease = try captureProjectsGitHostLease()
+        } catch {
+            setStatusMessage(claudeDesktopOpenFailureMessage(error))
+            return false
+        }
+        do {
+            lease.client.rememberRuntimeRoute("claude", forSessionID: session.id)
+            guard try await lease.client.sessionSupportsThreadDesktopOpen(sessionID: session.id) else {
+                try requireCurrentProjectsGitHost(lease)
+                claudeDesktopOpenSupport = ClaudeTakeoverSupport(scope: lease.scope, supported: false)
+                setStatusMessage(L10n.text("ui.claude_desktop_open_upgrade_required"))
+                return false
+            }
+            try requireCurrentProjectsGitHost(lease)
+            claudeDesktopOpenSupport = ClaudeTakeoverSupport(scope: lease.scope, supported: true)
+            let result = try await lease.client.openThreadInDesktop(threadID: session.id)
+            try requireCurrentProjectsGitHost(lease)
+            setStatusMessage(
+                L10n.text(
+                    result.alreadyInDesktop
+                        ? "ui.claude_desktop_switched_notice"
+                        : "ui.claude_desktop_opened_readonly_notice"
+                )
+            )
+            if !result.alreadyInDesktop, session.id == selectedSessionID {
+                let targetSessionID = session.id
+                let expectedScope = lease.scope
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    guard let self,
+                          self.appStore.activeHostScope == expectedScope,
+                          self.selectedSessionID == targetSessionID else {
+                        return
+                    }
+                    await self.refreshCurrentContext(origin: .routine)
+                }
+            }
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard (try? requireCurrentProjectsGitHost(lease)) != nil else {
+                return false
+            }
+            if CodexAppServerThreadDesktopOpenResult.isGatewayMethodUnsupported(error) {
+                claudeDesktopOpenSupport = ClaudeTakeoverSupport(scope: lease.scope, supported: false)
+            }
+            setStatusMessage(claudeDesktopOpenFailureMessage(error))
+            return false
+        }
+    }
+
+    func claudeDesktopOpenFailureMessage(_ error: Error) -> String {
+        if let failure = CodexAppServerThreadDesktopOpenResult.failure(from: error) {
+            switch failure.reason {
+            case "turn_active":
+                return L10n.text("ui.claude_desktop_open_turn_active")
+            case "held_elsewhere":
+                return L10n.text("ui.claude_desktop_open_held_elsewhere")
+            case "not_installed":
+                return L10n.text("ui.claude_desktop_open_not_installed")
+            case "outdated":
+                return L10n.text("ui.claude_desktop_open_outdated")
+            case "open_failed":
+                return L10n.text("ui.claude_desktop_open_failed")
+            case "unsupported_platform":
+                return L10n.text("ui.claude_desktop_open_unsupported_platform")
+            default:
+                break
+            }
+        }
+        if CodexAppServerThreadDesktopOpenResult.isGatewayMethodUnsupported(error) {
+            return L10n.text("ui.claude_desktop_open_upgrade_required")
+        }
+        return L10n.format("ui.claude_desktop_open_failed_value", error.localizedDescription)
+    }
+
+    private static func firstNonEmptyHandoffValue(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 }

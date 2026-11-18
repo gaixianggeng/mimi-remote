@@ -96,6 +96,9 @@ final class SessionStore: ObservableObject {
     /// #451：当前主机 Claude channel 是否声明 thread/takeover，按主机缓存；nil 表示尚未探测。
     @Published var claudeTakeoverSupport: ClaudeTakeoverSupport?
     @Published var claudeTakeoverInFlightSessionID: SessionID?
+    /// #726：当前主机 Claude channel 是否声明 thread/desktop/open，按主机缓存；nil 表示尚未探测。
+    @Published var claudeDesktopOpenSupport: ClaudeTakeoverSupport?
+    @Published var claudeDesktopOpenInFlightSessionID: SessionID?
     /// 接管被 bridge 明确拒绝（不可重试）后，对同一持有方不再提供按钮，避免反复结束重启的进程。
     @Published var claudeTakeoverFailures: [SessionID: ClaudeTakeoverFailureNotice] = [:]
     // 首屏搜索覆盖 300ms 防抖和实际请求；与分页 loading 分离，避免“继续搜索”误占空态。

@@ -140,6 +140,10 @@ struct SessionActionMenuContent: View {
             }
             .accessibilityValue(session.id)
 
+            if let handoff = sessionStore.claudeComputerHandoffDetails(for: session) {
+                claudeComputerHandoffMenu(handoff)
+            }
+
             Divider()
 
             Button {
@@ -170,6 +174,53 @@ struct SessionActionMenuContent: View {
                 }
                 .disabled(!actions.canChangeArchiveState)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func claudeComputerHandoffMenu(_ handoff: ClaudeComputerHandoffDetails) -> some View {
+        Menu {
+            if handoff.canOpenInDesktop {
+                Button {
+                    Task { await sessionStore.openClaudeSessionInDesktop(session) }
+                } label: {
+                    Label(
+                        L10n.text(
+                            handoff.isAlreadyInDesktop
+                                ? "ui.switch_to_claude_desktop"
+                                : "ui.open_in_claude_desktop"
+                        ),
+                        systemImage: "macwindow"
+                    )
+                }
+                .disabled(session.isRunning || handoff.isOpeningInDesktop)
+                .accessibilityIdentifier("sessionActions.claudeHandoff.openDesktop")
+
+                Divider()
+            }
+
+            Button {
+                sessionStore.copyClaudeTerminalRecoveryCommand(handoff, isRunning: session.isRunning)
+            } label: {
+                Label(L10n.text("ui.copy_claude_recovery_command"), systemImage: "terminal")
+            }
+            .accessibilityValue(handoff.terminalCommand)
+            .accessibilityIdentifier("sessionActions.claudeHandoff.copyTerminalCommand")
+
+            Button {
+                sessionStore.copyClaudeSlashResumeCommand(handoff, isRunning: session.isRunning)
+            } label: {
+                Label(L10n.text("ui.copy_claude_slash_resume_command"), systemImage: "doc.on.doc")
+            }
+            .accessibilityValue(handoff.slashResumeCommand)
+            .accessibilityIdentifier("sessionActions.claudeHandoff.copySlashResume")
+        } label: {
+            Label(L10n.text("ui.continue_on_computer"), systemImage: "desktopcomputer")
+        }
+        .menuOrder(.fixed)
+        .accessibilityIdentifier("sessionActions.claudeHandoff")
+        .task(id: session.id) {
+            await sessionStore.refreshClaudeDesktopOpenSupportIfNeeded(for: session)
         }
     }
 

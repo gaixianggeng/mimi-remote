@@ -6103,6 +6103,83 @@
         }
       }
     },
+    "ui.claude_command_copied_active_turn_warning": {
+      "comment": "Warning toast when copying a Claude resume command while a turn is running.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Command copied. Once resumed on your computer, this device yields automatically and interrupts the running turn." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制命令。在电脑上恢复后，当前设备会自动让出并中断正在运行的回合。" } }
+      }
+    },
+    "ui.claude_desktop_open_failed": {
+      "comment": "Failure message when opening Claude Desktop via deep link fails.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't open Claude Desktop on your computer. Confirm that you are signed in to Claude Desktop and Deep Links aren't disabled, then try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未能打开电脑上的 Claude 桌面版。请确认桌面版已登录且未禁用深链后再试。" } }
+      }
+    },
+    "ui.claude_desktop_open_failed_value": {
+      "comment": "Fallback error message when opening Claude Desktop fails with an unexpected reason.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn't open Claude Desktop: %@" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "未能在 Claude 桌面版打开：%@" } }
+      }
+    },
+    "ui.claude_desktop_open_held_elsewhere": {
+      "comment": "Failure message when the Claude session is currently held by a terminal process.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This session is currently open in a terminal on your computer. Continue there or exit Claude in the terminal first." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这条会话正在电脑终端里使用。请在终端里继续，或先退出终端里的 Claude。" } }
+      }
+    },
+    "ui.claude_desktop_open_not_installed": {
+      "comment": "Failure message when Claude Desktop is not installed on the computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Claude Desktop is not installed on this computer." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上没有安装 Claude 桌面版。" } }
+      }
+    },
+    "ui.claude_desktop_open_outdated": {
+      "comment": "Failure message when Claude Desktop on the computer is older than the minimum version supporting resume deep links.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Claude Desktop on this computer is out of date. Update Claude Desktop and try again." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上的 Claude 桌面版版本过旧，请更新后再试。" } }
+      }
+    },
+    "ui.claude_desktop_open_turn_active": {
+      "comment": "Failure message when attempting to hand off a Claude session to Claude Desktop while a turn is running.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Wait for the current turn to finish before opening in Claude Desktop." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "当前回合还在运行，请等本轮结束后再在 Claude 桌面版打开。" } }
+      }
+    },
+    "ui.claude_desktop_open_unsupported_platform": {
+      "comment": "Failure message when Claude Desktop handoff is requested on a non-macOS host.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Claude Desktop handoff is only available on macOS." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "只有 macOS 电脑支持在 Claude 桌面版打开。" } }
+      }
+    },
+    "ui.claude_desktop_open_upgrade_required": {
+      "comment": "Failure message when the computer's Mimi Remote / Claude bridge does not support thread/desktop/open.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mimi Remote on this computer is out of date. Update it before opening sessions in Claude Desktop." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "这台电脑上的 Mimi Remote 版本较旧，请更新后再使用「在 Claude 桌面版打开」。" } }
+      }
+    },
+    "ui.claude_desktop_opened_readonly_notice": {
+      "comment": "Status notice shown after opening a Claude session in Claude Desktop on the computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Opened in Claude Desktop on your computer. This session is read-only here until closed there or taken over." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已在电脑的 Claude 桌面版打开；当前设备将转为只读，关闭桌面版会话或点「接管」后可继续输入。" } }
+      }
+    },
+    "ui.claude_desktop_switched_notice": {
+      "comment": "Status notice shown when switching an already-open Claude Desktop window to the session.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Switched Claude Desktop on your computer to this session." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已将电脑上的 Claude 桌面版切换到此会话。" } }
+      }
+    },
     "ui.claude_recovery_command": {
       "comment": "Label for the shell command that resumes a Claude session.",
       "localizations": {
@@ -6135,6 +6212,41 @@
             "value": "恢复命令已复制"
           }
         }
+      }
+    },
+    "ui.claude_slash_resume_command_copied": {
+      "comment": "Confirmation after copying the Claude /resume command.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "/resume command copied" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制 /resume 命令" } }
+      }
+    },
+    "ui.continue_on_computer": {
+      "comment": "Submenu title in session actions for continuing a Claude session on the computer.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Continue on Computer" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在电脑上继续" } }
+      }
+    },
+    "ui.copy_claude_slash_resume_command": {
+      "comment": "Menu action that copies /resume <sessionID> for an open Claude Code terminal.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy /resume command" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "复制 /resume 命令" } }
+      }
+    },
+    "ui.open_in_claude_desktop": {
+      "comment": "Menu action to open the Claude session in Claude Desktop on macOS.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Open in Claude Desktop" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "在 Claude 桌面版打开" } }
+      }
+    },
+    "ui.switch_to_claude_desktop": {
+      "comment": "Menu action to bring an already-open Claude Desktop session to the front.",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Show in Claude Desktop" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "前往 Claude 桌面版" } }
       }
     },
     "ui.claude_request_sent_again": {

@@ -809,6 +809,14 @@ struct CodexAppServerRequestBuilder {
         return CodexAppServerRequestSpec(method: "thread/takeover", params: .object(params))
     }
 
+    /// #726：在电脑上的 Claude 桌面版中打开这条会话；网关只放行当前连接授权过的 threadId。
+    func threadDesktopOpen(threadID: String) -> CodexAppServerRequestSpec {
+        CodexAppServerRequestSpec(
+            method: "thread/desktop/open",
+            params: .object(["threadId": .string(threadID)])
+        )
+    }
+
     func threadRead(threadID: String, includeTurns: Bool = false) -> CodexAppServerRequestSpec {
         CodexAppServerRequestSpec(method: "thread/read", params: CodexAppServerJSONValue.objectValue([
             "threadId": .string(threadID),
@@ -1344,5 +1352,80 @@ struct CodexAppServerThreadTakeoverFailure: Equatable, Sendable {
         self.reason = reason
         self.retryable = retryable
         self.holderPID = holderPID
+    }
+}
+
+// MARK: - thread/desktop/open
+
+/// `thread/desktop/open` 的结果摘要（#726）。
+struct CodexAppServerThreadDesktopOpenResult: Equatable, Sendable {
+    let opened: Bool
+    let titleWritten: Bool
+    let alreadyInDesktop: Bool
+    let desktopVersion: String?
+
+    init(
+        opened: Bool,
+        titleWritten: Bool = false,
+        alreadyInDesktop: Bool = false,
+        desktopVersion: String? = nil
+    ) {
+        self.opened = opened
+        self.titleWritten = titleWritten
+        self.alreadyInDesktop = alreadyInDesktop
+        self.desktopVersion = desktopVersion
+    }
+
+    init(result: CodexAppServerJSONValue?) {
+        let object = result?.objectValue ?? [:]
+        opened = object["opened"]?.boolValue ?? false
+        titleWritten = object["titleWritten"]?.boolValue ?? false
+        alreadyInDesktop = object["alreadyInDesktop"]?.boolValue ?? false
+        desktopVersion = object["desktopVersion"]?.stringValue
+    }
+
+    /// 适配器用 `{accepted:false, reason, retryable}` 返回拒绝原因（turn_active / held_elsewhere /
+    /// not_installed / outdated / open_failed / unsupported_platform）。
+    static func failure(from error: Error) -> CodexAppServerThreadDesktopOpenFailure? {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error,
+              let data = appError.data?.objectValue,
+              data["accepted"]?.boolValue == false,
+              let reason = data["reason"]?.stringValue,
+              !reason.isEmpty else {
+            return nil
+        }
+        return CodexAppServerThreadDesktopOpenFailure(
+            reason: reason,
+            retryable: data["retryable"]?.boolValue ?? false,
+            version: data["version"]?.stringValue,
+            minimumVersion: data["minimumVersion"]?.stringValue
+        )
+    }
+
+    /// 旧版 agentd 网关对未声明的方法返回 -32080。
+    static func isGatewayMethodUnsupported(_ error: Error) -> Bool {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error else {
+            return false
+        }
+        return appError.code == -32080 && !appError.message.contains("未由当前 gateway 连接授权")
+    }
+}
+
+struct CodexAppServerThreadDesktopOpenFailure: Equatable, Sendable {
+    let reason: String
+    let retryable: Bool
+    let version: String?
+    let minimumVersion: String?
+
+    init(
+        reason: String,
+        retryable: Bool,
+        version: String? = nil,
+        minimumVersion: String? = nil
+    ) {
+        self.reason = reason
+        self.retryable = retryable
+        self.version = version
+        self.minimumVersion = minimumVersion
     }
 }

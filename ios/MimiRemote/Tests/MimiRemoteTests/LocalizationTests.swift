@@ -560,7 +560,22 @@ final class LocalizationTests: XCTestCase {
             "ui.waiting_for_mac_assistant_to_return_check_results",
             "ui.workspaces_on_this_mac_appear_as_soon_as",
             "ui.pairing_qr_expired_refresh_windows",
-            "ui.pairing_qr_expired_refresh_linux"
+            "ui.pairing_qr_expired_refresh_linux",
+            "ui.claude_command_copied_active_turn_warning",
+            "ui.claude_desktop_open_failed",
+            "ui.claude_desktop_open_held_elsewhere",
+            "ui.claude_desktop_open_not_installed",
+            "ui.claude_desktop_open_outdated",
+            "ui.claude_desktop_open_turn_active",
+            "ui.claude_desktop_open_unsupported_platform",
+            "ui.claude_desktop_open_upgrade_required",
+            "ui.claude_desktop_opened_readonly_notice",
+            "ui.claude_desktop_switched_notice",
+            "ui.claude_slash_resume_command_copied",
+            "ui.continue_on_computer",
+            "ui.copy_claude_slash_resume_command",
+            "ui.open_in_claude_desktop",
+            "ui.switch_to_claude_desktop"
         ]
 
         for key in keys {

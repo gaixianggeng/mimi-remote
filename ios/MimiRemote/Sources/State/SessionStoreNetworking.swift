@@ -172,6 +172,9 @@ protocol SessionStoreAPIClient {
     func takeOverThread(threadID: String) async throws -> CodexAppServerThreadTakeoverResult
     /// 当前主机对应 runtime 的 channel 是否声明 thread/takeover。
     func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool
+    /// #726：在电脑上的 Claude 桌面版中打开该会话。
+    func openThreadInDesktop(threadID: String) async throws -> CodexAppServerThreadDesktopOpenResult
+    func sessionSupportsThreadDesktopOpen(sessionID: String) async throws -> Bool
     func unsubscribeThread(threadID: String) async throws -> CodexAppServerThreadUnsubscribeStatus?
     func startReview(threadID: String, target: CodexAppServerReviewTarget, delivery: CodexAppServerReviewDelivery?) async throws -> CodexAppServerReviewStartResult
     func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage]
@@ -320,6 +323,14 @@ extension SessionStoreAPIClient {
     }
 
     func sessionSupportsThreadTakeover(sessionID: String) async throws -> Bool {
+        false
+    }
+
+    func openThreadInDesktop(threadID: String) async throws -> CodexAppServerThreadDesktopOpenResult {
+        throw AgentAPIError.invalidResponse
+    }
+
+    func sessionSupportsThreadDesktopOpen(sessionID: String) async throws -> Bool {
         false
     }
 
