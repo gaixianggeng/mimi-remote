@@ -255,6 +255,32 @@ function Publish-TrayDiagnostics([string]$Source) {
     }
 }
 
+function Update-Windows10Guest {
+    $attempt = 'C:\OEM\servicing-attempted'
+    $update = 'C:\OEM\KB5066791.msu'
+    if ([IO.File]::Exists($attempt) -or -not [IO.File]::Exists($update)) {
+        throw 'Windows 10 did not reach the required fixture update level.'
+    }
+    [IO.File]::WriteAllText($attempt, 'attempted')
+    $script:step = 'apply-win10-cumulative-update'
+    Publish-Result 'servicing'
+    $wusaPath = Join-Path $env:WINDIR 'System32\wusa.exe'
+    $wusa = Start-Process -FilePath $wusaPath -ArgumentList @($update, '/quiet', '/norestart') -WindowStyle Hidden -PassThru
+    try {
+        if (-not $wusa.WaitForExit(1200000)) { throw 'The offline guest update timed out.' }
+        if ($wusa.ExitCode -notin @(0, 3010)) {
+            Publish-Result 'diagnosing' @{ updateExit = $wusa.ExitCode }
+            throw 'The offline guest update failed.'
+        }
+    } finally { $wusa.Dispose() }
+    $runOnce = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+    if (-not (Test-Path -LiteralPath $runOnce)) { New-Item -Path $runOnce | Out-Null }
+    New-ItemProperty -LiteralPath $runOnce -Name '!MimiGuestAfterServicing' -PropertyType String -Value 'cmd.exe /d /c C:\OEM\install.bat' -Force | Out-Null
+    Publish-Result 'servicing-restart'
+    & (Join-Path $env:WINDIR 'System32\shutdown.exe') /r /t 0
+    if ($LASTEXITCODE -ne 0) { throw 'The updated guest did not restart.' }
+}
+
 try {
     if ($PSCommandPath -notlike 'C:\OEM\*' -or $ResultPath -notlike 'C:\OEM\*' -or
         ($principal.Name -split '\\')[-1] -ne 'MimiFixture') {
@@ -276,6 +302,11 @@ try {
     }
     $reportAllowed = $true
     if ($build -ne $ExpectedBuild) { throw 'The actual Windows build does not match.' }
+    if ($build -eq 19045 -and $revision -ne 6456) {
+        if ($Observe -or $revision -gt 6456) { throw 'Unexpected Windows 10 fixture update level.' }
+        Update-Windows10Guest
+        return
+    }
     if ($Observe) {
         $step = 'check-new-logon'
         if ($previousState.expectedBuild -ne $ExpectedBuild -or $previousState.phase -cne 'awaiting-logon' -or

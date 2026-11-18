@@ -31,6 +31,15 @@ printf '%s\r\n' \
   "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\OEM\\WinUiLogonProbe.ps1 -InstallerPath C:\\OEM\\Mimi-Remote-Setup.exe -ResultPath C:\\OEM\\result.json -ResultPort COM2 -ExpectedBuild $EXPECTED_WIN_BUILD" \
   > "$job_dir/oem/install.bat"
 
+if [[ $EXPECTED_WIN_BUILD == 19045 ]]; then
+  # Microsoft Catalog KB5066791. The guest also validates the update through WUSA.
+  update="$job_dir/oem/KB5066791.msu"
+  curl --fail --silent --show-error --location --retry 2 --max-time 300 --output "$update" \
+    'https://catalog.s.download.windowsupdate.com/c/msdownload/update/software/secu/2025/10/windows10.0-kb5066791-x64_3210d264091be5effb3253d05397c4daefba44c8.msu'
+  [[ $(stat -c %s "$update") -eq 765104062 ]]
+  printf '3210d264091be5effb3253d05397c4daefba44c8  %s\n' "$update" | sha1sum --check --status
+fi
+
 curl --fail --silent --show-error --location --retry 2 --max-time 900 \
   --output "$job_dir/custom.iso" "$ISO_URL"
 printf '%s  %s\n' "$ISO_SHA256" "$job_dir/custom.iso" | sha256sum --check --status
@@ -60,7 +69,7 @@ while (( SECONDS < deadline )); do
       if jq -e '.status == "passed"' <<< "$last" >/dev/null; then
         printf '%s\n' "$records"
         jq -e --argjson build "$EXPECTED_WIN_BUILD" '
-          .build == $build and .transition == "logoff" and .newLogon and
+          .build == $build and ($build != 19045 or .revision == 6456) and .transition == "logoff" and .newLogon and
           .trayBackground and .oneNativeProcess and .sameInstanceVisible and
           .nativeBackend and .localAccessAndIdentityPreserved
         ' <<< "$last" >/dev/null
