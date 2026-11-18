@@ -60,9 +60,9 @@ if ($PfxPath) {
 $requiredTools = @('go', 'cargo')
 if (-not $AdapterBinary) { $requiredTools += 'bun' }
 foreach ($tool in $requiredTools) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" } }
-# Claude 适配器内嵌 Bun 运行时：版本固定为 bridges/claude-sdk/.bun-version，版本不同产物就不同。
+# Bun 1.2.23 starts stripping the Windows runtime's invalidated signature before re-signing.
 $adapterRoot = Join-Path $root 'bridges\claude-sdk'
-$requiredBun = (Get-Content -LiteralPath (Join-Path $adapterRoot '.bun-version') -Raw).Trim()
+$requiredBun = (Get-Content -LiteralPath (Join-Path $adapterRoot '.bun-version-windows') -Raw).Trim()
 if (-not $AdapterBinary) {
     $bunVersion = (& bun --version).Trim()
     if ($bunVersion -ne $requiredBun) { throw "The Claude adapter requires Bun $requiredBun, found $bunVersion." }

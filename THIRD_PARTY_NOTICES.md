@@ -55,7 +55,7 @@ Go 依赖版本以 `go.mod`、`go.sum` 为准；源码树包含 iOS 客户端时
 | `Simple Icons DeepSeek SVG` | `16.27.0` | macOS 运行时资源 |
 | `@anthropic-ai/claude-agent-sdk` | `0.3.296` | Claude 适配器（Mac App 与 Windows 安装包内的 `mimi-claude-adapter`） |
 | `zod` | `4.1.12` | Claude 适配器 |
-| `Bun runtime` | `1.2.22` | Claude 适配器单文件内嵌的运行时 |
+| `Bun runtime` | `1.2.22`，Windows 安装包使用 `1.2.23` | Claude 适配器单文件内嵌的运行时 |
 
 ## Tailcat 连接组件
 
@@ -2601,9 +2601,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Bun runtime 1.2.22
+### Bun runtime 1.2.22 / 1.2.23
 
-`bun build --compile` 把 Bun 运行时编进适配器单文件。Bun 本身按 MIT 许可发布；它静态链接的 JavaScriptCore 与 WebKit 组件按 LGPL-2.1 发布，其他随附组件各有许可。完整许可证清单见 Bun 仓库对应版本的 [LICENSE.md](https://github.com/oven-sh/bun/blob/bun-v1.2.22/LICENSE.md)，Bun 使用的 WebKit 源码见 [oven-sh/WebKit](https://github.com/oven-sh/WebKit)。适配器源码位于本仓库 `bridges/claude-sdk`，可按 `.bun-version` 指定的 Bun 版本重新构建。
+`bun build --compile` 把 Bun 运行时编进适配器单文件。Bun 本身按 MIT 许可发布，它静态链接的 JavaScriptCore 与 WebKit 组件按 LGPL-2.1 发布，其他随附组件各有许可。完整许可证清单见 Bun 的 [1.2.22 许可](https://github.com/oven-sh/bun/blob/bun-v1.2.22/LICENSE.md)和 [1.2.23 许可](https://github.com/oven-sh/bun/blob/bun-v1.2.23/LICENSE.md)。Bun 使用的 WebKit 源码见 [oven-sh/WebKit](https://github.com/oven-sh/WebKit)。适配器源码和构建版本文件位于 `bridges/claude-sdk`，Windows 安装包读取 `.bun-version-windows`，其他构建读取 `.bun-version`。
 
 ## Tailcat 连接组件许可证正文
 
