@@ -415,21 +415,22 @@ svg { flex: none; }
 .float { display: flex; justify-content: center; padding: clamp(32px, 5vw, 56px) 0; }
 .float__device { width: min(58%, 290px); }
 
-/* design: iPad flanked by a light and a dark iPhone */
+/* design: landscape iPad Pro flanked by iPad mini (left) and iPhone (right) */
 .showcase {
-  display: flex; justify-content: center; align-items: flex-start;
-  height: clamp(380px, 58vw, 640px);
-  margin-top: clamp(40px, 6vw, 64px); padding-top: clamp(36px, 6vw, 72px);
+  position: relative;
+  display: block;
+  margin-top: clamp(40px, 6vw, 64px);
+  padding: clamp(32px, 5vw, 60px) clamp(16px, 3vw, 40px) clamp(36px, 5.5vw, 68px);
 }
-.showcase__ipad { position: relative; z-index: 1; width: 52%; }
-.showcase__phone { position: relative; z-index: 2; width: 21%; margin-top: 12%; }
-.showcase__phone--left { margin-right: -5%; }
-.showcase__phone--right { margin-left: -5%; }
+.showcase__ipad { position: relative; z-index: 1; width: 70%; margin-left: 16%; }
+.device.showcase__mini { position: absolute; left: clamp(14px, 3vw, 36px); bottom: clamp(22px, 3.5vw, 46px); z-index: 2; width: 26%; }
+.device.showcase__phone { position: absolute; right: clamp(16px, 3.2vw, 40px); bottom: clamp(18px, 3vw, 40px); z-index: 3; width: 21.5%; }
 .showcase__legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-top: 22px; font-size: 0.9375rem; color: var(--ink-3); }
 @media (max-width: 640px) {
-  .showcase { height: clamp(340px, 108vw, 520px); }
-  .showcase__ipad { display: none; }
-  .showcase__phone { width: 42%; margin: 0 3%; }
+  .showcase { padding: 24px 12px 32px; }
+  .showcase__ipad { width: 88%; margin-left: 6%; }
+  .device.showcase__mini { left: 8px; bottom: 16px; width: 30%; }
+  .device.showcase__phone { right: 8px; bottom: 14px; width: 24%; }
 }
 
 /* compare: remote desktop / SSH / Mimi, one row per question; stacked on phones */

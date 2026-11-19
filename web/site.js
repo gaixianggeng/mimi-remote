@@ -96,7 +96,7 @@
     "progress.eyebrow": "进度与改动",
     "progress.title": "看它在做什么，<br>也看它改了什么。",
     "progress.body": "回复、推理、命令和工具调用，实时汇成一条清晰易读的时间线。工作区按项目把会话分成进行中、刚完成和最近。使用 Codex 时，还能查看 Diff、管理 Worktree，提交并创建草稿 PR。",
-    "progress.legend": "iPhone 是紧凑的会话界面 · iPad 是多栏工作台",
+    "progress.legend": "iPhone 紧凑会话 · iPad mini 轻便随行 · iPad Pro 横屏多栏工作台",
     "progress.try": "切换本页深浅色",
 
     "devices.eyebrow": "多台电脑与多个 Agent",
@@ -188,8 +188,8 @@
     "alt.heroPhone": "iPhone 上的会话列表，进行中的任务排在最上方。",
     "alt.handoff": "同一段对话，在 iPhone 上接着进行。",
     "alt.control": "对话中的审批卡片：拒绝、仅允许一次、本会话允许、始终允许此工具。",
-    "alt.progressLight": "iPhone 上的工作区页面。",
-    "alt.progressIpad": "iPad 上的工作区视图，列出一个项目进行中和最近的会话。",
+    "alt.progressMini": "iPad mini 上的工作区页面。",
+    "alt.progressIpad": "横屏 iPad Pro 13 英寸上的工作区视图，列出一个项目进行中和最近的会话。",
     "alt.progressDark": "iPhone 上的会话列表。",
     "alt.devices": "iPhone 上的「电脑连接」页面，列出当前电脑和另一台已保存的电脑。",
 
