@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Mimi Remote — Control Codex &amp; Claude Code from iPhone and iPad</title>
-  <meta name="description" content="Remote control for Codex and Claude Code. Your Mac, Windows or Linux computer runs the agent; you watch, reply and approve from iPhone and iPad. Open source." />
+  <title>Mimi Remote — Native Mobile Agent GUI for Codex &amp; Claude Code</title>
+  <meta name="description" content="Stop fighting terminals on tiny screens. Keep using native Codex and Claude Code on your Mac, Windows or Linux computer, and control them with a native touch GUI on iPhone and iPad. Open source." />
   <meta name="color-scheme" content="light dark" />
   <meta name="apple-itunes-app" content="app-id=6778076511" />
 
@@ -18,20 +18,20 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Mimi Remote" />
   <meta property="og:url" content="https://remote.code89757.com/" />
-  <meta property="og:title" content="Mimi Remote — Control Codex &amp; Claude Code from iPhone and iPad" />
-  <meta property="og:description" content="Remote control for Codex and Claude Code. Your computer keeps running the agent; you watch, reply and approve from iPhone and iPad." />
+  <meta property="og:title" content="Mimi Remote — Stop fighting terminals. Meet native Agent GUI." />
+  <meta property="og:description" content="No CLI typing on tiny screens, no reinventing the wheel. Keep native Codex &amp; Claude Code on your computer; control them with a native GUI on iPhone and iPad." />
   <meta property="og:locale" content="en_US" />
   <meta property="og:locale:alternate" content="zh_CN" />
-  <meta property="og:image" content="https://remote.code89757.com/assets/og.png?v=20261019-2" />
+  <meta property="og:image" content="https://remote.code89757.com/assets/og.png?v=20261119-1" />
   <meta property="og:image:type" content="image/png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="Mimi Remote on iPad and iPhone, with the headline “Remote control for Codex and Claude Code.”" />
+  <meta property="og:image:alt" content="Mimi Remote on iPad Pro 13-inch, iPad mini and iPhone 17 Pro, with the headline “Stop fighting terminals. Meet native Agent GUI.”" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Mimi Remote — Control Codex &amp; Claude Code from iPhone and iPad" />
-  <meta name="twitter:description" content="Remote control for Codex and Claude Code. Your computer keeps running the agent; you watch, reply and approve from iPhone and iPad." />
-  <meta name="twitter:image" content="https://remote.code89757.com/assets/og.png?v=20261019-2" />
-  <meta name="twitter:image:alt" content="Mimi Remote on iPad and iPhone, with the headline “Remote control for Codex and Claude Code.”" />
+  <meta name="twitter:title" content="Mimi Remote — Stop fighting terminals. Meet native Agent GUI." />
+  <meta name="twitter:description" content="No CLI typing on tiny screens, no reinventing the wheel. Keep native Codex &amp; Claude Code on your computer; control them with a native GUI on iPhone and iPad." />
+  <meta name="twitter:image" content="https://remote.code89757.com/assets/og.png?v=20261119-1" />
+  <meta name="twitter:image:alt" content="Mimi Remote on iPad Pro 13-inch, iPad mini and iPhone 17 Pro, with the headline “Stop fighting terminals. Meet native Agent GUI.”" />
 
   <link rel="icon" type="image/png" sizes="64x64" href="./assets/favicon.png" />
   <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
@@ -57,7 +57,8 @@
         "operatingSystem": "iOS 18.0 or later, iPadOS 18.0 or later",
         "image": "https://remote.code89757.com/assets/app-icon.png",
         "screenshot": [
-          "https://remote.code89757.com/assets/shots/ipad-approval-en-light.webp",
+          "https://remote.code89757.com/assets/shots/ipad-landscape-approval-en-light.webp",
+          "https://remote.code89757.com/assets/shots/ipad-mini-workspaces-en-light.webp",
           "https://remote.code89757.com/assets/shots/iphone-sessions-en-light.webp"
         ],
         "downloadUrl": "https://apps.apple.com/app/id6778076511",
@@ -114,9 +115,9 @@
       if (!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) d.classList.add("has-reveal");
 
       /* Screenshots carry no src in the markup, so a Chinese or dark visit never downloads
-         English light copies first. Start the hero pair now at default priority, so they
+         English light copies first. Start the hero trio now at default priority, so they
          don't compete with the stylesheet; site.js sets every src. */
-      list = ["ipad-approval", "iphone-sessions"];
+      list = ["ipad-landscape-approval", "ipad-mini-workspaces", "iphone-sessions"];
       for (i = 0; i < list.length; i++) {
         link = document.createElement("link");
         link.rel = "preload";
@@ -126,7 +127,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="./styles.css?v=20261019-2" />
+  <link rel="stylesheet" href="./styles.css?v=20261119-1" />
 </head>
 <body>
   <a class="skip" href="#main" data-i18n="skip">Skip to content</a>
@@ -165,9 +166,9 @@
     <!-- ── Hero ─────────────────────────────────────────────────── -->
     <section class="hero">
       <div class="wrap">
-        <p class="hero__eyebrow reveal" data-i18n="hero.eyebrow">For iPhone &amp; iPad</p>
-        <h1 class="hero__title reveal" data-i18n="hero.title">Remote control for<br />Codex and Claude&nbsp;Code.</h1>
-        <p class="hero__lede reveal" data-i18n="hero.lede">Codex and Claude Code keep working on your Mac, Windows or Linux computer. From your iPhone or iPad, you watch the progress, reply and approve — no remote desktop, no terminal.</p>
+        <p class="hero__eyebrow reveal" data-i18n="hero.eyebrow">Native GUI for iPhone, iPad mini &amp; iPad Pro</p>
+        <h1 class="hero__title reveal" data-i18n="hero.title">Stop fighting terminals.<br />Meet native Agent&nbsp;GUI.</h1>
+        <p class="hero__lede reveal" data-i18n="hero.lede">No CLI typing on tiny screens, no reinventing the wheel — keep using native Codex and Claude Code on your Mac, Windows or Linux computer, and add a native touch GUI entry point on iPhone and iPad.</p>
         <div class="cta reveal">
           <a class="btn btn--primary btn--lg" href="https://apps.apple.com/app/id6778076511" target="_blank" rel="noopener noreferrer">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.37 1.43c0 1.14-.49 2.27-1.18 3.08-.74.9-1.99 1.57-2.99 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.57-2.27 1.21-2.98.8-.94 2.14-1.64 3.25-1.68.03.13.05.28.05.43Zm4.56 15.71c-.03.07-.46 1.58-1.52 3.12-.94 1.34-1.94 2.71-3.43 2.71-1.52 0-1.9-.88-3.63-.88-1.7 0-2.3.91-3.67.91-1.38 0-2.33-1.26-3.43-2.8-1.29-1.82-2.32-4.63-2.32-7.28 0-4.28 2.8-6.55 5.55-6.55 1.45 0 2.68.95 3.6.95.87 0 2.22-1.01 3.9-1.01.61 0 2.89.06 4.37 2.19-.13.09-2.38 1.37-2.38 4.19 0 3.26 2.85 4.42 2.96 4.45Z"/></svg>
@@ -183,11 +184,17 @@
 
       <div class="wrap">
         <div class="stage reveal reveal--late">
-          <div class="device device--ipad stage__ipad">
-            <img data-shot="ipad-approval" width="1320" height="1760" fetchpriority="high"
-                 data-i18n-alt="alt.heroIpad" alt="Mimi Remote on iPad: the session sidebar beside a conversation waiting for approval." />
-            <noscript><img src="./assets/shots/ipad-approval-en-light.webp" width="1320" height="1760"
-                 alt="Mimi Remote on iPad: the session sidebar beside a conversation waiting for approval." /></noscript>
+          <div class="device device--ipad-landscape stage__ipad">
+            <img data-shot="ipad-landscape-approval" width="1760" height="1320" fetchpriority="high"
+                 data-i18n-alt="alt.heroIpad" alt="Mimi Remote on iPad Pro 13-inch in landscape: the session sidebar beside a conversation waiting for approval." />
+            <noscript><img src="./assets/shots/ipad-landscape-approval-en-light.webp" width="1760" height="1320"
+                 alt="Mimi Remote on iPad Pro 13-inch in landscape: the session sidebar beside a conversation waiting for approval." /></noscript>
+          </div>
+          <div class="device device--ipad-mini stage__mini">
+            <img data-shot="ipad-mini-workspaces" width="1008" height="1544"
+                 data-i18n-alt="alt.heroMini" alt="Mimi Remote on iPad mini: project workspaces and active sessions." />
+            <noscript><img src="./assets/shots/ipad-mini-workspaces-en-light.webp" width="1008" height="1544"
+                 alt="Mimi Remote on iPad mini: project workspaces and active sessions." /></noscript>
           </div>
           <div class="device device--phone stage__phone">
             <img data-shot="iphone-sessions" width="720" height="1565"
@@ -242,9 +249,9 @@
     <section class="section" id="remote">
       <div class="wrap">
         <header class="section__head section__head--center reveal">
-          <p class="eyebrow" data-i18n="handoff.eyebrow">Pick up where you left off</p>
-          <h2 class="h2" data-i18n="handoff.title">Start on your computer.<br />Keep it moving from your&nbsp;phone.</h2>
-          <p class="body" data-i18n="handoff.body">Mimi connects to the same Codex App Server as Codex Desktop and the Codex CLI. A thread started in any of them opens in the others with its history, context and running turn intact — no copy-paste, no re-explaining.</p>
+          <p class="eyebrow" data-i18n="handoff.eyebrow">No reinventing the wheel</p>
+          <h2 class="h2" data-i18n="handoff.title">Keep native apps on your computer.<br />Add one clean mobile&nbsp;entry.</h2>
+          <p class="body" data-i18n="handoff.body">On your computer, keep using the native Codex Desktop, Codex CLI or Claude Code you already love. Mimi connects to the same local runtime and adds a native mobile GUI entry point — history, context and running turns stay intact without copy-paste.</p>
         </header>
 
         <div class="panel handoff reveal">
@@ -451,7 +458,7 @@
       <div class="wrap feature feature--flip">
         <div class="feature__copy reveal">
           <p class="eyebrow" data-i18n="connect.eyebrow">Connection</p>
-          <h2 class="h2" data-i18n="connect.title">Same Wi-Fi at home.<br />Tailscale on the go.</h2>
+          <h2 class="h2" data-i18n="connect.title">Same Wi-Fi at home.<br />Tailscale or Mimi Relay on the go.</h2>
           <p class="body" data-i18n="connect.body">Mimi talks only to the computer you paired, over a trusted local network or your own Tailscale network. There's no Mimi cloud account, session hosting or application-level relay; the optional Tailcat route's transport relay is explained below. Pairing is a QR code on the computer, scanned once with your phone. Keep the computer service on a private network; don't expose it to the public Internet.</p>
           <ul class="routes" role="list">
             <li class="route">
@@ -464,7 +471,11 @@
             </li>
             <li class="route">
               <h3>Tailcat <span class="tag" data-i18n="tag.experimental">Experimental</span></h3>
-              <p data-i18n="route.tc">Mac, Windows and Linux, off by default. Lets your phone reach the computer without the Tailscale app.</p>
+              <p data-i18n="route.tc">Mac, Windows and Linux, off by default. Lets your phone reach the computer without the Tailscale app, using default or self-hosted relays.</p>
+            </li>
+            <li class="route">
+              <h3 data-i18n="route.mimiRelay.t">Mimi Relay <span class="tag" data-i18n="tag.optional">Optional</span></h3>
+              <p data-i18n="route.mimiRelay">Optional subscription in the mainland China App Store (7-day free trial) for end-to-end encrypted cross-network connections — no extra networking app required.</p>
             </li>
           </ul>
           <p class="privacy">
@@ -510,9 +521,9 @@
     <section class="section" id="compare">
       <div class="wrap">
         <header class="section__head section__head--center reveal">
-          <p class="eyebrow" data-i18n="compare.eyebrow">Compared with remote desktop and SSH</p>
-          <h2 class="h2" id="compare-title" data-i18n="compare.title">Not a remote desktop.<br />Not a terminal.</h2>
-          <p class="body" data-i18n="compare.body">Mimi Remote controls agent sessions only. To operate the whole computer or an arbitrary shell from your phone, a remote desktop or SSH client is the better fit.</p>
+          <p class="eyebrow" data-i18n="compare.eyebrow">Compared with remote desktop and SSH / TUI</p>
+          <h2 class="h2" id="compare-title" data-i18n="compare.title">Built for mobile touch.<br />Not a terminal in a tiny box.</h2>
+          <p class="body" data-i18n="compare.body">No typing commands or pinching terminal text on a phone. Mimi Remote turns agent threads into native touch cards, one-tap approvals and readable diffs — while leaving full-desktop or arbitrary shell tasks to remote desktop and SSH.</p>
         </header>
 
         <div class="cmp reveal">
@@ -608,11 +619,11 @@
           </details>
           <details class="qa">
             <summary data-i18n="faq.4.q">How do I connect when I'm not on the same network?</summary>
-            <p data-i18n="faq.4.a">Put your phone and computer on the same private network with Tailscale. Mac, Windows and Linux computers can also try the experimental Tailcat connection described under <a href="#connect">Connection</a>.</p>
+            <p data-i18n="faq.4.a">Use Tailscale or self-hosted Tailcat for free, or subscribe to optional Mimi Relay (available in the mainland China App Store with a 7-day free trial) for end-to-end encrypted cross-network connections without installing another networking tool. See <a href="#connect">Connection</a>.</p>
           </details>
           <details class="qa">
             <summary data-i18n="faq.5.q">Does it cost anything?</summary>
-            <p data-i18n="faq.5.a">The iPhone and iPad app and the computer software are free and open source, with no in-app purchases or subscriptions. Model usage counts against the Codex or Claude Code account on your computer.</p>
+            <p data-i18n="faq.5.a">The iPhone and iPad app and the computer software are free and open source. Local-network, Tailscale and self-hosted Tailcat connections remain free. In the mainland China App Store, an optional Mimi Relay subscription (¥18/month or ¥128/year, with a 7-day free trial) is available for managed encrypted relay across networks. Model usage counts against the Codex or Claude Code account on your computer.</p>
           </details>
           <details class="qa">
             <summary data-i18n="faq.6.q">How is this different from the official mobile remote features from OpenAI and Anthropic?</summary>
@@ -655,6 +666,6 @@
     </div>
   </footer>
 
-  <script src="./site.js?v=20261019-2"></script>
+  <script src="./site.js?v=20261119-1"></script>
 </body>
 </html>
