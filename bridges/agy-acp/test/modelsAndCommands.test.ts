@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { sanitizeAgyEnv } from "../src/agy/env.ts";
 import { catalogAgyCommands } from "../src/agy/commands.ts";
 import { catalogAgyModels } from "../src/agy/models.ts";
+import { formatTranscriptUserText, inspectTranscriptActivity, readTranscriptTurns } from "../src/agy/transcript.ts";
 import { agyModeFor, runSettingsFor } from "../src/runtime/settings.ts";
 
 describe("agy env & settings & catalogs", () => {
@@ -99,5 +103,74 @@ describe("agy env & settings & catalogs", () => {
     expect(runSettingsFor({ approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } }).mode).toBe("auto");
     expect(runSettingsFor({ collaborationMode: { mode: "plan" }, sandboxPolicy: { type: "workspaceWrite" } }).mode).toBe("plan");
     expect(agyModeFor({}, { type: "readOnly", networkAccess: false })).toBe("plan");
+  });
+
+  test("formatTranscriptUserText expands @[Quote] and @[ITEM] references into readable blockquotes", () => {
+    const raw = `<USER_REQUEST>
+@[Quote] 按照你推荐的方案来进行处理就可以
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-11-18T11:59:15+08:00.
+
+The user has mentioned some items in the form @[ITEM]. Here is extra information about the items that were mentioned by the user, in the order that they appear:
+
+@[Quote] is a [Text Block]:
+D1–D6 的倾向
+</ADDITIONAL_METADATA>`;
+    expect(formatTranscriptUserText(raw)).toBe("> D1–D6 的倾向\n\n按照你推荐的方案来进行处理就可以");
+  });
+
+  test("readTranscriptTurns and inspectTranscriptActivity decode quotes, media, tools, and live desktop busy state", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-test-"));
+    try {
+      const sessionId = "desktop-session-1";
+      const logsDir = path.join(tempRoot, ".gemini", "antigravity", "brain", sessionId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      const imagePath = path.join(tempRoot, "shot.png");
+      await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          source: "USER_EXPLICIT",
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-19T14:00:00Z",
+          content: "<USER_REQUEST>\n看下这张图\n</USER_REQUEST>",
+          media: [{ mime_type: "image/png", uri: imagePath }],
+        }),
+        JSON.stringify({
+          step_index: 1,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-19T14:00:02Z",
+          thinking: "Let me check",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"echo ok\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          source: "MODEL",
+          type: "GENERIC",
+          status: "RUNNING",
+          created_at: "2026-11-19T14:00:03Z",
+          content: "running...",
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const activity = await inspectTranscriptActivity(sessionId, "other", { HOME: tempRoot });
+      expect(activity?.externallyBusy).toBe(true);
+
+      const turns = await readTranscriptTurns(sessionId, "/workspace", transcriptPath, false, true);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.status).toBe("completed");
+      const userItem = turns[0]?.items.find((item) => item.type === "userMessage");
+      expect(userItem?.type === "userMessage" ? userItem.content.map((c) => c.type) : []).toEqual(["text", "image"]);
+      const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
+      expect(cmdItem?.type === "commandExecution" ? cmdItem.status : "").toBe("inProgress");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });

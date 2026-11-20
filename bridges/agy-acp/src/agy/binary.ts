@@ -98,6 +98,7 @@ export interface SpawnAgyAcpOptions {
   sandbox?: boolean;
   skipPermissions?: boolean;
   addDirs?: readonly string[];
+  appDataDirName?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -106,12 +107,13 @@ export type SpawnAgyTransport = (options: SpawnAgyAcpOptions) => AcpTransport;
 export function defaultSpawnAgyTransport(options: SpawnAgyAcpOptions): AcpTransport {
   const cleanEnv = sanitizeAgyEnv(options.env ?? process.env);
   const paths = resolveAgyDataPaths(options.env ?? process.env);
+  const effectiveAppDataDir = options.appDataDirName?.trim() || paths.appDataDirName;
   const args = ["acp", "--stdio"];
   if (paths.geminiDirName !== ".gemini") {
     args.push("--gemini-dir", paths.geminiDirName);
   }
-  if (paths.appDataDirName !== "antigravity-cli") {
-    args.push("--app-data-dir", paths.appDataDirName);
+  if (effectiveAppDataDir !== "antigravity-cli") {
+    args.push("--app-data-dir", effectiveAppDataDir);
   }
   if (options.sandbox) {
     args.push("--sandbox");
@@ -205,8 +207,10 @@ export async function startAgyAcpClient(
 }
 
 /**
- * 供只读目录查询（`session/list`、`session/load` 历史回放、模型与斜杠命令发现）复用的常驻沙盒 `agy acp` 客户端。
- * `agy acp` 冷启动首次初始化内部服务约需 4-6s，复用常驻连接后 `session/list` 与回放读取均降至 ~10ms 级。
+ * 每个 `appDataDir`（`antigravity-cli` / `antigravity`）只维护唯一一个常驻 `agy acp` 服务进程，
+ * 复用于目录查询、历史回放、模型/命令发现以及所有活跃对话回合。
+ * 多个 `agy acp` 并发访问同一 `conversations/` 会触发 SQLite `database is locked` 导致新建会话丢失索引；
+ * 统一复用单实例后既彻底消除锁冲突，又把 `thread/start` 与 `thread/list` 冷启动耗时从 ~5s 降至 ~30ms。
  */
 export class SharedReadonlyAcp {
   private client: AcpClient | undefined;
@@ -218,6 +222,7 @@ export class SharedReadonlyAcp {
     private readonly executable: () => string,
     private readonly spawnTransport: SpawnAgyTransport,
     private readonly env: () => NodeJS.ProcessEnv = () => process.env,
+    private readonly appDataDirName?: string,
   ) {}
 
   subscribeUpdates(listener: (sessionId: string, update: AcpSessionUpdate) => void): () => void {
@@ -242,7 +247,8 @@ export class SharedReadonlyAcp {
       {
         executable: this.executable(),
         cwd: os.tmpdir(),
-        sandbox: true,
+        sandbox: false,
+        ...(this.appDataDirName ? { appDataDirName: this.appDataDirName } : {}),
         env: this.env(),
       },
       {

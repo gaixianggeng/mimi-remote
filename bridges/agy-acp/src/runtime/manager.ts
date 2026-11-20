@@ -3,8 +3,8 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import { notificationFrame } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { Session } from "@mimi/appserver-kit/session/session.ts";
 import { logger } from "../util/logging.ts";
+import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
-import type { SpawnAgyTransport } from "../agy/binary.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
@@ -17,13 +17,12 @@ interface PendingRequest {
 }
 
 export interface ManagerOptions {
-  agyExecutable(): string;
-  spawnTransport: SpawnAgyTransport;
-  env?: () => NodeJS.ProcessEnv;
+  acquireClient(appDataDirName?: string): Promise<AcpClient>;
   idleCloseMs?: number;
   onSessionOpen?: (openResult: AcpSessionOpenResult) => void;
   onAvailableCommands?: (cwd: string, commands: AcpAvailableCommand[]) => void;
   onTurnPersisted?: (threadId: string, patch: { preview?: string; updatedAt?: number }) => void;
+  existingTurnCount?: (threadId: string) => Promise<number>;
   hasCustomTitle?: (threadId: string) => boolean;
 }
 
@@ -49,6 +48,7 @@ export class ThreadManager {
   private readonly subscribers = new Map<string, Set<Session>>();
   private readonly subscriptions = new Map<Session, Set<string>>();
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly turnClientIds = new Map<string, string>();
   private counter = 0;
   private readonly host: RuntimeHost;
 
@@ -56,9 +56,7 @@ export class ThreadManager {
     this.host = {
       publish: (threadId, method, params) => this.publish(threadId, method, params),
       request: (threadId, method, params, signal) => this.request(threadId, method, params, signal),
-      agyExecutable: options.agyExecutable,
-      spawnTransport: options.spawnTransport,
-      env: options.env ?? (() => process.env),
+      acquireClient: options.acquireClient,
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
       onSessionOpen: options.onSessionOpen,
       onAvailableCommands: options.onAvailableCommands,
@@ -68,7 +66,23 @@ export class ThreadManager {
         }
       },
       onTurnPersisted: options.onTurnPersisted,
+      existingTurnCount: options.existingTurnCount,
+      recordTurnClientId: (turnId, clientId) => this.recordTurnClientId(turnId, clientId),
     };
+  }
+
+  clientIdForTurn(turnId: string): string | undefined {
+    return this.turnClientIds.get(turnId);
+  }
+
+  private recordTurnClientId(turnId: string, clientId: string): void {
+    this.turnClientIds.delete(turnId);
+    this.turnClientIds.set(turnId, clientId);
+    while (this.turnClientIds.size > 500) {
+      const oldest = this.turnClientIds.keys().next().value;
+      if (!oldest) break;
+      this.turnClientIds.delete(oldest);
+    }
   }
 
   get(threadId: string): ThreadRuntime | undefined {
@@ -109,13 +123,20 @@ export class ThreadManager {
     return runtime;
   }
 
-  openExisting(threadId: string, cwd: string, settings: AgyRunSettings, title: string | null): ThreadRuntime {
+  openExisting(
+    threadId: string,
+    cwd: string,
+    settings: AgyRunSettings,
+    title: string | null,
+    appDataDirName?: string,
+    initialTimestamps?: { createdAt?: number; updatedAt?: number },
+  ): ThreadRuntime {
     const existing = this.runtimes.get(threadId);
     if (existing) {
       if (title && !existing.title) existing.title = title;
       return existing;
     }
-    const created = new ThreadRuntime(threadId, cwd, this.host, settings, true, title);
+    const created = new ThreadRuntime(threadId, cwd, this.host, settings, true, title, appDataDirName, initialTimestamps);
     this.runtimes.set(threadId, created);
     return created;
   }

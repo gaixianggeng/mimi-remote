@@ -28,6 +28,8 @@ export interface AcpClientOptions {
   onRequestPermission?: (params: AcpRequestPermissionParams, signal: AbortSignal) => Promise<AcpRequestPermissionResult>;
   onClose?: (error?: Error) => void;
   log?: (message: string) => void;
+  /** `session/load` 响应返回后等待尾部异步历史回放静默的窗口（毫秒），默认 200ms。 */
+  replaySettleMs?: number;
 }
 
 interface PendingCall {
@@ -37,12 +39,26 @@ interface PendingCall {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+interface ReplayCapture {
+  updates: AcpSessionUpdate[];
+  onUpdate?: () => void;
+  onClose?: () => void;
+}
+
+const DEFAULT_REPLAY_SETTLE_MS = 200;
+const MAX_REPLAY_SETTLE_MS = 5_000;
+
 export class AcpClient {
   private nextId = 1;
   private closed = false;
   private readonly pending = new Map<RequestId, PendingCall>();
   private readonly inboundControllers = new Set<AbortController>();
   private readonly sessionListeners = new Map<string, Set<(update: AcpSessionUpdate) => void>>();
+  private readonly replayCaptures = new Map<string, ReplayCapture>();
+  private readonly permissionHandlers = new Map<
+    string,
+    (params: AcpRequestPermissionParams, signal: AbortSignal) => Promise<AcpRequestPermissionResult>
+  >();
   private readonly readerDone: Promise<void>;
 
   constructor(
@@ -75,6 +91,18 @@ export class AcpClient {
     };
   }
 
+  onPermission(
+    sessionId: string,
+    handler: (params: AcpRequestPermissionParams, signal: AbortSignal) => Promise<AcpRequestPermissionResult>,
+  ): () => void {
+    this.permissionHandlers.set(sessionId, handler);
+    return () => {
+      if (this.permissionHandlers.get(sessionId) === handler) {
+        this.permissionHandlers.delete(sessionId);
+      }
+    };
+  }
+
   async initialize(timeoutMs = 15_000): Promise<AcpInitializeResult> {
     return (await this.call(
       "initialize",
@@ -97,7 +125,10 @@ export class AcpClient {
   }
 
   /**
-   * 加载已有会话并收集在 `session/load` 返回前同步回放的全部 `session/update` 帧。
+   * 加载已有会话并收集全部历史回放 `session/update` 帧。
+   * 实测 `agy acp` 的 `session/load` 会在 JSON-RPC 响应返回后继续由后台 goroutine 异步冲出剩余
+   * 历史帧（大型会话可持续数十至数百毫秒）；这里在响应返回后继续捕获直到流静默，确保历史尾部
+   * 不会泄漏到紧随其后的新 `session/prompt` 回合里。
    */
   async sessionLoadWithReplay(
     sessionId: string,
@@ -105,16 +136,50 @@ export class AcpClient {
     mcpServers: unknown[] = [],
     timeoutMs = 30_000,
   ): Promise<{ result: AcpSessionOpenResult; updates: AcpSessionUpdate[] }> {
-    const updates: AcpSessionUpdate[] = [];
-    const unsubscribe = this.onSession(sessionId, (update) => {
-      updates.push(update);
-    });
+    const capture: ReplayCapture = { updates: [] };
+    const previous = this.replayCaptures.get(sessionId);
+    this.replayCaptures.set(sessionId, capture);
     try {
       const result = (await this.call("session/load", { sessionId, cwd, mcpServers }, timeoutMs)) as AcpSessionOpenResult;
-      return { result, updates };
+      await this.waitForReplayQuiescence(capture);
+      return { result, updates: capture.updates };
     } finally {
-      unsubscribe();
+      capture.onUpdate = undefined;
+      capture.onClose = undefined;
+      if (this.replayCaptures.get(sessionId) === capture) {
+        if (previous) {
+          this.replayCaptures.set(sessionId, previous);
+        } else {
+          this.replayCaptures.delete(sessionId);
+        }
+      }
     }
+  }
+
+  private waitForReplayQuiescence(capture: ReplayCapture): Promise<void> {
+    const settleMs = this.options.replaySettleMs ?? DEFAULT_REPLAY_SETTLE_MS;
+    if (settleMs <= 0 || this.closed) return Promise.resolve();
+    return new Promise((resolve) => {
+      let finished = false;
+      let quietTimer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        if (quietTimer) clearTimeout(quietTimer);
+        clearTimeout(maxTimer);
+        capture.onUpdate = undefined;
+        capture.onClose = undefined;
+        resolve();
+      };
+      const armQuiet = () => {
+        if (quietTimer) clearTimeout(quietTimer);
+        quietTimer = setTimeout(done, settleMs);
+      };
+      const maxTimer = setTimeout(done, MAX_REPLAY_SETTLE_MS);
+      capture.onUpdate = armQuiet;
+      capture.onClose = done;
+      armQuiet();
+    });
   }
 
   async sessionClose(sessionId: string, timeoutMs = 5_000): Promise<void> {
@@ -221,11 +286,17 @@ export class AcpClient {
               const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "";
               const update = params?.update;
               if (sessionId && update && typeof update === "object" && typeof update.sessionUpdate === "string") {
-                const listeners = this.sessionListeners.get(sessionId);
-                if (listeners) {
-                  for (const listener of [...listeners]) listener(update);
+                const capture = this.replayCaptures.get(sessionId);
+                if (capture) {
+                  capture.updates.push(update);
+                  capture.onUpdate?.();
+                } else {
+                  const listeners = this.sessionListeners.get(sessionId);
+                  if (listeners) {
+                    for (const listener of [...listeners]) listener(update);
+                  }
+                  this.options.onSessionUpdate?.(sessionId, update);
                 }
-                this.options.onSessionUpdate?.(sessionId, update);
               }
             }
             break;
@@ -251,11 +322,14 @@ export class AcpClient {
     this.inboundControllers.add(controller);
     try {
       if (method === "session/request_permission") {
-        if (!this.options.onRequestPermission) {
+        const reqParams = params as AcpRequestPermissionParams;
+        const handler = (reqParams?.sessionId ? this.permissionHandlers.get(reqParams.sessionId) : undefined)
+          ?? this.options.onRequestPermission;
+        if (!handler) {
           this.writeFrame(resultFrame(id, { outcome: { outcome: "cancelled" } } satisfies AcpRequestPermissionResult));
           return;
         }
-        const res = await this.options.onRequestPermission(params as AcpRequestPermissionParams, controller.signal);
+        const res = await handler(reqParams, controller.signal);
         if (!this.closed) this.writeFrame(resultFrame(id, res));
         return;
       }
@@ -275,6 +349,8 @@ export class AcpClient {
   private failAll(error: Error): void {
     if (this.closed) return;
     this.closed = true;
+    for (const capture of this.replayCaptures.values()) capture.onClose?.();
+    this.replayCaptures.clear();
     for (const controller of this.inboundControllers) controller.abort();
     this.inboundControllers.clear();
     for (const [, pending] of this.pending) {

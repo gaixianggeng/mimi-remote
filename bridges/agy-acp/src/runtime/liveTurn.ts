@@ -24,7 +24,9 @@ export class LiveTurn {
   explicitlyInterrupted = false;
   private readonly startedAt = nowSeconds();
   private completedAt: number | null = null;
-  private seq = 0;
+  private userSeq = 0;
+  private reasoningSeq = 0;
+  private msgSeq = 0;
   private openThought: { id: string; text: string } | null = null;
   private openMessage: { id: string; text: string } | null = null;
   private planItem: { id: string; text: string } | null = null;
@@ -40,9 +42,19 @@ export class LiveTurn {
     private readonly emit: Emit,
   ) {}
 
-  private nextItemId(kind: string): string {
-    this.seq += 1;
-    return `${this.id}:${kind}:${this.seq}`;
+  private nextUserItemId(): string {
+    this.userSeq += 1;
+    return this.userSeq === 1 ? `${this.id}:user` : `${this.id}:user:${this.userSeq}`;
+  }
+
+  private nextReasoningItemId(): string {
+    this.reasoningSeq += 1;
+    return `${this.id}:reasoning:${this.reasoningSeq}`;
+  }
+
+  private nextMessageItemId(): string {
+    this.msgSeq += 1;
+    return `${this.id}:msg:${this.msgSeq}`;
   }
 
   private scoped(params: Record<string, unknown>): Record<string, unknown> {
@@ -124,7 +136,7 @@ export class LiveTurn {
     this.emit("turn/started", { threadId: this.threadId, turn: this.snapshot(false) });
     const userItem: ThreadItem = {
       type: "userMessage",
-      id: this.nextItemId("user"),
+      id: this.nextUserItemId(),
       clientId,
       content: input,
     };
@@ -139,7 +151,7 @@ export class LiveTurn {
         if (!delta) return;
         if (this.openMessage) this.closeOpenText();
         if (!this.openThought) {
-          const id = this.nextItemId("reasoning");
+          const id = this.nextReasoningItemId();
           this.openThought = { id, text: "" };
           this.emitStarted({ type: "reasoning", id, summary: [], content: [] });
         }
@@ -153,7 +165,7 @@ export class LiveTurn {
         if (!delta) return;
         if (this.openThought) this.closeOpenText();
         if (!this.openMessage) {
-          const id = this.nextItemId("msg");
+          const id = this.nextMessageItemId();
           this.openMessage = { id, text: "" };
           this.emitStarted({
             type: "agentMessage",
@@ -206,7 +218,7 @@ export class LiveTurn {
         const markdown = formatPlanMarkdown(entries);
         if (!markdown) return;
         this.closeOpenText();
-        const id = this.planItem?.id ?? this.nextItemId("plan");
+        const id = this.planItem?.id ?? `${this.id}:plan`;
         const isNew = !this.planItem;
         this.planItem = { id, text: markdown };
         const item: ThreadItem = { type: "plan", id, text: markdown };

@@ -20,6 +20,8 @@ export interface FakeStoredSession {
   model: string;
   thoughtLevel: string;
   replayUpdates: AcpSessionUpdate[];
+  /** 模拟真实 `agy acp` 在 `session/load` 响应返回后由后台 goroutine 异步冲出的尾部历史回放帧。 */
+  postLoadReplayUpdates?: Array<{ delayMs: number; update: AcpSessionUpdate }>;
 }
 
 export interface FakeAgyBehavior {
@@ -258,6 +260,11 @@ export class FakeAgyWorld {
               configOptions: structuredClone(DEFAULT_CONFIG_OPTIONS),
             },
           });
+          for (const trailing of stored.postLoadReplayUpdates ?? []) {
+            setTimeout(() => {
+              if (!stdout.destroyed) emitUpdate(sessionId, trailing.update);
+            }, trailing.delayMs);
+          }
           return;
         }
 

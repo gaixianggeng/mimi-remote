@@ -176,16 +176,25 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       expect(turnsPage.data).toHaveLength(1);
       expect(turnsPage.data[0]?.itemsView).toBe("summary");
       expect(turnsPage.data[0]?.items.map((i) => i.type)).toEqual(["userMessage", "agentMessage"]);
+      // 同一个 appDataDir 下，model/list、slashCommand/list、thread/start 与 turn/start 必须共享唯一常驻 agy acp 进程，
+      // 避免多进程并发打开 conversations/*.db 触发 SQLite `database is locked`。
+      expect(world.spawns.filter((opt) => opt.appDataDirName !== "antigravity")).toHaveLength(1);
     } finally {
       await harness.close();
     }
   });
 
-  test("filters out Desktop-only sessions lacking ~/.gemini/antigravity-cli/conversations/<id>.db (D1)", async () => {
+  test("classifies CLI and Other sessions by db directory, routes Other replay via antigravity appDataDir, and filters orphans", async () => {
     const cliSessionId = "cli-backed-session";
-    const desktopOnlyId = "desktop-only-session";
+    const otherSessionId = "desktop-other-session";
+    const orphanSessionId = "orphan-no-db-session";
     await writeFile(
       path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${cliSessionId}.db`),
+      "sqlite-placeholder",
+    );
+    await mkdir(path.join(fakeHome, ".gemini", "antigravity", "conversations"), { recursive: true });
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity", "conversations", `${otherSessionId}.db`),
       "sqlite-placeholder",
     );
 
@@ -205,10 +214,23 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
           ],
         },
         {
-          sessionId: desktopOnlyId,
+          sessionId: otherSessionId,
           cwd: workspaceDir,
-          title: "Desktop Only Session",
+          title: "Desktop Other Session",
           updatedAt: "2026-11-18T11:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hi from Desktop" } },
+            { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Loaded from antigravity!" } },
+          ],
+        },
+        {
+          sessionId: orphanSessionId,
+          cwd: workspaceDir,
+          title: "Orphan Session",
+          updatedAt: "2026-11-18T12:00:00Z",
           modeId: "default",
           model: "gemini-4-carbon",
           thoughtLevel: "medium",
@@ -219,17 +241,30 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
 
     const harness = await createTestHarness(world);
     try {
-      const listed = await harness.rpc<{ data: Array<{ id: string; name: string | null }> }>("thread/list", {
+      const listed = await harness.rpc<{ data: Array<{ id: string; name: string | null; source: unknown }> }>("thread/list", {
         cwd: workspaceDir,
       });
-      expect(listed.data.map((t) => t.id)).toEqual([cliSessionId]);
+      expect(listed.data.map((t) => ({ id: t.id, source: t.source }))).toEqual([
+        { id: otherSessionId, source: { custom: "other" } },
+        { id: cliSessionId, source: "cli" },
+      ]);
 
-      const readRes = await harness.rpc<{ thread: { turns: Array<{ items: Array<{ type: string }> }> } }>("thread/read", {
+      const readCli = await harness.rpc<{ thread: { source: unknown; turns: Array<{ items: Array<{ type: string }> }> } }>("thread/read", {
         threadId: cliSessionId,
         includeTurns: true,
       });
-      expect(readRes.thread.turns).toHaveLength(1);
-      expect(readRes.thread.turns[0]?.items.map((i) => i.type)).toEqual(["userMessage", "agentMessage"]);
+      expect(readCli.thread.source).toBe("cli");
+      expect(readCli.thread.turns).toHaveLength(1);
+      expect(readCli.thread.turns[0]?.items.map((i) => i.type)).toEqual(["userMessage", "agentMessage"]);
+
+      const readOther = await harness.rpc<{ thread: { source: unknown; turns: Array<{ items: Array<{ type: string }> }> } }>("thread/read", {
+        threadId: otherSessionId,
+        includeTurns: true,
+      });
+      expect(readOther.thread.source).toEqual({ custom: "other" });
+      expect(readOther.thread.turns).toHaveLength(1);
+      expect(readOther.thread.turns[0]?.items.map((i) => i.type)).toEqual(["userMessage", "agentMessage"]);
+      expect(world.spawns.some((opt) => opt.appDataDirName === "antigravity")).toBe(true);
     } finally {
       await harness.close();
     }
@@ -292,6 +327,215 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
         await new Promise((r) => setTimeout(r, 20));
       }
       expect(observedOutcome).toEqual({ outcome: { outcome: "selected", optionId: "opt-allow-once" } });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("resuming an old session does not bump its updatedAt above newer sessions", async () => {
+    const oldSessionId = "old-cli-session";
+    const newerSessionId = "newer-cli-session";
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${oldSessionId}.db`),
+      "sqlite-placeholder",
+    );
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${newerSessionId}.db`),
+      "sqlite-placeholder",
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId: oldSessionId,
+          cwd: workspaceDir,
+          title: "Old Session",
+          updatedAt: "2026-11-18T10:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+        {
+          sessionId: newerSessionId,
+          cwd: workspaceDir,
+          title: "Newer Session",
+          updatedAt: "2026-11-20T01:22:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      await harness.rpc("thread/resume", { threadId: oldSessionId, cwd: workspaceDir });
+      const listed = await harness.rpc<{ data: Array<{ id: string; updatedAt: number }> }>("thread/list", {
+        cwd: workspaceDir,
+      });
+      expect(listed.data.map((t) => t.id)).toEqual([newerSessionId, oldSessionId]);
+      const oldRow = listed.data.find((t) => t.id === oldSessionId);
+      expect(oldRow?.updatedAt).toBe(Math.floor(Date.parse("2026-11-18T10:00:00Z") / 1000));
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("live turn IDs and item IDs match persisted transcript history without duplication on reopen", async () => {
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ emitUpdate }) => {
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      const started = await harness.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      const threadId = started.thread.id;
+      const clientId = "client-msg-ok-1";
+      const turnRes = await harness.rpc<{ turn: { id: string } }>("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        clientUserMessageId: clientId,
+        input: [{ type: "text", text: "测试 回复 ok", text_elements: [] }],
+      });
+
+      for (let i = 0; i < 40; i += 1) {
+        if (harness.notifications.some((n) => n.method === "turn/completed")) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+
+      const itemOf = (params: unknown) =>
+        (params as { item?: { type?: string; id?: string; clientId?: string | null; text?: string } } | undefined)?.item;
+      const liveUser = harness.notifications.find((n) => n.method === "item/completed" && itemOf(n.params)?.type === "userMessage");
+      const liveAgent = harness.notifications.find((n) => n.method === "item/completed" && itemOf(n.params)?.type === "agentMessage");
+      const liveUserItem = itemOf(liveUser?.params)!;
+      const liveAgentItem = itemOf(liveAgent?.params)!;
+
+      expect(turnRes.turn.id).toBe(`${threadId}:turn:1`);
+      expect(liveUserItem.id).toBe(`${threadId}:turn:1:user`);
+      expect(liveUserItem.clientId).toBe(clientId);
+      expect(liveAgentItem.id).toBe(`${threadId}:turn:1:msg:1`);
+
+      // 模拟 agy 把刚完成的回合写入 transcript_full.jsonl，客户端随后重开会话拉取 thread/turns/list。
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({
+            step_index: 0,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-20T01:22:01Z",
+            content: "<USER_REQUEST>\n测试 回复 ok\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 1,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-20T01:22:02Z",
+            content: "ok",
+          }),
+        ].join("\n"),
+      );
+
+      const historyRes = await harness.rpc<{
+        data: Array<{ id: string; items: Array<{ type: string; id: string; clientId?: string | null; text?: string }> }>;
+      }>("thread/turns/list", { threadId, itemsView: "full" });
+      expect(historyRes.data).toHaveLength(1);
+      expect(historyRes.data[0]?.id).toBe(turnRes.turn.id);
+      expect(historyRes.data[0]?.items[0]).toMatchObject({
+        type: "userMessage",
+        id: liveUserItem.id,
+        clientId,
+      });
+      expect(historyRes.data[0]?.items[1]).toMatchObject({
+        type: "agentMessage",
+        id: liveAgentItem.id,
+        text: "ok",
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("drains trailing post-session/load replay updates before starting a new live turn", async () => {
+    const existingId = "large-existing-session";
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${existingId}.db`),
+      "sqlite-placeholder",
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId: existingId,
+          cwd: workspaceDir,
+          title: "Large Session",
+          updatedAt: "2026-11-21T02:09:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "First prompt" } },
+          ],
+          postLoadReplayUpdates: [
+            {
+              delayMs: 30,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "stale-prev-tool",
+                title: "Stale previous turn tool",
+                kind: "execute",
+                status: "completed",
+              },
+            },
+            {
+              delayMs: 70,
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: "Stale previous assistant reply" },
+              },
+            },
+          ],
+        },
+      ],
+      onPrompt: async ({ emitUpdate }) => {
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fresh new reply" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      await harness.rpc("thread/resume", { threadId: existingId, cwd: workspaceDir });
+      await harness.rpc("turn/start", {
+        threadId: existingId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "Second prompt", text_elements: [] }],
+      });
+
+      for (let i = 0; i < 60; i += 1) {
+        if (harness.notifications.some((n) => n.method === "turn/completed")) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+
+      const completedItems = harness.notifications
+        .filter((n) => n.method === "item/completed")
+        .map((n) => (n.params as { item?: { type?: string; text?: string; id?: string } }).item);
+      const agentTexts = completedItems.filter((i) => i?.type === "agentMessage").map((i) => i?.text);
+      const toolIds = completedItems.filter((i) => i?.type === "commandExecution").map((i) => i?.id);
+
+      expect(agentTexts).toEqual(["Fresh new reply"]);
+      expect(toolIds).toEqual([]);
     } finally {
       await harness.close();
     }

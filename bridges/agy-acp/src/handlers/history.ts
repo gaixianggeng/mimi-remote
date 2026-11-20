@@ -39,8 +39,16 @@ function viewOf(turn: Turn, view: unknown): Turn {
   return summarizeTurn(turn);
 }
 
-export function createHistoryHandlers(history: AgyHistoryStore, isRunning: (threadId: string) => boolean = () => false) {
-  const turnsOf = (threadId: string) => history.turns(threadId, isRunning(threadId));
+export function createHistoryHandlers(
+  history: AgyHistoryStore,
+  isRunning: (threadId: string) => boolean = () => false,
+  isHolderActive: (threadId: string) => Promise<boolean> = async () => false,
+) {
+  const turnsOf = async (threadId: string) => {
+    const running = isRunning(threadId);
+    const holderActive = !running && (await isHolderActive(threadId));
+    return history.turns(threadId, running, holderActive);
+  };
 
   return {
     async turns(raw: unknown): Promise<ThreadTurnsListResponse> {

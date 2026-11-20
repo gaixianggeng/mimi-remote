@@ -9,11 +9,24 @@ import { USER_AGENT } from "../version.ts";
 
 export type AdapterThread = Thread & {
   canAcceptDirectInput: boolean;
+  claudeOwner?: Record<string, unknown>;
 };
 
 export interface LiveState {
   canAcceptDirectInput: boolean;
   status?: Thread["status"];
+  claudeOwner?: Record<string, unknown>;
+}
+
+export function desktopOwnerSummary(mtimeMs: number): Record<string, unknown> {
+  return {
+    entrypoint: "desktop",
+    kind: "desktop",
+    status: "busy",
+    pid: null,
+    statusUpdatedAt: new Date(mtimeMs).toISOString(),
+    waitingKind: null,
+  };
 }
 
 export function toThread(
@@ -43,7 +56,7 @@ export function toThread(
     cwd: record.cwd,
     cliVersion: USER_AGENT,
     originator: null,
-    source: "appServer",
+    source: record.origin === "other" ? { custom: "other" } : "cli",
     threadSource: null,
     agentNickname: null,
     agentRole: null,
@@ -51,6 +64,7 @@ export function toThread(
     name: record.name,
     turns,
     canAcceptDirectInput: live.canAcceptDirectInput,
+    ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
   };
 }
 
@@ -87,15 +101,34 @@ export interface LiveSource {
 }
 
 export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistoryStore, liveSource?: LiveSource) {
-  const liveStateOf = (threadId: string): LiveState => {
-    if (!liveSource) return { canAcceptDirectInput: true, status: { type: "notLoaded" } };
-    if (liveSource.activeTurnId(threadId) !== undefined) {
-      return { canAcceptDirectInput: true, status: { type: "active", activeFlags: [] } };
+  const liveStateOf = async (threadId: string): Promise<{ live: LiveState; holderActive: boolean }> => {
+    if (liveSource?.activeTurnId(threadId) !== undefined) {
+      return {
+        live: { canAcceptDirectInput: true, status: { type: "active", activeFlags: [] } },
+        holderActive: false,
+      };
     }
-    if (liveSource.hasLiveProcess(threadId)) {
-      return { canAcceptDirectInput: true, status: { type: "idle" } };
+    const ext = await catalog.externalActivity(threadId);
+    if (ext?.externallyBusy) {
+      return {
+        live: {
+          canAcceptDirectInput: false,
+          status: { type: "active", activeFlags: [] },
+          claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+        },
+        holderActive: true,
+      };
     }
-    return { canAcceptDirectInput: true, status: { type: "notLoaded" } };
+    if (liveSource?.hasLiveProcess(threadId)) {
+      return {
+        live: { canAcceptDirectInput: true, status: { type: "idle" } },
+        holderActive: false,
+      };
+    }
+    return {
+      live: { canAcceptDirectInput: true, status: { type: "notLoaded" } },
+      holderActive: false,
+    };
   };
 
   return {
@@ -126,8 +159,15 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
       const first = page[0];
       const hasMore = start >= 0 && start + limit < records.length;
 
+      const data = await Promise.all(
+        page.map(async (record) => {
+          const { live } = await liveStateOf(record.id);
+          return toThread(record, [], live);
+        }),
+      );
+
       return {
-        data: page.map((record) => toThread(record, [], liveStateOf(record.id))),
+        data,
         nextCursor: hasMore && last ? encodeCursor({ v: key(last)[0], id: last.id }) : null,
         backwardsCursor: first ? encodeCursor({ v: key(first)[0], id: first.id, incl: true }) : null,
       };
@@ -144,8 +184,9 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
         throw RpcError.invalidParams(`找不到 Antigravity 会话 ${threadId}`);
       }
       const running = liveSource?.activeTurnId(threadId) !== undefined;
-      const turns = params.includeTurns === true ? await history.turns(threadId, running) : [];
-      return { thread: toThread(record, turns, liveStateOf(threadId)) };
+      const { live, holderActive } = await liveStateOf(threadId);
+      const turns = params.includeTurns === true ? await history.turns(threadId, running, holderActive) : [];
+      return { thread: toThread(record, turns, live) };
     },
 
     loaded(): ThreadLoadedListResponse {

@@ -15,6 +15,30 @@ export interface AcpToolState {
   rawOutput?: unknown;
 }
 
+const MAX_TOOL_OUTPUT_CHARS = 16 * 1024;
+const MAX_DIFF_CHARS = 24 * 1024;
+const MAX_ARG_STRING_CHARS = 4 * 1024;
+
+function truncateText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}\n…（内容过长，已截断 ${text.length - limit} 字符）`;
+}
+
+function sanitizeToolArguments(raw: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "string") {
+      out[k] = truncateText(v, MAX_ARG_STRING_CHARS);
+    } else if (Array.isArray(v)) {
+      out[k] = v.slice(0, 20).map((entry) => (typeof entry === "string" ? truncateText(entry, MAX_ARG_STRING_CHARS) : entry));
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 function baseName(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
 }
@@ -23,7 +47,7 @@ function unifiedHunk(oldText: string, newText: string): string {
   const removed = oldText === "" ? [] : oldText.split("\n");
   const added = newText === "" ? [] : newText.split("\n");
   const body = [...removed.map((line) => `-${line}`), ...added.map((line) => `+${line}`)].join("\n");
-  return `@@ -1,${removed.length} +1,${added.length} @@\n${body}\n`;
+  return truncateText(`@@ -1,${removed.length} +1,${added.length} @@\n${body}\n`, MAX_DIFF_CHARS);
 }
 
 function strField(input: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
@@ -74,11 +98,11 @@ function extractTextOutput(state: AcpToolState): string | null {
       chunks.push(part.content.text);
     }
   }
-  if (chunks.length > 0) return chunks.join("\n");
-  if (typeof state.rawOutput === "string" && state.rawOutput.trim()) return state.rawOutput;
+  if (chunks.length > 0) return truncateText(chunks.join("\n"), MAX_TOOL_OUTPUT_CHARS);
+  if (typeof state.rawOutput === "string" && state.rawOutput.trim()) return truncateText(state.rawOutput, MAX_TOOL_OUTPUT_CHARS);
   if (state.rawOutput && typeof state.rawOutput === "object") {
     const out = (state.rawOutput as Record<string, unknown>).output;
-    if (typeof out === "string" && out) return out;
+    if (typeof out === "string" && out) return truncateText(out, MAX_TOOL_OUTPUT_CHARS);
   }
   return null;
 }
@@ -183,7 +207,7 @@ export function acpToolToThreadItem(state: AcpToolState, cwd: string, stillRunni
     id: state.toolCallId,
     namespace: "antigravity",
     tool: state.title?.trim() || kind,
-    arguments: ((state.rawInput ?? {}) as unknown) as JsonValue,
+    arguments: (sanitizeToolArguments(state.rawInput) as unknown) as JsonValue,
     status,
     contentItems: output ? [{ type: "inputText", text: output }] : null,
     success: status === "completed" ? true : status === "failed" ? false : null,

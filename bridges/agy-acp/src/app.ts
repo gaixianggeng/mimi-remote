@@ -12,7 +12,7 @@ import {
 } from "./agy/binary.ts";
 import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend } from "./agy/catalog.ts";
 import { acpCommandDiscovery, CommandCatalog, type DiscoverAgyCommands } from "./agy/commands.ts";
-import { defaultAgyExecutable } from "./agy/env.ts";
+import { appDataDirForOrigin, defaultAgyExecutable } from "./agy/env.ts";
 import { GitRepoIndex } from "./agy/git.ts";
 import { acpModelDiscovery, ModelCatalog, type DiscoverAgyModels } from "./agy/models.ts";
 import { AgyOverlay } from "./agy/overlay.ts";
@@ -84,31 +84,37 @@ export function createApp(options: AppOptions): App {
   const agyGate = new AgyVersionGate(agyExecutable, options.probeAgy ?? defaultProbeAgy, env);
   const overlay = new AgyOverlay(path.join(stateDir, "overlay.json"));
   const git = new GitRepoIndex();
-  const sharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env);
-  const backend = options.sessionBackend ?? createAcpSessionBackend(sharedAcp, env);
+  const cliSharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env, appDataDirForOrigin("cli", env()));
+  const otherSharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env, appDataDirForOrigin("other", env()));
+  let managerRef: ThreadManager | undefined;
+  let catalogRef: AgyCatalog | undefined;
+  let historyRef: AgyHistoryStore | undefined;
+  const backend =
+    options.sessionBackend ??
+    createAcpSessionBackend(cliSharedAcp, otherSharedAcp, env, (sessionId) => managerRef?.get(sessionId)?.hasLiveProcess() ?? false);
 
   const models = new ModelCatalog({
-    discover: options.discoverModels ?? acpModelDiscovery(sharedAcp),
+    discover: options.discoverModels ?? acpModelDiscovery(cliSharedAcp),
     log: options.log,
   });
 
-  let managerRef: ThreadManager | undefined;
   const commands = new CommandCatalog({
-    discover: options.discoverCommands ?? acpCommandDiscovery(sharedAcp),
+    discover: options.discoverCommands ?? acpCommandDiscovery(cliSharedAcp),
     live: (cwd) => managerRef?.liveCommands(cwd),
     log: options.log,
   });
 
+  const otherAppDataDir = appDataDirForOrigin("other", env());
   const manager = new ThreadManager({
-    agyExecutable,
-    spawnTransport,
-    env,
+    acquireClient: (appDataDirName) => (appDataDirName === otherAppDataDir ? otherSharedAcp.acquire() : cliSharedAcp.acquire()),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
     onSessionOpen: (open) => models.observeSessionOpen(open),
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
     onTurnPersisted: (threadId, patch) => {
+      catalogRef?.invalidate();
       void overlay.recordSession(threadId, patch);
     },
+    existingTurnCount: (threadId) => historyRef?.persistedTurnCount(threadId) ?? Promise.resolve(0),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
   });
   managerRef = manager;
@@ -119,7 +125,14 @@ export function createApp(options: AppOptions): App {
     overlay,
     inMemorySessions: () => manager.inMemorySessionSnapshots(),
   });
-  const history = new AgyHistoryStore(catalog, backend, (sessionId) => manager.liveTurns(sessionId));
+  catalogRef = catalog;
+  const history = new AgyHistoryStore(
+    catalog,
+    backend,
+    (sessionId) => manager.liveTurns(sessionId),
+    (turnId) => manager.clientIdForTurn(turnId),
+  );
+  historyRef = history;
 
   const activeTurnId = (threadId: string) => manager.get(threadId)?.activeTurnId;
   const threads = createThreadHandlers(catalog, history, {
@@ -127,8 +140,12 @@ export function createApp(options: AppOptions): App {
     hasLiveProcess: (threadId) => manager.get(threadId)?.hasLiveProcess() ?? false,
     loadedThreadIds: () => manager.loadedThreadIds(),
   });
-  const historyHandlers = createHistoryHandlers(history, (threadId) => activeTurnId(threadId) !== undefined);
-  const turns = createTurnHandlers({ manager, catalog, history, overlay, agyGate });
+  const historyHandlers = createHistoryHandlers(
+    history,
+    (threadId) => activeTurnId(threadId) !== undefined,
+    async (threadId) => Boolean((await catalog.externalActivity(threadId))?.externallyBusy),
+  );
+  const turns = createTurnHandlers({ manager, catalog, history, overlay, agyGate, env });
   const account = createAccountHandlers(models, unavailableAgyRateLimits);
   const commandHandlers = createCommandHandlers(commands);
 
@@ -161,7 +178,7 @@ export function createApp(options: AppOptions): App {
     manager,
     models,
     async close() {
-      await Promise.allSettled([manager.closeAll(), sharedAcp.close()]);
+      await Promise.allSettled([manager.closeAll(), cliSharedAcp.close(), otherSharedAcp.close()]);
     },
   };
 }

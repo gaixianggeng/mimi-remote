@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
@@ -11,24 +10,23 @@ import type {
   AcpSessionOpenResult,
   AcpSessionUpdate,
 } from "../acp/types.ts";
-import { startAgyAcpClient, type SpawnAgyTransport } from "../agy/binary.ts";
 import { updatesToTurns } from "../agy/history.ts";
 import { selectPermissionOption, serverApprovalFor } from "./approvals.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
-import { sameProcessBoundary, type AgyRunSettings, type ExecutionPolicy } from "./settings.ts";
+import type { AgyRunSettings } from "./settings.ts";
 import { toAcpPromptBlocks } from "./userInput.ts";
 
 export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
   request(threadId: string, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
-  agyExecutable(): string;
-  spawnTransport: SpawnAgyTransport;
-  env(): NodeJS.ProcessEnv;
+  acquireClient(appDataDirName?: string): Promise<AcpClient>;
   idleCloseMs: number;
   onSessionOpen?(openResult: AcpSessionOpenResult): void;
   onAvailableCommands?(cwd: string, commands: AcpAvailableCommand[]): void;
   onTitleUpdated?(threadId: string, title: string): void;
   onTurnPersisted?(threadId: string, patch: { preview?: string; updatedAt?: number }): void;
+  existingTurnCount?(threadId: string): Promise<number>;
+  recordTurnClientId?(turnId: string, clientId: string): void;
 }
 
 export interface TurnStartRequest {
@@ -39,7 +37,8 @@ export interface TurnStartRequest {
 
 export class ThreadRuntime {
   private client: AcpClient | undefined;
-  private appliedBoundary: ExecutionPolicy | undefined;
+  private unsubSession: (() => void) | undefined;
+  private unsubPermission: (() => void) | undefined;
   private appliedMode: string | undefined;
   private appliedModel: string | undefined;
   private appliedEffort: string | undefined;
@@ -49,8 +48,8 @@ export class ThreadRuntime {
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private historyTurns: Turn[] | undefined;
   private availableCommands: AcpAvailableCommand[] | undefined;
-  readonly createdAt = Math.floor(Date.now() / 1000);
-  updatedAt = this.createdAt;
+  readonly createdAt: number;
+  updatedAt: number;
   title: string | null;
 
   constructor(
@@ -60,7 +59,12 @@ export class ThreadRuntime {
     private settings: AgyRunSettings,
     private persisted: boolean,
     initialTitle: string | null = null,
+    private readonly appDataDirName?: string,
+    initialTimestamps?: { createdAt?: number; updatedAt?: number },
   ) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    this.createdAt = initialTimestamps?.createdAt ?? nowSec;
+    this.updatedAt = initialTimestamps?.updatedAt ?? this.createdAt;
     this.title = initialTitle;
   }
 
@@ -93,16 +97,19 @@ export class ThreadRuntime {
     if (this.currentTurn) {
       return [...this.historyTurns, this.currentTurn.snapshot(true)];
     }
+    // 已落盘的会话在空闲时优先走磁盘/transcript 读取，避免桌面端或终端追加的新消息被旧内存快照遮蔽。
+    if (this.persisted) return undefined;
     return this.historyTurns;
   }
 
   /**
-   * 为 `thread/start` 启动新 ACP 会话并取得 `agy` 原生分配的 `sessionId`。
+   * 为 `thread/start` 在常驻共享 `agy acp` 实例上创建新会话并取得原生分配的 `sessionId`。
    */
   async initializeNewSession(): Promise<string> {
-    const client = await this.ensureClient(this.settings.executionPolicy);
+    const client = await this.host.acquireClient(this.appDataDirName);
     const open = await client.sessionNew(this.cwd);
     this.threadId = open.sessionId;
+    this.attachClient(client, this.threadId);
     this.historyTurns = [];
     this.recordSessionMeta(open);
     await this.applySessionControls(client, this.settings);
@@ -127,31 +134,24 @@ export class ThreadRuntime {
       };
       const { blocks, preview } = await toAcpPromptBlocks(req.input);
 
-      const needRestart =
-        !this.client
-        || this.client.isClosed
-        || !this.appliedBoundary
-        || !sameProcessBoundary(this.appliedBoundary, this.settings.executionPolicy);
-
-      if (needRestart) {
-        await this.closeClient();
-        const client = await this.ensureClient(this.settings.executionPolicy);
-        if (this.persisted) {
-          const { result, updates } = await client.sessionLoadWithReplay(this.threadId, this.cwd);
-          this.historyTurns = updatesToTurns(this.threadId, this.cwd, updates, false);
-          this.recordSessionMeta(result);
-        } else {
-          // 若此前 `initializeNewSession` 的子进程因边界切换重启且还未落盘，重新 load（若已落盘）或报错。
-          const { result, updates } = await client.sessionLoadWithReplay(this.threadId, this.cwd);
-          this.historyTurns = updatesToTurns(this.threadId, this.cwd, updates, false);
-          this.recordSessionMeta(result);
-        }
+      if (!this.client || this.client.isClosed) {
+        this.detachSessionHandlers();
+        const client = await this.host.acquireClient(this.appDataDirName);
+        const { result, updates } = await client.sessionLoadWithReplay(this.threadId, this.cwd);
+        this.attachClient(client, this.threadId);
+        this.historyTurns = updatesToTurns(this.threadId, this.cwd, updates, false);
+        this.recordSessionMeta(result);
       }
 
       const client = this.client!;
       await this.applySessionControls(client, this.settings);
 
-      const turnId = randomUUID();
+      const diskTurnCount = this.persisted ? ((await this.host.existingTurnCount?.(this.threadId).catch(() => 0)) ?? 0) : 0;
+      const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskTurnCount) + 1;
+      const turnId = `${this.threadId}:turn:${nextTurnIndex}`;
+      if (req.clientUserMessageId) {
+        this.host.recordTurnClientId?.(turnId, req.clientUserMessageId);
+      }
       turn = new LiveTurn(turnId, this.threadId, this.cwd, (method, params) => {
         this.host.publish(this.threadId, method, params);
       });
@@ -229,41 +229,21 @@ export class ThreadRuntime {
     }
   }
 
-  private async ensureClient(policy: ExecutionPolicy): Promise<AcpClient> {
-    if (this.client && !this.client.isClosed && this.appliedBoundary && sameProcessBoundary(this.appliedBoundary, policy)) {
-      return this.client;
-    }
-    const addDirs = policy.type === "workspaceWrite" ? (policy.writableRoots ?? []) : [];
-    const client = await startAgyAcpClient(
-      this.host.spawnTransport,
-      {
-        executable: this.host.agyExecutable(),
-        cwd: this.cwd,
-        sandbox: policy.type !== "dangerFullAccess",
-        skipPermissions: policy.type === "dangerFullAccess",
-        addDirs,
-        env: this.host.env(),
-      },
-      {
-        onSessionUpdate: (sessionId, update) => this.handleSessionUpdate(sessionId, update),
-        onRequestPermission: (params, signal) => this.handlePermissionRequest(params, signal),
-        onClose: () => {
-          if (this.client === client) {
-            this.client = undefined;
-            this.appliedBoundary = undefined;
-            this.appliedMode = undefined;
-            this.appliedModel = undefined;
-            this.appliedEffort = undefined;
-          }
-        },
-      },
-    );
+  private attachClient(client: AcpClient, sessionId: string): void {
+    this.detachSessionHandlers();
     this.client = client;
-    this.appliedBoundary = policy;
     this.appliedMode = undefined;
     this.appliedModel = undefined;
     this.appliedEffort = undefined;
-    return client;
+    this.unsubSession = client.onSession(sessionId, (update) => this.handleSessionUpdate(sessionId, update));
+    this.unsubPermission = client.onPermission(sessionId, (params, signal) => this.handlePermissionRequest(params, signal));
+  }
+
+  private detachSessionHandlers(): void {
+    this.unsubSession?.();
+    this.unsubSession = undefined;
+    this.unsubPermission?.();
+    this.unsubPermission = undefined;
   }
 
   private async applySessionControls(client: AcpClient, settings: AgyRunSettings): Promise<void> {
@@ -374,16 +354,15 @@ export class ThreadRuntime {
   }
 
   private async closeClient(): Promise<void> {
+    this.detachSessionHandlers();
     const client = this.client;
     this.client = undefined;
-    this.appliedBoundary = undefined;
     this.appliedMode = undefined;
     this.appliedModel = undefined;
     this.appliedEffort = undefined;
-    if (!client) return;
+    if (!client || client.isClosed) return;
     if (this.threadId) {
       await client.sessionClose(this.threadId).catch(() => {});
     }
-    await client.close().catch(() => {});
   }
 }

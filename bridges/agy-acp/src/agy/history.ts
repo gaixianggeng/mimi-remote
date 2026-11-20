@@ -8,6 +8,9 @@ import { acpToolToThreadItem, formatPlanMarkdown, mergeToolState, type AcpToolSt
 interface TurnBuilder {
   id: string;
   items: ThreadItem[];
+  userSeq: number;
+  reasoningSeq: number;
+  msgSeq: number;
   userTextIndex: number | null;
   openThoughtIndex: number | null;
   openMessageIndex: number | null;
@@ -38,13 +41,15 @@ export function updatesToTurns(
 ): Turn[] {
   const turns: TurnBuilder[] = [];
   let current: TurnBuilder | undefined;
-  let seq = 0;
 
   const nextTurn = (): TurnBuilder => {
     const index = turns.length + 1;
     const draft: TurnBuilder = {
       id: `${sessionId}:turn:${index}`,
       items: [],
+      userSeq: 0,
+      reasoningSeq: 0,
+      msgSeq: 0,
       userTextIndex: null,
       openThoughtIndex: null,
       openMessageIndex: null,
@@ -78,11 +83,11 @@ export function updatesToTurns(
             }
           }
         } else {
-          seq += 1;
+          turn.userSeq += 1;
           turn.userTextIndex = turn.items.length;
           turn.items.push({
             type: "userMessage",
-            id: `${sessionId}:item:${seq}`,
+            id: turn.userSeq === 1 ? `${turn.id}:user` : `${turn.id}:user:${turn.userSeq}`,
             clientId: null,
             content: [input],
           });
@@ -101,11 +106,11 @@ export function updatesToTurns(
             item.content = [`${item.content[0] ?? ""}${text}`];
           }
         } else {
-          seq += 1;
+          turn.reasoningSeq += 1;
           turn.openThoughtIndex = turn.items.length;
           turn.items.push({
             type: "reasoning",
-            id: `${sessionId}:item:${seq}`,
+            id: `${turn.id}:reasoning:${turn.reasoningSeq}`,
             summary: [],
             content: [text],
           });
@@ -124,11 +129,11 @@ export function updatesToTurns(
             item.text += text;
           }
         } else {
-          seq += 1;
+          turn.msgSeq += 1;
           turn.openMessageIndex = turn.items.length;
           turn.items.push({
             type: "agentMessage",
-            id: `${sessionId}:item:${seq}`,
+            id: `${turn.id}:msg:${turn.msgSeq}`,
             text,
             phase: null,
             memoryCitation: null,
@@ -177,9 +182,8 @@ export function updatesToTurns(
           const existing = turn.items[turn.planIndex]!;
           if (existing.type === "plan") existing.text = markdown;
         } else {
-          seq += 1;
           turn.planIndex = turn.items.length;
-          turn.items.push({ type: "plan", id: `${sessionId}:plan:${seq}`, text: markdown });
+          turn.items.push({ type: "plan", id: `${turn.id}:plan`, text: markdown });
         }
         break;
       }

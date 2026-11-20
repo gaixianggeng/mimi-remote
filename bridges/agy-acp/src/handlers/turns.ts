@@ -2,11 +2,12 @@ import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.
 import { RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { RequestContext } from "@mimi/appserver-kit/server/router.ts";
 import type { AgyCatalog, AgyHistoryStore, SessionRecord } from "../agy/catalog.ts";
+import { appDataDirForOrigin } from "../agy/env.ts";
 import type { AgyOverlay } from "../agy/overlay.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
 import type { ThreadRuntime } from "../runtime/threadRuntime.ts";
-import { toThread, type AdapterThread } from "./threads.ts";
+import { desktopOwnerSummary, toThread, type AdapterThread } from "./threads.ts";
 
 type Params = Record<string, unknown>;
 
@@ -16,6 +17,7 @@ export interface TurnHandlerDeps {
   history: AgyHistoryStore;
   overlay: AgyOverlay;
   agyGate: { ensure(): Promise<string> };
+  env?: () => NodeJS.ProcessEnv;
 }
 
 function asParams(value: unknown): Params {
@@ -38,7 +40,7 @@ function inputOf(params: Params, method: string): UserInput[] {
 
 function newRecord(threadId: string, cwd: string): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
-  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false };
+  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, origin: "cli" };
 }
 
 function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: Params) {
@@ -69,7 +71,14 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
     if (!record) {
       throw RpcError.invalidParams(`找不到 Antigravity 会话 ${threadId}`);
     }
-    const runtime = manager.openExisting(threadId, cwd ?? record.cwd, runSettingsFor(params), record.name);
+    const runtime = manager.openExisting(
+      threadId,
+      cwd ?? record.cwd,
+      runSettingsFor(params),
+      record.name,
+      appDataDirForOrigin(record.origin, deps.env?.() ?? process.env),
+      { createdAt: record.createdAt, updatedAt: record.updatedAt },
+    );
     return { record, runtime };
   }
 
@@ -99,10 +108,17 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const { record, runtime } = await openExisting(threadId, cwd, params);
       manager.subscribe(threadId, context.session);
-      const thread = toThread(record, [], {
-        canAcceptDirectInput: true,
-        status: runtime.activeTurnId ? { type: "active", activeFlags: [] } : { type: "idle" },
-      });
+      const ext = runtime.activeTurnId ? undefined : await catalog.externalActivity(threadId);
+      const live = runtime.activeTurnId
+        ? { canAcceptDirectInput: true, status: { type: "active" as const, activeFlags: [] } }
+        : ext?.externallyBusy
+          ? {
+              canAcceptDirectInput: false,
+              status: { type: "active" as const, activeFlags: [] },
+              claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+            }
+          : { canAcceptDirectInput: true, status: { type: "idle" as const } };
+      const thread = toThread(record, [], live);
       return {
         ...sessionResponse(thread, runtime, params),
         collaborationMode: null,

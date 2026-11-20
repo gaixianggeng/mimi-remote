@@ -28,36 +28,70 @@ export interface AgyDataPaths {
   geminiDirName: string;
   appDataDirName: string;
   appDataRoot: string;
+  otherAppDataDirName: string;
+  otherAppDataRoot: string;
 }
+
+export type AgySessionOrigin = "cli" | "other";
 
 export function resolveAgyDataPaths(env: NodeJS.ProcessEnv = process.env): AgyDataPaths {
   const homeDir = env.HOME?.trim() || os.homedir();
   const geminiDirName = env.AGY_ADAPTER_GEMINI_DIR?.trim() || ".gemini";
   const appDataDirName = env.AGY_ADAPTER_APP_DATA_DIR?.trim() || "antigravity-cli";
+  const otherAppDataDirName = env.AGY_ADAPTER_OTHER_APP_DATA_DIR?.trim() || "antigravity";
   const geminiRoot = path.isAbsolute(geminiDirName) ? geminiDirName : path.join(homeDir, geminiDirName);
   const appDataRoot = path.join(geminiRoot, appDataDirName);
-  return { homeDir, geminiDirName, appDataDirName, appDataRoot };
+  const otherAppDataRoot = path.join(geminiRoot, otherAppDataDirName);
+  return { homeDir, geminiDirName, appDataDirName, appDataRoot, otherAppDataDirName, otherAppDataRoot };
 }
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 
-export function conversationDbPath(sessionId: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function conversationDbPath(
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  origin: AgySessionOrigin = "cli",
+): string | undefined {
   if (!SAFE_SESSION_ID.test(sessionId)) return undefined;
-  return path.join(resolveAgyDataPaths(env).appDataRoot, "conversations", `${sessionId}.db`);
+  const paths = resolveAgyDataPaths(env);
+  const root = origin === "other" ? paths.otherAppDataRoot : paths.appDataRoot;
+  return path.join(root, "conversations", `${sessionId}.db`);
 }
 
-/**
- * `agy acp` 的 `session/list` 会读取共享摘要，可能包含仅存在于 `Antigravity.app` 桌面端
- * （`~/.gemini/antigravity/conversations`）的会话；在 `antigravity-cli` 下 `session/load`
- * 这些会话会得到 0 条历史（D1）。只放行 CLI 数据库实际存在的会话。
- */
-export async function hasCliConversationDb(sessionId: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  const dbPath = conversationDbPath(sessionId, env);
-  if (!dbPath) return false;
+export function appDataDirForOrigin(origin: AgySessionOrigin, env: NodeJS.ProcessEnv = process.env): string {
+  const paths = resolveAgyDataPaths(env);
+  return origin === "other" ? paths.otherAppDataDirName : paths.appDataDirName;
+}
+
+async function fileExists(targetPath: string | undefined): Promise<boolean> {
+  if (!targetPath) return false;
   try {
-    await access(dbPath);
+    await access(targetPath);
     return true;
   } catch {
     return false;
   }
+}
+
+export async function hasCliConversationDb(sessionId: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  return fileExists(conversationDbPath(sessionId, env, "cli"));
+}
+
+/**
+ * 识别 `agy acp` `session/list` 返回的会话来源：
+ * - `cli`：落盘在 `~/.gemini/antigravity-cli/conversations/<id>.db`（CLI / Herdr / Mimi 新建）；
+ * - `other`：落盘在 `~/.gemini/antigravity/conversations/<id>.db`（Antigravity Desktop / IDE，通过 `--app-data-dir antigravity` 完整读取和续聊）；
+ * - `null`：两边都不存在 `.db` 的孤儿摘要，忽略避免打开空白页。
+ */
+export async function resolveSessionOrigin(
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<AgySessionOrigin | null> {
+  if (await fileExists(conversationDbPath(sessionId, env, "cli"))) {
+    return "cli";
+  }
+  if (await fileExists(conversationDbPath(sessionId, env, "other"))) {
+    return "other";
+  }
+  return null;
 }
