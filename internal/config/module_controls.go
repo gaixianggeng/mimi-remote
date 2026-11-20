@@ -7,7 +7,9 @@ import (
 
 func (c CodexConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
-func (c Config) HasEnabledAgent() bool { return c.Codex.IsEnabled() || c.Claude.Enabled || c.Agy.Enabled }
+func (c Config) HasEnabledAgent() bool {
+	return c.Codex.IsEnabled() || c.Claude.Enabled || c.Agy.Enabled
+}
 
 // Independent ingress controls are opt-in, so upgrading does not change an
 // existing custom bind. The first explicit network mutation records both intents.

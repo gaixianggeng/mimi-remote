@@ -578,12 +578,9 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	if agyBin == "" {
 		agyBin = "agy"
 	}
-	if agyPath, err := claudebridge.LookPathIn(agyBin, env); err == nil {
-		if signedIn, _ := agybridge.CheckAgySignedIn(ctx, agyPath, env); !signedIn {
-			status.State = runtimeStateSignedOut
-			status.Reason = "signed_out"
-			return status
-		}
+	if _, err := claudebridge.LookPathIn(agyBin, env); err != nil {
+		status.Reason = "agy_missing"
+		return status
 	}
 
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Agy.AdapterBin))

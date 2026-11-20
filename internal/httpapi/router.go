@@ -124,13 +124,13 @@ type Router struct {
 	claudeCode                 claudeCodeVersionCache
 	activeClaudeBridge         int
 	// claudeForeground 按具名会话登记当前前台连接，由 claudeMu 保护。
-	claudeForeground map[string]*claudeForegroundLease
-	claudeBridge     *claudeBridgeSupervisor
-	agyMu            sync.Mutex
-	agyProbe         agyAdapterProbe
+	claudeForeground  map[string]*claudeForegroundLease
+	claudeBridge      *claudeBridgeSupervisor
+	agyMu             sync.Mutex
+	agyProbe          agyAdapterProbe
 	activeAgySessions int
-	agyForeground    map[string]*claudeForegroundLease
-	agyAdapter       *claudeBridgeSupervisor
+	agyForeground     map[string]*claudeForegroundLease
+	agyAdapter        *claudeBridgeSupervisor
 	// Harness 原生资源由独立 owner 关闭和限流，Router 只负责入口与组合。
 	// harnessTurnPush 在手机离线后继续观察经 Mimi 提交的 DeepSeek 回合，结束时推送提醒。
 	harnessNative     harnessNativeResources

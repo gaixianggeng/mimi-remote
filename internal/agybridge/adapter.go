@@ -128,9 +128,10 @@ func AgyVersion(ctx context.Context, bin string, env []string) (string, error) {
 }
 
 // CheckAgySignedIn 执行无副作用的 `agy models` 探测登录态：
-// 实测未登录时返回非零退出码并提示 "Please sign in to view available models"。
+// 实测未登录时返回非零退出码并提示 "Please sign in to view available models"；
+// 冷启动首次拉取远端模型列表约需 7-10 秒，因此预留 15 秒超时。
 func CheckAgySignedIn(ctx context.Context, bin string, env []string) (bool, string) {
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "models")
 	cmd.Env = env
@@ -138,6 +139,9 @@ func CheckAgySignedIn(ctx context.Context, bin string, env []string) (bool, stri
 	text := strings.TrimSpace(string(output))
 	lower := strings.ToLower(text)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, "探测 Antigravity CLI 登录状态超时（agy models 未在 15 秒内返回）"
+		}
 		if strings.Contains(lower, "sign in") || strings.Contains(lower, "login") || strings.Contains(lower, "authenticate") {
 			return false, "Antigravity CLI 尚未登录，请在终端运行 agy 完成登录"
 		}
