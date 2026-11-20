@@ -763,10 +763,30 @@ extension CodexAppServerSessionRuntime {
             writerHeldElsewhere: writerHeldElsewhere(from: thread, cached: cached?.writerHeldElsewhere),
             // 派生来源只在 thread/list 上出现；状态推送与历史分页的 thread 不带它，沿用已知值。
             spawnedFromThreadID: nonEmpty(thread["spawnedFromThreadId"]?.stringValue) ?? cached?.spawnedFromThreadID,
+            sessionOrigin: antigravitySessionOrigin(from: thread, cached: cached?.sessionOrigin),
             context: context
         )
         if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }
         return session
+    }
+
+    private func antigravitySessionOrigin(
+        from thread: [String: CodexAppServerJSONValue],
+        cached: String?
+    ) -> String? {
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "agy" else {
+            return cached
+        }
+        if let raw = thread["source"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           raw == "cli" || raw == "other" {
+            return raw
+        }
+        if let custom = thread["source"]?.objectValue?["custom"]?.stringValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           custom == "cli" || custom == "other" {
+            return custom
+        }
+        return cached
     }
 
     /// 只有网关的 thread/list 带这个字段。其余响应没有结论：会话仍是 notLoaded 就沿用已知值；

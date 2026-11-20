@@ -960,6 +960,12 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             }
             return sanitized
         }
+        // 非 Codex 通道不支持 mimiPreserveThreadPermissions；若历史草稿/缓存残留该标记，
+        // 统一归一化为显式请求审批，避免网关以 -32080 拒绝请求。
+        if sanitized.preservesThreadPermissionSettings,
+           !RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: sanitized.runtimeProvider) {
+            ComposerPermissionMode.requestApproval.apply(to: &sanitized)
+        }
         // 两条通道的完全访问都表示显式免审批；旧草稿的 on-request 在发送前归一化。
         // 被动恢复仍继承会话设置，不能因为全局默认变化而提升现有会话权限。
         if !sanitized.preservesThreadPermissionSettings,
@@ -1032,6 +1038,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 
     func turnParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
         let preservesPermissions = preservesThreadPermissionSettings
+            && RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider)
         let profileID = preservesPermissions ? nil : permissionProfileID.flatMap(nonEmptyString)
         return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },
@@ -1053,6 +1060,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 
     func threadParams(projectPath: String) -> [String: CodexAppServerJSONValue?] {
         let preservesPermissions = preservesThreadPermissionSettings
+            && RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider)
         let profileID = preservesPermissions ? nil : permissionProfileID.flatMap(nonEmptyString)
         return [
             "model": model.flatMap(nonEmptyString).map { .string($0) },

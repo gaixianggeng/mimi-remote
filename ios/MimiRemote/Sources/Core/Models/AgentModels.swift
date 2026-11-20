@@ -118,7 +118,24 @@ struct AgentSession: Identifiable, Codable, Hashable {
     /// Claude 桌面版"主会话派生会话"的父会话线程 ID，只用于列表分组展示。
     /// 派生会话是完整会话，和 `parentThreadID`（子 Agent，只读）无关，不参与授权。
     var spawnedFromThreadID: String?
+    /// Antigravity 会话来源标识（`"cli"` 或 `"other"`），用于列表轻量胶囊区分 CLI 与桌面端会话。
+    var sessionOrigin: String? = nil
     let context: SessionContextSnapshot?
+
+    /// Antigravity 会话来源小标签（仅 Antigravity 展示 `CLI` / `Other`）。
+    var antigravityOriginBadgeTitle: String? {
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider ?? source) == "agy" else {
+            return nil
+        }
+        switch sessionOrigin?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "cli":
+            return "CLI"
+        case "other":
+            return "Other"
+        default:
+            return nil
+        }
+    }
 
     /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
     var gitBranchName: String? {
@@ -205,6 +222,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         claudeOwner: ClaudeSessionOwner? = nil,
         writerHeldElsewhere: Bool? = nil,
         spawnedFromThreadID: String? = nil,
+        sessionOrigin: String? = nil,
         context: SessionContextSnapshot? = nil
     ) {
         self.id = id
@@ -253,6 +271,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
         self.spawnedFromThreadID = normalizedSpawnedFrom?.isEmpty == false && normalizedSpawnedFrom != id
             ? normalizedSpawnedFrom
             : nil
+        let normalizedOrigin = sessionOrigin?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.sessionOrigin = normalizedOrigin?.isEmpty == false ? normalizedOrigin : nil
         self.context = context
     }
 
@@ -314,6 +334,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case canAcceptDirectInput = "can_accept_direct_input"
         case claudeOwner = "claude_owner"
         case spawnedFromThreadID = "spawned_from_thread_id"
+        case sessionOrigin = "session_origin"
         case context
     }
 }

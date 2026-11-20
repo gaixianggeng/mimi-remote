@@ -3070,6 +3070,7 @@ extension SessionStore {
             claudeOwner: item.claudeOwner,
             writerHeldElsewhere: item.writerHeldElsewhere,
             spawnedFromThreadID: item.spawnedFromThreadID,
+            sessionOrigin: item.sessionOrigin,
             context: item.context
         )
     }

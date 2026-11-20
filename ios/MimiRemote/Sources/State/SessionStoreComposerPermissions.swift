@@ -22,27 +22,45 @@ extension SessionStore {
         composerPermissionSelectionCache.remove(scope: scope)
     }
 
+    private func sanitizedPermissionSelection(
+        _ snapshot: ComposerPermissionSelectionSnapshot,
+        for runtimeProvider: String?
+    ) -> ComposerPermissionSelectionSnapshot {
+        guard snapshot.preservesThreadSettings,
+              !RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider) else {
+            return snapshot
+        }
+        // 非 Codex 通道（如 Claude / Antigravity）不允许携带 mimiPreserveThreadPermissions；
+        // 即便旧缓存里遗留了继承标记，也在还原时回退为显式请求审批。
+        var options = CodexAppServerTurnOptions.default
+        ComposerPermissionMode.requestApproval.apply(to: &options)
+        return ComposerPermissionSelectionSnapshot(
+            options: options,
+            requiresNewTurn: snapshot.requiresNewTurn
+        )
+    }
+
     func restoredComposerPermissionSelection(
         for scope: ComposerDraftScopeKey,
         runtimeProvider: String?,
         defaultMode: ComposerPermissionMode
     ) -> ComposerPermissionSelectionSnapshot {
         if let snapshot = composerPermissionSelection(for: scope) {
-            return snapshot
+            return sanitizedPermissionSelection(snapshot, for: runtimeProvider)
         }
         var options = CodexAppServerTurnOptions.default
         if case .session(let sessionID) = scope, !sessionID.hasPrefix("local:") {
             // 待发送边界保存了 requiresNewTurn，优先于持久化的稳定权限选择。
             if let boundary = latestPendingPermissionTurnBoundary(for: sessionID) {
-                return boundary.permissionSelection
+                return sanitizedPermissionSelection(boundary.permissionSelection, for: runtimeProvider)
             }
             if let snapshot = sessionControlStateStore.permissionSelection(
                 sessionID: sessionID, profileID: appStore.notificationRoutingProfileID
             ) {
-                return snapshot
+                return sanitizedPermissionSelection(snapshot, for: runtimeProvider)
             }
-            if runtimeProvider == "claude" {
-                // 旧版本没有保存会话权限，Claude bridge 也不支持继承标记。
+            if !RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: runtimeProvider) {
+                // 旧版本没有保存会话权限，非 Codex 适配器也不支持继承标记。
                 // 无法还原的历史选择从请求审批开始，不能套用其他会话的完全访问偏好。
                 ComposerPermissionMode.requestApproval.apply(to: &options)
             } else {

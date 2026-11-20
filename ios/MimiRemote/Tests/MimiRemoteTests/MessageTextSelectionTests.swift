@@ -94,6 +94,35 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertEqual(plain.text.attribute(.font, at: 0, effectiveRange: nil) as? UIFont, rich.text.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)
     }
 
+    func testWrappedInlineCodeInBulletListDoesNotBleedIntoIndentGutter() throws {
+        let sample = """
+        - 实测 `agy 1.5.11` 的 `Other` 对话（Antigravity Desktop 产生、落盘在 `~/.gemini/antigravity/conversations/<id>.db`）通过 `--app-data-dir antigravity` 可以完整回放历史。
+          - 放行 `~/.gemini/antigravity-cli/conversations/<id>.db`（标记 `source: "cli"`）与 `~/.gemini/antigravity/conversations/<id>.db`（标记 `source: { custom: "other" }`）。
+        """
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sample).blocks)
+        view.apply(content: content, style: style)
+        let size = view.measuredSize(width: 300, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layoutIfNeeded()
+
+        let layout = try XCTUnwrap(view.layoutManager as? InlineCodeLayoutManager)
+        let fullGlyphs = layout.glyphRange(for: view.textContainer)
+        let rects = layout.inlineCodeBackgroundRects(forGlyphRange: fullGlyphs, at: .zero)
+        XCTAssertGreaterThanOrEqual(rects.count, 8, "折行后的行内代码应按行拆成多个紧贴字形的背景胶囊")
+        for entry in rects {
+            // 第一级列表 headIndent = 22，嵌套列表 headIndent = 44；任何胶囊左缘都不能越过缩进槽贴到 0。
+            XCTAssertGreaterThanOrEqual(entry.rect.minX, 19, "行内代码背景不应向左溢出到列表项目符号缩进槽：\(entry.rect)")
+            XCTAssertLessThanOrEqual(entry.rect.maxX, 300.5)
+        }
+        // 验证不存在原始 .backgroundColor（避免 TextKit 默认整行铺底回归）。
+        var hasLegacyBackground = false
+        view.textStorage.enumerateAttribute(.backgroundColor, in: NSRange(location: 0, length: view.textStorage.length), options: []) { value, _, _ in
+            if value != nil { hasLegacyBackground = true }
+        }
+        XCTAssertFalse(hasLegacyBackground)
+    }
+
     func testCopyUsesVisibleBodyWithoutInternalDirectivesOrMarkdownSyntax() {
         let message = ConversationMessage(role: .assistant, content: """
         **已完成**，[说明](https://example.com)。

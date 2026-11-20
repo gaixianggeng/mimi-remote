@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+extension NSAttributedString.Key {
+    /// 行内代码背景由自定义 LayoutManager 按字形边界绘制圆角胶囊，避免 UIKit 默认 `.backgroundColor`
+    /// 在列表项续行把阴影铺满整个左侧 `headIndent` 空白槽。
+    static let mimiInlineCodeBackground = NSAttributedString.Key("com.mimi.inlineCodeBackground")
+}
+
 enum MessageTextContent: Equatable {
     case plain(String)
     case markdown([MarkdownBlock])
@@ -84,7 +90,7 @@ struct MessageTextStyle: Equatable {
             let intent = run.inlinePresentationIntent
             if intent?.contains(.code) == true {
                 runFont = self.font(size: 15, code: true)
-                attributes[.backgroundColor] = UIColor(markdown.codeBackground)
+                attributes[.mimiInlineCodeBackground] = UIColor(markdown.codeBackground)
             }
             var traits = runFont.fontDescriptor.symbolicTraits
             if intent?.contains(.stronglyEmphasized) == true { traits.insert(.traitBold) }
@@ -139,7 +145,10 @@ private struct MessageTextDocumentBuilder {
 
     private func appendParagraph(_ paragraph: NSAttributedString) {
         if text.length > 0 {
-            text.append(NSAttributedString(string: "\n", attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
+            var separatorAttributes = text.attributes(at: text.length - 1, effectiveRange: nil)
+            separatorAttributes.removeValue(forKey: .mimiInlineCodeBackground)
+            separatorAttributes.removeValue(forKey: .backgroundColor)
+            text.append(NSAttributedString(string: "\n", attributes: separatorAttributes))
         }
         text.append(paragraph)
     }

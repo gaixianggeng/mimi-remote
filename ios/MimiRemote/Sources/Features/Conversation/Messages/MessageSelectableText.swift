@@ -59,6 +59,57 @@ enum MessageTextSelectionPolicy {
     }
 }
 
+final class InlineCodeLayoutManager: NSLayoutManager {
+    func inlineCodeBackgroundRects(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) -> [(rect: CGRect, color: UIColor)] {
+        guard let storage = textStorage,
+              let container = textContainers.first,
+              glyphsToShow.length > 0 else { return [] }
+        let charRange = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        guard charRange.length > 0 else { return [] }
+
+        var results: [(CGRect, UIColor)] = []
+        storage.enumerateAttribute(.mimiInlineCodeBackground, in: charRange, options: []) { value, range, _ in
+            guard let color = value as? UIColor else { return }
+            let runGlyphRange = self.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard runGlyphRange.length > 0 else { return }
+            let fontLineHeight = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont)?.lineHeight
+
+            self.enumerateLineFragments(forGlyphRange: runGlyphRange) { lineRect, usedRect, _, lineGlyphRange, _ in
+                let clipped = NSIntersectionRange(runGlyphRange, lineGlyphRange)
+                guard clipped.length > 0 else { return }
+                let glyphRect = self.boundingRect(forGlyphRange: clipped, in: container)
+                // TextKit 对带 headIndent 的列表续行会把 glyphRect.minX 拉回 0；
+                // 用该行首字形实际位置与行内可见区域求交，仅包裹真正的文字宽度。
+                let startX = lineRect.minX + self.location(forGlyphAt: clipped.location).x
+                let minX = max(glyphRect.minX, startX, usedRect.minX)
+                let maxX = min(glyphRect.maxX, usedRect.maxX)
+                guard maxX > minX else { return }
+
+                let horizontalPadding: CGFloat = 2
+                let clampedX = max(origin.x, origin.x + minX - horizontalPadding)
+                let rightEdge = min(origin.x + lineRect.maxX, origin.x + maxX + horizontalPadding)
+                let pillHeight = fontLineHeight.map { min(usedRect.height, ceil($0) + 1) } ?? usedRect.height
+                let pillRect = CGRect(
+                    x: clampedX,
+                    y: origin.y + usedRect.minY,
+                    width: max(1, rightEdge - clampedX),
+                    height: max(1, pillHeight)
+                )
+                results.append((pillRect, color))
+            }
+        }
+        return results
+    }
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        for item in inlineCodeBackgroundRects(forGlyphRange: glyphsToShow, at: origin) {
+            item.color.setFill()
+            UIBezierPath(roundedRect: item.rect, cornerRadius: 4).fill()
+        }
+    }
+}
+
 final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate {
     var messageActions: MessageTextActions?
     var openLink: ((URL) -> Void)?
@@ -79,7 +130,7 @@ final class MessageTextView: UITextView, UITextViewDelegate, UIEditMenuInteracti
 
     init() {
         let storage = NSTextStorage()
-        let layout = NSLayoutManager()
+        let layout = InlineCodeLayoutManager()
         let container = NSTextContainer(size: .zero)
         storage.addLayoutManager(layout)
         layout.addTextContainer(container)

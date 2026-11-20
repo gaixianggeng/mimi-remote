@@ -120,5 +120,57 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertTrue(RuntimeFeatureSupport.supportsRuntimeSlashCommandCatalog(for: "agy"))
         XCTAssertTrue(RuntimeFeatureSupport.usesGlobalThreadListSearch(for: "agy"))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "codex"))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: nil))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "claude"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "agy"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "deepseek"))
+    }
+
+    func testAntigravityNeverEmitsPreserveThreadPermissionsFlag() {
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "agy"
+        options.preservesThreadPermissionSettings = true
+
+        let sanitized = options.sanitizedForRuntimePolicy()
+        XCTAssertFalse(sanitized.preservesThreadPermissionSettings)
+        XCTAssertNil(sanitized.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        XCTAssertNil(sanitized.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        // 即便未调用 sanitizedForRuntimePolicy，底层 wire 参数也不得向非 Codex 通道发送 true。
+        XCTAssertNil(options.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        XCTAssertNil(options.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+    }
+
+    @MainActor
+    func testRestoredAntigravityPermissionSelectionDoesNotPreserveThreadSettings() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let scope = ComposerDraftScopeKey.session("existing-agy-thread")
+
+        let restoredDefault = store.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: "agy",
+            defaultMode: .fullAccess
+        )
+        XCTAssertFalse(restoredDefault.preservesThreadSettings)
+        XCTAssertEqual(restoredDefault.mode, ComposerPermissionMode.requestApproval)
+
+        // 若旧缓存中残留了 preservesThreadSettings = true，还原时必须归一化回显式模式。
+        var staleOptions = CodexAppServerTurnOptions.default
+        staleOptions.preservesThreadPermissionSettings = true
+        store.saveComposerPermissionSelection(
+            ComposerPermissionSelectionSnapshot(options: staleOptions),
+            for: scope
+        )
+        let healed = store.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: "agy",
+            defaultMode: .fullAccess
+        )
+        XCTAssertFalse(healed.preservesThreadSettings)
+        XCTAssertEqual(healed.mode, ComposerPermissionMode.requestApproval)
     }
 }

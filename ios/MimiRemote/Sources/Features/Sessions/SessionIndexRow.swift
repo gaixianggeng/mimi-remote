@@ -364,6 +364,36 @@ struct SessionRuntimeBadge: View {
     }
 }
 
+/// Antigravity 会话来源小标识（`CLI` / `Other`），与时间戳并列但不抢夺标题主视觉。
+struct SessionOriginBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let title: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let isCLI = title.caseInsensitiveCompare("CLI") == .orderedSame
+
+        Text(title)
+            .font(themeStore.uiFont(size: 9.5, weight: .medium))
+            .foregroundStyle(isCLI ? tokens.secondaryText : tokens.tertiaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(
+                tokens.elevatedSurface.opacity(isCLI ? 0.82 : 0.56),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border.opacity(isCLI ? 0.56 : 0.44), lineWidth: 0.5)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(title)
+    }
+}
+
 /// 置顶属于用户主动设置的稳定状态，用品牌紫实底与白色钉子提升扫读辨识度。
 /// 组件统一服务规划 Tab、工作区最近规划和侧栏，避免三个入口各自使用不同强调方式。
 struct SessionPinnedBadge: View {
@@ -659,6 +689,11 @@ struct SessionIndexRow: View {
             }
 
             Spacer(minLength: 12)
+
+            if let originBadgeTitle = session.antigravityOriginBadgeTitle {
+                SessionOriginBadge(title: originBadgeTitle)
+                    .layoutPriority(2)
+            }
 
             if isSessionLibrary {
                 // 单行里没有第二行可放状态：需要处理或仍在运行时，状态文字占据时间的位置；
