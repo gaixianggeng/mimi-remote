@@ -71,13 +71,12 @@ jobs:
       - name: Prepare isolated build tools and directories
         run: |
           $ErrorActionPreference = 'Stop'
-          choco install innosetup --version=6.7.1 --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned Inno Setup preparation failed.' }
+          $installedInno = (& choco list --exact innosetup --limit-output | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $installedInno -notmatch '(?im)^InnoSetup\|6\.7\.1$') {
+            throw 'Requires preinstalled Inno Setup 6.7.1; no tool installation is attempted.'
+          }
           $iscc = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6/ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'Pinned Inno compiler not found.' }
-          $compilerBanner = (& $iscc '/?' 2>&1 | Out-String)
-          if ($compilerBanner -notmatch 'Inno Setup 6\.7\.1') { throw 'Unexpected Inno compiler version.' }
-          $global:LASTEXITCODE = 0
           (Split-Path -Parent $iscc) >> $env:GITHUB_PATH
           'INNO_VERSION=6.7.1' >> $env:GITHUB_ENV
           $root = Join-Path $env:RUNNER_TEMP 'pr1048-46a0802a-build'
@@ -114,6 +113,9 @@ jobs:
           ./scripts/build-windows-installer.ps1 -Version $env:ACCEPTANCE_VERSION -OutputDirectory $output -AllowUnsignedRelease *>&1 |
             Tee-Object -FilePath (Join-Path $output 'build.log')
           if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+          if (-not (Select-String -LiteralPath (Join-Path $output 'build.log') -Pattern 'Compiler engine version: Inno Setup 6\.7\.1' -Quiet)) {
+            throw 'The actual compiler engine version did not match Inno Setup 6.7.1.'
+          }
           $exe = Join-Path $output "Mimi-Remote-Setup-$($env:ACCEPTANCE_VERSION)-unsigned.exe"
           ./scripts/check-windows-installer.ps1 -InstallerPath $exe -ExpectedVersion $env:ACCEPTANCE_VERSION *>&1 |
             Tee-Object -FilePath (Join-Path $output 'validation.log')
