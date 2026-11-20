@@ -1,0 +1,182 @@
+name: Windows PR1048 build only
+
+on:
+  push:
+    branches:
+      - codex/gh-979-build-only-46a0802a-20261120
+    paths:
+      - .github/workflows/windows-pr1048-build-only.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-pr1048-build-only-46a0802a
+  cancel-in-progress: false
+
+env:
+  PRODUCT_SOURCE_SHA: 46a0802a112dd6c2da2dd81d81ae2e68c9cb0ac0
+  ACCEPTANCE_VERSION: 1.1.15-acceptance
+
+jobs:
+  installer:
+    if: github.repository == 'gaixianggeng/mimi-remote' && github.ref == 'refs/heads/codex/gh-979-build-only-46a0802a-20261120'
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout the immutable product source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: 46a0802a112dd6c2da2dd81d81ae2e68c9cb0ac0
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify source and isolated runner
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') {
+            throw 'Requires an isolated GitHub-hosted Windows AMD64 runner.'
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:PRODUCT_SOURCE_SHA) { throw 'Product source SHA mismatch.' }
+          $remote = git ls-remote https://github.com/gaixianggeng/mimi-remote.git refs/heads/codex/gh-979-winui-installer
+          if ($LASTEXITCODE -ne 0 -or -not $remote -or ($remote -split '\s+')[0] -cne $env:PRODUCT_SOURCE_SHA) {
+            throw 'PR #1048 head changed; stop without building a different version.'
+          }
+          if ((git status --porcelain --untracked-files=no)) { throw 'Unexpected tracked source changes.' }
+          if ((Get-Content bridges/claude-sdk/.bun-version-windows -Raw).Trim() -ne '1.2.23') { throw 'Unexpected Windows Bun pin.' }
+          if (-not (Select-String -LiteralPath go.mod -Pattern '^go 1\.25\.0$' -Quiet)) { throw 'Unexpected Go pin.' }
+          if (-not (Select-String -LiteralPath experiments/tailcat/go.mod -Pattern '^go 1\.27\.1$' -Quiet)) { throw 'Unexpected Tailcat Go pin.' }
+
+      - name: Setup Go without shared Actions cache
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.25.0
+          cache: false
+
+      - name: Setup the pinned .NET SDK without shared cache
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: windows/global.json
+          cache: false
+
+      - name: Setup pinned Windows baseline Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.2.23/bun-windows-x64-baseline.zip
+
+      - name: Prepare isolated build tools and directories
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --version=6.7.1 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Inno Setup preparation failed.' }
+          $iscc = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw 'Pinned Inno compiler not found.' }
+          $compilerBanner = (& $iscc '/?' 2>&1 | Out-String)
+          if ($compilerBanner -notmatch 'Inno Setup 6\.7\.1') { throw 'Unexpected Inno compiler version.' }
+          $global:LASTEXITCODE = 0
+          (Split-Path -Parent $iscc) >> $env:GITHUB_PATH
+          'INNO_VERSION=6.7.1' >> $env:GITHUB_ENV
+          $root = Join-Path $env:RUNNER_TEMP 'pr1048-46a0802a-build'
+          $paths = @{
+            MIMI_DOTNET_ARTIFACTS = (Join-Path $root 'dotnet')
+            NUGET_PACKAGES = (Join-Path $root 'nuget')
+            CARGO_TARGET_DIR = (Join-Path $root 'cargo-target')
+            GOMODCACHE = (Join-Path $root 'gomod')
+            GOCACHE = (Join-Path $root 'go-build')
+            BUN_INSTALL_CACHE_DIR = (Join-Path $root 'bun-cache')
+            BUILD_OUTPUT = (Join-Path $root 'output')
+          }
+          foreach ($entry in $paths.GetEnumerator()) {
+            New-Item -ItemType Directory -Force -Path $entry.Value | Out-Null
+            "$($entry.Key)=$($entry.Value)" >> $env:GITHUB_ENV
+          }
+          # The unmodified builder copies from ./target; route that path to the external Cargo directory.
+          if (Test-Path -LiteralPath target) { throw 'Unexpected preexisting target directory.' }
+          New-Item -ItemType Junction -Path (Join-Path $PWD 'target') -Target $paths.CARGO_TARGET_DIR | Out-Null
+          if ((go version | Out-String).Trim() -ne 'go version go1.25.0 windows/amd64') { throw 'Unexpected root Go toolchain.' }
+          Push-Location windows
+          try {
+            if ((dotnet --version | Out-String).Trim() -ne '10.0.403') { throw 'Unexpected selected .NET SDK.' }
+          } finally { Pop-Location }
+          if ((bun --version | Out-String).Trim() -ne '1.2.23') { throw 'Unexpected Bun toolchain.' }
+          rustc --version
+          cargo --version
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain unavailable.' }
+
+      - name: Build and statically verify the unsigned installer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = $env:BUILD_OUTPUT
+          ./scripts/build-windows-installer.ps1 -Version $env:ACCEPTANCE_VERSION -OutputDirectory $output -AllowUnsignedRelease *>&1 |
+            Tee-Object -FilePath (Join-Path $output 'build.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+          $exe = Join-Path $output "Mimi-Remote-Setup-$($env:ACCEPTANCE_VERSION)-unsigned.exe"
+          ./scripts/check-windows-installer.ps1 -InstallerPath $exe -ExpectedVersion $env:ACCEPTANCE_VERSION *>&1 |
+            Tee-Object -FilePath (Join-Path $output 'validation.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer validation failed.' }
+          $signature = (Get-AuthenticodeSignature -LiteralPath $exe).Status.ToString()
+          if ($signature -ne 'NotSigned') { throw "Expected an unsigned installer, got $signature." }
+          $source = (git rev-parse HEAD).Trim()
+          if ($source -cne $env:PRODUCT_SOURCE_SHA -or (git status --porcelain --untracked-files=no)) { throw 'Product source changed during build.' }
+          $remote = git ls-remote https://github.com/gaixianggeng/mimi-remote.git refs/heads/codex/gh-979-winui-installer
+          if ($LASTEXITCODE -ne 0 -or -not $remote -or ($remote -split '\s+')[0] -cne $env:PRODUCT_SOURCE_SHA) { throw 'PR head changed during build.' }
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $metadata = Get-Content -LiteralPath "$exe.metadata.json" -Raw | ConvertFrom-Json
+          if ($metadata.sha256 -ne $hash -or $metadata.signing -ne 'unsigned-release') { throw 'Installer metadata mismatch.' }
+          $stream = [IO.File]::OpenRead($exe)
+          try {
+            $reader = [IO.BinaryReader]::new($stream)
+            $stream.Position = 0x3c
+            $pe = $reader.ReadUInt32()
+            $stream.Position = $pe
+            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'Invalid installer PE header.' }
+            $bootstrapMachine = '0x{0:x4}' -f $reader.ReadUInt16()
+          } finally { $stream.Dispose() }
+          Push-Location windows
+          try { $sdk = (dotnet --version | Out-String).Trim() } finally { Pop-Location }
+          [ordered]@{
+            product_source_sha = $source
+            product_source_tree = (git rev-parse 'HEAD^{tree}').Trim()
+            workflow_definition_sha = $env:GITHUB_SHA
+            workflow_ref = $env:GITHUB_REF
+            run_url = "https://github.com/gaixianggeng/mimi-remote/actions/runs/$($env:GITHUB_RUN_ID)"
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_name = $env:RUNNER_NAME
+            runner_environment = $env:RUNNER_ENVIRONMENT
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+            image_version = $env:ImageVersion
+            payload_target = 'win-x64/amd64'
+            installer_bootstrap_machine = $bootstrapMachine
+            installer = [IO.Path]::GetFileName($exe)
+            installer_bytes = (Get-Item -LiteralPath $exe).Length
+            installer_sha256 = $hash
+            signature_status = $signature
+            version = $env:ACCEPTANCE_VERSION
+            dotnet_sdk = $sdk
+            go = (go version | Out-String).Trim()
+            bun = (bun --version | Out-String).Trim()
+            inno = $env:INNO_VERSION
+            rustc = (rustc --version | Out-String).Trim()
+            cargo = (cargo --version | Out-String).Trim()
+            artifact_retention_days = 14
+            installer_executed = $false
+            virtual_machine_tests_executed = $false
+            release_published = $false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'source-build-receipt.json') -Encoding utf8
+          "SOURCE_SHA=$source"
+          "SETUP_SHA256=$hash"
+          "SIGNATURE_STATUS=$signature"
+          "Unsigned build only. Source: $source. Setup SHA-256: $hash. Installer not executed." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Retain validated candidate and logs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mimi-setup-pr1048-46a0802a-amd64-unsigned
+          path: ${{ env.BUILD_OUTPUT }}/
+          retention-days: 14
+          if-no-files-found: error
