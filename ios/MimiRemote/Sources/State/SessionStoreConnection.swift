@@ -3044,6 +3044,7 @@ extension SessionStore {
         permissionProfilesRefreshRequestedCWD = nil
         isRefreshingPermissionProfiles = false
         availableRuntimeProviders = ["codex"]
+        runtimeChannelDiagnosticsByProvider = [:]
         threadGoalRuntimeProviders = ["codex"]
         accountRateLimitsByRuntime = [:]
         accountTokenUsage = nil

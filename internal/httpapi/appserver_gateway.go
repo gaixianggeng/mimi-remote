@@ -264,14 +264,16 @@ type appServerChannel struct {
 }
 
 type appServerBridgeMetadata struct {
-	Name           string `json:"name"`
-	Version        string `json:"version,omitempty"`
-	MinimumVersion string `json:"minimum_version,omitempty"`
-	Path           string `json:"path,omitempty"`
-	Status         string `json:"status"`
-	Healthy        bool   `json:"healthy"`
-	LastProbeError string `json:"last_probe_error,omitempty"`
-	Fix            string `json:"fix,omitempty"`
+	Name              string `json:"name"`
+	Version           string `json:"version,omitempty"`
+	MinimumVersion    string `json:"minimum_version,omitempty"`
+	CLIVersion        string `json:"cli_version,omitempty"`
+	MinimumCLIVersion string `json:"minimum_cli_version,omitempty"`
+	Path              string `json:"path,omitempty"`
+	Status            string `json:"status"`
+	Healthy           bool   `json:"healthy"`
+	LastProbeError    string `json:"last_probe_error,omitempty"`
+	Fix               string `json:"fix,omitempty"`
 }
 
 type appServerChannelCapability struct {

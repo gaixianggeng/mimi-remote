@@ -97,6 +97,10 @@ extension UserFacingError {
             self.init(category: .notFound, message: L10n.text(key), technicalDetail: rawDescription)
             return
         }
+        if case CodexAppServerSessionRuntimeError.channelUnavailable(let diagnostic) = error {
+            self.init(category: .described, message: diagnostic.localizedMessage, technicalDetail: diagnostic.lastProbeError)
+            return
+        }
         if let structured = Self.structuredAppServerReason(in: error) {
             self.init(category: .described, message: structured, technicalDetail: rawDescription)
             return
@@ -431,6 +435,19 @@ extension UserFacingError {
             return interfaceIsChinese
                 ? "电脑上的 Antigravity CLI 尚未登录。请在终端运行 agy 完成登录，然后重试。"
                 : "Antigravity CLI is not signed in on your computer. Run `agy` in Terminal to sign in, then try again."
+        }
+        if let bridgeStatus, ["agy_unsupported", "agy_missing", "claude_unsupported"].contains(bridgeStatus) {
+            let cliVersion = data?["cliVersion"]?.stringValue
+            let minimumCLIVersion = data?["minimumCLIVersion"]?.stringValue ?? data?["minimumVersion"]?.stringValue
+            let diagnostic = RuntimeChannelDiagnostic(
+                provider: bridgeStatus.hasPrefix("claude") ? "claude" : "agy",
+                status: bridgeStatus,
+                cliVersion: cliVersion,
+                minimumCLIVersion: minimumCLIVersion,
+                lastProbeError: appServerError.message,
+                fix: data?["fix"]?.stringValue
+            )
+            return diagnostic.localizedMessage
         }
         if loweredMessage.contains("authentication required") {
             return interfaceIsChinese

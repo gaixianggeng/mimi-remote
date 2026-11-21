@@ -205,3 +205,42 @@ exit 0
 		t.Fatalf("expected ready probe after signing in, got %+v", recovered)
 	}
 }
+
+func TestB14AgyProbeExposesCLIVersionAndMinimumVersionWhenOutdated(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := writeFakeAgyAdapterScript(t, dir)
+	agyPath := filepath.Join(dir, "agy")
+	outdatedScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.4.99"; exit 0; fi
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(outdatedScript), 0o755); err != nil {
+		t.Fatalf("write outdated agy: %v", err)
+	}
+
+	router := &Router{
+		cfg: config.Config{
+			Listen: "127.0.0.1:8787",
+			Agy: config.AgyConfig{
+				Enabled:    true,
+				AdapterBin: adapterPath,
+				Env: map[string]string{
+					"PATH":                    dir,
+					agybridge.AgyBinaryEnvKey: agyPath,
+				},
+			},
+		},
+		agyAdapter: newAgyAdapterSupervisor(),
+	}
+
+	probe := router.refreshAgyAdapterProbe()
+	if probe.Healthy || probe.Status != "agy_unsupported" || probe.CLIVersion != "1.4.99" || probe.MinimumCLIVersion != "1.5.0" {
+		t.Fatalf("expected agy_unsupported with versions 1.4.99/1.5.0, got %+v", probe)
+	}
+
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/app-server/config", nil)
+	ch := router.agyChannelConfig(req)
+	if ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.CLIVersion != "1.4.99" || ch.Bridge.MinimumCLIVersion != "1.5.0" {
+		t.Fatalf("expected channel bridge to include cli_version=1.4.99 and minimum_cli_version=1.5.0, got %+v", ch.Bridge)
+	}
+}

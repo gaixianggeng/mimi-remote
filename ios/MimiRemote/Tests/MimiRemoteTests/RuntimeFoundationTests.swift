@@ -260,4 +260,63 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertEqual(response, .object(["decision": .string("acceptForSession")]))
     }
+
+    func testB14OutdatedAntigravityBridgeSurfacesVersionUpgradeDiagnosticInWorkspace() {
+        let channel = CodexAppServerChannelMetadata(
+            id: "agy",
+            runtimeID: "agy",
+            title: "Antigravity",
+            provider: "agy",
+            type: "agy_acp_adapter",
+            protocolName: "app_server_jsonrpc_stdio_v1",
+            enabled: true,
+            gatewayWSURL: "ws://127.0.0.1:8787/api/app-server/ws?runtime=agy",
+            gatewayAvailable: false,
+            managed: false,
+            experimental: true,
+            lifecycle: "per_connection",
+            bridge: CodexAppServerChannelBridgeMetadata(
+                name: "mimi-agy-adapter",
+                version: "0.1.0",
+                minimumVersion: "0.1.0",
+                cliVersion: "1.4.99",
+                minimumCLIVersion: "1.5.0",
+                path: "/opt/mimi/mimi-agy-adapter",
+                status: "agy_unsupported",
+                healthy: false,
+                lastProbeError: "Antigravity CLI 1.4.99 过旧，Mimi Remote 需要 1.5.0 或更新版本。请升级 agy 后重试。",
+                fix: "升级 Antigravity CLI (agy)"
+            ),
+            methods: nil,
+            capabilities: nil
+        )
+
+        let diagnostic = RuntimeChannelDiagnostic.from(channel: channel)
+        XCTAssertEqual(diagnostic?.provider, "agy")
+        XCTAssertEqual(diagnostic?.status, "agy_unsupported")
+        XCTAssertEqual(diagnostic?.cliVersion, "1.4.99")
+        XCTAssertEqual(diagnostic?.minimumCLIVersion, "1.5.0")
+        XCTAssertTrue(diagnostic?.localizedMessage.contains("1.4.99") == true)
+        XCTAssertTrue(diagnostic?.localizedMessage.contains("1.5.0") == true)
+
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        store.availableRuntimeProviders = []
+        if let diagnostic {
+            store.runtimeChannelDiagnosticsByProvider["agy"] = diagnostic
+        }
+        // Even if selectedRuntime fell back to .codex when no runtime is available,
+        // the workspace still surfaces the Antigravity upgrade diagnostic.
+        let notice = store.workspaceRuntimeNotice(for: .codex)
+        XCTAssertEqual(notice, diagnostic)
+
+        let errorPresentation = UserFacingError(CodexAppServerSessionRuntimeError.channelUnavailable(diagnostic!))
+        XCTAssertEqual(errorPresentation.category, .described)
+        XCTAssertFalse(errorPresentation.suggestsReconnect)
+        XCTAssertTrue(errorPresentation.message.contains("1.4.99"))
+        XCTAssertTrue(errorPresentation.message.contains("1.5.0"))
+    }
 }

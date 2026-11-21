@@ -45,13 +45,15 @@ var appServerAgyAllowedMethods = map[string]struct{}{
 }
 
 type agyAdapterProbe struct {
-	Status       string
-	Path         string
-	Version      string
-	Healthy      bool
-	Error        string
-	CheckedAt    time.Time
-	Capabilities *agybridge.AdapterCapabilities
+	Status            string
+	Path              string
+	Version           string
+	CLIVersion        string
+	MinimumCLIVersion string
+	Healthy           bool
+	Error             string
+	CheckedAt         time.Time
+	Capabilities      *agybridge.AdapterCapabilities
 }
 
 type agyAuthProbeCache struct {
@@ -174,6 +176,7 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 		return probe
 	}
 	probe.Capabilities = &capabilities
+	probe.MinimumCLIVersion = strings.TrimSpace(capabilities.Agy.MinimumVersion)
 
 	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
 	if agyBin == "" {
@@ -187,6 +190,7 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 		return probe
 	}
 	if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
+		probe.CLIVersion = agyVer
 		if !capabilities.AgySupported(agyVer) {
 			probe.Status = "agy_unsupported"
 			probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
@@ -289,14 +293,16 @@ func (r *Router) agyChannelConfig(req *http.Request) appServerChannel {
 		Experimental:     agySpec.Experimental,
 		Lifecycle:        "per_connection",
 		Bridge: &appServerBridgeMetadata{
-			Name:           agybridge.AdapterName,
-			Version:        probe.Version,
-			MinimumVersion: agybridge.MinimumVersion,
-			Path:           probe.Path,
-			Status:         probe.Status,
-			Healthy:        probe.Healthy,
-			LastProbeError: probe.Error,
-			Fix:            agyAdapterFix(probe),
+			Name:              agybridge.AdapterName,
+			Version:           probe.Version,
+			MinimumVersion:    agybridge.MinimumVersion,
+			CLIVersion:        probe.CLIVersion,
+			MinimumCLIVersion: probe.MinimumCLIVersion,
+			Path:              probe.Path,
+			Status:            probe.Status,
+			Healthy:           probe.Healthy,
+			LastProbeError:    probe.Error,
+			Fix:               agyAdapterFix(probe),
 		},
 		Methods:      methods,
 		Capabilities: capabilities,
@@ -466,11 +472,17 @@ func (r *Router) appServerAgyGatewayWS(w http.ResponseWriter, req *http.Request)
 	r.refreshAgyAdapterProbeIfStale()
 	probe := r.agyAdapterProbeSnapshot()
 	if !probe.Healthy {
+		minVer := agybridge.MinimumVersion
+		if probe.Status == "agy_unsupported" && probe.MinimumCLIVersion != "" {
+			minVer = probe.MinimumCLIVersion
+		}
 		writeGatewayRuntimeErrorWithData(client, "AGY_ADAPTER_UNAVAILABLE", firstNonEmpty(probe.Error, "Antigravity 适配器不可用"), map[string]any{
-			"bridgeStatus":   probe.Status,
-			"bridgeVersion":  probe.Version,
-			"minimumVersion": agybridge.MinimumVersion,
-			"fix":            agyAdapterFix(probe),
+			"bridgeStatus":      probe.Status,
+			"bridgeVersion":     probe.Version,
+			"minimumVersion":    minVer,
+			"cliVersion":        probe.CLIVersion,
+			"minimumCLIVersion": probe.MinimumCLIVersion,
+			"fix":               agyAdapterFix(probe),
 		})
 		return
 	}

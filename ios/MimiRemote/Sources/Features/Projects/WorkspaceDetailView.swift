@@ -39,6 +39,7 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let canLoadMoreSessions: Bool
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
     let availableRuntimeProviders: Set<String>
+    var runtimeDiagnostic: RuntimeChannelDiagnostic? = nil
     let onRetryUnavailable: (WorkspaceSessionRuntimeChoice) async -> Bool
     let currentDate: () -> Date
     let onRefreshSessions: () -> Void
@@ -145,9 +146,23 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                     .padding(.bottom, 2)
             }
 
+            if let runtimeDiagnostic, !recentSessions.isEmpty {
+                runtimeDiagnosticBanner(runtimeDiagnostic, tokens: tokens)
+            }
+
             if sessionLoadState.isLoading, !hasInitialSessionContent {
                 // 首屏窗口还没凑满：稳定显示骨架屏，避免切换时先渲染欠填的半截列表再逐批变多。
                 recentSessionPlaceholders(rowDensity: rowDensity, tokens: tokens)
+            } else if recentSessions.isEmpty, let runtimeDiagnostic {
+                ContentUnavailableView {
+                    Label(runtimeDiagnostic.localizedTitle, systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(runtimeDiagnostic.localizedMessage)
+                } actions: {
+                    Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                }
+                .frame(maxWidth: .infinity, minHeight: 150)
+                .accessibilityIdentifier("workspace.runtimeDiagnostic")
             } else if recentSessions.isEmpty, case .failed(let message) = sessionLoadState {
                 ContentUnavailableView {
                     Label(L10n.text("ui.unable_to_load_session"), systemImage: "exclamationmark.triangle")
@@ -480,12 +495,13 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(
-            !selectedRuntime.isAvailable(
-                in: availableRuntimeProviders,
-                enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
-                    from: enabledRuntimesRawValue
+            (runtimeDiagnostic != nil && availableRuntimeProviders.isEmpty)
+                || !selectedRuntime.isAvailable(
+                    in: availableRuntimeProviders,
+                    enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(
+                        from: enabledRuntimesRawValue
+                    )
                 )
-            )
         )
         .shadow(
             color: isFloating
@@ -541,4 +557,35 @@ struct WorkspaceDetailView<StatusLine: View>: View {
         .accessibilityLabel(L10n.text("ui.loading_recent_conversations"))
     }
 
+    private func runtimeDiagnosticBanner(
+        _ diagnostic: RuntimeChannelDiagnostic,
+        tokens: ThemeTokens
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(themeStore.uiFont(.footnote, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(diagnostic.localizedTitle)
+                    .font(themeStore.uiFont(.footnote, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(diagnostic.localizedMessage)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button(L10n.text("ui.reload"), action: onRefreshSessions)
+                .font(themeStore.uiFont(.caption, weight: .semibold))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(tokens.warning.opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityIdentifier("workspace.runtimeDiagnosticBanner")
+    }
 }

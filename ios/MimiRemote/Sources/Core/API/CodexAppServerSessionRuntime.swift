@@ -23,6 +23,7 @@ enum CodexAppServerProtocolDiagnostics {
 enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
     case gatewayUnavailable
+    case channelUnavailable(RuntimeChannelDiagnostic)
     case threadSearchUnavailable
     case threadGoalsUnavailable
     case projectNotFound(String)
@@ -43,6 +44,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.text("ui.app_server_gateway_url_is_invalid")
         case .gatewayUnavailable:
             return L10n.text("ui.agentd_does_not_enable_app_server_gateway_please")
+        case .channelUnavailable(let diagnostic):
+            return diagnostic.localizedMessage
         case .threadSearchUnavailable:
             return L10n.text("ui.currently_agentd_or_codex_app_server_does_not")
         case .threadGoalsUnavailable:
@@ -3782,6 +3785,10 @@ actor CodexAppServerSessionRuntime {
         purpose: GatewayConnectionPurpose = .resident
     ) throws -> URL {
         guard runtimeGatewayAvailable(in: config) else {
+            if let channel = runtimeGatewayChannel(in: config),
+               let diagnostic = RuntimeChannelDiagnostic.from(channel: channel) {
+                throw CodexAppServerSessionRuntimeError.channelUnavailable(diagnostic)
+            }
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
         // config 只用于确认 gateway 能力；真实 URL 始终从当前连接代次的 endpoint 派生。

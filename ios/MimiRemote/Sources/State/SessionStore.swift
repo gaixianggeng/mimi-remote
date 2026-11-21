@@ -177,7 +177,21 @@ final class SessionStore: ObservableObject {
     /// 其余 provider 由 config.channels 的真实可用性决定；新增 Runtime 只扩这个集合，
     /// 不再为每个 provider 各开一个 Bool。
     @Published var availableRuntimeProviders: Set<String> = ["codex"]
+    @Published var runtimeChannelDiagnosticsByProvider: [String: RuntimeChannelDiagnostic] = [:]
     var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
+
+    /// 解析当前工作区应呈现的不可用通道诊断（B14/B11/B13）：优先返回选中 Runtime 的诊断；
+    /// 若主机所有通道均不可用，则展示已配置但异常的通道（如版本过旧或未登录的 Antigravity）。
+    func workspaceRuntimeNotice(for selectedRuntime: WorkspaceSessionRuntimeChoice) -> RuntimeChannelDiagnostic? {
+        if let direct = runtimeChannelDiagnosticsByProvider[selectedRuntime.runtimeProvider] {
+            return direct
+        }
+        if availableRuntimeProviders.isEmpty {
+            return runtimeChannelDiagnosticsByProvider["agy"]
+                ?? runtimeChannelDiagnosticsByProvider.values.first
+        }
+        return nil
+    }
     /// 通道声明了 thread/goal/* 的 Runtime，与可用性一起刷新；目标入口只对这些 Runtime 展示（#791）。
     @Published var threadGoalRuntimeProviders: Set<String> = ["codex"]
     @Published var accountRateLimitsByRuntime: [String: RateLimitSummary] = [:]
