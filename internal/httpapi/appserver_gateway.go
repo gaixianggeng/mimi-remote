@@ -464,6 +464,7 @@ func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 	r.refreshClaudeBridgeProbeIfStale()
+	r.refreshAgyAdapterProbeIfStale()
 	projectList := r.projects.List()
 	runtimeMeta := r.appServerRuntimeMetadata()
 	log.Printf("app-server config response remote=%s host=%s projects=%d transport=%s gateway_available=%t", requestRemoteHost(req), req.Host, len(projectList), runtimeMeta.Transport, runtimeMeta.GatewayAvailable)
@@ -628,6 +629,9 @@ func (r *Router) appServerChannels(req *http.Request) []appServerChannel {
 			Policy:       claudePolicy,
 		})
 	}
+	if r.cfg.Agy.Enabled {
+		channels = append(channels, r.agyChannelConfig(req))
+	}
 	if r.cfg.DeepSeek.Enabled {
 		// Harness 原生通道不是 app-server runtime，不登记进 appServerRuntimeSpecs，
 		// 也不允许落回 /api/app-server/ws。channel 这里只声明三件彼此独立的事实：
@@ -714,6 +718,8 @@ func (r *Router) appServerGatewayWS(w http.ResponseWriter, req *http.Request) {
 		r.appServerCodexGatewayWS(w, req)
 	case appServerRuntimeClaudeID:
 		r.appServerClaudeGatewayWS(w, req)
+	case appServerRuntimeAgyID:
+		r.appServerAgyGatewayWS(w, req)
 	default:
 		writeError(w, http.StatusBadRequest, "未知 app-server runtime："+runtimeID)
 	}

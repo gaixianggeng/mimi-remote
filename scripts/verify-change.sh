@@ -208,6 +208,15 @@ is_claude_sdk_source_path() {
   return 1
 }
 
+is_agy_acp_source_path() {
+  case "$1" in
+    bridges/appserver-kit/*|bridges/agy-acp/*|scripts/check-agy-acp-adapter.sh)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_macos_source_path() {
   case "$1" in
     macos/MimiRemoteMac/*)
@@ -224,6 +233,7 @@ direct_rust=false
 direct_macos=false
 direct_windows=false
 direct_claude_sdk=false
+direct_agy_acp=false
 has_control=false
 has_contract=false
 has_harness_native_contract=false
@@ -331,6 +341,7 @@ for path in "${changed_paths[@]:-}"; do
   path_is_rust=false
   path_is_macos=false
   path_is_claude_sdk=false
+  path_is_agy_acp=false
   path_is_windows=false
   case "$path" in
     contracts/host-cli/*)
@@ -380,6 +391,10 @@ for path in "${changed_paths[@]:-}"; do
     if is_claude_sdk_source_path "$path"; then
       path_is_claude_sdk=true
       direct_claude_sdk=true
+    fi
+    if is_agy_acp_source_path "$path"; then
+      path_is_agy_acp=true
+      direct_agy_acp=true
     fi
   fi
   if is_control_path "$path"; then
@@ -511,6 +526,7 @@ for path in "${changed_paths[@]:-}"; do
      [[ "$path_is_rust" == false ]] && \
      [[ "$path_is_macos" == false ]] && \
      [[ "$path_is_claude_sdk" == false ]] && \
+     [[ "$path_is_agy_acp" == false ]] && \
      [[ "$path_is_windows" == false ]]; then
     unknown_paths+=("$path")
   fi
@@ -721,6 +737,10 @@ fi
 
 if [[ "$direct_claude_sdk" == true ]]; then
   add_check "Claude SDK 适配器：锁定依赖、类型检查与测试" "bash ./scripts/check-claude-sdk-adapter.sh" "claude-sdk"
+fi
+
+if [[ "$direct_agy_acp" == true ]]; then
+  add_check "Antigravity ACP 适配器：锁定依赖、类型检查与测试" "bash ./scripts/check-agy-acp-adapter.sh" "agy-acp"
 fi
 
 if [[ "$direct_windows" == true ]]; then

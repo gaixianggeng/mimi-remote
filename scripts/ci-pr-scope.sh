@@ -163,7 +163,7 @@ else
     esac
 
     case "$changed_path" in
-      Cargo.toml|Cargo.lock|bridges/appserver-kit/*|bridges/appserver-kit/**/*|bridges/claude/*|bridges/claude/**/*|bridges/claude-sdk/*|bridges/claude-sdk/**/*|scripts/check-claude-sdk-adapter.sh|scripts/test-claude-adapter-windows.ps1)
+      Cargo.toml|Cargo.lock|bridges/appserver-kit/*|bridges/appserver-kit/**/*|bridges/claude/*|bridges/claude/**/*|bridges/claude-sdk/*|bridges/claude-sdk/**/*|bridges/agy-acp/*|bridges/agy-acp/**/*|scripts/check-claude-sdk-adapter.sh|scripts/check-agy-acp-adapter.sh|scripts/test-claude-adapter-windows.ps1)
         rust_scope=true
         ;;
     esac

@@ -5,12 +5,14 @@ import SwiftUI
 enum RuntimeBrandMark {
     case openAI
     case claude
+    case antigravity
     case deepSeek
 
     var assetName: String {
         switch self {
         case .openAI: "OpenAIMonoblossom"
         case .claude: "Claude"
+        case .antigravity: "Antigravity"
         case .deepSeek: "DeepSeek"
         }
     }
@@ -24,7 +26,7 @@ enum RuntimeBrandMark {
     var inkRatio: CGFloat {
         switch self {
         case .openAI: 969.0 / 1442.0
-        case .claude, .deepSeek: 1
+        case .claude, .antigravity, .deepSeek: 1
         }
     }
 }
@@ -35,6 +37,7 @@ extension HostModuleID {
         switch self {
         case .codex: .openAI
         case .claude: .claude
+        case .agy: .antigravity
         case .deepseek: .deepSeek
         default: nil
         }

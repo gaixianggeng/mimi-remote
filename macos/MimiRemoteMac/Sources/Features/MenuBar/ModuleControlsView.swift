@@ -55,7 +55,7 @@ struct ModuleControlsGroup: View {
                     .padding(.horizontal, 3)
                     .padding(.top, 3)
 
-                if !store.codexEnabled && !store.claudeEnabled && !store.deepSeekEnabled {
+                if !store.codexEnabled && !store.claudeEnabled && !store.agyEnabled && !store.deepSeekEnabled {
                     Text("全部助手已关闭，移动端暂不可使用。")
                         .font(.caption)
                         .padding(.horizontal, 3)
@@ -209,6 +209,7 @@ private struct ModuleControlRow: View {
     private var isWorking: Bool {
         pendingEnabled != nil || store.updatingModule == module ||
             (module == .claude && store.isUpdatingClaude) ||
+            (module == .agy && store.isUpdatingAgy) ||
             (module == .tailcat && store.isUpdatingTailcat) ||
             (module == .deepseek && store.isUpdatingDeepSeek)
     }
@@ -416,6 +417,7 @@ private struct ModuleDetailView: View {
 
     private var loginCommand: String? {
         if module == .claude { return "claude" }
+        if module == .agy { return "agy" }
         return store.runtime(for: module)?.effectiveLoginCommand
     }
 
@@ -423,6 +425,7 @@ private struct ModuleDetailView: View {
         switch module {
         case .codex: "使用 Mac 上的 Codex。关闭只阻止 Mimi 使用该助手，不退出 Codex Desktop。"
         case .claude: "使用本机 Claude Code 与 bridge；请在 Mac 上完成安装和登录。"
+        case .agy: "使用本机 Antigravity CLI (agy) 与 ACP 适配器；请在终端运行 agy 完成安装和登录。"
         default: "使用本机运行中的 DeepSeek Harness。关闭只断开 Mimi 的连接，不影响 Harness 本身。"
         }
     }

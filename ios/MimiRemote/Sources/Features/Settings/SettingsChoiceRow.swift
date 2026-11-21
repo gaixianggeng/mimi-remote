@@ -66,6 +66,7 @@ extension WorkspaceSessionRuntimeChoice: SettingsChoiceOption {
         switch self {
         case .codex: L10n.text("ui.runtime_default")
         case .claude: L10n.text("ui.runtime_optional")
+        case .agy: "Antigravity"
         case .deepseek: "DeepSeek"
         }
     }

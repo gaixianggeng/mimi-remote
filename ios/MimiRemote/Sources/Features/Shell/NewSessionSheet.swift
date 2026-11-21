@@ -282,6 +282,7 @@ struct NewSessionSheet: View {
         switch choice {
         case .codex: "Codex"
         case .claude: "Claude Code"
+        case .agy: "Antigravity"
         case .deepseek: "DeepSeek Harness"
         }
     }

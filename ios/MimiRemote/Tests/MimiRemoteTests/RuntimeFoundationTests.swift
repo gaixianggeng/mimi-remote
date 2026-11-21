@@ -4,7 +4,7 @@ import XCTest
 @MainActor
 final class RuntimeFoundationTests: XCTestCase {
     func testSessionNotificationRoutePreservesAllKnownRuntimesAndRejectsUnknown() throws {
-        for raw in ["codex", "Claude", "DEEPSEEK", "claude-code"] {
+        for raw in ["codex", "Claude", "AGY", "antigravity", "DEEPSEEK", "claude-code"] {
             let route = SessionNotificationRoute.current(
                 profileID: "host-1",
                 projectID: "proj-1",
@@ -62,5 +62,115 @@ final class RuntimeFoundationTests: XCTestCase {
             fullAccess: false
         )
         XCTAssertNotEqual(claudeKey, agyKey)
+    }
+
+    func testAntigravityPermissionModesAndModelGridRespectDeclaredCapabilities() {
+        let agyModes = RuntimeFeatureSupport.permissionModes(for: "agy")
+        XCTAssertEqual(agyModes, [.requestApproval, .acceptEdits, .autoApprove, .readOnly, .fullAccess])
+        XCTAssertEqual(
+            RuntimeFeatureSupport.permissionModes(for: "claude"),
+            [.requestApproval, .readOnly, .autoApprove, .fullAccess]
+        )
+
+        var options = CodexAppServerTurnOptions()
+        ComposerPermissionMode.acceptEdits.apply(to: &options)
+        XCTAssertEqual(options.approvalPolicy, .onRequest)
+        XCTAssertEqual(options.approvalsReviewer, "accept_edits")
+        XCTAssertEqual(options.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(ComposerPermissionMode(options: options), .acceptEdits)
+
+        let models = [
+            CodexAppServerModelOption(
+                id: "gemini-4-carbon",
+                title: "Gemini 4 Carbon",
+                runtimeProvider: "agy",
+                isDefault: true,
+                supportedReasoningEfforts: ["low", "medium", "high"],
+                defaultReasoningEffort: "medium"
+            ),
+            CodexAppServerModelOption(
+                id: "gemini-4-hydrogen",
+                title: "Gemini 4 Hydrogen",
+                runtimeProvider: "agy",
+                supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+                defaultReasoningEffort: "medium"
+            ),
+            CodexAppServerModelOption(
+                id: "gemini-pro-orchestrator",
+                title: "Orchestrator (Carbon)",
+                runtimeProvider: "agy",
+                supportedReasoningEfforts: [],
+                defaultReasoningEffort: "none"
+            ),
+        ]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "agy", options: models)
+        XCTAssertEqual(layout.kind, .antigravity)
+        XCTAssertEqual(layout.efforts, [.low, .medium, .high, .xhigh])
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: models[0], layout: layout),
+            [.low, .medium, .high]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: models[1], layout: layout),
+            [.low, .medium, .high, .xhigh]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: models[2], layout: layout),
+            []
+        )
+        XCTAssertTrue(RuntimeFeatureSupport.supportsRuntimeSlashCommandCatalog(for: "agy"))
+        XCTAssertTrue(RuntimeFeatureSupport.usesGlobalThreadListSearch(for: "agy"))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "codex"))
+        XCTAssertTrue(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: nil))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "claude"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "agy"))
+        XCTAssertFalse(RuntimeFeatureSupport.supportsPreserveThreadPermissions(for: "deepseek"))
+    }
+
+    func testAntigravityNeverEmitsPreserveThreadPermissionsFlag() {
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "agy"
+        options.preservesThreadPermissionSettings = true
+
+        let sanitized = options.sanitizedForRuntimePolicy()
+        XCTAssertFalse(sanitized.preservesThreadPermissionSettings)
+        XCTAssertNil(sanitized.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        XCTAssertNil(sanitized.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        // 即便未调用 sanitizedForRuntimePolicy，底层 wire 参数也不得向非 Codex 通道发送 true。
+        XCTAssertNil(options.turnParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+        XCTAssertNil(options.threadParams(projectPath: "/tmp/project")["mimiPreserveThreadPermissions"] ?? nil)
+    }
+
+    @MainActor
+    func testRestoredAntigravityPermissionSelectionDoesNotPreserveThreadSettings() {
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let scope = ComposerDraftScopeKey.session("existing-agy-thread")
+
+        let restoredDefault = store.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: "agy",
+            defaultMode: .fullAccess
+        )
+        XCTAssertFalse(restoredDefault.preservesThreadSettings)
+        XCTAssertEqual(restoredDefault.mode, ComposerPermissionMode.requestApproval)
+
+        // 若旧缓存中残留了 preservesThreadSettings = true，还原时必须归一化回显式模式。
+        var staleOptions = CodexAppServerTurnOptions.default
+        staleOptions.preservesThreadPermissionSettings = true
+        store.saveComposerPermissionSelection(
+            ComposerPermissionSelectionSnapshot(options: staleOptions),
+            for: scope
+        )
+        let healed = store.restoredComposerPermissionSelection(
+            for: scope,
+            runtimeProvider: "agy",
+            defaultMode: .fullAccess
+        )
+        XCTAssertFalse(healed.preservesThreadSettings)
+        XCTAssertEqual(healed.mode, ComposerPermissionMode.requestApproval)
     }
 }

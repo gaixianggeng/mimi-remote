@@ -578,7 +578,7 @@ func sanitizeThreadForkResponse(payload []byte) ([]byte, json.RawMessage, error)
 // 应当显式纳入这里，而不是靠这个函数悄悄改变语义。
 func (p *appServerGatewayPolicy) enforcesInboundThreadAuthorization() bool {
 	switch normalizeAppServerRuntimeID(p.runtimeID) {
-	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeAgyID:
 		return true
 	default:
 		return false
@@ -924,7 +924,7 @@ func appServerServerRequestAllowed(runtimeID string, method string) bool {
 // runtime 仍保持原样透传，不改既有语义。
 func appServerRuntimeRedactsInlineImages(runtimeID string) bool {
 	switch normalizeAppServerRuntimeID(runtimeID) {
-	case appServerRuntimeCodexID, appServerRuntimeClaudeID:
+	case appServerRuntimeCodexID, appServerRuntimeClaudeID, appServerRuntimeAgyID:
 		return true
 	default:
 		return false

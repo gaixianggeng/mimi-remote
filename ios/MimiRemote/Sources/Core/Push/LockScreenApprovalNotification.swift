@@ -24,6 +24,7 @@ struct LockScreenApprovalNotification: Equatable, Sendable {
     enum Runtime: String, Sendable {
         case codex
         case claude
+        case agy
         /// 只有回合终态提醒（#568）；DeepSeek 没有锁屏审批与电脑端等待提醒。
         case deepseek
     }

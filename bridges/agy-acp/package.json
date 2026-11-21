@@ -1,0 +1,17 @@
+{
+  "name": "mimi-agy-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mimi Remote 的 Antigravity CLI (agy) 通道适配器，基于标准 ACP (Agent Client Protocol) v1",
+  "scripts": {
+    "build": "bun build --compile --minify src/main.ts --outfile dist/mimi-agy-adapter",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "sync-protocol": "bash scripts/sync-protocol.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.22",
+    "typescript": "5.9.3"
+  }
+}

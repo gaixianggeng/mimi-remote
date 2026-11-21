@@ -4,9 +4,10 @@ import XCTest
 
 final class ModuleModelsTests: XCTestCase {
     func testEqualAgentEntriesAndIndependentConnections() {
-        XCTAssertEqual(HostModuleGroup.agents.modules, [.codex, .claude, .deepseek])
+        XCTAssertEqual(HostModuleGroup.agents.modules, [.codex, .claude, .agy, .deepseek])
         XCTAssertEqual(HostModuleGroup.connections.modules, [.tailscale, .lan, .tailcat])
         XCTAssertTrue(ModuleChangePresentation.impact(.claude, enabled: false).contains("所有移动连接"))
+        XCTAssertTrue(ModuleChangePresentation.boundary(.agy).contains("Antigravity"))
         XCTAssertTrue(ModuleChangePresentation.boundary(.tailscale).contains("不修改系统"))
     }
 

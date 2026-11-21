@@ -1428,6 +1428,40 @@
         }
       }
     },
+    "ui.accept_edits": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accept Edits"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动接受改文件"
+          }
+        }
+      }
+    },
+    "ui.accept_edits_detail": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Approve file edits in the workspace without asking; still ask before shell commands."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动允许工作区内的文件修改，执行终端命令前仍会询问。"
+          }
+        }
+      }
+    },
     "ui.access_api_version_with_token": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -9797,6 +9831,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "创建草稿 PR"
+          }
+        }
+      }
+    },
+    "ui.create_a_new_antigravity_session": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create a new Antigravity session"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建 Antigravity 会话"
           }
         }
       }
@@ -33263,6 +33314,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "点击重新检查此运行时。"
+          }
+        }
+      }
+    },
+    "ui.runtime_subtitle_antigravity": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI sessions on this host."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机的 Antigravity CLI 会话。"
           }
         }
       }

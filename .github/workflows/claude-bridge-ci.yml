@@ -11,7 +11,9 @@ on:
       - "bridges/appserver-kit/**"
       - "bridges/claude/**"
       - "bridges/claude-sdk/**"
+      - "bridges/agy-acp/**"
       - "scripts/check-claude-sdk-adapter.sh"
+      - "scripts/check-agy-acp-adapter.sh"
       - "scripts/test-claude-adapter-windows.ps1"
       - ".github/workflows/claude-bridge-ci.yml"
   workflow_dispatch:
@@ -67,14 +69,16 @@ jobs:
           bun-version-file: bridges/claude-sdk/.bun-version
 
       - name: Typecheck and test SDK adapter
-        run: bash ./scripts/check-claude-sdk-adapter.sh
+        run: |
+          bash ./scripts/check-claude-sdk-adapter.sh
+          bash ./scripts/check-agy-acp-adapter.sh
 
       - name: Cross-compile packaged adapter targets
         # 与 Mac App、Windows 安装包里的目标一致（#660），先在这里确认都能编出来。
-        working-directory: bridges/claude-sdk
         run: |
           for target in bun-darwin-arm64 bun-darwin-x64 bun-windows-x64-baseline; do
-            bun build --compile --minify --target="$target" src/main.ts --outfile "$RUNNER_TEMP/adapter-$target"
+            (cd bridges/claude-sdk && bun build --compile --minify --target="$target" src/main.ts --outfile "$RUNNER_TEMP/claude-adapter-$target")
+            (cd bridges/agy-acp && bun build --compile --minify --target="$target" src/main.ts --outfile "$RUNNER_TEMP/agy-adapter-$target")
           done
 
   sdk-adapter-windows:

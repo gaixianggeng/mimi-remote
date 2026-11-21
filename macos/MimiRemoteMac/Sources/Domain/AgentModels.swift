@@ -183,6 +183,43 @@ struct ClaudeTurnHintsState: Codable, Equatable, Sendable {
     let enabled: Bool?
 }
 
+struct AgyModuleState: Codable, Equatable, Sendable {
+    let enabled: Bool?
+    let activation: ClaudeActivationPreference?
+    let agyBin: String?
+    let environmentPresent: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, activation
+        case agyBin = "agy_bin"
+        case environmentPresent = "environment_present"
+    }
+}
+
+struct AgyConfigurationResult: Codable, Equatable, Sendable {
+    let enabled: Bool
+    let available: Bool
+    let preference: ClaudeActivationPreference
+    let previousEnabled: Bool
+    let previousPreference: ClaudeActivationPreference
+    let changed: Bool
+    let restartRequired: Bool
+    let reason: String
+    let message: String
+    let previous: AgyModuleState?
+    let applied: AgyModuleState?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled = "agy_enabled"
+        case available, preference
+        case previousEnabled = "previous_enabled"
+        case previousPreference = "previous_preference"
+        case changed
+        case restartRequired = "restart_required"
+        case reason, message, previous, applied
+    }
+}
+
 struct ClaudeTurnHintsConfigurationResult: Codable, Equatable, Sendable {
     let enabled: Bool
     let previousEnabled: Bool

@@ -51,14 +51,14 @@ final class RuntimeCatalogRefreshTests: XCTestCase {
             probed.append($0)
             return false
         }
-        XCTAssertEqual(probed, [.deepseek])
+        XCTAssertEqual(probed, [.agy, .deepseek])
 
         probed = []
         await WorkspaceSessionRuntimeChoice.recheckUnavailable(in: []) {
             probed.append($0)
             return false
         }
-        XCTAssertEqual(probed, [.claude, .deepseek], "空集合时 Codex 是兜底可用项，不需要重探")
+        XCTAssertEqual(probed, [.claude, .agy, .deepseek], "空集合时 Codex 是兜底可用项，不需要重探")
     }
 
     func testRuntimeMissingFromAggregateIsFilledByTargetedFetch() async {

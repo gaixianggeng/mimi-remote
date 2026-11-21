@@ -1,12 +1,13 @@
 import Foundation
 
 enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
-    case codex, claude, deepseek, tailscale, tailcat, lan
+    case codex, claude, agy, deepseek, tailscale, tailcat, lan
     var id: String { rawValue }
     var title: String {
         switch self {
         case .codex: "Codex"
         case .claude: "Claude Code"
+        case .agy: "Antigravity"
         case .deepseek: "DeepSeek Harness"
         case .tailscale: "Tailscale"
         case .tailcat: "内置连接（Tailcat）"
@@ -17,13 +18,14 @@ enum HostModuleID: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .codex: "terminal"
         case .claude: "text.bubble"
+        case .agy: "wand.and.stars"
         case .deepseek: "sparkles"
         case .tailscale: "network"
         case .tailcat: "antenna.radiowaves.left.and.right"
         case .lan: "wifi"
         }
     }
-    var isAgent: Bool { self == .codex || self == .claude || self == .deepseek }
+    var isAgent: Bool { self == .codex || self == .claude || self == .agy || self == .deepseek }
     var network: PairingNetwork? {
         switch self {
         case .tailscale: .tailscale
@@ -38,7 +40,7 @@ enum HostModuleGroup: CaseIterable {
     case agents, connections
     var title: String { self == .agents ? "AI 编程助手" : "连接方式" }
     var modules: [HostModuleID] {
-        self == .agents ? [.codex, .claude, .deepseek] : [.tailscale, .lan, .tailcat]
+        self == .agents ? [.codex, .claude, .agy, .deepseek] : [.tailscale, .lan, .tailcat]
     }
 }
 
@@ -49,6 +51,7 @@ enum AgentModuleStatusState: String, Codable, Equatable, Sendable {
 struct AgentModuleStatus: Codable, Equatable, Sendable {
     let codexEnabled: Bool
     let claudeEnabled: Bool
+    let agyEnabled: Bool
     let tailscaleEnabled: Bool
     let lanEnabled: Bool
     let tailscaleAvailable: Bool
@@ -56,10 +59,40 @@ struct AgentModuleStatus: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case codexEnabled = "codex_enabled"
         case claudeEnabled = "claude_enabled"
+        case agyEnabled = "agy_enabled"
         case tailscaleEnabled = "tailscale_enabled"
         case lanEnabled = "lan_enabled"
         case tailscaleAvailable = "tailscale_available"
         case lanAvailable = "lan_available"
+    }
+
+    init(
+        codexEnabled: Bool,
+        claudeEnabled: Bool,
+        agyEnabled: Bool = false,
+        tailscaleEnabled: Bool,
+        lanEnabled: Bool,
+        tailscaleAvailable: Bool,
+        lanAvailable: Bool
+    ) {
+        self.codexEnabled = codexEnabled
+        self.claudeEnabled = claudeEnabled
+        self.agyEnabled = agyEnabled
+        self.tailscaleEnabled = tailscaleEnabled
+        self.lanEnabled = lanEnabled
+        self.tailscaleAvailable = tailscaleAvailable
+        self.lanAvailable = lanAvailable
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        codexEnabled = try container.decode(Bool.self, forKey: .codexEnabled)
+        claudeEnabled = try container.decode(Bool.self, forKey: .claudeEnabled)
+        agyEnabled = try container.decodeIfPresent(Bool.self, forKey: .agyEnabled) ?? false
+        tailscaleEnabled = try container.decode(Bool.self, forKey: .tailscaleEnabled)
+        lanEnabled = try container.decode(Bool.self, forKey: .lanEnabled)
+        tailscaleAvailable = try container.decode(Bool.self, forKey: .tailscaleAvailable)
+        lanAvailable = try container.decode(Bool.self, forKey: .lanAvailable)
     }
 }
 

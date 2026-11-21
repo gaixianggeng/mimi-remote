@@ -19,6 +19,7 @@ import (
 const (
 	appServerRuntimeCodexID  = "codex"
 	appServerRuntimeClaudeID = "claude"
+	appServerRuntimeAgyID    = "agy"
 )
 
 // appServerRuntimeSpec 描述一条 runtime 的能力边界。
@@ -82,6 +83,27 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 			FileDiffs:        true,
 			// RateLimits 由 bridge 探测结果决定，这里只是默认关闭的基线。
 			RateLimits: false,
+		},
+		Policy: appServerChannelPolicy{
+			ApprovalPolicies: []string{"on-request"},
+			SandboxModes:     []string{"read-only", "workspace-write"},
+			NetworkAccess:    false,
+			CWDScope:         "agentd_allowlist",
+		},
+		Experimental:       true,
+		UsesAdapterSandbox: true,
+	},
+	appServerRuntimeAgyID: {
+		ID:      appServerRuntimeAgyID,
+		Aliases: []string{"antigravity", "antigravity_cli", "antigravity-cli", "agy_cli", "agy-cli"},
+		Methods: appServerAgyAllowedMethods,
+		Capabilities: appServerChannelCapability{
+			Streaming:        true,
+			History:          true,
+			ApprovalRequests: true,
+			FileDiffs:        true,
+			Rename:           true,
+			RateLimits:       false,
 		},
 		Policy: appServerChannelPolicy{
 			ApprovalPolicies: []string{"on-request"},

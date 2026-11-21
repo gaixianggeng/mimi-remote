@@ -18,7 +18,7 @@ func (r *Router) moduleStatusHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	tailscale, lan := networkaccess.Availability()
 	writeJSON(w, http.StatusOK, config.ModuleStatus{
-		CodexEnabled: r.cfg.Codex.IsEnabled(), ClaudeEnabled: r.cfg.Claude.Enabled,
+		CodexEnabled: r.cfg.Codex.IsEnabled(), ClaudeEnabled: r.cfg.Claude.Enabled, AgyEnabled: r.cfg.Agy.Enabled,
 		TailscaleEnabled: r.cfg.TailscaleAccessEnabled(), LANEnabled: r.cfg.LANAccessEnabled(),
 		TailscaleAvailable: tailscale, LANAvailable: lan,
 	})

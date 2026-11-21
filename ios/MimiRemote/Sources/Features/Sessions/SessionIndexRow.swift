@@ -101,6 +101,7 @@ struct SessionRuntimePresentation: Equatable {
     enum Kind: Equatable {
         case codex
         case claude
+        case antigravity
         case deepSeek
     }
 
@@ -116,6 +117,8 @@ struct SessionRuntimePresentation: Equatable {
         switch CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue) {
         case "claude":
             kind = .claude
+        case "agy":
+            kind = .antigravity
         case "deepseek":
             kind = .deepSeek
         default:
@@ -129,6 +132,8 @@ struct SessionRuntimePresentation: Equatable {
             return L10n.text("ui.runtime_default")
         case .claude:
             return L10n.text("ui.runtime_optional")
+        case .antigravity:
+            return "Antigravity"
         case .deepSeek:
             return "DeepSeek"
         }
@@ -140,6 +145,8 @@ struct SessionRuntimePresentation: Equatable {
             return .openAI
         case .claude:
             return .claude
+        case .antigravity:
+            return .antigravity
         case .deepSeek:
             return .deepSeek
         }
@@ -354,6 +361,36 @@ struct SessionRuntimeBadge: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.title)
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// Antigravity 会话来源小标识（`CLI` / `Other`），与时间戳并列但不抢夺标题主视觉。
+struct SessionOriginBadge: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    let title: String
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let isCLI = title.caseInsensitiveCompare("CLI") == .orderedSame
+
+        Text(title)
+            .font(themeStore.uiFont(size: 9.5, weight: .medium))
+            .foregroundStyle(isCLI ? tokens.secondaryText : tokens.tertiaryText)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(
+                tokens.elevatedSurface.opacity(isCLI ? 0.82 : 0.56),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(tokens.border.opacity(isCLI ? 0.56 : 0.44), lineWidth: 0.5)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(title)
     }
 }
 
@@ -652,6 +689,11 @@ struct SessionIndexRow: View {
             }
 
             Spacer(minLength: 12)
+
+            if let originBadgeTitle = session.antigravityOriginBadgeTitle {
+                SessionOriginBadge(title: originBadgeTitle)
+                    .layoutPriority(2)
+            }
 
             if isSessionLibrary {
                 // 单行里没有第二行可放状态：需要处理或仍在运行时，状态文字占据时间的位置；

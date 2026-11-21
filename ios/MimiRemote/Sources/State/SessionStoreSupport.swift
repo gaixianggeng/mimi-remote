@@ -1916,6 +1916,7 @@ extension SessionStore {
         }
         // 派生来源不会改变；只带部分字段的快照不能把已知的父会话抹掉。
         result.spawnedFromThreadID = result.spawnedFromThreadID ?? existing.spawnedFromThreadID
+        result.sessionOrigin = result.sessionOrigin ?? existing.sessionOrigin
         return result
     }
 

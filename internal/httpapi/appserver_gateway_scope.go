@@ -69,6 +69,11 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 			return validated, fmt.Errorf("Claude 完全访问需要 bridge >= %s，请更新 Mimi Remote Mac 或 Claude bridge", claudebridge.FullAccessVersion)
 		}
 	}
+	if runtimeID == appServerRuntimeAgyID && gatewayAllowsNoApproval(runtimeID, method, params) {
+		if probe := r.agyAdapterProbeSnapshot(); !probe.fullAccessAvailable() {
+			return validated, fmt.Errorf("当前 Antigravity 适配器尚不支持完全访问")
+		}
+	}
 	if hasNetworkAccessEnabled(params) {
 		return validated, fmt.Errorf("networkAccess=true 不允许远程使用")
 	}
@@ -167,7 +172,8 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	// git common-dir 的映射，与 runtime 无关，因此所有已接入 runtime 同等适用。
 	allowsControlledGlobalList := method == "thread/list" &&
 		(runtimeID == appServerRuntimeCodexID ||
-			runtimeID == appServerRuntimeClaudeID)
+			runtimeID == appServerRuntimeClaudeID ||
+			runtimeID == appServerRuntimeAgyID)
 	if requiresGatewayCWD(method) && !allowsControlledGlobalList {
 		if !validated.hasCWD {
 			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist 或 browse_roots", method)
@@ -708,8 +714,8 @@ func hasApprovalPolicyNever(value any) bool {
 
 func gatewayAllowsNoApproval(runtimeID string, method string, params map[string]any) bool {
 	runtimeID = normalizeAppServerRuntimeID(runtimeID)
-	// Codex 与 Claude 同规则：只有显式完全访问才携带 approvalPolicy=never。
-	if runtimeID != "codex" && runtimeID != "claude" {
+	// Codex、Claude 与 Antigravity 同规则：只有显式完全访问才携带 approvalPolicy=never。
+	if runtimeID != appServerRuntimeCodexID && runtimeID != appServerRuntimeClaudeID && runtimeID != appServerRuntimeAgyID {
 		return false
 	}
 	if profileID, ok := gatewayPermissionProfileID(params["permissions"]); ok && runtimeID == "codex" {

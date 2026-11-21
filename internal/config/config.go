@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
@@ -20,6 +21,7 @@ import (
 const (
 	AppName                           = "mimi-remote"
 	DefaultClaudeMaxConcurrentBridges = 3
+	DefaultAgyMaxConcurrentSessions   = 3
 	// DefaultDeepSeekMaxConcurrentSessions 限制同时打开的 Harness 会话订阅数。
 	// 两台移动设备各自观察一个会话并短暂预热历史时会同时占用四条 remote.mux；
 	// 上限仍保持有界，且不代表正在执行的模型任务数。
@@ -72,6 +74,7 @@ type Config struct {
 	Voice         VoiceConfig      `json:"voice"`
 	Codex         CodexConfig      `json:"codex"`
 	Claude        ClaudeConfig     `json:"claude"`
+	Agy           AgyConfig        `json:"agy"`
 	DeepSeek      DeepSeekConfig   `json:"deepseek"`
 	Push          PushConfig       `json:"push"`
 	Tailcat       TailcatConfig    `json:"tailcat"`
@@ -137,6 +140,15 @@ type ClaudeConfig struct {
 
 func (c ClaudeConfig) TurnHintsAreEnabled() bool {
 	return c.TurnHintsEnabled == nil || *c.TurnHintsEnabled
+}
+
+type AgyConfig struct {
+	Enabled               bool              `json:"enabled"`
+	Activation            string            `json:"activation,omitempty"`
+	AdapterBin            string            `json:"adapter_bin"`
+	Args                  []string          `json:"args,omitempty"`
+	Env                   map[string]string `json:"env,omitempty"`
+	MaxConcurrentSessions int               `json:"max_concurrent_sessions"`
 }
 
 // DeepSeekConfig 配置 DeepSeek Harness 服务接入。默认关闭。
@@ -464,6 +476,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 		// override is applied below and continues to fail validation.
 		cfg.Claude.MaxConcurrentBridges = DefaultClaudeMaxConcurrentBridges
 	}
+	if cfg.Agy.MaxConcurrentSessions == 0 {
+		cfg.Agy.MaxConcurrentSessions = DefaultAgyMaxConcurrentSessions
+	}
 	if cfg.DeepSeek.MaxConcurrentSessions == 0 {
 		// 手工只写 enabled 时并发字段会缺省为零值。恰好为零按默认处理，
 		// 负值仍然非法，环境变量覆盖发生在下面并继续参与校验。
@@ -589,6 +604,17 @@ func DefaultClaudeConfig() ClaudeConfig {
 	}
 }
 
+func DefaultAgyConfig() AgyConfig {
+	return AgyConfig{
+		Enabled:               false,
+		AdapterBin:            agybridge.AdapterName,
+		MaxConcurrentSessions: DefaultAgyMaxConcurrentSessions,
+		Env: map[string]string{
+			"TERM": "xterm-256color",
+		},
+	}
+}
+
 func DefaultDeepSeekConfig() DeepSeekConfig {
 	return DeepSeekConfig{
 		Enabled:               false,
@@ -618,6 +644,7 @@ func defaults() Config {
 			},
 		},
 		Claude:   DefaultClaudeConfig(),
+		Agy:      DefaultAgyConfig(),
 		DeepSeek: DefaultDeepSeekConfig(),
 		Push:     DefaultPushConfig(),
 	}
@@ -666,6 +693,20 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("AGENTD_CLAUDE_MAX_CONCURRENT_BRIDGES"); v != "" {
 		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
 			cfg.Claude.MaxConcurrentBridges = n
+		}
+	}
+	if v := os.Getenv("AGENTD_AGY_ENABLED"); v != "" {
+		cfg.Agy.Enabled = truthy(v)
+	}
+	if v := os.Getenv("AGENTD_AGY_ADAPTER_BIN"); v != "" {
+		cfg.Agy.AdapterBin = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("AGENTD_AGY_ADAPTER_ARGS"); v != "" {
+		cfg.Agy.Args = strings.Fields(v)
+	}
+	if v := os.Getenv("AGENTD_AGY_MAX_CONCURRENT_SESSIONS"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.Agy.MaxConcurrentSessions = n
 		}
 	}
 	if v := os.Getenv("AGENTD_DEEPSEEK_ENABLED"); v != "" {
@@ -899,6 +940,12 @@ func (c Config) Validate() error {
 	}
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
+	}
+	if c.Agy.Enabled && strings.TrimSpace(c.Agy.AdapterBin) == "" && !agybridge.BundledAvailable() {
+		return fmt.Errorf("agy.adapter_bin 不能为空")
+	}
+	if c.Agy.Enabled && c.Agy.MaxConcurrentSessions <= 0 {
+		return fmt.Errorf("agy.max_concurrent_sessions 必须大于 0")
 	}
 	if _, err := NormalizeDeepSeekBaseURL(c.DeepSeek.BaseURL); err != nil {
 		return err

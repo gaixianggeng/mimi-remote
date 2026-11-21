@@ -33,6 +33,9 @@ final class HostStore {
     var claudeTurnHintsConfiguration: ClaudeTurnHintsConfigurationResult?
     var isUpdatingClaude = false
     var claudeError: String?
+    var agyConfiguration: AgyConfigurationResult?
+    var isUpdatingAgy = false
+    var agyError: String?
     var deepSeekConfiguration: DeepSeekConfigurationResult?
     var isUpdatingDeepSeek = false
     var deepSeekError: String?
@@ -65,6 +68,10 @@ final class HostStore {
 
     var claudeEnabled: Bool {
         status?.moduleStatus?.claudeEnabled ?? claudeConfiguration?.enabled ?? claudeRuntime?.enabled ?? false
+    }
+
+    var agyEnabled: Bool {
+        status?.moduleStatus?.agyEnabled ?? agyConfiguration?.enabled ?? runtime(for: .agy)?.enabled ?? false
     }
 
     var lanEnabled: Bool {

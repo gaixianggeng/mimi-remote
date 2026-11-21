@@ -1273,7 +1273,12 @@ actor CodexAppServerSessionRuntime {
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         var options = CodexAppServerTurnOptions.default
         options.threadSource = reason.rawValue
-        options.preservesThreadPermissionSettings = true
+        options.preservesThreadPermissionSettings = RuntimeFeatureSupport.supportsPreserveThreadPermissions(
+            for: runtimeProvider
+        )
+        if !options.preservesThreadPermissionSettings {
+            ComposerPermissionMode.requestApproval.apply(to: &options)
+        }
         let reconciliationToken: UUID?
         if runtimeProvider == "codex" {
             reconciliationToken = beginForkReconciliation(
@@ -3043,10 +3048,12 @@ actor CodexAppServerSessionRuntime {
         var passiveResumeOptions = CodexAppServerTurnOptions.default
         // 被动监听/重连不能把 Mimi 的安全默认重新写进已有 Codex Thread；否则 Windows
         // managed permission profiles 会把原来的 :danger-full-access 静默改成 :workspace。
-        passiveResumeOptions.preservesThreadPermissionSettings = runtimeProvider == "codex"
-        if runtimeProvider == "claude" {
-            // Claude 的被动恢复只连接会话，不应用下一轮的权限。使用普通参数让
-            // 仍受支持的旧 bridge 可以连接；显式完全访问仍在 turn/start 检查版本。
+        passiveResumeOptions.preservesThreadPermissionSettings = RuntimeFeatureSupport.supportsPreserveThreadPermissions(
+            for: runtimeProvider
+        )
+        if !passiveResumeOptions.preservesThreadPermissionSettings {
+            // 非 Codex 适配器（Claude / Antigravity）不支持 mimiPreserveThreadPermissions；
+            // 被动恢复只连接会话，不应用下一轮的权限。
             ComposerPermissionMode.requestApproval.apply(to: &passiveResumeOptions)
         }
         let scopedPassiveResumeOptions = runtimeScopedThreadOptions(passiveResumeOptions)
@@ -3498,6 +3505,8 @@ actor CodexAppServerSessionRuntime {
             return "codex"
         case "claude", "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
             return "claude"
+        case "agy", "antigravity", "antigravity_cli", "antigravity-cli", "agy_cli", "agy-cli":
+            return "agy"
         case "deepseek", "deepseek_harness", "deepseek-harness", "deepseek_harness_service", "deepseek-harness-service", "dsh":
             return "deepseek"
         default:
