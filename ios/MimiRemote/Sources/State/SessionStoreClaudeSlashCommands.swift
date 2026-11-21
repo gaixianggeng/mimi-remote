@@ -11,7 +11,8 @@ extension SessionStore {
         runtimeProvider: String?,
         sandboxMode: CodexAppServerSandboxMode
     ) -> ClaudeSlashCommandCatalogKey? {
-        guard Self.normalizedRuntimeProvider(runtimeProvider) == "claude",
+        let normalized = Self.normalizedRuntimeProvider(runtimeProvider)
+        guard RuntimeFeatureSupport.supportsRuntimeSlashCommandCatalog(for: normalized),
               let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines),
               !cwd.isEmpty
         else {
@@ -19,6 +20,7 @@ extension SessionStore {
         }
         return ClaudeSlashCommandCatalogKey(
             hostScope: appStore.activeHostScope,
+            runtimeProvider: normalized,
             cwd: cwd,
             fullAccess: sandboxMode == .dangerFullAccess
         )
@@ -49,7 +51,8 @@ extension SessionStore {
 
         let sandboxMode: CodexAppServerSandboxMode = key.fullAccess ? .dangerFullAccess : .workspaceWrite
         do {
-            let commands = try await clientFactory().claudeSlashCommands(
+            let commands = try await clientFactory().runtimeSlashCommands(
+                runtimeProvider: key.runtimeProvider,
                 cwd: key.cwd,
                 sandboxMode: sandboxMode,
                 forceReload: forceReload

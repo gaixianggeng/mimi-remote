@@ -1,7 +1,7 @@
-import type { ThreadItemEntry } from "../protocol/codex/v2/ThreadItemEntry.ts";
-import type { ThreadItemsListResponse } from "../protocol/codex/v2/ThreadItemsListResponse.ts";
-import type { ThreadTurnsListResponse } from "../protocol/codex/v2/ThreadTurnsListResponse.ts";
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
+import type { ThreadItemEntry } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItemEntry.ts";
+import type { ThreadItemsListResponse } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItemsListResponse.ts";
+import type { ThreadTurnsListResponse } from "@mimi/appserver-kit/protocol/codex/v2/ThreadTurnsListResponse.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { summarizeTurn } from "../claude/history.ts";
 import type { HistoryStore } from "../claude/catalog.ts";

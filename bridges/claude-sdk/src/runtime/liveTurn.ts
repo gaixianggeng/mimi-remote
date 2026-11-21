@@ -1,10 +1,10 @@
 // 一个进行中的 turn：把 SDK 的流式消息翻译成 app-server 通知。事件顺序与旧 bridge
 // 一致（turn/started → 用户消息 → 回复/思考/工具的 started、delta、completed → token
 // 用量 → turn/completed），item ID 与历史记录同一套规则。
-import type { ThreadItem } from "../protocol/codex/v2/ThreadItem.ts";
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
-import type { TurnStatus } from "../protocol/codex/v2/TurnStatus.ts";
-import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { ItemIdAllocator } from "../claude/itemIds.ts";
 import { completeToolItem, isHiddenTool, toolUseItem, unfinishedToolItem, type ToolOutput } from "../claude/tools.ts";
 import { logger } from "../util/logging.ts";

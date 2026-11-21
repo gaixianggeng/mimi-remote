@@ -63,17 +63,15 @@ enum SessionOpenTarget: Hashable, Sendable {
         }
     }
 
-    /// 这类会话的菜单里列哪些去处。Codex 桌面版总是列出（没装时灰显并说明），终端只列装着的（Claude 至少保底系统终端）。
+    /// 已支持的桌面版始终列出。只支持终端接手、且未检测到终端时，仍提供系统终端。
     static func candidates(for runtime: SessionRuntime, installedBundleIDs: Set<String>) -> [SessionOpenTarget] {
         let terminals = TerminalApp.allCases
             .filter { installedBundleIDs.contains($0.bundleID) }
             .map(SessionOpenTarget.terminal)
-        switch runtime {
-        case .codex:
-            return [.codexDesktop] + terminals
-        case .claude:
-            return terminals.isEmpty ? [.terminal(.terminal)] : terminals
+        if let desktop = runtime.desktopOpenTarget {
+            return [desktop] + terminals
         }
+        return terminals.isEmpty ? [.terminal(.terminal)] : terminals
     }
 
     /// 「打开」左半边用的去处：上次选的还在就用它，否则用第一个装着的。

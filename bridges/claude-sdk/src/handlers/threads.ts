@@ -1,7 +1,7 @@
-import type { Thread } from "../protocol/codex/v2/Thread.ts";
-import type { ThreadListResponse } from "../protocol/codex/v2/ThreadListResponse.ts";
-import type { ThreadLoadedListResponse } from "../protocol/codex/v2/ThreadLoadedListResponse.ts";
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
+import type { Thread } from "@mimi/appserver-kit/protocol/codex/v2/Thread.ts";
+import type { ThreadListResponse } from "@mimi/appserver-kit/protocol/codex/v2/ThreadListResponse.ts";
+import type { ThreadLoadedListResponse } from "@mimi/appserver-kit/protocol/codex/v2/ThreadLoadedListResponse.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import { RpcError } from "../rpc/frames.ts";
 import type { Catalog, HistoryStore, SessionRecord } from "../claude/catalog.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "../util/cursor.ts";

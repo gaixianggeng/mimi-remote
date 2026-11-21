@@ -76,6 +76,7 @@ PendingUserInputSheetSnapshotTests
 PushInstallationIdentityTests
 ResponsiveLayoutTests
 ReviewNotesAgentHandoffTests
+RuntimeFoundationTests
 SessionActivityStateTests
 SessionHierarchyPresentationTests
 SessionHistoryReadStateTests

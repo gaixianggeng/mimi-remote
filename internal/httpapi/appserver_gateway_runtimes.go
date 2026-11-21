@@ -39,6 +39,8 @@ type appServerRuntimeSpec struct {
 	Policy appServerChannelPolicy
 	// Experimental 标记尚未承诺稳定兼容的 runtime。
 	Experimental bool
+	// UsesAdapterSandbox 表示该 runtime 经本地常驻适配器承载，sandboxPolicy 按适配器契约归一化。
+	UsesAdapterSandbox bool
 }
 
 // appServerRuntimeSpecs 按规范化 ID 登记所有可用 runtime。
@@ -87,7 +89,8 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 			NetworkAccess:    false,
 			CWDScope:         "agentd_allowlist",
 		},
-		Experimental: true,
+		Experimental:       true,
+		UsesAdapterSandbox: true,
 	},
 }
 
@@ -102,6 +105,11 @@ func appServerRuntimeRegistered(runtimeID string) bool {
 	return ok
 }
 
+func appServerRuntimeUsesAdapterSandbox(runtimeID string) bool {
+	spec, ok := appServerRuntimeSpecFor(runtimeID)
+	return ok && spec.UsesAdapterSandbox
+}
+
 func appServerRuntimeIDs() []string {
 	ids := make([]string, 0, len(appServerRuntimeSpecs))
 	for id := range appServerRuntimeSpecs {
@@ -114,12 +122,18 @@ func appServerRuntimeIDs() []string {
 
 func normalizeAppServerRuntimeID(raw string) string {
 	value := strings.TrimSpace(strings.ToLower(raw))
-	switch value {
-	case "", appServerRuntimeCodexID, "openai", "codex_app_server", "codex-app-server":
+	if value == "" {
 		return appServerRuntimeCodexID
-	case appServerRuntimeClaudeID, "anthropic", "claude_code", "claude-code", "claude_code_bridge", "claude-code-bridge":
-		return appServerRuntimeClaudeID
-	default:
+	}
+	if _, ok := appServerRuntimeSpecs[value]; ok {
 		return value
 	}
+	for id, spec := range appServerRuntimeSpecs {
+		for _, alias := range spec.Aliases {
+			if value == strings.ToLower(strings.TrimSpace(alias)) {
+				return id
+			}
+		}
+	}
+	return value
 }

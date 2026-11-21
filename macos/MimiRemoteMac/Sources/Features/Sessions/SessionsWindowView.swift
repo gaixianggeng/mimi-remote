@@ -233,9 +233,23 @@ struct SessionsWindowView: View {
         SessionOpenTarget.candidates(for: session.runtime, installedBundleIDs: installedApps)
     }
 
+    private func storedOpenTarget(for runtime: SessionRuntime) -> String {
+        switch runtime {
+        case .codex: codexOpenTarget
+        case .claude: claudeOpenTarget
+        }
+    }
+
+    private func setStoredOpenTarget(_ value: String, for runtime: SessionRuntime) {
+        switch runtime {
+        case .codex: codexOpenTarget = value
+        case .claude: claudeOpenTarget = value
+        }
+    }
+
     private func preferredTarget(for session: DesktopSession) -> SessionOpenTarget? {
         SessionOpenTarget.preferred(
-            stored: session.runtime == .codex ? codexOpenTarget : claudeOpenTarget,
+            stored: storedOpenTarget(for: session.runtime),
             candidates: candidates(for: session),
             installedBundleIDs: installedApps
         )
@@ -277,7 +291,7 @@ struct SessionsWindowView: View {
             return
         }
         if remember {
-            if session.runtime == .codex { codexOpenTarget = target.storageValue } else { claudeOpenTarget = target.storageValue }
+            setStoredOpenTarget(target.storageValue, for: session.runtime)
         }
         switch target {
         case .codexDesktop:

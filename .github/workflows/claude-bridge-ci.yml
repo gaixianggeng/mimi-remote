@@ -8,6 +8,7 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "bridges/appserver-kit/**"
       - "bridges/claude/**"
       - "bridges/claude-sdk/**"
       - "scripts/check-claude-sdk-adapter.sh"

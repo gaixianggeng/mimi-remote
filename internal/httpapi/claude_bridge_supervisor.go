@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,62 +20,85 @@ import (
 // can exercise the timeout path without a ten-second wait.
 var claudeBridgeStartTimeout = 10 * time.Second
 
-// claudeBridgeSupervisor owns a single resident `alleycat-claude-bridge`
-// running behind a platform-local transport: a Unix socket on Unix and a
-// loopback-only TCP listener on Windows.
-//
-// The bridge used to be spawned per WebSocket connection, which tied every
-// piece of in-flight state to the life of a phone's network link: dropping the
-// connection killed the process, and with it the running turn, the Claude
-// child processes and the replay ring that exists precisely to survive a
-// reconnect. Keeping one process behind a socket lets a connection come and go
-// while the turn keeps running.
+// residentAdapterSupervisorConfig parameterizes a resident local JSON-RPC
+// adapter process (e.g. Claude SDK adapter, Antigravity ACP adapter) behind a
+// Unix socket on Unix or a loopback TCP listener on Windows.
+type residentAdapterSupervisorConfig struct {
+	RuntimeID      string
+	DisplayName    string
+	TempDirPrefix  string
+	DebugComponent string
+	BuildEnv       func(extra map[string]string) (env []string, sensitiveValues []string)
+}
+
+func claudeResidentAdapterSupervisorConfig() residentAdapterSupervisorConfig {
+	return residentAdapterSupervisorConfig{
+		RuntimeID:      appServerRuntimeClaudeID,
+		DisplayName:    "Claude bridge",
+		TempDirPrefix:  "mimi-claude",
+		DebugComponent: "claude-bridge",
+		BuildEnv: func(extra map[string]string) ([]string, []string) {
+			environment := buildClaudeBridgeEnv(extra)
+			return environment, claudeenv.ProxyValues(environment)
+		},
+	}
+}
+
 type claudeBridgeSupervisor struct {
+	spec      residentAdapterSupervisorConfig
 	mu        sync.Mutex
 	dir       string
 	network   string
 	address   string
 	cmd       *exec.Cmd
 	startedAt time.Time
-	// done is closed by the reaper once the process has been waited on. It is
-	// the only exit signal anyone else waits for: cmd.Wait has exactly one
-	// consumer, so startup and shutdown cannot starve each other of it.
-	done chan struct{}
-	// exited is set by the reaper once the process is gone, so the next
-	// ensure() starts a replacement instead of dialing a dead socket.
-	exited  bool
-	stopped bool
+	done      chan struct{}
+	exited    bool
+	stopped   bool
 
-	// cursors records, per session key, the highest sequence number this
-	// supervisor instance finished relaying. It proves a client-supplied cursor
-	// belongs to the current resident bridge and provides an upper bound; it is
-	// not itself a client acknowledgement.
 	cursorMu    sync.Mutex
 	cursorEpoch uint64
 	cursors     map[string]uint64
 	cursorFIFO  []string
 }
 
-// claudeBridgeMaxCursors caps the resume-cursor table. Far above the handful
-// of devices a single agentd serves; the bound only exists so client-chosen
-// keys cannot grow the map without limit.
 const claudeBridgeMaxCursors = 64
 
-func newClaudeBridgeSupervisor() *claudeBridgeSupervisor {
+func newResidentAdapterSupervisor(cfg residentAdapterSupervisorConfig) *claudeBridgeSupervisor {
+	if cfg.RuntimeID == "" {
+		cfg.RuntimeID = appServerRuntimeClaudeID
+	}
+	if cfg.DisplayName == "" {
+		cfg.DisplayName = cfg.RuntimeID + " adapter"
+	}
+	if cfg.TempDirPrefix == "" {
+		cfg.TempDirPrefix = "mimi-" + cfg.RuntimeID
+	}
+	if cfg.DebugComponent == "" {
+		cfg.DebugComponent = cfg.RuntimeID + "-adapter"
+	}
 	return &claudeBridgeSupervisor{
+		spec:        cfg,
 		cursorEpoch: 1,
 		cursors:     map[string]uint64{},
 	}
 }
 
-// noteDelivered advances the relay high-water mark for a session. Sequence
-// numbers only move forward; a replayed frame must not rewind it.
+func newClaudeBridgeSupervisor() *claudeBridgeSupervisor {
+	return newResidentAdapterSupervisor(claudeResidentAdapterSupervisorConfig())
+}
+
+func (s *claudeBridgeSupervisor) specOrDefault() residentAdapterSupervisorConfig {
+	if s.spec.RuntimeID == "" {
+		return claudeResidentAdapterSupervisorConfig()
+	}
+	return s.spec
+}
+
 func (s *claudeBridgeSupervisor) noteDelivered(sessionKey string, seq uint64, epoch uint64) {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()
 	if epoch != s.cursorEpoch {
-		// 旧 bridge 连接可能在进程换代后才完成一次 WebSocket 写。它的 sequence
-		// 不能重新污染刚清空的新实例 cursor namespace。
 		return
 	}
 	if current, ok := s.cursors[sessionKey]; ok {
@@ -101,9 +123,6 @@ func (s *claudeBridgeSupervisor) resumeCursor(sessionKey string) (uint64, bool) 
 	return seq, ok
 }
 
-// forgetCursor drops a cursor the bridge told us is no longer replayable, so
-// the next attach starts clean instead of asking for a sequence below the ring
-// floor again.
 func (s *claudeBridgeSupervisor) forgetCursor(sessionKey string) {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()
@@ -116,9 +135,6 @@ func (s *claudeBridgeSupervisor) forgetCursor(sessionKey string) {
 	}
 }
 
-// clearCursors drops every sequence watermark when the resident bridge
-// process changes. Sequence numbers are scoped to one bridge instance; carrying
-// them into a replacement can make a fresh ring appear fully consumed.
 func (s *claudeBridgeSupervisor) clearCursors() {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()
@@ -127,22 +143,23 @@ func (s *claudeBridgeSupervisor) clearCursors() {
 	s.cursors = map[string]uint64{}
 	s.cursorFIFO = nil
 	if cleared > 0 {
-		log.Printf("claude bridge cursor namespace cleared count=%d", cleared)
+		spec := s.specOrDefault()
+		log.Printf("%s cursor namespace cleared count=%d", spec.RuntimeID, cleared)
 	}
 }
 
-// ensure returns the local endpoint of a running bridge, starting one if needed.
 func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[string]string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	spec := s.specOrDefault()
 	if s.stopped {
-		return "", errors.New("Claude bridge 管理器已停止")
+		return "", fmt.Errorf("%s 管理器已停止", spec.DisplayName)
 	}
 	if s.cmd != nil && !s.exited {
 		return s.address, nil
 	}
 	if s.cmd != nil {
-		log.Printf("claude bridge exited; starting a replacement")
+		log.Printf("%s exited; starting a replacement", spec.DisplayName)
 		s.reset()
 	}
 	if err := s.start(bin, args, env); err != nil {
@@ -152,14 +169,12 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 	return s.address, nil
 }
 
-// start spawns the bridge and blocks until its local endpoint accepts a
-// connection.
-// Caller must hold s.mu.
 func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string]string) error {
+	spec := s.specOrDefault()
 	if s.dir == "" {
-		dir, err := os.MkdirTemp("", "mimi-claude")
+		dir, err := os.MkdirTemp("", spec.TempDirPrefix)
 		if err != nil {
-			return fmt.Errorf("创建 Claude bridge 运行目录失败：%w", err)
+			return fmt.Errorf("创建 %s 运行目录失败：%w", spec.DisplayName, err)
 		}
 		s.dir = dir
 	}
@@ -169,19 +184,25 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	}
 
 	cmd := exec.Command(bin, append(append([]string{}, args...), transportArgs...)...)
-	bridgeEnvironment := buildClaudeBridgeEnv(env)
+	var bridgeEnvironment []string
+	var sensitiveValues []string
+	if spec.BuildEnv != nil {
+		bridgeEnvironment, sensitiveValues = spec.BuildEnv(env)
+	} else {
+		bridgeEnvironment = os.Environ()
+	}
 	cmd.Env = bridgeEnvironment
 	configureGatewayCommandProcessGroup(cmd)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("创建 Claude bridge stderr 失败：%w", err)
+		return fmt.Errorf("创建 %s stderr 失败：%w", spec.DisplayName, err)
 	}
 	if err := startGatewayCommand(cmd); err != nil {
-		return fmt.Errorf("启动 Claude bridge 失败：%w", err)
+		return fmt.Errorf("启动 %s 失败：%w", spec.DisplayName, err)
 	}
 	s.startedAt = time.Now().UTC()
-	debuglog.Printf("claude-bridge", "started bin=%s pid=%d", filepath.Base(bin), cmd.Process.Pid)
-	go captureClaudeBridgeStderr(stderr, claudeenv.ProxyValues(bridgeEnvironment))
+	debuglog.Printf(spec.DebugComponent, "started bin=%s pid=%d", filepath.Base(bin), cmd.Process.Pid)
+	go captureResidentAdapterStderr(spec.DebugComponent, spec.DisplayName, stderr, sensitiveValues)
 
 	done := make(chan struct{})
 	s.cmd = cmd
@@ -191,24 +212,15 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	s.exited = false
 	go s.reap(cmd, done)
 
-	if err := waitForClaudeBridgeEndpoint(network, address, done, claudeBridgeStartTimeout); err != nil {
-		// Kill and walk away without waiting on the reaper: we hold s.mu, and
-		// the reaper takes it before closing done, so waiting here would
-		// deadlock the supervisor — and with it every later ensure() — for a
-		// bridge that merely failed to bind in time. The reaper still runs and
-		// still reaps; ensure() clears the bookkeeping, and the `s.cmd == cmd`
-		// guard keeps this dead process from clobbering its replacement.
+	if err := waitForResidentAdapterEndpoint(spec.DisplayName, network, address, done, claudeBridgeStartTimeout); err != nil {
 		terminateGatewayProcessGroup(cmd, true)
 		return err
 	}
 	return nil
 }
 
-// reap waits on the process and marks the supervisor dirty so a later ensure()
-// restarts it. It only touches shared state while cmd is still the current
-// process, so a shutdown-then-restart cycle cannot have an old reaper clobber
-// new state.
 func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
+	spec := s.specOrDefault()
 	err := cmd.Wait()
 	releaseGatewayProcessGroup(cmd)
 	s.mu.Lock()
@@ -217,23 +229,20 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	}
 	s.mu.Unlock()
 	if err != nil {
-		log.Printf("claude bridge exited err=%v", err)
+		log.Printf("%s exited err=%v", spec.DisplayName, err)
 		diagnosticlog.Record("bridge", "failed", diagnosticlog.Fields{})
-		debuglog.Printf("claude-bridge", "exited pid=%d err=%v", cmd.Process.Pid, err)
+		debuglog.Printf(spec.DebugComponent, "exited pid=%d err=%v", cmd.Process.Pid, err)
 	} else {
-		log.Printf("claude bridge exited")
+		log.Printf("%s exited", spec.DisplayName)
 		diagnosticlog.Record("bridge", "stopped", diagnosticlog.Fields{})
-		debuglog.Printf("claude-bridge", "exited pid=%d", cmd.Process.Pid)
+		debuglog.Printf(spec.DebugComponent, "exited pid=%d", cmd.Process.Pid)
 	}
 	close(done)
 }
 
-// dial opens a connection to the resident bridge and returns the cursor epoch
-// captured from the same supervisor snapshot as its socket. Each WebSocket
-// connection gets its own socket connection; the bridge multiplexes them onto
-// sessions.
 func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	s.mu.Lock()
+	spec := s.specOrDefault()
 	network := s.network
 	address := s.address
 	alive := s.cmd != nil && !s.exited
@@ -242,13 +251,8 @@ func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	s.cursorMu.Unlock()
 	s.mu.Unlock()
 	if !alive || network == "" || address == "" {
-		return nil, 0, errors.New("Claude bridge 未运行")
+		return nil, 0, fmt.Errorf("%s 未运行", spec.DisplayName)
 	}
-	// reset() 也持有 s.mu，并在同一次临界区内推进 cursorEpoch。因此这里捕获
-	// 到的 endpoint 与 epoch 必定属于同一个 supervisor 代次。解锁后若发生换代，
-	// 最坏只会让新连接携带旧 epoch，其 delivered watermark 会被安全忽略。
-	// Endpoint publication and listen readiness are not one atomic operation,
-	// so a dial racing a just-started bridge can see ECONNREFUSED. Retry briefly.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		conn, err := net.DialTimeout(network, address, time.Second)
@@ -262,8 +266,6 @@ func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	}
 }
 
-// runningSince 返回当前 resident bridge 的真实启动时间。
-// bridge 异常退出或 supervisor reset 后立即清空，避免菜单栏继续显示旧进程时长。
 func (s *claudeBridgeSupervisor) runningSince() *time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,31 +276,28 @@ func (s *claudeBridgeSupervisor) runningSince() *time.Time {
 	return &startedAt
 }
 
-// shutdown terminates the bridge process group and removes the socket
-// directory. The supervisor refuses to start again afterwards.
 func (s *claudeBridgeSupervisor) shutdown() {
 	s.mu.Lock()
+	spec := s.specOrDefault()
 	s.stopped = true
 	cmd, done, exited, dir := s.cmd, s.done, s.exited, s.dir
 	s.dir = ""
 	s.reset()
 	s.mu.Unlock()
 
-	// Terminate outside the lock: the reaper takes it on its way out.
 	if cmd != nil && !exited {
-		// The bridge spawns Claude Code children; signal the whole group so a
-		// restart does not inherit orphans still holding the workspace.
-		terminateClaudeBridge(cmd, done)
+		terminateResidentAdapter(spec.DisplayName, cmd, done)
 	}
 	if dir != "" {
 		_ = os.RemoveAll(dir)
 	}
 }
 
-// terminateClaudeBridge signals the whole process group, escalating to SIGKILL
-// if the bridge does not go quietly. It waits on the reaper's done channel,
-// which has no competing consumer.
 func terminateClaudeBridge(cmd *exec.Cmd, done <-chan struct{}) {
+	terminateResidentAdapter("Claude bridge", cmd, done)
+}
+
+func terminateResidentAdapter(displayName string, cmd *exec.Cmd, done <-chan struct{}) {
 	terminateGatewayProcessGroup(cmd, false)
 	select {
 	case <-done:
@@ -309,12 +308,10 @@ func terminateClaudeBridge(cmd *exec.Cmd, done <-chan struct{}) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		log.Printf("claude bridge process did not exit after SIGKILL pid=%d", gatewayProcessID(cmd))
+		log.Printf("%s process did not exit after SIGKILL pid=%d", displayName, gatewayProcessID(cmd))
 	}
 }
 
-// reset clears process bookkeeping without touching s.dir, which is reused
-// across restarts. Caller must hold s.mu.
 func (s *claudeBridgeSupervisor) reset() {
 	s.cmd = nil
 	s.done = nil
@@ -325,19 +322,16 @@ func (s *claudeBridgeSupervisor) reset() {
 	s.clearCursors()
 }
 
-// waitForClaudeBridgeEndpoint polls until the bridge has bound its endpoint,
-// the process dies, or the deadline passes.
-//
-// Unix can observe the socket node without opening a real connection. TCP has
-// no equivalent readiness primitive, so the Windows path performs a loopback
-// connect and immediately closes it; the bridge treats that as a harmless
-// unattached local connection.
 func waitForClaudeBridgeEndpoint(network, address string, done <-chan struct{}, timeout time.Duration) error {
+	return waitForResidentAdapterEndpoint("Claude bridge", network, address, done, timeout)
+}
+
+func waitForResidentAdapterEndpoint(displayName, network, address string, done <-chan struct{}, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		select {
 		case <-done:
-			return errors.New("Claude bridge 启动后立即退出")
+			return fmt.Errorf("%s 启动后立即退出", displayName)
 		default:
 		}
 		if network == "unix" {
@@ -352,7 +346,7 @@ func waitForClaudeBridgeEndpoint(network, address string, done <-chan struct{}, 
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("Claude bridge 在 %s 内未监听本地端点 %s", timeout, address)
+			return fmt.Errorf("%s 在 %s 内未监听本地端点 %s", displayName, timeout, address)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

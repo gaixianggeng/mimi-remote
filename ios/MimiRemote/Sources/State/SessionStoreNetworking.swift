@@ -105,8 +105,9 @@ protocol SessionStoreAPIClient {
     /// 发送准备只读取目标 Runtime；模型菜单仍使用无参数入口聚合全部目录。
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption]
     func permissionProfiles(cwd: String) async throws -> [CodexAppServerPermissionProfileSummary]
-    /// Claude 会话 `/` 菜单的命令目录；不支持的主机抛出 ClaudeSlashCommandCatalogError.unsupported。
+    /// 常驻适配器会话 `/` 菜单的命令目录；不支持的主机抛出 ClaudeSlashCommandCatalogError.unsupported。
     func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand]
+    func runtimeSlashCommands(runtimeProvider: String, cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
     /// 该 Runtime 的通道是否声明了目标任务（thread/goal/*）；决定是否展示目标入口（#791）。
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool
@@ -285,6 +286,13 @@ extension SessionStoreAPIClient {
 
     func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
         throw ClaudeSlashCommandCatalogError.unsupported
+    }
+
+    func runtimeSlashCommands(runtimeProvider: String, cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand] {
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude" else {
+            throw ClaudeSlashCommandCatalogError.unsupported
+        }
+        return try await claudeSlashCommands(cwd: cwd, sandboxMode: sandboxMode, forceReload: forceReload)
     }
 
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { completeToolItem, isTurnHintItem, toolUseItem, unfinishedToolItem } from "../src/claude/tools.ts";
-import type { JsonValue } from "../src/protocol/codex/serde_json/JsonValue.ts";
+import type { JsonValue } from "@mimi/appserver-kit/protocol/codex/serde_json/JsonValue.ts";
 import { MIMI_TURN_HINT_TOOL_NAMES, mimiTurnHintTools } from "../src/runtime/turnHints.ts";
 
 describe("Claude turn hint tools", () => {

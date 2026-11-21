@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Catalog, SessionRecord } from "../claude/catalog.ts";
 import type { Overlay } from "../claude/overlay.ts";
 import type { ClaudeSessions } from "../claude/sdk.ts";
-import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { RpcError } from "../rpc/frames.ts";
 import { liveThreadStatus, ownerSummary, type SessionHolder } from "../runtime/holders.ts";
 import type { ThreadManager } from "../runtime/manager.ts";

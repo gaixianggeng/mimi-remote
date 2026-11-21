@@ -9,8 +9,8 @@ import {
   type SDKMessage,
   type SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
-import type { UserInput } from "../protocol/codex/v2/UserInput.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
+import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { notificationTurnId } from "../claude/itemIds.ts";
 import { runsAsClaudeCommand } from "../claude/skillCommand.ts";
 import { claudeConfigDir } from "../claude/transcripts.ts";

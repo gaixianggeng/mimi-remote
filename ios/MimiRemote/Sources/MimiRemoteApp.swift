@@ -82,13 +82,14 @@ struct SessionNotificationRoute: Equatable, Hashable {
         self.runtimeProvider = runtimeProvider
     }
 
-    /// 只接受两个已知 runtime；其它值视为未知，交给本地会话路由推断。
+    /// 只接受已登记的已知 runtime；其它值视为未知，交给本地会话路由推断。
     private static func normalizedRuntimeProvider(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              value == "codex" || value == "claude" else {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
             return nil
         }
-        return value
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(raw)
+        return RuntimeFeatureSupport.isKnownRuntimeProvider(normalized) ? normalized : nil
     }
 
     private static func normalizedIdentifier(_ value: Any?) -> String? {

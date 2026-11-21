@@ -1,9 +1,9 @@
 // Claude 工具调用 → Codex ThreadItem。分类与展示文案和旧 bridge 保持一致，
 // 这样 iOS 的渲染（命令卡片、文件改动、MCP、子代理）切换后不变。
-import type { ThreadItem } from "../protocol/codex/v2/ThreadItem.ts";
-import type { CommandAction } from "../protocol/codex/v2/CommandAction.ts";
-import type { FileUpdateChange } from "../protocol/codex/v2/FileUpdateChange.ts";
-import type { JsonValue } from "../protocol/codex/serde_json/JsonValue.ts";
+import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
+import type { CommandAction } from "@mimi/appserver-kit/protocol/codex/v2/CommandAction.ts";
+import type { FileUpdateChange } from "@mimi/appserver-kit/protocol/codex/v2/FileUpdateChange.ts";
+import type { JsonValue } from "@mimi/appserver-kit/protocol/codex/serde_json/JsonValue.ts";
 
 type Args = Record<string, unknown>;
 

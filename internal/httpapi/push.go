@@ -410,9 +410,10 @@ func (r *Router) submitApprovalDecision(ctx context.Context, action pushbridge.A
 	switch action.Runtime {
 	case "codex":
 		return r.submitCodexApprovalDecision(ctx, action, payload)
-	case "claude":
-		return r.submitClaudeApprovalDecision(ctx, action, payload)
 	default:
+		if appServerRuntimeUsesAdapterSandbox(action.Runtime) {
+			return r.submitResidentApprovalDecision(ctx, action.Runtime, action, payload)
+		}
 		return fmt.Errorf("未知 runtime")
 	}
 }
@@ -456,7 +457,11 @@ func (r *Router) submitCodexApprovalDecision(ctx context.Context, action pushbri
 }
 
 func (r *Router) submitClaudeApprovalDecision(ctx context.Context, action pushbridge.Action, payload []byte) error {
-	observer := r.claudeApprovalObserverFor(action.SessionKey)
+	return r.submitResidentApprovalDecision(ctx, appServerRuntimeClaudeID, action, payload)
+}
+
+func (r *Router) submitResidentApprovalDecision(ctx context.Context, runtimeID string, action pushbridge.Action, payload []byte) error {
+	observer := r.residentApprovalObserverFor(runtimeID, action.SessionKey)
 	if observer == nil {
 		return fmt.Errorf("会话已结束，请打开 App 查看最新状态")
 	}

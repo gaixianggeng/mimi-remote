@@ -1,4 +1,4 @@
-import type { Turn } from "../protocol/codex/v2/Turn.ts";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { DesktopSpawnIndex } from "./desktopSpawns.ts";
 import { messagesToTurns } from "./history.ts";
 import type { Overlay } from "./overlay.ts";
