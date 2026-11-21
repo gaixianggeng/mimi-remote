@@ -411,6 +411,7 @@ export async function readTranscriptTurns(
     userSeq: number;
     reasoningSeq: number;
     msgSeq: number;
+    toolSeq: number;
     startedAtMs: number | null;
     completedAtMs: number | null;
     toolStates: Map<string, AcpToolState>;
@@ -420,7 +421,6 @@ export async function readTranscriptTurns(
 
   const turns: TurnDraft[] = [];
   let current: TurnDraft | undefined;
-  let seq = 0;
   const pendingTools: PendingToolSlot[] = [];
 
   const nextTurn = (startedAtMs: number | null): TurnDraft => {
@@ -431,6 +431,7 @@ export async function readTranscriptTurns(
       userSeq: 0,
       reasoningSeq: 0,
       msgSeq: 0,
+      toolSeq: 0,
       startedAtMs,
       completedAtMs: startedAtMs,
       toolStates: new Map(),
@@ -498,8 +499,8 @@ export async function readTranscriptTurns(
         for (const call of step.tool_calls) {
           const name = call.name?.trim() || "tool";
           const args = decodeToolArgs(call.args);
-          seq += 1;
-          const toolCallId = `${sessionId}:tool:${step.step_index ?? seq}:${seq}`;
+          draft.toolSeq += 1;
+          const toolCallId = `${draft.id}:tool:${draft.toolSeq}`;
           const targetPath = [args.Path, args.TargetFile, args.path, args.file_path].find(
             (v): v is string => typeof v === "string" && v.trim().length > 0,
           );

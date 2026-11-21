@@ -784,4 +784,127 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await coldHarness.close();
     }
   });
+
+  test("B15/C05: command and fileChange item IDs stay identical across live streaming, approvals, ACP replay, and cold transcript read", async () => {
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ emitUpdate, requestPermission }) => {
+        emitUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "native-random-cmd-99",
+          title: "Run pwd",
+          kind: "execute",
+          status: "pending",
+          rawInput: { CommandLine: "pwd" },
+        });
+        await requestPermission(
+          { toolCallId: "native-random-cmd-99", title: "Run pwd", kind: "execute", rawInput: { CommandLine: "pwd" } },
+          [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+        );
+        emitUpdate({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "native-random-cmd-99",
+          status: "completed",
+          content: [{ type: "content", content: { type: "text", text: workspaceDir } }],
+        });
+        emitUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "native-random-diff-88",
+          title: "Edit notes.txt",
+          kind: "edit",
+          status: "completed",
+          content: [{ type: "diff", path: path.join(workspaceDir, "notes.txt"), oldText: "a", newText: "b" }],
+        });
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const first = await createTestHarness(world);
+    let threadId = "";
+    let liveCmdId = "";
+    let liveDiffId = "";
+    let approvalItemId = "";
+    try {
+      const started = await first.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      threadId = started.thread.id;
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "run pwd and edit notes.txt", text_elements: [] }],
+      });
+      for (let i = 0; i < 40; i += 1) {
+        if (first.serverRequests.length > 0) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      approvalItemId = String((first.serverRequests[0]?.params as { itemId?: string } | undefined)?.itemId ?? "");
+      first.respondServerRequest(first.serverRequests[0]?.id, { decision: "accept" });
+      for (let i = 0; i < 40; i += 1) {
+        if (first.notifications.some((n) => n.method === "turn/completed")) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      const completedItems = first.notifications
+        .filter((n) => n.method === "item/completed")
+        .map((n) => (n.params as { item?: { type?: string; id?: string } }).item);
+      liveCmdId = completedItems.find((i) => i?.type === "commandExecution")?.id ?? "";
+      liveDiffId = completedItems.find((i) => i?.type === "fileChange")?.id ?? "";
+      expect(liveCmdId).toBe(`${threadId}:turn:1:tool:1`);
+      expect(liveDiffId).toBe(`${threadId}:turn:1:tool:2`);
+      expect(approvalItemId).toBe(liveCmdId);
+    } finally {
+      await first.close();
+    }
+
+    const cold = await createTestHarness(world);
+    try {
+      // 1) Cold ACP replay path
+      const replayTurns = await cold.rpc<{ data: Array<{ items: Array<{ type: string; id: string }> }> }>(
+        "thread/turns/list",
+        { threadId, itemsView: "full" },
+      );
+      expect(replayTurns.data[0]?.items.find((i) => i.type === "commandExecution")?.id).toBe(liveCmdId);
+      expect(replayTurns.data[0]?.items.find((i) => i.type === "fileChange")?.id).toBe(liveDiffId);
+
+      // 2) Cold transcript direct-read path
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({
+            step_index: 0,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-21T11:00:00Z",
+            content: "<USER_REQUEST>\nrun pwd and edit notes.txt\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 1,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-21T11:00:01Z",
+            tool_calls: [
+              { name: "run_command", args: { CommandLine: "\"pwd\"" } },
+              { name: "edit_file", args: { Path: path.join(workspaceDir, "notes.txt"), Target: "a", Replacement: "b" } },
+            ],
+          }),
+          JSON.stringify({ step_index: 2, type: "GENERIC", status: "DONE", content: workspaceDir }),
+          JSON.stringify({ step_index: 3, type: "GENERIC", status: "DONE", content: "updated" }),
+          JSON.stringify({ step_index: 4, type: "PLANNER_RESPONSE", status: "DONE", content: "Done." }),
+        ].join("\n") + "\n",
+      );
+
+      const transcriptTurns = await cold.rpc<{ data: Array<{ items: Array<{ type: string; id: string }> }> }>(
+        "thread/turns/list",
+        { threadId, itemsView: "full" },
+      );
+      expect(transcriptTurns.data[0]?.items.find((i) => i.type === "commandExecution")?.id).toBe(liveCmdId);
+      expect(transcriptTurns.data[0]?.items.find((i) => i.type === "fileChange")?.id).toBe(liveDiffId);
+    } finally {
+      await cold.close();
+    }
+  });
 });

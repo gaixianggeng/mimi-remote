@@ -5,6 +5,7 @@ export interface ApprovalContext {
   threadId: string;
   turnId: string;
   cwd: string;
+  itemId?: string;
 }
 
 export interface ServerApprovalSpec {
@@ -77,7 +78,7 @@ export function serverApprovalFor(
   const common = {
     threadId: context.threadId,
     turnId: context.turnId,
-    itemId: tool.toolCallId,
+    itemId: context.itemId ?? tool.toolCallId,
     startedAtMs: Date.now(),
     reason: tool.title ?? null,
     inputSummary: summarizeInput(tool.rawInput),

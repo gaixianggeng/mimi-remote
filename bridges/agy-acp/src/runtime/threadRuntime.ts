@@ -393,7 +393,13 @@ export class ThreadRuntime {
       }
     }
     const turnId = this.currentTurn?.id ?? `${this.threadId}:approval`;
-    const spec = serverApprovalFor(params, { threadId: this.threadId, turnId, cwd: this.cwd });
+    const itemId = this.currentTurn?.itemIdForToolCall(params.toolCall.toolCallId);
+    const spec = serverApprovalFor(params, {
+      threadId: this.threadId,
+      turnId,
+      cwd: this.cwd,
+      ...(itemId ? { itemId } : {}),
+    });
     if (await this.checkExternalWriteConflict()) {
       return { outcome: { outcome: "cancelled" } };
     }

@@ -11,10 +11,12 @@ interface TurnBuilder {
   userSeq: number;
   reasoningSeq: number;
   msgSeq: number;
+  toolSeq: number;
   userTextIndex: number | null;
   openThoughtIndex: number | null;
   openMessageIndex: number | null;
   planIndex: number | null;
+  toolItemIds: Map<string, string>;
   toolIndices: Map<string, number>;
   toolStates: Map<string, AcpToolState>;
 }
@@ -50,10 +52,12 @@ export function updatesToTurns(
       userSeq: 0,
       reasoningSeq: 0,
       msgSeq: 0,
+      toolSeq: 0,
       userTextIndex: null,
       openThoughtIndex: null,
       openMessageIndex: null,
       planIndex: null,
+      toolItemIds: new Map(),
       toolIndices: new Map(),
       toolStates: new Map(),
     };
@@ -146,13 +150,19 @@ export function updatesToTurns(
 
       case "tool_call":
       case "tool_call_update": {
-        const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
-        if (!toolCallId) break;
+        const rawToolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
+        if (!rawToolCallId) break;
         const turn = current ?? nextTurn();
         turn.openThoughtIndex = null;
         turn.openMessageIndex = null;
-        const merged = mergeToolState(turn.toolStates.get(toolCallId), {
-          toolCallId,
+        let itemId = turn.toolItemIds.get(rawToolCallId);
+        if (!itemId) {
+          turn.toolSeq += 1;
+          itemId = `${turn.id}:tool:${turn.toolSeq}`;
+          turn.toolItemIds.set(rawToolCallId, itemId);
+        }
+        const merged = mergeToolState(turn.toolStates.get(itemId), {
+          toolCallId: itemId,
           title: typeof update.title === "string" ? update.title : undefined,
           kind: typeof update.kind === "string" ? update.kind : undefined,
           status: typeof update.status === "string" ? update.status : undefined,
@@ -161,13 +171,13 @@ export function updatesToTurns(
           rawInput: update.rawInput && typeof update.rawInput === "object" ? (update.rawInput as Record<string, unknown>) : undefined,
           rawOutput: update.rawOutput,
         });
-        turn.toolStates.set(toolCallId, merged);
-        const existingIndex = turn.toolIndices.get(toolCallId);
+        turn.toolStates.set(itemId, merged);
+        const existingIndex = turn.toolIndices.get(itemId);
         const item = acpToolToThreadItem(merged, cwd, true);
         if (existingIndex !== undefined) {
           turn.items[existingIndex] = item;
         } else {
-          turn.toolIndices.set(toolCallId, turn.items.length);
+          turn.toolIndices.set(itemId, turn.items.length);
           turn.items.push(item);
         }
         break;

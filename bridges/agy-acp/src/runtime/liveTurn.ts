@@ -27,9 +27,11 @@ export class LiveTurn {
   private userSeq = 0;
   private reasoningSeq = 0;
   private msgSeq = 0;
+  private toolSeq = 0;
   private openThought: { id: string; text: string } | null = null;
   private openMessage: { id: string; text: string } | null = null;
   private planItem: { id: string; text: string } | null = null;
+  private readonly toolItemIds = new Map<string, string>();
   private readonly toolStates = new Map<string, AcpToolState>();
   private readonly completedItems: ThreadItem[] = [];
   private contextWindow: number | null = null;
@@ -55,6 +57,16 @@ export class LiveTurn {
   private nextMessageItemId(): string {
     this.msgSeq += 1;
     return `${this.id}:msg:${this.msgSeq}`;
+  }
+
+  /** 为工具调用分配与 ACP replay 及 transcript 直读一致的确定性回合内 ID（B15/C05）。 */
+  itemIdForToolCall(rawToolCallId: string): string {
+    const existing = this.toolItemIds.get(rawToolCallId);
+    if (existing) return existing;
+    this.toolSeq += 1;
+    const itemId = `${this.id}:tool:${this.toolSeq}`;
+    this.toolItemIds.set(rawToolCallId, itemId);
+    return itemId;
   }
 
   private scoped(params: Record<string, unknown>): Record<string, unknown> {
@@ -184,12 +196,13 @@ export class LiveTurn {
 
       case "tool_call":
       case "tool_call_update": {
-        const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
-        if (!toolCallId) return;
+        const rawToolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
+        if (!rawToolCallId) return;
         this.closeOpenText();
-        const isFirst = !this.toolStates.has(toolCallId);
-        const merged = mergeToolState(this.toolStates.get(toolCallId), {
-          toolCallId,
+        const itemId = this.itemIdForToolCall(rawToolCallId);
+        const isFirst = !this.toolStates.has(rawToolCallId);
+        const merged = mergeToolState(this.toolStates.get(rawToolCallId), {
+          toolCallId: itemId,
           title: typeof update.title === "string" ? update.title : undefined,
           kind: typeof update.kind === "string" ? update.kind : undefined,
           status: typeof update.status === "string" ? update.status : undefined,
@@ -201,13 +214,13 @@ export class LiveTurn {
         const terminal = merged.status === "completed" || merged.status === "failed";
         const item = acpToolToThreadItem(merged, this.cwd, !terminal);
         if (isFirst) {
-          this.toolStates.set(toolCallId, merged);
+          this.toolStates.set(rawToolCallId, merged);
           this.emitStarted(acpToolToThreadItem({ ...merged, status: "in_progress" }, this.cwd, true));
         } else {
-          this.toolStates.set(toolCallId, merged);
+          this.toolStates.set(rawToolCallId, merged);
         }
         if (terminal) {
-          this.toolStates.delete(toolCallId);
+          this.toolStates.delete(rawToolCallId);
           this.emitCompleted(item);
         }
         return;
