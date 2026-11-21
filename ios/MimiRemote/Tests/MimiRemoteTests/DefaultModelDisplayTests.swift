@@ -17,6 +17,7 @@ final class DefaultModelDisplayTests: XCTestCase {
         let catalog = [
             CodexAppServerModelOption(id: "gpt-custom", title: "Custom GPT", isDefault: true),
             CodexAppServerModelOption(id: "opus", title: "Claude Opus 9.2", runtimeProvider: "claude", isDefault: true),
+            CodexAppServerModelOption(id: "gemini-4-carbon", title: "Gemini 4 Carbon", runtimeProvider: "agy", isDefault: true),
             CodexAppServerModelOption(id: "deepseek-chat", title: "DeepSeek Chat", provider: "local", runtimeProvider: "deepseek", isDefault: true)
         ]
         for runtime in DefaultModelRuntime.allCases {

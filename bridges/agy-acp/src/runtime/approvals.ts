@@ -33,7 +33,7 @@ function pickOption(options: readonly AcpPermissionOption[], preferredKinds: rea
     const found = options.find((opt) => opt.kind === kind);
     if (found) return found.optionId;
   }
-  return options[0]?.optionId;
+  return undefined;
 }
 
 export function selectPermissionOption(

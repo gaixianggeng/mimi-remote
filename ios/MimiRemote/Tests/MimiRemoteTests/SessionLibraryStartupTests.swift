@@ -465,6 +465,7 @@ extension ConversationDataFlowTests {
 
     func testGlobalLibraryFirstPageFailureDoesNotBlockOtherRuntimeFirstPages() async {
         let project = makeProject(id: "startup_partial")
+        let expectedSources: Set<String> = ["claude", "agy", "deepseek"]
         var store: SessionStore!
         var requests: [String] = []
         let client = MockSessionStoreClient(
@@ -473,7 +474,7 @@ extension ConversationDataFlowTests {
                 requests.append(runtime)
                 if runtime == "codex" { throw MockError.unimplemented }
                 if cursor != nil {
-                    XCTAssertEqual(Set(store.sessions.map(\.source)), ["claude", "deepseek"])
+                    XCTAssertEqual(Set(store.sessions.map(\.source)), expectedSources)
                     return SessionsPage(sessions: [])
                 }
                 return SessionsPage(sessions: [makeSession(
@@ -489,8 +490,8 @@ extension ConversationDataFlowTests {
 
         await store.refreshSessionLibraryIndex()
 
-        XCTAssertEqual(requests, ["codex", "claude", "deepseek", "claude", "deepseek"])
-        XCTAssertEqual(Set(store.sessions.map(\.source)), ["claude", "deepseek"])
+        XCTAssertEqual(requests, ["codex", "claude", "agy", "deepseek", "claude", "agy", "deepseek"])
+        XCTAssertEqual(Set(store.sessions.map(\.source)), expectedSources)
     }
 }
 

@@ -325,7 +325,7 @@ export class LiveTurn {
         misalignment: null,
       };
     }
-    this.emit("turn/completed", { threadId: this.threadId, turn: this.snapshot(false) });
+    this.emit("turn/completed", { threadId: this.threadId, turn: { ...turn, items: [] } });
     return { turn, usage: lastUsage };
   }
 }
