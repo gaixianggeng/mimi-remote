@@ -29,6 +29,7 @@ export interface FakeStoredSession {
 export interface FakeAgyBehavior {
   sessions?: FakeStoredSession[];
   commands?: AcpAvailableCommand[];
+  sessionNewError?: { code: number; message: string };
   onPrompt?: (ctx: {
     session: FakeStoredSession;
     prompt: AcpContentBlock[];
@@ -200,6 +201,10 @@ export class FakeAgyWorld {
         }
 
         case "session/new": {
+          if (this.behavior.sessionNewError) {
+            sendFrame({ jsonrpc: "2.0", id, error: this.behavior.sessionNewError });
+            return;
+          }
           const sessionId = `fake-agy-session-${this.nextSessionNum++}`;
           const cwd = String(params.cwd ?? "");
           const stored: FakeStoredSession = {

@@ -142,3 +142,66 @@ func TestB13AgyProbeRevokesGatewayAvailabilityWhenCLIMissing(t *testing.T) {
 		t.Fatalf("expected ready probe after restoring agy binary, got %+v", recovered)
 	}
 }
+
+func TestB11AgyProbeMarksSignedOutUnavailableAndRecoversAfterLogin(t *testing.T) {
+	dir := t.TempDir()
+	adapterPath := writeFakeAgyAdapterScript(t, dir)
+	agyPath := filepath.Join(dir, "agy")
+	signedOutScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.5.13"; exit 0; fi
+if [ "$1" = "models" ]; then echo "Error: Please sign in to view available models." >&2; exit 1; fi
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(signedOutScript), 0o755); err != nil {
+		t.Fatalf("write signed-out agy: %v", err)
+	}
+
+	router := &Router{
+		cfg: config.Config{
+			Listen: "127.0.0.1:8787",
+			Agy: config.AgyConfig{
+				Enabled:    true,
+				AdapterBin: adapterPath,
+				Env: map[string]string{
+					"PATH":                    dir,
+					agybridge.AgyBinaryEnvKey: agyPath,
+				},
+			},
+		},
+		agyAdapter: newAgyAdapterSupervisor(),
+	}
+
+	probe := router.refreshAgyAdapterProbe()
+	if probe.Healthy || probe.Status != "agy_signed_out" || probe.Error == "" {
+		t.Fatalf("expected agy_signed_out unhealthy probe, got %+v", probe)
+	}
+
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8787/api/app-server/config", nil)
+	ch := router.agyChannelConfig(req)
+	if ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.Healthy || ch.Bridge.Status != "agy_signed_out" {
+		t.Fatalf("expected channel gateway_available=false and agy_signed_out, got %+v", ch)
+	}
+
+	rt := router.probeAgyRuntime(context.Background())
+	if rt.State != runtimeStateSignedOut || rt.Reason != "agy_signed_out" {
+		t.Fatalf("expected runtime status signed_out/agy_signed_out, got %+v", rt)
+	}
+
+	// Simulate user signing in and cache expiring.
+	signedInScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.5.13"; exit 0; fi
+if [ "$1" = "models" ]; then echo "gemini-4-carbon"; exit 0; fi
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(signedInScript), 0o755); err != nil {
+		t.Fatalf("write signed-in agy: %v", err)
+	}
+	router.agyMu.Lock()
+	router.agyAuth.checkedAt = time.Time{}
+	router.agyMu.Unlock()
+
+	recovered := router.refreshAgyAdapterProbe()
+	if !recovered.Healthy || recovered.Status != "ready" {
+		t.Fatalf("expected ready probe after signing in, got %+v", recovered)
+	}
+}

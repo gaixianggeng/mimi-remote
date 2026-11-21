@@ -1012,4 +1012,16 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("B11: normalizes ACP Authentication required error into actionable agy sign-in guidance", async () => {
+    const world = new FakeAgyWorld({
+      sessionNewError: { code: -32000, message: "Authentication required" },
+    });
+    const harness = await createTestHarness(world);
+    try {
+      await expect(harness.rpc("thread/start", { cwd: workspaceDir })).rejects.toThrow("agy_authentication_required");
+    } finally {
+      await harness.close();
+    }
+  });
 });

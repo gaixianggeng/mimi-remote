@@ -128,6 +128,7 @@ type Router struct {
 	claudeBridge      *claudeBridgeSupervisor
 	agyMu             sync.Mutex
 	agyProbe          agyAdapterProbe
+	agyAuth           agyAuthProbeCache
 	activeAgySessions int
 	agyForeground     map[string]*claudeForegroundLease
 	agyAdapter        *claudeBridgeSupervisor

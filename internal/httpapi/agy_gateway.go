@@ -54,6 +54,18 @@ type agyAdapterProbe struct {
 	Capabilities *agybridge.AdapterCapabilities
 }
 
+type agyAuthProbeCache struct {
+	path      string
+	signedOut bool
+	message   string
+	checkedAt time.Time
+}
+
+const (
+	agyAuthSignedInCacheTTL  = 2 * time.Minute
+	agyAuthSignedOutCacheTTL = 5 * time.Second
+)
+
 func (p agyAdapterProbe) supportsMethod(method string) bool {
 	return p.Healthy && p.Capabilities != nil && p.Capabilities.Supports(method)
 }
@@ -81,9 +93,39 @@ func agyAdapterFix(probe agyAdapterProbe) string {
 		return "安装 Antigravity CLI (agy) 并在终端登录"
 	case "agy_unsupported":
 		return "升级 Antigravity CLI (agy)"
+	case "agy_signed_out":
+		return "在终端运行 agy 完成登录"
 	default:
 		return agybridge.InstallHint
 	}
+}
+
+func (r *Router) checkAgySignedOutCached(agyPath string, env []string) (bool, string) {
+	now := time.Now().UTC()
+	r.agyMu.Lock()
+	cached := r.agyAuth
+	r.agyMu.Unlock()
+	if cached.path == agyPath && !cached.checkedAt.IsZero() {
+		ttl := agyAuthSignedInCacheTTL
+		if cached.signedOut {
+			ttl = agyAuthSignedOutCacheTTL
+		}
+		if now.Sub(cached.checkedAt) < ttl {
+			return cached.signedOut, cached.message
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	signedOut, msg := agybridge.CheckAgySignedOut(ctx, agyPath, env)
+	r.agyMu.Lock()
+	r.agyAuth = agyAuthProbeCache{
+		path:      agyPath,
+		signedOut: signedOut,
+		message:   msg,
+		checkedAt: time.Now().UTC(),
+	}
+	r.agyMu.Unlock()
+	return signedOut, msg
 }
 
 func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
@@ -151,6 +193,12 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 			r.setAgyAdapterProbe(probe)
 			return probe
 		}
+	}
+	if signedOut, signMsg := r.checkAgySignedOutCached(agyPath, env); signedOut {
+		probe.Status = "agy_signed_out"
+		probe.Error = signMsg
+		r.setAgyAdapterProbe(probe)
+		return probe
 	}
 
 	probe.Status = "ready"
@@ -578,6 +626,9 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		switch probe.Status {
 		case "agy_missing", "agy_unsupported":
 			status.Reason = probe.Status
+		case "agy_signed_out":
+			status.State = runtimeStateSignedOut
+			status.Reason = "agy_signed_out"
 		}
 		return status
 	}

@@ -137,17 +137,45 @@ func CheckAgySignedIn(ctx context.Context, bin string, env []string) (bool, stri
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
-	lower := strings.ToLower(text)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return false, "探测 Antigravity CLI 登录状态超时（agy models 未在 15 秒内返回）"
 		}
-		if strings.Contains(lower, "sign in") || strings.Contains(lower, "login") || strings.Contains(lower, "authenticate") {
+		if IsAgySignedOutOutput(text) {
 			return false, "Antigravity CLI 尚未登录，请在终端运行 agy 完成登录"
 		}
 		return false, firstLineOrFallback(text, "无法确认 Antigravity CLI 登录状态")
 	}
 	return true, ""
+}
+
+// CheckAgySignedOut 仅在 `agy models` 明确输出未登录/需认证提示时返回 signedOut=true；
+// 超时或网络抖动不误报为未登录，避免把已登录的离线环境错判成退出登录（B11）。
+func CheckAgySignedOut(ctx context.Context, bin string, env []string) (bool, string) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, bin, "models")
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return false, ""
+	}
+	text := strings.TrimSpace(string(output))
+	if IsAgySignedOutOutput(text) {
+		return true, "Antigravity CLI 尚未登录，请在终端运行 agy 完成登录"
+	}
+	return false, ""
+}
+
+func IsAgySignedOutOutput(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.Contains(lower, "sign in") ||
+		strings.Contains(lower, "login") ||
+		strings.Contains(lower, "authenticate") ||
+		strings.Contains(lower, "authentication required")
 }
 
 func firstLineOrFallback(raw, fallback string) string {

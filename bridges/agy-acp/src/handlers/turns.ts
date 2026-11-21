@@ -1,5 +1,5 @@
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
-import { RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
+import { ErrorCode, RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { RequestContext } from "@mimi/appserver-kit/server/router.ts";
 import type { AgyCatalog, AgyHistoryStore, SessionRecord } from "../agy/catalog.ts";
 import { appDataDirForOrigin } from "../agy/env.ts";
@@ -7,7 +7,25 @@ import type { AgyOverlay } from "../agy/overlay.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
 import type { ThreadRuntime } from "../runtime/threadRuntime.ts";
+import { errorText } from "../util/logging.ts";
 import { desktopOwnerSummary, toThread, type AdapterThread } from "./threads.ts";
+
+function normalizeAcpAuthError(error: unknown): unknown {
+  const text = errorText(error).toLowerCase();
+  if (
+    text.includes("authentication required")
+    || text.includes("please sign in")
+    || text.includes("not logged in")
+    || text.includes("credentials expired")
+  ) {
+    return new RpcError(
+      ErrorCode.invalidParams,
+      "Antigravity CLI is not signed in. Please run `agy` in Terminal on your computer to sign in, then try again.",
+      { code: "agy_authentication_required", loginCommand: "agy" },
+    );
+  }
+  return error;
+}
 
 type Params = Record<string, unknown>;
 
@@ -87,7 +105,12 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const params = asParams(raw);
       const cwd = requireString(params, "cwd", "thread/start");
       await deps.agyGate.ensure();
-      const runtime = await manager.createNew(cwd, runSettingsFor(params));
+      let runtime: ThreadRuntime;
+      try {
+        runtime = await manager.createNew(cwd, runSettingsFor(params));
+      } catch (error) {
+        throw normalizeAcpAuthError(error);
+      }
       catalog.invalidate();
       await overlay.recordSession(runtime.threadId, {
         cwd,
@@ -145,19 +168,23 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
       history.invalidate(threadId);
-      const turn = await runtime.startTurn({
-        input,
-        clientUserMessageId: typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : null,
-        settings: {
-          ...(settings.model ? { model: settings.model } : {}),
-          ...(settings.effort ? { effort: settings.effort } : {}),
-          ...("approvalPolicy" in params || "sandboxPolicy" in params || "sandbox" in params || "collaborationMode" in params
-            ? { mode: settings.mode }
-            : {}),
-          ...("sandboxPolicy" in params || "sandbox" in params ? { executionPolicy: settings.executionPolicy } : {}),
-        },
-      });
-      return { turn };
+      try {
+        const turn = await runtime.startTurn({
+          input,
+          clientUserMessageId: typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : null,
+          settings: {
+            ...(settings.model ? { model: settings.model } : {}),
+            ...(settings.effort ? { effort: settings.effort } : {}),
+            ...("approvalPolicy" in params || "sandboxPolicy" in params || "sandbox" in params || "collaborationMode" in params
+              ? { mode: settings.mode }
+              : {}),
+            ...("sandboxPolicy" in params || "sandbox" in params ? { executionPolicy: settings.executionPolicy } : {}),
+          },
+        });
+        return { turn };
+      } catch (error) {
+        throw normalizeAcpAuthError(error);
+      }
     },
 
     turnInterrupt(raw: unknown) {
