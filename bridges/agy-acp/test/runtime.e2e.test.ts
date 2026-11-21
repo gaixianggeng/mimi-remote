@@ -29,7 +29,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
     }
   });
 
-  async function createTestHarness(world: FakeAgyWorld) {
+  async function createTestHarness(world: FakeAgyWorld, extra: { externalWritePollMs?: number } = {}) {
     const env = () => ({ HOME: fakeHome });
     const app = createApp({
       stateDir,
@@ -38,6 +38,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       probeAgy: async () => ({ version: "1.5.10" }),
       spawnTransport: world.spawnTransport,
       env,
+      ...(extra.externalWritePollMs !== undefined ? { externalWritePollMs: extra.externalWritePollMs } : {}),
     });
     const registry = new SessionRegistry({
       idleTtlMs: 60_000,
@@ -536,6 +537,139 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
 
       expect(agentTexts).toEqual(["Fresh new reply"]);
       expect(toolIds).toEqual([]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("C12: detects concurrent external Mac CLI write during pending approval, cancels approval, and fails turn explicitly", async () => {
+    let observedOutcome: unknown;
+    let promptAborted = false;
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ session, emitUpdate, requestPermission, signal }) => {
+        signal.addEventListener("abort", () => {
+          promptAborted = true;
+        });
+        emitUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-pwd-1",
+          title: "Run pwd",
+          kind: "execute",
+          status: "pending",
+          rawInput: { CommandLine: "pwd" },
+        });
+        observedOutcome = await requestPermission(
+          { toolCallId: "call-pwd-1", title: "Run pwd", kind: "execute", rawInput: { CommandLine: "pwd" } },
+          [
+            { optionId: "opt-allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "opt-reject", name: "Reject", kind: "reject_once" },
+          ],
+        );
+        return { stopReason: "cancelled" };
+      },
+    });
+
+    const harness = await createTestHarness(world, { externalWritePollMs: 25 });
+    try {
+      const started = await harness.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      const threadId = started.thread.id;
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+      const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+      const priorLines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: new Date(Date.now() - 5_000).toISOString(),
+          content: "<USER_REQUEST>\nPrior completed turn\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: new Date(Date.now() - 4_000).toISOString(),
+          content: "Prior answer",
+        }),
+      ];
+      await writeFile(transcriptPath, `${priorLines.join("\n")}\n`);
+
+      await harness.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "Run pwd and wait for approval", text_elements: [] }],
+      });
+
+      for (let i = 0; i < 40; i += 1) {
+        if (harness.serverRequests.length > 0) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      expect(harness.serverRequests).toHaveLength(1);
+
+      // Simulate Mac CLI writing a contending turn into the same session while iPad holds the approval.
+      await writeFile(
+        transcriptPath,
+        [
+          ...priorLines,
+          JSON.stringify({
+            step_index: 2,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: new Date().toISOString(),
+            content: "<USER_REQUEST>\nRun pwd and wait for approval\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 3,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: new Date().toISOString(),
+            content: "<USER_REQUEST>\nCROSS MAC CONTENDING\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 4,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: new Date().toISOString(),
+            content: "CROSS MAC CONTENDING",
+          }),
+        ].join("\n") + "\n",
+      );
+
+      for (let i = 0; i < 60; i += 1) {
+        if (harness.notifications.some((n) => n.method === "turn/completed")) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+
+      expect(observedOutcome).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(promptAborted).toBe(true);
+      expect(harness.notifications.some((n) => n.method === "serverRequest/resolved")).toBe(true);
+      const completed = harness.notifications.find((n) => n.method === "turn/completed");
+      const completedTurn = (completed?.params as { turn?: { status?: string; error?: { message?: string } | null } })?.turn;
+      expect(completedTurn?.status).toBe("failed");
+      expect(completedTurn?.error?.message).toContain("Another Antigravity process");
+
+      // Also verify turn/start rejects when an external process is actively running.
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          step_index: 3,
+          type: "USER_INPUT",
+          status: "RUNNING",
+          created_at: new Date().toISOString(),
+          content: "<USER_REQUEST>\nExternal busy\n</USER_REQUEST>",
+        })}\n`,
+      );
+      await expect(
+        harness.rpc("turn/start", {
+          threadId,
+          cwd: workspaceDir,
+          input: [{ type: "text", text: "Should be blocked", text_elements: [] }],
+        }),
+      ).rejects.toThrow("currently active");
     } finally {
       await harness.close();
     }

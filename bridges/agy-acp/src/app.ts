@@ -67,6 +67,7 @@ export interface AppOptions {
   discoverCommands?: DiscoverAgyCommands;
   env?: () => NodeJS.ProcessEnv;
   idleCloseMs?: number;
+  externalWritePollMs?: number;
 }
 
 export interface App {
@@ -108,14 +109,18 @@ export function createApp(options: AppOptions): App {
   const manager = new ThreadManager({
     acquireClient: (appDataDirName) => (appDataDirName === otherAppDataDir ? otherSharedAcp.acquire() : cliSharedAcp.acquire()),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
+    ...(options.externalWritePollMs !== undefined ? { externalWritePollMs: options.externalWritePollMs } : {}),
     onSessionOpen: (open) => models.observeSessionOpen(open),
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
+      historyRef?.invalidate(threadId);
       void overlay.recordSession(threadId, patch);
     },
     existingTurnCount: (threadId) => historyRef?.persistedTurnCount(threadId) ?? Promise.resolve(0),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
+    inspectTranscriptState: (threadId) => catalogRef?.transcriptState(threadId) ?? Promise.resolve(undefined),
+    externalActivity: (threadId) => catalogRef?.externalActivity(threadId) ?? Promise.resolve(undefined),
   });
   managerRef = manager;
 

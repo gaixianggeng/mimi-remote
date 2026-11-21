@@ -134,6 +134,14 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       await deps.agyGate.ensure();
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const runtime = manager.get(threadId) ?? (await openExisting(threadId, cwd, params)).runtime;
+      if (!runtime.isBusy()) {
+        const ext = await catalog.externalActivity(threadId);
+        if (ext?.externallyBusy) {
+          throw RpcError.invalidParams(
+            "Another Antigravity process on this computer is currently active on this session. Wait for it to finish and refresh before sending.",
+          );
+        }
+      }
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
       history.invalidate(threadId);

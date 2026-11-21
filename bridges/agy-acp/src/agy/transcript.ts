@@ -41,6 +41,27 @@ export interface TranscriptActivityInfo {
   externallyBusy: boolean;
 }
 
+export interface TranscriptTurnSnapshot {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  userInputs: string[];
+  plannerResponseCount: number;
+  stepCount: number;
+}
+
+export interface ExternalWriteBaseline {
+  userInputCount: number;
+  expectedPromptText: string;
+  approvalUserInputCount?: number;
+  approvalPlannerResponseCount?: number;
+}
+
+export interface ExternalWriteDetection {
+  detected: boolean;
+  reason?: string;
+}
+
 function brainDirForOrigin(origin: AgySessionOrigin, env: NodeJS.ProcessEnv): string {
   const paths = resolveAgyDataPaths(env);
   const root = origin === "other" ? paths.otherAppDataRoot : paths.appDataRoot;
@@ -132,6 +153,82 @@ export async function inspectTranscriptActivity(
   } catch {
     return undefined;
   }
+}
+
+function normalizePromptCompare(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export async function snapshotTranscriptState(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TranscriptTurnSnapshot | undefined> {
+  const filePath = await resolveTranscriptPath(sessionId, origin, env);
+  if (!filePath) return undefined;
+  try {
+    const [info, raw] = await Promise.all([stat(filePath), readFile(filePath, "utf8")]);
+    const userInputs: string[] = [];
+    let plannerResponseCount = 0;
+    let stepCount = 0;
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let step: TranscriptStep;
+      try {
+        step = JSON.parse(trimmed) as TranscriptStep;
+      } catch {
+        continue;
+      }
+      stepCount += 1;
+      if (step.type === "USER_INPUT") {
+        userInputs.push(normalizePromptCompare(formatTranscriptUserText(step.content ?? "")));
+      } else if (step.type === "PLANNER_RESPONSE") {
+        plannerResponseCount += 1;
+      }
+    }
+    return {
+      path: filePath,
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      userInputs,
+      plannerResponseCount,
+      stepCount,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function detectExternalConcurrentWrite(
+  baseline: ExternalWriteBaseline,
+  current: TranscriptTurnSnapshot | undefined,
+): ExternalWriteDetection {
+  if (!current) return { detected: false };
+  const newUserInputs = current.userInputs.slice(baseline.userInputCount);
+  if (newUserInputs.length > 1) {
+    return { detected: true, reason: "multiple_user_inputs_during_active_turn" };
+  }
+  const expected = normalizePromptCompare(baseline.expectedPromptText);
+  if (newUserInputs.length === 1 && expected) {
+    const observed = newUserInputs[0] ?? "";
+    if (observed && observed !== expected && !observed.includes(expected) && !expected.includes(observed)) {
+      return { detected: true, reason: "mismatched_user_input_during_active_turn" };
+    }
+  }
+  if (
+    baseline.approvalUserInputCount !== undefined
+    && current.userInputs.length > baseline.approvalUserInputCount
+  ) {
+    return { detected: true, reason: "external_user_input_during_pending_approval" };
+  }
+  if (
+    baseline.approvalPlannerResponseCount !== undefined
+    && current.plannerResponseCount > baseline.approvalPlannerResponseCount
+  ) {
+    return { detected: true, reason: "external_planner_response_during_pending_approval" };
+  }
+  return { detected: false };
 }
 
 interface ParsedMention {

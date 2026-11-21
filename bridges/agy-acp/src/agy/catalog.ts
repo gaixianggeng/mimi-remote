@@ -11,7 +11,9 @@ import {
   inspectTranscriptActivity,
   readTranscriptTurns,
   resolveTranscriptPath,
+  snapshotTranscriptState,
   type TranscriptActivityInfo,
+  type TranscriptTurnSnapshot,
 } from "./transcript.ts";
 
 export interface SessionRecord {
@@ -40,6 +42,7 @@ export interface AgySessionBackend {
   conversationFilePath(sessionId: string, origin: AgySessionOrigin): string | null;
   diskRevision?(sessionId: string, origin: AgySessionOrigin): Promise<DiskRevisionInfo | undefined>;
   inspectExternalActivity?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptActivityInfo | undefined>;
+  snapshotTranscriptState?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptTurnSnapshot | undefined>;
   loadTranscriptTurns?(
     sessionId: string,
     cwd: string,
@@ -117,6 +120,10 @@ export function createAcpSessionBackend(
       return inspectTranscriptActivity(sessionId, origin, env());
     },
 
+    snapshotTranscriptState(sessionId: string, origin: AgySessionOrigin) {
+      return snapshotTranscriptState(sessionId, origin, env());
+    },
+
     loadTranscriptTurns(sessionId: string, cwd: string, transcriptPath: string, running: boolean, holderActive: boolean) {
       return readTranscriptTurns(sessionId, cwd, transcriptPath, running, holderActive);
     },
@@ -154,6 +161,12 @@ export class AgyCatalog {
     const origin = await this.deps.backend.resolveSessionOrigin(sessionId);
     if (!origin) return undefined;
     return this.deps.backend.inspectExternalActivity(sessionId, origin);
+  }
+
+  async transcriptState(sessionId: string): Promise<TranscriptTurnSnapshot | undefined> {
+    if (!this.deps.backend.snapshotTranscriptState) return undefined;
+    const origin = (await this.deps.backend.resolveSessionOrigin(sessionId)) ?? "cli";
+    return this.deps.backend.snapshotTranscriptState(sessionId, origin);
   }
 
   async list(dirs?: readonly string[]): Promise<SessionRecord[]> {

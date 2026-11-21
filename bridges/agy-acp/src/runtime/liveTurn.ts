@@ -267,10 +267,12 @@ export class LiveTurn {
     this.toolStates.clear();
 
     const stopReason = result?.stopReason;
-    if (this.explicitlyInterrupted || stopReason === "cancelled") {
+    if (this.explicitlyInterrupted) {
       this.status = "interrupted";
     } else if (errorMessage) {
       this.status = "failed";
+    } else if (stopReason === "cancelled") {
+      this.status = "interrupted";
     } else {
       this.status = "completed";
     }

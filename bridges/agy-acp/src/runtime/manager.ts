@@ -5,6 +5,7 @@ import type { Session } from "@mimi/appserver-kit/session/session.ts";
 import { logger } from "../util/logging.ts";
 import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
+import type { TranscriptActivityInfo, TranscriptTurnSnapshot } from "../agy/transcript.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
@@ -19,11 +20,14 @@ interface PendingRequest {
 export interface ManagerOptions {
   acquireClient(appDataDirName?: string): Promise<AcpClient>;
   idleCloseMs?: number;
+  externalWritePollMs?: number;
   onSessionOpen?: (openResult: AcpSessionOpenResult) => void;
   onAvailableCommands?: (cwd: string, commands: AcpAvailableCommand[]) => void;
   onTurnPersisted?: (threadId: string, patch: { preview?: string; updatedAt?: number }) => void;
   existingTurnCount?: (threadId: string) => Promise<number>;
   hasCustomTitle?: (threadId: string) => boolean;
+  inspectTranscriptState?: (threadId: string) => Promise<TranscriptTurnSnapshot | undefined>;
+  externalActivity?: (threadId: string) => Promise<TranscriptActivityInfo | undefined>;
 }
 
 export function unavailableAgyRateLimits(): RateLimitSnapshot {
@@ -58,6 +62,7 @@ export class ThreadManager {
       request: (threadId, method, params, signal) => this.request(threadId, method, params, signal),
       acquireClient: options.acquireClient,
       idleCloseMs: options.idleCloseMs ?? 10 * 60_000,
+      ...(options.externalWritePollMs !== undefined ? { externalWritePollMs: options.externalWritePollMs } : {}),
       onSessionOpen: options.onSessionOpen,
       onAvailableCommands: options.onAvailableCommands,
       onTitleUpdated: (threadId, title) => {
@@ -68,6 +73,8 @@ export class ThreadManager {
       onTurnPersisted: options.onTurnPersisted,
       existingTurnCount: options.existingTurnCount,
       recordTurnClientId: (turnId, clientId) => this.recordTurnClientId(turnId, clientId),
+      inspectTranscriptState: options.inspectTranscriptState,
+      externalActivity: options.externalActivity,
     };
   }
 

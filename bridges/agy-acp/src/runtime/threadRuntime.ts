@@ -11,22 +11,37 @@ import type {
   AcpSessionUpdate,
 } from "../acp/types.ts";
 import { updatesToTurns } from "../agy/history.ts";
+import {
+  detectExternalConcurrentWrite,
+  type ExternalWriteBaseline,
+  type TranscriptActivityInfo,
+  type TranscriptTurnSnapshot,
+} from "../agy/transcript.ts";
+import { desktopOwnerSummary } from "../handlers/threads.ts";
 import { selectPermissionOption, serverApprovalFor } from "./approvals.ts";
 import { LiveTurn, type TurnUsage } from "./liveTurn.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { toAcpPromptBlocks } from "./userInput.ts";
+
+export const EXTERNAL_WRITE_CONFLICT_MESSAGE =
+  "Another Antigravity process on this computer wrote to this session; this turn and any pending approval were stopped to avoid conflicting changes. Refresh to view the latest messages.";
+
+const DEFAULT_EXTERNAL_WRITE_POLL_MS = 500;
 
 export interface RuntimeHost {
   publish(threadId: string, method: string, params: Record<string, unknown>): void;
   request(threadId: string, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   acquireClient(appDataDirName?: string): Promise<AcpClient>;
   idleCloseMs: number;
+  externalWritePollMs?: number;
   onSessionOpen?(openResult: AcpSessionOpenResult): void;
   onAvailableCommands?(cwd: string, commands: AcpAvailableCommand[]): void;
   onTitleUpdated?(threadId: string, title: string): void;
   onTurnPersisted?(threadId: string, patch: { preview?: string; updatedAt?: number }): void;
   existingTurnCount?(threadId: string): Promise<number>;
   recordTurnClientId?(turnId: string, clientId: string): void;
+  inspectTranscriptState?(threadId: string): Promise<TranscriptTurnSnapshot | undefined>;
+  externalActivity?(threadId: string): Promise<TranscriptActivityInfo | undefined>;
 }
 
 export interface TurnStartRequest {
@@ -46,6 +61,11 @@ export class ThreadRuntime {
   private startingTurn = false;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private externalWriteTimer: ReturnType<typeof setInterval> | undefined;
+  private externalWriteChecking = false;
+  private externalWriteBaseline: ExternalWriteBaseline | undefined;
+  private externalWriteConflict: string | undefined;
+  private approvalAbortController: AbortController | undefined;
   private historyTurns: Turn[] | undefined;
   private availableCommands: AcpAvailableCommand[] | undefined;
   readonly createdAt: number;
@@ -169,9 +189,20 @@ export class ThreadRuntime {
         updatedAt: this.updatedAt,
       });
 
+      const initialSnapshot = await this.host.inspectTranscriptState?.(this.threadId).catch(() => undefined);
+      this.externalWriteConflict = undefined;
+      this.externalWriteBaseline = {
+        userInputCount: initialSnapshot?.userInputs.length ?? 0,
+        expectedPromptText: preview,
+      };
+      this.startExternalWriteMonitor();
+
       void this.runPrompt(client, turn, blocks);
       return turn.snapshot(false);
     } catch (error) {
+      this.stopExternalWriteMonitor();
+      this.externalWriteBaseline = undefined;
+      this.externalWriteConflict = undefined;
       this.startingTurn = false;
       this.currentTurn = undefined;
       this.scheduleIdleClose();
@@ -192,6 +223,9 @@ export class ThreadRuntime {
 
   async close(): Promise<void> {
     this.cancelIdleClose();
+    this.stopExternalWriteMonitor();
+    this.approvalAbortController?.abort();
+    this.approvalAbortController = undefined;
     if (this.currentTurn && !this.currentTurn.finished) {
       this.currentTurn.markInterrupted();
       const { turn } = this.currentTurn.finish(undefined, "session closed", this.totalUsage);
@@ -209,22 +243,41 @@ export class ThreadRuntime {
     try {
       const res = await client.sessionPrompt(this.threadId, blocks);
       this.persisted = true;
-      const finished = turn.finish(res, undefined, this.totalUsage);
+      const conflict = this.externalWriteConflict;
+      const finished = turn.finish(res, conflict, this.totalUsage);
       if (finished.usage) this.totalUsage = finished.usage;
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } catch (error) {
-      const finished = turn.finish(undefined, errorText(error), this.totalUsage);
+      const conflict = this.externalWriteConflict;
+      if (conflict) this.persisted = true;
+      const finished = turn.finish(undefined, conflict ?? errorText(error), this.totalUsage);
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } finally {
+      this.stopExternalWriteMonitor();
+      this.externalWriteBaseline = undefined;
+      const hadConflict = Boolean(this.externalWriteConflict);
+      this.externalWriteConflict = undefined;
       if (this.currentTurn === turn) {
         this.currentTurn = undefined;
       }
       this.updatedAt = Math.floor(Date.now() / 1000);
       this.host.onTurnPersisted?.(this.threadId, { updatedAt: this.updatedAt });
-      this.host.publish(this.threadId, "thread/status/changed", {
-        threadId: this.threadId,
-        status: { type: "idle" },
-      });
+      const ext = hadConflict
+        ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
+        : undefined;
+      if (ext?.externallyBusy) {
+        this.host.publish(this.threadId, "thread/status/changed", {
+          threadId: this.threadId,
+          status: { type: "active", activeFlags: [] },
+          canAcceptDirectInput: false,
+          claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+        });
+      } else {
+        this.host.publish(this.threadId, "thread/status/changed", {
+          threadId: this.threadId,
+          status: { type: "idle" },
+        });
+      }
       this.scheduleIdleClose();
     }
   }
@@ -316,22 +369,97 @@ export class ThreadRuntime {
     }
     const turnId = this.currentTurn?.id ?? `${this.threadId}:approval`;
     const spec = serverApprovalFor(params, { threadId: this.threadId, turnId, cwd: this.cwd });
+    if (await this.checkExternalWriteConflict()) {
+      return { outcome: { outcome: "cancelled" } };
+    }
+    if (this.externalWriteBaseline) {
+      const preApproval = await this.host.inspectTranscriptState?.(this.threadId).catch(() => undefined);
+      if (preApproval) {
+        this.externalWriteBaseline = {
+          ...this.externalWriteBaseline,
+          approvalUserInputCount: preApproval.userInputs.length,
+          approvalPlannerResponseCount: preApproval.plannerResponseCount,
+        };
+      }
+    }
+    const localAbort = new AbortController();
+    const onUpstreamAbort = () => localAbort.abort();
+    signal.addEventListener("abort", onUpstreamAbort, { once: true });
+    this.approvalAbortController = localAbort;
     this.host.publish(this.threadId, "thread/status/changed", {
       threadId: this.threadId,
       status: { type: "active", activeFlags: ["waitingOnApproval"] },
     });
     try {
-      const response = await this.host.request(this.threadId, spec.method, spec.params, signal);
+      const response = await this.host.request(this.threadId, spec.method, spec.params, localAbort.signal);
+      if (await this.checkExternalWriteConflict()) {
+        return { outcome: { outcome: "cancelled" } };
+      }
       return spec.toAcpResult(response);
     } catch {
       return { outcome: { outcome: "cancelled" } };
     } finally {
-      if (this.currentTurn && !this.currentTurn.finished) {
+      signal.removeEventListener("abort", onUpstreamAbort);
+      if (this.approvalAbortController === localAbort) {
+        this.approvalAbortController = undefined;
+      }
+      if (this.externalWriteBaseline) {
+        this.externalWriteBaseline = {
+          userInputCount: this.externalWriteBaseline.userInputCount,
+          expectedPromptText: this.externalWriteBaseline.expectedPromptText,
+        };
+      }
+      if (this.currentTurn && !this.currentTurn.finished && !this.externalWriteConflict) {
         this.host.publish(this.threadId, "thread/status/changed", {
           threadId: this.threadId,
           status: { type: "active", activeFlags: [] },
         });
       }
+    }
+  }
+
+  private startExternalWriteMonitor(): void {
+    this.stopExternalWriteMonitor();
+    if (!this.host.inspectTranscriptState) return;
+    const pollMs = this.host.externalWritePollMs ?? DEFAULT_EXTERNAL_WRITE_POLL_MS;
+    if (pollMs <= 0) return;
+    this.externalWriteTimer = setInterval(() => {
+      void this.checkExternalWriteConflict();
+    }, pollMs);
+    this.externalWriteTimer.unref?.();
+  }
+
+  private stopExternalWriteMonitor(): void {
+    if (this.externalWriteTimer) {
+      clearInterval(this.externalWriteTimer);
+      this.externalWriteTimer = undefined;
+    }
+  }
+
+  private async checkExternalWriteConflict(): Promise<boolean> {
+    if (this.externalWriteConflict) return true;
+    const baseline = this.externalWriteBaseline;
+    if (!baseline || !this.currentTurn || this.currentTurn.finished || !this.host.inspectTranscriptState) {
+      return false;
+    }
+    if (this.externalWriteChecking) return false;
+    this.externalWriteChecking = true;
+    try {
+      const current = await this.host.inspectTranscriptState(this.threadId).catch(() => undefined);
+      const detection = detectExternalConcurrentWrite(baseline, current);
+      if (!detection.detected) return false;
+      this.externalWriteConflict = EXTERNAL_WRITE_CONFLICT_MESSAGE;
+      logger.info("agy.concurrent_write.detected", {
+        thread: this.threadId,
+        turn: this.currentTurn.id,
+        reason: detection.reason ?? "external_write",
+      });
+      this.stopExternalWriteMonitor();
+      this.approvalAbortController?.abort();
+      this.client?.sessionCancel(this.threadId);
+      return true;
+    } finally {
+      this.externalWriteChecking = false;
     }
   }
 

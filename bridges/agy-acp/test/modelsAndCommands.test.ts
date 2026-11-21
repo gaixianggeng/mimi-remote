@@ -5,7 +5,12 @@ import path from "node:path";
 import { sanitizeAgyEnv } from "../src/agy/env.ts";
 import { catalogAgyCommands } from "../src/agy/commands.ts";
 import { catalogAgyModels } from "../src/agy/models.ts";
-import { formatTranscriptUserText, inspectTranscriptActivity, readTranscriptTurns } from "../src/agy/transcript.ts";
+import {
+  detectExternalConcurrentWrite,
+  formatTranscriptUserText,
+  inspectTranscriptActivity,
+  readTranscriptTurns,
+} from "../src/agy/transcript.ts";
 import { agyModeFor, runSettingsFor } from "../src/runtime/settings.ts";
 
 describe("agy env & settings & catalogs", () => {
@@ -172,5 +177,54 @@ D1–D6 的倾向
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  test("C12: detectExternalConcurrentWrite flags external USER_INPUT and approval-window writes without false positives", () => {
+    const baseline = {
+      userInputCount: 1,
+      expectedPromptText: "Run pwd and wait for approval",
+    };
+    // Own USER_INPUT matching prompt is NOT a conflict.
+    expect(
+      detectExternalConcurrentWrite(baseline, {
+        path: "/tmp/t.jsonl",
+        size: 100,
+        mtimeMs: Date.now(),
+        userInputs: ["prior turn", "Run pwd and wait for approval"],
+        plannerResponseCount: 1,
+        stepCount: 3,
+      }).detected,
+    ).toBe(false);
+
+    // Second new USER_INPUT during active turn IS a conflict.
+    expect(
+      detectExternalConcurrentWrite(baseline, {
+        path: "/tmp/t.jsonl",
+        size: 200,
+        mtimeMs: Date.now(),
+        userInputs: ["prior turn", "Run pwd and wait for approval", "CROSS MAC CONTENDING"],
+        plannerResponseCount: 2,
+        stepCount: 5,
+      }),
+    ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
+
+    // Any new PLANNER_RESPONSE during pending approval IS a conflict.
+    expect(
+      detectExternalConcurrentWrite(
+        {
+          ...baseline,
+          approvalUserInputCount: 2,
+          approvalPlannerResponseCount: 1,
+        },
+        {
+          path: "/tmp/t.jsonl",
+          size: 240,
+          mtimeMs: Date.now(),
+          userInputs: ["prior turn", "Run pwd and wait for approval"],
+          plannerResponseCount: 2,
+          stepCount: 4,
+        },
+      ),
+    ).toEqual({ detected: true, reason: "external_planner_response_during_pending_approval" });
   });
 });
