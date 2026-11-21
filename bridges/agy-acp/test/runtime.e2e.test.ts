@@ -674,4 +674,114 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("B10: preserves failed and interrupted turn terminal status and structured error across cold restart on both ACP replay and transcript paths", async () => {
+    let callCount = 0;
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ emitUpdate }) => {
+        callCount += 1;
+        if (callCount === 1) {
+          emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "before failure" } });
+          throw new Error("EDGE_FIXTURE_E42: injected turn failure");
+        }
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial before stop" } });
+        return { stopReason: "cancelled" };
+      },
+    });
+
+    const firstHarness = await createTestHarness(world);
+    let threadId = "";
+    try {
+      const started = await firstHarness.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      threadId = started.thread.id;
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+
+      await firstHarness.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "edge-error", text_elements: [] }],
+      });
+      for (let i = 0; i < 40; i += 1) {
+        if (firstHarness.notifications.filter((n) => n.method === "turn/completed").length >= 1) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      await firstHarness.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "edge-stop", text_elements: [] }],
+      });
+      for (let i = 0; i < 40; i += 1) {
+        if (firstHarness.notifications.filter((n) => n.method === "turn/completed").length >= 2) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    } finally {
+      await firstHarness.close();
+    }
+
+    // Cold restart (new adapter instance reading the same stateDir/overlay.json):
+    // 1) ACP replay path (no transcript file yet).
+    const coldHarness = await createTestHarness(world);
+    try {
+      const replayHistory = await coldHarness.rpc<{
+        data: Array<{ id: string; status: string; error: { message: string } | null }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(replayHistory.data).toHaveLength(2);
+      expect(replayHistory.data[0]?.status).toBe("failed");
+      expect(replayHistory.data[0]?.error?.message).toContain("EDGE_FIXTURE_E42");
+      expect(replayHistory.data[1]?.status).toBe("interrupted");
+      expect(replayHistory.data[1]?.error).toBeNull();
+
+      // 2) Transcript direct-read path (even if transcript itself does not mark the failed/interrupted steps).
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({
+            step_index: 0,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-21T10:00:00Z",
+            content: "<USER_REQUEST>\nedge-error\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 1,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-21T10:00:01Z",
+            content: "before failure",
+          }),
+          JSON.stringify({
+            step_index: 2,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-21T10:00:02Z",
+            content: "<USER_REQUEST>\nedge-stop\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 3,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-21T10:00:03Z",
+            content: "partial before stop",
+          }),
+        ].join("\n") + "\n",
+      );
+
+      const transcriptHistory = await coldHarness.rpc<{
+        data: Array<{ id: string; status: string; error: { message: string } | null }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(transcriptHistory.data).toHaveLength(2);
+      expect(transcriptHistory.data[0]?.status).toBe("failed");
+      expect(transcriptHistory.data[0]?.error?.message).toContain("EDGE_FIXTURE_E42");
+      expect(transcriptHistory.data[1]?.status).toBe("interrupted");
+      expect(transcriptHistory.data[1]?.error).toBeNull();
+    } finally {
+      await coldHarness.close();
+    }
+  });
 });

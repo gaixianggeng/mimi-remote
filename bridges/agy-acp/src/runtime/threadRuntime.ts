@@ -37,7 +37,14 @@ export interface RuntimeHost {
   onSessionOpen?(openResult: AcpSessionOpenResult): void;
   onAvailableCommands?(cwd: string, commands: AcpAvailableCommand[]): void;
   onTitleUpdated?(threadId: string, title: string): void;
-  onTurnPersisted?(threadId: string, patch: { preview?: string; updatedAt?: number }): void;
+  onTurnPersisted?(
+    threadId: string,
+    patch: {
+      preview?: string;
+      updatedAt?: number;
+      turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+    },
+  ): void;
   existingTurnCount?(threadId: string): Promise<number>;
   recordTurnClientId?(turnId: string, clientId: string): void;
   inspectTranscriptState?(threadId: string): Promise<TranscriptTurnSnapshot | undefined>;
@@ -230,6 +237,10 @@ export class ThreadRuntime {
       this.currentTurn.markInterrupted();
       const { turn } = this.currentTurn.finish(undefined, "session closed", this.totalUsage);
       this.historyTurns = [...(this.historyTurns ?? []), turn];
+      this.host.onTurnPersisted?.(this.threadId, {
+        updatedAt: Math.floor(Date.now() / 1000),
+        turnOutcome: { turnId: turn.id, status: "interrupted" },
+      });
       this.currentTurn = undefined;
     }
     await this.closeClient();
@@ -240,17 +251,20 @@ export class ThreadRuntime {
     turn: LiveTurn,
     blocks: Parameters<AcpClient["sessionPrompt"]>[1],
   ): Promise<void> {
+    let finishedTurn: Turn | undefined;
     try {
       const res = await client.sessionPrompt(this.threadId, blocks);
       this.persisted = true;
       const conflict = this.externalWriteConflict;
       const finished = turn.finish(res, conflict, this.totalUsage);
+      finishedTurn = finished.turn;
       if (finished.usage) this.totalUsage = finished.usage;
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } catch (error) {
       const conflict = this.externalWriteConflict;
       if (conflict) this.persisted = true;
       const finished = turn.finish(undefined, conflict ?? errorText(error), this.totalUsage);
+      finishedTurn = finished.turn;
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } finally {
       this.stopExternalWriteMonitor();
@@ -261,7 +275,18 @@ export class ThreadRuntime {
         this.currentTurn = undefined;
       }
       this.updatedAt = Math.floor(Date.now() / 1000);
-      this.host.onTurnPersisted?.(this.threadId, { updatedAt: this.updatedAt });
+      const turnOutcome =
+        finishedTurn && (finishedTurn.status === "failed" || finishedTurn.status === "interrupted")
+          ? {
+              turnId: finishedTurn.id,
+              status: finishedTurn.status,
+              error: finishedTurn.error?.message ?? null,
+            }
+          : undefined;
+      this.host.onTurnPersisted?.(this.threadId, {
+        updatedAt: this.updatedAt,
+        ...(turnOutcome ? { turnOutcome } : {}),
+      });
       const ext = hadConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
         : undefined;

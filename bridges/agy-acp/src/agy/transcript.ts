@@ -414,6 +414,8 @@ export async function readTranscriptTurns(
     startedAtMs: number | null;
     completedAtMs: number | null;
     toolStates: Map<string, AcpToolState>;
+    terminalStatus?: "failed" | "interrupted";
+    errorMessage?: string;
   }
 
   const turns: TurnDraft[] = [];
@@ -463,6 +465,13 @@ export async function readTranscriptTurns(
     if (step.type === "PLANNER_RESPONSE") {
       const draft = current ?? nextTurn(stepMs);
       if (stepMs !== null) draft.completedAtMs = stepMs;
+      const normalizedStatus = typeof step.status === "string" ? step.status.toUpperCase() : "";
+      if (
+        (normalizedStatus === "CANCELLED" || normalizedStatus === "CANCELED" || normalizedStatus === "INTERRUPTED")
+        && draft.terminalStatus !== "failed"
+      ) {
+        draft.terminalStatus = "interrupted";
+      }
       if (typeof step.thinking === "string" && step.thinking.trim()) {
         draft.reasoningSeq += 1;
         draft.items.push({
@@ -528,19 +537,24 @@ export async function readTranscriptTurns(
       continue;
     }
 
-    if (step.type === "ERROR_MESSAGE" && typeof step.content === "string" && step.content.trim()) {
+    if (step.type === "ERROR_MESSAGE") {
       const draft = current ?? nextTurn(stepMs);
       if (stepMs !== null) draft.completedAtMs = stepMs;
-      draft.msgSeq += 1;
-      draft.items.push({
-        type: "agentMessage",
-        id: `${draft.id}:msg:${draft.msgSeq}`,
-        text: step.content.trim(),
-        phase: null,
-        memoryCitation: null,
-        delivery: null,
-        questions: null,
-      });
+      draft.terminalStatus = "failed";
+      const errText = typeof step.content === "string" ? step.content.trim() : "";
+      if (errText) {
+        draft.errorMessage = errText;
+      }
+      continue;
+    }
+
+    const normalizedStepStatus = typeof step.status === "string" ? step.status.toUpperCase() : "";
+    if (
+      current
+      && (normalizedStepStatus === "CANCELLED" || normalizedStepStatus === "CANCELED" || normalizedStepStatus === "INTERRUPTED")
+      && current.terminalStatus !== "failed"
+    ) {
+      current.terminalStatus = "interrupted";
     }
   }
 
@@ -554,7 +568,16 @@ export async function readTranscriptTurns(
       if (!state) return item;
       return acpToolToThreadItem(state, cwd, toolsPending);
     });
-    const status: TurnStatus = isActiveTurn ? "inProgress" : "completed";
+    const status: TurnStatus = isActiveTurn ? "inProgress" : (draft.terminalStatus ?? "completed");
+    const error =
+      !isActiveTurn && status === "failed"
+        ? {
+            message: draft.errorMessage ?? "Antigravity turn failed",
+            codexErrorInfo: null,
+            additionalDetails: null,
+            misalignment: null,
+          }
+        : null;
     const startedAt = draft.startedAtMs !== null ? Math.floor(draft.startedAtMs / 1000) : null;
     const completedAt = !isActiveTurn && draft.completedAtMs !== null ? Math.floor(draft.completedAtMs / 1000) : null;
     const durationMs =
@@ -567,7 +590,7 @@ export async function readTranscriptTurns(
       items: finalizedItems,
       itemsView: "full",
       status,
-      error: null,
+      error,
       startedAt,
       completedAt,
       durationMs,

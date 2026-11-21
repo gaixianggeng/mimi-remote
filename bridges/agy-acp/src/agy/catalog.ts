@@ -6,7 +6,7 @@ import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import type { GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
-import type { AgyOverlay } from "./overlay.ts";
+import type { AgyOverlay, TurnOutcomeRecord } from "./overlay.ts";
 import {
   inspectTranscriptActivity,
   readTranscriptTurns,
@@ -296,6 +296,8 @@ export class AgyHistoryStore {
     private readonly liveTurns?: (sessionId: string) => Turn[] | undefined,
     /** 为本进程发起的历史回合补回本地 clientId，确保 iOS 重开会话刷新时与本地回显精确对齐。 */
     private readonly clientIdForTurn?: (turnId: string) => string | undefined,
+    /** 回填持久化在 overlay 中的失败/中断回合终态与结构化错误（B10）。 */
+    private readonly turnOutcomeForTurn?: (sessionId: string, turnId: string) => TurnOutcomeRecord | undefined,
   ) {}
 
   invalidate(sessionId: string): void {
@@ -338,6 +340,7 @@ export class AgyHistoryStore {
       turns = updatesToTurns(sessionId, record.cwd, updates, running);
     }
     turns = this.attachKnownClientIds(turns);
+    turns = this.applyKnownTurnOutcomes(sessionId, turns);
 
     this.cache.delete(sessionId);
     this.cache.set(sessionId, { revision, running, holderActive, turns });
@@ -363,6 +366,35 @@ export class AgyHistoryStore {
         return item;
       });
       return changed ? { ...turn, items } : turn;
+    });
+  }
+
+  private applyKnownTurnOutcomes(sessionId: string, turns: Turn[]): Turn[] {
+    if (!this.turnOutcomeForTurn) return turns;
+    return turns.map((turn) => {
+      if (turn.status === "inProgress") return turn;
+      const outcome = this.turnOutcomeForTurn!(sessionId, turn.id);
+      if (!outcome) return turn;
+      if (outcome.status === "failed") {
+        return {
+          ...turn,
+          status: "failed",
+          error: turn.error ?? {
+            message: outcome.error ?? "Antigravity turn failed",
+            codexErrorInfo: null,
+            additionalDetails: null,
+            misalignment: null,
+          },
+        };
+      }
+      if (outcome.status === "interrupted" && turn.status === "completed") {
+        return {
+          ...turn,
+          status: "interrupted",
+          error: null,
+        };
+      }
+      return turn;
     });
   }
 }

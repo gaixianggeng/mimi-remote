@@ -1,6 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+export interface TurnOutcomeRecord {
+  status: "failed" | "interrupted";
+  error?: string | null;
+}
+
 interface OverlayEntry {
   customTitle?: string;
   preview?: string;
@@ -8,7 +13,10 @@ interface OverlayEntry {
   updatedAt?: number;
   cwd?: string;
   archived?: boolean;
+  turnOutcomes?: Record<string, TurnOutcomeRecord>;
 }
+
+const MAX_TURN_OUTCOMES_PER_SESSION = 200;
 
 interface OverlayData {
   version: 1;
@@ -50,12 +58,38 @@ export class AgyOverlay {
     return this.data.sessions[sessionId]?.archived === true;
   }
 
+  getTurnOutcome(sessionId: string, turnId: string): TurnOutcomeRecord | undefined {
+    return this.data.sessions[sessionId]?.turnOutcomes?.[turnId];
+  }
+
   async recordSession(
     sessionId: string,
-    patch: { cwd?: string; preview?: string; createdAt?: number; updatedAt?: number; customTitle?: string },
+    patch: {
+      cwd?: string;
+      preview?: string;
+      createdAt?: number;
+      updatedAt?: number;
+      customTitle?: string;
+      turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+    },
   ): Promise<void> {
     await this.load();
     const current = this.data.sessions[sessionId] ?? {};
+    let turnOutcomes = current.turnOutcomes;
+    if (patch.turnOutcome) {
+      const nextOutcomes: Record<string, TurnOutcomeRecord> = { ...(current.turnOutcomes ?? {}) };
+      delete nextOutcomes[patch.turnOutcome.turnId];
+      nextOutcomes[patch.turnOutcome.turnId] = {
+        status: patch.turnOutcome.status,
+        ...(patch.turnOutcome.error ? { error: patch.turnOutcome.error } : {}),
+      };
+      const keys = Object.keys(nextOutcomes);
+      while (keys.length > MAX_TURN_OUTCOMES_PER_SESSION) {
+        const oldest = keys.shift();
+        if (oldest) delete nextOutcomes[oldest];
+      }
+      turnOutcomes = nextOutcomes;
+    }
     const next: OverlayEntry = {
       ...current,
       ...(patch.cwd ? { cwd: patch.cwd } : {}),
@@ -63,6 +97,7 @@ export class AgyOverlay {
       ...(patch.createdAt !== undefined && current.createdAt === undefined ? { createdAt: patch.createdAt } : {}),
       ...(patch.updatedAt !== undefined ? { updatedAt: Math.max(current.updatedAt ?? 0, patch.updatedAt) } : {}),
       ...(patch.customTitle !== undefined ? { customTitle: patch.customTitle } : {}),
+      ...(turnOutcomes ? { turnOutcomes } : {}),
     };
     this.data.sessions[sessionId] = next;
     await this.persist();
@@ -70,6 +105,10 @@ export class AgyOverlay {
 
   async setCustomTitle(sessionId: string, title: string): Promise<void> {
     await this.recordSession(sessionId, { customTitle: title });
+  }
+
+  flush(): Promise<void> {
+    return this.writeChain;
   }
 
   private persist(): Promise<void> {

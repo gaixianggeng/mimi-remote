@@ -209,22 +209,69 @@ D1–D6 的倾向
     ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
 
     // Any new PLANNER_RESPONSE during pending approval IS a conflict.
-    expect(
-      detectExternalConcurrentWrite(
-        {
-          ...baseline,
-          approvalUserInputCount: 2,
-          approvalPlannerResponseCount: 1,
-        },
-        {
-          path: "/tmp/t.jsonl",
-          size: 240,
-          mtimeMs: Date.now(),
-          userInputs: ["prior turn", "Run pwd and wait for approval"],
-          plannerResponseCount: 2,
-          stepCount: 4,
-        },
-      ),
-    ).toEqual({ detected: true, reason: "external_planner_response_during_pending_approval" });
+      expect(
+        detectExternalConcurrentWrite(
+          {
+            ...baseline,
+            approvalUserInputCount: 2,
+            approvalPlannerResponseCount: 1,
+          },
+          {
+            path: "/tmp/t.jsonl",
+            size: 240,
+            mtimeMs: Date.now(),
+            userInputs: ["prior turn", "Run pwd and wait for approval"],
+            plannerResponseCount: 2,
+            stepCount: 4,
+          },
+        ),
+      ).toEqual({ detected: true, reason: "external_planner_response_during_pending_approval" });
+    });
+
+  test("B10: readTranscriptTurns preserves failed ERROR_MESSAGE and cancelled/interrupted turn status", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:00Z",
+          content: "<USER_REQUEST>\ntrigger error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:01Z",
+          content: "Error: EDGE_FIXTURE_E42: injected turn failure",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "<USER_REQUEST>\nstop me\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "CANCELLED",
+          created_at: "2026-11-21T10:00:03Z",
+          content: "partial output",
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(2);
+      expect(turns[0]?.status).toBe("failed");
+      expect(turns[0]?.error?.message).toBe("Error: EDGE_FIXTURE_E42: injected turn failure");
+      expect(turns[1]?.status).toBe("interrupted");
+      expect(turns[1]?.error).toBeNull();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 });

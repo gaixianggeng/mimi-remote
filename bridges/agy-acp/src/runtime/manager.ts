@@ -23,7 +23,14 @@ export interface ManagerOptions {
   externalWritePollMs?: number;
   onSessionOpen?: (openResult: AcpSessionOpenResult) => void;
   onAvailableCommands?: (cwd: string, commands: AcpAvailableCommand[]) => void;
-  onTurnPersisted?: (threadId: string, patch: { preview?: string; updatedAt?: number }) => void;
+  onTurnPersisted?: (
+    threadId: string,
+    patch: {
+      preview?: string;
+      updatedAt?: number;
+      turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+    },
+  ) => void;
   existingTurnCount?: (threadId: string) => Promise<number>;
   hasCustomTitle?: (threadId: string) => boolean;
   inspectTranscriptState?: (threadId: string) => Promise<TranscriptTurnSnapshot | undefined>;

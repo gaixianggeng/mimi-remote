@@ -136,6 +136,7 @@ export function createApp(options: AppOptions): App {
     backend,
     (sessionId) => manager.liveTurns(sessionId),
     (turnId) => manager.clientIdForTurn(turnId),
+    (sessionId, turnId) => overlay.getTurnOutcome(sessionId, turnId),
   );
   historyRef = history;
 
@@ -184,6 +185,7 @@ export function createApp(options: AppOptions): App {
     models,
     async close() {
       await Promise.allSettled([manager.closeAll(), cliSharedAcp.close(), otherSharedAcp.close()]);
+      await overlay.flush().catch(() => {});
     },
   };
 }
