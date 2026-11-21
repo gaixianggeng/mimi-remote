@@ -130,18 +130,20 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 		if threadID == "" || threadID != threadIDRaw || cwd == "" || cwd != cwdRaw || !filepath.IsAbs(cwd) {
 			continue
 		}
-		scope, ok := p.router.gatewayScopeForPath(cwd)
+		scope, ok := p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
 		if !ok {
 			continue
 		}
-		info, err := os.Stat(scope.realPath)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		if strings.TrimSpace(scope.project.ID) == "" && scope.browse {
-			if _, seen := seenGitPaths[scope.realPath]; !seen {
-				seenGitPaths[scope.realPath] = struct{}{}
-				gitPaths = append(gitPaths, scope.realPath)
+		if !scope.missing {
+			info, err := os.Stat(scope.realPath)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			if strings.TrimSpace(scope.project.ID) == "" && scope.browse {
+				if _, seen := seenGitPaths[scope.realPath]; !seen {
+					seenGitPaths[scope.realPath] = struct{}{}
+					gitPaths = append(gitPaths, scope.realPath)
+				}
 			}
 		}
 		candidates = append(candidates, globalListCandidate{itemFields: itemFields, thread: thread, threadID: threadID, scope: scope})
@@ -161,7 +163,7 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 		}
 		itemFields, thread, threadID, scope := candidate.itemFields, candidate.thread, candidate.threadID, candidate.scope
 		project := scope.project
-		if strings.TrimSpace(project.ID) == "" && scope.browse {
+		if strings.TrimSpace(project.ID) == "" && scope.browse && !scope.missing {
 			if _, unsettled := unsettledPaths[scope.realPath]; unsettled {
 				incomplete = true
 				continue
@@ -172,9 +174,9 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			continue
 		}
 
-		// 外部 browse-root Worktree 和所有显式 parent 子会话都只有“可读发现”资格。
-		// 上游即使声明 canAcceptDirectInput=true，也不能越过 Phase 1 父会话管理边界。
-		forceReadOnly := scope.browse || strings.TrimSpace(thread.ParentThreadID) != ""
+		// 外部 browse-root Worktree、原目录已移动/删除的历史会话以及显式 parent 子会话
+		// 都只有“可读发现”资格；上游即使声明 canAcceptDirectInput=true 也强制降为只读。
+		forceReadOnly := scope.browse || scope.missing || strings.TrimSpace(thread.ParentThreadID) != ""
 		canAccept := false
 		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
 		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
@@ -185,7 +187,7 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			"id", "sessionId", "threadId", "parentThreadId", "cwd", "path",
 			"name", "preview", "status", "modelProvider", "source", "threadSource",
 			"agentNickname", "agentRole", "gitInfo", "createdAt", "updatedAt", "recencyAt",
-			"canAcceptDirectInput",
+			"canAcceptDirectInput", "cwdMissing",
 			// Claude bridge 在会话被本机其他 Claude 进程持有时附带的持有方摘要
 			// （entrypoint/kind/status/pid），只用于展示"正在 Mac 上运行"，不参与授权。
 			"claudeOwner",
@@ -196,13 +198,18 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 		if forceReadOnly {
 			safeThread["canAcceptDirectInput"] = false
 		}
-		safeThread["mimiRemote"] = map[string]any{
+		mimiMeta := map[string]any{
 			"projectId":   project.ID,
 			"projectName": project.Name,
 			"projectPath": project.Path,
 			"discovery":   "global",
 			"readOnly":    forceReadOnly,
 		}
+		if scope.missing {
+			safeThread["cwdMissing"] = true
+			mimiMeta["cwdMissing"] = true
+		}
+		safeThread["mimiRemote"] = mimiMeta
 		safeItems = append(safeItems, safeThread)
 		allowedThreads = append(allowedThreads, appServerGatewayAllowedThread{
 			id:                   threadID,
@@ -212,6 +219,7 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			canAcceptDirectInput: canAccept,
 			directInputKnown:     directInputKnown,
 			readOnly:             forceReadOnly,
+			cwdMissing:           scope.missing,
 		})
 	}
 

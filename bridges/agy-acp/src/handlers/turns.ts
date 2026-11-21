@@ -3,6 +3,7 @@ import { ErrorCode, RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { RequestContext } from "@mimi/appserver-kit/server/router.ts";
 import type { AgyCatalog, AgyHistoryStore, SessionRecord } from "../agy/catalog.ts";
 import { appDataDirForOrigin } from "../agy/env.ts";
+import { directoryExists } from "../agy/git.ts";
 import type { AgyOverlay } from "../agy/overlay.ts";
 import type { ThreadManager } from "../runtime/manager.ts";
 import { runSettingsFor } from "../runtime/settings.ts";
@@ -58,7 +59,7 @@ function inputOf(params: Params, method: string): UserInput[] {
 
 function newRecord(threadId: string, cwd: string): SessionRecord {
   const now = Math.floor(Date.now() / 1000);
-  return { id: threadId, cwd, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, origin: "cli" };
+  return { id: threadId, cwd, cwdMissing: false, name: null, preview: "", createdAt: now, updatedAt: now, gitBranch: null, path: null, archived: false, origin: "cli" };
 }
 
 function sessionResponse(thread: AdapterThread, runtime: ThreadRuntime, params: Params) {
@@ -157,6 +158,11 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       await deps.agyGate.ensure();
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const runtime = manager.get(threadId) ?? (await openExisting(threadId, cwd, params)).runtime;
+      if (!(await directoryExists(runtime.cwd))) {
+        throw RpcError.invalidParams(
+          "The original workspace directory for this session no longer exists on your computer (it may have been moved or deleted). History remains available read-only.",
+        );
+      }
       if (!runtime.isBusy()) {
         const ext = await catalog.externalActivity(threadId);
         if (ext?.externallyBusy) {

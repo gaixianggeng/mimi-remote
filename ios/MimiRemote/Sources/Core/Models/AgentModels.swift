@@ -120,6 +120,8 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var spawnedFromThreadID: String?
     /// Antigravity 会话来源标识（`"cli"` 或 `"other"`），用于列表轻量胶囊区分 CLI 与桌面端会话。
     var sessionOrigin: String? = nil
+    /// 会话原工作目录在电脑上已移动或删除时为 true，保留只读历史并提示路径缺失（C14/C15）。
+    var cwdMissing: Bool? = nil
     let context: SessionContextSnapshot?
 
     /// Antigravity 会话来源小标签（仅 Antigravity 展示 `CLI` / `Other`）。
@@ -173,9 +175,12 @@ struct AgentSession: Identifiable, Codable, Hashable {
     }
 
     /// 旧 App Server 的普通顶层 thread 没有 capability 字段，继续沿用既有可写行为；
-    /// 子会话缺字段则 fail-closed，避免把协议未知误当成可直接输入。
+    /// 子会话缺字段或原目录已缺失则 fail-closed，避免把协议未知或目录失效误当成可直接输入。
     var allowsDirectInput: Bool {
-        canAcceptDirectInput ?? !isSubagentThread
+        if cwdMissing == true {
+            return false
+        }
+        return canAcceptDirectInput ?? !isSubagentThread
     }
 
     /// 父子关系或明确的 subAgent source 任一成立，都按结构子任务处理。
@@ -223,6 +228,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         writerHeldElsewhere: Bool? = nil,
         spawnedFromThreadID: String? = nil,
         sessionOrigin: String? = nil,
+        cwdMissing: Bool? = nil,
         context: SessionContextSnapshot? = nil
     ) {
         self.id = id
@@ -273,6 +279,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
             : nil
         let normalizedOrigin = sessionOrigin?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         self.sessionOrigin = normalizedOrigin?.isEmpty == false ? normalizedOrigin : nil
+        self.cwdMissing = cwdMissing
         self.context = context
     }
 
@@ -335,6 +342,7 @@ struct AgentSession: Identifiable, Codable, Hashable {
         case claudeOwner = "claude_owner"
         case spawnedFromThreadID = "spawned_from_thread_id"
         case sessionOrigin = "session_origin"
+        case cwdMissing = "cwd_missing"
         case context
     }
 }

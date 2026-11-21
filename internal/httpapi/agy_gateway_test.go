@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
 func TestAgyRuntimeNormalizationAndChannelDeclaration(t *testing.T) {
@@ -242,5 +244,108 @@ exit 0
 	ch := router.agyChannelConfig(req)
 	if ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.CLIVersion != "1.4.99" || ch.Bridge.MinimumCLIVersion != "1.5.0" {
 		t.Fatalf("expected channel bridge to include cli_version=1.4.99 and minimum_cli_version=1.5.0, got %+v", ch.Bridge)
+	}
+}
+
+func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *testing.T) {
+	parentDir := t.TempDir()
+	projectDir := filepath.Join(parentDir, "remove-fixture")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir projectDir: %v", err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "remove-fixture", Name: "Remove Fixture", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatalf("new project registry: %v", err)
+	}
+	// Remove the registered workspace directory after registration (C14/C15).
+	if err := os.Remove(projectDir); err != nil {
+		t.Fatalf("remove projectDir: %v", err)
+	}
+
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		cfg: config.Config{
+			BrowseRoots: []string{parentDir},
+		},
+	}
+
+	// Strict write-path scope check must still reject missing directory.
+	if _, ok := router.gatewayScopeForPath(projectDir); ok {
+		t.Fatalf("expected strict gatewayScopeForPath to reject missing directory")
+	}
+	// Read-only history scope helper must resolve it as missing=true.
+	histScope, ok := router.gatewayReadOnlyScopeForHistoryPath(projectDir)
+	if !ok || !histScope.missing || histScope.project.ID != "remove-fixture" {
+		t.Fatalf("expected missing read-only history scope for remove-fixture, got ok=%v scope=%+v", ok, histScope)
+	}
+
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	upstreamPayload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"data": []map[string]any{
+				{
+					"id":                   "sess-removed",
+					"cwd":                  projectDir,
+					"name":                 "Removed Fixture Session",
+					"canAcceptDirectInput": true,
+				},
+			},
+			"nextCursor": nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal upstream payload: %v", err)
+	}
+	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
+		method: "thread/list",
+	})
+	if err != nil {
+		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	}
+	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
+		t.Fatalf("expected read-only cwdMissing allowed thread, got %+v", allowed)
+	}
+
+	var decoded struct {
+		Result struct {
+			Data []struct {
+				ID                   string         `json:"id"`
+				CanAcceptDirectInput bool           `json:"canAcceptDirectInput"`
+				CwdMissing           bool           `json:"cwdMissing"`
+				MimiRemote           map[string]any `json:"mimiRemote"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &decoded); err != nil {
+		t.Fatalf("unmarshal rewritten global list: %v", err)
+	}
+	if len(decoded.Result.Data) != 1 || decoded.Result.Data[0].ID != "sess-removed" ||
+		decoded.Result.Data[0].CanAcceptDirectInput || !decoded.Result.Data[0].CwdMissing ||
+		decoded.Result.Data[0].MimiRemote["cwdMissing"] != true {
+		t.Fatalf("unexpected rewritten missing-dir item: %s", string(rewritten))
+	}
+
+	// Register allowed thread and verify thread/read validation succeeds for the missing-dir history.
+	policy.allowThread(allowed[0])
+	readRaw, _ := json.Marshal(map[string]any{
+		"thread": map[string]any{
+			"id":  "sess-removed",
+			"cwd": projectDir,
+		},
+	})
+	if err := policy.validateReadOnlyThreadResponse(readRaw, appServerGatewayPendingThreadRequest{
+		method:   "thread/read",
+		threadID: "sess-removed",
+	}); err != nil {
+		t.Fatalf("expected validateReadOnlyThreadResponse to allow missing-dir history read, got %v", err)
 	}
 }

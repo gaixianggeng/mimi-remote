@@ -690,6 +690,18 @@ struct SessionIndexRow: View {
 
             Spacer(minLength: 12)
 
+            if session.cwdMissing == true {
+                let prefersChinese = UserFacingError.message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
+                Text(prefersChinese ? "目录缺失" : "Missing path")
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.warning)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(tokens.warning.opacity(0.12), in: Capsule())
+                    .accessibilityIdentifier("session.cwdMissingBadge")
+                    .layoutPriority(2)
+            }
+
             if let originBadgeTitle = session.antigravityOriginBadgeTitle {
                 SessionOriginBadge(title: originBadgeTitle)
                     .layoutPriority(2)

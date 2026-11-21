@@ -744,6 +744,10 @@ func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, t
 		annotation = map[string]any{}
 	}
 	annotation["readOnly"] = true
+	if allowed.cwdMissing {
+		thread["cwdMissing"] = true
+		annotation["cwdMissing"] = true
+	}
 	thread["mimiRemote"] = annotation
 	rewritten, err := json.Marshal(response)
 	if err != nil {
@@ -781,12 +785,17 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 		return fmt.Errorf("thread/read 返回的只读子会话缺少可验证的 cwd")
 	}
 	scope, ok := p.router.gatewayScopeForPath(cwd)
+	if !ok && allowed.cwdMissing {
+		scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
+	}
 	if !ok || scope.id != allowed.scopeID {
 		return fmt.Errorf("thread/read 返回的只读子会话不在授权作用域")
 	}
-	info, err := os.Stat(scope.realPath)
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
+	if !scope.missing {
+		info, err := os.Stat(scope.realPath)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
+		}
 	}
 	return nil
 }
@@ -1428,23 +1437,33 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 		}
 		cwd := firstNonEmpty(item.CWD, item.Path, pending.cwd)
 		scope, ok := p.router.gatewayScopeForPath(cwd)
+		if !ok && pending.method == "thread/list" {
+			scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
+		}
 		if !ok {
 			continue
 		}
-		readOnly := false
+		readOnly := scope.missing
 		if pending.scopeID != "" && scope.id != pending.scopeID {
 			// 按仓库列出的同仓 worktree 会话按自己的作用域授权，其他一律不登记。
 			if pending.method != "thread/list" {
 				continue
 			}
-			if sameRepository == nil {
-				sameRepository = newGatewaySameRepository(pending.cwd)
+			if scope.missing {
+				pendingScope, pendingOK := p.router.gatewayReadOnlyScopeForHistoryPath(pending.cwd)
+				if !pendingOK || !realPathWithin(pendingScope.realPath, scope.realPath) {
+					continue
+				}
+			} else {
+				if sameRepository == nil {
+					sameRepository = newGatewaySameRepository(pending.cwd)
+				}
+				if !sameRepository.matches(scope.realPath) {
+					continue
+				}
 			}
-			if !sameRepository.matches(scope.realPath) {
-				continue
-			}
-			// 与全局发现一致：只在 browse_roots 内可见的 worktree 只读。
-			readOnly = scope.browse
+			// 与全局发现一致：只在 browse_roots 内可见或目录已缺失的会话只读。
+			readOnly = scope.browse || scope.missing
 		}
 		out = append(out, appServerGatewayAllowedThread{
 			id:                   strings.TrimSpace(id),
@@ -1452,6 +1471,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput && !readOnly,
 			directInputKnown:     item.CanAcceptDirectInput != nil || readOnly,
 			readOnly:             readOnly,
+			cwdMissing:           scope.missing,
 			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
@@ -1626,6 +1646,9 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = existing.canAcceptDirectInput
 		}
+		if existing.cwdMissing {
+			thread.cwdMissing = true
+		}
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
@@ -1705,6 +1728,9 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 		} else if !thread.directInputKnown && existing.directInputKnown {
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = existing.canAcceptDirectInput
+		}
+		if existing.cwdMissing {
+			thread.cwdMissing = true
 		}
 	}
 	r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)] = thread

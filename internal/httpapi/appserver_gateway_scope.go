@@ -157,6 +157,9 @@ func (r *Router) validateGatewayPolicyParams(runtimeID string, method string, pa
 	}
 	if cwd, ok := gatewayStringParam(params, "cwd"); ok {
 		scope, pendingManagedPath, scopeOK := r.gatewayScopeForPathWithPendingUse(cwd, gatewayMethodNeedsManagedPendingUse(method))
+		if !scopeOK && method == "thread/list" {
+			scope, scopeOK = r.gatewayReadOnlyScopeForHistoryPath(cwd)
+		}
 		if !scopeOK {
 			return validated, fmt.Errorf("%s.cwd 必须来自 projects allowlist 或 browse_roots", method)
 		}
@@ -600,6 +603,73 @@ func (r *Router) gatewayScopeForPathWithPendingUse(raw string, acquirePendingUse
 		return gatewayScope{id: workspaceIDForRealPath(realPath), realPath: realPath, browse: true}, "", true
 	}
 	return gatewayScope{}, "", false
+}
+
+// canonicalMissingPath 解析已移动或删除目录的规范路径：沿父目录向上找到最近存在的祖先，
+// 对祖先执行 EvalSymlinks 防符号链接越界，再拼回剩余路径段（C14/C15）。
+func canonicalMissingPath(abs string) (string, bool) {
+	cleaned := filepath.Clean(abs)
+	if !filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	var tail []string
+	cur := cleaned
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		base := filepath.Base(cur)
+		if base == "" || base == "." || base == ".." {
+			return "", false
+		}
+		tail = append([]string{base}, tail...)
+		cur = parent
+		realAncestor, err := filepath.EvalSymlinks(cur)
+		if err != nil {
+			continue
+		}
+		parts := append([]string{realAncestor}, tail...)
+		return filepath.Join(parts...), true
+	}
+}
+
+// gatewayReadOnlyScopeForHistoryPath 仅用于只读历史发现与读取（thread/list / thread/read）。
+// 当会话原工作目录被移动或删除时，若其规范路径仍落在已登记项目或 browse_roots 范围内，
+// 返回 missing=true 的只读作用域，让历史仍可找回并提示路径缺失，写操作路径不受影响（C14/C15）。
+func (r *Router) gatewayReadOnlyScopeForHistoryPath(raw string) (gatewayScope, bool) {
+	if scope, ok := r.gatewayScopeForPath(raw); ok {
+		return scope, true
+	}
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return gatewayScope{}, false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return gatewayScope{}, false
+	}
+	canonicalMissing, ok := canonicalMissingPath(abs)
+	if !ok {
+		return gatewayScope{}, false
+	}
+	if project, found := r.projects.FindByPath(canonicalMissing); found {
+		return gatewayScope{
+			id:       project.ID,
+			realPath: canonicalMissing,
+			project:  project,
+			missing:  true,
+		}, true
+	}
+	if r.realPathInBrowseRoots(canonicalMissing) {
+		return gatewayScope{
+			id:       workspaceIDForRealPath(canonicalMissing),
+			realPath: canonicalMissing,
+			browse:   true,
+			missing:  true,
+		}, true
+	}
+	return gatewayScope{}, false
 }
 
 // realPathInBrowseRoots 期望传入已 EvalSymlinks 的路径；browse root 自身每次惰性

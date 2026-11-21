@@ -243,6 +243,12 @@ extension SessionStore {
     }
 
     var selectedSessionControlNotice: String? {
+        if selectedSession?.cwdMissing == true {
+            let prefersChinese = UserFacingError.message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
+            return prefersChinese
+                ? "原工作目录已移动或删除，当前仅支持只读查看历史。"
+                : "Original directory was moved or deleted. History is read-only."
+        }
         guard isSelectedSessionObserving else {
             return nil
         }

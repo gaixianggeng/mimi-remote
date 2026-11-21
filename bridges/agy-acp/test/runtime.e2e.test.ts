@@ -1024,4 +1024,65 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("C14/C15: keeps sessions discoverable and readable as read-only with cwdMissing when directory is moved or removed", async () => {
+    const missingSubdir = path.join(workspaceDir, "moved-or-removed-dir");
+    await mkdir(missingSubdir, { recursive: true });
+    const sessionId = "missing-cwd-session";
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`),
+      "sqlite-placeholder",
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: missingSubdir,
+          title: "Removed Workspace Fixture",
+          updatedAt: "2026-11-21T13:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hello before delete" } },
+            { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Saved reply" } },
+          ],
+        },
+      ],
+    });
+
+    // Remove the directory before querying the adapter.
+    await rm(missingSubdir, { recursive: true, force: true });
+
+    const harness = await createTestHarness(world);
+    try {
+      const scopedList = await harness.rpc<{
+        data: Array<{ id: string; canAcceptDirectInput: boolean; cwdMissing?: boolean }>;
+      }>("thread/list", { cwd: workspaceDir });
+      expect(scopedList.data).toHaveLength(1);
+      expect(scopedList.data[0]).toMatchObject({
+        id: sessionId,
+        canAcceptDirectInput: false,
+        cwdMissing: true,
+      });
+
+      const readRes = await harness.rpc<{
+        thread: { id: string; canAcceptDirectInput: boolean; cwdMissing?: boolean; turns: Array<{ items: Array<{ type: string }> }> };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      expect(readRes.thread.canAcceptDirectInput).toBe(false);
+      expect(readRes.thread.cwdMissing).toBe(true);
+      expect(readRes.thread.turns).toHaveLength(1);
+
+      await expect(
+        harness.rpc("turn/start", {
+          threadId: sessionId,
+          cwd: missingSubdir,
+          input: [{ type: "text", text: "should fail read-only", text_elements: [] }],
+        }),
+      ).rejects.toThrow("no longer exists");
+    } finally {
+      await harness.close();
+    }
+  });
 });

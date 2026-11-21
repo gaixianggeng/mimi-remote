@@ -4,7 +4,7 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
 import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
-import type { GitRepoIndex } from "./git.ts";
+import { directoryExists, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
 import type { AgyOverlay, TurnOutcomeRecord } from "./overlay.ts";
 import {
@@ -19,6 +19,7 @@ import {
 export interface SessionRecord {
   id: string;
   cwd: string;
+  cwdMissing: boolean;
   name: string | null;
   preview: string;
   createdAt: number;
@@ -92,7 +93,8 @@ export function createAcpSessionBackend(
     },
 
     async loadReplay(sessionId: string, cwd: string, origin: AgySessionOrigin) {
-      const effectiveCwd = cwd.trim() || os.tmpdir();
+      const trimmed = cwd.trim();
+      const effectiveCwd = trimmed && (await directoryExists(trimmed)) ? trimmed : os.tmpdir();
       const targetAcp = origin === "other" ? otherSharedAcp : cliSharedAcp;
       return targetAcp.use(async (client) => {
         const { updates } = await client.sessionLoadWithReplay(sessionId, effectiveCwd);
@@ -284,12 +286,14 @@ export class AgyCatalog {
     const normalizedTmp = os.tmpdir().replace(/\/+$/, "");
     const summaryCwd = rawSummaryCwd && rawSummaryCwd.replace(/\/+$/, "") !== normalizedTmp ? rawSummaryCwd : "";
     const cwd = (summaryCwd || mem?.cwd || overlay?.cwd || rawSummaryCwd).trim();
-    const gitInfo = cwd ? await this.deps.git.inspect(cwd) : { branch: null };
+    const cwdMissing = Boolean(cwd) && !(await directoryExists(cwd));
+    const gitInfo = cwd && !cwdMissing ? await this.deps.git.inspect(cwd) : { branch: null };
     const title = overlay?.customTitle?.trim() || mem?.title?.trim() || summary.title?.trim() || null;
     const preview = overlay?.preview?.trim() || title || "";
     return {
       id: summary.sessionId,
       cwd,
+      cwdMissing,
       name: title,
       preview,
       createdAt,

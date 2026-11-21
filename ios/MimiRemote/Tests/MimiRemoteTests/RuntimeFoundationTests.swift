@@ -319,4 +319,34 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertTrue(errorPresentation.message.contains("1.4.99"))
         XCTAssertTrue(errorPresentation.message.contains("1.5.0"))
     }
+
+    @MainActor
+    func testC14C15MissingDirectorySessionIsReadOnlyWithControlNotice() {
+        let session = AgentSession(
+            id: "sess-missing-dir",
+            projectID: "remove-fixture",
+            project: "Remove Fixture",
+            dir: "/tmp/remove-fixture",
+            title: "Removed Workspace Fixture",
+            status: "completed",
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true,
+            cwdMissing: true
+        )
+        XCTAssertFalse(session.allowsDirectInput)
+
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+        XCTAssertTrue(store.isProtocolReadOnlySession(session))
+        XCTAssertNotNil(store.selectedSessionControlNotice)
+    }
 }

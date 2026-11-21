@@ -429,6 +429,7 @@ type gatewayScope struct {
 	project  projects.Project
 	browse   bool
 	managed  bool
+	missing  bool
 }
 
 type appServerGatewayAllowedThread struct {
@@ -439,6 +440,7 @@ type appServerGatewayAllowedThread struct {
 	canAcceptDirectInput bool
 	directInputKnown     bool
 	readOnly             bool
+	cwdMissing           bool
 	autoTitleEligible    bool
 	lastSeen             time.Time
 }

@@ -9,11 +9,13 @@ import { USER_AGENT } from "../version.ts";
 
 export type AdapterThread = Thread & {
   canAcceptDirectInput: boolean;
+  cwdMissing?: boolean;
   claudeOwner?: Record<string, unknown>;
 };
 
 export interface LiveState {
   canAcceptDirectInput: boolean;
+  cwdMissing?: boolean;
   status?: Thread["status"];
   claudeOwner?: Record<string, unknown>;
 }
@@ -63,7 +65,8 @@ export function toThread(
     gitInfo: record.gitBranch ? { sha: null, branch: record.gitBranch, originUrl: null } : null,
     name: record.name,
     turns,
-    canAcceptDirectInput: live.canAcceptDirectInput,
+    canAcceptDirectInput: record.cwdMissing ? false : live.canAcceptDirectInput,
+    ...(record.cwdMissing || live.cwdMissing ? { cwdMissing: true } : {}),
     ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
   };
 }

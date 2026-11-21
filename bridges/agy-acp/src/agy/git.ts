@@ -1,9 +1,46 @@
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+export async function directoryExists(dir: string): Promise<boolean> {
+  const trimmed = dir.trim();
+  if (!trimmed) return false;
+  try {
+    const info = await stat(trimmed);
+    return info.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 对已移动或删除的目录，沿父目录向上找到最近存在的祖先再做 `realpath` 并拼回尾段，
+ * 避免 macOS 上 `/var/...` 与 `/private/var/...` 失配导致历史会话从过滤列表消失（C14/C15）。
+ */
+export async function canonicalPathPreservingMissing(dir: string): Promise<string> {
+  const resolved = path.resolve(dir);
+  try {
+    return await realpath(resolved);
+  } catch {
+    const tail: string[] = [];
+    let current = resolved;
+    while (true) {
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      tail.unshift(path.basename(current));
+      current = parent;
+      try {
+        const realAncestor = await realpath(current);
+        return path.join(realAncestor, ...tail);
+      } catch {
+        // 继续向上找最近存在的祖先目录。
+      }
+    }
+  }
+}
 
 export interface GitDirectoryInfo {
   canonicalDir: string;
@@ -30,7 +67,7 @@ export class GitRepoIndex {
     if (cached && cached.expiresAt > now) {
       return cached.info;
     }
-    const canonicalDir = await realpath(trimmed).catch(() => path.resolve(trimmed));
+    const canonicalDir = await canonicalPathPreservingMissing(trimmed);
     let repoKey = canonicalDir;
     let branch: string | null = null;
     try {
