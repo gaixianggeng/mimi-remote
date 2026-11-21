@@ -81,6 +81,33 @@ final class ExternalPairingLinkTests: XCTestCase {
         await store.openPairingLink(Self.expiredTicketLink)
 
         XCTAssertEqual(store.pairingLinkAttempt, .failed(PairingLinkError.expired.localizedDescription))
+        XCTAssertEqual(store.lastPairingLinkRoute, .tailscale)
+    }
+
+    func testFailedLANPairingLinkRecordsLANRouteAndClearsAfterSuccess() async throws {
+        let lanLink = URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787&token=test-token"
+        )!
+        var shouldFail = true
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in
+            if shouldFail {
+                throw URLError(.cannotConnectToHost)
+            }
+        })
+
+        await store.openPairingLink(lanLink)
+        XCTAssertEqual(store.lastPairingLinkRoute, .lan)
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(
+                from: try XCTUnwrap(appStore.lastError),
+                route: store.lastPairingLinkRoute
+            ),
+            L10n.text("ui.connection_failure_guidance_lan")
+        )
+
+        shouldFail = false
+        await store.openPairingLink(lanLink)
+        XCTAssertNil(store.lastPairingLinkRoute)
     }
 
     private func makeStores(routeProbe: @escaping ConnectionRouteProbe) -> (SessionStore, AppStore) {

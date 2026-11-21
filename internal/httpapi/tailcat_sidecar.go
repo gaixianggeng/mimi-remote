@@ -75,6 +75,7 @@ type tailcatSidecar interface {
 	Reset(context.Context) (tailcatStatus, error)
 	ConfigureDERPMap(context.Context, string) (tailcatStatus, error)
 	ConfigureMode(context.Context, bool, func() error) (tailcatStatus, error)
+	ConfigureRelay(context.Context, string, func() error) (tailcatStatus, error)
 	Close()
 }
 

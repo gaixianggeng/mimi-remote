@@ -1334,4 +1334,146 @@ final class ClaudeTakeoverTests: XCTestCase {
         _ = await store.bootstrap(restoring: SessionRestoreSnapshot(endpoint: appStore.endpoint, session: held))
         return HeldStore(clientFailure: clientFailure, store: store, client: client, appStore: appStore, held: held, sockets: sockets)
     }
+
+    // MARK: - 手机端「在电脑上继续」（#726）
+
+    func testClaudeComputerHandoffEligibilityAndPlatformCommands() async throws {
+        let fixture = await makeHeldStore(id: "claude_handoff_rules", supportsTakeover: true)
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.10:8787",
+            token: "test-token",
+            installationID: "install-mac",
+            hostPlatform: .apple
+        ))
+
+        let claudeSession = AgentSession(
+            id: "thr_claude_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/Users/dev/my repo",
+            title: "Claude 会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "11111111-1111-4111-8111-111111111111",
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let macDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: claudeSession))
+        XCTAssertEqual(
+            macDetails.terminalCommand,
+            "cd '/Users/dev/my repo' && claude --resume '11111111-1111-4111-8111-111111111111'"
+        )
+        XCTAssertEqual(macDetails.slashResumeCommand, "/resume 11111111-1111-4111-8111-111111111111")
+
+        // 第三方网关下的 claude-desktop-3p 也按桌面版持有方识别（#991 实测），被电脑持有时仍可复制恢复命令。
+        var desktopHeld = claudeSession
+        desktopHeld.canAcceptDirectInput = false
+        desktopHeld.claudeOwner = ClaudeSessionOwner(
+            entrypoint: "claude-desktop-3p",
+            kind: "interactive",
+            status: "idle",
+            pid: 9001
+        )
+        XCTAssertEqual(desktopHeld.claudeOwner?.displayName, L10n.text("ui.claude_owner_desktop"))
+        XCTAssertNotNil(fixture.store.claudeComputerHandoffDetails(for: desktopHeld))
+
+        // Windows 主机终端恢复命令使用 PowerShell。
+        _ = try await fixture.appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.11:8787",
+            token: "win-token",
+            profileTarget: .newProfile(id: "win-host", displayName: "Windows PC"),
+            installationID: "install-win",
+            hostPlatform: .windows
+        ))
+        let winSession = AgentSession(
+            id: "thr_claude_win",
+            projectID: "proj_win",
+            project: "WinRepo",
+            dir: #"C:\Work\O'Brien"#,
+            title: "Win Claude",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "win-sess-1",
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let winDetails = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: winSession))
+        XCTAssertEqual(
+            winDetails.terminalCommand,
+            #"Set-Location -LiteralPath 'C:\Work\O''Brien' -ErrorAction Stop; claude --resume 'win-sess-1'"#
+        )
+        XCTAssertEqual(winDetails.slashResumeCommand, "/resume win-sess-1")
+
+        // Codex、DeepSeek、缺少目录或只读子会话均不显示该菜单。
+        let codexSession = makeSession(id: "thr_codex", projectID: "proj_1", title: "Codex", status: "history", source: "codex", runtimeProvider: "codex")
+        let deepseekSession = makeSession(id: "thr_ds", projectID: "proj_1", title: "DeepSeek", status: "history", source: "deepseek", runtimeProvider: "deepseek")
+        let emptyDirSession = AgentSession(
+            id: "thr_nodir",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "   ",
+            title: "NoDir",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        var subagentSession = claudeSession
+        subagentSession.isSubagent = true
+        var protocolReadOnlySession = claudeSession
+        protocolReadOnlySession.canAcceptDirectInput = false
+        let localDraftSession = AgentSession(
+            id: "draft_claude_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/Users/dev/my repo",
+            title: "Draft",
+            status: "draft",
+            source: "local",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: codexSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: deepseekSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: emptyDirSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: subagentSession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: protocolReadOnlySession))
+        XCTAssertNil(fixture.store.claudeComputerHandoffDetails(for: localDraftSession))
+    }
+
+    func testCopyClaudeComputerCommandsWarnsWhenTurnIsRunning() async throws {
+        let fixture = await makeHeldStore(id: "claude_copy_cmds", supportsTakeover: true)
+        let session = AgentSession(
+            id: "thr_copy_1",
+            projectID: "proj_1",
+            project: "Repo",
+            dir: "/tmp/repo",
+            title: "Claude",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil
+        )
+        let details = try XCTUnwrap(fixture.store.claudeComputerHandoffDetails(for: session))
+
+        fixture.store.copyClaudeTerminalRecoveryCommand(details, isRunning: false)
+        XCTAssertEqual(UIPasteboard.general.string, "cd '/tmp/repo' && claude --resume 'thr_copy_1'")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_recovery_command_copied"))
+
+        fixture.store.copyClaudeSlashResumeCommand(details, isRunning: false)
+        XCTAssertEqual(UIPasteboard.general.string, "/resume thr_copy_1")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_slash_resume_command_copied"))
+
+        fixture.store.copyClaudeSlashResumeCommand(details, isRunning: true)
+        XCTAssertEqual(UIPasteboard.general.string, "/resume thr_copy_1")
+        XCTAssertEqual(fixture.store.statusMessage, L10n.text("ui.claude_command_copied_active_turn_warning"))
+    }
 }

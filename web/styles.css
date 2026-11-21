@@ -188,15 +188,21 @@ svg { flex: none; }
 
 .stage {
   position: relative; isolation: isolate;
-  max-width: 900px; margin: clamp(56px, 8vw, 96px) auto 0; padding-bottom: clamp(24px, 4vw, 48px);
+  max-width: 1020px; margin: clamp(56px, 8vw, 96px) auto 0; padding-bottom: clamp(32px, 5vw, 64px);
 }
 .stage::before {
-  content: ""; position: absolute; z-index: -1; inset: 14% 2% 6%;
+  content: ""; position: absolute; z-index: -1; inset: 12% 2% 6%;
   background: radial-gradient(closest-side, var(--accent-glow), transparent);
-  filter: blur(24px);
+  filter: blur(28px);
 }
-.stage__ipad { width: 62%; margin-left: 11%; }
-.device.stage__phone { position: absolute; right: 7%; bottom: clamp(24px, 4vw, 48px); width: 24%; }
+.stage__ipad { width: 70%; margin-left: 16%; }
+.device.stage__mini { position: absolute; left: 2%; bottom: clamp(20px, 3.5vw, 44px); z-index: 2; width: 27%; }
+.device.stage__phone { position: absolute; right: 3%; bottom: clamp(16px, 3vw, 38px); z-index: 3; width: 22.5%; }
+@media (max-width: 640px) {
+  .stage__ipad { width: 88%; margin-left: 6%; }
+  .device.stage__mini { left: 1%; width: 30%; bottom: clamp(12px, 3vw, 24px); }
+  .device.stage__phone { right: 1%; width: 25%; bottom: clamp(10px, 2.5vw, 20px); }
+}
 
 /* -------------------------------------------------------------- devices */
 
@@ -229,7 +235,7 @@ svg { flex: none; }
 .device--phone::before { padding: 0.95%; }
 .device--phone::after { width: 29.3%; aspect-ratio: 126 / 37; margin-top: 5.86%; border-radius: 999px; }
 .device--phone img { width: 93.4%; margin: 3.3%; border-radius: 13.7% / 6.3%; }
-/* iPad Pro 13": 2064 × 2752 screen, bezel 2.6% of the width, camera centred in the top bezel */
+/* iPad Pro 13" (portrait): 2064 × 2752 screen, bezel 2.6% of the width, camera centred in the top bezel */
 .device--ipad { border-radius: 5.1% / 3.85%; }
 .device--ipad::before { padding: 0.7%; }
 .device--ipad::after {
@@ -237,6 +243,22 @@ svg { flex: none; }
   background: radial-gradient(circle at 35% 35%, #2C3440, #0A0C10 70%);
 }
 .device--ipad img { width: 94.8%; margin: 2.6%; border-radius: 2.6% / 1.95%; }
+/* iPad Pro 13" (landscape): 2752 × 2064 screen, landscape top camera */
+.device--ipad-landscape { border-radius: 4.5% / 5.95%; }
+.device--ipad-landscape::before { padding: 0.55%; }
+.device--ipad-landscape::after {
+  width: 0.65%; aspect-ratio: 1; margin-top: 1.1%; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #2C3440, #0A0C10 70%);
+}
+.device--ipad-landscape img { width: 95.2%; margin: 2.4%; border-radius: 2.1% / 2.8%; }
+/* iPad mini 8: 1512 × 2316 screen, slightly thicker proportional bezel & rounded corners */
+.device--ipad-mini { border-radius: 7.4% / 4.9%; }
+.device--ipad-mini::before { padding: 0.85%; }
+.device--ipad-mini::after {
+  width: 0.9%; aspect-ratio: 1; margin-top: 2.1%; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #2C3440, #0A0C10 70%);
+}
+.device--ipad-mini img { width: 90.8%; margin: 4.6%; border-radius: 3.4% / 2.25%; }
 
 /* ------------------------------------------------------------- overview */
 
@@ -393,21 +415,22 @@ svg { flex: none; }
 .float { display: flex; justify-content: center; padding: clamp(32px, 5vw, 56px) 0; }
 .float__device { width: min(58%, 290px); }
 
-/* design: iPad flanked by a light and a dark iPhone */
+/* design: landscape iPad Pro flanked by iPad mini (left) and iPhone (right) */
 .showcase {
-  display: flex; justify-content: center; align-items: flex-start;
-  height: clamp(380px, 58vw, 640px);
-  margin-top: clamp(40px, 6vw, 64px); padding-top: clamp(36px, 6vw, 72px);
+  position: relative;
+  display: block;
+  margin-top: clamp(40px, 6vw, 64px);
+  padding: clamp(32px, 5vw, 60px) clamp(16px, 3vw, 40px) clamp(36px, 5.5vw, 68px);
 }
-.showcase__ipad { position: relative; z-index: 1; width: 52%; }
-.showcase__phone { position: relative; z-index: 2; width: 21%; margin-top: 12%; }
-.showcase__phone--left { margin-right: -5%; }
-.showcase__phone--right { margin-left: -5%; }
+.showcase__ipad { position: relative; z-index: 1; width: 70%; margin-left: 16%; }
+.device.showcase__mini { position: absolute; left: clamp(14px, 3vw, 36px); bottom: clamp(22px, 3.5vw, 46px); z-index: 2; width: 26%; }
+.device.showcase__phone { position: absolute; right: clamp(16px, 3.2vw, 40px); bottom: clamp(18px, 3vw, 40px); z-index: 3; width: 21.5%; }
 .showcase__legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-top: 22px; font-size: 0.9375rem; color: var(--ink-3); }
 @media (max-width: 640px) {
-  .showcase { height: clamp(340px, 108vw, 520px); }
-  .showcase__ipad { display: none; }
-  .showcase__phone { width: 42%; margin: 0 3%; }
+  .showcase { padding: 24px 12px 32px; }
+  .showcase__ipad { width: 88%; margin-left: 6%; }
+  .device.showcase__mini { left: 8px; bottom: 16px; width: 30%; }
+  .device.showcase__phone { right: 8px; bottom: 14px; width: 24%; }
 }
 
 /* compare: remote desktop / SSH / Mimi, one row per question; stacked on phones */

@@ -12,16 +12,25 @@ case "$COMPONENT" in
     ;;
 esac
 
-for command_name in env git shasum awk basename dirname; do
+for command_name in env git awk basename dirname; do
   command -v "$command_name" >/dev/null 2>&1 \
     || { echo "开发缓存路径失败：缺少 ${command_name}。" >&2; exit 1; }
 done
+
+if command -v shasum >/dev/null 2>&1; then
+  hash_command=(shasum -a 256)
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_command=(sha256sum)
+else
+  echo "开发缓存路径失败：缺少 shasum 或 sha256sum。" >&2
+  exit 1
+fi
 
 # DEVELOPER_DIR 只属于 Xcode 工具链选择。测试或兼容性构建可能把它指向
 # 临时 Xcode 目录，不能让 macOS 的 git shim 因此失效。
 git_common_dir="$(env -u DEVELOPER_DIR git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
 repository_name="$(basename "$(dirname "$git_common_dir")")"
-repository_hash="$(printf '%s' "$git_common_dir" | shasum -a 256 | awk '{ print substr($1, 1, 12) }')"
+repository_hash="$(printf '%s' "$git_common_dir" | "${hash_command[@]}" | awk '{ print substr($1, 1, 12) }')"
 
 if [[ -n "${MIMI_DEVELOPMENT_CACHE_ROOT:-}" ]]; then
   cache_parent="${MIMI_DEVELOPMENT_CACHE_ROOT%/}"

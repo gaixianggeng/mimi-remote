@@ -1,9 +1,18 @@
 import Foundation
+import UIKit
 
 /// 某台主机的 Claude channel 是否声明 thread/takeover。按主机缓存，切换主机后自然失效。
 struct ClaudeTakeoverSupport: Equatable {
     let scope: HostScope
     let supported: Bool
+}
+
+/// #726：手机端 Claude 会话「在电脑上继续」菜单所需的信息快照。
+struct ClaudeComputerHandoffDetails: Equatable {
+    let sessionID: String
+    let cwd: String
+    let terminalCommand: String
+    let slashResumeCommand: String
 }
 
 /// 失败原因和禁用条件一起保留，返回会话后仍能解释为什么不能接管。
@@ -186,5 +195,84 @@ extension SessionStore {
             }
         }
         return L10n.format("ui.take_over_failed_value", error.localizedDescription)
+    }
+
+    // MARK: - 在电脑上继续（#726）
+
+    func claudeComputerHandoffDetails(
+        for session: AgentSession,
+        context: SessionContextSnapshot? = nil
+    ) -> ClaudeComputerHandoffDetails? {
+        let resolvedContext = context ?? contextStore.context(for: session.id) ?? session.context
+        let isResolvedSubagent = session.isSubagentThread
+            || resolvedContext?.isSubagent == true
+            || resolvedContext?.parentThreadID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        guard !session.isLocalDraft,
+              !isResolvedSubagent,
+              session.allowsDirectInput || session.isHeldOnComputer else {
+            return nil
+        }
+        let runtimeProvider = Self.firstNonEmptyHandoffValue(
+            session.runtimeProvider,
+            resolvedContext?.environment?.runtimeProvider,
+            session.source
+        )
+        guard CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "claude" else {
+            return nil
+        }
+        guard let sessionID = Self.firstNonEmptyHandoffValue(
+            session.appServerSessionID,
+            session.resumeID,
+            resolvedContext?.threadID,
+            session.id
+        ), let cwd = Self.firstNonEmptyHandoffValue(
+            session.dir,
+            resolvedContext?.environment?.cwd
+        ) else {
+            return nil
+        }
+        let hostPlatform = appStore.activeConnectionProfile?.hostPlatform ?? .unknown
+        return ClaudeComputerHandoffDetails(
+            sessionID: sessionID,
+            cwd: cwd,
+            terminalCommand: ClaudeSessionRecoveryCommand.make(
+                sessionID: sessionID,
+                cwd: cwd,
+                hostPlatform: hostPlatform
+            ),
+            slashResumeCommand: ClaudeSessionRecoveryCommand.slashResumeCommand(sessionID: sessionID)
+        )
+    }
+
+    func copyClaudeTerminalRecoveryCommand(_ details: ClaudeComputerHandoffDetails, isRunning: Bool) {
+        UIPasteboard.general.string = details.terminalCommand
+        setStatusMessage(
+            L10n.text(
+                isRunning
+                    ? "ui.claude_command_copied_active_turn_warning"
+                    : "ui.claude_recovery_command_copied"
+            )
+        )
+    }
+
+    func copyClaudeSlashResumeCommand(_ details: ClaudeComputerHandoffDetails, isRunning: Bool) {
+        UIPasteboard.general.string = details.slashResumeCommand
+        setStatusMessage(
+            L10n.text(
+                isRunning
+                    ? "ui.claude_command_copied_active_turn_warning"
+                    : "ui.claude_slash_resume_command_copied"
+            )
+        )
+    }
+
+    private static func firstNonEmptyHandoffValue(_ candidates: String?...) -> String? {
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 }

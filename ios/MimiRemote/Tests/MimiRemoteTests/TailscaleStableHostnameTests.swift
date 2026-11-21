@@ -655,4 +655,175 @@ final class TailscaleStableHostnameTests: XCTestCase {
         )
         XCTAssertEqual(current.deviceName, "工作室的 Mac Studio")
     }
+
+    func testConnectionProfileRouteClassifiesEndpointsAndPairingLinks() throws {
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("http://192.168.1.20:8787"), .lan)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("192.168.1.20"), .lan)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("http://studio-mac.local:8787"), .lan)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("http://100.64.0.10:8787"), .tailscale)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("http://studio-mac.tailnet.ts.net:8787"), .tailscale)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("studio-mac.tailnet.ts.net"), .tailscale)
+        XCTAssertEqual(ConnectionProfileRoute.fromEndpoint("https://mac.example.com:8787"), .https)
+        XCTAssertNil(ConnectionProfileRoute.fromEndpoint(""))
+        XCTAssertNil(ConnectionProfileRoute.fromEndpoint("not a url"))
+        XCTAssertNil(ConnectionProfileRoute.fromEndpoint("http://203.0.113.10:8787"))
+
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787&issued_at=2026-01-01T00:00:00Z&expires_at=2026-01-01T00:10:00Z&pair_sig=sig"
+            ),
+            .lan
+        )
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.10%3A8787&issued_at=2026-01-01T00:00:00Z&expires_at=2026-01-01T00:10:00Z&pair_sig=sig"
+            ),
+            .tailscale
+        )
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://connect?endpoint=https%3A%2F%2Fmac.example.com%3A8787&token=abc"
+            ),
+            .https
+        )
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://pair?transport=tailcat&relay_service=mimi&tailcat_pair_address=addr&endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-01-01T00:00:00Z&expires_at=2026-01-01T00:10:00Z&pair_sig=sig"
+            ),
+            .managedTailcat
+        )
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://pair?transport=tailcat&managed_mac_installation_id=id-1&managed_mac_tailcat_public_key=key-1&tailcat_pair_address=addr&endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-01-01T00:00:00Z&expires_at=2026-01-01T00:10:00Z&pair_sig=sig"
+            ),
+            .managedTailcat
+        )
+        XCTAssertEqual(
+            ConnectionProfileRoute.fromPairingInput(
+                "mimiremote://pair?transport=tailcat&tailcat_pair_address=addr&endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2026-01-01T00:00:00Z&expires_at=2026-01-01T00:10:00Z&pair_sig=sig"
+            ),
+            .customTailcat
+        )
+        XCTAssertNil(ConnectionProfileRoute.fromPairingInput("https://example.com"))
+    }
+
+    func testConnectionFailureGuidanceMatchesConnectionRoute() {
+        let reachabilityErrors: [Error] = [
+            URLError(.timedOut),
+            URLError(.cannotConnectToHost),
+            URLError(.cannotFindHost),
+            URLError(.dnsLookupFailed),
+            URLError(.networkConnectionLost),
+            URLError(.notConnectedToInternet),
+            CodexAppServerConnectionError.disconnected,
+        ]
+
+        for error in reachabilityErrors {
+            let lanMessage = ConnectionFailureGuidance.message(for: error, route: .lan)
+            XCTAssertEqual(lanMessage, L10n.text("ui.connection_failure_guidance_lan"))
+            XCTAssertFalse(lanMessage.contains("Tailscale"))
+
+            let tailscaleMessage = ConnectionFailureGuidance.message(for: error, route: .tailscale)
+            XCTAssertEqual(tailscaleMessage, L10n.text("ui.the_current_device_cannot_find_this_mac_at"))
+
+            let managedMessage = ConnectionFailureGuidance.message(for: error, route: .managedTailcat)
+            XCTAssertEqual(managedMessage, L10n.text("ui.connection_failure_guidance_managed_tailcat"))
+            XCTAssertFalse(managedMessage.contains("Tailscale"))
+
+            let customTailcatMessage = ConnectionFailureGuidance.message(for: error, route: .customTailcat)
+            XCTAssertEqual(customTailcatMessage, L10n.text("ui.connection_failure_guidance_custom_tailcat"))
+            XCTAssertFalse(customTailcatMessage.contains("Tailscale"))
+
+            let httpsMessage = ConnectionFailureGuidance.message(for: error, route: .https)
+            XCTAssertEqual(httpsMessage, L10n.text("ui.connection_failure_guidance_https"))
+            XCTAssertFalse(httpsMessage.contains("Tailscale"))
+
+            let unknownRouteMessage = ConnectionFailureGuidance.message(for: error, route: nil)
+            XCTAssertEqual(unknownRouteMessage, L10n.text("ui.connection_conditional_tailscale_guidance"))
+
+            let legacyTailcatMessage = ConnectionFailureGuidance.message(
+                for: error,
+                route: nil,
+                tailcatExperimentEnabled: true
+            )
+            XCTAssertEqual(
+                legacyTailcatMessage,
+                L10n.text("ui.please_check_mac_assistant_and_network_connections")
+            )
+        }
+    }
+
+    func testFriendlyMessagePreservesSpecificErrorsAndAdaptsSavedCredentialsNoticeByRoute() {
+        let savedNotice = L10n.text("ui.the_connection_credentials_have_been_saved_safely_but")
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: savedNotice, route: .lan),
+            L10n.text("ui.connection_credentials_saved_load_failed_lan")
+        )
+        XCTAssertFalse(
+            ConnectionFailureGuidance.friendlyMessage(from: savedNotice, route: .lan).contains("Tailscale")
+        )
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: savedNotice, route: .managedTailcat),
+            L10n.text("ui.connection_credentials_saved_load_failed_tailcat")
+        )
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: savedNotice, route: .https),
+            L10n.text("ui.connection_credentials_saved_load_failed_https")
+        )
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: savedNotice, route: .tailscale),
+            savedNotice
+        )
+
+        let duplicateError = ConnectionProfileError.duplicateInstallation(profileName: "工作室电脑")
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(
+                from: duplicateError.localizedDescription,
+                route: .lan
+            ),
+            duplicateError.localizedDescription
+        )
+        let mismatchError = ConnectionProfileError.installationIdentityMismatch(profileName: "工作室电脑")
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(
+                from: mismatchError.localizedDescription,
+                route: .tailscale
+            ),
+            mismatchError.localizedDescription
+        )
+
+        XCTAssertEqual(
+            ConnectionFailureGuidance.message(
+                for: PairingLinkError.expired,
+                route: .lan,
+                repairPlatform: .windows
+            ),
+            HostPlatform.windows.pairingQRCodeExpiredGuidance
+        )
+        XCTAssertEqual(
+            ConnectionFailureGuidance.message(
+                for: PairingLinkError.expired,
+                route: .lan,
+                repairPlatform: nil
+            ),
+            HostPlatform.unknown.pairingQRCodeExpiredGuidance
+        )
+
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(
+                from: URLError(.timedOut).localizedDescription,
+                route: .lan,
+                activeTermination: .credentialsInvalid
+            ),
+            ConnectionTerminationStatus.credentialsInvalid.message
+        )
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(
+                from: URLError(.timedOut).localizedDescription,
+                route: .lan,
+                activeTermination: nil
+            ),
+            L10n.text("ui.connection_failure_guidance_lan")
+        )
+    }
 }

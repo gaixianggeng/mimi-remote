@@ -702,3 +702,238 @@ enum HostSwitchSignpost {
         os_signpost(.end, log: log, name: name, "%{public}@", metadata as NSString)
     }
 }
+
+/// 按连接类型给出失败原因与下一步操作（#349）。
+///
+/// 底层 `URLError` 或网关握手失败只表达可达性事实；这里结合本次连接尝试或当前档案的
+/// `ConnectionProfileRoute` 给出对应连接方式的排查提示，避免局域网或中转连接失败时
+/// 误导用户去检查 Tailscale，同时在连接类型未知时给出条件式提示。
+@MainActor
+enum ConnectionFailureGuidance {
+    private static let reachabilityURLErrorCodes: [URLError.Code] = [
+        .timedOut,
+        .cannotConnectToHost,
+        .cannotFindHost,
+        .dnsLookupFailed,
+        .networkConnectionLost,
+        .notConnectedToInternet,
+        .internationalRoamingOff,
+        .callIsActive,
+        .dataNotAllowed,
+        .resourceUnavailable,
+        .cannotLoadFromNetwork,
+    ]
+
+    static func reachabilityGuidance(
+        for route: ConnectionProfileRoute?,
+        tailcatExperimentEnabled: Bool = false
+    ) -> String {
+        switch route {
+        case .lan:
+            return L10n.text("ui.connection_failure_guidance_lan")
+        case .tailscale:
+            return L10n.text("ui.the_current_device_cannot_find_this_mac_at")
+        case .managedTailcat:
+            return L10n.text("ui.connection_failure_guidance_managed_tailcat")
+        case .customTailcat:
+            return L10n.text("ui.connection_failure_guidance_custom_tailcat")
+        case .https:
+            return L10n.text("ui.connection_failure_guidance_https")
+        case nil:
+            if tailcatExperimentEnabled {
+                return L10n.text("ui.please_check_mac_assistant_and_network_connections")
+            }
+            return L10n.text("ui.connection_conditional_tailscale_guidance")
+        }
+    }
+
+    static func savedCredentialsLoadFailureGuidance(
+        for route: ConnectionProfileRoute?,
+        tailcatExperimentEnabled: Bool = false
+    ) -> String {
+        switch route {
+        case .lan:
+            return L10n.text("ui.connection_credentials_saved_load_failed_lan")
+        case .managedTailcat, .customTailcat:
+            return L10n.text("ui.connection_credentials_saved_load_failed_tailcat")
+        case .https:
+            return L10n.text("ui.connection_credentials_saved_load_failed_https")
+        case .tailscale:
+            return L10n.text("ui.the_connection_credentials_have_been_saved_safely_but")
+        case nil:
+            if tailcatExperimentEnabled {
+                return L10n.text("ui.connection_credentials_saved_load_failed_tailcat")
+            }
+            return L10n.text("ui.the_connection_credentials_have_been_saved_safely_but")
+        }
+    }
+
+    static func isReachabilityFailure(_ error: Error) -> Bool {
+        if isCancellationError(error) || isCredentialInvalidatingError(error) {
+            return false
+        }
+        if let connectionError = error as? CodexAppServerConnectionError {
+            switch connectionError {
+            case .disconnected, .timeout:
+                return true
+            case .transport(let underlying):
+                return isReachabilityFailure(underlying)
+            default:
+                return false
+            }
+        }
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else {
+            return false
+        }
+        return reachabilityURLErrorCodes.contains(URLError.Code(rawValue: nsError.code))
+    }
+
+    static func isReachabilityFailureMessage(_ raw: String) -> Bool {
+        let reachabilityGuidanceKeys = [
+            "ui.connection_failure_guidance_lan",
+            "ui.the_current_device_cannot_find_this_mac_at",
+            "ui.connection_failure_guidance_managed_tailcat",
+            "ui.connection_failure_guidance_custom_tailcat",
+            "ui.connection_failure_guidance_https",
+            "ui.connection_conditional_tailscale_guidance",
+            "ui.please_check_mac_assistant_and_network_connections",
+        ]
+        if reachabilityGuidanceKeys.contains(where: { raw == L10n.text($0) }) {
+            return true
+        }
+        if reachabilityURLErrorCodes.contains(where: {
+            let localized = URLError($0).localizedDescription
+            return !localized.isEmpty && (raw == localized || raw.contains(localized))
+        }) {
+            return true
+        }
+        let lowercased = raw.lowercased()
+        let englishMarkers = [
+            "timed out",
+            "cannot connect",
+            "could not connect",
+            "could not be found",
+            "cannot find host",
+            "dns lookup",
+            "network connection was lost",
+            "appears to be offline",
+            "not connected to the internet",
+            "no route to host",
+            "connection refused",
+            "network is unreachable",
+        ]
+        if englishMarkers.contains(where: lowercased.contains) {
+            return true
+        }
+        return raw.contains("无法连接") || raw.contains("超时")
+    }
+
+    static func isSavedCredentialsLoadFailureMessage(_ raw: String) -> Bool {
+        let keys = [
+            "ui.the_connection_credentials_have_been_saved_safely_but",
+            "ui.connection_credentials_saved_load_failed_lan",
+            "ui.connection_credentials_saved_load_failed_tailcat",
+            "ui.connection_credentials_saved_load_failed_https",
+        ]
+        return keys.contains(where: { raw == L10n.text($0) }) || raw.contains("连接凭据已安全保存")
+    }
+
+    static func message(
+        for error: Error,
+        route: ConnectionProfileRoute?,
+        repairPlatform: HostPlatform? = nil,
+        tailcatExperimentEnabled: Bool = false
+    ) -> String {
+        if (error as? PairingLinkError) == .expired {
+            return (repairPlatform ?? .unknown).pairingQRCodeExpiredGuidance
+        }
+        if error is PairingLinkError ||
+            error is TailcatPairingError ||
+            error is ConnectionProfileError ||
+            error is ManagedConnectionDeviceStoreError ||
+            error is ManagedConnectionDeviceAPIError {
+            return error.localizedDescription
+        }
+        if isCredentialInvalidatingError(error) {
+            return L10n.text("ui.this_device_has_not_been_verified_by_mac")
+        }
+        if isReachabilityFailure(error) {
+            return reachabilityGuidance(for: route, tailcatExperimentEnabled: tailcatExperimentEnabled)
+        }
+        return friendlyMessage(
+            from: error.localizedDescription,
+            route: route,
+            activeTermination: nil,
+            tailcatExperimentEnabled: tailcatExperimentEnabled
+        )
+    }
+
+    static func friendlyMessage(
+        from raw: String,
+        route: ConnectionProfileRoute?,
+        activeTermination: ConnectionTerminationStatus? = nil,
+        tailcatExperimentEnabled: Bool = false
+    ) -> String {
+        if let activeTermination {
+            return activeTermination.message
+        }
+        if isSavedCredentialsLoadFailureMessage(raw) {
+            return savedCredentialsLoadFailureGuidance(
+                for: route,
+                tailcatExperimentEnabled: tailcatExperimentEnabled
+            )
+        }
+        if isPreservedUserFacingMessage(raw) {
+            return raw
+        }
+        let lowercased = raw.lowercased()
+        if lowercased.contains("expired") || raw.contains("过期") {
+            return HostPlatform.unknown.pairingQRCodeExpiredGuidance
+        }
+        if InitialConnectionErrorClassifier.isCredentialRejection(raw) {
+            return L10n.text("ui.this_device_has_not_been_verified_by_mac")
+        }
+        if isReachabilityFailureMessage(raw) {
+            return reachabilityGuidance(
+                for: route,
+                tailcatExperimentEnabled: tailcatExperimentEnabled
+            )
+        }
+        if raw.contains("连接链接缺少访问码") {
+            return L10n.text("ui.the_connection_link_is_missing_the_access_code")
+        }
+        if raw.contains("连接链接缺少地址") {
+            return L10n.text("ui.the_link_is_missing_an_address")
+        }
+        if raw.contains("连接地址格式无效") {
+            return L10n.text("ui.the_connection_address_format_is_invalid")
+        }
+        if raw.contains("连接地址") || raw.contains("连接链接") {
+            return L10n.text("ui.invalid_connection_link")
+        }
+        return L10n.text("ui.the_connection_was_not_completed_please_confirm_that")
+    }
+
+    private static func isPreservedUserFacingMessage(_ raw: String) -> Bool {
+        if HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
+            TailcatPairingError.isUserFacingMessage(raw) ||
+            ConnectionProfileError.isUserFacingMessage(raw) {
+            return true
+        }
+        let localizedKeys = [
+            "ui.clipboard_does_not_contain_connection_info",
+            "ui.invalid_connection_link",
+            "ui.the_connection_link_is_missing_the_access_code",
+            "ui.the_link_is_missing_an_address",
+            "ui.the_connection_address_format_is_invalid",
+            "ui.the_connection_address_is_invalid_please_enter_the",
+            "ui.tailcat_pairing_address_missing",
+            "ui.the_current_mac_has_changed_please_try_again",
+            "ui.the_native_assistant_was_detected_but_the_automatic",
+            "ui.the_code_scan_has_been_cancelled_please_scan",
+            "ui.this_device_has_not_been_verified_by_mac",
+        ]
+        return localizedKeys.contains(where: { raw == L10n.text($0) }) || raw.contains("Endpoint")
+    }
+}
