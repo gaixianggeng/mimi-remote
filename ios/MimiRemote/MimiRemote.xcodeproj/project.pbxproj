@@ -3437,7 +3437,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = MimiRemote;
 				PRODUCT_NAME = MimiRemote;
@@ -3546,7 +3546,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.notificationservice;
 				PRODUCT_NAME = MimiNotificationService;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER)";
@@ -3569,7 +3569,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.notificationservice;
 				PRODUCT_NAME = MimiNotificationService;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_NOTIFICATION_PROVISIONING_PROFILE_SPECIFIER)";
@@ -3620,7 +3620,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi;
 				PRODUCT_MODULE_NAME = MimiRemote;
 				PRODUCT_NAME = MimiRemote;
@@ -3666,7 +3666,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.carstatuswidget;
 				PRODUCT_NAME = MimiCarStatusWidget;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)";
@@ -3754,7 +3754,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.0.1;
+				MARKETING_VERSION = 2.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.gaixianggeng.mimi.carstatuswidget;
 				PRODUCT_NAME = MimiCarStatusWidget;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "$(IOS_WIDGET_PROVISIONING_PROFILE_SPECIFIER)";
