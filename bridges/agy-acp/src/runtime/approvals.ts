@@ -38,14 +38,16 @@ function pickOption(options: readonly AcpPermissionOption[], preferredKinds: rea
 
 export function selectPermissionOption(
   options: readonly AcpPermissionOption[],
-  kind: "allow_once" | "allow_always" | "reject_once",
+  kind: "allow_once" | "allow_always" | "allow_any" | "reject_once",
 ): AcpRequestPermissionResult {
   const order =
-    kind === "allow_always"
+    kind === "allow_any"
       ? ["allow_always", "allow_once"]
-      : kind === "allow_once"
-        ? ["allow_once", "allow_always"]
-        : ["reject_once", "reject_always"];
+      : kind === "allow_always"
+        ? ["allow_always"]
+        : kind === "allow_once"
+          ? ["allow_once"]
+          : ["reject_once", "reject_always"];
   const optionId = pickOption(options, order);
   return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
 }
@@ -65,10 +67,12 @@ export function serverApprovalFor(
     locations: tool.locations,
     rawInput: tool.rawInput,
   };
+  const hasOnceOption = request.options.some((opt) => opt.kind === "allow_once");
   const hasAlwaysOption = request.options.some((opt) => opt.kind === "allow_always");
-  const availableDecisions = hasAlwaysOption
-    ? ["accept", "acceptForSession", "decline"]
-    : ["accept", "decline"];
+  const availableDecisions: string[] = [];
+  if (hasOnceOption) availableDecisions.push("accept");
+  if (hasAlwaysOption) availableDecisions.push("acceptForSession");
+  availableDecisions.push("decline");
 
   const common = {
     threadId: context.threadId,

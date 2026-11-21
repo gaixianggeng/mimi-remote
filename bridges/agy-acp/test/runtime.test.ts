@@ -13,6 +13,22 @@ test("declining an ACP request with only an allow option cancels it", () => {
   expect(approval.toAcpResult({ decision: "accept" })).toEqual({
     outcome: { outcome: "selected", optionId: "allow" },
   });
+  expect(approval.params.availableDecisions).toEqual(["accept", "decline"]);
+  expect(approval.toAcpResult({ decision: "acceptForSession" })).toEqual({ outcome: { outcome: "cancelled" } });
+});
+
+test("B01: ACP request with only allow_always omits accept and never escalates allow_once", () => {
+  const approval = serverApprovalFor({
+    sessionId: "session",
+    toolCall: { toolCallId: "tool-always-only", kind: "execute", title: "Run command" },
+    options: [{ optionId: "fixture-allow-always", name: "Always allow", kind: "allow_always" }],
+  }, { threadId: "session", turnId: "turn", cwd: "/workspace" });
+
+  expect(approval.params.availableDecisions).toEqual(["acceptForSession", "decline"]);
+  expect(approval.toAcpResult({ decision: "accept" })).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(approval.toAcpResult({ decision: "acceptForSession" })).toEqual({
+    outcome: { outcome: "selected", optionId: "fixture-allow-always" },
+  });
 });
 
 test("a failed turn completion includes the same error as its history", () => {

@@ -817,6 +817,11 @@ struct ApprovalSummary: Codable, Hashable {
         return command.contains(" ") || command.contains("/") || command.contains("：") || command.contains(":")
     }
 
+    var canApproveOnce: Bool {
+        guard let availableDecisions else { return true }
+        return supportsDecision("accept")
+    }
+
     var canPersistPermission: Bool {
         let supportsDecision = availableDecisions?.contains { decision in
             decision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame

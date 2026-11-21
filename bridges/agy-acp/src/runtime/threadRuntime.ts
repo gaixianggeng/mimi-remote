@@ -306,7 +306,7 @@ export class ThreadRuntime {
     signal: AbortSignal,
   ): Promise<AcpRequestPermissionResult> {
     if (this.settings.executionPolicy.type === "dangerFullAccess") {
-      return selectPermissionOption(params.options, "allow_always");
+      return selectPermissionOption(params.options, "allow_any");
     }
     if (this.settings.executionPolicy.type === "readOnly") {
       const kind = params.toolCall.kind ?? "";

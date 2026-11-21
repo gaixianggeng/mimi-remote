@@ -173,4 +173,36 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertFalse(healed.preservesThreadSettings)
         XCTAssertEqual(healed.mode, ComposerPermissionMode.requestApproval)
     }
+
+    func testB01ApprovalSummaryHidesApproveOnceWhenGatewayOmitsAccept() {
+        let alwaysOnly = ApprovalSummary(
+            id: "req-always-only",
+            title: "Run command",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["acceptForSession", "decline"]
+        )
+        XCTAssertFalse(alwaysOnly.canApproveOnce)
+
+        let onceAndSession = ApprovalSummary(
+            id: "req-once-and-session",
+            title: "Run command",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["accept", "acceptForSession", "decline"]
+        )
+        XCTAssertTrue(onceAndSession.canApproveOnce)
+
+        let legacyNilDecisions = ApprovalSummary(
+            id: "req-legacy",
+            title: "Run command",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: nil
+        )
+        XCTAssertTrue(legacyNilDecisions.canApproveOnce)
+    }
 }

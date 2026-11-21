@@ -804,16 +804,20 @@ struct PendingApprovalActionCard: View {
             .fixedSize(horizontal: false, vertical: true)
         }
 
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                approveButton(tokens: tokens)
-                rejectButton(tokens: tokens)
-            }
+        if approval.canApproveOnce {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    approveButton(tokens: tokens)
+                    rejectButton(tokens: tokens)
+                }
 
-            VStack(spacing: 10) {
-                approveButton(tokens: tokens)
-                rejectButton(tokens: tokens)
+                VStack(spacing: 10) {
+                    approveButton(tokens: tokens)
+                    rejectButton(tokens: tokens)
+                }
             }
+        } else {
+            rejectButton(tokens: tokens)
         }
     }
 
