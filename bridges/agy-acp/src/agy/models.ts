@@ -139,7 +139,7 @@ export class ModelCatalog {
 
   constructor(private readonly options: ModelCatalogOptions) {}
 
-  /** 收到活跃会话的 `session/new` / `session/load` 结果时顺带刷新缓存，省去额外探测子进程。 */
+  /** 收到新建会话的 `session/new` 结果时顺带刷新缓存，省去额外探测子进程；不得传入 `session/load` 结果。 */
   observeSessionOpen(openResult: AcpSessionOpenResult): void {
     const parsed = catalogAgyModels(openResult);
     if (parsed.length > 0) {

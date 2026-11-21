@@ -907,4 +907,57 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await cold.close();
     }
   });
+
+  test("B20: continuing a session pinned to a non-default model does not overwrite global default model in model/list", async () => {
+    const pinnedId = "pinned-hydrogen-session";
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${pinnedId}.db`),
+      "sqlite-placeholder",
+    );
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId: pinnedId,
+          cwd: workspaceDir,
+          title: "Pinned Hydrogen",
+          updatedAt: "2026-11-21T10:00:00Z",
+          modeId: "default",
+          model: "gemini-4-hydrogen",
+          thoughtLevel: "high",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "hi" } },
+            { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hello" } },
+          ],
+        },
+      ],
+      onPrompt: async ({ emitUpdate }) => {
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "continued" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      const before = await harness.rpc<{ data: Array<{ id: string; isDefault: boolean }> }>("model/list", {});
+      expect(before.data.find((m) => m.isDefault)?.id).toBe("gemini-4-carbon");
+
+      await harness.rpc("thread/resume", { threadId: pinnedId, cwd: workspaceDir });
+      await harness.rpc("turn/start", {
+        threadId: pinnedId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "continue pinned session", text_elements: [] }],
+      });
+      for (let i = 0; i < 40; i += 1) {
+        if (harness.notifications.some((n) => n.method === "turn/completed")) break;
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      const after = await harness.rpc<{ data: Array<{ id: string; isDefault: boolean }> }>("model/list", {});
+      expect(after.data.find((m) => m.isDefault)?.id).toBe("gemini-4-carbon");
+      expect(after.data.find((m) => m.id === "gemini-4-hydrogen")?.isDefault).toBe(false);
+      expect(world.sessions.get(pinnedId)?.model).toBe("gemini-4-hydrogen");
+    } finally {
+      await harness.close();
+    }
+  });
 });

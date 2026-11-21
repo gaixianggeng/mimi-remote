@@ -138,7 +138,7 @@ export class ThreadRuntime {
     this.threadId = open.sessionId;
     this.attachClient(client, this.threadId);
     this.historyTurns = [];
-    this.recordSessionMeta(open);
+    this.recordSessionMeta(open, true);
     await this.applySessionControls(client, this.settings);
     this.scheduleIdleClose();
     return this.threadId;
@@ -167,7 +167,7 @@ export class ThreadRuntime {
         const { result, updates } = await client.sessionLoadWithReplay(this.threadId, this.cwd);
         this.attachClient(client, this.threadId);
         this.historyTurns = updatesToTurns(this.threadId, this.cwd, updates, false);
-        this.recordSessionMeta(result);
+        this.recordSessionMeta(result, false);
       }
 
       const client = this.client!;
@@ -346,8 +346,12 @@ export class ThreadRuntime {
     }
   }
 
-  private recordSessionMeta(open: AcpSessionOpenResult): void {
-    this.host.onSessionOpen?.(open);
+  private recordSessionMeta(open: AcpSessionOpenResult, updateGlobalModelCatalog: boolean): void {
+    // 仅 `session/new` 返回运行时全局默认模型；`session/load` 的 currentValue 是该历史会话固定的模型，
+    // 不能覆写全局 ModelCatalog 的 isDefault（B20）。
+    if (updateGlobalModelCatalog) {
+      this.host.onSessionOpen?.(open);
+    }
     if (open.modes?.currentModeId) {
       this.appliedMode = open.modes.currentModeId;
     }
