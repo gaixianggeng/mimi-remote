@@ -29,7 +29,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
             ?? throw new FileNotFoundException("未找到 agentd.exe。请先安装 Mimi Remote 电脑端，然后重新打开此窗口。");
     }
 
-    private static string? FindInstallDirectory()
+    public static string? FindInstallDirectory()
     {
         if (!OperatingSystem.IsWindows()) { return null; }
         // Use the installed CLI for service operations so PID and firewall path checks match the scheduled task.

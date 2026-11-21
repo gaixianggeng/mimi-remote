@@ -179,11 +179,14 @@ jobs:
       - name: Read Bun version
         id: bun-version
         shell: pwsh
-        run: '"version=$((Get-Content bridges/claude-sdk/.bun-version -Raw).Trim())" >> $env:GITHUB_OUTPUT'
+        run: |
+          $pin = 'bridges/claude-sdk/.bun-version-windows'
+          # A release retry can target an older tag that used the shared Bun pin.
+          if (-not (Test-Path -LiteralPath $pin -PathType Leaf)) { $pin = 'bridges/claude-sdk/.bun-version' }
+          "version=$((Get-Content -LiteralPath $pin -Raw).Trim())" >> $env:GITHUB_OUTPUT
 
       - name: Setup Bun (baseline)
-        # Bun 1.2.22 在 Windows 上交叉下载 baseline 运行时后解压失败；直接安装 baseline 版，
-        # 编译目标与它自己相同，不再下载。版本仍来自 .bun-version（#660）。
+        # Match the embedded baseline target to the installed runtime so compilation needs no cross-download.
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v${{ steps.bun-version.outputs.version }}/bun-windows-x64-baseline.zip

@@ -60,9 +60,9 @@ if ($PfxPath) {
 $requiredTools = @('go', 'cargo')
 if (-not $AdapterBinary) { $requiredTools += 'bun' }
 foreach ($tool in $requiredTools) { if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" } }
-# Claude 适配器内嵌 Bun 运行时：版本固定为 bridges/claude-sdk/.bun-version，版本不同产物就不同。
+# Bun 1.2.23 starts stripping the Windows runtime's invalidated signature before re-signing.
 $adapterRoot = Join-Path $root 'bridges\claude-sdk'
-$requiredBun = (Get-Content -LiteralPath (Join-Path $adapterRoot '.bun-version') -Raw).Trim()
+$requiredBun = (Get-Content -LiteralPath (Join-Path $adapterRoot '.bun-version-windows') -Raw).Trim()
 if (-not $AdapterBinary) {
     $bunVersion = (& bun --version).Trim()
     if ($bunVersion -ne $requiredBun) { throw "The Claude adapter requires Bun $requiredBun, found $bunVersion." }
@@ -83,6 +83,7 @@ Push-Location $root
 try {
     Copy-Item -LiteralPath $iconSource -Destination (Join-Path $stage 'mimi-remote.ico')
     Copy-Item -LiteralPath $noticesSource -Destination (Join-Path $stage 'THIRD_PARTY_NOTICES.md')
+    Copy-Item -LiteralPath (Join-Path $root 'packaging/windows/stop-desktop.ps1') -Destination $stage
     $env:CGO_ENABLED = '0'; $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
     & go build -trimpath -ldflags "-s -w -X main.version=$Version" -o (Join-Path $stage 'agentd.exe') ./cmd/agentd
     if ($LASTEXITCODE -ne 0) { throw 'go build failed.' }
@@ -116,8 +117,9 @@ try {
     if (-not (Test-Path -LiteralPath $hostBinary -PathType Leaf)) { throw "Native AOT did not produce mimi-agent-host.exe: $hostBinary" }
     Copy-Item -LiteralPath $hostBinary -Destination $stage
     & (Join-Path $root 'scripts\check-windows-host-subsystem.ps1') -Path (Join-Path $stage 'mimi-agent-host.exe') -Expected GUI
-    & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.releaseVersion=$Version" -o (Join-Path $stage 'mimi-remote-tray.exe') ./cmd/mimi-remote-tray
-    if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed.' }
+    $clientDirectory = Join-Path $stage 'app'
+    & (Join-Path $PSScriptRoot 'publish-windows-client.ps1') -PayloadDirectory $clientDirectory -Version $Version
+    $clientBinary = Join-Path $clientDirectory 'MimiRemote.exe'
     # Tailcat 辅助程序是独立 Go module，要求比根 module 更新的工具链。与 .goreleaser.yml 的
     # linux-tailcat 一样只对它允许自动选择工具链，其余组件的构建环境不变。
     $tailcatPath = Join-Path $stage 'mimi-tailcat-experiment.exe'
@@ -168,7 +170,7 @@ try {
     & $adapterPath --version
     if ($LASTEXITCODE -ne 0) { throw 'The Claude adapter failed its version probe.' }
     if ($PfxPath) {
-        foreach ($file in (Get-ChildItem -LiteralPath $stage -Filter '*.exe')) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $stage -Filter '*.exe') + @(Get-Item -LiteralPath $clientBinary)) {
             & $signtool sign /fd SHA256 /f $PfxPath /p $PfxPassword /tr http://timestamp.digicert.com /td SHA256 $file.FullName
             if ($LASTEXITCODE -ne 0) { throw "Signing failed: $($file.Name)" }
         }
@@ -201,11 +203,26 @@ try {
     if (-not (Test-Path -LiteralPath $setup)) { throw "Expected installer was not produced: $setup" }
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     $payloadHashes = [ordered]@{}
-    foreach ($payloadName in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
-        $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath (Join-Path $stage $payloadName) -Algorithm SHA256).Hash.ToLowerInvariant()
+    foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName) {
+        $payloadName = [IO.Path]::GetRelativePath($stage, $file.FullName).Replace('\', '/')
+        $payloadHashes[$payloadName] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
     $signingMode = if ($Snapshot) { 'unsigned-snapshot' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
-    [ordered]@{ product = 'Mimi Remote'; version = $Version; installer = [IO.Path]::GetFileName($setup); sha256 = $hash; signing = $signingMode; rust_target = $RustTarget; rust_crt = 'static'; bun_version = $requiredBun; tailcat_version = $tailcatVersion; binaries = @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe'); assets = @('mimi-remote.ico', 'THIRD_PARTY_NOTICES.md'); payload_sha256 = $payloadHashes } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
+    [ordered]@{
+        product = 'Mimi Remote'
+        version = $Version
+        installer = [IO.Path]::GetFileName($setup)
+        sha256 = $hash
+        signing = $signingMode
+        rust_target = $RustTarget
+        rust_crt = 'static'
+        bun_version = $requiredBun
+        tailcat_version = $tailcatVersion
+        client_version = (Get-Item -LiteralPath $clientBinary).VersionInfo.ProductVersion
+        binaries = @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-tailcat-experiment.exe', 'app/MimiRemote.exe')
+        assets = @('mimi-remote.ico', 'THIRD_PARTY_NOTICES.md', 'stop-desktop.ps1')
+        payload_sha256 = $payloadHashes
+    } | ConvertTo-Json | Set-Content -LiteralPath "$setup.metadata.json" -Encoding utf8
     "$hash  $([IO.Path]::GetFileName($setup))" | Set-Content -LiteralPath "$setup.sha256" -Encoding ascii
     Write-Host "Created $setup"
 } finally {

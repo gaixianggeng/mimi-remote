@@ -11,7 +11,7 @@
 使用前请确认：
 
 - iPhone 或 iPad 运行 iOS / iPadOS 18 或更高版本。
-- 电脑运行 macOS 15 或更高版本、Windows 10/11 x64，或带 systemd 用户会话的 Linux（x86_64 或 ARM64），并已安装和登录 Codex（Mac 上 Codex CLI 或 ChatGPT 桌面版均可，Windows 和 Linux 需要 Codex CLI）。
+- 电脑运行 macOS 15 或更高版本、Windows 10 22H2 或 Windows 11（x64），或带 systemd 用户会话的 Linux（x86_64 或 ARM64），并已安装和登录 Codex（Mac 上 Codex CLI 或 ChatGPT 桌面版均可，Windows 和 Linux 需要 Codex CLI）。
 - 电脑已从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装并启动 Mimi Remote 宿主：Mac 使用 **Mimi Remote Mac**，Windows 使用 `Mimi-Remote-Setup` 安装程序，Linux 使用 `linux` 归档。
 - 移动设备能够通过局域网、Tailscale 私有网络、实验性 Tailcat 连接或用户配置的 HTTPS 地址访问电脑。
 
@@ -61,7 +61,7 @@ This page provides installation, connection, diagnostics, data-deletion, and con
 Before using the app, confirm that:
 
 - Your iPhone or iPad runs iOS/iPadOS 18 or later.
-- Your computer runs macOS 15 or later, Windows 10/11 x64, or Linux (x86_64 or ARM64 with a systemd user session), with Codex installed and signed in (on a Mac, the Codex CLI or the ChatGPT desktop app; on Windows and Linux, the Codex CLI).
+- Your computer runs macOS 15 or later, Windows 10 22H2 or Windows 11 (x64), or Linux (x86_64 or ARM64 with a systemd user session), with Codex installed and signed in. Use Codex CLI on Windows and Linux. On Mac, use Codex CLI or the ChatGPT desktop app.
 - The Mimi Remote host is installed from [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) and running: **Mimi Remote Mac** on Mac, the `Mimi-Remote-Setup` installer on Windows, or the `linux` archive on Linux.
 - The mobile device can reach the computer over a local network, a private Tailscale network, the experimental Tailcat connection, or an HTTPS endpoint you configure.
 

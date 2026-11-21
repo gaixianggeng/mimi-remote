@@ -28,7 +28,9 @@
 
 ## 本地验证
 
-Windows 无窗口宿主使用 `windows/global.json` 固定的 .NET SDK，Native AOT 发布还需要
+Windows WinUI 客户端和无窗口宿主使用 `windows/global.json` 固定的 .NET SDK。安装包面向
+Windows 10 22H2 和 Windows 11 x64，把自包含客户端放在 `app\`，后台程序放在安装目录根部。
+Native AOT 发布还需要
 Visual Studio 2022 C++ Build Tools 和 Windows SDK。安装包另外需要 Inno Setup 6.4 或更新版本；Go、Rust、
 Bun 沿用仓库锁定版本。PowerShell 7 中执行 `./scripts/test-windows-app.ps1` 可完成锁定依赖恢复、
 格式、单测、Native AOT 发布和隔离进程树验证，产物自动放到仓库外共享缓存。

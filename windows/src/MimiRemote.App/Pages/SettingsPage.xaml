@@ -9,7 +9,7 @@
             <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
         </StackPanel>
         <toolkit:SettingsCard Header="登录后在托盘运行" Description="后台服务由系统独立管理。">
-            <ToggleSwitch IsOn="{x:Bind ViewModel.Login, Mode=TwoWay}" AutomationProperties.Name="登录后在托盘运行"/>
+            <ToggleSwitch IsOn="{x:Bind ViewModel.Login, Mode=TwoWay}" IsEnabled="{x:Bind ViewModel.CanConfigureLogin}" AutomationProperties.Name="登录后在托盘运行"/>
         </toolkit:SettingsCard>
         <toolkit:SettingsCard Header="允许系统通知" Description="服务异常与软件更新时通知你。">
             <ToggleSwitch IsOn="{x:Bind ViewModel.Notifications, Mode=TwoWay}" AutomationProperties.Name="允许系统通知"/>

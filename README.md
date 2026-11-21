@@ -38,7 +38,7 @@ Mimi Remote controls agent sessions only. To operate the whole computer or an ar
 
 ## Get started
 
-You need an iPhone or iPad on **iOS/iPadOS 18+** and a computer that stays awake while you connect: **macOS 15+**, **Windows 10/11 x64**, or **Linux** (x86_64 or ARM64 with a systemd user session).
+You need an iPhone or iPad on **iOS/iPadOS 18+** and a computer that stays awake while you connect: **macOS 15+**, **Windows 10 22H2 or Windows 11 (x64)**, or **Linux** (x86_64 or ARM64 with a systemd user session).
 
 1. Install and sign in to the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) on that computer. On a Mac, the ChatGPT desktop app also works.
 2. Install the host from [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest): `Mimi-Remote-Mac.dmg` on Mac, the `Mimi-Remote-Setup` installer on Windows, or the `linux` archive on Linux. On a Mac, drag **Mimi Remote Mac** to Applications and open it; a setup window asks for your code folder and then shows a pairing QR code. The [installation guide](docs/install-upgrade-rollback.md) covers checksums, first-run setup, upgrades, and rollback.
@@ -100,7 +100,7 @@ Each official feature serves its own agent. Mimi Remote connects to both Codex a
 
 ## Contributing
 
-This repository contains the SwiftUI iPhone/iPad app, the Go `agentd` host, the Mac menu bar app, the Windows and Linux tray, and the Claude bridge. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for checks and conventions, and the [iOS build guide](ios/MimiRemote/README.md) for the app. Maintainers run `bash ./scripts/verify-release.sh` before a formal release.
+This repository contains the SwiftUI iPhone/iPad app, the Go `agentd` host, the Mac menu bar app, the Windows WinUI client, the Linux tray, and the Claude bridge. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for checks and conventions, and the [iOS build guide](ios/MimiRemote/README.md) for the app. Maintainers run `bash ./scripts/verify-release.sh` before a formal release.
 
 Report bugs and ideas in [GitHub Issues](https://github.com/gaixianggeng/mimi-remote/issues/new). Report vulnerabilities privately through [SECURITY.md](SECURITY.md). For help, see the [support page](docs/support.md).
 

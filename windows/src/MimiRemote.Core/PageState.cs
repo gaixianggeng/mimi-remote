@@ -42,8 +42,7 @@ public class PageState : ObservableObject
 
 public static class ClientStartup
 {
-    // The installed legacy tray cannot restore a hidden native preview. Leave ownership with it.
-    public static bool ShouldLaunch(bool background, bool legacyTrayRunning) => !background || !legacyTrayRunning;
+    public static bool ShouldLaunch(bool background, bool installed) => !background || installed;
 }
 
 public sealed record ClientBuild(string Display, Version? Release)

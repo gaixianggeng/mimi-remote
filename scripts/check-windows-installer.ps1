@@ -8,16 +8,27 @@ if (-not (Test-Path -LiteralPath $metadataPath)) { throw "Missing metadata: $met
 $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if ($metadata.installer -ne [IO.Path]::GetFileName($installer)) { throw 'Metadata installer name does not match artifact.' }
 if ($ExpectedVersion -and $metadata.version -ne $ExpectedVersion.TrimStart('v')) { throw "Metadata version $($metadata.version) does not match the expected release $ExpectedVersion." }
-foreach ($binary in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe')) {
+$binaries = @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-tailcat-experiment.exe', 'app/MimiRemote.exe')
+foreach ($binary in $binaries) {
     if ($metadata.binaries -notcontains $binary) { throw "Metadata does not declare embedded binary: $binary" }
 }
 # 安装包只发布由同一提交构建、版本一致的 agentd 与 Tailcat 辅助程序。
 if ($metadata.tailcat_version -ne $metadata.version) { throw "Embedded Tailcat helper version '$($metadata.tailcat_version)' does not match installer version $($metadata.version)." }
+if ($metadata.client_version -ne $metadata.version) { throw "Embedded WinUI client version '$($metadata.client_version)' does not match installer version $($metadata.version)." }
 if ($metadata.assets -notcontains 'mimi-remote.ico') { throw 'Metadata does not declare the Windows application icon.' }
 if ($metadata.assets -notcontains 'THIRD_PARTY_NOTICES.md') { throw 'Metadata does not declare the bundled third-party notices.' }
-foreach ($payload in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
+if ($metadata.binaries -contains 'mimi-remote-tray.exe' -or $metadata.payload_sha256.'mimi-remote-tray.exe') { throw 'Windows installer must not ship the legacy tray.' }
+$required = $binaries + @(
+    'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md', 'stop-desktop.ps1', 'app/mimi-remote.ico', 'app/MimiRemote.dll',
+    'app/MimiRemote.runtimeconfig.json', 'app/coreclr.dll', 'app/Microsoft.UI.Xaml.dll', 'app/MimiRemote.pri',
+    'app/LICENSE', 'app/NOTICE.md', 'app/THIRD_PARTY_NOTICES.md', 'app/licenses.json'
+)
+foreach ($payload in $required) {
     $payloadHash = $metadata.payload_sha256.$payload
     if ($payloadHash -notmatch '^[0-9a-f]{64}$') { throw "Metadata is missing a valid payload SHA-256: $payload" }
+}
+foreach ($entry in $metadata.payload_sha256.PSObject.Properties) {
+    if ($entry.Value -notmatch '^[0-9a-f]{64}$') { throw "Malformed payload SHA-256: $($entry.Name)" }
 }
 if ($metadata.rust_crt -ne 'static') { throw 'Metadata must declare a static Rust CRT.' }
 if ($metadata.bun_version -notmatch '^\d+\.\d+\.\d+$') { throw 'Metadata must declare the Bun version the Claude adapter was built with.' }

@@ -89,7 +89,7 @@ public sealed partial class MainWindow : Window, IDisposable
         else if (ContentFrame.CurrentSourcePageType != type) { ContentFrame.Navigate(type); }
     }
     public void HideToTray() { if (tray is not null) { AppWindow.Hide(); UpdateActivity(); } }
-    private void Quit() { quitting = true; Close(); }
+    internal void Quit() { quitting = true; Close(); }
     private void Navigate(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
         if (args.SelectedItem is NavigationViewItem item && Routes.TryGetValue((string)item.Tag, out var type) && ContentFrame.CurrentSourcePageType != type)

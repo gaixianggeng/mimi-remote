@@ -38,7 +38,7 @@ Mimi Remote 只遥控 Agent 会话。要在手机上操作整台电脑或任意�
 
 ## 快速开始
 
-你需要一台 **iOS / iPadOS 18+** 的 iPhone 或 iPad，以及一台连接期间保持唤醒的电脑：**macOS 15+**、**Windows 10/11 x64**，或 **Linux**（x86_64 或 ARM64，需要 systemd 用户会话）。
+你需要一台 **iOS / iPadOS 18+** 的 iPhone 或 iPad，以及一台连接期间保持唤醒的电脑。支持 **macOS 15+**、**Windows 10 22H2 或 Windows 11（x64）**，以及 **Linux**（x86_64 或 ARM64，需要 systemd 用户会话）。
 
 1. 在这台电脑上安装并登录 [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)。Mac 上用 ChatGPT 桌面版也可以。
 2. 从 [Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 安装宿主：Mac 用 `Mimi-Remote-Mac.dmg`，Windows 用 `Mimi-Remote-Setup` 安装程序，Linux 用 `linux` 归档。Mac 上把 **Mimi Remote Mac** 拖进「应用程序」后打开，首次设置窗口会让你选代码文件夹，完成后直接显示配对二维码。校验、首次配置、升级和回滚见[安装文档](docs/install-upgrade-rollback.md)。
@@ -100,7 +100,7 @@ App 与电脑端免费开源，局域网、Tailscale 和自建 Tailcat 连接继
 
 ## 参与开发
 
-仓库包含 SwiftUI iPhone / iPad App、Go `agentd` 宿主、Mac 菜单栏 App、Windows 与 Linux 托盘，以及 Claude bridge。检查与约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，App 构建见 [iOS 构建说明](ios/MimiRemote/README.md)。维护者在正式发布前运行 `bash ./scripts/verify-release.sh`。
+仓库包含 SwiftUI iPhone / iPad App、Go `agentd` 宿主、Mac 菜单栏 App、Windows WinUI 客户端、Linux 托盘，以及 Claude bridge。检查与约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，App 构建见 [iOS 构建说明](ios/MimiRemote/README.md)。维护者在正式发布前运行 `bash ./scripts/verify-release.sh`。
 
 Bug 和建议请提交 [GitHub Issue](https://github.com/gaixianggeng/mimi-remote/issues/new)，安全问题按 [SECURITY.md](SECURITY.md) 私下报告，使用帮助见[支持说明](docs/support.md)。
 

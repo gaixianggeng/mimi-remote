@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.Win32;
 
 namespace MimiRemote.App;
 
@@ -27,21 +26,4 @@ internal sealed class DesktopPreferences
         }
         finally { if (File.Exists(temporary)) { File.Delete(temporary); } }
     }
-
-    internal static bool LoginEnabled
-    {
-        get
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-            return key?.GetValue("MimiRemoteNative") as string == StartupCommand;
-        }
-        set
-        {
-            using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-            if (value) { key.SetValue("MimiRemoteNative", StartupCommand); }
-            else { key.DeleteValue("MimiRemoteNative", throwOnMissingValue: false); }
-        }
-    }
-
-    private static string StartupCommand => $"\"{Environment.ProcessPath}\" --background";
 }
