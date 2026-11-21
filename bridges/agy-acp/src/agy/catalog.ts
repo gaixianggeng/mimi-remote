@@ -3,7 +3,7 @@ import os from "node:os";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
 import { SharedReadonlyAcp } from "./binary.ts";
-import { conversationDbPath, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
+import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import type { GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
 import type { AgyOverlay, TurnOutcomeRecord } from "./overlay.ts";
@@ -70,7 +70,25 @@ export function createAcpSessionBackend(
 ): AgySessionBackend {
   return {
     async listSummaries() {
-      return cliSharedAcp.use((client) => client.sessionList());
+      const checkOther = await hasOtherConversations(env());
+      if (!checkOther) {
+        return cliSharedAcp.use((client) => client.sessionList());
+      }
+      const [cliList, otherList] = await Promise.all([
+        cliSharedAcp.use((client) => client.sessionList()),
+        otherSharedAcp.use((client) => client.sessionList()).catch(() => [] as AcpSessionSummary[]),
+      ]);
+      if (otherList.length === 0) return cliList;
+      const merged = new Map<string, AcpSessionSummary>();
+      for (const item of cliList) {
+        if (item.sessionId) merged.set(item.sessionId, item);
+      }
+      for (const item of otherList) {
+        if (item.sessionId && !merged.has(item.sessionId)) {
+          merged.set(item.sessionId, item);
+        }
+      }
+      return [...merged.values()];
     },
 
     async loadReplay(sessionId: string, cwd: string, origin: AgySessionOrigin) {

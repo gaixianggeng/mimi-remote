@@ -960,4 +960,56 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("C10: discovers sessions present only in the Other native ACP index", async () => {
+    const otherOnlyId = "other-only-native-session";
+    await mkdir(path.join(fakeHome, ".gemini", "antigravity", "conversations"), { recursive: true });
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity", "conversations", `${otherOnlyId}.db`),
+      "sqlite-placeholder",
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId: otherOnlyId,
+          cwd: workspaceDir,
+          title: "Other Only Fixture",
+          updatedAt: "2026-11-21T12:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          appDataDirName: "antigravity",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Hello from Other" } },
+            { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Other reply" } },
+          ],
+        },
+      ],
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      const globalList = await harness.rpc<{ data: Array<{ id: string; source: unknown }> }>("thread/list", {});
+      expect(globalList.data.map((t) => ({ id: t.id, source: t.source }))).toEqual([
+        { id: otherOnlyId, source: { custom: "other" } },
+      ]);
+
+      const scopedList = await harness.rpc<{ data: Array<{ id: string; source: unknown }> }>("thread/list", {
+        cwd: workspaceDir,
+      });
+      expect(scopedList.data.map((t) => ({ id: t.id, source: t.source }))).toEqual([
+        { id: otherOnlyId, source: { custom: "other" } },
+      ]);
+
+      const readRes = await harness.rpc<{ thread: { id: string; source: unknown; turns: Array<{ items: Array<{ type: string }> }> } }>(
+        "thread/read",
+        { threadId: otherOnlyId, includeTurns: true },
+      );
+      expect(readRes.thread.source).toEqual({ custom: "other" });
+      expect(readRes.thread.turns).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
 });

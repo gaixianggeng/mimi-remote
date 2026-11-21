@@ -22,6 +22,8 @@ export interface FakeStoredSession {
   replayUpdates: AcpSessionUpdate[];
   /** 模拟真实 `agy acp` 在 `session/load` 响应返回后由后台 goroutine 异步冲出的尾部历史回放帧。 */
   postLoadReplayUpdates?: Array<{ delayMs: number; update: AcpSessionUpdate }>;
+  /** 若设置，则仅在对应 `appDataDirName` 的 ACP 实例上通过 `session/list` 暴露该会话（用于 C10 测试）。 */
+  appDataDirName?: string;
 }
 
 export interface FakeAgyBehavior {
@@ -184,12 +186,15 @@ export class FakeAgyWorld {
         }
 
         case "session/list": {
-          const summaries: AcpSessionSummary[] = [...this.sessions.values()].map((s) => ({
-            sessionId: s.sessionId,
-            cwd: s.cwd,
-            title: s.title,
-            updatedAt: s.updatedAt,
-          }));
+          const currentAppDataDir = options.appDataDirName ?? "antigravity-cli";
+          const summaries: AcpSessionSummary[] = [...this.sessions.values()]
+            .filter((s) => !s.appDataDirName || s.appDataDirName === currentAppDataDir)
+            .map((s) => ({
+              sessionId: s.sessionId,
+              cwd: s.cwd,
+              title: s.title,
+              updatedAt: s.updatedAt,
+            }));
           sendFrame({ jsonrpc: "2.0", id, result: { sessions: summaries } });
           return;
         }
