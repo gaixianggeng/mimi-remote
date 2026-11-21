@@ -774,22 +774,35 @@ struct PendingApprovalActionCard: View {
             .accessibilityHint(L10n.text("ui.after_confirmation_write_the_precise_rules_suggested_by"))
         }
 
+        if approval.canAcceptForSession {
+            sessionTrustButton(
+                title: L10n.text("ui.allow_for_this_session"),
+                systemImage: "clock.badge.checkmark",
+                decision: "acceptForSession",
+                identifier: "approval.allowForSession",
+                accessibilityHint: nil,
+                tokens: tokens
+            )
+        }
+
         if approval.canAcceptMCPToolForSession {
-            mcpTrustButton(
+            sessionTrustButton(
                 title: L10n.text("ui.allow_for_this_session"),
                 systemImage: "clock.badge.checkmark",
                 decision: "acceptForSession",
                 identifier: "approval.allowMCPForSession",
+                accessibilityHint: L10n.text("ui.codex_saves_this_choice_on_the_mac"),
                 tokens: tokens
             )
         }
 
         if approval.canAlwaysAllowMCPTool {
-            mcpTrustButton(
+            sessionTrustButton(
                 title: L10n.text("ui.always_allow_this_tool"),
                 systemImage: "checkmark.shield",
                 decision: "acceptAlways",
                 identifier: "approval.alwaysAllowMCPTool",
+                accessibilityHint: L10n.text("ui.codex_saves_this_choice_on_the_mac"),
                 tokens: tokens
             )
         }
@@ -821,11 +834,12 @@ struct PendingApprovalActionCard: View {
         }
     }
 
-    private func mcpTrustButton(
+    private func sessionTrustButton(
         title: String,
         systemImage: String,
         decision: String,
         identifier: String,
+        accessibilityHint: String?,
         tokens: ThemeTokens
     ) -> some View {
         Button {
@@ -861,7 +875,7 @@ struct PendingApprovalActionCard: View {
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isSendingDecision || !approval.hasDecisionContext)
         .accessibilityIdentifier(identifier)
-        .accessibilityHint(L10n.text("ui.codex_saves_this_choice_on_the_mac"))
+        .accessibilityHint(accessibilityHint ?? "")
     }
 
     private func rejectButton(tokens: ThemeTokens) -> some View {

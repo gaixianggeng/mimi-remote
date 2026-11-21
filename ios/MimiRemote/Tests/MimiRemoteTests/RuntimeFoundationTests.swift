@@ -205,4 +205,59 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertTrue(legacyNilDecisions.canApproveOnce)
     }
+
+    func testB05CommandAndFileApprovalsExposeAllowForSessionWhenAdvertisedByGateway() async {
+        let commandWithSession = ApprovalSummary(
+            id: "req-cmd-session",
+            title: "Run pwd",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["accept", "acceptForSession", "decline"]
+        )
+        XCTAssertTrue(commandWithSession.canApproveOnce)
+        XCTAssertTrue(commandWithSession.canAcceptForSession)
+        XCTAssertFalse(commandWithSession.canAcceptMCPToolForSession)
+
+        let fileAlwaysOnly = ApprovalSummary(
+            id: "req-file-session",
+            title: "Edit file",
+            body: "diff",
+            kind: "fileChange",
+            count: nil,
+            availableDecisions: ["acceptForSession", "decline"]
+        )
+        XCTAssertFalse(fileAlwaysOnly.canApproveOnce)
+        XCTAssertTrue(fileAlwaysOnly.canAcceptForSession)
+
+        let commandOnceOnly = ApprovalSummary(
+            id: "req-cmd-once",
+            title: "Run pwd",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["accept", "decline"]
+        )
+        XCTAssertTrue(commandOnceOnly.canApproveOnce)
+        XCTAssertFalse(commandOnceOnly.canAcceptForSession)
+
+        let mcpWithSession = ApprovalSummary(
+            id: "req-mcp-session",
+            title: "Call tool",
+            body: "args",
+            kind: CodexMCPToolApprovalProtocol.kind,
+            count: nil,
+            availableDecisions: ["accept", "acceptForSession", "decline"]
+        )
+        XCTAssertFalse(mcpWithSession.canAcceptForSession)
+        XCTAssertTrue(mcpWithSession.canAcceptMCPToolForSession)
+
+        let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: "agy")
+        let response = await runtime.approvalResponse(
+            method: "item/commandExecution/requestApproval",
+            params: [:],
+            decision: "acceptForSession"
+        )
+        XCTAssertEqual(response, .object(["decision": .string("acceptForSession")]))
+    }
 }

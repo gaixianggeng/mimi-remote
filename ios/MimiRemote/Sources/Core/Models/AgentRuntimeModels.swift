@@ -822,6 +822,11 @@ struct ApprovalSummary: Codable, Hashable {
         return supportsDecision("accept")
     }
 
+    var canAcceptForSession: Bool {
+        guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
+        return supportsDecision("acceptForSession")
+    }
+
     var canPersistPermission: Bool {
         let supportsDecision = availableDecisions?.contains { decision in
             decision.caseInsensitiveCompare("acceptWithPermissionUpdate") == .orderedSame
