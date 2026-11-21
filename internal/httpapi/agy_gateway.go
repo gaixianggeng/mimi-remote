@@ -137,14 +137,19 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 	if agyBin == "" {
 		agyBin = "agy"
 	}
-	if agyPath, lookErr := claudebridge.LookPathIn(agyBin, env); lookErr == nil {
-		if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
-			if !capabilities.AgySupported(agyVer) {
-				probe.Status = "agy_unsupported"
-				probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
-				r.setAgyAdapterProbe(probe)
-				return probe
-			}
+	agyPath, lookErr := claudebridge.LookPathIn(agyBin, env)
+	if lookErr != nil {
+		probe.Status = "agy_missing"
+		probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
+		r.setAgyAdapterProbe(probe)
+		return probe
+	}
+	if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
+		if !capabilities.AgySupported(agyVer) {
+			probe.Status = "agy_unsupported"
+			probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
+			r.setAgyAdapterProbe(probe)
+			return probe
 		}
 	}
 
@@ -570,6 +575,10 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	r.refreshAgyAdapterProbeIfStale()
 	probe := r.agyAdapterProbeSnapshot()
 	if !probe.Healthy {
+		switch probe.Status {
+		case "agy_missing", "agy_unsupported":
+			status.Reason = probe.Status
+		}
 		return status
 	}
 
