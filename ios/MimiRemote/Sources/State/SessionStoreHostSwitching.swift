@@ -90,6 +90,7 @@ extension SessionStore {
 
     func resetConnectionForSettingsChange(clearData: Bool = false) {
         invalidatePreparedConnectionChange()
+        lastPairingLinkRoute = nil
         connectionTermination = nil
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
@@ -278,11 +279,13 @@ extension SessionStore {
     func openPairingLink(_ url: URL) async {
         let wasConfigured = appStore.isConfigured
         let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
+        lastPairingLinkRoute = ConnectionProfileRoute.fromPairingURL(url)
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
         }
         do {
             _ = try await applyPairingURL(url)
+            lastPairingLinkRoute = nil
             if RelayServiceChoice.fromPairingURL(url) == .mimi {
                 mimiRelaySetupProfileID = appStore.activeConnectionProfileID
             }
@@ -517,6 +520,7 @@ extension SessionStore {
             }
         }
         connectionTermination = nil
+        lastPairingLinkRoute = nil
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
         // 必须在三个 Store 仍指向旧 Profile 时退役旧 socket；disconnect 会把旧主机中

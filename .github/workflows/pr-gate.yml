@@ -21,6 +21,7 @@ jobs:
       ios: ${{ steps.scope.outputs.ios }}
       rust: ${{ steps.scope.outputs.rust }}
       macos: ${{ steps.scope.outputs.macos }}
+      windows: ${{ steps.scope.outputs.windows }}
       docs: ${{ steps.scope.outputs.docs }}
     steps:
       - name: Checkout
@@ -85,6 +86,12 @@ jobs:
     if: needs.scope.outputs.macos == 'true'
     uses: ./.github/workflows/macos-ci.yml
 
+  windows:
+    name: Windows App
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
+    uses: ./.github/workflows/windows-ci.yml
+
   docs:
     name: Docs and static policy
     needs: scope
@@ -102,6 +109,7 @@ jobs:
       - ios
       - rust
       - macos
+      - windows
       - docs
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -120,6 +128,8 @@ jobs:
           RUST_RESULT: ${{ needs.rust.result }}
           MACOS_REQUIRED: ${{ needs.scope.outputs.macos }}
           MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_REQUIRED: ${{ needs.scope.outputs.windows }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
           DOCS_REQUIRED: ${{ needs.scope.outputs.docs }}
           DOCS_RESULT: ${{ needs.docs.result }}
         run: |
@@ -156,6 +166,7 @@ jobs:
           require_scoped_success "iOS" "$IOS_REQUIRED" "$IOS_RESULT"
           require_scoped_success "Rust bridge" "$RUST_REQUIRED" "$RUST_RESULT"
           require_scoped_success "Mac App" "$MACOS_REQUIRED" "$MACOS_RESULT"
+          require_scoped_success "Windows App" "$WINDOWS_REQUIRED" "$WINDOWS_RESULT"
           require_scoped_success "Docs and static policy" "$DOCS_REQUIRED" "$DOCS_RESULT"
 
           {
@@ -170,6 +181,7 @@ jobs:
             echo "| iOS | \`$IOS_REQUIRED\` | \`$IOS_RESULT\` |"
             echo "| Rust bridge | \`$RUST_REQUIRED\` | \`$RUST_RESULT\` |"
             echo "| Mac App | \`$MACOS_REQUIRED\` | \`$MACOS_RESULT\` |"
+            echo "| Windows App | \`$WINDOWS_REQUIRED\` | \`$WINDOWS_RESULT\` |"
             echo "| Docs and static policy | \`$DOCS_REQUIRED\` | \`$DOCS_RESULT\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -7,7 +7,7 @@ enum SessionOpenApps {
     private static var icons: [String: NSImage] = [:]
 
     static func installedBundleIDs() -> Set<String> {
-        let all = [SessionOpenTarget.codexDesktopBundleID, SessionOpenTarget.claudeDesktopBundleID]
+        let all = [SessionOpenTarget.codexDesktopBundleID]
             + TerminalApp.allCases.map(\.bundleID)
         return Set(all.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil })
     }
