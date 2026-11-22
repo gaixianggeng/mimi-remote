@@ -64,6 +64,41 @@ async function statSizeAndMtime(targetPath: string | undefined): Promise<{ size:
   }
 }
 
+const DEFAULT_OTHER_LIST_TIMEOUT_MS = 2_500;
+
+function otherListTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_OTHER_LIST_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OTHER_LIST_TIMEOUT_MS;
+}
+
+function withBoundedTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(fallback);
+    }, timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
 export function createAcpSessionBackend(
   cliSharedAcp: SharedReadonlyAcp,
   otherSharedAcp: SharedReadonlyAcp,
@@ -72,13 +107,19 @@ export function createAcpSessionBackend(
 ): AgySessionBackend {
   return {
     async listSummaries() {
-      const checkOther = await hasOtherConversations(env());
+      const currentEnv = env();
+      const checkOther = await hasOtherConversations(currentEnv);
       if (!checkOther) {
         return cliSharedAcp.use((client) => client.sessionList());
       }
+      const timeoutMs = otherListTimeoutMs(currentEnv);
       const [cliList, otherList] = await Promise.all([
         cliSharedAcp.use((client) => client.sessionList()),
-        otherSharedAcp.use((client) => client.sessionList()).catch(() => [] as AcpSessionSummary[]),
+        withBoundedTimeout(
+          otherSharedAcp.use((client) => client.sessionList()),
+          timeoutMs,
+          [] as AcpSessionSummary[],
+        ),
       ]);
       if (otherList.length === 0) return cliList;
       const merged = new Map<string, AcpSessionSummary>();

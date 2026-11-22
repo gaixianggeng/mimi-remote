@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { serveConnection } from "@mimi/appserver-kit/server/connection.ts";
 import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
 import { capabilityDeclaration, createApp } from "../src/app.ts";
+import type { SpawnAgyTransport } from "../src/agy/binary.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
 describe("mimi-agy-adapter end-to-end runtime", () => {
@@ -29,14 +30,17 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
     }
   });
 
-  async function createTestHarness(world: FakeAgyWorld, extra: { externalWritePollMs?: number } = {}) {
-    const env = () => ({ HOME: fakeHome });
+  async function createTestHarness(
+    world: FakeAgyWorld,
+    extra: { externalWritePollMs?: number; spawnTransport?: SpawnAgyTransport; env?: () => NodeJS.ProcessEnv } = {},
+  ) {
+    const env = extra.env ?? (() => ({ HOME: fakeHome }));
     const app = createApp({
       stateDir,
       log: () => {},
       agyExecutable: () => "/usr/local/bin/fake-agy",
       probeAgy: async () => ({ version: "1.5.10" }),
-      spawnTransport: world.spawnTransport,
+      spawnTransport: extra.spawnTransport ?? world.spawnTransport,
       env,
       ...(extra.externalWritePollMs !== undefined ? { externalWritePollMs: extra.externalWritePollMs } : {}),
     });
@@ -1612,6 +1616,117 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       expect(transcript.data[2]!.items.find((i) => i.type === "fileChange")?.id).toBe(liveIdsByLabel.get("file:out-of-order.txt"));
     } finally {
       await cold.close();
+    }
+  });
+
+  test("C10 round2: healthy CLI pagination stays available when Other is unconfigured, fails to start, or responds slowly", async () => {
+    const cliIds = ["cli-page-1", "cli-page-2", "cli-page-3"];
+    for (const id of cliIds) {
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${id}.db`),
+        "sqlite-placeholder",
+      );
+    }
+    const baseSessions = cliIds.map((id, idx) => ({
+      sessionId: id,
+      cwd: workspaceDir,
+      title: `CLI ${idx + 1}`,
+      updatedAt: `2026-11-22T0${idx + 1}:00:00Z`,
+      modeId: "default",
+      model: "gemini-4-carbon",
+      thoughtLevel: "medium",
+      appDataDirName: "antigravity-cli",
+      replayUpdates: [],
+    }));
+
+    // 1) Other unconfigured (no antigravity/conversations/*.db): otherSharedAcp is never spawned; CLI pagination works.
+    const world1 = new FakeAgyWorld({ sessions: baseSessions });
+    const h1 = await createTestHarness(world1);
+    try {
+      const page1 = await h1.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", { limit: 2 });
+      expect(page1.data).toHaveLength(2);
+      expect(page1.nextCursor).not.toBeNull();
+      const page2 = await h1.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", {
+        limit: 2,
+        cursor: page1.nextCursor,
+      });
+      expect(page2.data).toHaveLength(1);
+      expect(page2.nextCursor).toBeNull();
+      expect(world1.spawns.some((s) => s.appDataDirName === "antigravity")).toBe(false);
+    } finally {
+      await h1.close();
+    }
+
+    // Create a placeholder Other db so hasOtherConversations returns true for cases 2 & 3.
+    await mkdir(path.join(fakeHome, ".gemini", "antigravity", "conversations"), { recursive: true });
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity", "conversations", "other-broken.db"),
+      "sqlite-placeholder",
+    );
+
+    // 2) Other fails to start: healthy CLI pagination still succeeds.
+    const world2 = new FakeAgyWorld({ sessions: baseSessions });
+    const h2 = await createTestHarness(world2, {
+      spawnTransport: (opts) => {
+        if (opts.appDataDirName === "antigravity") {
+          throw new Error("simulated Other ACP spawn failure");
+        }
+        return world2.spawnTransport(opts);
+      },
+    });
+    try {
+      const page1 = await h2.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", { limit: 2 });
+      expect(page1.data).toHaveLength(2);
+      expect(page1.nextCursor).not.toBeNull();
+      const page2 = await h2.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", {
+        limit: 2,
+        cursor: page1.nextCursor,
+      });
+      expect(page2.data).toHaveLength(1);
+    } finally {
+      await h2.close();
+    }
+
+    // 3) Other hangs / responds slowly past bounded timeout: healthy CLI pagination returns promptly.
+    const world3 = new FakeAgyWorld({ sessions: baseSessions });
+    const h3 = await createTestHarness(world3, {
+      env: () => ({
+        ...process.env,
+        HOME: fakeHome,
+        AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS: "120",
+      }),
+      spawnTransport: (opts) => {
+        if (opts.appDataDirName === "antigravity") {
+          const stdin = new PassThrough();
+          const stdout = new PassThrough();
+          // Never responds to initialize / session/list (simulates hung Other subprocess).
+          return {
+            stdin,
+            stdout,
+            pid: 99_999,
+            async close() {
+              stdin.end();
+              stdout.end();
+            },
+          };
+        }
+        return world3.spawnTransport(opts);
+      },
+    });
+    try {
+      const startedAt = Date.now();
+      const page1 = await h3.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", { limit: 2 });
+      const elapsedMs = Date.now() - startedAt;
+      expect(page1.data).toHaveLength(2);
+      expect(page1.nextCursor).not.toBeNull();
+      expect(elapsedMs).toBeLessThan(1_500);
+      const page2 = await h3.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", {
+        limit: 2,
+        cursor: page1.nextCursor,
+      });
+      expect(page2.data).toHaveLength(1);
+    } finally {
+      await h3.close();
     }
   });
 });
