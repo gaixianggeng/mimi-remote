@@ -644,6 +644,164 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         )
     }
 
+    func testPhoneFloatingCapsuleMetricsEnablementAndBounds() {
+        let phoneLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: false,
+            isPhone: true
+        )
+        let compactPadLayout = WorkbenchLayout(
+            containerWidth: 375,
+            horizontalSizeClass: .compact,
+            isPad: true,
+            isPhone: false
+        )
+        let miniPortraitPadLayout = WorkbenchLayout(
+            containerWidth: 744,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+        let widePadLayout = WorkbenchLayout(
+            containerWidth: 1032,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+
+        XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: phoneLayout))
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 不启用悬浮胶囊顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 不启用悬浮胶囊顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 不启用悬浮胶囊顶栏")
+
+        // 固定最大宽度落在 280–320pt 区间（当前取值 304pt），圆角恒为高度一半。
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.maximumWidth, 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 375), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 440), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320), 288)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 48), 24)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 56), 28)
+
+        let titleBudget = PhoneSessionFloatingCapsuleMetrics.titleRegionMaxWidth(capsuleMaxWidth: 304)
+        XCTAssertEqual(titleBudget, 200)
+        XCTAssertGreaterThanOrEqual(
+            titleBudget,
+            PhoneSessionFloatingCapsuleMetrics.titleRegionMinWidth(capsuleMaxWidth: 304)
+        )
+    }
+
+    @MainActor
+    func testPhoneFloatingCapsuleHeaderCapsMaxWidthAndTruncatesLongTitle() throws {
+        let defaultsSuite = "PhoneFloatingCapsuleHeaderTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let tokens = themeStore.tokens(for: .light)
+
+        func measureCapsule(
+            title: String,
+            subtitle: String,
+            containerWidth: CGFloat
+        ) -> CGSize {
+            var measured = CGSize.zero
+            let data = SessionNavigationTitleDisplayData(
+                title: title,
+                subtitle: subtitle,
+                showsStatus: false,
+                subtitleColor: tokens.tertiaryText,
+                subtitleFont: themeStore.uiFont(.caption2, weight: .medium),
+                accessibilityValue: subtitle,
+                workspaceIcon: .emoji("🐱")
+            )
+            let header = PhoneSessionFloatingCapsuleHeader(
+                data: data,
+                tokens: tokens,
+                availableWidth: containerWidth,
+                isMenuDisabled: false,
+                onBack: {},
+                onMeasuredCapsuleSize: { size in
+                    measured = size
+                },
+                moreMenuContent: {
+                    Button("Refresh") {}
+                }
+            )
+            .environment(\.colorScheme, .light)
+
+            let bounds = CGRect(x: 0, y: 0, width: containerWidth, height: 120)
+            let host = UIHostingController(rootView: header)
+            let window: UIWindow
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                window = UIWindow(windowScene: scene)
+                window.frame = bounds
+            } else {
+                window = UIWindow(frame: bounds)
+            }
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            defer {
+                window.rootViewController = nil
+                window.isHidden = true
+            }
+            host.view.frame = bounds
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            host.view.layoutIfNeeded()
+            return measured
+        }
+
+        let shortSize = measureCapsule(
+            title: "整理开源发布说明",
+            subtitle: "mimi-remote",
+            containerWidth: 402
+        )
+        let longSize = measureCapsule(
+            title: "这是一个非常非常长的会话标题用来验证悬浮胶囊顶栏在内容过长时会单行尾部截断而绝不撑破容器边界",
+            subtitle: "very-long-workspace-repository-name-with-deep-nested-subpath",
+            containerWidth: 402
+        )
+        let narrowSize = measureCapsule(
+            title: "这是一个非常非常长的会话标题用来验证窄屏悬浮胶囊顶栏不会溢出屏幕左右安全边距",
+            subtitle: "mimi-remote",
+            containerWidth: 320
+        )
+
+        XCTAssertGreaterThan(shortSize.width, 0, "应测量到悬浮胶囊真实渲染宽度")
+        XCTAssertLessThanOrEqual(
+            shortSize.width,
+            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5
+        )
+        XCTAssertGreaterThanOrEqual(
+            shortSize.height,
+            PhoneSessionFloatingCapsuleMetrics.minimumHeight - 0.5
+        )
+
+        XCTAssertGreaterThan(longSize.width, 0)
+        XCTAssertLessThanOrEqual(
+            longSize.width,
+            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5,
+            "超长标题与副标题必须截断在固定最大宽度 \(PhoneSessionFloatingCapsuleMetrics.maximumWidth)pt 内，不能撑破胶囊"
+        )
+        XCTAssertLessThanOrEqual(
+            abs(longSize.height - shortSize.height),
+            2.0,
+            "超长标题必须保持单行截断，不能折行撑高悬浮胶囊"
+        )
+
+        XCTAssertGreaterThan(narrowSize.width, 0)
+        XCTAssertLessThanOrEqual(
+            narrowSize.width,
+            PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320) + 0.5,
+            "窄屏容器下胶囊应进一步收缩并保留左右安全边距"
+        )
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,
