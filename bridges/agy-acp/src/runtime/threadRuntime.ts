@@ -410,7 +410,7 @@ export class ThreadRuntime {
           threadId: this.threadId,
           status: { type: "active", activeFlags: [] },
           canAcceptDirectInput: false,
-          claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+          claudeOwner: desktopOwnerSummary(ext.mtimeMs, ext.holderPid ?? null),
         });
       } else {
         this.host.publish(this.threadId, "thread/status/changed", {

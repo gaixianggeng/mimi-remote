@@ -139,7 +139,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
           ? {
               canAcceptDirectInput: false,
               status: { type: "active" as const, activeFlags: [] },
-              claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+              claudeOwner: desktopOwnerSummary(ext.mtimeMs, ext.holderPid ?? null),
             }
           : { canAcceptDirectInput: true, status: { type: "idle" as const } };
       const thread = toThread(record, [], live);
@@ -194,11 +194,19 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       }
     },
 
-    turnInterrupt(raw: unknown) {
+    async turnInterrupt(raw: unknown) {
       const params = asParams(raw);
       const threadId = requireString(params, "threadId", "turn/interrupt");
       const runtime = manager.get(threadId);
-      if (!runtime) return {};
+      if (!runtime?.isBusy()) {
+        const ext = await catalog.externalActivity(threadId);
+        if (ext?.externallyBusy) {
+          throw RpcError.invalidParams(
+            "Another Antigravity process on this computer is currently active on this session and cannot be interrupted remotely. Wait for it to finish and refresh.",
+          );
+        }
+        return {};
+      }
       const turnId = typeof params.turnId === "string" && params.turnId.trim() ? params.turnId.trim() : undefined;
       return runtime.interrupt(turnId);
     },

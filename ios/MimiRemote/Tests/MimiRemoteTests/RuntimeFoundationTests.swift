@@ -571,4 +571,109 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertNil(store.runtimeChannelDiagnosticsByProvider["agy"])
         XCTAssertNil(store.workspaceRuntimeNotice(for: .agy))
     }
+
+    func testC11Round3FirstScreenMetadataRefreshRespectsCapabilityAndDegradesGracefullyOnFailure() async throws {
+        let project = AgentProject(id: "proj-c11-cap", name: "C11", path: "/tmp/c11-cap")
+        let agyChannelWithoutRead = CodexAppServerChannelMetadata(
+            id: "agy",
+            runtimeID: "agy",
+            title: "Antigravity",
+            provider: "agy",
+            type: "agy_acp_adapter",
+            protocolName: "app_server_jsonrpc_stdio_v1",
+            enabled: true,
+            gatewayWSURL: "ws://127.0.0.1:8787/api/app-server/ws?runtime=agy",
+            gatewayAvailable: true,
+            managed: false,
+            experimental: true,
+            lifecycle: "per_connection",
+            bridge: nil,
+            methods: ["initialize", "initialized", "thread/turns/list"],
+            capabilities: nil,
+            policy: nil
+        )
+        let agyChannelWithRead = CodexAppServerChannelMetadata(
+            id: "agy",
+            runtimeID: "agy",
+            title: "Antigravity",
+            provider: "agy",
+            type: "agy_acp_adapter",
+            protocolName: "app_server_jsonrpc_stdio_v1",
+            enabled: true,
+            gatewayWSURL: "ws://127.0.0.1:8787/api/app-server/ws?runtime=agy",
+            gatewayAvailable: true,
+            managed: false,
+            experimental: true,
+            lifecycle: "per_connection",
+            bridge: nil,
+            methods: ["initialize", "initialized", "thread/read", "thread/turns/list"],
+            capabilities: nil,
+            policy: nil
+        )
+
+        // 1) When channel omits `thread/read` capability, messagesPage MUST skip `thread/read` and call `thread/turns/list` directly.
+        let transportNoRead = FakeCodexAppServerTransport()
+        let runtimeNoRead = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test-token",
+            runtimeProvider: "agy",
+            transportFactory: { transportNoRead },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/turns/list"],
+                    channels: [agyChannelWithoutRead]
+                )
+            }
+        )
+        let pageNoRead = Task { try await runtimeNoRead.messagesPage(sessionID: "sess-no-read", before: nil, limit: 20) }
+        let init1 = try await waitForFakeAppServerRequest(transportNoRead, method: "initialize")
+        transportResponse(transportNoRead, id: init1.id, result: #"{"userAgent":"fake-agy","platformFamily":"macos"}"#)
+        let turns1 = try await waitForFakeAppServerRequest(transportNoRead, method: "thread/turns/list")
+        transportResponse(transportNoRead, id: turns1.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await pageNoRead.value
+        let sentMethods1 = await transportNoRead.sentMessages().compactMap { (try? decodeAppServerRequest($0))?.method }
+        XCTAssertFalse(sentMethods1.contains("thread/read"))
+        await runtimeNoRead.shutdownForHostSwitch()
+
+        // 2) When `thread/read` IS supported on cached agy session but fails (-32601 / transient error), degrade gracefully to `thread/turns/list`.
+        let transportDegrade = FakeCodexAppServerTransport()
+        let runtimeDegrade = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "test-token",
+            runtimeProvider: "agy",
+            transportFactory: { transportDegrade },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: ["initialize", "initialized", "thread/read", "thread/turns/list"],
+                    channels: [agyChannelWithRead]
+                )
+            }
+        )
+        let cachedSession = AgentSession(
+            id: "sess-degrade",
+            projectID: project.id,
+            project: project.name,
+            dir: project.path,
+            title: "Cached Agy",
+            status: "completed",
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: "sess-degrade",
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true
+        )
+        await runtimeDegrade.rememberForkedSession(cachedSession)
+        let pageDegrade = Task { try await runtimeDegrade.messagesPage(sessionID: "sess-degrade", before: nil, limit: 20) }
+        let init2 = try await waitForFakeAppServerRequest(transportDegrade, method: "initialize")
+        transportResponse(transportDegrade, id: init2.id, result: #"{"userAgent":"fake-agy","platformFamily":"macos"}"#)
+        let read2 = try await waitForFakeAppServerRequest(transportDegrade, method: "thread/read")
+        transportErrorResponse(transportDegrade, id: read2.id, code: -32601, message: "method not found")
+        let turns2 = try await waitForFakeAppServerRequest(transportDegrade, method: "thread/turns/list")
+        transportResponse(transportDegrade, id: turns2.id, result: #"{"data":[],"nextCursor":null}"#)
+        _ = try await pageDegrade.value
+        await runtimeDegrade.shutdownForHostSwitch()
+    }
 }

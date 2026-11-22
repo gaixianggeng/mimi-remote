@@ -20,12 +20,12 @@ export interface LiveState {
   claudeOwner?: Record<string, unknown>;
 }
 
-export function desktopOwnerSummary(mtimeMs: number): Record<string, unknown> {
+export function desktopOwnerSummary(mtimeMs: number, pid: number | null = null): Record<string, unknown> {
   return {
     entrypoint: "desktop",
     kind: "desktop",
     status: "busy",
-    pid: null,
+    pid,
     statusUpdatedAt: new Date(mtimeMs).toISOString(),
     waitingKind: null,
   };
@@ -117,7 +117,7 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
         live: {
           canAcceptDirectInput: false,
           status: { type: "active", activeFlags: [] },
-          claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+          claudeOwner: desktopOwnerSummary(ext.mtimeMs, ext.holderPid ?? null),
         },
         holderActive: true,
       };

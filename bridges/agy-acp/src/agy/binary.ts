@@ -232,6 +232,10 @@ export class SharedReadonlyAcp {
     };
   }
 
+  get pid(): number | undefined {
+    return this.client && !this.client.isClosed ? this.client.pid : undefined;
+  }
+
   async acquire(): Promise<AcpClient> {
     if (this.disposed) {
       throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp has been closed");

@@ -488,4 +488,63 @@ D1–D6 的倾向
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("C11 round3: interim DONE planner reply while native GENERIC tool is still RUNNING keeps externallyBusy true until completion signal + final reply", async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), "agy-c11-interim-"));
+    try {
+      const sessionId = "sess-c11-long-tool";
+      const logsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+      const env = { HOME: tempHome };
+
+      const earlySteps = [
+        { step_index: 0, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:00Z", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+        { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:01Z", content: "BASE OK" },
+        { step_index: 2, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:57Z", content: "<USER_REQUEST>\nrun sleep 55\n</USER_REQUEST>" },
+        { step_index: 3, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:28:57Z" },
+        { step_index: 4, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:57Z", tool_calls: [{ name: "run_command", args: { CommandLine: "\"sleep 55\"" } }] },
+        { step_index: 5, type: "GENERIC", status: "RUNNING", created_at: "2026-11-22T02:29:04Z" },
+      ];
+      await writeFile(transcriptPath, `${earlySteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+
+      // Stage 1 (early): GENERIC RUNNING -> externallyBusy === true
+      const earlyInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(earlyInfo?.externallyBusy).toBe(true);
+
+      // Stage 2 (mid-flight): native CLI writes interim PLANNER_RESPONSE (DONE, "Waiting for sleep 55 to finish.") while step 5 is STILL RUNNING!
+      const midFlightSteps = [
+        ...earlySteps,
+        { step_index: 6, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:14Z", content: "Waiting for `sleep 55` to finish." },
+      ];
+      await writeFile(transcriptPath, `${midFlightSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      const midFlightInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(midFlightInfo?.externallyBusy).toBe(true);
+
+      // Stage 3 (post-exit): command finishes -> SYSTEM_MESSAGE + final PLANNER_RESPONSE -> externallyBusy === false
+      const finishedSteps = [
+        ...midFlightSteps,
+        { step_index: 7, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:29:59Z" },
+        { step_index: 8, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:59Z", content: "VERIFY C11 MAC BUSY FINISH" },
+      ];
+      await writeFile(transcriptPath, `${finishedSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      const finishedInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(finishedInfo?.externallyBusy).toBe(false);
+
+      // Stage 4: Live external holder PID keeps externallyBusy true even before transcript updates!
+      const pidHeldInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => 55246,
+      });
+      expect(pidHeldInfo?.externallyBusy).toBe(true);
+      expect(pidHeldInfo?.holderPid).toBe(55246);
+    } finally {
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
 });

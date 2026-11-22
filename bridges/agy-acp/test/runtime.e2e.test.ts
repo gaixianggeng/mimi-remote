@@ -2101,4 +2101,147 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await second.close();
     }
   });
+
+  test("C11 round3: every entry point shows and enforces external holder across early, mid-flight interim planner reply, and post-exit windows", async () => {
+    const sessionId = "c11-all-entries-session";
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`),
+      "sqlite-placeholder",
+    );
+    const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+    await mkdir(logsDir, { recursive: true });
+    const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+
+    const baseSteps = [
+      { step_index: 0, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:00Z", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+      { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:01Z", content: "BASE READY" },
+    ];
+    await writeFile(transcriptPath, `${baseSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "C11 All Entries",
+          updatedAt: "2026-11-22T02:28:01Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      const assertAllEntriesHeld = async (stageLabel: string) => {
+        // 1) Global thread/list
+        const globalList = await harness.rpc<{ data: Array<{ id: string; canAcceptDirectInput: boolean; claudeOwner?: { status?: string } }> }>(
+          "thread/list",
+          {},
+        );
+        const globalEntry = globalList.data.find((d) => d.id === sessionId);
+        expect(globalEntry, `${stageLabel}: global thread/list`).toMatchObject({
+          id: sessionId,
+          canAcceptDirectInput: false,
+          claudeOwner: expect.objectContaining({ status: "busy" }),
+        });
+
+        // 2) Scoped thread/list
+        const scopedList = await harness.rpc<{ data: Array<{ id: string; canAcceptDirectInput: boolean; claudeOwner?: { status?: string } }> }>(
+          "thread/list",
+          { cwd: workspaceDir },
+        );
+        const scopedEntry = scopedList.data.find((d) => d.id === sessionId);
+        expect(scopedEntry, `${stageLabel}: scoped thread/list`).toMatchObject({
+          id: sessionId,
+          canAcceptDirectInput: false,
+          claudeOwner: expect.objectContaining({ status: "busy" }),
+        });
+
+        // 3) thread/read
+        const readRes = await harness.rpc<{
+          thread: { id: string; canAcceptDirectInput: boolean; claudeOwner?: { status?: string }; turns: Array<{ status: string }> };
+        }>("thread/read", { threadId: sessionId, includeTurns: true });
+        expect(readRes.thread.canAcceptDirectInput, `${stageLabel}: thread/read`).toBe(false);
+        expect(readRes.thread.claudeOwner?.status, `${stageLabel}: thread/read owner`).toBe("busy");
+        expect(readRes.thread.turns[readRes.thread.turns.length - 1]?.status, `${stageLabel}: thread/read last turn`).toBe("inProgress");
+
+        // 4) thread/turns/list
+        const turnsRes = await harness.rpc<{ data: Array<{ status: string }> }>("thread/turns/list", {
+          threadId: sessionId,
+          sortDirection: "desc",
+          itemsView: "full",
+        });
+        expect(turnsRes.data[0]?.status, `${stageLabel}: thread/turns/list`).toBe("inProgress");
+
+        // 5) thread/resume
+        const resumeRes = await harness.rpc<{ thread: { canAcceptDirectInput: boolean; claudeOwner?: { status?: string } } }>(
+          "thread/resume",
+          { threadId: sessionId, cwd: workspaceDir },
+        );
+        expect(resumeRes.thread.canAcceptDirectInput, `${stageLabel}: thread/resume`).toBe(false);
+        expect(resumeRes.thread.claudeOwner?.status, `${stageLabel}: thread/resume owner`).toBe("busy");
+
+        // 6) turn/start rejected
+        await expect(
+          harness.rpc("turn/start", {
+            threadId: sessionId,
+            cwd: workspaceDir,
+            input: [{ type: "text", text: "blocked during holder", text_elements: [] }],
+          }),
+        ).rejects.toThrow("currently active");
+
+        // 7) turn/interrupt rejected
+        await expect(harness.rpc("turn/interrupt", { threadId: sessionId })).rejects.toThrow("cannot be interrupted remotely");
+      };
+
+      // Stage 1 (early): native CLI starts sleep 55 -> GENERIC RUNNING
+      const earlySteps = [
+        ...baseSteps,
+        { step_index: 2, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:57Z", content: "<USER_REQUEST>\nsleep 55\n</USER_REQUEST>" },
+        { step_index: 3, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:28:57Z" },
+        { step_index: 4, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:57Z", tool_calls: [{ name: "run_command", args: { CommandLine: "\"sleep 55\"" } }] },
+        { step_index: 5, type: "GENERIC", status: "RUNNING", created_at: "2026-11-22T02:29:04Z" },
+      ];
+      await writeFile(transcriptPath, `${earlySteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      await assertAllEntriesHeld("early");
+
+      // Stage 2 (mid-flight): interim PLANNER_RESPONSE ("Waiting for sleep 55 to finish.") while step 5 is STILL RUNNING!
+      const midSteps = [
+        ...earlySteps,
+        { step_index: 6, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:14Z", content: "Waiting for `sleep 55` to finish." },
+      ];
+      await writeFile(transcriptPath, `${midSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      await assertAllEntriesHeld("mid-flight-interim-planner");
+
+      // Stage 3 (post-exit): command completes -> SYSTEM_MESSAGE + final PLANNER_RESPONSE -> all entries recover to writable & completed!
+      const finishedSteps = [
+        ...midSteps,
+        { step_index: 7, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:29:59Z" },
+        { step_index: 8, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:59Z", content: "VERIFY C11 MAC BUSY FINISH" },
+      ];
+      await writeFile(transcriptPath, `${finishedSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+
+      const readAfter = await harness.rpc<{
+        thread: { canAcceptDirectInput: boolean; claudeOwner?: unknown; turns: Array<{ status: string }> };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      expect(readAfter.thread.canAcceptDirectInput).toBe(true);
+      expect(readAfter.thread.claudeOwner).toBeUndefined();
+      expect(readAfter.thread.turns[readAfter.thread.turns.length - 1]?.status).toBe("completed");
+
+      const turnsAfter = await harness.rpc<{ data: Array<{ status: string }> }>("thread/turns/list", {
+        threadId: sessionId,
+        sortDirection: "desc",
+        itemsView: "full",
+      });
+      expect(turnsAfter.data[0]?.status).toBe("completed");
+
+      const listAfter = await harness.rpc<{ data: Array<{ id: string; canAcceptDirectInput: boolean }> }>("thread/list", {});
+      expect(listAfter.data.find((d) => d.id === sessionId)?.canAcceptDirectInput).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
 });

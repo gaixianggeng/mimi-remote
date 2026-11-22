@@ -1356,6 +1356,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: loadMode,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
+            canRefreshThreadMetadata: runtimeSupportsMethod("thread/read", in: config),
             recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
@@ -1374,6 +1375,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: .full,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
+            canRefreshThreadMetadata: runtimeSupportsMethod("thread/read", in: config),
             recoveringInterruptedTurnID: nil
         )
     }
@@ -1385,16 +1387,20 @@ actor CodexAppServerSessionRuntime {
         loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject],
         canHydrateTurnItems: Bool,
+        canRefreshThreadMetadata: Bool? = nil,
         recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let cursor = Self.decodeThreadTurnsCursor(before)
+        let supportsThreadRead = canRefreshThreadMetadata ?? true
+        let needsUncachedMetadata = contextsBySessionID[sessionID] == nil
+        let wantsOpportunisticAgyRefresh = cursor == nil && runtimeProvider == "agy"
         let threadMetadata = try await threadMetadataForHistoryPage(
             sessionID: sessionID,
             builder: builder,
             projects: projects,
-            shouldRefresh: contextsBySessionID[sessionID] == nil
-                || (cursor == nil && (runtimeProvider == "agy" || runtimeProvider == "claude"))
+            shouldRefresh: supportsThreadRead && (needsUncachedMetadata || wantsOpportunisticAgyRefresh),
+            allowDegradedFallback: !needsUncachedMetadata
         )
         var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         let result: CodexAppServerJSONValue?
@@ -1719,16 +1725,38 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         builder: CodexAppServerRequestBuilder,
         projects: [AgentProject],
-        shouldRefresh: Bool
+        shouldRefresh: Bool,
+        allowDegradedFallback: Bool = false
     ) async throws -> [String: CodexAppServerJSONValue]? {
         if !shouldRefresh {
             return nil
         }
-        let result = try await sendRecoveringFromStaleInitialization(
-            builder.threadRead(threadID: sessionID, includeTurns: false),
-            timeout: longRunningRequestTimeout
-        )
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                builder.threadRead(threadID: sessionID, includeTurns: false),
+                timeout: longRunningRequestTimeout
+            )
+        } catch {
+            if error is CancellationError {
+                throw error
+            }
+            if case CodexAppServerConnectionError.appServer(let failure) = error, failure.code == -32601 {
+                // 上游不支持 thread/read 时受控降级为已有上下文壳 + thread/turns/list，不阻断首屏历史加载（C11）。
+                return nil
+            }
+            if allowDegradedFallback {
+                if case CodexAppServerConnectionError.appServer(let failure) = error, failure.code == -32080 {
+                    throw error
+                }
+                return nil
+            }
+            throw error
+        }
         guard let thread = threadObject(from: result) else {
+            if allowDegradedFallback {
+                return nil
+            }
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {

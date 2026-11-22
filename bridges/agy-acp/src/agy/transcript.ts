@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
@@ -7,10 +9,15 @@ import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.
 import { resolveAgyDataPaths, type AgySessionOrigin } from "./env.ts";
 import { acpToolToThreadItem, stableToolItemId, type AcpToolState } from "./tools.ts";
 
+const execFileAsync = promisify(execFile);
+
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const EXTERNAL_BUSY_WINDOW_MS = 90_000;
+const EXTERNAL_RUNNING_TOOL_WINDOW_MS = 10 * 60_000;
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
-const TAIL_READ_BYTES = 24 * 1024;
+const TAIL_READ_BYTES = 64 * 1024;
+const LARGE_TAIL_READ_BYTES = 256 * 1024;
+const PS_CACHE_TTL_MS = 300;
 
 interface TranscriptToolCall {
   id?: string;
@@ -41,6 +48,7 @@ export interface TranscriptActivityInfo {
   size: number;
   mtimeMs: number;
   externallyBusy: boolean;
+  holderPid?: number | null;
 }
 
 export interface TranscriptTurnSnapshot {
@@ -127,10 +135,10 @@ export async function resolveTranscriptPath(
   return resolved.kind === "present" ? resolved.path : undefined;
 }
 
-async function readTailSteps(filePath: string, fileSize: number): Promise<TranscriptStep[]> {
+async function readTailSteps(filePath: string, fileSize: number, maxBytes = TAIL_READ_BYTES): Promise<TranscriptStep[]> {
   const handle = await open(filePath, "r");
   try {
-    const start = Math.max(0, fileSize - TAIL_READ_BYTES);
+    const start = Math.max(0, fileSize - maxBytes);
     const length = fileSize - start;
     const buffer = Buffer.alloc(length);
     await handle.read(buffer, 0, length, start);
@@ -157,7 +165,8 @@ async function readTailSteps(filePath: string, fileSize: number): Promise<Transc
 
 function isStepIndicatingExternalActivity(step: TranscriptStep | undefined): boolean {
   if (!step) return false;
-  if (step.status === "RUNNING") return true;
+  const status = typeof step.status === "string" ? step.status.toUpperCase() : "";
+  if (status === "RUNNING" || status === "IN_PROGRESS" || status === "PENDING") return true;
   if (step.type === "USER_INPUT" || step.type === "SYSTEM_MESSAGE") return true;
   if (step.type === "GENERIC") return true;
   if (step.type === "PLANNER_RESPONSE") {
@@ -168,29 +177,210 @@ function isStepIndicatingExternalActivity(step: TranscriptStep | undefined): boo
   return false;
 }
 
+/**
+ * 分析最新一轮（最后一个 `USER_INPUT` 之后）的原生 transcript 步骤，判断是否存在未结束的外部持有状态（C11）：
+ * 真实 `agy` 在长命令（例如 `sleep 55`）执行期间，会先追加 `GENERIC (RUNNING)`，随后在命令尚未退出时
+ * 写一条中间 `PLANNER_RESPONSE (DONE, "Waiting for sleep 55 to finish.")`，直到命令退出才追加
+ * `SYSTEM_MESSAGE` 与最终 `PLANNER_RESPONSE`。仅看最后一条 `PLANNER_RESPONSE` 会提前误判为空闲，
+ * 必须结合尚未收到完成信号的 `RUNNING` 步骤共同判定。
+ */
+export function analyzeLatestTurnExternalBusy(steps: readonly TranscriptStep[]): {
+  busy: boolean;
+  hasUnresolvedRunningTool: boolean;
+} {
+  let lastUserIdx = -1;
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    if (steps[i]?.type === "USER_INPUT") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const turnSteps = lastUserIdx >= 0 ? steps.slice(lastUserIdx) : steps;
+  let runningToolActive = false;
+  let toolCompletionSignaled = false;
+  const unresolvedRunningStepIndices = new Set<number>();
+
+  for (const step of turnSteps) {
+    const status = typeof step.status === "string" ? step.status.toUpperCase() : "";
+    const isTerminalStatus =
+      status === "DONE"
+      || status === "COMPLETED"
+      || status === "ERROR"
+      || status === "FAILED"
+      || status === "CANCELLED"
+      || status === "CANCELED"
+      || status === "INTERRUPTED";
+
+    if (status === "RUNNING" || status === "IN_PROGRESS" || status === "PENDING") {
+      runningToolActive = true;
+      toolCompletionSignaled = false;
+      if (typeof step.step_index === "number") {
+        unresolvedRunningStepIndices.add(step.step_index);
+      }
+      continue;
+    }
+
+    if (typeof step.step_index === "number" && unresolvedRunningStepIndices.has(step.step_index) && isTerminalStatus) {
+      unresolvedRunningStepIndices.delete(step.step_index);
+      if (unresolvedRunningStepIndices.size === 0) {
+        runningToolActive = false;
+      }
+    }
+
+    if (step.type === "SYSTEM_MESSAGE" && runningToolActive) {
+      toolCompletionSignaled = true;
+      continue;
+    }
+
+    if (
+      step.type === "ERROR_MESSAGE"
+      || status === "CANCELLED"
+      || status === "CANCELED"
+      || status === "INTERRUPTED"
+    ) {
+      runningToolActive = false;
+      toolCompletionSignaled = false;
+      unresolvedRunningStepIndices.clear();
+      continue;
+    }
+
+    if (step.type === "PLANNER_RESPONSE") {
+      const hasToolCalls = Array.isArray(step.tool_calls) && step.tool_calls.length > 0;
+      const hasReplyText = typeof step.content === "string" && step.content.trim().length > 0;
+      const isDone = status === "DONE" || status === "COMPLETED";
+      if (hasToolCalls) {
+        toolCompletionSignaled = false;
+      } else if (isDone && hasReplyText && runningToolActive && toolCompletionSignaled) {
+        runningToolActive = false;
+        toolCompletionSignaled = false;
+        unresolvedRunningStepIndices.clear();
+      }
+    }
+  }
+
+  if (runningToolActive) {
+    return { busy: true, hasUnresolvedRunningTool: true };
+  }
+  const lastMeaningful = [...turnSteps].reverse().find((s) => s.type !== "CHECKPOINT");
+  return {
+    busy: isStepIndicatingExternalActivity(lastMeaningful),
+    hasUnresolvedRunningTool: false,
+  };
+}
+
+let cachedPsSnapshot: { at: number; lines: Array<{ pid: number; args: string }> } | undefined;
+
+async function listSystemProcesses(): Promise<Array<{ pid: number; args: string }>> {
+  if (process.platform === "win32") return [];
+  const now = Date.now();
+  if (cachedPsSnapshot && now - cachedPsSnapshot.at < PS_CACHE_TTL_MS) {
+    return cachedPsSnapshot.lines;
+  }
+  try {
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="], { timeout: 1_000, maxBuffer: 2 * 1024 * 1024 });
+    const lines: Array<{ pid: number; args: string }> = [];
+    for (const raw of stdout.split("\n")) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      const match = /^(\d+)\s+([\s\S]+)$/.exec(trimmed);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (Number.isInteger(pid) && pid > 0) {
+        lines.push({ pid, args: match[2]! });
+      }
+    }
+    cachedPsSnapshot = { at: Date.now(), lines };
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+export async function findExternalAgyHolderPid(
+  sessionId: string,
+  ownPids: ReadonlySet<number> = new Set(),
+): Promise<number | null> {
+  if (!SAFE_SESSION_ID.test(sessionId) || sessionId.length < 4) return null;
+  const procs = await listSystemProcesses();
+  for (const proc of procs) {
+    if (proc.pid === process.pid || ownPids.has(proc.pid)) continue;
+    if (!proc.args.includes(sessionId)) continue;
+    if (
+      proc.args.includes(`--conversation ${sessionId}`)
+      || proc.args.includes(`--conversation=${sessionId}`)
+      || /\bagy\b/.test(proc.args)
+    ) {
+      return proc.pid;
+    }
+  }
+  return null;
+}
+
+export interface InspectExternalActivityOptions {
+  nowMs?: number;
+  ownPids?: ReadonlySet<number>;
+  findExternalHolderPid?: (sessionId: string, ownPids: ReadonlySet<number>) => Promise<number | null>;
+}
+
 export async function inspectTranscriptActivity(
   sessionId: string,
   origin: AgySessionOrigin,
   env: NodeJS.ProcessEnv = process.env,
-  nowMs = Date.now(),
+  nowMsOrOptions: number | InspectExternalActivityOptions = Date.now(),
 ): Promise<TranscriptActivityInfo | undefined> {
+  const opts: InspectExternalActivityOptions =
+    typeof nowMsOrOptions === "number" ? { nowMs: nowMsOrOptions } : nowMsOrOptions;
+  const nowMs = opts.nowMs ?? Date.now();
+  const ownPids = opts.ownPids ?? new Set<number>();
+  const pidFinder = opts.findExternalHolderPid ?? findExternalAgyHolderPid;
+  const holderPid = await pidFinder(sessionId, ownPids).catch(() => null);
+
   const filePath = await resolveTranscriptPath(sessionId, origin, env);
-  if (!filePath) return undefined;
+  if (!filePath) {
+    if (holderPid !== null) {
+      return {
+        path: "",
+        size: 0,
+        mtimeMs: nowMs,
+        externallyBusy: true,
+        holderPid,
+      };
+    }
+    return undefined;
+  }
   try {
     const info = await stat(filePath);
-    let externallyBusy = false;
-    if (nowMs - info.mtimeMs <= EXTERNAL_BUSY_WINDOW_MS) {
-      const tailSteps = await readTailSteps(filePath, info.size);
-      const lastMeaningful = [...tailSteps].reverse().find((s) => s.type !== "CHECKPOINT");
-      externallyBusy = isStepIndicatingExternalActivity(lastMeaningful);
+    let externallyBusy = holderPid !== null;
+    if (!externallyBusy && nowMs - info.mtimeMs <= EXTERNAL_RUNNING_TOOL_WINDOW_MS) {
+      let tailSteps = await readTailSteps(filePath, info.size, TAIL_READ_BYTES);
+      if (info.size > TAIL_READ_BYTES && !tailSteps.some((step) => step.type === "USER_INPUT")) {
+        tailSteps = await readTailSteps(filePath, info.size, LARGE_TAIL_READ_BYTES);
+      }
+      const analysis = analyzeLatestTurnExternalBusy(tailSteps);
+      const ageMs = nowMs - info.mtimeMs;
+      if (analysis.hasUnresolvedRunningTool) {
+        externallyBusy = ageMs <= EXTERNAL_RUNNING_TOOL_WINDOW_MS;
+      } else {
+        externallyBusy = analysis.busy && ageMs <= EXTERNAL_BUSY_WINDOW_MS;
+      }
     }
     return {
       path: filePath,
       size: info.size,
       mtimeMs: info.mtimeMs,
       externallyBusy,
+      ...(holderPid !== null ? { holderPid } : {}),
     };
   } catch {
+    if (holderPid !== null) {
+      return {
+        path: filePath,
+        size: 0,
+        mtimeMs: nowMs,
+        externallyBusy: true,
+        holderPid,
+      };
+    }
     return undefined;
   }
 }

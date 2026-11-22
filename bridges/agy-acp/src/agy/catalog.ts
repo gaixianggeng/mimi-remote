@@ -182,7 +182,10 @@ export function createAcpSessionBackend(
     },
 
     inspectExternalActivity(sessionId: string, origin: AgySessionOrigin) {
-      return inspectTranscriptActivity(sessionId, origin, env());
+      const ownPids = new Set<number>();
+      if (cliSharedAcp.pid) ownPids.add(cliSharedAcp.pid);
+      if (otherSharedAcp.pid) ownPids.add(otherSharedAcp.pid);
+      return inspectTranscriptActivity(sessionId, origin, env(), { ownPids });
     },
 
     snapshotTranscriptState(sessionId: string, origin: AgySessionOrigin) {
