@@ -147,6 +147,7 @@ struct ConversationView: View {
                 .background {
                     composerReadabilityBackdrop(tokens: tokens)
                 }
+                .inAppNoticeComposerAnchor(isActive: phoneKeyboardVisible != nil && isPhoneDetailActive)
             }
             .background(tokens.conversationCanvasBackground.ignoresSafeArea())
             .task(id: isPhoneDetailActive ? sessionStore.selectedSession?.id : nil) {
