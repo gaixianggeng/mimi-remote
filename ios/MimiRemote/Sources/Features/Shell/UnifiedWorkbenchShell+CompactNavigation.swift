@@ -283,7 +283,7 @@ struct SessionBottomTabBarModifier: ViewModifier {
         if usesPhoneIntegratedBottomChrome {
             content
                 .environment(\.phoneConversationKeyboardVisible, isKeyboardVisible)
-                .toolbar(isKeyboardVisible ? .hidden : .visible, for: .tabBar)
+                .toolbar(isKeyboardVisible || shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
                 // 以软键盘实际占用的区域为准。外接键盘给输入框焦点时仍可切 Tab。
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
                     guard let screen = note.object as? UIScreen,

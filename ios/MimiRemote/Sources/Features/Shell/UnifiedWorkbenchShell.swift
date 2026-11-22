@@ -1156,6 +1156,14 @@ struct UnifiedWorkbenchShell: View {
         // 紧凑导航的退出页必须保留自己的会话身份。pop 同帧全局 route 已回到根页，
         // 若继续从 route 取 ID，退出中的标题会在转场结束前被替换。
         let detailSessionID = destinationSessionID ?? navigationState.route.detailSessionID
+        let hidesTabBarForRelatedSession: Bool
+        if layout.usesPhoneIntegratedBottomChrome,
+           case .subagent(let parentID, _) = compactPath(for: navigationState.compactSelectedTab).last {
+            // 父详情仍留在栈内，Tab 栏可见性也要跟随当前的子页路由。
+            hidesTabBarForRelatedSession = parentID == detailSessionID
+        } else {
+            hidesTabBarForRelatedSession = false
+        }
         let canPresentSessionDetail = layout.usesPhoneIntegratedBottomChrome
             ? detailSessionID == sessionStore.selectedSessionID
             : navigationState.canPresentSessionDetail(selectedSessionID: sessionStore.selectedSessionID)
@@ -1306,7 +1314,7 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
         .modifier(SessionBottomTabBarModifier(
             usesPhoneIntegratedBottomChrome: layout.usesPhoneIntegratedBottomChrome,
-            shouldHideTabBar: shouldHideTabBar
+            shouldHideTabBar: shouldHideTabBar || hidesTabBarForRelatedSession
         ))
         .modifier(
             SessionNavigationMaterialModifier(
