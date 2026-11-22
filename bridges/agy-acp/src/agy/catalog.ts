@@ -10,6 +10,8 @@ import { updatesToTurns } from "./history.ts";
 import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
 import { toolItemFingerprint, toolItemOutputFingerprint } from "./tools.ts";
 import {
+  copyNativeTranscriptTurnMeta,
+  getNativeTranscriptTurnMeta,
   inspectTranscriptActivity,
   readTranscriptTurns,
   resolveTranscriptPath,
@@ -19,6 +21,7 @@ import {
   type TranscriptSnapshotResult,
   type TranscriptTurnSnapshot,
 } from "./transcript.ts";
+import { hashNormalizedPrompt, PROMPT_PREVIEW_MAX_CHARS } from "../runtime/userInput.ts";
 
 export interface SessionRecord {
   id: string;
@@ -804,54 +807,165 @@ function extractTurnUserPrompt(turn: Turn): string {
 function rewriteTurnId(turn: Turn, targetTurnId: string): Turn {
   if (turn.id === targetTurnId) return turn;
   const oldPrefix = `${turn.id}:`;
-  return {
+  const rewritten: Turn = {
     ...turn,
     id: targetTurnId,
     items: turn.items.map((item) =>
       item.id.startsWith(oldPrefix) ? { ...item, id: `${targetTurnId}:${item.id.slice(oldPrefix.length)}` } : item,
     ),
   };
+  copyNativeTranscriptTurnMeta(turn, rewritten);
+  return rewritten;
+}
+
+function visibleItemDedupKey(item: Turn["items"][number]): string {
+  if (item.type === "agentMessage") {
+    return `agent:${item.text.replace(/\s+/g, " ").trim()}`;
+  }
+  if (item.type === "reasoning") {
+    return `reasoning:${item.content.join("\n").replace(/\s+/g, " ").trim()}`;
+  }
+  if (item.type === "plan") {
+    return `plan:${item.text.replace(/\s+/g, " ").trim()}`;
+  }
+  if (item.type === "commandExecution" || item.type === "fileChange" || item.type === "dynamicToolCall") {
+    const fp = toolItemFingerprint(item) ?? item.id;
+    const outFp = toolItemOutputFingerprint(item) ?? "";
+    return `${item.type}:${fp}:${outFp}`;
+  }
+  return `${item.type}:${item.id}`;
+}
+
+function mergeVisibleTurnItems(aligned: Turn, synthetic: Turn): Turn["items"] {
+  const synthUser = synthetic.items.find((item) => item.type === "userMessage");
+  const synthNonUsers = synthetic.items.filter((item) => item.type !== "userMessage");
+  const alignedHasNonUser = aligned.items.some((item) => item.type !== "userMessage");
+
+  const mergedItems: Turn["items"] = aligned.items.map((item) => {
+    if (item.type === "userMessage" && !item.clientId && synthUser?.type === "userMessage" && synthUser.clientId) {
+      return { ...item, clientId: synthUser.clientId };
+    }
+    return item;
+  });
+
+  if (!mergedItems.some((item) => item.type === "userMessage") && synthUser) {
+    mergedItems.unshift(synthUser);
+  }
+
+  if (synthNonUsers.length === 0) {
+    return mergedItems;
+  }
+
+  if (!alignedHasNonUser) {
+    // 原生延迟落盘仅含 USER_INPUT 时，完整保留 syntheticTurn 中已向用户展示的局部输出与原始消息 ID（B10 round5）。
+    return [...mergedItems, ...synthNonUsers];
+  }
+
+  const existingKeys = new Set(mergedItems.filter((item) => item.type !== "userMessage").map(visibleItemDedupKey));
+  const existingIds = new Set(mergedItems.map((item) => item.id));
+  for (const item of synthNonUsers) {
+    const key = visibleItemDedupKey(item);
+    if (existingIds.has(item.id) || existingKeys.has(key)) continue;
+    existingIds.add(item.id);
+    existingKeys.add(key);
+    mergedItems.push(item);
+  }
+  return mergedItems;
 }
 
 function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
   const aligned = rewriteTurnId(turn, attempt.turnId);
   if (aligned.status === "inProgress") return aligned;
+
+  let mergedBase = aligned;
+  if (attempt.syntheticTurn) {
+    const synthAligned = rewriteTurnId(attempt.syntheticTurn, attempt.turnId);
+    const mergedItems = mergeVisibleTurnItems(aligned, synthAligned);
+    if (
+      mergedItems !== aligned.items
+      || (aligned.startedAt === null && synthAligned.startedAt !== null)
+      || (aligned.completedAt === null && synthAligned.completedAt !== null)
+    ) {
+      mergedBase = {
+        ...aligned,
+        items: mergedItems,
+        startedAt: aligned.startedAt ?? synthAligned.startedAt,
+        completedAt: aligned.completedAt ?? synthAligned.completedAt,
+        durationMs: aligned.durationMs ?? synthAligned.durationMs,
+      };
+      copyNativeTranscriptTurnMeta(aligned, mergedBase);
+    }
+  }
+
   if (attempt.status === "completed") {
-    return aligned;
+    return mergedBase;
   }
   if (attempt.status === "failed") {
-    return {
-      ...aligned,
+    const failedTurn: Turn = {
+      ...mergedBase,
       status: "failed",
-      error: aligned.error ?? {
+      error: mergedBase.error ?? {
         message: attempt.error ?? "Antigravity turn failed",
         codexErrorInfo: null,
         additionalDetails: null,
         misalignment: null,
       },
     };
+    copyNativeTranscriptTurnMeta(mergedBase, failedTurn);
+    return failedTurn;
   }
-  if (attempt.status === "interrupted" && aligned.status === "completed") {
-    return {
-      ...aligned,
+  if (attempt.status === "interrupted" && mergedBase.status === "completed") {
+    const interruptedTurn: Turn = {
+      ...mergedBase,
       status: "interrupted",
       error: null,
     };
+    copyNativeTranscriptTurnMeta(mergedBase, interruptedTurn);
+    return interruptedTurn;
   }
-  return aligned;
+  return mergedBase;
 }
 
-function promptsMatchExact(attemptPrompt: string, candidatePrompt: string): boolean {
+function promptsMatchAttempt(attempt: TurnAttemptRecord, candidatePrompt: string): boolean {
+  if (attempt.promptHash) {
+    if (!candidatePrompt) return false;
+    return hashNormalizedPrompt(candidatePrompt) === attempt.promptHash;
+  }
+  const attemptPrompt = normalizeTurnPrompt(attempt.promptText);
   if (attemptPrompt === "" && candidatePrompt === "") return true;
   if (attemptPrompt === "" || candidatePrompt === "") return false;
   if (candidatePrompt === attemptPrompt) return true;
-  // `toAcpPromptBlocks` 将 preview 截断为 240 字符，仅在达到截断上限时允许精确前缀匹配。
-  return attemptPrompt.length === 240 && candidatePrompt.startsWith(attemptPrompt);
+  if (attempt.promptTruncated) {
+    return candidatePrompt.startsWith(attemptPrompt);
+  }
+  // 兼容旧版未保存 promptHash/promptTruncated 的 240 字符截断：
+  // 保留截断边界尾空格（仅 trimStart），避免第 240 字符为空格时 trim 后缩成 239 字符导致冷读改写 ID（B10 round5）。
+  const rawLeadingTrimmed = attempt.promptText.replace(/\s+/g, " ").trimStart();
+  if (rawLeadingTrimmed.length === PROMPT_PREVIEW_MAX_CHARS && candidatePrompt.startsWith(rawLeadingTrimmed)) {
+    return true;
+  }
+  return attemptPrompt.length === PROMPT_PREVIEW_MAX_CHARS && candidatePrompt.startsWith(attemptPrompt);
 }
 
 function turnHasAssistantOrToolProgress(turn: Turn | undefined): boolean {
   if (!turn) return false;
   return turn.items.some((item) => item.type !== "userMessage");
+}
+
+function isLatePersistedTimingCompatible(attempt: TurnAttemptRecord, candidate: Turn): boolean {
+  const meta = getNativeTranscriptTurnMeta(candidate);
+  if (
+    attempt.startedAtMs !== undefined
+    && attempt.completedAtMs !== undefined
+    && meta?.userCreatedAtMs !== undefined
+  ) {
+    // 原生 USER_INPUT.created_at 在上游收到请求时记录，同一次尝试的延迟刷盘必然落在该尝试窗口内（允许 2s 秒级截断误差）。
+    return (
+      meta.userCreatedAtMs >= attempt.startedAtMs - 2_000
+      && meta.userCreatedAtMs <= attempt.completedAtMs + 2_000
+    );
+  }
+  return true;
 }
 
 function mergeTurnsWithAttempts(
@@ -911,36 +1025,41 @@ function mergeTurnsWithAttempts(
     }
 
     const candidate = nativeTurns[nativeIdx];
-    const attemptPrompt = normalizeTurnPrompt(attempt.promptText);
+    const candidateMeta = candidate ? getNativeTranscriptTurnMeta(candidate) : undefined;
     const candidatePrompt = candidate ? extractTurnUserPrompt(candidate) : "";
-    // 严格按规范化提示词精确匹配，禁止宽松子串包含把相近但独立的原生成功回合错合并到旧失败尝试（B10 round4）。
-    const promptsCompatible = Boolean(candidate) && promptsMatchExact(attemptPrompt, candidatePrompt);
+    const stepIndexMismatch =
+      attempt.nativeUserStepIndex !== undefined
+      && candidateMeta?.userStepIndex !== undefined
+      && attempt.nativeUserStepIndex !== candidateMeta.userStepIndex;
+    // 严格按完整提示词哈希（或旧版截断边界）精确匹配，并校验已确认落盘的原生 step_index（B10 round5）。
+    const promptsCompatible = Boolean(candidate) && !stepIndexMismatch && promptsMatchAttempt(attempt, candidatePrompt);
 
     let laterAttemptNeedsNative = false;
-    if (promptsCompatible && attempt.status !== "completed" && attemptPrompt) {
-      // 同提示词连续重试：前一次早失败未落盘、后一次成功落盘时，剩余原生回合数少于剩余同提示词尝试数，
-      // 必须把原生回合留给后续成功尝试，不能把早失败错误贴到新成功回合上（B10）。
-      let remainingSamePromptAttempts = 0;
-      let hasLaterCompletedSamePrompt = false;
-      for (let j = i; j < finishedAttempts.length; j += 1) {
+    if (promptsCompatible && attempt.status !== "completed" && attempt.persisted !== true && candidatePrompt) {
+      // 同提示词连续重试：若后续存在同提示词且需要原生槽位的尝试（不仅是 completed，也包括后续已落盘或未标
+      // persisted:false 的 interrupted/failed 重试），且剩余原生回合不足以同时覆盖，必须留给后续尝试（B10 round5）。
+      let laterCommittedSamePrompt = 0;
+      let laterNonUnpersistedSamePrompt = 0;
+      for (let j = i + 1; j < finishedAttempts.length; j += 1) {
         const other = finishedAttempts[j]!;
-        if (j > i && other.persisted === false) continue;
-        const otherPrompt = normalizeTurnPrompt(other.promptText);
-        if (promptsMatchExact(otherPrompt, candidatePrompt)) {
-          remainingSamePromptAttempts += 1;
-          if (j > i && other.status === "completed") {
-            hasLaterCompletedSamePrompt = true;
-          }
+        if (!promptsMatchAttempt(other, candidatePrompt)) continue;
+        if (other.status === "completed" || other.persisted === true) {
+          laterCommittedSamePrompt += 1;
+        }
+        if (other.persisted !== false) {
+          laterNonUnpersistedSamePrompt += 1;
         }
       }
       let remainingSamePromptNative = 0;
       for (let k = nativeIdx; k < nativeTurns.length; k += 1) {
         const p = extractTurnUserPrompt(nativeTurns[k]!);
-        if (promptsMatchExact(attemptPrompt, p)) {
+        if (promptsMatchAttempt(attempt, p)) {
           remainingSamePromptNative += 1;
         }
       }
-      if (hasLaterCompletedSamePrompt && remainingSamePromptNative < remainingSamePromptAttempts) {
+      if (attempt.persisted === false && laterNonUnpersistedSamePrompt > 0 && remainingSamePromptNative <= laterNonUnpersistedSamePrompt) {
+        laterAttemptNeedsNative = true;
+      } else if (laterCommittedSamePrompt > 0 && remainingSamePromptNative <= laterCommittedSamePrompt) {
         laterAttemptNeedsNative = true;
       }
     }
@@ -950,9 +1069,17 @@ function mergeTurnsWithAttempts(
       const candidateHasProgress = turnHasAssistantOrToolProgress(candidate);
       const attemptHasProgress = turnHasAssistantOrToolProgress(attempt.syntheticTurn);
       if (attempt.persisted === false) {
-        // 兼容旧版或取消瞬间 transcript 延迟刷盘：若当前原生位置已落盘同一提示词且无完成回复（或终态一致），
-        // 说明该中断/失败请求其实已落盘，应合并为单条记录，避免重复显示两份（B10 round4）。
-        const isLatePersistedSameAttempt = !candidateHasProgress || candidate.status === attempt.status;
+        // 兼容旧版 b36 或取消/报错瞬间 transcript 延迟刷盘：
+        // - 必须符合尝试时间窗（避免吞并更晚发起的独立同文本重试）；
+        // - 仅当原生终态一致，或原生仅落盘 USER_INPUT 且本次尝试为 interrupted / 已有流式进展的 failed 时归并；
+        // - 无任何产出的早失败（persisted:false, !attemptHasProgress）绝不吞并独立落盘的无回复同文本重试（B10 round5）。
+        const timingOk = isLatePersistedTimingCompatible(attempt, candidate);
+        const isLatePersistedSameAttempt =
+          timingOk
+          && (
+            candidate.status === attempt.status
+            || (!candidateHasProgress && (attempt.status === "interrupted" || attemptHasProgress))
+          );
         if (!isLatePersistedSameAttempt) {
           shouldTreatAsUnpersisted = true;
         }

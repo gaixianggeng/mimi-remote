@@ -34,10 +34,15 @@ export interface ManagerOptions {
         attemptId: string;
         turnId: string;
         promptText?: string;
+        promptHash?: string;
+        promptTruncated?: boolean;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
         persisted?: boolean;
+        nativeUserStepIndex?: number;
+        startedAtMs?: number;
+        completedAtMs?: number;
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
@@ -45,7 +50,14 @@ export interface ManagerOptions {
   ) => void;
   reserveTurnAttempt?: (
     threadId: string,
-    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+    info: {
+      minTurnOrdinal: number;
+      afterPersistedTurnCount: number;
+      promptText: string;
+      promptHash?: string;
+      promptTruncated?: boolean;
+      startedAtMs?: number;
+    },
   ) => Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?: (threadId: string) => Promise<number>;
   existingTurnInfo?: (threadId: string) => Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;

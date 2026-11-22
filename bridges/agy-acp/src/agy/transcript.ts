@@ -56,8 +56,27 @@ export interface TranscriptTurnSnapshot {
   size: number;
   mtimeMs: number;
   userInputs: string[];
+  userInputStepIndices?: Array<number | null>;
   plannerResponseCount: number;
   stepCount: number;
+}
+
+export interface NativeTranscriptTurnMeta {
+  userStepIndex?: number;
+  userCreatedAtMs?: number;
+}
+
+const nativeTurnMetaMap = new WeakMap<Turn, NativeTranscriptTurnMeta>();
+
+export function getNativeTranscriptTurnMeta(turn: Turn): NativeTranscriptTurnMeta | undefined {
+  return nativeTurnMetaMap.get(turn);
+}
+
+export function copyNativeTranscriptTurnMeta(from: Turn, to: Turn): void {
+  const meta = nativeTurnMetaMap.get(from);
+  if (meta) {
+    nativeTurnMetaMap.set(to, meta);
+  }
 }
 
 export type TranscriptSnapshotResult =
@@ -405,6 +424,7 @@ export async function snapshotTranscriptStateDetailed(
       return { kind: "error", reason: "transcript_not_a_file" };
     }
     const userInputs: string[] = [];
+    const userInputStepIndices: Array<number | null> = [];
     let plannerResponseCount = 0;
     let stepCount = 0;
     for (const line of raw.split("\n")) {
@@ -427,6 +447,7 @@ export async function snapshotTranscriptStateDetailed(
       stepCount += 1;
       if (step.type === "USER_INPUT") {
         userInputs.push(normalizePromptCompare(formatTranscriptUserText(step.content ?? "")));
+        userInputStepIndices.push(typeof step.step_index === "number" ? step.step_index : null);
       } else if (step.type === "PLANNER_RESPONSE") {
         plannerResponseCount += 1;
       }
@@ -438,6 +459,7 @@ export async function snapshotTranscriptStateDetailed(
         size: info.size,
         mtimeMs: info.mtimeMs,
         userInputs,
+        userInputStepIndices,
         plannerResponseCount,
         stepCount,
       },
@@ -671,6 +693,7 @@ export async function readTranscriptTurns(
     toolSeq: number;
     startedAtMs: number | null;
     completedAtMs: number | null;
+    userStepIndex?: number;
     toolStates: Map<string, AcpToolState>;
     terminalStatus?: "failed" | "interrupted";
     errorMessage?: string;
@@ -703,6 +726,9 @@ export async function readTranscriptTurns(
     if (step.type === "USER_INPUT") {
       pendingTools.length = 0;
       const draft = nextTurn(stepMs);
+      if (typeof step.step_index === "number") {
+        draft.userStepIndex = step.step_index;
+      }
       const text = formatTranscriptUserText(step.content ?? "");
       const mediaInputs = await loadMediaInputs(step.media);
       const content: UserInput[] = [];
@@ -859,7 +885,7 @@ export async function readTranscriptTurns(
       !isActiveTurn && draft.startedAtMs !== null && draft.completedAtMs !== null && draft.completedAtMs >= draft.startedAtMs
         ? draft.completedAtMs - draft.startedAtMs
         : null;
-    return {
+    const turn: Turn = {
       id: draft.id,
       rootTurnId: null,
       items: finalizedItems,
@@ -870,5 +896,11 @@ export async function readTranscriptTurns(
       completedAt,
       durationMs,
     };
+    const meta: NativeTranscriptTurnMeta = {
+      ...(draft.userStepIndex !== undefined ? { userStepIndex: draft.userStepIndex } : {}),
+      ...(draft.startedAtMs !== null ? { userCreatedAtMs: draft.startedAtMs } : {}),
+    };
+    nativeTurnMetaMap.set(turn, meta);
+    return turn;
   });
 }

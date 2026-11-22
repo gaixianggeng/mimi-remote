@@ -73,10 +73,15 @@ export interface RuntimeHost {
         attemptId: string;
         turnId: string;
         promptText?: string;
+        promptHash?: string;
+        promptTruncated?: boolean;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
         persisted?: boolean;
+        nativeUserStepIndex?: number;
+        startedAtMs?: number;
+        completedAtMs?: number;
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
@@ -84,7 +89,14 @@ export interface RuntimeHost {
   ): void;
   reserveTurnAttempt?(
     threadId: string,
-    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+    info: {
+      minTurnOrdinal: number;
+      afterPersistedTurnCount: number;
+      promptText: string;
+      promptHash?: string;
+      promptTruncated?: boolean;
+      startedAtMs?: number;
+    },
   ): Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?(threadId: string): Promise<number>;
   existingTurnInfo?(threadId: string): Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;
@@ -107,7 +119,17 @@ export class ThreadRuntime {
   private appliedModel: string | undefined;
   private appliedEffort: string | undefined;
   private currentTurn: LiveTurn | undefined;
-  private currentAttempt: { attemptId: string; turnId: string; promptText: string; afterPersistedTurnCount: number } | undefined;
+  private currentAttempt:
+    | {
+        attemptId: string;
+        turnId: string;
+        promptText: string;
+        promptHash?: string;
+        promptTruncated: boolean;
+        afterPersistedTurnCount: number;
+        startedAtMs: number;
+      }
+    | undefined;
   private startingTurn = false;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -208,7 +230,7 @@ export class ThreadRuntime {
         mode: req.settings.mode ?? this.settings.mode,
         executionPolicy: req.settings.executionPolicy ?? this.settings.executionPolicy,
       };
-      const { blocks, preview } = await toAcpPromptBlocks(req.input);
+      const { blocks, preview, promptHash, promptTruncated } = await toAcpPromptBlocks(req.input);
 
       if (!this.client || this.client.isClosed) {
         this.detachSessionHandlers();
@@ -232,17 +254,24 @@ export class ThreadRuntime {
       const historyCompletedCount = this.historyTurns?.filter((t) => t.status === "completed").length ?? 0;
       const persistedBefore = Math.max(historyCompletedCount, diskInfo.nativeTurnCount);
       const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskInfo.nativeTurnCount, diskInfo.maxTurnOrdinal) + 1;
+      const startedAtMs = Date.now();
       const reserved = await this.host.reserveTurnAttempt?.(this.threadId, {
         minTurnOrdinal: nextTurnIndex,
         afterPersistedTurnCount: persistedBefore,
         promptText: preview,
+        ...(promptHash ? { promptHash } : {}),
+        promptTruncated,
+        startedAtMs,
       });
       const turnId = reserved?.turnId ?? `${this.threadId}:turn:${nextTurnIndex}`;
       const attemptMeta = {
         attemptId: reserved?.attemptId ?? `${turnId}:attempt`,
         turnId,
         promptText: preview,
+        ...(promptHash ? { promptHash } : {}),
+        promptTruncated,
         afterPersistedTurnCount: persistedBefore,
+        startedAtMs,
       };
       if (req.clientUserMessageId) {
         this.host.recordTurnClientId?.(turnId, req.clientUserMessageId);
@@ -328,9 +357,13 @@ export class ThreadRuntime {
                 attemptId: attempt.attemptId,
                 turnId: turn.id,
                 promptText: attempt.promptText,
+                ...(attempt.promptHash ? { promptHash: attempt.promptHash } : {}),
+                promptTruncated: attempt.promptTruncated,
                 afterPersistedTurnCount: attempt.afterPersistedTurnCount,
                 status: "interrupted",
                 error: null,
+                startedAtMs: attempt.startedAtMs,
+                completedAtMs: Date.now(),
                 syntheticTurn: turn,
               },
             }
@@ -346,7 +379,15 @@ export class ThreadRuntime {
     client: AcpClient,
     turn: LiveTurn,
     blocks: Parameters<AcpClient["sessionPrompt"]>[1],
-    attemptMeta: { attemptId: string; turnId: string; promptText: string; afterPersistedTurnCount: number },
+    attemptMeta: {
+      attemptId: string;
+      turnId: string;
+      promptText: string;
+      promptHash?: string;
+      promptTruncated: boolean;
+      afterPersistedTurnCount: number;
+      startedAtMs: number;
+    },
     initialSnapshot: TranscriptTurnSnapshot | undefined,
   ): Promise<void> {
     let finishedTurn: Turn | undefined;
@@ -376,16 +417,30 @@ export class ThreadRuntime {
         this.currentTurn = undefined;
         this.currentAttempt = undefined;
       }
-      this.updatedAt = Math.floor(Date.now() / 1000);
+      const completedAtMs = Date.now();
+      this.updatedAt = Math.floor(completedAtMs / 1000);
       const afterInspection = await this.inspectTranscript();
       const afterSnapshot = afterInspection.kind === "present" ? afterInspection.snapshot : undefined;
       let attemptPersisted: boolean | undefined;
+      let nativeUserStepIndex: number | undefined;
+      const beforeCount = initialSnapshot?.userInputs.length ?? attemptMeta.afterPersistedTurnCount;
       if (finishedTurn?.status === "completed") {
         attemptPersisted = true;
       } else if (initialSnapshot !== undefined && afterSnapshot !== undefined) {
         attemptPersisted = afterSnapshot.userInputs.length > initialSnapshot.userInputs.length;
       } else if (afterSnapshot !== undefined && afterSnapshot.userInputs.length > attemptMeta.afterPersistedTurnCount) {
         attemptPersisted = true;
+      }
+      if (
+        attemptPersisted === true
+        && afterSnapshot !== undefined
+        && afterSnapshot.userInputs.length === beforeCount + 1
+        && afterSnapshot.userInputStepIndices
+      ) {
+        const idx = afterSnapshot.userInputStepIndices[afterSnapshot.userInputStepIndices.length - 1];
+        if (typeof idx === "number") {
+          nativeUserStepIndex = idx;
+        }
       }
       const attemptStatus: "completed" | "failed" | "interrupted" =
         finishedTurn?.status === "failed"
@@ -400,10 +455,15 @@ export class ThreadRuntime {
           attemptId: attemptMeta.attemptId,
           turnId: finishedTurn?.id ?? attemptMeta.turnId,
           promptText: attemptMeta.promptText,
+          ...(attemptMeta.promptHash ? { promptHash: attemptMeta.promptHash } : {}),
+          promptTruncated: attemptMeta.promptTruncated,
           afterPersistedTurnCount: attemptMeta.afterPersistedTurnCount,
           status: attemptStatus,
           error: finishedTurn?.error?.message ?? null,
           ...(attemptPersisted !== undefined ? { persisted: attemptPersisted } : {}),
+          ...(nativeUserStepIndex !== undefined ? { nativeUserStepIndex } : {}),
+          startedAtMs: attemptMeta.startedAtMs,
+          completedAtMs,
           ...(attemptStatus !== "completed" && finishedTurn ? { syntheticTurn: finishedTurn } : {}),
         },
         ...(toolEntries.length > 0 ? { toolMappings: { turnId: finishedTurn?.id ?? attemptMeta.turnId, entries: toolEntries } } : {}),

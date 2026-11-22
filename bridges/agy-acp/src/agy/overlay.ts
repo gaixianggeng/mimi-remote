@@ -24,11 +24,20 @@ export interface TurnAttemptRecord {
   attemptId: string;
   turnId: string;
   promptText: string;
+  /** 规范化完整用户提示词的 SHA-256 摘要，避免长提示词 240 字符截断边界失配（B10 round5）。 */
+  promptHash?: string;
+  /** 显式标记 promptText 是否因 240 字符预览上限被截断（B10 round5）。 */
+  promptTruncated?: boolean;
   afterPersistedTurnCount: number;
   status: "inProgress" | "completed" | "failed" | "interrupted";
   error?: string | null;
   /** 若明确确认未落盘（如写用户消息前早失败），为 false；成功落盘为 true；未知（如无 transcript 文件）为 undefined。 */
   persisted?: boolean;
+  /** 若结束时确认已落盘到原生 transcript，记录对应的 USER_INPUT step_index 以建立精确身份（B10 round5）。 */
+  nativeUserStepIndex?: number;
+  /** 尝试开始与结束的毫秒时间戳，用于校验延迟落盘与独立重试（B10 round5）。 */
+  startedAtMs?: number;
+  completedAtMs?: number;
   /** 仅针对未落盘的失败/中断尝试保存完整快照，以便冷读历史时保留（B10）。 */
   syntheticTurn?: Turn;
   createdAt: number;
@@ -130,7 +139,14 @@ export class AgyOverlay {
    */
   async reserveTurnAttempt(
     sessionId: string,
-    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+    info: {
+      minTurnOrdinal: number;
+      afterPersistedTurnCount: number;
+      promptText: string;
+      promptHash?: string;
+      promptTruncated?: boolean;
+      startedAtMs?: number;
+    },
   ): Promise<{ turnId: string; attemptId: string }> {
     await this.load();
     const current = this.data.sessions[sessionId] ?? {};
@@ -150,6 +166,9 @@ export class AgyOverlay {
       attemptId,
       turnId,
       promptText: info.promptText,
+      ...(info.promptHash ? { promptHash: info.promptHash } : {}),
+      ...(info.promptTruncated !== undefined ? { promptTruncated: info.promptTruncated } : {}),
+      ...(info.startedAtMs !== undefined ? { startedAtMs: info.startedAtMs } : {}),
       afterPersistedTurnCount: info.afterPersistedTurnCount,
       status: "inProgress",
       createdAt: Math.floor(Date.now() / 1000),
@@ -180,10 +199,15 @@ export class AgyOverlay {
         attemptId: string;
         turnId: string;
         promptText?: string;
+        promptHash?: string;
+        promptTruncated?: boolean;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
         persisted?: boolean;
+        nativeUserStepIndex?: number;
+        startedAtMs?: number;
+        completedAtMs?: number;
         syntheticTurn?: Turn;
       };
       toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
@@ -216,8 +240,13 @@ export class AgyOverlay {
         nextAttempts[idx] = {
           ...existing,
           status: update.status,
+          ...(update.promptHash ? { promptHash: update.promptHash } : {}),
+          ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
           ...(update.error !== undefined ? { error: update.error } : {}),
           ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+          ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
+          ...(update.startedAtMs !== undefined ? { startedAtMs: update.startedAtMs } : {}),
+          ...(update.completedAtMs !== undefined ? { completedAtMs: update.completedAtMs } : {}),
           ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
         };
       } else {
@@ -225,10 +254,15 @@ export class AgyOverlay {
           attemptId: update.attemptId,
           turnId: update.turnId,
           promptText: update.promptText ?? "",
+          ...(update.promptHash ? { promptHash: update.promptHash } : {}),
+          ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
           afterPersistedTurnCount: update.afterPersistedTurnCount ?? 0,
           status: update.status,
           ...(update.error !== undefined ? { error: update.error } : {}),
           ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+          ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
+          ...(update.startedAtMs !== undefined ? { startedAtMs: update.startedAtMs } : {}),
+          ...(update.completedAtMs !== undefined ? { completedAtMs: update.completedAtMs } : {}),
           ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
           createdAt: Math.floor(Date.now() / 1000),
         });
