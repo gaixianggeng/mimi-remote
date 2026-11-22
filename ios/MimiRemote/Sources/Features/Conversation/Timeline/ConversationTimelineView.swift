@@ -55,6 +55,7 @@ struct ConversationTimelineView: View {
         // body 只读来源与已发布列表；投影、旧位置捕获和发布在同一个 onChange 中完成。
         let timelineSnapshot = presentedSnapshot.scope == scope ? presentedSnapshot : .empty
         let timelineItems = timelineSnapshot.rows
+        let timestampSeparators = ConversationTimestampSeparatorPolicy.separatorLabels(for: timelineItems)
         let timelineListIdentity = ConversationTimelineListIdentity(
             scope: scope,
             hasTimelineContent: !timelineItems.isEmpty,
@@ -126,7 +127,9 @@ struct ConversationTimelineView: View {
                                     item,
                                     provider: timelineProvider,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                                    crossSessionOriginMessageID: crossSessionOriginMessageID
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
+                                    timestampSeparator: timestampSeparators[item.id],
+                                    tokens: tokens
                                 )
                             }
                             if let tailStatus {
@@ -253,14 +256,37 @@ struct ConversationTimelineView: View {
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?
+        crossSessionOriginMessageID: UUID?,
+        timestampSeparator: String?,
+        tokens: ThemeTokens
     ) -> some View {
-        timelineRow(
-            item,
-            provider: provider,
-            activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-            crossSessionOriginMessageID: crossSessionOriginMessageID
-        )
+        Group {
+            if let timestampSeparator {
+                VStack(spacing: 12) {
+                    Text(timestampSeparator)
+                        .font(themeStore.uiFont(.caption2, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+                        .accessibilityIdentifier("conversation.timeline.timestampSeparator")
+                    timelineRow(
+                        item,
+                        provider: provider,
+                        activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                        crossSessionOriginMessageID: crossSessionOriginMessageID
+                    )
+                }
+            } else {
+                timelineRow(
+                    item,
+                    provider: provider,
+                    activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                    crossSessionOriginMessageID: crossSessionOriginMessageID
+                )
+            }
+        }
         .modifier(ConversationHistoryAnchorGeometryModifier(
             // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
             // 重建时仍按 raw message UUID 选中锚点。

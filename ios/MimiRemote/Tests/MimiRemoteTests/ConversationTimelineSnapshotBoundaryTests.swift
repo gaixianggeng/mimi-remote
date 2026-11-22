@@ -230,6 +230,38 @@ final class ConversationTimelineSnapshotBoundaryTests: XCTestCase {
         XCTAssertEqual(unchanged.revision, switched.revision)
     }
 
+    func testTimestampSeparatorAppearsAcrossDayAndLongGapOnly() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+        let locale = Locale(identifier: "zh_Hans_CN")
+        let twoDaysAgo = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 9, minute: 30))!
+        let yesterdayEvening = calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 23, minute: 50))!
+        let day2Morning = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 10, minute: 55))!
+        let day2CloseFollowUp = day2Morning.addingTimeInterval(3 * 60)
+        let day2LaterGap = day2CloseFollowUp.addingTimeInterval(12 * 60)
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 16, minute: 0))!
+
+        let m0 = ConversationMessage(role: .user, content: "前天", createdAt: twoDaysAgo)
+        let m1 = ConversationMessage(role: .user, content: "昨晚", createdAt: yesterdayEvening)
+        let m2 = ConversationMessage(role: .assistant, content: "今早日报", createdAt: day2Morning)
+        let m3 = ConversationMessage(role: .user, content: "紧接着追问", createdAt: day2CloseFollowUp)
+        let m4 = ConversationMessage(role: .user, content: "隔了十二分钟", createdAt: day2LaterGap)
+
+        let items: [ConversationTimelineItem] = [.message(m0), .message(m1), .message(m2), .message(m3), .message(m4)]
+        let labels = ConversationTimestampSeparatorPolicy.separatorLabels(
+            for: items,
+            now: now,
+            calendar: calendar,
+            locale: locale
+        )
+
+        XCTAssertNil(labels[items[0].id], "首条消息前不额外插时间分隔")
+        XCTAssertEqual(labels[items[1].id], "\(L10n.text("ui.yesterday")) 23:50", "跨日到昨天应显示昨天时间")
+        XCTAssertEqual(labels[items[2].id], "\(L10n.text("ui.today")) 10:55", "跨自然日到今天应展示居中时间分隔")
+        XCTAssertNil(labels[items[3].id], "三分钟内的连续对话不应重复插分隔")
+        XCTAssertEqual(labels[items[4].id], "\(L10n.text("ui.today")) 11:10", "超过 10 分钟的新段落应展示时间分隔")
+    }
+
     private static func history(
         id: String,
         content: String,

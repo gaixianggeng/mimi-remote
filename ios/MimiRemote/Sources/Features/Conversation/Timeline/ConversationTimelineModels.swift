@@ -142,3 +142,74 @@ struct ConversationTranscriptPresentation: Equatable {
 
     mutating func reset() { enabledScope = nil }
 }
+
+/// 在跨自然日或对话间隔较长时生成极简居中时间分隔文案，不改动消息分组和快照行结构。
+enum ConversationTimestampSeparatorPolicy {
+    static let minimumGap: TimeInterval = 10 * 60
+
+    static func separatorLabels(
+        for items: [ConversationTimelineItem],
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
+    ) -> [String: String] {
+        var labels: [String: String] = [:]
+        var previousMessage: ConversationMessage?
+        for item in items {
+            guard case .message(let message) = item,
+                  message.kind == .message,
+                  !message.isTimestampFallback else {
+                continue
+            }
+            if let previous = previousMessage,
+               shouldSeparate(from: previous.createdAt, to: message.createdAt, calendar: calendar) {
+                labels[item.id] = format(message.createdAt, now: now, calendar: calendar, locale: locale)
+            }
+            previousMessage = message
+        }
+        return labels
+    }
+
+    static func shouldSeparate(
+        from previous: Date,
+        to current: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> Bool {
+        if !calendar.isDate(previous, inSameDayAs: current) {
+            return true
+        }
+        return current.timeIntervalSince(previous) >= minimumGap
+    }
+
+    static func format(
+        _ date: Date,
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        let timeFormatter = DateFormatter()
+        timeFormatter.calendar = calendar
+        timeFormatter.timeZone = calendar.timeZone
+        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
+        timeFormatter.dateFormat = "HH:mm"
+        let timeText = timeFormatter.string(from: date)
+
+        if calendar.isDate(date, inSameDayAs: now) {
+            return "\(L10n.text("ui.today")) \(timeText)"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "\(L10n.text("ui.yesterday")) \(timeText)"
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.calendar = calendar
+        dateFormatter.timeZone = calendar.timeZone
+        dateFormatter.locale = locale
+        let template = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+            ? "MMMd"
+            : "yMMMd"
+        dateFormatter.dateFormat = DateFormatter.dateFormat(fromTemplate: template, options: 0, locale: locale) ?? template
+        return "\(dateFormatter.string(from: date)) \(timeText)"
+    }
+}
