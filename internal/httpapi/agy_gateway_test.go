@@ -1258,3 +1258,113 @@ exit 0
 		t.Fatalf("expected runtime status agy=available (not adapter_unavailable) after 4.2s cold probe, got %+v", *agyStatus)
 	}
 }
+
+func TestB23Round5SpecialAndPercentLiteralPathsPreserveScopeAndWritability(t *testing.T) {
+	root := t.TempDir()
+	specialDir := filepath.Join(root, "边界 空格 & '引号'")
+	literalPercentDir := filepath.Join(root, "foo%20bar")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{specialDir, literalPercentDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "proj-special", Name: "Special", Path: specialDir},
+		{ID: "proj-literal-pct", Name: "LiteralPercent", Path: literalPercentDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+
+	// Existing Chinese/space/&/quote and literal %20 registered projects resolve cleanly as writable (missing=false).
+	for _, tc := range []struct {
+		name string
+		dir  string
+		id   string
+	}{
+		{name: "chinese_special", dir: specialDir, id: "proj-special"},
+		{name: "literal_percent20", dir: literalPercentDir, id: "proj-literal-pct"},
+	} {
+		scope, ok := router.gatewayScopeForPath(tc.dir)
+		if !ok || scope.missing || scope.id != tc.id {
+			t.Fatalf("%s: expected writable registered project scope %q, got ok=%v scope=%+v", tc.name, tc.id, ok, scope)
+		}
+	}
+
+	// Gateway scope validation MUST remain strict: encoded traversal or outside paths are rejected.
+	if _, ok := router.gatewayScopeForPath(filepath.Join(specialDir, "%2E%2E", "outside")); ok {
+		t.Fatalf("expected percent-encoded traversal path to be rejected by strict gateway scope")
+	}
+	if _, ok := router.gatewayReadOnlyScopeForHistoryPath(outsideDir); ok {
+		t.Fatalf("expected outside directory to be rejected by history scope")
+	}
+
+	// Global thread/list with normalized real paths marks both sessions writable (cwdMissing=false, canAcceptDirectInput=true).
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	payload, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"data": []map[string]any{
+				{
+					"id":                   "thr-special",
+					"cwd":                  specialDir,
+					"cwdMissing":           false,
+					"canAcceptDirectInput": true,
+				},
+				{
+					"id":                   "thr-literal-pct",
+					"cwd":                  literalPercentDir,
+					"cwdMissing":           false,
+					"canAcceptDirectInput": true,
+				},
+			},
+			"nextCursor": nil,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(payload, appServerGatewayPendingThreadRequest{
+		method:          "thread/list",
+		globalDiscovery: true,
+	})
+	if err != nil {
+		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	}
+	if len(allowed) != 2 {
+		t.Fatalf("expected 2 allowed threads, got %d (%+v)", len(allowed), allowed)
+	}
+	for _, entry := range allowed {
+		if entry.cwdMissing || entry.readOnly || !entry.canAcceptDirectInput {
+			t.Fatalf("expected thread %s to be writable and non-missing, got %+v", entry.id, entry)
+		}
+	}
+	var resp struct {
+		Result struct {
+			Data []struct {
+				ID                   string `json:"id"`
+				CWD                  string `json:"cwd"`
+				CwdMissing           bool   `json:"cwdMissing"`
+				CanAcceptDirectInput bool   `json:"canAcceptDirectInput"`
+			} `json:"data"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rewritten, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Result.Data) != 2 || resp.Result.Data[0].CwdMissing || !resp.Result.Data[0].CanAcceptDirectInput || resp.Result.Data[1].CWD != literalPercentDir {
+		t.Fatalf("unexpected global list payload: %+v", resp.Result.Data)
+	}
+}

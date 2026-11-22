@@ -8,6 +8,7 @@ import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
 import { createApp } from "../src/app.ts";
 import type { SpawnAgyTransport } from "../src/agy/binary.ts";
 import type { AgySessionBackend } from "../src/agy/catalog.ts";
+import { decodePercentEncodedPath, normalizeNativeCwd } from "../src/agy/git.ts";
 import { inspectTranscriptActivity } from "../src/agy/transcript.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
@@ -1062,6 +1063,140 @@ describe("mimi-agy-adapter round5 fixes", () => {
         const parsed = JSON.parse(overlayRaw) as { sessions?: Record<string, { turnAttempts?: unknown[] }> };
         expect(parsed.sessions?.[sessionId]?.turnAttempts ?? []).toHaveLength(0);
       }
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("B23 round5: percent-encoded native cwd (Chinese, spaces, &, quotes, file:// URI) and literal % directories reopen as existing writable sessions without breaking traversal guards", async () => {
+    // 1) Create real directories: Chinese/space/&/quote, literal %20, and literal 100% done.
+    const specialName = "边界 空格 & '引号'";
+    const specialDir = path.join(tempRoot, specialName);
+    const literalPercent20Dir = path.join(tempRoot, "foo%20bar");
+    const literalPercentSpaceDir = path.join(tempRoot, "100% done");
+    const removedChineseDir = path.join(tempRoot, "已删除 目录");
+    await mkdir(specialDir, { recursive: true });
+    await mkdir(literalPercent20Dir, { recursive: true });
+    await mkdir(literalPercentSpaceDir, { recursive: true });
+
+    const encodePathSegments = (absPath: string) =>
+      absPath
+        .split("/")
+        .map((seg) => encodeURIComponent(seg))
+        .join("/");
+
+    const encodedSpecialCwd = encodePathSegments(specialDir);
+    const fileUrlSpecialCwd = `file://${encodedSpecialCwd}`;
+    const doubleEncodedLiteralPercent20 = encodePathSegments(literalPercent20Dir); // .../foo%2520bar
+    const encodedLiteralPercentSpace = encodePathSegments(literalPercentSpaceDir); // .../100%25%20done
+    const encodedRemovedChinese = encodePathSegments(removedChineseDir);
+
+    // Direct unit checks on path normalization & security guards:
+    expect(await normalizeNativeCwd(encodedSpecialCwd)).toBe(specialDir);
+    expect(await normalizeNativeCwd(fileUrlSpecialCwd)).toBe(specialDir);
+    // Literal foo%20bar returned unencoded MUST stay foo%20bar (never decoded to "foo bar")!
+    expect(await normalizeNativeCwd(literalPercent20Dir)).toBe(literalPercent20Dir);
+    // Literal foo%20bar returned percent-encoded as foo%2520bar decodes ONCE to foo%20bar!
+    expect(await normalizeNativeCwd(doubleEncodedLiteralPercent20)).toBe(literalPercent20Dir);
+    expect(await normalizeNativeCwd(encodedLiteralPercentSpace)).toBe(literalPercentSpaceDir);
+    // Security guard: encoded traversal (%2E%2E) or encoded slash (%2F) MUST be rejected!
+    expect(decodePercentEncodedPath(`${tempRoot}/%2E%2E/secret`)).toBeUndefined();
+    expect(decodePercentEncodedPath(`${tempRoot}/a%2Fb`)).toBeUndefined();
+    expect(decodePercentEncodedPath(`${tempRoot}/a%00b`)).toBeUndefined();
+
+    // 2) Full cold-reopen E2E across global thread/list, scoped thread/list, thread/read, and turn/start!
+    const sessions = [
+      { id: "b23-r5-special", rawCwd: encodedSpecialCwd, expectedCwd: specialDir, expectMissing: false },
+      { id: "b23-r5-fileurl", rawCwd: fileUrlSpecialCwd, expectedCwd: specialDir, expectMissing: false },
+      { id: "b23-r5-lit-raw", rawCwd: literalPercent20Dir, expectedCwd: literalPercent20Dir, expectMissing: false },
+      { id: "b23-r5-lit-enc", rawCwd: doubleEncodedLiteralPercent20, expectedCwd: literalPercent20Dir, expectMissing: false },
+      { id: "b23-r5-lit-100", rawCwd: encodedLiteralPercentSpace, expectedCwd: literalPercentSpaceDir, expectMissing: false },
+      { id: "b23-r5-removed", rawCwd: encodedRemovedChinese, expectedCwd: removedChineseDir, expectMissing: true },
+    ];
+    for (const s of sessions) {
+      await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${s.id}.db`), "sqlite");
+    }
+
+    const world = new FakeAgyWorld({
+      sessions: sessions.map((s, idx) => ({
+        sessionId: s.id,
+        cwd: s.rawCwd,
+        title: `B23 ${s.id}`,
+        updatedAt: `2026-11-22T03:0${idx}:00Z`,
+        modeId: "default",
+        model: "gemini-4-carbon",
+        thoughtLevel: "medium",
+        replayUpdates: [
+          { sessionUpdate: "user_message_chunk", content: { type: "text", text: "pwd" } },
+          { sessionUpdate: "agent_message_chunk", content: { type: "text", text: s.expectedCwd } },
+        ],
+      })),
+      onPrompt: async ({ emitUpdate }) => {
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "CONTINUED OK" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const harness = await createHarness(world);
+    try {
+      const globalList = await harness.rpc<{
+        data: Array<{ id: string; cwd: string; cwdMissing?: boolean; canAcceptDirectInput: boolean }>;
+      }>("thread/list", { limit: 20 });
+
+      for (const s of sessions) {
+        const entry = globalList.data.find((d) => d.id === s.id);
+        expect(entry, `global list entry for ${s.id}`).toMatchObject({
+          id: s.id,
+          cwd: s.expectedCwd,
+          cwdMissing: s.expectMissing,
+          canAcceptDirectInput: !s.expectMissing,
+        });
+      }
+
+      // Scoped thread/list by real unencoded Chinese/space/&/quote cwd finds BOTH percent-encoded & file:// sessions!
+      const scopedSpecial = await harness.rpc<{ data: Array<{ id: string; cwd: string; cwdMissing?: boolean }> }>(
+        "thread/list",
+        { cwd: specialDir, limit: 20 },
+      );
+      expect(scopedSpecial.data.map((d) => d.id).sort()).toEqual(["b23-r5-fileurl", "b23-r5-special"]);
+      expect(scopedSpecial.data.every((d) => d.cwd === specialDir && d.cwdMissing === false)).toBe(true);
+
+      // Scoped thread/list by literal foo%20bar finds BOTH raw and %2520-encoded sessions!
+      const scopedLiteral = await harness.rpc<{ data: Array<{ id: string; cwd: string; cwdMissing?: boolean }> }>(
+        "thread/list",
+        { cwd: literalPercent20Dir, limit: 20 },
+      );
+      expect(scopedLiteral.data.map((d) => d.id).sort()).toEqual(["b23-r5-lit-enc", "b23-r5-lit-raw"]);
+
+      // Cold thread/read and real takeover turn/start on Chinese/space/&/quote and literal %20 directories succeed!
+      for (const targetId of ["b23-r5-special", "b23-r5-lit-enc"]) {
+        const expected = sessions.find((s) => s.id === targetId)!;
+        const readRes = await harness.rpc<{
+          thread: { id: string; cwd: string; cwdMissing?: boolean; canAcceptDirectInput: boolean };
+        }>("thread/read", { threadId: targetId, includeTurns: true });
+        expect(readRes.thread).toMatchObject({
+          id: targetId,
+          cwd: expected.expectedCwd,
+          cwdMissing: false,
+          canAcceptDirectInput: true,
+        });
+
+        await harness.rpc("turn/start", {
+          threadId: targetId,
+          cwd: expected.expectedCwd,
+          input: [{ type: "text", text: "continue after cold reopen", text_elements: [] }],
+        });
+      }
+      await waitIdle(harness.notifications, 2);
+
+      // Truly removed Chinese directory still stays read-only with cwdMissing:true and rejects writes (C14/C15 preserved).
+      await expect(
+        harness.rpc("turn/start", {
+          threadId: "b23-r5-removed",
+          cwd: removedChineseDir,
+          input: [{ type: "text", text: "must stay read-only", text_elements: [] }],
+        }),
+      ).rejects.toThrow("no longer exists");
     } finally {
       await harness.close();
     }

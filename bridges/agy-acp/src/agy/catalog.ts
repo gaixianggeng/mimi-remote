@@ -5,7 +5,7 @@ import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
 import { errorText, logger } from "../util/logging.ts";
 import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
-import { directoryExists, type GitRepoIndex } from "./git.ts";
+import { directoryExists, normalizeNativeCwd, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
 import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
 import { toolItemFingerprint, toolItemOutputFingerprint } from "./tools.ts";
@@ -489,7 +489,8 @@ export class AgyCatalog {
     const updatedAt =
       Math.max(summaryUpdatedAt, diskSec, fallbackDiskSec, mem?.updatedAt ?? 0, overlay?.updatedAt ?? 0) || nowSec;
     const createdAt = overlay?.createdAt ?? mem?.createdAt ?? updatedAt;
-    const rawSummaryCwd = summary.cwd?.trim() || "";
+    const fallbackCwd = (mem?.cwd || overlay?.cwd || "").trim() || undefined;
+    const rawSummaryCwd = summary.cwd?.trim() ? await normalizeNativeCwd(summary.cwd, fallbackCwd) : "";
     const normalizedTmp = os.tmpdir().replace(/\/+$/, "");
     const summaryCwd = rawSummaryCwd && rawSummaryCwd.replace(/\/+$/, "") !== normalizedTmp ? rawSummaryCwd : "";
     const cwd = (summaryCwd || mem?.cwd || overlay?.cwd || rawSummaryCwd).trim();

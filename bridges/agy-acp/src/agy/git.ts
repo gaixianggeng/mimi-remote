@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export async function directoryExists(dir: string): Promise<boolean> {
   const trimmed = dir.trim();
@@ -14,6 +15,94 @@ export async function directoryExists(dir: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function decodePercentEncodedSegment(segment: string): { value: string; unsafe: boolean } {
+  if (!/%[0-9A-Fa-f]{2}/.test(segment)) {
+    return { value: segment, unsafe: false };
+  }
+  const decoded = segment.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    const bytes = new Uint8Array(run.length / 3);
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Number.parseInt(run.slice(i * 3 + 1, i * 3 + 3), 16);
+    }
+    try {
+      return utf8FatalDecoder.decode(bytes);
+    } catch {
+      return run;
+    }
+  });
+  // 安全边界：单次按段解码绝不允许引入路径分隔符、NUL 字节或伪装 "." / ".." 穿越段（B23 round5）。
+  if (
+    decoded.includes("/")
+    || decoded.includes("\\")
+    || decoded.includes("\0")
+    || ((decoded === "." || decoded === "..") && segment !== "." && segment !== "..")
+  ) {
+    return { value: segment, unsafe: true };
+  }
+  return { value: decoded, unsafe: false };
+}
+
+/**
+ * 尝试对来自 `agy` 原生索引的百分号编码路径（或本地 `file://` URI）执行最多一次安全按段解码。
+ * 若解码企图引入 `/`, `\`, `\0` 或伪装的 `.`/`..` 路径穿越段，返回 `undefined` 拒绝解码。
+ */
+export function decodePercentEncodedPath(rawPath: string): string | undefined {
+  let candidate = rawPath.trim();
+  if (!candidate) return undefined;
+  let fromFileUrl = false;
+  if (/^file:\/\//i.test(candidate)) {
+    fromFileUrl = true;
+    const withoutScheme = candidate.slice("file://".length);
+    if (withoutScheme.startsWith("/")) {
+      candidate = withoutScheme;
+    } else if (/^localhost\//i.test(withoutScheme)) {
+      candidate = withoutScheme.slice("localhost".length);
+    } else {
+      return undefined;
+    }
+  }
+  const parts = candidate.split("/");
+  let changed = fromFileUrl;
+  const decodedParts: string[] = [];
+  for (const part of parts) {
+    const res = decodePercentEncodedSegment(part);
+    if (res.unsafe) return undefined;
+    if (res.value !== part) changed = true;
+    decodedParts.push(res.value);
+  }
+  if (!changed) return undefined;
+  return decodedParts.join("/");
+}
+
+/**
+ * 规范化来自原生 `agy` `session/list` 索引的 `cwd`（B23 round5）：
+ * 1) 若原始字面路径在磁盘上本身就存在（例如真实命名为 `foo%20bar` 或 `100% done` 的目录），原样保留不解码；
+ * 2) 否则尝试最多一次安全按段百分号解码（含本地 `file://` URI），若解码后目录存在则采用真实路径；
+ * 3) 两者皆不存在（目录真实移动/删除）时优先贴合 fallbackCwd（overlay/内存路径），否则采用安全解码路径以便匹配项目范围。
+ */
+export async function normalizeNativeCwd(rawPath: string, fallbackCwd?: string): Promise<string> {
+  const trimmed = rawPath.trim();
+  if (!trimmed) return "";
+  const isFileUrl = /^file:\/\//i.test(trimmed);
+  if (!isFileUrl && (await directoryExists(trimmed))) {
+    return trimmed;
+  }
+  const decoded = decodePercentEncodedPath(trimmed);
+  if (!decoded) {
+    return trimmed;
+  }
+  if (await directoryExists(decoded)) {
+    return decoded;
+  }
+  const cleanFallback = fallbackCwd?.trim();
+  if (cleanFallback) {
+    const normFallback = cleanFallback.replace(/\/+$/, "");
+    if (normFallback === trimmed.replace(/\/+$/, "")) return trimmed;
+    if (normFallback === decoded.replace(/\/+$/, "")) return decoded;
+  }
+  return decoded;
 }
 
 /**
