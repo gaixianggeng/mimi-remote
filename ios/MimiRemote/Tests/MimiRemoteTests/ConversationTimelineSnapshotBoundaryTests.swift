@@ -262,6 +262,18 @@ final class ConversationTimelineSnapshotBoundaryTests: XCTestCase {
         XCTAssertEqual(labels[items[4].id], "\(L10n.text("ui.today")) 11:10", "超过 10 分钟的新段落应展示时间分隔")
     }
 
+    func testReturnToTailButtonUsesCompactVisualDiscWithFullTouchTargetOnPhone() {
+        let phone = ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: true)
+        XCTAssertEqual(phone.visualDiameter, 36)
+        XCTAssertGreaterThanOrEqual(phone.hitDiameter, 44)
+        XCTAssertEqual(phone.symbolName, "chevron.down")
+
+        let pad = ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: false)
+        XCTAssertEqual(pad.visualDiameter, 48)
+        XCTAssertEqual(pad.hitDiameter, 48)
+        XCTAssertEqual(pad.symbolName, "arrow.down")
+    }
+
     private static func history(
         id: String,
         content: String,

@@ -8,6 +8,7 @@ struct ConversationTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.defaultMinListRowHeight) private var defaultMinListRowHeight
+    @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
@@ -214,14 +215,16 @@ struct ConversationTimelineView: View {
 
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
+                    let isCompactPhone = phoneKeyboardVisible != nil
                     ConversationReturnToTailButton(
                         tokens: tokens,
-                        accessibilityLabel: returnToTailAccessibilityLabel
+                        accessibilityLabel: returnToTailAccessibilityLabel,
+                        isCompactPhone: isCompactPhone
                     ) {
                         scrollController.returnToTail()
                     }
                     // 放在输入区正上方的视觉中轴，不与用户气泡或右侧滚动条争抢空间。
-                    .padding(.bottom, 10)
+                    .padding(.bottom, isCompactPhone ? 6 : 10)
                 }
 
                 if !isTimelineReadable {
@@ -965,20 +968,56 @@ private struct ConversationTimelineStabilizingCover: UIViewRepresentable {
     }
 }
 
+enum ConversationReturnToTailButtonMetrics: Equatable {
+    struct Spec: Equatable {
+        let visualDiameter: CGFloat
+        let hitDiameter: CGFloat
+        let symbolName: String
+        let symbolSize: CGFloat
+        let symbolWeight: Font.Weight
+    }
+
+    static func resolve(isCompactPhone: Bool) -> Spec {
+        if isCompactPhone {
+            // iPhone 输入框上方空间紧凑，视觉收精为 36pt 轻盈圆盘，仍保持 44pt 触控热区。
+            return Spec(
+                visualDiameter: 36,
+                hitDiameter: 44,
+                symbolName: "chevron.down",
+                symbolSize: 14,
+                symbolWeight: .semibold
+            )
+        }
+        return Spec(
+            visualDiameter: 48,
+            hitDiameter: 48,
+            symbolName: "arrow.down",
+            symbolSize: 17,
+            symbolWeight: .medium
+        )
+    }
+}
+
 /// 回到底部按钮和滚动实现放在同一文件，避免为单个私有控件扩张工程文件清单。
 private struct ConversationReturnToTailButton: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     let tokens: ThemeTokens
     let accessibilityLabel: String
+    var isCompactPhone = false
     let action: () -> Void
+
+    private var metrics: ConversationReturnToTailButtonMetrics.Spec {
+        ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: isCompactPhone)
+    }
 
     var body: some View {
         Button(action: action) {
             buttonLabel
+                .frame(width: metrics.hitDiameter, height: metrics.hitDiameter)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("conversation.returnToTail")
     }
@@ -1001,16 +1040,16 @@ private struct ConversationReturnToTailButton: View {
             }
             .shadow(
                 color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
-                radius: 6,
+                radius: isCompactPhone ? 5 : 6,
                 y: 2
             )
     }
 
     private var baseLabel: some View {
-        Image(systemName: "arrow.down")
-            .font(.system(size: 17, weight: .medium))
+        Image(systemName: metrics.symbolName)
+            .font(.system(size: metrics.symbolSize, weight: metrics.symbolWeight))
             .foregroundStyle(tokens.primaryText)
-            .frame(width: 48, height: 48)
+            .frame(width: metrics.visualDiameter, height: metrics.visualDiameter)
     }
 }
 
