@@ -223,7 +223,21 @@ extension UnifiedWorkbenchShell {
         let subtitleColor = usesSelectedSessionState
             ? sessionTitleSubtitleColor(tokens: tokens, now: now)
             : tokens.secondaryText
-        return VStack(spacing: 1) {
+        let workspaceIcon: WorkspaceProjectIconContent? = {
+            guard SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: layout,
+                projectID: session?.projectID
+            ),
+            let projectID = session?.projectID.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return nil
+            }
+            return workspaceAppearanceStore.projectIconContent(
+                profileID: appStore.activeHostScope.profileID,
+                projectID: projectID
+            )
+        }()
+        let textAlignment: HorizontalAlignment = workspaceIcon == nil ? .center : .leading
+        let titleStack = VStack(alignment: textAlignment, spacing: 1) {
             // 标题只保留一行当前任务；普通状态收进固定副标题槽，
             // 避免 running / idle 切换时把整条时间线向下推。
             Text(session?.title ?? L10n.text("ui.session"))
@@ -251,8 +265,20 @@ extension UnifiedWorkbenchShell {
                     .truncationMode(.middle)
             }
         }
-        .multilineTextAlignment(.center)
-        .frame(width: layout.titleMaxWidth)
+        .multilineTextAlignment(workspaceIcon == nil ? .center : .leading)
+
+        return Group {
+            if let workspaceIcon {
+                HStack(spacing: 7) {
+                    WorkspaceProjectIconTile(content: workspaceIcon, size: 22, tokens: tokens)
+                    titleStack
+                }
+                .frame(maxWidth: layout.titleMaxWidth)
+            } else {
+                titleStack
+                    .frame(width: layout.titleMaxWidth)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(session?.title ?? L10n.text("ui.session"))
         .accessibilityValue(

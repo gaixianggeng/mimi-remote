@@ -1644,6 +1644,15 @@ enum SessionNavigationTitlePresentation {
         return project.isEmpty ? L10n.text("ui.session") : project
     }
 
+    static func showsWorkspaceIcon(layout: WorkbenchLayout, projectID: String?) -> Bool {
+        guard layout.usesPhoneIntegratedBottomChrome,
+              let projectID = projectID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !projectID.isEmpty else {
+            return false
+        }
+        return true
+    }
+
     static func subtitleFont(layout: WorkbenchLayout, themeStore: ThemeStore) -> Font {
         if layout.usesCompactPhoneNavigationTypography {
             // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。

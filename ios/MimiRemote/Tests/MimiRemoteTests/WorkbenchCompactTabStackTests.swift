@@ -589,6 +589,61 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor
+    func testPhoneSessionNavigationTitleShowsWorkspaceIconOnlyOnPhoneWithProject() {
+        let phoneLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: false,
+            isPhone: true
+        )
+        let compactPadLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: true,
+            isPhone: false
+        )
+        let widePadLayout = WorkbenchLayout(
+            containerWidth: 1032,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+
+        XCTAssertTrue(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: "proj_mimi"
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: "   "
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: nil
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: compactPadLayout,
+                projectID: "proj_mimi"
+            ),
+            "窄窗 iPad 顶栏保持原有纯文字排版"
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: widePadLayout,
+                projectID: "proj_mimi"
+            ),
+            "宽屏 iPad 顶栏保持原有纯文字排版"
+        )
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,

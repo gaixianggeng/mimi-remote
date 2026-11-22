@@ -3,10 +3,10 @@ import SwiftUI
 /// iPad 和 iPhone 共用同一套路由；宽屏使用侧栏，窄屏使用真正的 push 导航。
 /// 不能只依赖 NavigationSplitView 自动折叠：折叠后的详情列没有返回栈，也就没有系统左缘返回手势。
 struct UnifiedWorkbenchShell: View {
-    @EnvironmentObject private var appStore: AppStore
+    @EnvironmentObject var appStore: AppStore
     @EnvironmentObject var sessionStore: SessionStore
     @EnvironmentObject var themeStore: ThemeStore
-    @EnvironmentObject private var workspaceAppearanceStore: WorkspaceAppearanceStore
+    @EnvironmentObject var workspaceAppearanceStore: WorkspaceAppearanceStore
     @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @EnvironmentObject var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
     @Environment(\.colorScheme) var colorScheme
