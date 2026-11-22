@@ -751,6 +751,19 @@ function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
   return aligned;
 }
 
+function promptsMatchExact(attemptPrompt: string, candidatePrompt: string): boolean {
+  if (attemptPrompt === "" && candidatePrompt === "") return true;
+  if (attemptPrompt === "" || candidatePrompt === "") return false;
+  if (candidatePrompt === attemptPrompt) return true;
+  // `toAcpPromptBlocks` 将 preview 截断为 240 字符，仅在达到截断上限时允许精确前缀匹配。
+  return attemptPrompt.length === 240 && candidatePrompt.startsWith(attemptPrompt);
+}
+
+function turnHasAssistantOrToolProgress(turn: Turn | undefined): boolean {
+  if (!turn) return false;
+  return turn.items.some((item) => item.type !== "userMessage");
+}
+
 function mergeTurnsWithAttempts(
   sessionId: string,
   nativeTurns: readonly Turn[],
@@ -810,21 +823,20 @@ function mergeTurnsWithAttempts(
     const candidate = nativeTurns[nativeIdx];
     const attemptPrompt = normalizeTurnPrompt(attempt.promptText);
     const candidatePrompt = candidate ? extractTurnUserPrompt(candidate) : "";
-    const promptsCompatible =
-      Boolean(candidate)
-      && (attemptPrompt === "" || candidatePrompt === "" || candidatePrompt === attemptPrompt || candidatePrompt.includes(attemptPrompt) || attemptPrompt.includes(candidatePrompt));
+    // 严格按规范化提示词精确匹配，禁止宽松子串包含把相近但独立的原生成功回合错合并到旧失败尝试（B10 round4）。
+    const promptsCompatible = Boolean(candidate) && promptsMatchExact(attemptPrompt, candidatePrompt);
 
-    let shouldTreatAsUnpersisted = attempt.persisted === false || !candidate || !promptsCompatible;
-    if (!shouldTreatAsUnpersisted && attempt.status !== "completed" && attemptPrompt) {
+    let laterAttemptNeedsNative = false;
+    if (promptsCompatible && attempt.status !== "completed" && attemptPrompt) {
       // 同提示词连续重试：前一次早失败未落盘、后一次成功落盘时，剩余原生回合数少于剩余同提示词尝试数，
       // 必须把原生回合留给后续成功尝试，不能把早失败错误贴到新成功回合上（B10）。
       let remainingSamePromptAttempts = 0;
       let hasLaterCompletedSamePrompt = false;
       for (let j = i; j < finishedAttempts.length; j += 1) {
         const other = finishedAttempts[j]!;
-        if (other.persisted === false) continue;
+        if (j > i && other.persisted === false) continue;
         const otherPrompt = normalizeTurnPrompt(other.promptText);
-        if (otherPrompt === attemptPrompt) {
+        if (promptsMatchExact(otherPrompt, candidatePrompt)) {
           remainingSamePromptAttempts += 1;
           if (j > i && other.status === "completed") {
             hasLaterCompletedSamePrompt = true;
@@ -834,11 +846,33 @@ function mergeTurnsWithAttempts(
       let remainingSamePromptNative = 0;
       for (let k = nativeIdx; k < nativeTurns.length; k += 1) {
         const p = extractTurnUserPrompt(nativeTurns[k]!);
-        if (p === attemptPrompt || p.includes(attemptPrompt) || attemptPrompt.includes(p)) {
+        if (promptsMatchExact(attemptPrompt, p)) {
           remainingSamePromptNative += 1;
         }
       }
       if (hasLaterCompletedSamePrompt && remainingSamePromptNative < remainingSamePromptAttempts) {
+        laterAttemptNeedsNative = true;
+      }
+    }
+
+    let shouldTreatAsUnpersisted = !candidate || !promptsCompatible || laterAttemptNeedsNative;
+    if (!shouldTreatAsUnpersisted && candidate && attempt.status !== "completed") {
+      const candidateHasProgress = turnHasAssistantOrToolProgress(candidate);
+      const attemptHasProgress = turnHasAssistantOrToolProgress(attempt.syntheticTurn);
+      if (attempt.persisted === false) {
+        // 兼容旧版或取消瞬间 transcript 延迟刷盘：若当前原生位置已落盘同一提示词且无完成回复（或终态一致），
+        // 说明该中断/失败请求其实已落盘，应合并为单条记录，避免重复显示两份（B10 round4）。
+        const isLatePersistedSameAttempt = !candidateHasProgress || candidate.status === attempt.status;
+        if (!isLatePersistedSameAttempt) {
+          shouldTreatAsUnpersisted = true;
+        }
+      } else if (
+        attempt.persisted === undefined
+        && !attemptHasProgress
+        && candidate.status === "completed"
+        && candidateHasProgress
+      ) {
+        // 未确认落盘且无任何助手/工具产出的早失败，不应吞并后续同提示词且完整回复的独立原生成功回合。
         shouldTreatAsUnpersisted = true;
       }
     }
