@@ -328,10 +328,10 @@ export function analyzeLatestTurnExternalBusy(steps: readonly TranscriptStep[]):
 
 let cachedPsSnapshot: { at: number; lines: Array<{ pid: number; args: string }> } | undefined;
 
-async function listSystemProcesses(): Promise<Array<{ pid: number; args: string }>> {
+async function listSystemProcesses(options?: { bypassCache?: boolean }): Promise<Array<{ pid: number; args: string }>> {
   if (process.platform === "win32") return [];
   const now = Date.now();
-  if (cachedPsSnapshot && now - cachedPsSnapshot.at < PS_CACHE_TTL_MS) {
+  if (!options?.bypassCache && cachedPsSnapshot && now - cachedPsSnapshot.at < PS_CACHE_TTL_MS) {
     return cachedPsSnapshot.lines;
   }
   try {
@@ -357,9 +357,10 @@ async function listSystemProcesses(): Promise<Array<{ pid: number; args: string 
 export async function findExternalAgyHolderPid(
   sessionId: string,
   ownPids: ReadonlySet<number> = new Set(),
+  options?: { bypassCache?: boolean },
 ): Promise<number | null> {
   if (!SAFE_SESSION_ID.test(sessionId) || sessionId.length < 4) return null;
-  const procs = await listSystemProcesses();
+  const procs = await listSystemProcesses(options);
   for (const proc of procs) {
     if (proc.pid === process.pid || ownPids.has(proc.pid)) continue;
     if (!proc.args.includes(sessionId)) continue;
@@ -377,7 +378,13 @@ export async function findExternalAgyHolderPid(
 export interface InspectExternalActivityOptions {
   nowMs?: number;
   ownPids?: ReadonlySet<number>;
-  findExternalHolderPid?: (sessionId: string, ownPids: ReadonlySet<number>) => Promise<number | null>;
+  /** 写路径与回合预留前绕过 300ms 进程快照缓存，实时复核当前外部持有者（C11 round5）。 */
+  bypassProcessCache?: boolean;
+  findExternalHolderPid?: (
+    sessionId: string,
+    ownPids: ReadonlySet<number>,
+    options?: { bypassCache?: boolean },
+  ) => Promise<number | null>;
 }
 
 export async function inspectTranscriptActivity(
@@ -391,7 +398,9 @@ export async function inspectTranscriptActivity(
   const nowMs = opts.nowMs ?? Date.now();
   const ownPids = opts.ownPids ?? new Set<number>();
   const pidFinder = opts.findExternalHolderPid ?? findExternalAgyHolderPid;
-  const holderPid = await pidFinder(sessionId, ownPids).catch(() => null);
+  const holderPid = await pidFinder(sessionId, ownPids, {
+    ...(opts.bypassProcessCache ? { bypassCache: true } : {}),
+  }).catch(() => null);
 
   const filePath = await resolveTranscriptPath(sessionId, origin, env);
   if (!filePath) {

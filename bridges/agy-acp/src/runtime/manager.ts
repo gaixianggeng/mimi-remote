@@ -63,7 +63,7 @@ export interface ManagerOptions {
   existingTurnInfo?: (threadId: string) => Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;
   hasCustomTitle?: (threadId: string) => boolean;
   inspectTranscriptState?: (threadId: string) => Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
-  externalActivity?: (threadId: string) => Promise<TranscriptActivityInfo | undefined>;
+  externalActivity?: (threadId: string, options?: { bypassProcessCache?: boolean }) => Promise<TranscriptActivityInfo | undefined>;
 }
 
 export function unavailableAgyRateLimits(): RateLimitSnapshot {

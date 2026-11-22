@@ -130,7 +130,7 @@ export function createApp(options: AppOptions): App {
       historyRef?.persistedTurnInfo(threadId) ?? Promise.resolve({ nativeTurnCount: 0, maxTurnOrdinal: 0 }),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
     inspectTranscriptState: (threadId) => catalogRef?.transcriptStateDetailed(threadId) ?? Promise.resolve({ kind: "missing" as const }),
-    externalActivity: (threadId) => catalogRef?.externalActivity(threadId) ?? Promise.resolve(undefined),
+    externalActivity: (threadId, opts) => catalogRef?.externalActivity(threadId, opts) ?? Promise.resolve(undefined),
   });
   managerRef = manager;
 

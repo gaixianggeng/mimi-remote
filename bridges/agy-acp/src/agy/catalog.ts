@@ -58,7 +58,11 @@ export interface AgySessionBackend {
   resolveSessionOrigin(sessionId: string): Promise<AgySessionOrigin | null>;
   conversationFilePath(sessionId: string, origin: AgySessionOrigin): string | null;
   diskRevision?(sessionId: string, origin: AgySessionOrigin): Promise<DiskRevisionInfo | undefined>;
-  inspectExternalActivity?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptActivityInfo | undefined>;
+  inspectExternalActivity?(
+    sessionId: string,
+    origin: AgySessionOrigin,
+    options?: { bypassProcessCache?: boolean },
+  ): Promise<TranscriptActivityInfo | undefined>;
   snapshotTranscriptState?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptTurnSnapshot | undefined>;
   snapshotTranscriptStateDetailed?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptSnapshotResult>;
   loadTranscriptTurns?(
@@ -298,11 +302,14 @@ export function createAcpSessionBackend(
       };
     },
 
-    inspectExternalActivity(sessionId: string, origin: AgySessionOrigin) {
+    inspectExternalActivity(sessionId: string, origin: AgySessionOrigin, options?: { bypassProcessCache?: boolean }) {
       const ownPids = new Set<number>();
       if (cliSharedAcp.pid) ownPids.add(cliSharedAcp.pid);
       if (otherSharedAcp.pid) ownPids.add(otherSharedAcp.pid);
-      return inspectTranscriptActivity(sessionId, origin, env(), { ownPids });
+      return inspectTranscriptActivity(sessionId, origin, env(), {
+        ownPids,
+        ...(options?.bypassProcessCache ? { bypassProcessCache: true } : {}),
+      });
     },
 
     snapshotTranscriptState(sessionId: string, origin: AgySessionOrigin) {
@@ -345,11 +352,20 @@ export class AgyCatalog {
     this.cachedList = undefined;
   }
 
-  async externalActivity(sessionId: string): Promise<TranscriptActivityInfo | undefined> {
+  async externalActivity(
+    sessionId: string,
+    options?: { bypassProcessCache?: boolean },
+  ): Promise<TranscriptActivityInfo | undefined> {
     if (!this.deps.backend.inspectExternalActivity) return undefined;
     const origin = await this.deps.backend.resolveSessionOrigin(sessionId);
-    if (!origin) return undefined;
-    return this.deps.backend.inspectExternalActivity(sessionId, origin);
+    if (!origin) {
+      // 写路径新鲜复核时，即使会话尚无 .db/transcript 落盘，仍按默认 cli 路径执行实时进程持有检测（C11 round5）。
+      if (options?.bypassProcessCache) {
+        return this.deps.backend.inspectExternalActivity(sessionId, "cli", options);
+      }
+      return undefined;
+    }
+    return this.deps.backend.inspectExternalActivity(sessionId, origin, options);
   }
 
   async transcriptState(sessionId: string): Promise<TranscriptTurnSnapshot | undefined> {

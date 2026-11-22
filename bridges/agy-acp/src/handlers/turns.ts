@@ -132,7 +132,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : undefined;
       const { record, runtime } = await openExisting(threadId, cwd, params);
       manager.subscribe(threadId, context.session);
-      const ext = runtime.activeTurnId ? undefined : await catalog.externalActivity(threadId);
+      const ext = runtime.activeTurnId ? undefined : await catalog.externalActivity(threadId, { bypassProcessCache: true });
       const live = runtime.activeTurnId
         ? { canAcceptDirectInput: true, status: { type: "active" as const, activeFlags: [] } }
         : ext?.externallyBusy
@@ -164,7 +164,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
         );
       }
       if (!runtime.isBusy()) {
-        const ext = await catalog.externalActivity(threadId);
+        const ext = await catalog.externalActivity(threadId, { bypassProcessCache: true });
         if (ext?.externallyBusy) {
           throw RpcError.invalidParams(
             "Another Antigravity process on this computer is currently active on this session. Wait for it to finish and refresh before sending.",
@@ -199,7 +199,7 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       const threadId = requireString(params, "threadId", "turn/interrupt");
       const runtime = manager.get(threadId);
       if (!runtime?.isBusy()) {
-        const ext = await catalog.externalActivity(threadId);
+        const ext = await catalog.externalActivity(threadId, { bypassProcessCache: true });
         if (ext?.externallyBusy) {
           throw RpcError.invalidParams(
             "Another Antigravity process on this computer is currently active on this session and cannot be interrupted remotely. Wait for it to finish and refresh.",

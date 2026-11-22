@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,6 +8,7 @@ import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
 import { createApp } from "../src/app.ts";
 import type { SpawnAgyTransport } from "../src/agy/binary.ts";
 import type { AgySessionBackend } from "../src/agy/catalog.ts";
+import { inspectTranscriptActivity } from "../src/agy/transcript.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
 describe("mimi-agy-adapter round5 fixes", () => {
@@ -913,6 +914,154 @@ describe("mimi-agy-adapter round5 fixes", () => {
       expect(overlapCmds[1]).toMatchObject({ id: `${sessionId}:turn:3:tool:2`, aggregatedOutput: "OVERLAP SECOND RESULT" });
       expect(overlapCmds[0]?.id).not.toBe(overlapSecondId);
       expect(overlapCmds[1]?.id).not.toBe(overlapFirstId);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("C11 round5: list keeps process cache while turn/start, turn/interrupt, and ThreadRuntime pre-reservation recheck bypass 300ms cache (including before first transcript flushes)", async () => {
+    const sessionId = "c11-r5-write-recheck";
+    const inspectCalls: Array<{ sessionId: string; bypassProcessCache: boolean }> = [];
+    let staleCachedBusy = false;
+    let freshHolderBusy = false;
+    let promptCalls = 0;
+
+    // 1) Verify inspectTranscriptActivity forwards bypassProcessCache -> findExternalHolderPid({ bypassCache }).
+    const observedBypassFlags: boolean[] = [];
+    const directActivity = await inspectTranscriptActivity(sessionId, "cli", { HOME: fakeHome }, {
+      bypassProcessCache: true,
+      findExternalHolderPid: async (_sid, _own, opts) => {
+        observedBypassFlags.push(Boolean(opts?.bypassCache));
+        return 77_123;
+      },
+    });
+    expect(observedBypassFlags).toEqual([true]);
+    expect(directActivity?.externallyBusy).toBe(true);
+    expect(directActivity?.holderPid).toBe(77_123);
+
+    // 2) Full adapter harness: session has NO transcript yet (and no .db on disk yet for early pre-flush window).
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "C11 Write Recheck",
+          updatedAt: "2026-11-22T02:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+      onPrompt: async ({ emitUpdate }) => {
+        promptCalls += 1;
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "SHOULD NOT RUN" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const backend: AgySessionBackend = {
+      async listSummaries() {
+        return [{ sessionId, cwd: workspaceDir, title: "C11 Write Recheck", updatedAt: "2026-11-22T02:00:00Z" }];
+      },
+      async loadReplay() {
+        return [];
+      },
+      async resolveSessionOrigin() {
+        // Deliberately simulate pre-transcript / pre-.db origin lookup returning null for first check,
+        // then switching to "cli" after list verification.
+        return sessionOriginResult;
+      },
+      conversationFilePath() {
+        return null;
+      },
+      async inspectExternalActivity(sid, _origin, opts) {
+        const bypass = opts?.bypassProcessCache === true;
+        inspectCalls.push({ sessionId: sid, bypassProcessCache: bypass });
+        const busy = bypass ? freshHolderBusy : staleCachedBusy;
+        return {
+          path: "",
+          size: 0,
+          mtimeMs: Date.now(),
+          externallyBusy: busy,
+          ...(busy ? { holderPid: 88_001 } : {}),
+        };
+      },
+    };
+    let sessionOriginResult: "cli" | null = "cli";
+
+    const harness = await createHarness(world, { sessionBackend: backend });
+    try {
+      // External process starts inside the 300ms cache window: cached snapshot still says idle, fresh check sees holder.
+      staleCachedBusy = false;
+      freshHolderBusy = true;
+
+      // List path keeps cached behavior (bypassProcessCache === false).
+      const listed = await harness.rpc<{ data: Array<{ id: string; canAcceptDirectInput: boolean }> }>("thread/list", {});
+      expect(listed.data[0]?.id).toBe(sessionId);
+      expect(listed.data[0]?.canAcceptDirectInput).toBe(true);
+      expect(inspectCalls[inspectCalls.length - 1]).toEqual({ sessionId, bypassProcessCache: false });
+
+      // Even before .db / transcript exists (resolveSessionOrigin returns null), write paths MUST still bypass cache and reject!
+      // First open existing runtime via thread/resume while origin is visible, then clear origin to test pre-flush path.
+      await harness.rpc("thread/resume", { threadId: sessionId, cwd: workspaceDir });
+      sessionOriginResult = null;
+
+      await expect(
+        harness.rpc("turn/start", {
+          threadId: sessionId,
+          cwd: workspaceDir,
+          input: [{ type: "text", text: "blocked by fresh write check", text_elements: [] }],
+        }),
+      ).rejects.toThrow("currently active");
+      expect(inspectCalls[inspectCalls.length - 1]).toEqual({ sessionId, bypassProcessCache: true });
+
+      await expect(harness.rpc("turn/interrupt", { threadId: sessionId })).rejects.toThrow("cannot be interrupted remotely");
+      expect(inspectCalls[inspectCalls.length - 1]).toEqual({ sessionId, bypassProcessCache: true });
+      expect(promptCalls).toBe(0);
+
+      // 3) Race window between handlers/turns.ts pre-check and ThreadRuntime.startTurn pre-reservation check:
+      // First bypass call (handlers/turns.ts) sees idle, then external holder acquires session before reserveTurnAttempt!
+      sessionOriginResult = "cli";
+      let bypassSeq = 0;
+      backend.inspectExternalActivity = async (sid, _origin, opts) => {
+        const bypass = opts?.bypassProcessCache === true;
+        inspectCalls.push({ sessionId: sid, bypassProcessCache: bypass });
+        if (!bypass) {
+          return { path: "", size: 0, mtimeMs: Date.now(), externallyBusy: false };
+        }
+        bypassSeq += 1;
+        // 1st bypass call is handlers/turns.ts turnStart -> idle;
+        // 2nd bypass call is ThreadRuntime.startTurn right before reserveTurnAttempt -> externally busy!
+        const busy = bypassSeq >= 2;
+        return {
+          path: "",
+          size: 0,
+          mtimeMs: Date.now(),
+          externallyBusy: busy,
+          ...(busy ? { holderPid: 88_002 } : {}),
+        };
+      };
+
+      const notificationsBefore = harness.notifications.length;
+      await expect(
+        harness.rpc("turn/start", {
+          threadId: sessionId,
+          cwd: workspaceDir,
+          input: [{ type: "text", text: "blocked before reserveTurnAttempt", text_elements: [] }],
+        }),
+      ).rejects.toThrow("currently active");
+
+      expect(bypassSeq).toBe(2);
+      expect(promptCalls).toBe(0);
+      // MUST NOT publish turn/started or write a reserved attempt into overlay.json!
+      const newNotifications = harness.notifications.slice(notificationsBefore);
+      expect(newNotifications.some((n) => n.method === "turn/started")).toBe(false);
+      const overlayRaw = await readFile(path.join(stateDir, "overlay.json"), "utf8").catch(() => "");
+      if (overlayRaw) {
+        const parsed = JSON.parse(overlayRaw) as { sessions?: Record<string, { turnAttempts?: unknown[] }> };
+        expect(parsed.sessions?.[sessionId]?.turnAttempts ?? []).toHaveLength(0);
+      }
     } finally {
       await harness.close();
     }

@@ -102,7 +102,7 @@ export interface RuntimeHost {
   existingTurnInfo?(threadId: string): Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;
   recordTurnClientId?(turnId: string, clientId: string): void;
   inspectTranscriptState?(threadId: string): Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
-  externalActivity?(threadId: string): Promise<TranscriptActivityInfo | undefined>;
+  externalActivity?(threadId: string, options?: { bypassProcessCache?: boolean }): Promise<TranscriptActivityInfo | undefined>;
 }
 
 export interface TurnStartRequest {
@@ -243,6 +243,17 @@ export class ThreadRuntime {
 
       const client = this.client!;
       await this.applySessionControls(client, this.settings);
+
+      // 预留不可复用回合序号与发布回合之前，绕过 300ms 进程缓存重新确认当前持有者（C11 round5），
+      // 防止写前判断到 sessionLoadWithReplay 之间的异步窗口内已被外部进程抢先接手。
+      if (this.host.externalActivity) {
+        const freshExt = await this.host.externalActivity(this.threadId, { bypassProcessCache: true });
+        if (freshExt?.externallyBusy) {
+          throw RpcError.invalidParams(
+            "Another Antigravity process on this computer is currently active on this session. Wait for it to finish and refresh before sending.",
+          );
+        }
+      }
 
       const diskInfo = this.persisted
         ? (await this.host.existingTurnInfo?.(this.threadId).catch(() => undefined))
@@ -843,7 +854,7 @@ export class ThreadRuntime {
         (b) => b.approvalPlannerResponseCount !== undefined && current.plannerResponseCount > b.approvalPlannerResponseCount,
       );
       if (plannerIncreasedDuringApproval && this.host.externalActivity) {
-        const ext = await this.host.externalActivity(this.threadId).catch(() => undefined);
+        const ext = await this.host.externalActivity(this.threadId, { bypassProcessCache: true }).catch(() => undefined);
         if (this.currentTurn !== boundTurn || boundTurn.finished) {
           return "ok";
         }
