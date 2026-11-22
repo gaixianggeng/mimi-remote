@@ -518,6 +518,7 @@ test("C12 round3: multiple concurrent approvals in the same turn keep isolated b
   const approvalAResponse = deferred<unknown>();
   const approvalBResponse = deferred<unknown>();
   const abortedFlags: Record<string, boolean> = {};
+  let userInputs = ["concurrent approvals"];
   let plannerResponses = 1;
   const mockAcp = makeMockAcpClient(() => promptDone.promise);
 
@@ -548,9 +549,9 @@ test("C12 round3: multiple concurrent approvals in the same turn keep isolated b
         path: "/tmp/t.jsonl",
         size: 100,
         mtimeMs: 1,
-        userInputs: ["concurrent approvals"],
+        userInputs: [...userInputs],
         plannerResponseCount: plannerResponses,
-        stepCount: plannerResponses + 1,
+        stepCount: userInputs.length + plannerResponses,
       },
     }),
   };
@@ -585,8 +586,9 @@ test("C12 round3: multiple concurrent approvals in the same turn keep isolated b
   approvalAResponse.resolve({ decision: "accept" });
   expect(await promiseA).toEqual({ outcome: { outcome: "selected", optionId: "allow-a" } });
 
-  // External process writes a new planner response while Approval B is still pending.
+  // External process writes a new USER_INPUT while Approval B is still pending.
   // Approval A finishing MUST NOT have wiped Approval B's baseline or abort controller!
+  userInputs = ["concurrent approvals", "external mac cli write"];
   plannerResponses = 2;
   approvalBResponse.resolve({ decision: "accept" });
   expect(await promiseB).toEqual({ outcome: { outcome: "cancelled" } });
@@ -598,6 +600,150 @@ test("C12 round3: multiple concurrent approvals in the same turn keep isolated b
   const turn = (completed?.params as { turn?: { status?: string; error?: { message?: string } | null } })?.turn;
   expect(turn?.status).toBe("failed");
   expect(turn?.error?.message).toBe(EXTERNAL_WRITE_CONFLICT_MESSAGE);
+});
+
+test("C12 round4: benign local tool planner progress does NOT cancel a second legitimate approval", async () => {
+  const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const promptDone = deferred<{ stopReason: string }>();
+  const approvalAResponse = deferred<unknown>();
+  const approvalBResponse = deferred<unknown>();
+  let plannerResponses = 1;
+  const mockAcp = makeMockAcpClient(() => promptDone.promise);
+
+  const host: RuntimeHost = {
+    publish: (_tid, method, params) => notifications.push({ method, params }),
+    request: (_tid, _method, params, signal) => {
+      const itemId = String(params.itemId ?? "");
+      const target = itemId.includes("tc-a") ? approvalAResponse : approvalBResponse;
+      return new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        void target.promise.then(resolve, reject);
+      });
+    },
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+    inspectTranscriptState: async (): Promise<TranscriptSnapshotResult> => ({
+      kind: "present",
+      snapshot: {
+        path: "/tmp/t.jsonl",
+        size: 120,
+        mtimeMs: 1,
+        userInputs: ["two local tools"],
+        plannerResponseCount: plannerResponses,
+        stepCount: plannerResponses + 1,
+      },
+    }),
+    externalActivity: async () => ({
+      path: "/tmp/t.jsonl",
+      size: 120,
+      mtimeMs: 1,
+      externallyBusy: false,
+      holderPid: null,
+    }),
+  };
+
+  const runtime = new ThreadRuntime(
+    "",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+  await runtime.startTurn({
+    input: [{ type: "text", text: "two local tools", text_elements: [] }],
+    clientUserMessageId: null,
+    settings: {},
+  });
+
+  const promiseA = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-a", title: "Run cmd A", kind: "execute" },
+    options: [{ optionId: "allow-a", name: "Allow once", kind: "allow_once" }],
+  });
+  const promiseB = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-b", title: "Run cmd B", kind: "execute" },
+    options: [{ optionId: "allow-b", name: "Allow once", kind: "allow_once" }],
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  approvalAResponse.resolve({ decision: "accept" });
+  expect(await promiseA).toEqual({ outcome: { outcome: "selected", optionId: "allow-a" } });
+
+  // Local ACP writes a benign follow-up PLANNER_RESPONSE after tool A finishes while tool B awaits approval.
+  plannerResponses = 2;
+  approvalBResponse.resolve({ decision: "accept" });
+  expect(await promiseB).toEqual({ outcome: { outcome: "selected", optionId: "allow-b" } });
+  expect(mockAcp.cancelledSessions).toEqual([]);
+
+  promptDone.resolve({ stopReason: "end_turn" });
+  await new Promise((r) => setTimeout(r, 20));
+  const completed = notifications.find((n) => n.method === "turn/completed");
+  const turn = (completed?.params as { turn?: { status?: string; error?: { message?: string } | null } })?.turn;
+  expect(turn?.status).toBe("completed");
+  expect(turn?.error).toBeNull();
+});
+
+test("C12 round4: local interrupt immediately revokes all pending approvals for the active turn", async () => {
+  const promptDone = deferred<{ stopReason: string }>();
+  const aborted: string[] = [];
+  const mockAcp = makeMockAcpClient(() => promptDone.promise);
+
+  const host: RuntimeHost = {
+    publish: () => {},
+    request: (_tid, _method, params, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted.push(String(params.itemId ?? ""));
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      }),
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+  };
+
+  const runtime = new ThreadRuntime(
+    "",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+  await runtime.startTurn({
+    input: [{ type: "text", text: "interrupt pending approvals", text_elements: [] }],
+    clientUserMessageId: null,
+    settings: {},
+  });
+
+  const p1 = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-int-1", title: "Cmd 1", kind: "execute" },
+    options: [{ optionId: "allow-1", name: "Allow once", kind: "allow_once" }],
+  });
+  const p2 = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-int-2", title: "Cmd 2", kind: "execute" },
+    options: [{ optionId: "allow-2", name: "Allow once", kind: "allow_once" }],
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Interrupt BEFORE upstream prompt resolves: both pending approvals must immediately abort & cancel.
+  runtime.interrupt();
+  expect(await p1).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(await p2).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(aborted).toHaveLength(2);
+  expect(mockAcp.cancelledSessions).toContain("race-session");
+
+  promptDone.resolve({ stopReason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 20));
 });
 
 test("C12 round3: same-millisecond approval re-check still runs a fresh verification via monotonic sequence", async () => {

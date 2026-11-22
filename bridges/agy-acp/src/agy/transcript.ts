@@ -485,12 +485,6 @@ export function detectExternalConcurrentWrite(
   ) {
     return { detected: true, reason: "external_user_input_during_pending_approval" };
   }
-  if (
-    baseline.approvalPlannerResponseCount !== undefined
-    && current.plannerResponseCount > baseline.approvalPlannerResponseCount
-  ) {
-    return { detected: true, reason: "external_planner_response_during_pending_approval" };
-  }
   return { detected: false };
 }
 

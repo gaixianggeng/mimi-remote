@@ -209,25 +209,44 @@ D1–D6 的倾向
       }),
     ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
 
-    // Any new PLANNER_RESPONSE during pending approval IS a conflict.
-      expect(
-        detectExternalConcurrentWrite(
-          {
-            ...baseline,
-            approvalUserInputCount: 2,
-            approvalPlannerResponseCount: 1,
-          },
-          {
-            path: "/tmp/t.jsonl",
-            size: 240,
-            mtimeMs: Date.now(),
-            userInputs: ["prior turn", "Run pwd and wait for approval"],
-            plannerResponseCount: 2,
-            stepCount: 4,
-          },
-        ),
-      ).toEqual({ detected: true, reason: "external_planner_response_during_pending_approval" });
-    });
+    // Benign local PLANNER_RESPONSE progress without new USER_INPUT is NOT a conflict (C12 round4).
+    expect(
+      detectExternalConcurrentWrite(
+        {
+          ...baseline,
+          approvalUserInputCount: 2,
+          approvalPlannerResponseCount: 1,
+        },
+        {
+          path: "/tmp/t.jsonl",
+          size: 240,
+          mtimeMs: Date.now(),
+          userInputs: ["prior turn", "Run pwd and wait for approval"],
+          plannerResponseCount: 2,
+          stepCount: 4,
+        },
+      ),
+    ).toEqual({ detected: false });
+
+    // New USER_INPUT during pending approval IS a conflict.
+    expect(
+      detectExternalConcurrentWrite(
+        {
+          ...baseline,
+          approvalUserInputCount: 2,
+          approvalPlannerResponseCount: 1,
+        },
+        {
+          path: "/tmp/t.jsonl",
+          size: 260,
+          mtimeMs: Date.now(),
+          userInputs: ["prior turn", "Run pwd and wait for approval", "external prompt"],
+          plannerResponseCount: 1,
+          stepCount: 4,
+        },
+      ),
+    ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
+  });
 
   test("B10: readTranscriptTurns preserves failed ERROR_MESSAGE and cancelled/interrupted turn status", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-"));

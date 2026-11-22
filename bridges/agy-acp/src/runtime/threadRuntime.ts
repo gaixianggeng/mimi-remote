@@ -298,6 +298,12 @@ export class ThreadRuntime {
       throw RpcError.invalidParams(`回合 ${turnId} 已不在运行`);
     }
     active.markInterrupted();
+    // 收到本地中断时立即撤销该回合全部挂起审批，避免等待上游结束期间继续响应旧卡片（C12 round4）。
+    for (const entry of [...this.pendingApprovals.values()]) {
+      if (entry.turn === active) {
+        entry.abortController.abort();
+      }
+    }
     this.client?.sessionCancel(this.threadId);
     return {};
   }
@@ -514,7 +520,7 @@ export class ThreadRuntime {
     const boundTurn = this.currentTurn;
     const boundTurnId = boundTurn?.id ?? `${this.threadId}:approval`;
     const approvalId = params.toolCall.toolCallId;
-    if (signal.aborted || (boundTurn && boundTurn.finished)) {
+    if (signal.aborted || (boundTurn && (boundTurn.finished || boundTurn.explicitlyInterrupted))) {
       return { outcome: { outcome: "cancelled" } };
     }
     const itemId = boundTurn?.itemIdForToolCall(approvalId);
@@ -529,7 +535,7 @@ export class ThreadRuntime {
     const localAbort = new AbortController();
     const isStillOwned = (): boolean => {
       if (signal.aborted || localAbort.signal.aborted || this.externalWriteConflict) return false;
-      if (boundTurn && (this.currentTurn !== boundTurn || boundTurn.finished)) return false;
+      if (boundTurn && (this.currentTurn !== boundTurn || boundTurn.finished || boundTurn.explicitlyInterrupted)) return false;
       return true;
     };
 
@@ -768,6 +774,25 @@ export class ThreadRuntime {
             boundTurnId,
             EXTERNAL_WRITE_CONFLICT_MESSAGE,
             detection.reason ?? "external_write",
+          );
+          return "conflict";
+        }
+      }
+      // 本地多工具回合正常推进也会增加 plannerResponseCount；仅在观测到独立外部进程 PID 时才将其视为外部冲突（C12 round4）。
+      const plannerIncreasedDuringApproval = baselinesToCheck.some(
+        (b) => b.approvalPlannerResponseCount !== undefined && current.plannerResponseCount > b.approvalPlannerResponseCount,
+      );
+      if (plannerIncreasedDuringApproval && this.host.externalActivity) {
+        const ext = await this.host.externalActivity(this.threadId).catch(() => undefined);
+        if (this.currentTurn !== boundTurn || boundTurn.finished) {
+          return "ok";
+        }
+        if (ext?.holderPid != null) {
+          this.triggerExternalWriteFailure(
+            boundTurn,
+            boundTurnId,
+            EXTERNAL_WRITE_CONFLICT_MESSAGE,
+            "external_holder_during_pending_approval",
           );
           return "conflict";
         }
