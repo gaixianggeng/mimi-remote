@@ -54,7 +54,7 @@ final class WorkbenchNavigationBindingScheduler {
     }
 }
 
-enum CompactWorkbenchTab: Hashable {
+enum CompactWorkbenchTab: String, Hashable {
     case sessions
     case workspaces
     case devices
@@ -113,7 +113,7 @@ struct WorkbenchNavigationCommit {
 
 enum WorkbenchNavigationEvent: Equatable {
     case open(AppDestination, source: WorkbenchRootPage?)
-    case synchronize(WorkbenchRestorationRoute)
+    case synchronize(WorkbenchRestorationRoute, preferredCompactTab: CompactWorkbenchTab? = nil)
     case selectionCommitted(SessionSelectionCommit)
     case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
     case compactTabChanged(CompactWorkbenchTab)
@@ -130,6 +130,15 @@ enum WorkbenchNavigationOrigin: Equatable {
 
 /// 工作台导航的纯状态机。所有入口先在副本上归并，再一次性写回 SwiftUI，避免多个
 /// `onChange` 在同一帧互相改写 selection、route 和 NavigationStack path。
+///
+/// iPhone 底部导航常驻（`usesPhoneIntegratedBottomChrome`）下的「全局单活会话」MVP 状态不变量：
+/// 1. `compactSelectedTab` 独立表示当前可见 Tab，不再隐式等同于会话 `route`；
+/// 2. 任意时刻最多只有一个紧凑导航栈（`compactSessionPath` 或 `compactWorkspacePath`）持有会话详情，
+///    且栈内容只能是 `[]`、`[.session(id)]` 或 `[.session(id), .subagent(id, childID)]`；
+/// 3. 切往工作区根页、设备或我的时保留单一会话路由和原栈，但 `visibleSessionID` 必须为 `nil`；
+/// 4. 从工作区打开另一会话时留在工作区栈，并在同一次 reduce 中原子清空会话 Tab 的旧详情；
+/// 5. 通知和深链（`reason == .notification`）统一切到会话 Tab，清空工作区详情并替换会话栈顶；
+/// 6. App 重启通过 `preferredCompactTab` 恢复上次 Tab，保留后台会话栈而不抢走当前 Tab。
 struct WorkbenchNavigationState: Equatable {
     private(set) var route: WorkbenchRestorationRoute
     private(set) var selection: AppDestination?
@@ -178,6 +187,16 @@ struct WorkbenchNavigationState: Equatable {
             return nil
         }
         return sessionID
+    }
+
+    /// 判断紧凑导航栈内挂载的某条会话详情当前是否真正处于活跃 Tab 的可见前景。
+    /// iPhone 切 Tab 后旧详情会留在后台 Tab 内存里，视图层据此停止定时刷新、键盘监听与后台写入。
+    func isSessionDetailActiveOnScreen(
+        sessionID: SessionID?,
+        usesCompactNavigation: Bool
+    ) -> Bool {
+        guard let sessionID else { return false }
+        return visibleSessionID(usesCompactNavigation: usesCompactNavigation) == sessionID
     }
 
     /// 路由先于 SessionStore 选择提交时，详情只能显示稳定底板，不能短暂复用上一个会话。
@@ -229,7 +248,7 @@ struct WorkbenchNavigationState: Equatable {
                 selectedSessionID: selectedSessionID
             )
 
-        case .synchronize(let restoredRoute):
+        case .synchronize(let restoredRoute, let preferredCompactTab):
             let preservedGlobalTab = globalSettingsTab(usesCompactNavigation: usesCompactNavigation)
             let preservedPendingSessionID = restoredRoute.detailSessionID == pendingSessionSelectionID
                 ? pendingSessionSelectionID
@@ -247,6 +266,8 @@ struct WorkbenchNavigationState: Equatable {
             if let preservedGlobalTab {
                 compactSelectedTab = preservedGlobalTab
                 selection = preservedGlobalTab.destination
+            } else if usesPhoneIntegratedBottomChrome, let preferredCompactTab {
+                restorePreferredCompactTabOnLaunch(preferredCompactTab)
             }
             return nil
 
@@ -297,7 +318,7 @@ struct WorkbenchNavigationState: Equatable {
                     sessionID,
                     source: .sessions,
                     usesCompactNavigation: usesCompactNavigation,
-                    replacesCompactPath: false
+                    replacesCompactPath: true
                 )
 
             case .userOpen:
@@ -349,6 +370,7 @@ struct WorkbenchNavigationState: Equatable {
             return effectForUserNavigation(to: destination, selectedSessionID: selectedSessionID)
 
         case .compactTabChanged(let tab):
+            let previousTab = compactSelectedTab
             compactSelectedTab = tab
             guard !tab.isGlobalSettings else {
                 // “我的”和“设备”是全局入口，切入时保留当前路由及其所在 Tab 的历史栈。
@@ -356,6 +378,14 @@ struct WorkbenchNavigationState: Equatable {
                 return nil
             }
             let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
+            // iPhone 再次点击当前已选中的 Tab 时回到该 Tab 的列表根页。
+            if usesPhoneIntegratedBottomChrome, tab == previousTab, !path.isEmpty {
+                applyRoot(Self.rootPage(for: tab))
+                return effectForUserNavigation(
+                    to: Self.rootDestination(for: tab),
+                    selectedSessionID: selectedSessionID
+                )
+            }
             // iPhone 可直接从详情切去另一个根页。保留单一会话路由和选择，
             // selection 单独表示屏幕现在显示的根页，通知也据此判断会话是否可见。
             if usesPhoneIntegratedBottomChrome, path.isEmpty, route.detailSessionID != nil {
@@ -527,6 +557,22 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
+    /// iPhone 冷启动恢复上次停留的 Tab。若原会话路由属于另一 Tab，保留其栈但不抢走当前可见页。
+    private mutating func restorePreferredCompactTabOnLaunch(_ tab: CompactWorkbenchTab) {
+        if tab.isGlobalSettings {
+            compactSelectedTab = tab
+            selection = tab.destination
+            return
+        }
+        guard compactSelectedTab != tab else { return }
+        if route.detailSessionID != nil {
+            compactSelectedTab = tab
+            selection = Self.rootDestination(for: tab)
+        } else {
+            applyRoot(Self.rootPage(for: tab))
+        }
+    }
+
     private mutating func applySubagent(
         parentID: SessionID,
         childID: SessionID,
@@ -633,17 +679,20 @@ struct WorkbenchNavigationState: Equatable {
         return updatedPath
     }
 
-    /// 栈顶详情已属于该会话时原样保留（子 Agent 页属于它的父会话），否则只留该会话。
+    /// 栈顶详情已属于该会话且满足单会话不变量时原样保留（子 Agent 页属于它的父会话），否则规范化为单一会话栈。
     private static func path(
         _ path: [AppDestination],
         endingAt sessionID: SessionID
     ) -> [AppDestination] {
-        switch path.last {
-        case .session(sessionID), .subagent(sessionID, _):
+        if path == [.session(sessionID)] {
             return path
-        default:
-            return [.session(sessionID)]
         }
+        if path.count == 2,
+           path[0] == .session(sessionID),
+           case .subagent(sessionID, _) = path[1] {
+            return path
+        }
+        return [.session(sessionID)]
     }
 
     private static func isSessionDetailDestination(_ destination: AppDestination) -> Bool {

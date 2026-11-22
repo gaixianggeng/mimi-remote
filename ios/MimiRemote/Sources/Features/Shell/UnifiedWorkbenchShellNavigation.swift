@@ -108,6 +108,12 @@ extension UnifiedWorkbenchShell {
         if restorationRoute != commit.state.route {
             restorationRoute = commit.state.route
         }
+        if layout.usesPhoneIntegratedBottomChrome {
+            let tabRawValue = commit.state.compactSelectedTab.rawValue
+            if storedCompactSelectedTabRawValue != tabRawValue {
+                storedCompactSelectedTabRawValue = tabRawValue
+            }
+        }
 
         switch commit.effect {
         case .returnToSessionList:

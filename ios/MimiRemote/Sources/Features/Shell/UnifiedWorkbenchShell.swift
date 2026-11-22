@@ -24,6 +24,7 @@ struct UnifiedWorkbenchShell: View {
     @State private var lastCompactNavigation: Bool?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @SceneStorage("workbench.floatingSidebarVisible") private var storedFloatingSidebarVisible = true
+    @SceneStorage("workbench.compactSelectedTab.v1") var storedCompactSelectedTabRawValue = ""
     @State private var floatingSidebarPresentation = FloatingSidebarPresentationState()
     @State private var floatingSidebarRenderedProgress = FloatingSidebarRenderedProgressTracker(
         initialValue: FloatingSidebarVisibility.open.progress
@@ -128,7 +129,7 @@ struct UnifiedWorkbenchShell: View {
             .onAppear {
                 lastCompactNavigation = layout.usesCompactNavigation
                 restoreFloatingSidebarVisibilityIfNeeded()
-                synchronizeNavigation(for: layout)
+                synchronizeNavigation(for: layout, restoresCompactTab: true)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
                 synchronizeSidebarLifecycle()
             }
@@ -1167,6 +1168,11 @@ struct UnifiedWorkbenchShell: View {
         let canPresentSessionDetail = layout.usesPhoneIntegratedBottomChrome
             ? detailSessionID == sessionStore.selectedSessionID
             : navigationState.canPresentSessionDetail(selectedSessionID: sessionStore.selectedSessionID)
+        let isDetailActiveOnScreen = !layout.usesPhoneIntegratedBottomChrome
+            || navigationState.isSessionDetailActiveOnScreen(
+                sessionID: detailSessionID,
+                usesCompactNavigation: layout.usesCompactNavigation
+            )
         let detailSession = detailSessionID.flatMap { sessionStore.sessionsByID[$0] }
         let transcriptScope = detailSessionID.map { sessionStore.conversationStore.scopedSessionID(for: $0) }
         let detailedTranscript = Binding(
@@ -1218,6 +1224,7 @@ struct UnifiedWorkbenchShell: View {
             ToolbarItem(placement: .principal) {
                 Group {
                     if canPresentSessionDetail,
+                       isDetailActiveOnScreen,
                        sessionStore.selectedRuntimeActivitySnapshot != nil {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             sessionDetailNavigationTitle(
@@ -1411,7 +1418,17 @@ struct UnifiedWorkbenchShell: View {
             get: { navigationState.compactSelectedTab },
             set: { tab in
                 let expectedTab = navigationState.compactSelectedTab
-                guard tab != expectedTab else { return }
+                if tab == expectedTab {
+                    guard layout.usesPhoneIntegratedBottomChrome,
+                          !tab.isGlobalSettings,
+                          !compactPath(for: tab).isEmpty else { return }
+                    applyInteractiveNavigation(
+                        .compactTabChanged(tab),
+                        lane: .compactTab,
+                        layout: layout
+                    )
+                    return
+                }
                 applyInteractiveNavigation(
                     .compactTabChanged(tab),
                     lane: .compactTab,
@@ -1458,8 +1475,17 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    private func synchronizeNavigation(for layout: WorkbenchLayout) {
-        applyNavigation(.synchronize(restorationRoute), layout: layout)
+    private func synchronizeNavigation(
+        for layout: WorkbenchLayout,
+        restoresCompactTab: Bool = false
+    ) {
+        let preferredCompactTab = restoresCompactTab && layout.usesPhoneIntegratedBottomChrome
+            ? CompactWorkbenchTab(rawValue: storedCompactSelectedTabRawValue)
+            : nil
+        applyNavigation(
+            .synchronize(restorationRoute, preferredCompactTab: preferredCompactTab),
+            layout: layout
+        )
     }
 
     private func applyDebugLaunchRouteIfNeeded(layout: WorkbenchLayout) {
