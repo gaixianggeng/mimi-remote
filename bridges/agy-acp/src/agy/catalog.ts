@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import os from "node:os";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
+import { errorText, logger } from "../util/logging.ts";
 import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import { directoryExists, type GitRepoIndex } from "./git.ts";
@@ -39,8 +40,15 @@ export interface DiskRevisionInfo {
   transcriptPath?: string;
 }
 
+export type OtherListDiagnostic =
+  | { status: "ok"; count: number; elapsedMs: number }
+  | { status: "empty"; count: 0; elapsedMs: number }
+  | { status: "timeout"; timeoutMs: number; elapsedMs: number }
+  | { status: "failed"; error: string; elapsedMs: number };
+
 export interface AgySessionBackend {
   listSummaries(): Promise<AcpSessionSummary[]>;
+  wasLastOtherListDegraded?(): boolean;
   loadReplay(sessionId: string, cwd: string, origin: AgySessionOrigin): Promise<AcpSessionUpdate[]>;
   resolveSessionOrigin(sessionId: string): Promise<AgySessionOrigin | null>;
   conversationFilePath(sessionId: string, origin: AgySessionOrigin): string | null;
@@ -76,53 +84,79 @@ function otherListTimeoutMs(env: NodeJS.ProcessEnv): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OTHER_LIST_TIMEOUT_MS;
 }
 
-function withBoundedTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(fallback);
-    }, timeoutMs);
-    timer.unref?.();
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(fallback);
-      },
-    );
-  });
-}
-
 export function createAcpSessionBackend(
   cliSharedAcp: SharedReadonlyAcp,
   otherSharedAcp: SharedReadonlyAcp,
   env: () => NodeJS.ProcessEnv = () => process.env,
   hasLiveSession?: (sessionId: string) => boolean,
+  onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void,
 ): AgySessionBackend {
+  let lastOtherDegraded = false;
+  const recordOtherDiag = (diag: OtherListDiagnostic) => {
+    lastOtherDegraded = diag.status === "timeout" || diag.status === "failed";
+    if (diag.status === "timeout") {
+      logger.info("agy.other_list.timeout", { timeoutMs: diag.timeoutMs, elapsedMs: diag.elapsedMs });
+    } else if (diag.status === "failed") {
+      logger.info("agy.other_list.failed", { error: diag.error, elapsedMs: diag.elapsedMs });
+    } else if (diag.status === "empty") {
+      logger.debug("agy.other_list.empty", { elapsedMs: diag.elapsedMs });
+    } else {
+      logger.debug("agy.other_list.ok", { count: diag.count, elapsedMs: diag.elapsedMs });
+    }
+    onOtherListDiagnostic?.(diag);
+  };
+
   return {
+    wasLastOtherListDegraded() {
+      return lastOtherDegraded;
+    },
+
     async listSummaries() {
       const currentEnv = env();
       const checkOther = await hasOtherConversations(currentEnv);
       if (!checkOther) {
+        lastOtherDegraded = false;
         return cliSharedAcp.use((client) => client.sessionList());
       }
       const timeoutMs = otherListTimeoutMs(currentEnv);
+      const queryOtherWithCancellation = async (): Promise<AcpSessionSummary[]> => {
+        const startedAt = Date.now();
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+        timer.unref?.();
+        try {
+          const list = await otherSharedAcp.use(
+            (client) => client.sessionList(timeoutMs, controller.signal),
+            { timeoutMs, signal: controller.signal },
+          );
+          const elapsedMs = Date.now() - startedAt;
+          if (list.length === 0) {
+            recordOtherDiag({ status: "empty", count: 0, elapsedMs });
+          } else {
+            recordOtherDiag({ status: "ok", count: list.length, elapsedMs });
+          }
+          return list;
+        } catch (error) {
+          const elapsedMs = Date.now() - startedAt;
+          if (timedOut || controller.signal.aborted) {
+            await otherSharedAcp.reset().catch(() => {});
+            recordOtherDiag({ status: "timeout", timeoutMs, elapsedMs });
+          } else {
+            recordOtherDiag({ status: "failed", error: errorText(error), elapsedMs });
+          }
+          return [];
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+
       const [cliList, otherList] = await Promise.all([
         cliSharedAcp.use((client) => client.sessionList()),
-        withBoundedTimeout(
-          otherSharedAcp.use((client) => client.sessionList()),
-          timeoutMs,
-          [] as AcpSessionSummary[],
-        ),
+        queryOtherWithCancellation(),
       ]);
       if (otherList.length === 0) return cliList;
       const merged = new Map<string, AcpSessionSummary>();
@@ -217,7 +251,7 @@ export interface CatalogDeps {
 }
 
 export class AgyCatalog {
-  private cachedList: { at: number; summaries: AcpSessionSummary[] } | undefined;
+  private cachedList: { at: number; degraded: boolean; summaries: AcpSessionSummary[] } | undefined;
 
   constructor(
     private readonly deps: CatalogDeps,
@@ -330,11 +364,13 @@ export class AgyCatalog {
 
   private async fetchSummaries(): Promise<AcpSessionSummary[]> {
     const now = Date.now();
-    if (this.cachedList && now - this.cachedList.at < this.listCacheMs) {
+    // 若上一次 Other 索引处于降级（超时/失败），不复用缓存，使分页翻页或下一次刷新能立即发现恢复后的 Other 会话（C10）。
+    if (this.cachedList && !this.cachedList.degraded && now - this.cachedList.at < this.listCacheMs) {
       return this.cachedList.summaries;
     }
     const summaries = await this.deps.backend.listSummaries();
-    this.cachedList = { at: Date.now(), summaries };
+    const degraded = this.deps.backend.wasLastOtherListDegraded?.() ?? false;
+    this.cachedList = { at: Date.now(), degraded, summaries };
     return summaries;
   }
 

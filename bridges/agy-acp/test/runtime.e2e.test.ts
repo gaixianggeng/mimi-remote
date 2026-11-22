@@ -8,6 +8,7 @@ import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
 import { capabilityDeclaration, createApp } from "../src/app.ts";
 import type { AcpSessionUpdate } from "../src/acp/types.ts";
 import type { SpawnAgyTransport } from "../src/agy/binary.ts";
+import type { OtherListDiagnostic } from "../src/agy/catalog.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
 describe("mimi-agy-adapter end-to-end runtime", () => {
@@ -33,7 +34,12 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
 
   async function createTestHarness(
     world: FakeAgyWorld,
-    extra: { externalWritePollMs?: number; spawnTransport?: SpawnAgyTransport; env?: () => NodeJS.ProcessEnv } = {},
+    extra: {
+      externalWritePollMs?: number;
+      spawnTransport?: SpawnAgyTransport;
+      env?: () => NodeJS.ProcessEnv;
+      onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void;
+    } = {},
   ) {
     const env = extra.env ?? (() => ({ HOME: fakeHome }));
     const app = createApp({
@@ -44,6 +50,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       spawnTransport: extra.spawnTransport ?? world.spawnTransport,
       env,
       ...(extra.externalWritePollMs !== undefined ? { externalWritePollMs: extra.externalWritePollMs } : {}),
+      ...(extra.onOtherListDiagnostic ? { onOtherListDiagnostic: extra.onOtherListDiagnostic } : {}),
     });
     const registry = new SessionRegistry({
       idleTtlMs: 60_000,
@@ -2242,6 +2249,130 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       expect(listAfter.data.find((d) => d.id === sessionId)?.canAcceptDirectInput).toBe(true);
     } finally {
       await harness.close();
+    }
+  });
+
+  test("C10 round3: Other list distinguishes empty/timeout/failed diagnostics, cancels timed-out subprocess, and recovers during pagination", async () => {
+    const cliIds = ["cli-rec-1", "cli-rec-2", "cli-rec-3"];
+    for (const id of cliIds) {
+      await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${id}.db`), "sqlite");
+    }
+    const otherId = "other-recovered-session";
+    await mkdir(path.join(fakeHome, ".gemini", "antigravity", "conversations"), { recursive: true });
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity", "conversations", `${otherId}.db`), "sqlite");
+
+    const cliSessions = cliIds.map((id, idx) => ({
+      sessionId: id,
+      cwd: workspaceDir,
+      title: `CLI ${idx + 1}`,
+      updatedAt: `2026-11-22T03:0${idx}:00Z`,
+      modeId: "default",
+      model: "gemini-4-carbon",
+      thoughtLevel: "medium",
+      replayUpdates: [],
+      appDataDirName: "antigravity-cli",
+    }));
+    const otherSession = {
+      sessionId: otherId,
+      cwd: workspaceDir,
+      title: "Other Recovered",
+      updatedAt: "2026-11-22T02:59:00Z",
+      modeId: "default",
+      model: "gemini-4-carbon",
+      thoughtLevel: "medium",
+      replayUpdates: [],
+      appDataDirName: "antigravity",
+    };
+
+    // 1) Empty Other index records explicit "empty" diagnostic (not timeout/failed).
+    const emptyDiags: OtherListDiagnostic[] = [];
+    const emptyWorld = new FakeAgyWorld({ sessions: cliSessions });
+    const hEmpty = await createTestHarness(emptyWorld, {
+      onOtherListDiagnostic: (d) => emptyDiags.push(d),
+    });
+    try {
+      const res = await hEmpty.rpc<{ data: Array<{ id: string }> }>("thread/list", { limit: 10 });
+      expect(res.data).toHaveLength(3);
+      expect(emptyDiags).toContainEqual(expect.objectContaining({ status: "empty", count: 0 }));
+    } finally {
+      await hEmpty.close();
+    }
+
+    // 2) Failed Other subprocess records explicit "failed" diagnostic.
+    const failedDiags: OtherListDiagnostic[] = [];
+    const failWorld = new FakeAgyWorld({ sessions: [...cliSessions, otherSession] });
+    const hFail = await createTestHarness(failWorld, {
+      onOtherListDiagnostic: (d) => failedDiags.push(d),
+      spawnTransport: (opts) => {
+        if (opts.appDataDirName === "antigravity") {
+          throw new Error("simulated Other crash");
+        }
+        return failWorld.spawnTransport(opts);
+      },
+    });
+    try {
+      const res = await hFail.rpc<{ data: Array<{ id: string }> }>("thread/list", { limit: 10 });
+      expect(res.data).toHaveLength(3);
+      expect(failedDiags).toContainEqual(
+        expect.objectContaining({ status: "failed", error: expect.stringContaining("simulated Other crash") }),
+      );
+    } finally {
+      await hFail.close();
+    }
+
+    // 3) Timeout during page 1 cancels & closes the hung Other transport and records "timeout";
+    //    then Other recovers before page 2 and pagination discovers the Other session seamlessly!
+    const recoveryDiags: OtherListDiagnostic[] = [];
+    let otherHungMode = true;
+    let hungTransportClosed = false;
+    const recoveryWorld = new FakeAgyWorld({ sessions: [...cliSessions, otherSession] });
+    const hRec = await createTestHarness(recoveryWorld, {
+      env: () => ({
+        ...process.env,
+        HOME: fakeHome,
+        AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS: "100",
+      }),
+      onOtherListDiagnostic: (d) => recoveryDiags.push(d),
+      spawnTransport: (opts) => {
+        if (opts.appDataDirName === "antigravity" && otherHungMode) {
+          const stdin = new PassThrough();
+          const stdout = new PassThrough();
+          return {
+            stdin,
+            stdout,
+            pid: 88_888,
+            async close() {
+              hungTransportClosed = true;
+              stdin.end();
+              stdout.end();
+            },
+          };
+        }
+        return recoveryWorld.spawnTransport(opts);
+      },
+    });
+    try {
+      // Page 1 while Other is hung -> CLI returns page 1 promptly, hung transport is cancelled & closed.
+      const page1 = await hRec.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", {
+        limit: 2,
+        sortKey: "updated_at",
+      });
+      expect(page1.data.map((d) => d.id)).toEqual(["cli-rec-3", "cli-rec-2"]);
+      expect(page1.nextCursor).not.toBeNull();
+      expect(hungTransportClosed).toBe(true);
+      expect(recoveryDiags).toContainEqual(expect.objectContaining({ status: "timeout", timeoutMs: 100 }));
+
+      // Other recovers BEFORE page 2 is fetched!
+      otherHungMode = false;
+      const page2 = await hRec.rpc<{ data: Array<{ id: string }>; nextCursor: string | null }>("thread/list", {
+        limit: 5,
+        sortKey: "updated_at",
+        cursor: page1.nextCursor,
+      });
+      expect(page2.data.map((d) => d.id)).toEqual(["cli-rec-1", otherId]);
+      expect(recoveryDiags).toContainEqual(expect.objectContaining({ status: "ok", count: 1 }));
+    } finally {
+      await hRec.close();
     }
   });
 });

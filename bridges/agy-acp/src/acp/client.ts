@@ -37,6 +37,7 @@ interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
+  cleanup?: () => void;
 }
 
 interface ReplayCapture {
@@ -103,7 +104,7 @@ export class AcpClient {
     };
   }
 
-  async initialize(timeoutMs = 15_000): Promise<AcpInitializeResult> {
+  async initialize(timeoutMs = 15_000, signal?: AbortSignal): Promise<AcpInitializeResult> {
     return (await this.call(
       "initialize",
       {
@@ -112,11 +113,12 @@ export class AcpClient {
         clientInfo: this.options.clientInfo,
       },
       timeoutMs,
+      signal,
     )) as AcpInitializeResult;
   }
 
-  async sessionList(timeoutMs = 15_000): Promise<AcpSessionSummary[]> {
-    const res = (await this.call("session/list", {}, timeoutMs)) as { sessions?: AcpSessionSummary[] } | null;
+  async sessionList(timeoutMs = 15_000, signal?: AbortSignal): Promise<AcpSessionSummary[]> {
+    const res = (await this.call("session/list", {}, timeoutMs, signal)) as { sessions?: AcpSessionSummary[] } | null;
     return Array.isArray(res?.sessions) ? res.sessions : [];
   }
 
@@ -220,26 +222,39 @@ export class AcpClient {
     await this.readerDone;
   }
 
-  private call(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+  private call(method: string, params: unknown, timeoutMs?: number, signal?: AbortSignal): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new RpcError(ErrorCode.internalError, `ACP connection closed before ${method}`));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new RpcError(ErrorCode.internalError, `ACP ${method} aborted`));
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const pending: PendingCall = { method, resolve, reject };
+      const finishReject = (err: Error) => {
+        if (!this.pending.delete(id)) return;
+        if (pending.timer) clearTimeout(pending.timer);
+        pending.cleanup?.();
+        reject(err);
+      };
       if (timeoutMs !== undefined && timeoutMs > 0) {
         pending.timer = setTimeout(() => {
-          this.pending.delete(id);
-          reject(new RpcError(ErrorCode.internalError, `ACP ${method} timed out after ${timeoutMs}ms`));
+          finishReject(new RpcError(ErrorCode.internalError, `ACP ${method} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
+      }
+      if (signal) {
+        const onAbort = () => {
+          finishReject(new RpcError(ErrorCode.internalError, `ACP ${method} aborted`));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        pending.cleanup = () => signal.removeEventListener("abort", onAbort);
       }
       this.pending.set(id, pending);
       try {
         this.writeFrame({ jsonrpc: "2.0", id, method, params });
       } catch (error) {
-        if (pending.timer) clearTimeout(pending.timer);
-        this.pending.delete(id);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        finishReject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
@@ -271,6 +286,7 @@ export class AcpClient {
             if (!pending) break;
             this.pending.delete(classified.id);
             if (pending.timer) clearTimeout(pending.timer);
+            pending.cleanup?.();
             if (raw.error && typeof raw.error === "object") {
               const code = typeof raw.error.code === "number" ? raw.error.code : ErrorCode.internalError;
               const message = typeof raw.error.message === "string" ? raw.error.message : `ACP ${pending.method} failed`;
@@ -355,6 +371,7 @@ export class AcpClient {
     this.inboundControllers.clear();
     for (const [, pending] of this.pending) {
       if (pending.timer) clearTimeout(pending.timer);
+      pending.cleanup?.();
       pending.reject(error);
     }
     this.pending.clear();

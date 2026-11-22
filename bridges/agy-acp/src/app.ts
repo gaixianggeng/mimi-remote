@@ -10,7 +10,7 @@ import {
   type ProbeAgy,
   type SpawnAgyTransport,
 } from "./agy/binary.ts";
-import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend } from "./agy/catalog.ts";
+import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend, type OtherListDiagnostic } from "./agy/catalog.ts";
 import { acpCommandDiscovery, CommandCatalog, type DiscoverAgyCommands } from "./agy/commands.ts";
 import { appDataDirForOrigin, defaultAgyExecutable } from "./agy/env.ts";
 import { GitRepoIndex } from "./agy/git.ts";
@@ -68,6 +68,7 @@ export interface AppOptions {
   env?: () => NodeJS.ProcessEnv;
   idleCloseMs?: number;
   externalWritePollMs?: number;
+  onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void;
 }
 
 export interface App {
@@ -92,7 +93,13 @@ export function createApp(options: AppOptions): App {
   let historyRef: AgyHistoryStore | undefined;
   const backend =
     options.sessionBackend ??
-    createAcpSessionBackend(cliSharedAcp, otherSharedAcp, env, (sessionId) => managerRef?.get(sessionId)?.hasLiveProcess() ?? false);
+    createAcpSessionBackend(
+      cliSharedAcp,
+      otherSharedAcp,
+      env,
+      (sessionId) => managerRef?.get(sessionId)?.hasLiveProcess() ?? false,
+      options.onOtherListDiagnostic,
+    );
 
   const models = new ModelCatalog({
     discover: options.discoverModels ?? acpModelDiscovery(cliSharedAcp),
