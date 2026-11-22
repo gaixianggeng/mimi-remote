@@ -27,6 +27,7 @@ const (
 	claudeRuntimeProbeTimeout   = 4 * time.Second
 	claudeRuntimeQuotaTimeout   = 2 * time.Second
 	claudeRuntimeQuotaHardLimit = 7 * time.Second
+	agyRuntimeProbeTimeout      = runtimebudget.ProbeGenerationTimeout
 )
 
 type runtimeConnectionState string
@@ -426,7 +427,7 @@ func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse
 	}()
 	if r.cfg.Agy.Enabled {
 		go func() {
-			probeCtx, cancel := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
+			probeCtx, cancel := context.WithTimeout(ctx, agyRuntimeProbeTimeout)
 			defer cancel()
 			agyResult <- r.probeAgyRuntime(probeCtx)
 		}()

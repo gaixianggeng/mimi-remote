@@ -738,6 +738,9 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		return status
 	}
 
+	connectCtx, cancelConnect := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
+	defer cancelConnect()
+
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Agy.AdapterBin))
 	ensureDone := make(chan error, 1)
 	go func() {
@@ -745,7 +748,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		ensureDone <- err
 	}()
 	select {
-	case <-ctx.Done():
+	case <-connectCtx.Done():
 		return status
 	case err := <-ensureDone:
 		if err != nil {
@@ -753,7 +756,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		}
 	}
 	status.StartedAt = r.agyAdapter.runningSince()
-	if ctx.Err() != nil {
+	if connectCtx.Err() != nil {
 		return status
 	}
 	conn, _, err := r.agyAdapter.dial()
@@ -770,7 +773,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		},
 	})
 	defer func() { _ = client.Close() }()
-	initialization, err := client.Initialize(ctx)
+	initialization, err := client.Initialize(connectCtx)
 	if err != nil {
 		return status
 	}

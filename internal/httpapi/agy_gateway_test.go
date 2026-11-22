@@ -19,6 +19,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	runtimebudget "github.com/gaixianggeng/mimi-remote/internal/runtimestatus"
 )
 
 func TestAgyRuntimeNormalizationAndChannelDeclaration(t *testing.T) {
@@ -1138,5 +1139,122 @@ func TestC14C15Round3PathRestorePreservesPermanentReadOnlyProvenanceAndRefreshes
 	)
 	if len(directSub) != 1 || !directSub[0].readOnly || !directSub[0].readOnlySubagent || directSub[0].canAcceptDirectInput {
 		t.Fatalf("threadsFromResult MUST mark parentThreadId thread as readOnlySubagent, got %+v", directSub)
+	}
+}
+
+func TestB11Round4SlowColdAgyProbeStaysConsistentAcrossConfigAndRuntimeStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX")
+	}
+	if agyRuntimeProbeTimeout < agyAuthProbeTimeout || runtimebudget.ProbeGenerationTimeout < agyAuthProbeTimeout {
+		t.Fatalf(
+			"agy runtime status budget (%s / %s) MUST cover cold auth probe timeout (%s)",
+			agyRuntimeProbeTimeout,
+			runtimebudget.ProbeGenerationTimeout,
+			agyAuthProbeTimeout,
+		)
+	}
+
+	dir := t.TempDir()
+	residentBridge := writeTestBridge(t, `#!/bin/sh
+IFS= read -r initialize
+printf '{"id":1,"result":{"userAgent":"mimi-agy-adapter/0.1.0"}}\n'
+IFS= read -r initialized
+while IFS= read -r line; do :; done
+`)
+	adapterWrapper := filepath.Join(dir, "mimi-agy-adapter")
+	wrapperScript := `#!/bin/sh
+case "$1" in
+  --version)
+    echo "mimi-agy-adapter 0.1.0"
+    exit 0
+    ;;
+  --capabilities)
+    echo '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["initialize","thread/list","thread/start","turn/start","model/list"],"fullAccess":true,"agy":{"minimumVersion":"1.5.0"}}'
+    exit 0
+    ;;
+  *)
+    exec "` + residentBridge + `" "$@"
+    ;;
+esac
+`
+	if err := os.WriteFile(adapterWrapper, []byte(wrapperScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate real slow-but-healthy agy cold auth probe taking > 4s (past old claudeRuntimeProbeTimeout).
+	agyPath := filepath.Join(dir, "agy")
+	slowReadyAgy := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.5.14"; exit 0; fi
+/bin/sleep 4.2
+echo "gemini-4-carbon"
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(slowReadyAgy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	upstreamURL, _, _ := fakeAppServerUpstream(t, runtimeStatusCodexResponder(t))
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Agy.Enabled = true
+		cfg.Agy.AdapterBin = adapterWrapper
+		cfg.Agy.MaxConcurrentSessions = 2
+		cfg.Agy.Env = map[string]string{
+			"PATH":                    dir,
+			agybridge.AgyBinaryEnvKey: agyPath,
+		}
+	})
+
+	// Concurrent cold /api/app-server/config and /api/runtime/status?refresh=wait MUST BOTH report available!
+	statusCh := make(chan runtimeStatusResponse, 1)
+	configCh := make(chan appServerChannel, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := authedRequest(t, http.MethodGet, "/api/runtime/status?refresh=wait", nil)
+		req.RemoteAddr = "127.0.0.1:44123"
+		handler.ServeHTTP(rec, req)
+		var resp runtimeStatusResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Errorf("decode runtime status: %v body=%s", err, rec.Body.String())
+		}
+		statusCh <- resp
+	}()
+	go func() {
+		rec := httptest.NewRecorder()
+		req := authedRequest(t, http.MethodGet, "/api/app-server/config", nil)
+		handler.ServeHTTP(rec, req)
+		var cfgResp struct {
+			Channels []appServerChannel `json:"channels"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &cfgResp); err != nil {
+			t.Errorf("decode app-server config: %v body=%s", err, rec.Body.String())
+		}
+		var found appServerChannel
+		for _, ch := range cfgResp.Channels {
+			if ch.ID == appServerRuntimeAgyID {
+				found = ch
+				break
+			}
+		}
+		configCh <- found
+	}()
+
+	ch := <-configCh
+	resp := <-statusCh
+	if !ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.Status != "ready" {
+		t.Fatalf("expected config ready after 4.2s cold auth probe, got %+v", ch)
+	}
+	var agyStatus *runtimeAccountStatus
+	for i := range resp.Runtimes {
+		if resp.Runtimes[i].ID == "agy" {
+			agyStatus = &resp.Runtimes[i]
+			break
+		}
+	}
+	if agyStatus == nil {
+		t.Fatalf("expected agy entry in runtime status response, got %+v", resp.Runtimes)
+	}
+	if agyStatus.State != runtimeStateAvailable || agyStatus.Reason != "" {
+		t.Fatalf("expected runtime status agy=available (not adapter_unavailable) after 4.2s cold probe, got %+v", *agyStatus)
 	}
 }
