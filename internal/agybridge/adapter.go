@@ -14,7 +14,19 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 )
 
-const AgyBinaryEnvKey = "AGY_ADAPTER_AGY_BIN"
+const (
+	AgyBinaryEnvKey       = "AGY_ADAPTER_AGY_BIN"
+	AgyGeminiDirEnvKey    = "AGY_ADAPTER_GEMINI_DIR"
+	AgyAppDataDirEnvKey   = "AGY_ADAPTER_APP_DATA_DIR"
+)
+
+type AgyAuthState string
+
+const (
+	AgyAuthSignedIn  AgyAuthState = "signed_in"
+	AgyAuthSignedOut AgyAuthState = "signed_out"
+	AgyAuthUnknown   AgyAuthState = "unknown"
+)
 
 type AdapterCapabilities struct {
 	Name       string   `json:"name"`
@@ -127,13 +139,38 @@ func AgyVersion(ctx context.Context, bin string, env []string) (string, error) {
 	return version, nil
 }
 
+func envLookup(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(entry, prefix))
+		}
+	}
+	return ""
+}
+
+// AgyAccountArgs 返回与 agy acp 保持一致的账号/数据目录参数（B11）：
+// 当配置了隔离的 AGY_ADAPTER_GEMINI_DIR 或 AGY_ADAPTER_APP_DATA_DIR 时，
+// 预检 `agy models` 必须使用同一组参数，避免探测宿主默认账号而真实 ACP 使用隔离配置。
+func AgyAccountArgs(env []string) []string {
+	var args []string
+	if geminiDir := envLookup(env, AgyGeminiDirEnvKey); geminiDir != "" && geminiDir != ".gemini" {
+		args = append(args, "--gemini-dir", geminiDir)
+	}
+	if appDataDir := envLookup(env, AgyAppDataDirEnvKey); appDataDir != "" && appDataDir != "antigravity-cli" {
+		args = append(args, "--app-data-dir", appDataDir)
+	}
+	return args
+}
+
 // CheckAgySignedIn 执行无副作用的 `agy models` 探测登录态：
 // 实测未登录时返回非零退出码并提示 "Please sign in to view available models"；
 // 冷启动首次拉取远端模型列表约需 7-10 秒，因此预留 15 秒超时。
 func CheckAgySignedIn(ctx context.Context, bin string, env []string) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "models")
+	args := append([]string{"models"}, AgyAccountArgs(env)...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
@@ -149,23 +186,36 @@ func CheckAgySignedIn(ctx context.Context, bin string, env []string) (bool, stri
 	return true, ""
 }
 
-// CheckAgySignedOut 仅在 `agy models` 明确输出未登录/需认证提示时返回 signedOut=true；
-// 超时或网络抖动不误报为未登录，避免把已登录的离线环境错判成退出登录（B11）。
-func CheckAgySignedOut(ctx context.Context, bin string, env []string) (bool, string) {
+// CheckAgyAuthStatus 区分已登录（signed_in）、明确未登录（signed_out）与探测未知（unknown，例如超时或瞬时故障），
+// 并传入与真实 ACP 一致的账户目录参数（B11）。未知状态不得当成已就绪缓存。
+func CheckAgyAuthStatus(ctx context.Context, bin string, env []string) (AgyAuthState, string) {
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 4*time.Second)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, bin, "models")
+	args := append([]string{"models"}, AgyAccountArgs(env)...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err == nil {
-		return false, ""
+		return AgyAuthSignedIn, ""
 	}
 	text := strings.TrimSpace(string(output))
 	if IsAgySignedOutOutput(text) {
-		return true, "Antigravity CLI 尚未登录，请在终端运行 agy 完成登录"
+		return AgyAuthSignedOut, "Antigravity CLI 尚未登录，请在终端运行 agy 完成登录"
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return AgyAuthUnknown, "Antigravity CLI 登录状态探测超时，正在重试确认"
+	}
+	return AgyAuthUnknown, firstLineOrFallback(text, "无法确认 Antigravity CLI 登录状态，正在重试确认")
+}
+
+// CheckAgySignedOut 仅在 `agy models` 明确输出未登录/需认证提示时返回 signedOut=true。
+func CheckAgySignedOut(ctx context.Context, bin string, env []string) (bool, string) {
+	state, msg := CheckAgyAuthStatus(ctx, bin, env)
+	if state == AgyAuthSignedOut {
+		return true, msg
 	}
 	return false, ""
 }

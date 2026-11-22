@@ -58,7 +58,8 @@ type agyAdapterProbe struct {
 
 type agyAuthProbeCache struct {
 	path      string
-	signedOut bool
+	envKey    string
+	state     agybridge.AgyAuthState
 	message   string
 	checkedAt time.Time
 }
@@ -66,7 +67,10 @@ type agyAuthProbeCache struct {
 const (
 	agyAuthSignedInCacheTTL  = 2 * time.Minute
 	agyAuthSignedOutCacheTTL = 5 * time.Second
+	agyAuthUnknownCacheTTL   = 2 * time.Second
 )
+
+var agyAuthProbeTimeout = 4 * time.Second
 
 func (p agyAdapterProbe) supportsMethod(method string) bool {
 	return p.Healthy && p.Capabilities != nil && p.Capabilities.Supports(method)
@@ -97,37 +101,44 @@ func agyAdapterFix(probe agyAdapterProbe) string {
 		return "升级 Antigravity CLI (agy)"
 	case "agy_signed_out":
 		return "在终端运行 agy 完成登录"
+	case "agy_auth_unknown":
+		return "请稍后重试，或在终端运行 agy 确认登录状态"
 	default:
 		return agybridge.InstallHint
 	}
 }
 
-func (r *Router) checkAgySignedOutCached(agyPath string, env []string) (bool, string) {
+func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybridge.AgyAuthState, string) {
 	now := time.Now().UTC()
+	envKey := strings.Join(agybridge.AgyAccountArgs(env), "\x00")
 	r.agyMu.Lock()
 	cached := r.agyAuth
 	r.agyMu.Unlock()
-	if cached.path == agyPath && !cached.checkedAt.IsZero() {
+	if cached.path == agyPath && cached.envKey == envKey && cached.state != "" && !cached.checkedAt.IsZero() {
 		ttl := agyAuthSignedInCacheTTL
-		if cached.signedOut {
+		switch cached.state {
+		case agybridge.AgyAuthSignedOut:
 			ttl = agyAuthSignedOutCacheTTL
+		case agybridge.AgyAuthUnknown:
+			ttl = agyAuthUnknownCacheTTL
 		}
 		if now.Sub(cached.checkedAt) < ttl {
-			return cached.signedOut, cached.message
+			return cached.state, cached.message
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), agyAuthProbeTimeout)
 	defer cancel()
-	signedOut, msg := agybridge.CheckAgySignedOut(ctx, agyPath, env)
+	state, msg := agybridge.CheckAgyAuthStatus(ctx, agyPath, env)
 	r.agyMu.Lock()
 	r.agyAuth = agyAuthProbeCache{
 		path:      agyPath,
-		signedOut: signedOut,
+		envKey:    envKey,
+		state:     state,
 		message:   msg,
 		checkedAt: time.Now().UTC(),
 	}
 	r.agyMu.Unlock()
-	return signedOut, msg
+	return state, msg
 }
 
 func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
@@ -198,9 +209,16 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 			return probe
 		}
 	}
-	if signedOut, signMsg := r.checkAgySignedOutCached(agyPath, env); signedOut {
+	authState, authMsg := r.checkAgyAuthStatusCached(agyPath, env)
+	switch authState {
+	case agybridge.AgyAuthSignedOut:
 		probe.Status = "agy_signed_out"
-		probe.Error = signMsg
+		probe.Error = authMsg
+		r.setAgyAdapterProbe(probe)
+		return probe
+	case agybridge.AgyAuthUnknown:
+		probe.Status = "agy_auth_unknown"
+		probe.Error = authMsg
 		r.setAgyAdapterProbe(probe)
 		return probe
 	}
@@ -240,8 +258,13 @@ func (r *Router) refreshAgyAdapterProbeIfStale() {
 	}
 	r.agyMu.Lock()
 	checkedAt := r.agyProbe.CheckedAt
+	status := r.agyProbe.Status
 	r.agyMu.Unlock()
-	if checkedAt.IsZero() || time.Since(checkedAt) >= claudeBridgeProbeCacheTTL {
+	ttl := claudeBridgeProbeCacheTTL
+	if status == "agy_auth_unknown" {
+		ttl = agyAuthUnknownCacheTTL
+	}
+	if checkedAt.IsZero() || time.Since(checkedAt) >= ttl {
 		r.refreshAgyAdapterProbe()
 	}
 }
@@ -677,7 +700,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	probe := r.currentAgyAdapterProbe()
 	if !probe.Healthy {
 		switch probe.Status {
-		case "agy_missing", "agy_unsupported":
+		case "agy_missing", "agy_unsupported", "agy_auth_unknown":
 			status.Reason = probe.Status
 		case "agy_signed_out":
 			status.State = runtimeStateSignedOut

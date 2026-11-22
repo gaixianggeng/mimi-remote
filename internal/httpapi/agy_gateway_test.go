@@ -855,3 +855,89 @@ func TestC11Round2ExternalHolderRejectionDistinguishedFromReadOnlySubsession(t *
 		t.Fatalf("expected turn/start to succeed after Mac becomes idle, got %+v", policyErr)
 	}
 }
+
+func TestB11Round2SlowOrUnknownAuthProbeDoesNotReportReadyAndPassesIsolatedAccountFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX")
+	}
+	oldTimeout := agyAuthProbeTimeout
+	agyAuthProbeTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { agyAuthProbeTimeout = oldTimeout })
+
+	dir := t.TempDir()
+	adapterPath := writeFakeAgyAdapterScript(t, dir)
+	agyPath := filepath.Join(dir, "agy")
+	argsLog := filepath.Join(dir, "models-args.txt")
+
+	// 1) Slow/hanging probe must yield agy_auth_unknown (Healthy=false), NEVER ready!
+	slowScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.5.14"; exit 0; fi
+if [ "$1" = "models" ]; then
+  echo "$@" > "` + argsLog + `"
+  /bin/sleep 2
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(slowScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		cfg: config.Config{
+			Listen: "127.0.0.1:8787",
+			Agy: config.AgyConfig{
+				Enabled:    true,
+				AdapterBin: adapterPath,
+				Env: map[string]string{
+					"PATH":                        dir,
+					agybridge.AgyBinaryEnvKey:     agyPath,
+					agybridge.AgyGeminiDirEnvKey:  ".gemini-isolated",
+					agybridge.AgyAppDataDirEnvKey: "antigravity-custom",
+				},
+			},
+		},
+		agyAdapter: newAgyAdapterSupervisor(),
+	}
+
+	probe := router.refreshAgyAdapterProbe()
+	if probe.Healthy || probe.Status != "agy_auth_unknown" {
+		t.Fatalf("slow/unknown auth probe MUST NOT report ready; got %+v", probe)
+	}
+	ch := router.agyChannelConfig(httptest.NewRequest("GET", "http://127.0.0.1:8787/api/app-server/config", nil))
+	if ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.Status != "agy_auth_unknown" {
+		t.Fatalf("config MUST NOT report gateway_available=true when auth probe is unknown; got %+v", ch)
+	}
+	rt := router.probeAgyRuntime(context.Background())
+	if rt.State != runtimeStateUnavailable || rt.Reason != "agy_auth_unknown" {
+		t.Fatalf("runtime status should report unavailable/agy_auth_unknown, got %+v", rt)
+	}
+
+	// Verify isolated ACP account flags were forwarded to `agy models`.
+	recordedArgsBytes, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("expected agy models to record args: %v", err)
+	}
+	recordedArgs := strings.TrimSpace(string(recordedArgsBytes))
+	if !strings.Contains(recordedArgs, "--gemini-dir .gemini-isolated") || !strings.Contains(recordedArgs, "--app-data-dir antigravity-custom") {
+		t.Fatalf("expected isolated ACP account flags in agy models invocation, got %q", recordedArgs)
+	}
+
+	// 2) Once probe becomes fast & signed-in, short unknown cache TTL expires and probe recovers cleanly.
+	fastSignedIn := `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "1.5.14"; exit 0; fi
+if [ "$1" = "models" ]; then echo "gemini-4-carbon"; exit 0; fi
+exit 0
+`
+	if err := os.WriteFile(agyPath, []byte(fastSignedIn), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	router.agyMu.Lock()
+	router.agyAuth.checkedAt = time.Now().UTC().Add(-agyAuthUnknownCacheTTL - time.Second)
+	router.agyProbe.CheckedAt = time.Now().UTC().Add(-agyAuthUnknownCacheTTL - time.Second)
+	router.agyMu.Unlock()
+
+	recovered := router.currentAgyAdapterProbe()
+	if !recovered.Healthy || recovered.Status != "ready" {
+		t.Fatalf("expected recovery to ready after short unknown retry TTL, got %+v", recovered)
+	}
+}
