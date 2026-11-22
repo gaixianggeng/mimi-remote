@@ -38,6 +38,39 @@ export function toolItemFingerprint(item: ThreadItem): string | undefined {
   return undefined;
 }
 
+function normalizeOutputForFingerprint(text: string | null | undefined): string {
+  if (!text) return "";
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+/**
+ * 基于工具结果内容生成规范化输出指纹，用于在无原生 toolCallId 的 transcript 冷读中
+ * 精确区分同命令逆序完成的多个调用（B15/C05）。
+ */
+export function toolItemOutputFingerprint(item: ThreadItem): string | undefined {
+  if (item.type === "commandExecution") {
+    const out = normalizeOutputForFingerprint(item.aggregatedOutput);
+    if (!out) return undefined;
+    return createHash("sha256").update(`cmd-out:${item.status}:${out}`).digest("hex").slice(0, 16);
+  }
+  if (item.type === "fileChange") {
+    const diffs = item.changes
+      .map((change) => `${change.path.trim().replace(/\/+$/, "")}:${normalizeOutputForFingerprint(change.diff)}`)
+      .filter((entry) => !entry.endsWith(":"))
+      .sort();
+    if (diffs.length === 0) return undefined;
+    return createHash("sha256").update(`file-out:${item.status}:${diffs.join("\n")}`).digest("hex").slice(0, 16);
+  }
+  if (item.type === "dynamicToolCall") {
+    const texts = (item.contentItems ?? [])
+      .map((entry) => (entry.type === "inputText" ? normalizeOutputForFingerprint(entry.text) : ""))
+      .filter(Boolean);
+    if (texts.length === 0) return undefined;
+    return createHash("sha256").update(`dyn-out:${item.status}:${texts.join("\n")}`).digest("hex").slice(0, 16);
+  }
+  return undefined;
+}
+
 export interface AcpToolState {
   toolCallId: string;
   title?: string;

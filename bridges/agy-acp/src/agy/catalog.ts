@@ -7,7 +7,7 @@ import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type A
 import { directoryExists, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
 import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
-import { toolItemFingerprint } from "./tools.ts";
+import { toolItemFingerprint, toolItemOutputFingerprint } from "./tools.ts";
 import {
   inspectTranscriptActivity,
   readTranscriptTurns,
@@ -536,27 +536,119 @@ export class AgyHistoryStore {
       if (mappings.length === 0) return turn;
       const knownIds = new Set(mappings.map((m) => m.itemId));
       const usedMappingIdx = new Set<number>();
-      let changed = false;
-      const items = turn.items.map((item) => {
+      const reassignedIds = new Map<number, string>();
+
+      interface PendingTranscriptItem {
+        itemIndex: number;
+        item: Turn["items"][number];
+        groupKey: string;
+        outputFingerprint?: string;
+      }
+
+      const pendingByGroup = new Map<string, PendingTranscriptItem[]>();
+
+      turn.items.forEach((item, itemIndex) => {
         if (item.type !== "commandExecution" && item.type !== "fileChange" && item.type !== "dynamicToolCall") {
-          return item;
+          return;
         }
         if (knownIds.has(item.id)) {
           const exactIdx = mappings.findIndex((m, idx) => !usedMappingIdx.has(idx) && m.itemId === item.id);
           if (exactIdx >= 0) usedMappingIdx.add(exactIdx);
-          return item;
+          return;
         }
         const fp = toolItemFingerprint(item);
-        if (!fp) return item;
-        const matchIdx = mappings.findIndex(
-          (m, idx) => !usedMappingIdx.has(idx) && m.itemType === item.type && m.fingerprint === fp,
-        );
-        if (matchIdx < 0) return item;
-        usedMappingIdx.add(matchIdx);
-        changed = true;
-        return { ...item, id: mappings[matchIdx]!.itemId };
+        if (!fp) return;
+        const groupKey = `${item.type}\x00${fp}`;
+        const list = pendingByGroup.get(groupKey) ?? [];
+        list.push({
+          itemIndex,
+          item,
+          groupKey,
+          outputFingerprint: toolItemOutputFingerprint(item),
+        });
+        pendingByGroup.set(groupKey, list);
       });
-      return changed ? { ...turn, items } : turn;
+
+      for (const [groupKey, groupItems] of pendingByGroup) {
+        const candidateIndices: number[] = [];
+        mappings.forEach((m, idx) => {
+          if (!usedMappingIdx.has(idx) && `${m.itemType}\x00${m.fingerprint}` === groupKey) {
+            candidateIndices.push(idx);
+          }
+        });
+        if (candidateIndices.length === 0) continue;
+
+        const unmatchedItems = [...groupItems];
+
+        // 1) 同签名多调用优先按规范化输出指纹 1-to-1 精确关联（防止逆序完成时冷读互换 ID，B15/C05）。
+        const itemOutCounts = new Map<string, number>();
+        for (const entry of unmatchedItems) {
+          if (entry.outputFingerprint) {
+            itemOutCounts.set(entry.outputFingerprint, (itemOutCounts.get(entry.outputFingerprint) ?? 0) + 1);
+          }
+        }
+        const mapOutCounts = new Map<string, number>();
+        for (const idx of candidateIndices) {
+          const outFp = mappings[idx]?.outputFingerprint;
+          if (outFp) {
+            mapOutCounts.set(outFp, (mapOutCounts.get(outFp) ?? 0) + 1);
+          }
+        }
+        const remainingItems: PendingTranscriptItem[] = [];
+        for (const entry of unmatchedItems) {
+          const outFp = entry.outputFingerprint;
+          if (outFp && itemOutCounts.get(outFp) === 1 && mapOutCounts.get(outFp) === 1) {
+            const matchIdx = candidateIndices.find(
+              (idx) => !usedMappingIdx.has(idx) && mappings[idx]?.outputFingerprint === outFp,
+            );
+            if (matchIdx !== undefined) {
+              usedMappingIdx.add(matchIdx);
+              reassignedIds.set(entry.itemIndex, mappings[matchIdx]!.itemId);
+              continue;
+            }
+          }
+          remainingItems.push(entry);
+        }
+
+        const remainingMappingIndices = candidateIndices.filter((idx) => !usedMappingIdx.has(idx));
+        if (remainingItems.length === 0 || remainingMappingIndices.length === 0) {
+          continue;
+        }
+
+        // 2) 该签名只剩唯一一对候选时直接绑定。
+        if (remainingItems.length === 1 && remainingMappingIndices.length === 1) {
+          const onlyIdx = remainingMappingIndices[0]!;
+          usedMappingIdx.add(onlyIdx);
+          reassignedIds.set(remainingItems[0]!.itemIndex, mappings[onlyIdx]!.itemId);
+          continue;
+        }
+
+        // 3) 多个同签名调用且输出不可区分：仅当串行无并发重叠且启动顺序明确时按出现顺序对齐；
+        // 并发重叠导致关联不唯一时保留可识别的确定性回退 ID，绝不把已知 ID 误绑到另一条结果。
+        const canOrderSafely =
+          remainingItems.length === remainingMappingIndices.length
+          && remainingMappingIndices.every((idx) => {
+            const m = mappings[idx]!;
+            return m.invocationIndex !== undefined && m.overlappedConcurrent !== true;
+          });
+        if (canOrderSafely) {
+          const ordered = [...remainingMappingIndices].sort(
+            (a, b) => (mappings[a]!.invocationIndex ?? 0) - (mappings[b]!.invocationIndex ?? 0),
+          );
+          for (let i = 0; i < remainingItems.length; i += 1) {
+            const mapIdx = ordered[i]!;
+            usedMappingIdx.add(mapIdx);
+            reassignedIds.set(remainingItems[i]!.itemIndex, mappings[mapIdx]!.itemId);
+          }
+        }
+      }
+
+      if (reassignedIds.size === 0) return turn;
+      const items = turn.items.map((item, idx) => {
+        const mappedId = reassignedIds.get(idx);
+        return mappedId ? { ...item, id: mappedId } : item;
+      });
+      return { ...turn, items };
     });
   }
 }

@@ -9,6 +9,7 @@ import {
   mergeToolState,
   stableToolItemId,
   toolItemFingerprint,
+  toolItemOutputFingerprint,
   type AcpToolState,
 } from "../agy/tools.ts";
 import type { PersistedToolMapping } from "../agy/overlay.ts";
@@ -42,6 +43,9 @@ export class LiveTurn {
   private readonly toolItemIds = new Map<string, string>();
   private readonly rawIdByItemId = new Map<string, string>();
   private readonly toolStates = new Map<string, AcpToolState>();
+  private readonly toolInvocationIndex = new Map<string, number>();
+  private readonly overlappedToolItemIds = new Set<string>();
+  private nextToolInvocationIndex = 0;
   private readonly completedItems: ThreadItem[] = [];
   private contextWindow: number | null = null;
   private contextUsed: number | null = null;
@@ -80,7 +84,7 @@ export class LiveTurn {
     return itemId;
   }
 
-  /** 导出本回合已观测到的工具映射，供缺原生 ID 的 transcript 冷读关联（B15/C05）。 */
+  /** 导出本回合已观测到的工具映射（按调用顺序并携带输出指纹），供缺原生 ID 的 transcript 冷读精确关联（B15/C05）。 */
   toolMappings(): PersistedToolMapping[] {
     const mappings: PersistedToolMapping[] = [];
     const seen = new Set<string>();
@@ -92,13 +96,19 @@ export class LiveTurn {
       seen.add(item.id);
       const fingerprint = toolItemFingerprint(item);
       if (!fingerprint) continue;
+      const outputFingerprint = toolItemOutputFingerprint(item);
+      const invocationIndex = this.toolInvocationIndex.get(item.id);
       mappings.push({
         rawToolCallId: this.rawIdByItemId.get(item.id) ?? item.id,
         itemId: item.id,
         itemType: item.type,
         fingerprint,
+        ...(invocationIndex !== undefined ? { invocationIndex } : {}),
+        ...(outputFingerprint ? { outputFingerprint } : {}),
+        ...(this.overlappedToolItemIds.has(item.id) ? { overlappedConcurrent: true } : {}),
       });
     }
+    mappings.sort((a, b) => (a.invocationIndex ?? Number.MAX_SAFE_INTEGER) - (b.invocationIndex ?? Number.MAX_SAFE_INTEGER));
     return mappings;
   }
 
@@ -247,6 +257,15 @@ export class LiveTurn {
         const terminal = merged.status === "completed" || merged.status === "failed";
         const item = acpToolToThreadItem(merged, this.cwd, !terminal);
         if (isFirst) {
+          if (!this.toolInvocationIndex.has(itemId)) {
+            this.toolInvocationIndex.set(itemId, this.nextToolInvocationIndex++);
+          }
+          if (this.toolStates.size > 0) {
+            this.overlappedToolItemIds.add(itemId);
+            for (const otherState of this.toolStates.values()) {
+              this.overlappedToolItemIds.add(otherState.toolCallId);
+            }
+          }
           this.toolStates.set(rawToolCallId, merged);
           this.emitStarted(acpToolToThreadItem({ ...merged, status: "in_progress" }, this.cwd, true));
         } else {

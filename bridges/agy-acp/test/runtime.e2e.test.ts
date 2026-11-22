@@ -1907,4 +1907,198 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await h3.close();
     }
   });
+
+  test("B15 round3: duplicate commands finishing in reverse order keep exact IDs on cold transcript read, and ambiguous concurrent identical outputs fall back safely", async () => {
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ prompt, emitUpdate }) => {
+        const text = prompt.find((p): p is { type: "text"; text: string } => p.type === "text")?.text ?? "";
+        if (text === "reverse-duplicate-distinct") {
+          // Both start in invocation order: first, then second.
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "duplicate-first",
+            title: "Run printf",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { CommandLine: "printf fixture-repeat" },
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "duplicate-second",
+            title: "Run printf",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { CommandLine: "printf fixture-repeat" },
+          });
+          // Complete in REVERSE order: second finishes BEFORE first!
+          emitUpdate({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "duplicate-second",
+            status: "completed",
+            rawOutput: { output: "FIXTURE SECOND RESULT", exitCode: 0 },
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "duplicate-first",
+            status: "completed",
+            rawOutput: { output: "FIXTURE FIRST RESULT", exitCode: 0 },
+          });
+          emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done distinct" } });
+          return { stopReason: "end_turn" };
+        }
+        // Ambiguous concurrent duplicates with identical output.
+        emitUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "ambig-a",
+          title: "Run printf",
+          kind: "execute",
+          status: "in_progress",
+          rawInput: { CommandLine: "printf same-output" },
+        });
+        emitUpdate({
+          sessionUpdate: "tool_call",
+          toolCallId: "ambig-b",
+          title: "Run printf",
+          kind: "execute",
+          status: "in_progress",
+          rawInput: { CommandLine: "printf same-output" },
+        });
+        emitUpdate({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "ambig-b",
+          status: "completed",
+          rawOutput: { output: "IDENTICAL RESULT", exitCode: 0 },
+        });
+        emitUpdate({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "ambig-a",
+          status: "completed",
+          rawOutput: { output: "IDENTICAL RESULT", exitCode: 0 },
+        });
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done ambiguous" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    let threadId = "";
+    const first = await createTestHarness(world);
+    try {
+      const started = await first.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      threadId = started.thread.id;
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "reverse-duplicate-distinct", text_elements: [] }],
+      });
+      for (let i = 0; i < 60; i += 1) {
+        const idle = first.notifications.filter(
+          (n) => n.method === "thread/status/changed" && (n.params as { status?: { type?: string } })?.status?.type === "idle",
+        );
+        if (idle.length >= 1) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "reverse-duplicate-ambiguous", text_elements: [] }],
+      });
+      for (let i = 0; i < 60; i += 1) {
+        const idle = first.notifications.filter(
+          (n) => n.method === "thread/status/changed" && (n.params as { status?: { type?: string } })?.status?.type === "idle",
+        );
+        if (idle.length >= 2) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    } finally {
+      await first.close();
+    }
+
+    // Write a native transcript WITHOUT native tool call IDs, recording invocations in start order.
+    const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+    await mkdir(logsDir, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        step_index: 0,
+        type: "USER_INPUT",
+        status: "DONE",
+        created_at: "2026-11-22T02:00:00Z",
+        content: "<USER_REQUEST>\nreverse-duplicate-distinct\n</USER_REQUEST>",
+      }),
+      JSON.stringify({
+        step_index: 1,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        created_at: "2026-11-22T02:00:01Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } },
+          { name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } },
+        ],
+      }),
+      JSON.stringify({ step_index: 2, type: "GENERIC", status: "DONE", content: "FIXTURE FIRST RESULT" }),
+      JSON.stringify({ step_index: 3, type: "GENERIC", status: "DONE", content: "FIXTURE SECOND RESULT" }),
+      JSON.stringify({ step_index: 4, type: "PLANNER_RESPONSE", status: "DONE", content: "done distinct" }),
+      JSON.stringify({
+        step_index: 5,
+        type: "USER_INPUT",
+        status: "DONE",
+        created_at: "2026-11-22T02:01:00Z",
+        content: "<USER_REQUEST>\nreverse-duplicate-ambiguous\n</USER_REQUEST>",
+      }),
+      JSON.stringify({
+        step_index: 6,
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        created_at: "2026-11-22T02:01:01Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: "\"printf same-output\"" } },
+          { name: "run_command", args: { CommandLine: "\"printf same-output\"" } },
+        ],
+      }),
+      JSON.stringify({ step_index: 7, type: "GENERIC", status: "DONE", content: "IDENTICAL RESULT" }),
+      JSON.stringify({ step_index: 8, type: "GENERIC", status: "DONE", content: "IDENTICAL RESULT" }),
+      JSON.stringify({ step_index: 9, type: "PLANNER_RESPONSE", status: "DONE", content: "done ambiguous" }),
+    ];
+    await writeFile(path.join(logsDir, "transcript_full.jsonl"), `${lines.join("\n")}\n`);
+
+    const second = await createTestHarness(world);
+    try {
+      const readRes = await second.rpc<{
+        thread: {
+          turns: Array<{
+            id: string;
+            items: Array<{ id: string; type: string; command?: string; aggregatedOutput?: string | null }>;
+          }>;
+        };
+      }>("thread/read", { threadId, includeTurns: true });
+      expect(readRes.thread.turns).toHaveLength(2);
+
+      // Turn 1: distinct outputs MUST bind duplicate-first -> FIRST RESULT and duplicate-second -> SECOND RESULT!
+      const turn1Cmds = readRes.thread.turns[0]!.items.filter((i) => i.type === "commandExecution");
+      expect(turn1Cmds).toEqual([
+        expect.objectContaining({
+          id: `${threadId}:turn:1:tool:duplicate-first`,
+          aggregatedOutput: "FIXTURE FIRST RESULT",
+        }),
+        expect.objectContaining({
+          id: `${threadId}:turn:1:tool:duplicate-second`,
+          aggregatedOutput: "FIXTURE SECOND RESULT",
+        }),
+      ]);
+
+      // Turn 2: ambiguous concurrent identical outputs MUST keep deterministic fallback IDs rather than misbinding!
+      const turn2Cmds = readRes.thread.turns[1]!.items.filter((i) => i.type === "commandExecution");
+      expect(turn2Cmds.map((c) => c.id)).toEqual([
+        `${threadId}:turn:2:tool:1`,
+        `${threadId}:turn:2:tool:2`,
+      ]);
+    } finally {
+      await second.close();
+    }
+  });
 });

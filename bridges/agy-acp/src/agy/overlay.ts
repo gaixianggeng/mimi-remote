@@ -12,6 +12,12 @@ export interface PersistedToolMapping {
   itemId: string;
   itemType: "commandExecution" | "fileChange" | "dynamicToolCall";
   fingerprint: string;
+  /** 本回合内该工具的启动/调用顺序（非完成顺序），用于同签名工具对齐（B15/C05）。 */
+  invocationIndex?: number;
+  /** 规范化结果输出指纹，用于逆序完成且缺少原生 toolCallId 时精确区分同签名调用（B15/C05）。 */
+  outputFingerprint?: string;
+  /** 若该调用在执行期间与同回合其他并发工具重叠则为 true；输出不可区分时避免误绑。 */
+  overlappedConcurrent?: boolean;
 }
 
 export interface TurnAttemptRecord {
