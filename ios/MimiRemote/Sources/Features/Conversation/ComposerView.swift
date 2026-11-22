@@ -1313,10 +1313,11 @@ struct ComposerView: View {
 
             if composerState.draft.isEmpty && !isComposerTextComposing {
                 // 占位文案复用 TextKit 的手机上内边距，确保首行文字与真实输入基线一致。
-                Text(composerPlaceholderText)
+                Text(resolvedComposerPlaceholderText)
                     .font(themeStore.uiFont(.body))
                     .foregroundStyle(tokens.conversationTertiaryText)
                     .lineLimit(singleLine ? 1 : nil)
+                    .truncationMode(.tail)
                     .padding(.top, topInset)
                     .allowsHitTesting(false)
             }
