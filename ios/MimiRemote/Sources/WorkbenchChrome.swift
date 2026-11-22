@@ -755,6 +755,7 @@ struct WorkbenchLayout: Equatable {
         let max: CGFloat
     }
 
+    let containerWidth: CGFloat
     let projectColumn: ColumnWidth
     let inspectorColumn: ColumnWidth
     let titleMaxWidth: CGFloat
@@ -784,6 +785,7 @@ struct WorkbenchLayout: Equatable {
         isPhone: Bool = false,
         keepsCompactNavigation: Bool? = nil
     ) {
+        self.containerWidth = containerWidth
         self.isPhone = isPhone
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
@@ -1682,6 +1684,11 @@ private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// iPhone 会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
+private struct WorkbenchUsesFloatingCapsuleHeaderKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 /// 根页面向上报告"正文此刻自己就在表达进行中"（连接过渡或目录加载）。
 ///
 /// 页面自己持有的设备入口（iPhone 工作区胶囊行、会话页顶栏）可以直接读页面状态；
@@ -1716,6 +1723,11 @@ extension EnvironmentValues {
     var workbenchHasBottomTabBar: Bool {
         get { self[WorkbenchHasBottomTabBarKey.self] }
         set { self[WorkbenchHasBottomTabBarKey.self] = newValue }
+    }
+
+    var workbenchUsesFloatingCapsuleHeader: Bool {
+        get { self[WorkbenchUsesFloatingCapsuleHeaderKey.self] }
+        set { self[WorkbenchUsesFloatingCapsuleHeaderKey.self] = newValue }
     }
 }
 

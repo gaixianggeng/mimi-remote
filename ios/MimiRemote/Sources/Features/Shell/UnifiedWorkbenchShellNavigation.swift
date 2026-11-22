@@ -92,6 +92,7 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
     let availableWidth: CGFloat
     let isMenuDisabled: Bool
     let onBack: () -> Void
+    let onMeasuredCapsuleSize: ((CGSize) -> Void)?
     private let moreMenuContent: MoreMenuContent
 
     init(
@@ -100,6 +101,7 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
         availableWidth: CGFloat,
         isMenuDisabled: Bool,
         onBack: @escaping () -> Void,
+        onMeasuredCapsuleSize: ((CGSize) -> Void)? = nil,
         @ViewBuilder moreMenuContent: () -> MoreMenuContent
     ) {
         self.data = data
@@ -107,6 +109,7 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
         self.availableWidth = availableWidth
         self.isMenuDisabled = isMenuDisabled
         self.onBack = onBack
+        self.onMeasuredCapsuleSize = onMeasuredCapsuleSize
         self.moreMenuContent = moreMenuContent()
     }
 
@@ -126,11 +129,24 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             capsuleChrome
+                .background {
+                    if let onMeasuredCapsuleSize {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { onMeasuredCapsuleSize(proxy.size) }
+                                .onChange(of: proxy.size) { _, newSize in
+                                    onMeasuredCapsuleSize(newSize)
+                                }
+                        }
+                    }
+                }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin)
         .padding(.top, PhoneSessionFloatingCapsuleMetrics.topPadding)
         .padding(.bottom, PhoneSessionFloatingCapsuleMetrics.bottomPadding)
+        // 隐藏系统导航栏后，登记悬浮胶囊下沿作为应用内顶部提示的保护边界，防止提示条压住胶囊。
+        .inAppNoticeProtectedRegion()
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessionDetail.floatingCapsuleHeader")
     }
@@ -592,6 +608,54 @@ extension UnifiedWorkbenchShell {
             accessibilityValue: usesSelectedSessionState ? sessionTitleAccessibilityValue(now: now) : subtitle,
             workspaceIcon: workspaceIcon
         )
+    }
+
+    func phoneSessionDetailFloatingCapsuleHeader<MoreMenuContent: View>(
+        session: AgentSession?,
+        canPresentSessionDetail: Bool,
+        isDetailActiveOnScreen: Bool,
+        layout: WorkbenchLayout,
+        tokens: ThemeTokens,
+        onBack: @escaping () -> Void,
+        @ViewBuilder moreMenuContent: @escaping () -> MoreMenuContent
+    ) -> some View {
+        Group {
+            if canPresentSessionDetail,
+               isDetailActiveOnScreen,
+               sessionStore.selectedRuntimeActivitySnapshot != nil {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    PhoneSessionFloatingCapsuleHeader(
+                        data: sessionNavigationTitleDisplayData(
+                            session: session,
+                            usesSelectedSessionState: true,
+                            layout: layout,
+                            tokens: tokens,
+                            now: context.date
+                        ),
+                        tokens: tokens,
+                        availableWidth: layout.containerWidth,
+                        isMenuDisabled: false,
+                        onBack: onBack,
+                        moreMenuContent: moreMenuContent
+                    )
+                }
+            } else {
+                PhoneSessionFloatingCapsuleHeader(
+                    data: sessionNavigationTitleDisplayData(
+                        session: session,
+                        usesSelectedSessionState: canPresentSessionDetail,
+                        layout: layout,
+                        tokens: tokens,
+                        now: Date()
+                    ),
+                    tokens: tokens,
+                    availableWidth: layout.containerWidth,
+                    isMenuDisabled: !canPresentSessionDetail,
+                    onBack: onBack,
+                    moreMenuContent: moreMenuContent
+                )
+            }
+        }
     }
 
     func sessionDetailNavigationTitle(

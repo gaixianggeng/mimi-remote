@@ -1152,6 +1152,32 @@ struct UnifiedWorkbenchShell: View {
         .accessibilityIdentifier("conversation.detailedTranscript")
     }
 
+    @ViewBuilder
+    private func compactSessionMoreMenuContent(
+        detailedTranscript: Binding<Bool>,
+        layout: WorkbenchLayout
+    ) -> some View {
+        CurrentSessionRefreshMenuButton()
+        detailedTranscriptMenuToggle(detailedTranscript)
+
+        Button {
+            toggleInspector(layout: layout)
+        } label: {
+            Label(
+                showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
+                systemImage: "sidebar.right"
+            )
+        }
+
+        if let session = sessionStore.selectedSession {
+            Divider()
+            SessionActionMenuContent(
+                session: session,
+                presentation: $sessionActionPresentation
+            )
+        }
+    }
+
     func sessionDetail(
         destinationSessionID: SessionID? = nil,
         layout: WorkbenchLayout,
@@ -1188,8 +1214,10 @@ struct UnifiedWorkbenchShell: View {
             ?? L10n.text("ui.session")
         let navigationTitleSession = detailSession
             ?? (canPresentSessionDetail ? sessionStore.selectedSession : nil)
+        let usesFloatingCapsuleHeader = PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: layout)
+        let resolvedColorScheme = themeStore.resolvedColorScheme(for: colorScheme)
 
-        return Group {
+        let baseDetailContent = Group {
             if canPresentSessionDetail {
                 WorkspaceView {
                     open(.workspaces, layout: layout)
@@ -1202,124 +1230,161 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .environment(\.conversationDetailedTranscript, detailedTranscript)
-        .navigationTitle(detailTitle)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if navigationState.showsWorkspaceBackButton(
-                usesCompactNavigation: layout.usesCompactNavigation
-            ) {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        open(.workspaces, layout: layout)
-                    } label: {
-                        Label(L10n.text("ui.workspace"), systemImage: "chevron.backward")
+        .environment(\.workbenchUsesFloatingCapsuleHeader, usesFloatingCapsuleHeader)
+
+        return Group {
+            if usesFloatingCapsuleHeader {
+                baseDetailContent
+                    .navigationTitle(detailTitle)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .toolbarColorScheme(resolvedColorScheme, for: .navigationBar)
+                    .background {
+                        NavigationInteractivePopEnabler()
+                            .frame(width: 0, height: 0)
+                            .accessibilityHidden(true)
                     }
-                    // 宽屏需要显式动作，紧凑布局由外层 NavigationStack 提供系统返回。
-                    // 保留原生 toolbar 样式，同时显式扩展交互形状，避免只按图标可见区域命中。
-                    .frame(minWidth: 44, minHeight: 44)
-                    .contentShape(.interaction, Rectangle())
-                    .accessibilityLabel(L10n.text("ui.workspace"))
-                    .accessibilityHint(L10n.text("ui.return_to_previous_level"))
-                    .accessibilityIdentifier("sessionDetail.workspaceBack")
-                }
-            }
-            // 第一帧就使用最终的两行标题和右侧菜单槽。目标会话尚未完成选择时只禁用动作，
-            // 不替换 ToolbarContent，避免 push 过程中导航栏重新测量。
-            ToolbarItem(placement: .principal) {
-                Group {
-                    if canPresentSessionDetail,
-                       isDetailActiveOnScreen,
-                       sessionStore.selectedRuntimeActivitySnapshot != nil {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            sessionDetailNavigationTitle(
-                                session: navigationTitleSession,
-                                usesSelectedSessionState: true,
-                                layout: layout,
-                                tokens: tokens,
-                                now: context.date
-                            )
-                        }
-                    } else {
-                        sessionDetailNavigationTitle(
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        phoneSessionDetailFloatingCapsuleHeader(
                             session: navigationTitleSession,
-                            usesSelectedSessionState: canPresentSessionDetail,
+                            canPresentSessionDetail: canPresentSessionDetail,
+                            isDetailActiveOnScreen: isDetailActiveOnScreen,
                             layout: layout,
                             tokens: tokens,
-                            now: Date()
+                            onBack: {
+                                let activeTab = navigationState.compactSelectedTab
+                                let lane: WorkbenchNavigationBindingScheduler.Lane = activeTab == .workspaces
+                                    ? .compactWorkspacesPath
+                                    : .compactSessionsPath
+                                applyInteractiveNavigation(
+                                    .compactPathChanged(tab: activeTab, path: []),
+                                    lane: lane,
+                                    layout: layout
+                                )
+                            },
+                            moreMenuContent: {
+                                compactSessionMoreMenuContent(
+                                    detailedTranscript: detailedTranscript,
+                                    layout: layout
+                                )
+                            }
                         )
                     }
-                }
-            }
-            if layout.usesCompactNavigation {
-                workbenchChromeToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        CurrentSessionRefreshMenuButton()
-                        detailedTranscriptMenuToggle(detailedTranscript)
-
-                        Button {
-                            toggleInspector(layout: layout)
-                        } label: {
-                            Label(
-                                showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
-                                systemImage: "sidebar.right"
-                            )
+            } else {
+                baseDetailContent
+                    .navigationTitle(detailTitle)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        if navigationState.showsWorkspaceBackButton(
+                            usesCompactNavigation: layout.usesCompactNavigation
+                        ) {
+                            ToolbarItem(placement: .navigation) {
+                                Button {
+                                    open(.workspaces, layout: layout)
+                                } label: {
+                                    Label(L10n.text("ui.workspace"), systemImage: "chevron.backward")
+                                }
+                                // 宽屏需要显式动作，紧凑布局由外层 NavigationStack 提供系统返回。
+                                // 保留原生 toolbar 样式，同时显式扩展交互形状，避免只按图标可见区域命中。
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(.interaction, Rectangle())
+                                .accessibilityLabel(L10n.text("ui.workspace"))
+                                .accessibilityHint(L10n.text("ui.return_to_previous_level"))
+                                .accessibilityIdentifier("sessionDetail.workspaceBack")
+                            }
                         }
-
-                        if let session = sessionStore.selectedSession {
-                            Divider()
-                            SessionActionMenuContent(
-                                session: session,
-                                presentation: $sessionActionPresentation
-                            )
+                        // 第一帧就使用最终的两行标题和右侧菜单槽。目标会话尚未完成选择时只禁用动作，
+                        // 不替换 ToolbarContent，避免 push 过程中导航栏重新测量。
+                        ToolbarItem(placement: .principal) {
+                            Group {
+                                if canPresentSessionDetail,
+                                   isDetailActiveOnScreen,
+                                   sessionStore.selectedRuntimeActivitySnapshot != nil {
+                                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                                        sessionDetailNavigationTitle(
+                                            session: navigationTitleSession,
+                                            usesSelectedSessionState: true,
+                                            layout: layout,
+                                            tokens: tokens,
+                                            now: context.date
+                                        )
+                                    }
+                                } else {
+                                    sessionDetailNavigationTitle(
+                                        session: navigationTitleSession,
+                                        usesSelectedSessionState: canPresentSessionDetail,
+                                        layout: layout,
+                                        tokens: tokens,
+                                        now: Date()
+                                    )
+                                }
+                            }
                         }
-                    } label: {
-                        WorkbenchChromeIcon(systemName: "ellipsis")
-                            .foregroundStyle(tokens.primaryText.opacity(0.72))
-                            .workbenchToolbarChromeCircle(tokens: tokens)
-                    }
-                    .menuOrder(.fixed)
-                    .disabled(!canPresentSessionDetail)
-                    .accessibilityLabel(L10n.text("ui.options"))
-                }
-            } else if canPresentSessionDetail {
-                if let session = sessionStore.selectedSession {
-                    workbenchChromeToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            CurrentSessionRefreshMenuButton()
-                            detailedTranscriptMenuToggle(detailedTranscript)
-                            Divider()
-                            SessionActionMenuContent(
-                                session: session,
-                                presentation: $sessionActionPresentation
-                            )
-                        } label: {
-                            WorkbenchChromeIcon(systemName: "ellipsis")
-                                .foregroundStyle(tokens.secondaryText)
-                                .workbenchToolbarChromeCircle(tokens: tokens)
-                        }
-                        .menuOrder(.fixed)
-                        .accessibilityLabel(L10n.text("ui.options"))
-                    }
-                    if #available(iOS 26.0, *) {
-                        ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                    }
-                }
+                        if layout.usesCompactNavigation {
+                            workbenchChromeToolbarItem(placement: .topBarTrailing) {
+                                Menu {
+                                    compactSessionMoreMenuContent(
+                                        detailedTranscript: detailedTranscript,
+                                        layout: layout
+                                    )
+                                } label: {
+                                    WorkbenchChromeIcon(systemName: "ellipsis")
+                                        .foregroundStyle(tokens.primaryText.opacity(0.72))
+                                        .workbenchToolbarChromeCircle(tokens: tokens)
+                                }
+                                .menuOrder(.fixed)
+                                .disabled(!canPresentSessionDetail)
+                                .accessibilityLabel(L10n.text("ui.options"))
+                            }
+                        } else if canPresentSessionDetail {
+                            if let session = sessionStore.selectedSession {
+                                workbenchChromeToolbarItem(placement: .topBarTrailing) {
+                                    Menu {
+                                        CurrentSessionRefreshMenuButton()
+                                        detailedTranscriptMenuToggle(detailedTranscript)
+                                        Divider()
+                                        SessionActionMenuContent(
+                                            session: session,
+                                            presentation: $sessionActionPresentation
+                                        )
+                                    } label: {
+                                        WorkbenchChromeIcon(systemName: "ellipsis")
+                                            .foregroundStyle(tokens.secondaryText)
+                                            .workbenchToolbarChromeCircle(tokens: tokens)
+                                    }
+                                    .menuOrder(.fixed)
+                                    .accessibilityLabel(L10n.text("ui.options"))
+                                }
+                                if #available(iOS 26.0, *) {
+                                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                                }
+                            }
 
-                workbenchChromeToolbarItem(placement: .topBarTrailing) {
-                    workbenchToolbarIconButton(
-                        systemImage: "arrow.clockwise",
-                        accessibilityLabel: L10n.text("ui.refresh_current_session"),
-                        tokens: tokens,
-                        isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
-                    ) {
-                        Task { await sessionStore.refreshCurrentContext(origin: .routine) }
+                            workbenchChromeToolbarItem(placement: .topBarTrailing) {
+                                workbenchToolbarIconButton(
+                                    systemImage: "arrow.clockwise",
+                                    accessibilityLabel: L10n.text("ui.refresh_current_session"),
+                                    tokens: tokens,
+                                    isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
+                                ) {
+                                    Task { await sessionStore.refreshCurrentContext(origin: .routine) }
+                                }
+                            }
+                            // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死，不靠系统按内容估算。
+                            if #available(iOS 26.0, *) {
+                                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                            }
+                            inspectorToolbarItem(layout: layout, tokens: tokens)
+                        }
                     }
-                }
-                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死，不靠系统按内容估算。
-                if #available(iOS 26.0, *) {
-                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
-                }
-                inspectorToolbarItem(layout: layout, tokens: tokens)
+                    .modifier(
+                        SessionNavigationMaterialModifier(
+                            usesCompactNavigation: layout.usesCompactNavigation,
+                            tokens: tokens,
+                            colorScheme: resolvedColorScheme,
+                            reduceTransparency: reduceTransparency
+                        )
+                    )
             }
         }
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
@@ -1328,14 +1393,6 @@ struct UnifiedWorkbenchShell: View {
             shouldHideTabBar: shouldHideTabBar || hidesTabBarForRelatedSession,
             isActiveDetail: isDetailActiveOnScreen
         ))
-        .modifier(
-            SessionNavigationMaterialModifier(
-                usesCompactNavigation: layout.usesCompactNavigation,
-                tokens: tokens,
-                colorScheme: themeStore.resolvedColorScheme(for: colorScheme),
-                reduceTransparency: reduceTransparency
-            )
-        )
         .sessionActionSheets(presentation: $sessionActionPresentation)
         .environment(
             \.openSubagentSession,
