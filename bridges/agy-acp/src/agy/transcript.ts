@@ -543,16 +543,22 @@ export async function readTranscriptTurns(
       const isCancelledPlanner =
         normalizedStatus === "CANCELLED" || normalizedStatus === "CANCELED" || normalizedStatus === "INTERRUPTED";
       const isErrorPlanner = normalizedStatus === "ERROR" || normalizedStatus === "FAILED";
+      const hasToolCalls = Array.isArray(step.tool_calls) && step.tool_calls.length > 0;
+      const hasReplyText = typeof step.content === "string" && step.content.trim().length > 0;
+      const isReliableTerminalSuccess =
+        (normalizedStatus === "DONE" || normalizedStatus === "COMPLETED")
+        && !hasToolCalls
+        && hasReplyText;
       if (isCancelledPlanner && draft.terminalStatus !== "failed") {
         draft.terminalStatus = "interrupted";
       } else if (
         !isCancelledPlanner
         && !isErrorPlanner
         && draft.terminalStatus === "failed"
-        && ((typeof step.content === "string" && step.content.trim().length > 0) || normalizedStatus === "DONE" || normalizedStatus === "COMPLETED")
+        && isReliableTerminalSuccess
       ) {
-        // 真实 CLI 回合中，可恢复的工具/中间错误会写一条 ERROR_MESSAGE，随后继续产出成功的
-        // PLANNER_RESPONSE；后续成功响应到达时清除先前的暂定失败态，避免误判整轮失败（B10）。
+        // 仅在收到可靠的原生终态成功标记（DONE/COMPLETED 且含最终回复文本、无未完成工具调用）时，
+        // 才清除先前的可恢复中间 ERROR_MESSAGE；非终态/流式/带工具调用的 planner 文本绝不清除失败态（B10）。
         draft.terminalStatus = undefined;
         draft.errorMessage = undefined;
       }

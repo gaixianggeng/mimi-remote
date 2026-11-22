@@ -48,6 +48,7 @@ export interface ManagerOptions {
     info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
   ) => Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?: (threadId: string) => Promise<number>;
+  existingTurnInfo?: (threadId: string) => Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;
   hasCustomTitle?: (threadId: string) => boolean;
   inspectTranscriptState?: (threadId: string) => Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
   externalActivity?: (threadId: string) => Promise<TranscriptActivityInfo | undefined>;
@@ -96,6 +97,7 @@ export class ThreadManager {
       onTurnPersisted: options.onTurnPersisted,
       reserveTurnAttempt: options.reserveTurnAttempt,
       existingTurnCount: options.existingTurnCount,
+      existingTurnInfo: options.existingTurnInfo,
       recordTurnClientId: (turnId, clientId) => this.recordTurnClientId(turnId, clientId),
       inspectTranscriptState: options.inspectTranscriptState,
       externalActivity: options.externalActivity,

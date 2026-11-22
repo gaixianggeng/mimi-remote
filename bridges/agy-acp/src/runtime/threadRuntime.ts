@@ -87,6 +87,7 @@ export interface RuntimeHost {
     info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
   ): Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?(threadId: string): Promise<number>;
+  existingTurnInfo?(threadId: string): Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }>;
   recordTurnClientId?(turnId: string, clientId: string): void;
   inspectTranscriptState?(threadId: string): Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
   externalActivity?(threadId: string): Promise<TranscriptActivityInfo | undefined>;
@@ -221,9 +222,16 @@ export class ThreadRuntime {
       const client = this.client!;
       await this.applySessionControls(client, this.settings);
 
-      const diskTurnCount = this.persisted ? ((await this.host.existingTurnCount?.(this.threadId).catch(() => 0)) ?? 0) : 0;
-      const persistedBefore = Math.max(this.historyTurns?.filter((t) => t.status === "completed").length ?? 0, diskTurnCount);
-      const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskTurnCount) + 1;
+      const diskInfo = this.persisted
+        ? (await this.host.existingTurnInfo?.(this.threadId).catch(() => undefined))
+          ?? {
+            nativeTurnCount: (await this.host.existingTurnCount?.(this.threadId).catch(() => 0)) ?? 0,
+            maxTurnOrdinal: 0,
+          }
+        : { nativeTurnCount: 0, maxTurnOrdinal: 0 };
+      const historyCompletedCount = this.historyTurns?.filter((t) => t.status === "completed").length ?? 0;
+      const persistedBefore = Math.max(historyCompletedCount, diskInfo.nativeTurnCount);
+      const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskInfo.nativeTurnCount, diskInfo.maxTurnOrdinal) + 1;
       const reserved = await this.host.reserveTurnAttempt?.(this.threadId, {
         minTurnOrdinal: nextTurnIndex,
         afterPersistedTurnCount: persistedBefore,

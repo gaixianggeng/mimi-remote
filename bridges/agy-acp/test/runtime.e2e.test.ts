@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { serveConnection } from "@mimi/appserver-kit/server/connection.ts";
 import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
 import { capabilityDeclaration, createApp } from "../src/app.ts";
+import type { AcpSessionUpdate } from "../src/acp/types.ts";
 import type { SpawnAgyTransport } from "../src/agy/binary.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
@@ -1725,6 +1726,183 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
         cursor: page1.nextCursor,
       });
       expect(page2.data).toHaveLength(1);
+    } finally {
+      await h3.close();
+    }
+  });
+
+  test("B10 round3: legacy overlay upgrade preserves old terminal states and coexists with new adapter writes and external native appends without turn ID collisions", async () => {
+    const sessionId = "b10-legacy-upgrade-session";
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`),
+      "sqlite-placeholder",
+    );
+
+    // Seed a round-1 legacy overlay.json (only `turnOutcomes`, no `turnAttempts`).
+    await writeFile(
+      path.join(stateDir, "overlay.json"),
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          [sessionId]: {
+            cwd: workspaceDir,
+            turnOutcomes: {
+              [`${sessionId}:turn:1`]: {
+                status: "failed",
+                error: "LEGACY_TEST_ERROR",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const replayUpdates: AcpSessionUpdate[] = [
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "legacy failed prompt" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "legacy partial reply before failure" } },
+    ];
+    let failNextPrompt = false;
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "Legacy Upgrade Session",
+          updatedAt: "2026-11-22T01:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates,
+        },
+      ],
+      onPrompt: async ({ session, prompt, emitUpdate }) => {
+        const text = prompt.find((p): p is { type: "text"; text: string } => p.type === "text")?.text ?? "";
+        if (failNextPrompt) {
+          failNextPrompt = false;
+          // Early failure before writing user message to native replay/storage.
+          session.replayUpdates.pop();
+          throw new Error("EARLY_FAILURE");
+        }
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `REPLY:${text}` } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const waitCompleted = async (notifications: Array<Record<string, unknown>>, count: number) => {
+      for (let i = 0; i < 100; i += 1) {
+        const completedCount = notifications.filter((n) => n.method === "turn/completed").length;
+        const idleCount = notifications.filter(
+          (n) => n.method === "thread/status/changed" && (n.params as { status?: { type?: string } })?.status?.type === "idle",
+        ).length;
+        if (completedCount >= count && idleCount >= count) return;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error(`timed out waiting for ${count} completed+idle notifications`);
+    };
+
+    // 1) Upgraded adapter reads legacy history -> turn 1 preserves LEGACY_TEST_ERROR.
+    const h1 = await createTestHarness(world);
+    try {
+      const before = await h1.rpc<{ thread: { turns: Array<{ id: string; status: string; error: { message: string } | null }> } }>(
+        "thread/read",
+        { threadId: sessionId, includeTurns: true },
+      );
+      expect(before.thread.turns).toEqual([
+        expect.objectContaining({
+          id: `${sessionId}:turn:1`,
+          status: "failed",
+          error: expect.objectContaining({ message: "LEGACY_TEST_ERROR" }),
+        }),
+      ]);
+
+      // 2) First new-format write on upgraded adapter (Turn 2: early failure, unpersisted).
+      failNextPrompt = true;
+      await h1.rpc("turn/start", {
+        threadId: sessionId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "early-fail-after-upgrade", text_elements: [] }],
+      });
+      await waitCompleted(h1.notifications, 1);
+
+      // 3) Recovery write on upgraded adapter (Turn 3: persisted success).
+      await h1.rpc("turn/start", {
+        threadId: sessionId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "adapter-recovery-success", text_elements: [] }],
+      });
+      await waitCompleted(h1.notifications, 2);
+    } finally {
+      await h1.close();
+    }
+
+    // 4) Simulate a real cross-device external Mac CLI append directly to native history!
+    const storedSession = world.sessions.get(sessionId)!;
+    storedSession.replayUpdates.push({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "External Mac CLI append" } });
+    storedSession.replayUpdates.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "EXTERNAL MAC REPLY" } });
+
+    // 5) Cold read after restart: legacy Turn 1 failure MUST survive, early fail Turn 2 survives,
+    //    adapter Turn 3 survives, and external native append gets unique Turn 4 (NO duplicate :turn:3)!
+    const h2 = await createTestHarness(world);
+    try {
+      const afterExternal = await h2.rpc<{
+        thread: { turns: Array<{ id: string; status: string; error: { message: string } | null }> };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      const idsAfterExternal = afterExternal.thread.turns.map((t) => t.id);
+      expect(afterExternal.thread.turns).toHaveLength(4);
+      expect(new Set(idsAfterExternal).size).toBe(4);
+      expect(afterExternal.thread.turns[0]).toMatchObject({
+        id: `${sessionId}:turn:1`,
+        status: "failed",
+        error: expect.objectContaining({ message: "LEGACY_TEST_ERROR" }),
+      });
+      expect(afterExternal.thread.turns[1]).toMatchObject({
+        id: `${sessionId}:turn:2`,
+        status: "failed",
+        error: expect.objectContaining({ message: expect.stringContaining("EARLY_FAILURE") }),
+      });
+      expect(afterExternal.thread.turns[2]).toMatchObject({
+        id: `${sessionId}:turn:3`,
+        status: "completed",
+        error: null,
+      });
+      expect(afterExternal.thread.turns[3]).toMatchObject({
+        id: `${sessionId}:turn:4`,
+        status: "completed",
+        error: null,
+      });
+
+      // 6) Follow-up write from adapter after external append gets unique Turn 5!
+      await h2.rpc("turn/start", {
+        threadId: sessionId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "adapter-after-external", text_elements: [] }],
+      });
+      await waitCompleted(h2.notifications, 1);
+    } finally {
+      await h2.close();
+    }
+
+    // 7) Final cold read after restart confirms all 5 turns remain unique, stable, and intact.
+    const h3 = await createTestHarness(world);
+    try {
+      const finalRead = await h3.rpc<{
+        thread: { turns: Array<{ id: string; status: string; error: { message: string } | null }> };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      expect(finalRead.thread.turns).toHaveLength(5);
+      expect(finalRead.thread.turns.map((t) => t.id)).toEqual([
+        `${sessionId}:turn:1`,
+        `${sessionId}:turn:2`,
+        `${sessionId}:turn:3`,
+        `${sessionId}:turn:4`,
+        `${sessionId}:turn:5`,
+      ]);
+      expect(finalRead.thread.turns[0]?.status).toBe("failed");
+      expect(finalRead.thread.turns[0]?.error?.message).toBe("LEGACY_TEST_ERROR");
+      expect(finalRead.thread.turns[1]?.status).toBe("failed");
+      expect(finalRead.thread.turns[2]?.status).toBe("completed");
+      expect(finalRead.thread.turns[3]?.status).toBe("completed");
+      expect(finalRead.thread.turns[4]?.status).toBe("completed");
     } finally {
       await h3.close();
     }

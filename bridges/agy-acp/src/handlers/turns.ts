@@ -173,7 +173,6 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
       }
       manager.subscribe(threadId, context.session);
       const settings = runSettingsFor(params);
-      history.invalidate(threadId);
       try {
         const turn = await runtime.startTurn({
           input,
@@ -187,8 +186,10 @@ export function createTurnHandlers(deps: TurnHandlerDeps) {
             ...("sandboxPolicy" in params || "sandbox" in params ? { executionPolicy: settings.executionPolicy } : {}),
           },
         });
+        history.invalidate(threadId);
         return { turn };
       } catch (error) {
+        history.invalidate(threadId);
         throw normalizeAcpAuthError(error);
       }
     },

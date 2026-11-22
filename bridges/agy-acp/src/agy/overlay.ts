@@ -45,6 +45,27 @@ interface OverlayEntry {
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
 const MAX_TURN_ATTEMPTS_PER_SESSION = 200;
 
+export function parseTurnOrdinal(sessionId: string, turnId: string): number {
+  const prefix = `${sessionId}:turn:`;
+  if (!turnId.startsWith(prefix)) return 0;
+  const raw = turnId.slice(prefix.length);
+  if (!/^\d+$/.test(raw)) return 0;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function maxRecordedTurnOrdinal(sessionId: string, entry: OverlayEntry | undefined): number {
+  if (!entry) return 0;
+  let maxOrd = entry.nextTurnOrdinal ?? 0;
+  for (const key of Object.keys(entry.turnOutcomes ?? {})) {
+    maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, key));
+  }
+  for (const attempt of entry.turnAttempts ?? []) {
+    maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, attempt.turnId));
+  }
+  return maxOrd;
+}
+
 interface OverlayData {
   version: 1;
   sessions: Record<string, OverlayEntry>;
@@ -107,7 +128,14 @@ export class AgyOverlay {
   ): Promise<{ turnId: string; attemptId: string }> {
     await this.load();
     const current = this.data.sessions[sessionId] ?? {};
-    const ordinal = Math.max(info.minTurnOrdinal, (current.nextTurnOrdinal ?? 0) + 1);
+    const existingMaxOrdinal = maxRecordedTurnOrdinal(sessionId, current);
+    // 未落盘的失败/中断尝试在历史中各自占有一个独立回合位，因此后续外部原生追加回合会占用
+    // `afterPersistedTurnCount + unpersistedCount` 之前的序号；新尝试必须从其后分配，绝不抢占外部回合 ID（B10）。
+    const unpersistedCount = (current.turnAttempts ?? []).filter(
+      (entry) => entry.status !== "completed" && entry.status !== "inProgress" && entry.persisted !== true && Boolean(entry.syntheticTurn),
+    ).length;
+    const minVisibleOrdinal = info.afterPersistedTurnCount + unpersistedCount + 1;
+    const ordinal = Math.max(info.minTurnOrdinal, existingMaxOrdinal + 1, minVisibleOrdinal);
     const attemptSeq = (current.nextAttemptSeq ?? 0) + 1;
     const turnId = `${sessionId}:turn:${ordinal}`;
     const attemptId = `${sessionId}:attempt:${attemptSeq}`;

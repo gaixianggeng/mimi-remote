@@ -119,6 +119,8 @@ export function createApp(options: AppOptions): App {
     },
     reserveTurnAttempt: (threadId, info) => overlay.reserveTurnAttempt(threadId, info),
     existingTurnCount: (threadId) => historyRef?.persistedTurnCount(threadId) ?? Promise.resolve(0),
+    existingTurnInfo: (threadId) =>
+      historyRef?.persistedTurnInfo(threadId) ?? Promise.resolve({ nativeTurnCount: 0, maxTurnOrdinal: 0 }),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
     inspectTranscriptState: (threadId) => catalogRef?.transcriptStateDetailed(threadId) ?? Promise.resolve({ kind: "missing" as const }),
     externalActivity: (threadId) => catalogRef?.externalActivity(threadId) ?? Promise.resolve(undefined),

@@ -6,7 +6,7 @@ import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import { directoryExists, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
-import type { AgyOverlay, PersistedToolMapping, TurnAttemptRecord, TurnOutcomeRecord } from "./overlay.ts";
+import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
 import { toolItemFingerprint } from "./tools.ts";
 import {
   inspectTranscriptActivity,
@@ -378,7 +378,10 @@ export class AgyCatalog {
 const HISTORY_CACHE_LIMIT = 8;
 
 export class AgyHistoryStore {
-  private readonly cache = new Map<string, { revision: string; running: boolean; holderActive: boolean; turns: Turn[] }>();
+  private readonly cache = new Map<
+    string,
+    { revision: string; running: boolean; holderActive: boolean; nativeTurnCount: number; maxTurnOrdinal: number; turns: Turn[] }
+  >();
 
   constructor(
     private readonly catalog: AgyCatalog,
@@ -404,15 +407,33 @@ export class AgyHistoryStore {
    * 仅优先读取内存缓存或 transcript 文件，避免在活跃会话上额外触发 `session/load`。
    */
   async persistedTurnCount(sessionId: string): Promise<number> {
+    const info = await this.persistedTurnInfo(sessionId);
+    return info.nativeTurnCount;
+  }
+
+  async persistedTurnInfo(sessionId: string): Promise<{ nativeTurnCount: number; maxTurnOrdinal: number }> {
     const cached = this.cache.get(sessionId);
     const record = await this.catalog.get(sessionId);
-    if (!record) return cached?.turns.length ?? 0;
+    if (!record) {
+      return {
+        nativeTurnCount: cached?.nativeTurnCount ?? 0,
+        maxTurnOrdinal: cached?.maxTurnOrdinal ?? 0,
+      };
+    }
     const disk = await this.backend.diskRevision?.(sessionId, record.origin);
     if (disk?.transcriptPath && this.backend.loadTranscriptTurns) {
-      const turns = await this.backend.loadTranscriptTurns(sessionId, record.cwd, disk.transcriptPath, false, false);
-      return turns.length;
+      const nativeTurns = await this.backend.loadTranscriptTurns(sessionId, record.cwd, disk.transcriptPath, false, false);
+      const merged = this.applyKnownTurnOutcomes(sessionId, nativeTurns);
+      let maxOrd = nativeTurns.length;
+      for (const turn of merged) {
+        maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, turn.id));
+      }
+      return { nativeTurnCount: nativeTurns.length, maxTurnOrdinal: maxOrd };
     }
-    return cached?.turns.length ?? 0;
+    return {
+      nativeTurnCount: cached?.nativeTurnCount ?? 0,
+      maxTurnOrdinal: cached?.maxTurnOrdinal ?? 0,
+    };
   }
 
   async turns(sessionId: string, running = false, holderActive = false): Promise<Turn[]> {
@@ -427,19 +448,25 @@ export class AgyHistoryStore {
       return cached.turns;
     }
 
-    let turns: Turn[];
+    let nativeTurns: Turn[];
     if (disk?.transcriptPath && this.backend.loadTranscriptTurns) {
-      turns = await this.backend.loadTranscriptTurns(sessionId, record.cwd, disk.transcriptPath, running, holderActive);
+      nativeTurns = await this.backend.loadTranscriptTurns(sessionId, record.cwd, disk.transcriptPath, running, holderActive);
     } else {
       const updates = await this.backend.loadReplay(sessionId, record.cwd, record.origin);
-      turns = updatesToTurns(sessionId, record.cwd, updates, running || holderActive);
+      nativeTurns = updatesToTurns(sessionId, record.cwd, updates, running || holderActive);
     }
-    turns = this.applyKnownTurnOutcomes(sessionId, turns);
+    const nativeTurnCount = nativeTurns.length;
+    let turns = this.applyKnownTurnOutcomes(sessionId, nativeTurns);
     turns = this.applyKnownToolMappings(sessionId, turns);
     turns = this.attachKnownClientIds(turns);
 
+    let maxTurnOrdinal = nativeTurnCount;
+    for (const turn of turns) {
+      maxTurnOrdinal = Math.max(maxTurnOrdinal, parseTurnOrdinal(sessionId, turn.id));
+    }
+
     this.cache.delete(sessionId);
-    this.cache.set(sessionId, { revision, running, holderActive, turns });
+    this.cache.set(sessionId, { revision, running, holderActive, nativeTurnCount, maxTurnOrdinal, turns });
     while (this.cache.size > HISTORY_CACHE_LIMIT) {
       const first = this.cache.keys().next().value;
       if (!first) break;
@@ -467,12 +494,16 @@ export class AgyHistoryStore {
 
   private applyKnownTurnOutcomes(sessionId: string, turns: Turn[]): Turn[] {
     const attempts = this.turnAttemptsForSession?.(sessionId) ?? [];
+    let resolvedTurns = turns;
+    let attemptControlledIds = new Set<string>();
     if (attempts.length > 0) {
-      return mergeTurnsWithAttempts(turns, attempts);
+      const merged = mergeTurnsWithAttempts(sessionId, turns, attempts);
+      resolvedTurns = merged.turns;
+      attemptControlledIds = merged.attemptControlledIds;
     }
-    if (!this.turnOutcomeForTurn) return turns;
-    return turns.map((turn) => {
-      if (turn.status === "inProgress") return turn;
+    if (!this.turnOutcomeForTurn) return resolvedTurns;
+    return resolvedTurns.map((turn) => {
+      if (turn.status === "inProgress" || attemptControlledIds.has(turn.id)) return turn;
       const outcome = this.turnOutcomeForTurn!(sessionId, turn.id);
       if (!outcome) return turn;
       if (outcome.status === "failed") {
@@ -589,17 +620,59 @@ function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
   return aligned;
 }
 
-function mergeTurnsWithAttempts(nativeTurns: readonly Turn[], attempts: readonly TurnAttemptRecord[]): Turn[] {
+function mergeTurnsWithAttempts(
+  sessionId: string,
+  nativeTurns: readonly Turn[],
+  attempts: readonly TurnAttemptRecord[],
+): { turns: Turn[]; attemptControlledIds: Set<string> } {
   const finishedAttempts = attempts.filter((entry) => entry.status !== "inProgress");
-  if (finishedAttempts.length === 0) return [...nativeTurns];
+  if (finishedAttempts.length === 0) {
+    return { turns: [...nativeTurns], attemptControlledIds: new Set() };
+  }
 
   const out: Turn[] = [];
+  const usedIds = new Set<string>();
+  const attemptControlledIds = new Set<string>();
+  const reservedAttemptIds = new Set(finishedAttempts.map((entry) => entry.turnId));
+  let nextFallbackOrdinal = 1;
+
+  const advanceOrdinalPast = (turnId: string) => {
+    const ord = parseTurnOrdinal(sessionId, turnId);
+    if (ord >= nextFallbackOrdinal) {
+      nextFallbackOrdinal = ord + 1;
+    }
+  };
+
+  const allocateUniqueTurnId = (): string => {
+    while (
+      usedIds.has(`${sessionId}:turn:${nextFallbackOrdinal}`)
+      || reservedAttemptIds.has(`${sessionId}:turn:${nextFallbackOrdinal}`)
+    ) {
+      nextFallbackOrdinal += 1;
+    }
+    const id = `${sessionId}:turn:${nextFallbackOrdinal}`;
+    nextFallbackOrdinal += 1;
+    return id;
+  };
+
+  const emitNativeTurn = (turn: Turn) => {
+    if (!usedIds.has(turn.id) && !reservedAttemptIds.has(turn.id)) {
+      usedIds.add(turn.id);
+      advanceOrdinalPast(turn.id);
+      out.push(turn);
+      return;
+    }
+    const uniqueId = allocateUniqueTurnId();
+    usedIds.add(uniqueId);
+    out.push(rewriteTurnId(turn, uniqueId));
+  };
+
   let nativeIdx = 0;
 
   for (let i = 0; i < finishedAttempts.length; i += 1) {
     const attempt = finishedAttempts[i]!;
     while (nativeIdx < nativeTurns.length && nativeIdx < attempt.afterPersistedTurnCount) {
-      out.push(nativeTurns[nativeIdx]!);
+      emitNativeTurn(nativeTurns[nativeIdx]!);
       nativeIdx += 1;
     }
 
@@ -641,18 +714,31 @@ function mergeTurnsWithAttempts(nativeTurns: readonly Turn[], attempts: readonly
 
     if (shouldTreatAsUnpersisted) {
       if (attempt.status !== "completed" && attempt.syntheticTurn) {
-        out.push(attempt.syntheticTurn);
+        const synth = usedIds.has(attempt.syntheticTurn.id)
+          ? rewriteTurnId(attempt.syntheticTurn, allocateUniqueTurnId())
+          : attempt.syntheticTurn;
+        usedIds.add(synth.id);
+        attemptControlledIds.add(synth.id);
+        advanceOrdinalPast(synth.id);
+        out.push(synth);
       }
       continue;
     }
 
-    out.push(applyAttemptOutcome(candidate!, attempt));
+    const applied = applyAttemptOutcome(candidate!, attempt);
+    const uniqueApplied = usedIds.has(applied.id)
+      ? rewriteTurnId(applied, allocateUniqueTurnId())
+      : applied;
+    usedIds.add(uniqueApplied.id);
+    attemptControlledIds.add(uniqueApplied.id);
+    advanceOrdinalPast(uniqueApplied.id);
+    out.push(uniqueApplied);
     nativeIdx += 1;
   }
 
   while (nativeIdx < nativeTurns.length) {
-    out.push(nativeTurns[nativeIdx]!);
+    emitNativeTurn(nativeTurns[nativeIdx]!);
     nativeIdx += 1;
   }
-  return out;
+  return { turns: out, attemptControlledIds };
 }

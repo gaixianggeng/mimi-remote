@@ -424,4 +424,68 @@ D1–D6 的倾向
       await rm(tempHome, { recursive: true, force: true });
     }
   });
+
+  test("B10 round3: non-terminal or tool-calling planner text after ERROR_MESSAGE does NOT clear failed turn status", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-nonterminal-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        // Turn 1: ERROR_MESSAGE followed by RUNNING planner text (non-terminal) -> MUST stay failed!
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: "<USER_REQUEST>\nturn with running partial text after error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-22T01:00:01Z",
+          content: "FATAL_UPSTREAM_ERR_1",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "PLANNER_RESPONSE",
+          status: "RUNNING",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "Trying to recover...",
+        }),
+        // Turn 2: ERROR_MESSAGE followed by DONE planner step that still invokes a tool (no final answer) -> MUST stay failed!
+        JSON.stringify({
+          step_index: 3,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:00Z",
+          content: "<USER_REQUEST>\nturn with tool call after error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-22T01:01:01Z",
+          content: "FATAL_UPSTREAM_ERR_2",
+        }),
+        JSON.stringify({
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:02Z",
+          content: "Retrying tool",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"echo retry\"" } }],
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10-nt", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(2);
+      expect(turns[0]?.status).toBe("failed");
+      expect(turns[0]?.error?.message).toBe("FATAL_UPSTREAM_ERR_1");
+      expect(turns[1]?.status).toBe("failed");
+      expect(turns[1]?.error?.message).toBe("FATAL_UPSTREAM_ERR_2");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
