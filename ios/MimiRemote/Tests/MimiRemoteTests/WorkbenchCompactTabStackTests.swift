@@ -1,3 +1,5 @@
+import SwiftUI
+import UIKit
 import XCTest
 @testable import MimiRemote
 
@@ -471,6 +473,122 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertFalse(wideIPad.usesPhoneIntegratedBottomChrome)
     }
 
+    @MainActor
+    func testReadOnlySubagentDestinationHidesBottomTabBarOnPhone() throws {
+        let defaultsSuite = "ReadOnlySubagentTabBarTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+
+        let conversationStore = ConversationStore()
+        let sessionStore = SessionStore(
+            appStore: AppStore(
+                defaults: defaults,
+                tokenStore: TokenStore(keychain: TestKeychainOperations())
+            ),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let now = Date(timeIntervalSince1970: 1_782_879_660)
+        let childID = "test-subagent-review"
+        let parentID = "test-parent-session"
+        let childSession = AgentSession(
+            id: childID,
+            projectID: "test-project",
+            project: "mimi-remote",
+            dir: "/Users/demo/code/mimi-remote",
+            title: "审查目标",
+            status: SessionStatus.completed.rawValue,
+            source: "codex",
+            runtimeProvider: "codex",
+            resumeID: childID,
+            createdAt: now.addingTimeInterval(-120),
+            updatedAt: now,
+            parentThreadID: parentID,
+            isSubagent: true,
+            canAcceptDirectInput: false
+        )
+        sessionStore.sessionsByID[childID] = childSession
+        conversationStore.replaceHistorySnapshot([
+            CodexHistoryMessage(
+                id: "\(childID)-msg-1",
+                role: "assistant",
+                content: "已完成文档核对：安装命令可执行，架构与当前 runtime 选择逻辑一致。",
+                createdAt: now,
+                turnID: "\(childID)-turn",
+                itemID: "\(childID)-item",
+                timelineOrdinal: 1
+            )
+        ], sessionID: childID)
+        let relation = SessionContextSubagent(
+            id: childID,
+            parentThreadID: parentID,
+            nickname: "审查目标",
+            status: SessionStatus.completed.rawValue,
+            canAcceptDirectInput: false
+        )
+        let themeStore = ThemeStore(defaults: defaults)
+        let rootView = ReadOnlySubagentTabBarHost(
+            relation: relation,
+            parentID: parentID,
+            childID: childID
+        )
+        .environmentObject(sessionStore)
+        .environmentObject(conversationStore)
+        .environmentObject(themeStore)
+        .environment(\.horizontalSizeClass, .compact)
+        .environment(\.colorScheme, .light)
+        .defaultAppStorage(defaults)
+
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let host = UIHostingController(rootView: rootView)
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+            window.frame = bounds
+        } else {
+            window = UIWindow(frame: bounds)
+        }
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+        host.view.frame = bounds
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        host.view.layoutIfNeeded()
+
+        XCTAssertGreaterThan(host.sizeThatFits(in: bounds.size).height, 0)
+        func findTabBars(in view: UIView) -> [UITabBar] {
+            var bars: [UITabBar] = []
+            if let tabBar = view as? UITabBar {
+                bars.append(tabBar)
+            }
+            for subview in view.subviews {
+                bars.append(contentsOf: findTabBars(in: subview))
+            }
+            return bars
+        }
+        let visibleTabBars = findTabBars(in: host.view).filter { !$0.isHidden && $0.alpha > 0.01 }
+        XCTAssertTrue(visibleTabBars.isEmpty, "只读子 Agent 页必须隐藏底部 Tab 栏")
+
+        let renderer = UIGraphicsImageRenderer(bounds: bounds)
+        let image = renderer.image { context in
+            if !window.drawHierarchy(in: bounds, afterScreenUpdates: true) {
+                host.view.layer.render(in: context.cgContext)
+            }
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "iphone-subagent-readonly"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,
@@ -517,5 +635,23 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertEqual(state.selection, .workspaces, file: file, line: line)
         XCTAssertEqual(state.route, .workspaces, file: file, line: line)
         XCTAssertTrue(state.compactWorkspacePath.isEmpty, file: file, line: line)
+    }
+}
+
+private struct ReadOnlySubagentTabBarHost: View {
+    let relation: SessionContextSubagent
+    let parentID: SessionID
+    let childID: SessionID
+
+    var body: some View {
+        NavigationStack {
+            RelatedSessionConversationView(
+                relation: relation,
+                parentSessionID: parentID,
+                showsCloseButton: false,
+                shouldHideTabBar: true,
+                onClose: {}
+            )
+        }
     }
 }
