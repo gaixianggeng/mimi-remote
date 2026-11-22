@@ -576,8 +576,8 @@ export async function readTranscriptTurns(
   const lastTurn = turns[turns.length - 1];
   return turns.map((draft) => {
     const isLastTurn = draft === lastTurn;
-    const isActiveTurn = isLastTurn && running;
-    const toolsPending = isLastTurn && (running || holderActive);
+    const isActiveTurn = isLastTurn && (running || holderActive);
+    const toolsPending = isActiveTurn;
     const finalizedItems = draft.items.map((item) => {
       const state = draft.toolStates.get(item.id);
       if (!state) return item;

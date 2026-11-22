@@ -691,3 +691,167 @@ exit 0
 		t.Fatalf("expected -32081 with bridgeStatus=agy_missing immediately on WS, got %s", string(msg))
 	}
 }
+
+func TestC11Round2ExternalHolderRejectionDistinguishedFromReadOnlySubsession(t *testing.T) {
+	projectDir := t.TempDir()
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "proj", Name: "Proj", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+
+	// 1) Initial idle list loads session as writable.
+	policy.allowThread(appServerGatewayAllowedThread{
+		id:                   "sess-c11",
+		runtimeID:            appServerRuntimeAgyID,
+		cwd:                  projectDir,
+		scopeID:              "proj",
+		canAcceptDirectInput: true,
+		directInputKnown:     true,
+		readOnly:             false,
+	})
+
+	// 2) Mac CLI enters busy -> thread/read returns canAcceptDirectInput=false (external holder, NOT readOnly subsession).
+	reqID := json.RawMessage(`10`)
+	if err := policy.rememberPendingThreadRequest(&reqID, appServerGatewayPendingThreadRequest{
+		method:   "thread/read",
+		threadID: "sess-c11",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	busyRead, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      10,
+		"result": map[string]any{
+			"thread": map[string]any{
+				"id":                   "sess-c11",
+				"cwd":                  projectDir,
+				"canAcceptDirectInput": false,
+				"claudeOwner": map[string]any{
+					"entrypoint": "desktop",
+					"kind":       "desktop",
+					"status":     "busy",
+				},
+			},
+		},
+	})
+	var busyFrame appServerGatewayFrame
+	_ = json.Unmarshal(busyRead, &busyFrame)
+	if _, forward, policyErr := policy.finishUpstreamThreadResponse(busyRead, busyFrame); !forward || policyErr != nil {
+		t.Fatalf("expected busy thread/read to succeed: forward=%v err=%+v", forward, policyErr)
+	}
+
+	// 3) turn/start & turn/interrupt must be rejected with external-holder message (NOT "只读子会话").
+	startReq, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      11,
+		"method":  "turn/start",
+		"params": map[string]any{
+			"threadId": "sess-c11",
+			"cwd":      projectDir,
+			"input":    []map[string]any{{"type": "text", "text": "hello"}},
+		},
+	})
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, startReq); policyErr == nil {
+		t.Fatal("expected turn/start to be rejected while Mac holds session")
+	} else {
+		if strings.Contains(policyErr.message, "只读子会话") {
+			t.Fatalf("external-holder rejection MUST NOT claim 只读子会话: %q", policyErr.message)
+		}
+		if !strings.Contains(policyErr.message, "电脑端其他进程") {
+			t.Fatalf("expected external-holder guidance in error, got %q", policyErr.message)
+		}
+	}
+
+	interruptReq, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      12,
+		"method":  "turn/interrupt",
+		"params": map[string]any{
+			"threadId": "sess-c11",
+		},
+	})
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, interruptReq); policyErr == nil {
+		t.Fatal("expected turn/interrupt to be rejected while Mac holds session")
+	} else {
+		if strings.Contains(policyErr.message, "只读子会话") {
+			t.Fatalf("external-holder interrupt rejection MUST NOT claim 只读子会话: %q", policyErr.message)
+		}
+		if !strings.Contains(policyErr.message, "电脑端其他进程") {
+			t.Fatalf("expected external-holder guidance in interrupt error, got %q", policyErr.message)
+		}
+	}
+
+	// 4) Structural read-only subsession STILL reports "只读子会话".
+	policy.allowThread(appServerGatewayAllowedThread{
+		id:                   "subagent-c11",
+		runtimeID:            appServerRuntimeAgyID,
+		cwd:                  projectDir,
+		scopeID:              "proj",
+		canAcceptDirectInput: false,
+		directInputKnown:     true,
+		readOnly:             true,
+	})
+	subStart, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      13,
+		"method":  "turn/start",
+		"params": map[string]any{
+			"threadId": "subagent-c11",
+			"cwd":      projectDir,
+			"input":    []map[string]any{{"type": "text", "text": "hello"}},
+		},
+	})
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, subStart); policyErr == nil || !strings.Contains(policyErr.message, "只读子会话") {
+		t.Fatalf("structural read-only subsession should keep 只读子会话 wording, got %+v", policyErr)
+	}
+
+	// 5) Mac returns idle -> thread/read returns canAcceptDirectInput=true -> turn/start succeeds again!
+	reqIDIdle := json.RawMessage(`14`)
+	if err := policy.rememberPendingThreadRequest(&reqIDIdle, appServerGatewayPendingThreadRequest{
+		method:   "thread/read",
+		threadID: "sess-c11",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idleRead, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      14,
+		"result": map[string]any{
+			"thread": map[string]any{
+				"id":                   "sess-c11",
+				"cwd":                  projectDir,
+				"canAcceptDirectInput": true,
+			},
+		},
+	})
+	var idleFrame appServerGatewayFrame
+	_ = json.Unmarshal(idleRead, &idleFrame)
+	if _, forward, policyErr := policy.finishUpstreamThreadResponse(idleRead, idleFrame); !forward || policyErr != nil {
+		t.Fatalf("expected idle thread/read to succeed: forward=%v err=%+v", forward, policyErr)
+	}
+	startAfterIdle, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      15,
+		"method":  "turn/start",
+		"params": map[string]any{
+			"threadId": "sess-c11",
+			"cwd":      projectDir,
+			"input":    []map[string]any{{"type": "text", "text": "after idle"}},
+		},
+	})
+	if _, policyErr := policy.validateClientFrame(websocket.TextMessage, startAfterIdle); policyErr != nil {
+		t.Fatalf("expected turn/start to succeed after Mac becomes idle, got %+v", policyErr)
+	}
+}

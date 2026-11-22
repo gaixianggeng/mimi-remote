@@ -364,7 +364,7 @@ export class AgyHistoryStore {
       turns = await this.backend.loadTranscriptTurns(sessionId, record.cwd, disk.transcriptPath, running, holderActive);
     } else {
       const updates = await this.backend.loadReplay(sessionId, record.cwd, record.origin);
-      turns = updatesToTurns(sessionId, record.cwd, updates, running);
+      turns = updatesToTurns(sessionId, record.cwd, updates, running || holderActive);
     }
     turns = this.applyKnownTurnOutcomes(sessionId, turns);
     turns = this.applyKnownToolMappings(sessionId, turns);

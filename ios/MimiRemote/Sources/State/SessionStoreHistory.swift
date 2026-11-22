@@ -1525,7 +1525,8 @@ extension SessionStore {
     }
 
     func reconcileSessionStateAfterHistoryRefresh(_ session: AgentSession) async {
-        if session.isRunning {
+        let provider = Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+        if session.isRunning || provider == "agy" || provider == "claude" {
             do {
                 let client = try clientFactory()
                 let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
@@ -1534,6 +1535,8 @@ extension SessionStore {
                 if !refreshed.isRunning {
                     clearForegroundActivity(sessionID: session.id)
                     clearRuntimeActivity(sessionID: session.id)
+                } else if !canControlSession(refreshed), connectedSessionID == refreshed.id {
+                    disconnectWebSocket()
                 }
                 if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
                     // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。

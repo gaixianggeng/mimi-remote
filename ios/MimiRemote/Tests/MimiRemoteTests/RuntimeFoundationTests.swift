@@ -399,4 +399,85 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertEqual(store.selectedSession?.allowsDirectInput, true)
         XCTAssertNil(store.selectedSessionControlNotice)
     }
+
+    @MainActor
+    func testC11Round2OpeningIdleListedSessionRefreshesMacBusyStateAndRecoversWhenIdle() {
+        let idleSession = AgentSession(
+            id: "sess-c11-mac-busy",
+            projectID: "proj-1",
+            project: "Demo",
+            dir: "/tmp/demo",
+            title: "Long Sleep Command",
+            status: "completed",
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: "sess-c11-mac-busy",
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true,
+            claudeOwner: nil
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        store.sessions = [idleSession]
+        store.selectedSessionID = idleSession.id
+        XCTAssertTrue(store.canControlSession(store.selectedSession))
+        XCTAssertNil(store.selectedOwnershipNotice)
+
+        // Mac CLI becomes busy after the idle global list was already loaded;
+        // thread/read refreshes owner/busy state into the store.
+        let busySnapshot = AgentSession(
+            id: idleSession.id,
+            projectID: idleSession.projectID,
+            project: idleSession.project,
+            dir: idleSession.dir,
+            title: idleSession.title,
+            status: SessionStatus.running.rawValue,
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: idleSession.id,
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: false,
+            claudeOwner: ClaudeSessionOwner(
+                entrypoint: "desktop",
+                kind: "desktop",
+                status: "busy",
+                pid: nil,
+                statusUpdatedAt: Date(),
+                waitingKind: nil
+            )
+        )
+        store.applyLiveSessionIndexUpdate(busySnapshot)
+        XCTAssertEqual(store.selectedSession?.isRunningOnComputer, true)
+        XCTAssertFalse(store.canControlSession(store.selectedSession))
+        XCTAssertTrue(store.isProtocolReadOnlySession(store.selectedSession!))
+        XCTAssertNotNil(store.selectedOwnershipNotice)
+        XCTAssertEqual(store.selectedOwnershipNotice?.owner.status, "busy")
+
+        // Once Mac finishes and returns idle, refreshing restores direct input.
+        let recoveredIdle = AgentSession(
+            id: idleSession.id,
+            projectID: idleSession.projectID,
+            project: idleSession.project,
+            dir: idleSession.dir,
+            title: idleSession.title,
+            status: SessionStatus.completed.rawValue,
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: idleSession.id,
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true,
+            claudeOwner: nil
+        )
+        store.applyLiveSessionIndexUpdate(recoveredIdle)
+        XCTAssertEqual(store.selectedSession?.isRunningOnComputer, false)
+        XCTAssertTrue(store.canControlSession(store.selectedSession))
+        XCTAssertFalse(store.isProtocolReadOnlySession(store.selectedSession!))
+        XCTAssertNil(store.selectedOwnershipNotice)
+    }
 }

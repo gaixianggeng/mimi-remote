@@ -1008,7 +1008,12 @@ extension SessionStore {
                 didRefreshHistory = await loadHistoryIfNeeded(for: session)
             }
             guard isSelectionLeaseCurrent(selectionLease) else { return false }
-            connectWebSocket(session, replayBufferedEvents: !didRefreshHistory, allowNonRunning: true)
+            let latestSession = sessionsByID[session.id] ?? session
+            if latestSession.isRunning && !canControlSession(latestSession) {
+                disconnectWebSocket()
+            } else {
+                connectWebSocket(latestSession, replayBufferedEvents: !didRefreshHistory, allowNonRunning: true)
+            }
         }
         return true
     }

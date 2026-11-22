@@ -1394,6 +1394,7 @@ actor CodexAppServerSessionRuntime {
             builder: builder,
             projects: projects,
             shouldRefresh: contextsBySessionID[sessionID] == nil
+                || (cursor == nil && (runtimeProvider == "agy" || runtimeProvider == "claude"))
         )
         var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         let result: CodexAppServerJSONValue?
@@ -1422,12 +1423,13 @@ actor CodexAppServerSessionRuntime {
         guard let object = result?.objectValue else {
             throw AgentAPIError.invalidResponse
         }
-        if runtimeProvider == "claude" {
-            // turns/list 不携带持有态。等待期间 read/resume/接管可能更新它；只使用
-            // 返回后的缓存，不能让请求前的 metadata 把新的只读状态或解除结果写回去。
+        if runtimeProvider == "claude" || runtimeProvider == "agy" {
+            // turns/list 不携带持有态与目录缺失标记。等待期间 read/resume/接管可能更新它；
+            // 只使用返回后的缓存，不能让请求前的 metadata 把新的只读状态或解除结果写回去。
             let cachedThread = historyThreadShell(sessionID: sessionID, projects: projects)
             thread["canAcceptDirectInput"] = cachedThread["canAcceptDirectInput"]
             thread["claudeOwner"] = cachedThread["claudeOwner"]
+            thread["cwdMissing"] = cachedThread["cwdMissing"]
         }
         let validatedPage = try Self.validatedHistoryTurnsPage(object)
         let rawTurns = validatedPage.turns
@@ -1735,6 +1737,8 @@ actor CodexAppServerSessionRuntime {
                 cwd: session.dir,
                 activeTurnID: session.activeTurnID
             )
+            // 打开详情时把最新 thread/read 的运行态、外部持有方与路径缺失状态同步回列表与详情投影（C11/C14）。
+            emit(.session(session))
         }
         return thread
     }
@@ -1804,6 +1808,7 @@ actor CodexAppServerSessionRuntime {
                 // 分页历史不重新读取持有方。缓存壳必须保留只读及其原因，否则额度更新
                 // 再推送整条会话时会把提示清掉，直到下一次权威快照才恢复。
                 "canAcceptDirectInput": cached.canAcceptDirectInput.map { .bool($0) } ?? .null,
+                "cwdMissing": cached.cwdMissing.map { .bool($0) } ?? .null,
                 "claudeOwner": cached.claudeOwner.map { owner in .object([
                     "entrypoint": owner.entrypoint.map { .string($0) } ?? .null,
                     "kind": owner.kind.map { .string($0) } ?? .null,

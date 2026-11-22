@@ -169,7 +169,7 @@ D1–D6 的倾向
 
       const turns = await readTranscriptTurns(sessionId, "/workspace", transcriptPath, false, true);
       expect(turns).toHaveLength(1);
-      expect(turns[0]?.status).toBe("completed");
+      expect(turns[0]?.status).toBe("inProgress");
       const userItem = turns[0]?.items.find((item) => item.type === "userMessage");
       expect(userItem?.type === "userMessage" ? userItem.content.map((c) => c.type) : []).toEqual(["text", "image"]);
       const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
@@ -324,6 +324,56 @@ D1–D6 的倾向
       expect(turns[0]?.error).toBeNull();
       const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
       expect(cmdItem && cmdItem.type === "commandExecution" ? cmdItem.status : null).toBe("failed");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C11 round2: readTranscriptTurns marks the last turn inProgress while external Mac holder is busy and completed when idle", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-c11-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: "<USER_REQUEST>\nfirst completed turn\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "first done",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:00Z",
+          content: "<USER_REQUEST>\nrun sleep 55\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "RUNNING",
+          created_at: "2026-11-22T01:01:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"sleep 55\"" } }],
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const whileBusy = await readTranscriptTurns("sess-c11", "/workspace", transcriptPath, false, true);
+      expect(whileBusy).toHaveLength(2);
+      expect(whileBusy[0]?.status).toBe("completed");
+      expect(whileBusy[1]?.status).toBe("inProgress");
+      expect(whileBusy[1]?.completedAt).toBeNull();
+
+      const afterIdle = await readTranscriptTurns("sess-c11", "/workspace", transcriptPath, false, false);
+      expect(afterIdle).toHaveLength(2);
+      expect(afterIdle[1]?.status).toBe("completed");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
