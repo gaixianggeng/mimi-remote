@@ -587,6 +587,13 @@ struct PendingApprovalActionCard: View {
                 .frame(maxHeight: maximumHeight)
             }
         }
+        .onChange(of: approval.id) { _, _ in
+            // 只对当前审批保留折叠和确认状态。新请求到达时丢弃上一个确认入口。
+            isPhoneCardCollapsed = false
+            isDetailsExpanded = false
+            persistentGrant = nil
+            showsPhoneApprovalSheet = false
+        }
         .sheet(isPresented: $showsPhoneApprovalSheet) {
             ScrollView {
                 PendingApprovalActionCard(

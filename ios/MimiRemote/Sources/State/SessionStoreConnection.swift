@@ -6,6 +6,13 @@ extension SessionStore {
         _ relation: SessionContextSubagent,
         parentSessionID: SessionID
     ) async -> AgentSession? {
+#if DEBUG
+        // 内存里的演示子会话不建立辅助订阅，也不请求真实会话历史。
+        if isDebugWorkbenchUISeedActive, let child = sessionsByID[relation.id],
+           child.source == "debug", child.isSubagentThread, !child.allowsDirectInput {
+            return child
+        }
+#endif
         let hostScope = appStore.activeHostScope
         guard !relation.id.isEmpty else { return nil }
 

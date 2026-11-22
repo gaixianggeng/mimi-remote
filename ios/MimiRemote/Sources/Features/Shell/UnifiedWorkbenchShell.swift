@@ -1042,12 +1042,16 @@ struct UnifiedWorkbenchShell: View {
                     onClose: {}
                 )
             } else {
-                ContentUnavailableView(
+                let unavailable = ContentUnavailableView(
                     L10n.text("ui.sub_agent"),
                     systemImage: "person.2.slash",
                     description: Text(L10n.text("ui.sub_agent_unavailable"))
                 )
-                .toolbar(layout.usesPhoneIntegratedBottomChrome ? .hidden : .automatic, for: .tabBar)
+                if layout.usesPhoneIntegratedBottomChrome {
+                    unavailable.toolbar(.hidden, for: .tabBar)
+                } else {
+                    unavailable
+                }
             }
         }
     }
