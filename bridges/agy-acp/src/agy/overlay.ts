@@ -7,6 +7,13 @@ export interface TurnOutcomeRecord {
   error?: string | null;
 }
 
+export interface PersistedToolMapping {
+  rawToolCallId: string;
+  itemId: string;
+  itemType: "commandExecution" | "fileChange" | "dynamicToolCall";
+  fingerprint: string;
+}
+
 export interface TurnAttemptRecord {
   attemptId: string;
   turnId: string;
@@ -32,6 +39,7 @@ interface OverlayEntry {
   nextAttemptSeq?: number;
   turnOutcomes?: Record<string, TurnOutcomeRecord>;
   turnAttempts?: TurnAttemptRecord[];
+  toolMappings?: Record<string, PersistedToolMapping[]>;
 }
 
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
@@ -83,6 +91,10 @@ export class AgyOverlay {
 
   getTurnAttempts(sessionId: string): TurnAttemptRecord[] {
     return this.data.sessions[sessionId]?.turnAttempts ?? [];
+  }
+
+  getToolMappings(sessionId: string, turnId: string): PersistedToolMapping[] {
+    return this.data.sessions[sessionId]?.toolMappings?.[turnId] ?? [];
   }
 
   /**
@@ -140,6 +152,7 @@ export class AgyOverlay {
         persisted?: boolean;
         syntheticTurn?: Turn;
       };
+      toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
     },
   ): Promise<void> {
     await this.load();
@@ -191,6 +204,18 @@ export class AgyOverlay {
       }
       turnAttempts = nextAttempts;
     }
+    let toolMappings = current.toolMappings;
+    if (patch.toolMappings && patch.toolMappings.entries.length > 0) {
+      const nextMappings: Record<string, PersistedToolMapping[]> = { ...(current.toolMappings ?? {}) };
+      delete nextMappings[patch.toolMappings.turnId];
+      nextMappings[patch.toolMappings.turnId] = patch.toolMappings.entries;
+      const keys = Object.keys(nextMappings);
+      while (keys.length > MAX_TURN_OUTCOMES_PER_SESSION) {
+        const oldest = keys.shift();
+        if (oldest) delete nextMappings[oldest];
+      }
+      toolMappings = nextMappings;
+    }
     const next: OverlayEntry = {
       ...current,
       ...(patch.cwd ? { cwd: patch.cwd } : {}),
@@ -200,6 +225,7 @@ export class AgyOverlay {
       ...(patch.customTitle !== undefined ? { customTitle: patch.customTitle } : {}),
       ...(turnOutcomes ? { turnOutcomes } : {}),
       ...(turnAttempts ? { turnAttempts } : {}),
+      ...(toolMappings ? { toolMappings } : {}),
     };
     this.data.sessions[sessionId] = next;
     await this.persist();

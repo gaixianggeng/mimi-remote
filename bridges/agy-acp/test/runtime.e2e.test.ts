@@ -851,8 +851,8 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
         .map((n) => (n.params as { item?: { type?: string; id?: string } }).item);
       liveCmdId = completedItems.find((i) => i?.type === "commandExecution")?.id ?? "";
       liveDiffId = completedItems.find((i) => i?.type === "fileChange")?.id ?? "";
-      expect(liveCmdId).toBe(`${threadId}:turn:1:tool:1`);
-      expect(liveDiffId).toBe(`${threadId}:turn:1:tool:2`);
+      expect(liveCmdId).toBe(`${threadId}:turn:1:tool:native-random-cmd-99`);
+      expect(liveDiffId).toBe(`${threadId}:turn:1:tool:native-random-diff-88`);
       expect(approvalItemId).toBe(liveCmdId);
     } finally {
       await first.close();
@@ -1379,6 +1379,239 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       expect(transcriptTurns.data[2]?.error).toBeNull();
     } finally {
       await third.close();
+    }
+  });
+
+  test("B15 round2: approval-first, interleaved dual tools, and command+file keep identical IDs across live, approval, replay, and transcript", async () => {
+    let turnNum = 0;
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ emitUpdate, requestPermission }) => {
+        turnNum += 1;
+        if (turnNum === 1) {
+          // Case 1: Approval for Tool B ("printf second") arrives BEFORE tool updates for Tool A ("printf first") & Tool B!
+          await requestPermission(
+            { toolCallId: "call-second", title: "printf second", kind: "execute", rawInput: { CommandLine: "printf second" } },
+            [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+          );
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "call-first",
+            title: "printf first",
+            kind: "execute",
+            status: "completed",
+            rawInput: { CommandLine: "printf first" },
+            content: [{ type: "content", content: { type: "text", text: "first" } }],
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "call-second",
+            title: "printf second",
+            kind: "execute",
+            status: "completed",
+            rawInput: { CommandLine: "printf second" },
+            content: [{ type: "content", content: { type: "text", text: "second" } }],
+          });
+        } else if (turnNum === 2) {
+          // Case 2: Interleaved dual tools (A starts, B starts, B completes, A completes).
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "interleave-a",
+            title: "echo A",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { CommandLine: "echo A" },
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "interleave-b",
+            title: "echo B",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { CommandLine: "echo B" },
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "interleave-b",
+            status: "completed",
+            content: [{ type: "content", content: { type: "text", text: "B" } }],
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "interleave-a",
+            status: "completed",
+            content: [{ type: "content", content: { type: "text", text: "A" } }],
+          });
+        } else {
+          // Case 3: File approval arrives before command update, then command + file complete.
+          const filePath = path.join(workspaceDir, "out-of-order.txt");
+          await requestPermission(
+            { toolCallId: "call-file", title: "Edit out-of-order.txt", kind: "edit", rawInput: { Path: filePath } },
+            [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+          );
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "call-cmd",
+            title: "Run date",
+            kind: "execute",
+            status: "completed",
+            rawInput: { CommandLine: "date" },
+            content: [{ type: "content", content: { type: "text", text: "today" } }],
+          });
+          emitUpdate({
+            sessionUpdate: "tool_call",
+            toolCallId: "call-file",
+            title: "Edit out-of-order.txt",
+            kind: "edit",
+            status: "completed",
+            content: [{ type: "diff", path: filePath, oldText: "old", newText: "new" }],
+          });
+        }
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `turn ${turnNum} done` } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const first = await createTestHarness(world);
+    let threadId = "";
+    const liveIdsByLabel = new Map<string, string>();
+    let turn1ApprovalItemId = "";
+    let turn3ApprovalItemId = "";
+    try {
+      const started = await first.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      threadId = started.thread.id;
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+
+      // Turn 1: approval-first
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "approval first", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && first.serverRequests.length < 1; i += 1) await new Promise((r) => setTimeout(r, 15));
+      turn1ApprovalItemId = String((first.serverRequests[0]?.params as { itemId?: string }).itemId ?? "");
+      first.respondServerRequest(first.serverRequests[0]!.id, { decision: "accept" });
+      for (let i = 0; i < 40 && first.notifications.filter((n) => n.method === "turn/completed").length < 1; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      // Turn 2: interleaved
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "interleaved", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && first.notifications.filter((n) => n.method === "turn/completed").length < 2; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      // Turn 3: command + file with file approval first
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "cmd plus file", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && first.serverRequests.length < 2; i += 1) await new Promise((r) => setTimeout(r, 15));
+      turn3ApprovalItemId = String((first.serverRequests[1]?.params as { itemId?: string }).itemId ?? "");
+      first.respondServerRequest(first.serverRequests[1]!.id, { decision: "accept" });
+      for (let i = 0; i < 40 && first.notifications.filter((n) => n.method === "turn/completed").length < 3; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      for (const n of first.notifications) {
+        if (n.method !== "item/completed") continue;
+        const item = (n.params as { item?: { type?: string; id?: string; command?: string; changes?: Array<{ path?: string }> } }).item;
+        if (item?.type === "commandExecution" && item.command && item.id) {
+          liveIdsByLabel.set(item.command, item.id);
+        }
+        if (item?.type === "fileChange" && item.id) {
+          liveIdsByLabel.set("file:out-of-order.txt", item.id);
+        }
+      }
+      expect(turn1ApprovalItemId).toBe(liveIdsByLabel.get("printf second")!);
+      expect(turn3ApprovalItemId).toBe(liveIdsByLabel.get("file:out-of-order.txt")!);
+      expect(liveIdsByLabel.get("printf first")).not.toBe(liveIdsByLabel.get("printf second"));
+    } finally {
+      await first.close();
+    }
+
+    const cold = await createTestHarness(world);
+    try {
+      // 1) Cold ACP replay: every item matches its live ID (zero swapping!)
+      const replay = await cold.rpc<{
+        data: Array<{ items: Array<{ type: string; id: string; command?: string }> }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(replay.data).toHaveLength(3);
+      const t1 = replay.data[0]!.items;
+      expect(t1.find((i) => i.command === "printf first")?.id).toBe(liveIdsByLabel.get("printf first"));
+      expect(t1.find((i) => i.command === "printf second")?.id).toBe(liveIdsByLabel.get("printf second"));
+      const t2 = replay.data[1]!.items;
+      expect(t2.find((i) => i.command === "echo A")?.id).toBe(liveIdsByLabel.get("echo A"));
+      expect(t2.find((i) => i.command === "echo B")?.id).toBe(liveIdsByLabel.get("echo B"));
+      const t3 = replay.data[2]!.items;
+      expect(t3.find((i) => i.command === "date")?.id).toBe(liveIdsByLabel.get("date"));
+      expect(t3.find((i) => i.type === "fileChange")?.id).toBe(liveIdsByLabel.get("file:out-of-order.txt"));
+
+      // 2) Cold transcript read (without native tool_call IDs in JSONL) uses persisted overlay mappings!
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      const filePath = path.join(workspaceDir, "out-of-order.txt");
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\napproval first\n</USER_REQUEST>" }),
+          JSON.stringify({
+            step_index: 1,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            tool_calls: [
+              { name: "run_command", args: { CommandLine: "\"printf first\"" } },
+              { name: "run_command", args: { CommandLine: "\"printf second\"" } },
+            ],
+          }),
+          JSON.stringify({ step_index: 2, type: "GENERIC", status: "DONE", content: "first" }),
+          JSON.stringify({ step_index: 3, type: "GENERIC", status: "DONE", content: "second" }),
+          JSON.stringify({ step_index: 4, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\ninterleaved\n</USER_REQUEST>" }),
+          JSON.stringify({
+            step_index: 5,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            tool_calls: [
+              { name: "run_command", args: { CommandLine: "\"echo A\"" } },
+              { name: "run_command", args: { CommandLine: "\"echo B\"" } },
+            ],
+          }),
+          JSON.stringify({ step_index: 6, type: "GENERIC", status: "DONE", content: "A" }),
+          JSON.stringify({ step_index: 7, type: "GENERIC", status: "DONE", content: "B" }),
+          JSON.stringify({ step_index: 8, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>\ncmd plus file\n</USER_REQUEST>" }),
+          JSON.stringify({
+            step_index: 9,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            tool_calls: [
+              { name: "run_command", args: { CommandLine: "\"date\"" } },
+              { name: "edit_file", args: { Path: filePath, Target: "old", Replacement: "new" } },
+            ],
+          }),
+          JSON.stringify({ step_index: 10, type: "GENERIC", status: "DONE", content: "today" }),
+          JSON.stringify({ step_index: 11, type: "GENERIC", status: "DONE", content: "edited" }),
+        ].join("\n") + "\n",
+      );
+
+      const transcript = await cold.rpc<{
+        data: Array<{ items: Array<{ type: string; id: string; command?: string }> }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(transcript.data).toHaveLength(3);
+      expect(transcript.data[0]!.items.find((i) => i.command === "printf first")?.id).toBe(liveIdsByLabel.get("printf first"));
+      expect(transcript.data[0]!.items.find((i) => i.command === "printf second")?.id).toBe(liveIdsByLabel.get("printf second"));
+      expect(transcript.data[1]!.items.find((i) => i.command === "echo A")?.id).toBe(liveIdsByLabel.get("echo A"));
+      expect(transcript.data[1]!.items.find((i) => i.command === "echo B")?.id).toBe(liveIdsByLabel.get("echo B"));
+      expect(transcript.data[2]!.items.find((i) => i.command === "date")?.id).toBe(liveIdsByLabel.get("date"));
+      expect(transcript.data[2]!.items.find((i) => i.type === "fileChange")?.id).toBe(liveIdsByLabel.get("file:out-of-order.txt"));
+    } finally {
+      await cold.close();
     }
   });
 });

@@ -11,6 +11,7 @@ import type {
   AcpSessionUpdate,
 } from "../acp/types.ts";
 import { updatesToTurns } from "../agy/history.ts";
+import type { PersistedToolMapping } from "../agy/overlay.ts";
 import {
   detectExternalConcurrentWrite,
   type ExternalWriteBaseline,
@@ -58,6 +59,7 @@ export interface RuntimeHost {
         persisted?: boolean;
         syntheticTurn?: Turn;
       };
+      toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
     },
   ): void;
   reserveTurnAttempt?(
@@ -351,6 +353,7 @@ export class ThreadRuntime {
           : finishedTurn?.status === "interrupted"
             ? "interrupted"
             : "completed";
+      const toolEntries = turn.toolMappings();
       this.host.onTurnPersisted?.(this.threadId, {
         updatedAt: this.updatedAt,
         turnAttemptUpdate: {
@@ -363,6 +366,7 @@ export class ThreadRuntime {
           ...(attemptPersisted !== undefined ? { persisted: attemptPersisted } : {}),
           ...(attemptStatus !== "completed" && finishedTurn ? { syntheticTurn: finishedTurn } : {}),
         },
+        ...(toolEntries.length > 0 ? { toolMappings: { turnId: finishedTurn?.id ?? attemptMeta.turnId, entries: toolEntries } } : {}),
       });
       const ext = hadConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)

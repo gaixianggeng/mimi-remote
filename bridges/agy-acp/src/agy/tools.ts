@@ -1,8 +1,42 @@
+import { createHash } from "node:crypto";
 import type { JsonValue } from "@mimi/appserver-kit/protocol/codex/serde_json/JsonValue.ts";
 import type { CommandAction } from "@mimi/appserver-kit/protocol/codex/v2/CommandAction.ts";
 import type { FileUpdateChange } from "@mimi/appserver-kit/protocol/codex/v2/FileUpdateChange.ts";
 import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
 import type { AcpPlanEntry, AcpToolCallContent, AcpToolCallLocation, AcpToolCallStatus } from "../acp/types.ts";
+
+const SAFE_TOOL_CALL_ID = /^[A-Za-z0-9._-]{1,80}$/;
+
+/**
+ * 基于稳定原生 toolCallId 构造与顺序无关的确定性工具项目 ID（B15/C05）。
+ * 审批先到、多工具交错或 ACP 回放顺序与实时不一致时，同一原生工具始终映射到同一 ID。
+ */
+export function stableToolItemId(turnId: string, rawToolCallId: string): string {
+  const trimmed = rawToolCallId.trim();
+  const token = SAFE_TOOL_CALL_ID.test(trimmed)
+    ? trimmed
+    : createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+  return `${turnId}:tool:${token}`;
+}
+
+export function toolItemFingerprint(item: ThreadItem): string | undefined {
+  if (item.type === "commandExecution") {
+    const cmd = item.command.replace(/\s+/g, " ").trim();
+    return cmd ? `cmd:${cmd}` : undefined;
+  }
+  if (item.type === "fileChange") {
+    const paths = item.changes
+      .map((change) => change.path.trim().replace(/\/+$/, ""))
+      .filter(Boolean)
+      .sort();
+    return paths.length > 0 ? `file:${paths.join("|")}` : undefined;
+  }
+  if (item.type === "dynamicToolCall") {
+    const name = item.tool.trim();
+    return name ? `dyn:${name}` : undefined;
+  }
+  return undefined;
+}
 
 export interface AcpToolState {
   toolCallId: string;

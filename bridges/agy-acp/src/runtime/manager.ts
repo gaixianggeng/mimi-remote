@@ -5,6 +5,7 @@ import type { Session } from "@mimi/appserver-kit/session/session.ts";
 import { logger } from "../util/logging.ts";
 import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
+import type { PersistedToolMapping } from "../agy/overlay.ts";
 import type { TranscriptActivityInfo, TranscriptTurnSnapshot } from "../agy/transcript.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
@@ -39,6 +40,7 @@ export interface ManagerOptions {
         persisted?: boolean;
         syntheticTurn?: Turn;
       };
+      toolMappings?: { turnId: string; entries: PersistedToolMapping[] };
     },
   ) => void;
   reserveTurnAttempt?: (

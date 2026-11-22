@@ -6,7 +6,8 @@ import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import { directoryExists, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
-import type { AgyOverlay, TurnAttemptRecord, TurnOutcomeRecord } from "./overlay.ts";
+import type { AgyOverlay, PersistedToolMapping, TurnAttemptRecord, TurnOutcomeRecord } from "./overlay.ts";
+import { toolItemFingerprint } from "./tools.ts";
 import {
   inspectTranscriptActivity,
   readTranscriptTurns,
@@ -322,6 +323,8 @@ export class AgyHistoryStore {
     private readonly turnOutcomeForTurn?: (sessionId: string, turnId: string) => TurnOutcomeRecord | undefined,
     /** 读取按不可复用尝试 ID 持久化的回合尝试记录，用于合并早失败与避免旧错误覆盖新回合（B10）。 */
     private readonly turnAttemptsForSession?: (sessionId: string) => TurnAttemptRecord[],
+    /** 读取持久化的工具调用映射，让缺少原生 toolCallId 的 transcript 冷读复用实时/回放 ID（B15/C05）。 */
+    private readonly toolMappingsForTurn?: (sessionId: string, turnId: string) => PersistedToolMapping[],
   ) {}
 
   invalidate(sessionId: string): void {
@@ -364,6 +367,7 @@ export class AgyHistoryStore {
       turns = updatesToTurns(sessionId, record.cwd, updates, running);
     }
     turns = this.applyKnownTurnOutcomes(sessionId, turns);
+    turns = this.applyKnownToolMappings(sessionId, turns);
     turns = this.attachKnownClientIds(turns);
 
     this.cache.delete(sessionId);
@@ -423,6 +427,37 @@ export class AgyHistoryStore {
         };
       }
       return turn;
+    });
+  }
+
+  private applyKnownToolMappings(sessionId: string, turns: Turn[]): Turn[] {
+    if (!this.toolMappingsForTurn) return turns;
+    return turns.map((turn) => {
+      const mappings = this.toolMappingsForTurn!(sessionId, turn.id);
+      if (mappings.length === 0) return turn;
+      const knownIds = new Set(mappings.map((m) => m.itemId));
+      const usedMappingIdx = new Set<number>();
+      let changed = false;
+      const items = turn.items.map((item) => {
+        if (item.type !== "commandExecution" && item.type !== "fileChange" && item.type !== "dynamicToolCall") {
+          return item;
+        }
+        if (knownIds.has(item.id)) {
+          const exactIdx = mappings.findIndex((m, idx) => !usedMappingIdx.has(idx) && m.itemId === item.id);
+          if (exactIdx >= 0) usedMappingIdx.add(exactIdx);
+          return item;
+        }
+        const fp = toolItemFingerprint(item);
+        if (!fp) return item;
+        const matchIdx = mappings.findIndex(
+          (m, idx) => !usedMappingIdx.has(idx) && m.itemType === item.type && m.fingerprint === fp,
+        );
+        if (matchIdx < 0) return item;
+        usedMappingIdx.add(matchIdx);
+        changed = true;
+        return { ...item, id: mappings[matchIdx]!.itemId };
+      });
+      return changed ? { ...turn, items } : turn;
     });
   }
 }

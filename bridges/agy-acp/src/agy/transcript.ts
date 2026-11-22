@@ -5,7 +5,7 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { resolveAgyDataPaths, type AgySessionOrigin } from "./env.ts";
-import { acpToolToThreadItem, type AcpToolState } from "./tools.ts";
+import { acpToolToThreadItem, stableToolItemId, type AcpToolState } from "./tools.ts";
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const EXTERNAL_BUSY_WINDOW_MS = 90_000;
@@ -13,6 +13,8 @@ const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
 const TAIL_READ_BYTES = 24 * 1024;
 
 interface TranscriptToolCall {
+  id?: string;
+  call_id?: string;
   name?: string;
   args?: Record<string, unknown>;
 }
@@ -511,7 +513,8 @@ export async function readTranscriptTurns(
           const name = call.name?.trim() || "tool";
           const args = decodeToolArgs(call.args);
           draft.toolSeq += 1;
-          const toolCallId = `${draft.id}:tool:${draft.toolSeq}`;
+          const nativeId = (typeof call.id === "string" && call.id.trim()) || (typeof call.call_id === "string" && call.call_id.trim()) || "";
+          const toolCallId = nativeId ? stableToolItemId(draft.id, nativeId) : `${draft.id}:tool:${draft.toolSeq}`;
           const targetPath = [args.Path, args.TargetFile, args.path, args.file_path].find(
             (v): v is string => typeof v === "string" && v.trim().length > 0,
           );

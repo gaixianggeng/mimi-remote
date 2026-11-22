@@ -139,6 +139,7 @@ export function createApp(options: AppOptions): App {
     (turnId) => manager.clientIdForTurn(turnId),
     (sessionId, turnId) => overlay.getTurnOutcome(sessionId, turnId),
     (sessionId) => overlay.getTurnAttempts(sessionId),
+    (sessionId, turnId) => overlay.getToolMappings(sessionId, turnId),
   );
   historyRef = history;
 

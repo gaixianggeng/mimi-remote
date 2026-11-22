@@ -3,7 +3,15 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import type { AcpPromptResult, AcpSessionUpdate } from "../acp/types.ts";
-import { acpToolToThreadItem, formatPlanMarkdown, mergeToolState, type AcpToolState } from "../agy/tools.ts";
+import {
+  acpToolToThreadItem,
+  formatPlanMarkdown,
+  mergeToolState,
+  stableToolItemId,
+  toolItemFingerprint,
+  type AcpToolState,
+} from "../agy/tools.ts";
+import type { PersistedToolMapping } from "../agy/overlay.ts";
 
 export type Emit = (method: string, params: Record<string, unknown>) => void;
 
@@ -32,6 +40,7 @@ export class LiveTurn {
   private openMessage: { id: string; text: string } | null = null;
   private planItem: { id: string; text: string } | null = null;
   private readonly toolItemIds = new Map<string, string>();
+  private readonly rawIdByItemId = new Map<string, string>();
   private readonly toolStates = new Map<string, AcpToolState>();
   private readonly completedItems: ThreadItem[] = [];
   private contextWindow: number | null = null;
@@ -59,14 +68,38 @@ export class LiveTurn {
     return `${this.id}:msg:${this.msgSeq}`;
   }
 
-  /** 为工具调用分配与 ACP replay 及 transcript 直读一致的确定性回合内 ID（B15/C05）。 */
+  /** 为工具调用分配与审批、流式及 ACP 回放顺序无关的确定性 ID（B15/C05）。 */
   itemIdForToolCall(rawToolCallId: string): string {
     const existing = this.toolItemIds.get(rawToolCallId);
     if (existing) return existing;
-    this.toolSeq += 1;
-    const itemId = `${this.id}:tool:${this.toolSeq}`;
+    const itemId = rawToolCallId.trim()
+      ? stableToolItemId(this.id, rawToolCallId)
+      : `${this.id}:tool:${++this.toolSeq}`;
     this.toolItemIds.set(rawToolCallId, itemId);
+    this.rawIdByItemId.set(itemId, rawToolCallId);
     return itemId;
+  }
+
+  /** 导出本回合已观测到的工具映射，供缺原生 ID 的 transcript 冷读关联（B15/C05）。 */
+  toolMappings(): PersistedToolMapping[] {
+    const mappings: PersistedToolMapping[] = [];
+    const seen = new Set<string>();
+    for (const item of this.completedItems) {
+      if (item.type !== "commandExecution" && item.type !== "fileChange" && item.type !== "dynamicToolCall") {
+        continue;
+      }
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      const fingerprint = toolItemFingerprint(item);
+      if (!fingerprint) continue;
+      mappings.push({
+        rawToolCallId: this.rawIdByItemId.get(item.id) ?? item.id,
+        itemId: item.id,
+        itemType: item.type,
+        fingerprint,
+      });
+    }
+    return mappings;
   }
 
   private scoped(params: Record<string, unknown>): Record<string, unknown> {

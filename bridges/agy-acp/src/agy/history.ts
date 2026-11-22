@@ -3,7 +3,7 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import type { AcpSessionUpdate } from "../acp/types.ts";
-import { acpToolToThreadItem, formatPlanMarkdown, mergeToolState, type AcpToolState } from "./tools.ts";
+import { acpToolToThreadItem, formatPlanMarkdown, mergeToolState, stableToolItemId, type AcpToolState } from "./tools.ts";
 
 interface TurnBuilder {
   id: string;
@@ -157,8 +157,7 @@ export function updatesToTurns(
         turn.openMessageIndex = null;
         let itemId = turn.toolItemIds.get(rawToolCallId);
         if (!itemId) {
-          turn.toolSeq += 1;
-          itemId = `${turn.id}:tool:${turn.toolSeq}`;
+          itemId = stableToolItemId(turn.id, rawToolCallId);
           turn.toolItemIds.set(rawToolCallId, itemId);
         }
         const merged = mergeToolState(turn.toolStates.get(itemId), {
