@@ -208,6 +208,39 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testPhoneComposerShowsSingleLineOnlyWhenIdleAndKeyboardIsHidden() {
+        let draft = ComposerState()
+        XCTAssertTrue(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: nil, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: true, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: true, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: true, draft: draft
+        ))
+    }
+
+    func testPhoneComposerKeepsDraftAndAttachmentsExpandedAfterEditing() {
+        var draft = ComposerState()
+        draft.draft = "请先检查输入区。"
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+
+        draft.draft = ""
+        draft.addAttachment(.image(url: "data:image/jpeg;base64,AA==", detail: .auto))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+    }
+
     func testCompactComposerToolbarRendersWithoutGenericMetadataStackOverflow() throws {
         let defaultsSuite = "CompactComposerToolbarTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))

@@ -383,8 +383,66 @@ struct CompactComposerLeadingControlsShell: View {
     }
 }
 
+enum PhoneComposerPresentation {
+    static func showsSingleLine(
+        keyboardVisible: Bool?, isEditing: Bool, isComposing: Bool, draft: ComposerState
+    ) -> Bool {
+        // 等系统移开软键盘，也等 TextKit 完成失焦和输入法提交，再收起空输入框。
+        keyboardVisible == false && !isEditing && !isComposing
+            && draft.draft.isEmpty && draft.attachments.isEmpty && !draft.voiceDraftNeedsReview
+    }
+}
+
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    var singleLinePhoneEditorHeight: CGFloat {
+        max(44, ceil(composerUIFont.lineHeight) + 12)
+    }
+
+    func integratedPhoneComposerCard(tokens: ThemeTokens) -> some View {
+        let singleLine = PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: phoneKeyboardVisible,
+            isEditing: isComposerTextEditing,
+            isComposing: isComposerTextComposing,
+            draft: composerState
+        )
+        let shape = RoundedRectangle(cornerRadius: singleLine ? singleLinePhoneEditorHeight / 2 + 4 : 26)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            if !singleLine {
+                composerStatusTray.transition(.opacity)
+            }
+            HStack(spacing: 2) {
+                if singleLine {
+                    Color.clear.frame(width: 44, height: 44)
+                }
+                // 编辑器始终留在同一位置，展开时只改变外壳和旁边的控件。
+                integratedPhoneEditorBox(tokens: tokens, singleLine: singleLine)
+                if singleLine {
+                    (primaryComposerAction == .stopCurrentReply ? submitControlBox() : microphoneControlBox())
+                        .transition(.opacity)
+                }
+            }
+            if !singleLine {
+                compactPrimaryComposerToolbar(
+                    showsModelTitle: compactToolbarShowsModelTitle, includesAddContent: false
+                )
+                .transition(.opacity)
+            }
+        }
+        // 两种形态共用「+」的弹出面板锚点，面板里的搜索键盘不会把它移除。
+        .overlay(alignment: singleLine ? .leading : .bottomLeading) {
+            addContentControlBox()
+        }
+        .padding(.horizontal, singleLine ? 6 : 8)
+        .padding(.vertical, singleLine ? 4 : 8)
+        .frame(maxWidth: .infinity)
+        .background { composerContainerBackground(shape: shape, tokens: tokens) }
+        .overlay { shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth) }
+        .tint(tokens.accent)
+        .animation(reduceMotion ? nil : composerMotionAnimation, value: singleLine)
+    }
+
     @ViewBuilder
     var addContentButton: some View {
         ZStack {

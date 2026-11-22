@@ -168,6 +168,7 @@ struct ComposerTextView: UIViewRepresentable {
     let onSkillAutocompleteDismiss: () -> Void
     /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片交给输入框作为附件（#829）；nil 表示当前通道不收附件。
     var onPasteImages: (([Data]) -> Void)? = nil
+    var onEditingStateChange: ((Bool) -> Void)? = nil
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
         let textView = CommandSubmitTextView()
@@ -381,6 +382,11 @@ struct ComposerTextView: UIViewRepresentable {
             updateSkillQuery(for: textView)
         }
 
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            guard !isRetiredFromComposer, !isSynchronizingFromSwiftUI else { return }
+            parent.onEditingStateChange?(true)
+        }
+
         func textViewDidEndEditing(_ textView: UITextView) {
             guard !isRetiredFromComposer,
                   !isSynchronizingFromSwiftUI,
@@ -392,6 +398,7 @@ struct ComposerTextView: UIViewRepresentable {
             // 失焦是最后兜底边界，保证 UIKit 文本不会滞留在旧 draft 之外。
             syncCommittedTextIfNeeded(textView.text ?? "", force: true)
             publishSkillQuery(nil)
+            parent.onEditingStateChange?(false)
         }
 
         func updateCompositionState(_ isComposing: Bool) {

@@ -26,6 +26,7 @@ struct ComposerView: View {
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @Environment(\.composerLayoutHandoff) var composerLayoutHandoff
+    @Environment(\.phoneConversationKeyboardVisible) var phoneKeyboardVisible
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -55,6 +56,7 @@ struct ComposerView: View {
     @State var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State var measuredComposerTextHeight: CGFloat = 0
     @State var isComposerTextComposing = false
+    @State var isComposerTextEditing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()
     @State var composerTextFocusRequestID: UUID?
     // 收起状态服务 iPad 的显式操作，以及提问卡片内联输入框聚焦时的自动让位。
@@ -180,6 +182,7 @@ struct ComposerView: View {
                 sessionStore.activeComposerInstanceID = nil
             }
             composerLayoutHandoff?.unregister(composerInstanceID)
+            isComposerTextEditing = false
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
             sessionStore.saveComposerModelSelection(
@@ -1182,9 +1185,9 @@ struct ComposerView: View {
         .tint(tokens.accent)
     }
 
-    func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
+    func expandedPhoneComposerContent(tokens: ThemeTokens, singleLine: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: composerCardSpacing) {
-            composerTextArea(tokens: tokens)
+            composerTextArea(tokens: tokens, singleLine: singleLine)
             voiceReviewNotice
         }
         // 水平保留 10pt 阅读边距，与参考输入光标位置对齐；竖向由外层 8pt 统一控制，避免单行态
@@ -1237,8 +1240,11 @@ struct ComposerView: View {
             .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
     }
 
-    func composerTextArea(tokens: ThemeTokens) -> some View {
-        ZStack(alignment: .topLeading) {
+    func composerTextArea(tokens: ThemeTokens, singleLine: Bool = false) -> some View {
+        let topInset = singleLine
+            ? (singleLinePhoneEditorHeight - composerUIFont.lineHeight) / 2
+            : (usesNarrowComposerLayout ? 8 : 0)
+        return ZStack(alignment: .topLeading) {
             ComposerTextView(
                 text: composerDraftBinding,
                 submitBridge: composerTextSubmitBridge,
@@ -1249,9 +1255,7 @@ struct ComposerView: View {
                 focusRequestID: $composerTextFocusRequestID,
                 minHeight: composerMinHeight,
                 maxHeight: composerMaxHeight,
-                textContainerInset: usesNarrowComposerLayout
-                    ? UIEdgeInsets(top: 8, left: 0, bottom: 0, right: 0)
-                    : .zero,
+                textContainerInset: UIEdgeInsets(top: topInset, left: 0, bottom: 0, right: 0),
                 onSubmit: { submitDraft() },
                 onContentHeightChange: { height in
                     if abs(measuredComposerTextHeight - height) > 0.5 {
@@ -1286,16 +1290,18 @@ struct ComposerView: View {
                 onSkillAutocompleteDismiss: {
                     activeSkillQuery = nil
                 },
-                onPasteImages: composerPasteImagesHandler
+                onPasteImages: composerPasteImagesHandler,
+                onEditingStateChange: phoneKeyboardVisible == nil ? nil : { isComposerTextEditing = $0 }
             )
-            .frame(height: composerTextHeight)
+            .frame(height: singleLine ? singleLinePhoneEditorHeight : composerTextHeight)
 
             if composerState.draft.isEmpty && !isComposerTextComposing {
                 // 占位文案复用 TextKit 的手机上内边距，确保首行文字与真实输入基线一致。
                 Text(composerPlaceholderText)
                     .font(themeStore.uiFont(.body))
                     .foregroundStyle(tokens.conversationTertiaryText)
-                    .padding(.top, usesNarrowComposerLayout ? 8 : 0)
+                    .lineLimit(singleLine ? 1 : nil)
+                    .padding(.top, topInset)
                     .allowsHitTesting(false)
             }
         }
@@ -1407,9 +1413,11 @@ struct ComposerView: View {
             && !compactToolbarShowsInlineDeliveryControl
     }
 
-    func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
+    func compactPrimaryComposerToolbar(showsModelTitle: Bool, includesAddContent: Bool = true) -> some View {
         CompactComposerToolbarShell(
-            leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
+            leadingControls: compactLeadingControlsBox(
+                showsModelTitle: showsModelTitle, includesAddContent: includesAddContent
+            ),
             toolControls: compactToolControlsBox(),
             submitControl: submitControlBox(),
             spacing: usesNarrowComposerLayout ? 6 : 10
