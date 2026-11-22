@@ -65,7 +65,11 @@ extension ComposerView {
     // 所以两边都只经下面的方法放控件。
 
     @inline(never)
-    func compactLeadingControlsBox(showsModelTitle: Bool, includesAddContent: Bool) -> AnyView {
+    func compactLeadingControlsBox(
+        showsModelTitle: Bool,
+        includesAddContent: Bool,
+        includesModel: Bool = true
+    ) -> AnyView {
         // iPhone 运行态把投递方式收进设置菜单，避免第六个控件挤破 320–390pt 工具栏。
         // iPad 保留原有平铺入口。
         let deliveryControl = compactToolbarShowsInlineDeliveryControl
@@ -76,10 +80,18 @@ extension ComposerView {
                 addControl: includesAddContent
                     ? addContentControlBox()
                     : AnyView(Color.clear.frame(width: 44, height: 44)),
-                modelControl: modelControlBox(showsTitle: showsModelTitle),
+                modelControl: includesModel ? modelControlBox(showsTitle: showsModelTitle) : nil,
                 deliveryControl: deliveryControl
             )
         )
+    }
+
+    @inline(never)
+    func phoneModelPillBox(tokens: ThemeTokens) -> AnyView {
+        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return AnyView(unavailablePhoneModelPill(tokens: tokens))
+        }
+        return AnyView(phoneModelPillControl(tokens: tokens))
     }
 
     @inline(never)

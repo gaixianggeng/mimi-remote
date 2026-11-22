@@ -370,13 +370,15 @@ struct CompactComposerToolControlsShell: View {
 /// 再传入这里组合，防止真机在收集泛型元数据时触发 __chkstk_darwin。
 struct CompactComposerLeadingControlsShell: View {
     let addControl: AnyView
-    let modelControl: AnyView
+    let modelControl: AnyView?
     let deliveryControl: AnyView?
 
     var body: some View {
         HStack(spacing: 6) {
             addControl
-            modelControl
+            if let modelControl {
+                modelControl
+            }
             if let deliveryControl {
                 deliveryControl
             }
@@ -468,6 +470,11 @@ extension ComposerView {
         return VStack(alignment: .leading, spacing: 4) {
             if !singleLine {
                 composerStatusTray.transition(.opacity)
+                // 模型选择器以小药丸放在文字输入区上方，不与底栏按钮争抢宽度，点开即为半屏 Sheet。
+                phoneModelPillBox(tokens: tokens)
+                    .padding(.horizontal, 2)
+                    .padding(.top, 2)
+                    .transition(.opacity)
             }
             HStack(spacing: 2) {
                 if singleLine {
@@ -484,7 +491,7 @@ extension ComposerView {
                 compactPrimaryComposerToolbar(
                     showsModelTitle: compactToolbarShowsModelTitle,
                     includesAddContent: false,
-                    usesIntegratedPhoneTrailingSlot: true
+                    usesIntegratedPhoneLayout: true
                 )
                 .transition(.opacity)
             }
