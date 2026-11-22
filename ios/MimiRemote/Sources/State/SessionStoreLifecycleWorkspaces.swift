@@ -1,7 +1,4 @@
 import Foundation
-#if DEBUG
-import UIKit
-#endif
 
 enum WorkspaceOpenOutcome: Equatable {
     /// 工作区选择已经提交；会话首屏由 WorkspaceRoot 的独立加载生命周期继续补齐。
@@ -179,17 +176,6 @@ extension SessionStore {
         let runningSessionID = "debug-session-running"
         let historySessionID = "debug-session-workspace"
         let claudeSessionID = "debug-session-claude"
-        let seedsReadOnlySubagent = UIDevice.current.userInterfaceIdiom == .phone
-            && ProcessInfo.processInfo.arguments.contains("--debug-seed-read-only-subagent-ui")
-        let readOnlySubagent = seedsReadOnlySubagent
-            ? SessionContextSubagent(
-                id: "debug-subagent-review",
-                parentThreadID: selectedSessionID,
-                nickname: L10n.text("ui.review_goals"),
-                status: SessionStatus.completed.rawValue,
-                canAcceptDirectInput: false
-            )
-            : nil
         // MCP 审批样例只在显式 Debug 参数下出现，用于真机检查 Codex 声明的
         // 一次、会话和永久信任入口；不连接真实 MCP，也不会写入用户授权配置。
         let mcpApproval = appStore.shouldSeedDebugMCPApprovalUI
@@ -219,10 +205,7 @@ extension SessionStore {
                 updatedAt: now.addingTimeInterval(-60 * 3),
                 preview: L10n.text("ui.review_installation_steps_architecture_diagrams_privacy_boundaries_and"),
                 rateLimit: debugRateLimit,
-                pendingApproval: mcpApproval,
-                context: readOnlySubagent.map {
-                    SessionContextSnapshot(sessionID: selectedSessionID, subagents: [$0])
-                }
+                pendingApproval: mcpApproval
             ),
             AgentSession(
                 id: runningSessionID,
@@ -274,22 +257,6 @@ extension SessionStore {
         var seededSessions: [AgentSession] = (appStore.shouldSeedDebugDenseWorkspaceUI
             ? sessions + debugDenseWorkspaceSessions(workspace: mimiDemo, now: now)
             : sessions) + debugSpawnedSessions(parentID: claudeSessionID, workspace: mimiDemo, now: now)
-        if let child = readOnlySubagent {
-            // 用真正的父子路由演示只读页，原有的会话树样例仍可演示桌面派生会话。
-            seededSessions.append(AgentSession(
-                id: child.id, projectID: mimiDemo.id, project: mimiDemo.name, dir: mimiDemo.path,
-                title: child.displayName, status: SessionStatus.completed.rawValue, source: "debug",
-                runtimeProvider: "codex", resumeID: child.id, createdAt: now, updatedAt: now,
-                parentThreadID: selectedSessionID, isSubagent: true, canAcceptDirectInput: false
-            ))
-            conversationStore.replaceHistorySnapshot([
-                CodexHistoryMessage(
-                    id: "\(child.id)-review", role: "assistant",
-                    content: L10n.text("ui.document_verification_has_been_completed_the_installation_command"),
-                    createdAt: now, turnID: "\(child.id)-turn", itemID: "\(child.id)-item", timelineOrdinal: 1
-                )
-            ], sessionID: child.id)
-        }
         if appStore.shouldSeedDebugQuietSidebarUI {
             // 值班表全空的验收截图（#547）：没有运行、等待中的会话，「最近」照常有内容。
             seededSessions = seededSessions.map { session in
