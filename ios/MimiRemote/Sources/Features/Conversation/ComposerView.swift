@@ -28,6 +28,7 @@ struct ComposerView: View {
     @Environment(\.composerLayoutHandoff) var composerLayoutHandoff
     @Environment(\.phoneConversationKeyboardVisible) var phoneKeyboardVisible
     @Environment(\.phoneConversationDetailIsActive) var isPhoneDetailActive
+    @Environment(\.phoneConversationAvailableHeight) var phoneConversationAvailableHeight
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -56,6 +57,7 @@ struct ComposerView: View {
     @State var activeVoiceTranscriptionContext: VoiceTranscriptionContext?
     @State var retryableVoiceTranscription: RetryableVoiceTranscription?
     @State var measuredComposerTextHeight: CGFloat = 0
+    @State var measuredPhoneComposerCardHeight: CGFloat = 0
     @State var isComposerTextComposing = false
     @State var isComposerTextEditing = false
     @State var composerTextSubmitBridge = ComposerTextSubmitBridge()

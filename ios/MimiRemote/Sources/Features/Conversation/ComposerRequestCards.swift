@@ -491,14 +491,69 @@ private struct OptionalAccessibilityIdentifierModifier: ViewModifier {
     }
 }
 
+private struct PhoneConversationAvailableHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
 private struct PhoneApprovalMaximumHeightKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
 }
 
 extension EnvironmentValues {
+    var phoneConversationAvailableHeight: CGFloat? {
+        get { self[PhoneConversationAvailableHeightKey.self] }
+        set { self[PhoneConversationAvailableHeightKey.self] = newValue }
+    }
+
     var phoneApprovalMaximumHeight: CGFloat? {
         get { self[PhoneApprovalMaximumHeightKey.self] }
         set { self[PhoneApprovalMaximumHeightKey.self] = newValue }
+    }
+}
+
+enum PhoneApprovalCardDisplayMode: Equatable {
+    case expanded(maxHeight: CGFloat)
+    case collapsedToInlineSummary
+    case collapsedToSheetSummary
+}
+
+enum PhoneApprovalCardLayout {
+    static let maximumExpandedHeight: CGFloat = 240
+    static let minimumExpandedHeight: CGFloat = 156
+    static let minimumTimelineHeight: CGFloat = 180
+    static let verticalChromeSpacing: CGFloat = 24
+    static let maximumDetailHeightRatio: CGFloat = 0.36
+
+    /// 基于详情容器和输入框的实测高度计算审批卡上限；空间不够时返回较小值，绝不硬保留最小高度。
+    static func maximumCardHeight(
+        availableDetailHeight: CGFloat,
+        measuredComposerHeight: CGFloat,
+        keyboardVisible: Bool
+    ) -> CGFloat {
+        guard !keyboardVisible else { return 0 }
+        let remaining = availableDetailHeight
+            - measuredComposerHeight
+            - verticalChromeSpacing
+            - minimumTimelineHeight
+        return max(0, min(maximumExpandedHeight, availableDetailHeight * maximumDetailHeightRatio, remaining))
+    }
+
+    static func displayMode(
+        maximumHeight: CGFloat,
+        isManuallyCollapsed: Bool,
+        keyboardVisible: Bool,
+        isAccessibilitySize: Bool
+    ) -> PhoneApprovalCardDisplayMode {
+        if keyboardVisible {
+            return isAccessibilitySize ? .collapsedToSheetSummary : .collapsedToInlineSummary
+        }
+        if isAccessibilitySize || maximumHeight < minimumExpandedHeight {
+            return .collapsedToSheetSummary
+        }
+        if isManuallyCollapsed {
+            return .collapsedToInlineSummary
+        }
+        return .expanded(maxHeight: maximumHeight)
     }
 }
 
@@ -553,11 +608,20 @@ struct PendingApprovalActionCard: View {
     }
 
     private func phoneCard(maximumHeight: CGFloat, tokens: ThemeTokens) -> some View {
-        let needsSheet = maximumHeight < 148 || dynamicTypeSize.isAccessibilitySize
+        let mode = PhoneApprovalCardLayout.displayMode(
+            maximumHeight: maximumHeight,
+            isManuallyCollapsed: isPhoneCardCollapsed,
+            keyboardVisible: phoneKeyboardVisible == true,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
         return Group {
-            if isPhoneCardCollapsed || phoneKeyboardVisible == true || needsSheet {
-                phoneSummaryButton(needsSheet: needsSheet, tokens: tokens)
-            } else {
+            switch mode {
+            case .collapsedToInlineSummary, .collapsedToSheetSummary:
+                phoneSummaryButton(
+                    opensSheet: mode == .collapsedToSheetSummary,
+                    tokens: tokens
+                )
+            case .expanded(let resolvedMaxHeight):
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
                         approvalHeader(tokens: tokens)
@@ -584,7 +648,7 @@ struct PendingApprovalActionCard: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
-                .frame(maxHeight: maximumHeight)
+                .frame(maxHeight: resolvedMaxHeight)
             }
         }
         .onChange(of: approval.id) { _, _ in
@@ -595,39 +659,72 @@ struct PendingApprovalActionCard: View {
             showsPhoneApprovalSheet = false
         }
         .sheet(isPresented: $showsPhoneApprovalSheet) {
-            ScrollView {
-                PendingApprovalActionCard(
-                    approval: approval,
-                    runtimePresentation: runtimePresentation,
-                    isSendingDecision: isSendingDecision,
-                    onDecision: onDecision
-                )
-                .environment(\.phoneApprovalMaximumHeight, nil)
-                .padding()
+            NavigationStack {
+                ScrollView {
+                    PendingApprovalActionCard(
+                        approval: approval,
+                        runtimePresentation: runtimePresentation,
+                        isSendingDecision: isSendingDecision,
+                        onDecision: onDecision
+                    )
+                    .environment(\.phoneApprovalMaximumHeight, nil)
+                    .padding()
+                }
+                .navigationTitle(L10n.text("ui.waiting_for_approval"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(L10n.text("ui.done")) {
+                            showsPhoneApprovalSheet = false
+                        }
+                    }
+                }
             }
             .presentationDragIndicator(.visible)
         }
     }
 
-    private func phoneSummaryButton(needsSheet: Bool, tokens: ThemeTokens) -> some View {
+    private func phoneSummaryButton(opensSheet: Bool, tokens: ThemeTokens) -> some View {
         Button {
             isPhoneCardCollapsed = false
             if phoneKeyboardVisible == true {
                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            } else if needsSheet {
+                if opensSheet {
+                    showsPhoneApprovalSheet = true
+                }
+            } else if opensSheet {
                 showsPhoneApprovalSheet = true
             }
         } label: {
-            HStack(spacing: 8) {
-                Label("\(L10n.text("ui.waiting_for_approval")) · \(kindLabel)", systemImage: "exclamationmark.shield")
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("\(L10n.text("ui.waiting_for_approval")) · \(kindLabel)", systemImage: "exclamationmark.shield")
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let riskLabel {
+                        Text(riskLabel)
+                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .foregroundStyle(riskTone(tokens: tokens))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(riskTone(tokens: tokens).opacity(0.10), in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(riskTone(tokens: tokens).opacity(0.24), lineWidth: 1)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+                Spacer(minLength: 4)
                 Image(systemName: "chevron.down")
+                    .foregroundStyle(tokens.secondaryText)
                     .accessibilityHidden(true)
             }
-            .font(themeStore.uiFont(.subheadline, weight: .semibold))
-            .foregroundStyle(tokens.primaryText)
             .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
@@ -709,6 +806,8 @@ struct PendingApprovalActionCard: View {
             Label(L10n.text("ui.waiting_for_approval"), systemImage: "exclamationmark.shield")
                 .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
 
             Text(kindLabel)
                 .font(themeStore.uiFont(.caption2, weight: .semibold))

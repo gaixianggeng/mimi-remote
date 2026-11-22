@@ -16,6 +16,7 @@ struct ConversationView: View {
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
     // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
     @State private var measuredContentWidth: CGFloat?
+    @State private var measuredTopStatusHeight: CGFloat = 0
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -56,13 +57,23 @@ struct ConversationView: View {
                 safeAreaInsets: proxy.safeAreaInsets
             )
             let composerWidth = min(layout.composerAvailableWidth, layout.composerMaxWidth)
-            // 使用详情当前实际可用高度，先为正文和输入区留空间。
-            let phoneApprovalHeight = phoneKeyboardVisible.map { keyboardVisible in
-                keyboardVisible ? 0 : max(0, min(240, proxy.size.height * 0.32, proxy.size.height - 300))
-            }
+            let hasTopStatusStrip = model.errorPresentation != nil
+                || model.historySavingsNotice != nil
+                || model.quotaNotice != nil
+            // 将详情容器扣除顶部状态条后的实测可用高度传给输入区，由输入区再扣除自身实测高度计算审批卡限高。
+            let phoneAvailableDetailHeight: CGFloat? = phoneKeyboardVisible == nil
+                ? nil
+                : max(0, proxy.size.height - (hasTopStatusStrip ? measuredTopStatusHeight : 0))
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        if abs(measuredTopStatusHeight - height) > 0.5 {
+                            measuredTopStatusHeight = height
+                        }
+                    }
                     // 状态提示只占用自己的布局高度，不能改变导航栏与时间线的材质模式；
                     // List 扩展进顶部安全区后也始终让提示保持在正文之上。
                     .zIndex(1)
@@ -123,7 +134,7 @@ struct ConversationView: View {
                                 availableWidth: composerWidth,
                                 initialGoalStatusExpanded: initialGoalStatusExpanded
                             )
-                            .environment(\.phoneApprovalMaximumHeight, phoneApprovalHeight)
+                            .environment(\.phoneConversationAvailableHeight, phoneAvailableDetailHeight)
                         }
                     }
                         // 确定宽度阻止固定尺寸的工具按钮反向撑大输入卡和上方目标栏。

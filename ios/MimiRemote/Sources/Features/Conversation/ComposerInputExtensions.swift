@@ -456,6 +456,13 @@ extension ComposerView {
         .background { composerContainerBackground(shape: shape, tokens: tokens) }
         .overlay { shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth) }
         .tint(tokens.accent)
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.height
+        } action: { height in
+            if height > 0, abs(measuredPhoneComposerCardHeight - height) > 0.5 {
+                measuredPhoneComposerCardHeight = height
+            }
+        }
         .animation(reduceMotion ? nil : composerMotionAnimation, value: singleLine)
     }
 
@@ -875,6 +882,15 @@ extension ComposerView {
         if !sessionStore.isSelectedSessionObserving,
            let session = sessionStore.selectedSession,
            let approval = session.pendingApproval {
+            let approvalMaximumHeight = phoneConversationAvailableHeight.map { availableHeight in
+                PhoneApprovalCardLayout.maximumCardHeight(
+                    availableDetailHeight: availableHeight,
+                    measuredComposerHeight: measuredPhoneComposerCardHeight > 0
+                        ? measuredPhoneComposerCardHeight
+                        : singleLinePhoneEditorHeight + 8,
+                    keyboardVisible: phoneKeyboardVisible == true
+                )
+            }
             PendingApprovalActionCard(
                 approval: approval,
                 runtimePresentation: SessionRuntimePresentation(session: session),
@@ -883,6 +899,7 @@ extension ComposerView {
                     sessionStore.decideApproval(approval, decision: decision)
                 }
             )
+            .environment(\.phoneApprovalMaximumHeight, approvalMaximumHeight)
         }
     }
 
