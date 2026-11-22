@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -960,5 +962,181 @@ exit 2
 	recovered := router.currentAgyAdapterProbe()
 	if !recovered.Healthy || recovered.Status != "ready" {
 		t.Fatalf("expected recovery to ready after short unknown retry TTL, got %+v", recovered)
+	}
+}
+
+func TestC14C15Round3PathRestorePreservesPermanentReadOnlyProvenanceAndRefreshesProjectAPI(t *testing.T) {
+	parentDir := t.TempDir()
+	projectDir := filepath.Join(parentDir, "registered-proj")
+	browseRoot := filepath.Join(parentDir, "browse-root")
+	browseSub := filepath.Join(browseRoot, "browse-missing")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(browseSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "reg-1", Name: "Registered", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		cfg: config.Config{
+			BrowseRoots: []string{browseRoot},
+		},
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+
+	// Remove both directories while gateway is running.
+	if err := os.RemoveAll(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(browseSub); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) /api/projects dynamically reports missing=true before restart.
+	rec1 := httptest.NewRecorder()
+	router.projectsHandler(rec1, httptest.NewRequest("GET", "http://127.0.0.1:8787/api/projects", nil))
+	var projectsBefore struct {
+		Projects []projects.Project `json:"projects"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &projectsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if len(projectsBefore.Projects) != 1 || !projectsBefore.Projects[0].Missing {
+		t.Fatalf("expected /api/projects to report missing=true when dir removed, got %+v", projectsBefore.Projects)
+	}
+
+	// 2) Global thread/list discovers:
+	//    - subagent-missing (registered project + parentThreadId != "" + cwdMissing)
+	//    - browse-missing (browse_roots + cwdMissing)
+	//    - normal-missing (registered project + cwdMissing ONLY)
+	listID := json.RawMessage(`100`)
+	if err := policy.rememberPendingThreadRequest(&listID, appServerGatewayPendingThreadRequest{
+		method:           "thread/list",
+		globalDiscovery:  true,
+		responseLimit:    25,
+		responseLimitSet: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	globalPayload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      100,
+		"result": map[string]any{
+			"data": []map[string]any{
+				{
+					"id":                   "subagent-missing",
+					"parentThreadId":       "parent-1",
+					"cwd":                  projectDir,
+					"canAcceptDirectInput": true,
+				},
+				{
+					"id":                   "browse-missing",
+					"cwd":                  browseSub,
+					"canAcceptDirectInput": true,
+				},
+				{
+					"id":                   "normal-missing",
+					"cwd":                  projectDir,
+					"canAcceptDirectInput": true,
+				},
+			},
+			"nextCursor": nil,
+		},
+	})
+	var listFrame appServerGatewayFrame
+	_ = json.Unmarshal(globalPayload, &listFrame)
+	if _, forward, policyErr := policy.finishUpstreamThreadResponse(globalPayload, listFrame); !forward || policyErr != nil {
+		t.Fatalf("global list failed: forward=%v err=%+v", forward, policyErr)
+	}
+
+	// 3) Restore BOTH directories on disk without restarting gateway!
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(browseSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// /api/projects MUST immediately clear missing=true without restart!
+	rec2 := httptest.NewRecorder()
+	router.projectsHandler(rec2, httptest.NewRequest("GET", "http://127.0.0.1:8787/api/projects", nil))
+	var projectsAfter struct {
+		Projects []projects.Project `json:"projects"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &projectsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if len(projectsAfter.Projects) != 1 || projectsAfter.Projects[0].Missing {
+		t.Fatalf("expected /api/projects to clear missing after dir restore, got %+v", projectsAfter.Projects)
+	}
+
+	// 4) Run thread/read on all 3 threads after restore:
+	//    - normal-missing: clears cwdMissing AND becomes writable!
+	//    - subagent-missing: clears cwdMissing, MUST STAY readOnly (readOnlySubagent preserved)!
+	//    - browse-missing: clears cwdMissing, MUST STAY readOnly (readOnlyBrowseScope preserved)!
+	readThread := func(reqID int, threadID, cwd, parentID string) {
+		rawID := json.RawMessage(fmt.Sprintf("%d", reqID))
+		if err := policy.rememberPendingThreadRequest(&rawID, appServerGatewayPendingThreadRequest{
+			method:   "thread/read",
+			threadID: threadID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		threadObj := map[string]any{
+			"id":                   threadID,
+			"cwd":                  cwd,
+			"canAcceptDirectInput": true,
+		}
+		if parentID != "" {
+			threadObj["parentThreadId"] = parentID
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      reqID,
+			"result":  map[string]any{"thread": threadObj},
+		})
+		var frame appServerGatewayFrame
+		_ = json.Unmarshal(payload, &frame)
+		if _, forward, policyErr := policy.finishUpstreamThreadResponse(payload, frame); !forward || policyErr != nil {
+			t.Fatalf("thread/read %s failed: forward=%v err=%+v", threadID, forward, policyErr)
+		}
+	}
+
+	readThread(101, "normal-missing", projectDir, "")
+	readThread(102, "subagent-missing", projectDir, "") // Note: detail omits parentThreadId, provenance from global list must STILL hold!
+	readThread(103, "browse-missing", browseSub, "")
+
+	normalAllowed, _ := policy.allowedThread("normal-missing")
+	if normalAllowed.cwdMissing || normalAllowed.readOnly || !normalAllowed.canAcceptDirectInput {
+		t.Fatalf("normal-missing should recover writable after restore, got %+v", normalAllowed)
+	}
+	subAllowed, _ := policy.allowedThread("subagent-missing")
+	if subAllowed.cwdMissing || !subAllowed.readOnly || !subAllowed.readOnlySubagent || subAllowed.canAcceptDirectInput {
+		t.Fatalf("subagent-missing MUST preserve readOnlySubagent after path restore, got %+v", subAllowed)
+	}
+	browseAllowed, _ := policy.allowedThread("browse-missing")
+	if browseAllowed.cwdMissing || !browseAllowed.readOnly || !browseAllowed.readOnlyBrowseScope || browseAllowed.canAcceptDirectInput {
+		t.Fatalf("browse-missing MUST preserve readOnlyBrowseScope after path restore, got %+v", browseAllowed)
+	}
+
+	// 5) Also verify threadsFromResult checks ParentThreadID even when discovered directly via detail response!
+	directSub := policy.threadsFromResult(
+		json.RawMessage(`{"thread":{"id":"direct-sub","parentThreadId":"parent-2","cwd":`+strconv.Quote(projectDir)+`,"canAcceptDirectInput":true}}`),
+		appServerGatewayPendingThreadRequest{method: "thread/read", threadID: "direct-sub"},
+	)
+	if len(directSub) != 1 || !directSub[0].readOnly || !directSub[0].readOnlySubagent || directSub[0].canAcceptDirectInput {
+		t.Fatalf("threadsFromResult MUST mark parentThreadId thread as readOnlySubagent, got %+v", directSub)
 	}
 }

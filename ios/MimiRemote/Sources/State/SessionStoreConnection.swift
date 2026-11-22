@@ -126,6 +126,11 @@ extension SessionStore {
             disconnectWebSocket()
             return
         }
+        // 原工作目录已移动或删除的会话只允许通过历史接口只读查看，绝不发起写端 thread/resume（C14/C15）。
+        guard session.cwdMissing != true else {
+            disconnectWebSocket()
+            return
+        }
         guard connectionTermination == nil, !appStore.requiresRePairing else {
             setWebSocketStatus(.terminated(.credentialsInvalid))
             return

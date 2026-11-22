@@ -1447,7 +1447,8 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 		if !ok {
 			continue
 		}
-		readOnly := scope.missing
+		isSubagent := strings.TrimSpace(item.ParentThreadID) != ""
+		readOnlyBrowseScope := false
 		if pending.scopeID != "" && scope.id != pending.scopeID {
 			// 按仓库列出的同仓 worktree 会话按自己的作用域授权，其他一律不登记。
 			if pending.method != "thread/list" {
@@ -1467,14 +1468,17 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 				}
 			}
 			// 与全局发现一致：只在 browse_roots 内可见或目录已缺失的会话只读。
-			readOnly = scope.browse || scope.missing
+			readOnlyBrowseScope = scope.browse
 		}
+		readOnly := isSubagent || readOnlyBrowseScope || scope.missing
 		out = append(out, appServerGatewayAllowedThread{
 			id:                   strings.TrimSpace(id),
 			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
 			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput && !readOnly,
 			directInputKnown:     item.CanAcceptDirectInput != nil || readOnly,
 			readOnly:             readOnly,
+			readOnlySubagent:     isSubagent,
+			readOnlyBrowseScope:  readOnlyBrowseScope,
 			cwdMissing:           scope.missing,
 			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
@@ -1620,10 +1624,34 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 			directInputKnown:     true,
 			// MIM-24 Phase 1 只允许从父会话查看子 Thread。即使后续
 			// thread/read 返回 true，也不能把父侧派生出的权限升级成可写。
-			readOnly: true,
+			readOnly:         true,
+			readOnlySubagent: true,
 		})
 	}
 	return out
+}
+
+// mergeGatewayAllowedThread 合并连接级/全局授权记录：
+// 目录从缺失恢复为可用时仅清除 cwdMissing 导致的瞬态只读，
+// 子会话（readOnlySubagent）、browse_roots 只读（readOnlyBrowseScope）与其他永久只读原因一律保留（C14/C15）。
+func mergeGatewayAllowedThread(existing, incoming appServerGatewayAllowedThread) appServerGatewayAllowedThread {
+	pathRestored := existing.cwdMissing && !incoming.cwdMissing
+	existingPermanentReadOnly := existing.readOnlySubagent || existing.readOnlyBrowseScope || (existing.readOnly && !existing.cwdMissing)
+	incoming.readOnlySubagent = incoming.readOnlySubagent || existing.readOnlySubagent
+	incoming.readOnlyBrowseScope = incoming.readOnlyBrowseScope || existing.readOnlyBrowseScope
+	if existing.cwdMissing && !pathRestored {
+		incoming.cwdMissing = true
+	}
+	permanentReadOnly := existingPermanentReadOnly || incoming.readOnlySubagent || incoming.readOnlyBrowseScope
+	incoming.readOnly = permanentReadOnly || incoming.cwdMissing
+	if incoming.readOnly {
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = false
+	} else if !pathRestored && !incoming.directInputKnown && existing.directInputKnown {
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = existing.canAcceptDirectInput
+	}
+	return incoming
 }
 
 func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThread) {
@@ -1642,18 +1670,7 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 		return appServerGatewayAllowedThread{}, false
 	}
 	if existing, ok := p.allowedThread(thread.id); ok {
-		pathRestored := existing.cwdMissing && !thread.cwdMissing
-		if existing.readOnly && !pathRestored {
-			thread.readOnly = true
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = false
-		} else if !pathRestored && !thread.directInputKnown && existing.directInputKnown {
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = existing.canAcceptDirectInput
-		}
-		if existing.cwdMissing && !pathRestored {
-			thread.cwdMissing = true
-		}
+		thread = mergeGatewayAllowedThread(existing, thread)
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
@@ -1726,18 +1743,7 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()
 	if existing, ok := r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)]; ok {
-		pathRestored := existing.cwdMissing && !thread.cwdMissing
-		if existing.readOnly && !pathRestored {
-			thread.readOnly = true
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = false
-		} else if !pathRestored && !thread.directInputKnown && existing.directInputKnown {
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = existing.canAcceptDirectInput
-		}
-		if existing.cwdMissing && !pathRestored {
-			thread.cwdMissing = true
-		}
+		thread = mergeGatewayAllowedThread(existing, thread)
 	}
 	r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)] = thread
 	r.pruneGatewayThreadsLocked(now)

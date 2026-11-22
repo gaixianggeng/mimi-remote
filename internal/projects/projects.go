@@ -148,15 +148,48 @@ func canonicalMissingProjectPath(abs string) (string, bool) {
 	}
 }
 
+// refreshProjectAvailability 实时核对已登记项目目录当前是否存在于磁盘（C14）：
+// 目录在网关运行期间被移走或恢复后，`/api/projects` 与 `/api/app-server/config`
+// 立即反映最新 `Missing` 状态，无需等待下一次网关重启。
+func refreshProjectAvailability(project Project) Project {
+	if project.Path == "" {
+		return project
+	}
+	if _, err := os.Lstat(project.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			project.Missing = true
+		}
+		return project
+	}
+	realPath, err := filepath.EvalSymlinks(project.Path)
+	if err != nil {
+		project.Missing = true
+		return project
+	}
+	info, err := os.Stat(realPath)
+	if err != nil || !info.IsDir() {
+		project.Missing = true
+		return project
+	}
+	project.Missing = false
+	project.RealPath = realPath
+	return project
+}
+
 func (r *Registry) List() []Project {
 	out := make([]Project, len(r.list))
-	copy(out, r.list)
+	for i, project := range r.list {
+		out[i] = refreshProjectAvailability(project)
+	}
 	return out
 }
 
 func (r *Registry) Get(id string) (Project, bool) {
 	project, ok := r.projects[id]
-	return project, ok
+	if !ok {
+		return Project{}, false
+	}
+	return refreshProjectAvailability(project), true
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {

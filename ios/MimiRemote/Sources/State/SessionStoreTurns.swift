@@ -942,7 +942,7 @@ extension SessionStore {
             )
             guard isSelectionLeaseCurrent(selectionLease),
                   let refreshed = selectedSession else { return false }
-            if refreshed.isRunning && !canControlSession(refreshed) {
+            if refreshed.cwdMissing == true || (refreshed.isRunning && !canControlSession(refreshed)) {
                 disconnectWebSocket()
             } else {
                 connectWebSocket(
@@ -951,6 +951,11 @@ extension SessionStore {
                     allowNonRunning: true
                 )
             }
+        } else if session.cwdMissing == true {
+            // 原工作目录缺失：只做历史读取，保留目录缺失只读提示并跳过写端 thread/resume（C14/C15）。
+            _ = await loadHistoryIfNeeded(for: session)
+            guard isSelectionLeaseCurrent(selectionLease) else { return false }
+            disconnectWebSocket()
         } else if session.isRunning && canControlSession(session) {
             // 运行中的会话优先恢复实时订阅，不能让历史首屏网络耗时挡住 turn 状态和新输出。
             // 先带 replay 接入保证历史加载期间产生的事件不会丢；随后权威历史快照负责去重/
@@ -1013,7 +1018,7 @@ extension SessionStore {
             }
             guard isSelectionLeaseCurrent(selectionLease) else { return false }
             let latestSession = sessionsByID[session.id] ?? session
-            if latestSession.isRunning && !canControlSession(latestSession) {
+            if latestSession.cwdMissing == true || (latestSession.isRunning && !canControlSession(latestSession)) {
                 disconnectWebSocket()
             } else {
                 connectWebSocket(latestSession, replayBufferedEvents: !didRefreshHistory, allowNonRunning: true)

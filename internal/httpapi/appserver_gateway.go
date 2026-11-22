@@ -440,9 +440,13 @@ type appServerGatewayAllowedThread struct {
 	canAcceptDirectInput bool
 	directInputKnown     bool
 	readOnly             bool
-	cwdMissing           bool
-	autoTitleEligible    bool
-	lastSeen             time.Time
+	// 区分永久只读来源（子会话 / browse_roots 跨作用域）与瞬态目录缺失（cwdMissing），
+	// 确保目录恢复时只解除目录缺失限制，绝不丢失独立的子会话或浏览根只读约束（C14/C15）。
+	readOnlySubagent    bool
+	readOnlyBrowseScope bool
+	cwdMissing          bool
+	autoTitleEligible   bool
+	lastSeen            time.Time
 }
 
 type appServerGatewayThreadWire struct {

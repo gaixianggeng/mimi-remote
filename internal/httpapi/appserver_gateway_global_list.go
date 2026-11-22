@@ -188,7 +188,8 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 
 		// 外部 browse-root Worktree、原目录已移动/删除的历史会话以及显式 parent 子会话
 		// 都只有“可读发现”资格；上游即使声明 canAcceptDirectInput=true 也强制降为只读。
-		forceReadOnly := scope.browse || scope.missing || strings.TrimSpace(thread.ParentThreadID) != ""
+		isSubagent := strings.TrimSpace(thread.ParentThreadID) != ""
+		forceReadOnly := scope.browse || scope.missing || isSubagent
 		canAccept := false
 		directInputKnown := forceReadOnly || thread.CanAcceptDirectInput != nil
 		if thread.CanAcceptDirectInput != nil && !forceReadOnly {
@@ -231,6 +232,8 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			canAcceptDirectInput: canAccept,
 			directInputKnown:     directInputKnown,
 			readOnly:             forceReadOnly,
+			readOnlySubagent:     isSubagent,
+			readOnlyBrowseScope:  scope.browse,
 			cwdMissing:           scope.missing,
 		})
 	}

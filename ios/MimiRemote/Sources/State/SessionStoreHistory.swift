@@ -1580,7 +1580,9 @@ extension SessionStore {
         }
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
-            if canReportForeground() {
+            // 静默后台刷新或当前正在查看目录缺失的只读历史（如 C15 仅浏览已删除目录）时，
+            // 不能用泛化的“工作区已过期”覆盖目录缺失的专门说明。
+            if reportErrorOnFailure, canReportForeground(), selectedSession?.cwdMissing != true {
                 setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
             }
             return
@@ -2753,6 +2755,10 @@ extension SessionStore {
         }
         await loadHistoryIfNeeded(for: session)
         guard isSelectionLeaseCurrent(selectionLease) else { return }
+        if session.cwdMissing == true {
+            disconnectWebSocket()
+            return
+        }
         if session.isRunning {
             if autoAttach && (canControlSession(session) || isProtocolReadOnlySession(session)) {
                 // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做

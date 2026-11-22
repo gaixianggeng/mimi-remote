@@ -676,4 +676,67 @@ final class RuntimeFoundationTests: XCTestCase {
         _ = try await pageDegrade.value
         await runtimeDegrade.shutdownForHostSwitch()
     }
+
+    @MainActor
+    func testC14C15Round3OpeningMissingDirectorySessionSkipsResumeWebSocketAndPreservesMissingPathNotice() async {
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "test-token"
+        let socket = MockWebSocketClient()
+        let browseMissingSession = AgentSession(
+            id: "sess-c15-browse-missing",
+            projectID: "browse:deleted-empty-dir",
+            project: "Removed Browse Dir",
+            dir: "/tmp/browse-root/removed-empty-dir",
+            title: "Browse Only Missing",
+            status: "completed",
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: "sess-c15-browse-missing",
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: false,
+            cwdMissing: true
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [browseMissingSession],
+            messagesBySessionID: [
+                browseMissingSession.id: [
+                    AgentMessage(
+                        id: "msg-1",
+                        sessionID: browseMissingSession.id,
+                        role: .assistant,
+                        content: "Historical reply preserved read-only",
+                        createdAt: Date()
+                    )
+                ]
+            ]
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.sessions = [browseMissingSession]
+
+        let selected = await store.selectSession(browseMissingSession)
+        XCTAssertTrue(selected)
+        // Must NEVER open write-side WebSocket (which triggers thread/resume) for cwdMissing!
+        XCTAssertNil(socket.connectedSessionID)
+        XCTAssertNil(store.connectedSessionID)
+        // Must preserve dedicated missing-path notice and NOT surface "workspace expired" error!
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNotNil(store.selectedSessionControlNotice)
+        XCTAssertTrue(
+            store.selectedSessionControlNotice?.contains("移动或删除") == true
+                || store.selectedSessionControlNotice?.contains("moved or deleted") == true
+        )
+        XCTAssertEqual(store.conversationStore.messages(for: browseMissingSession.id).count, 1)
+
+        // Quiet background refresh for a missing browse projectID must NOT overwrite UI with "workspace expired".
+        await store.refreshSessionListQuietlyIfStillSelected(projectID: browseMissingSession.projectID)
+        XCTAssertNil(store.errorMessage)
+    }
 }
