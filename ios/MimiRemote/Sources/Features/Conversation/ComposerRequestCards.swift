@@ -797,9 +797,16 @@ struct PendingApprovalActionCard: View {
                 systemImage: "checkmark.shield",
                 decision: "acceptAlways",
                 identifier: "approval.allowAlways",
-                accessibilityHint: approval.alwaysAllowLabel,
+                accessibilityHint: approval.alwaysAllowScopeNotice ?? approval.alwaysAllowLabel,
                 tokens: tokens
             )
+            if let scopeNotice = approval.alwaysAllowScopeNotice {
+                Label(scopeNotice, systemImage: "info.circle")
+                    .font(themeStore.uiFont(.footnote))
+                    .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("approval.allowAlwaysScopeNotice")
+            }
         }
 
         if approval.canAcceptMCPToolForSession {

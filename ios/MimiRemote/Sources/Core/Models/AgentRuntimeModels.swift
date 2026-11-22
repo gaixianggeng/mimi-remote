@@ -782,6 +782,7 @@ struct ApprovalSummary: Codable, Hashable {
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
     let alwaysAllowLabel: String?
+    let alwaysAllowScopeUncertain: Bool?
 
     init(
         id: String,
@@ -792,7 +793,8 @@ struct ApprovalSummary: Codable, Hashable {
         count: Int?,
         availableDecisions: [String]? = nil,
         persistentPermissionRules: [String]? = nil,
-        alwaysAllowLabel: String? = nil
+        alwaysAllowLabel: String? = nil,
+        alwaysAllowScopeUncertain: Bool? = nil
     ) {
         let normalizedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalizedRisk = risk?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -806,6 +808,7 @@ struct ApprovalSummary: Codable, Hashable {
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
         self.alwaysAllowLabel = normalizedAlwaysLabel.isEmpty ? nil : normalizedAlwaysLabel
+        self.alwaysAllowScopeUncertain = alwaysAllowScopeUncertain
     }
 
     var hasDecisionContext: Bool {
@@ -834,6 +837,19 @@ struct ApprovalSummary: Codable, Hashable {
     var canAcceptAlways: Bool {
         guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
         return supportsDecision("acceptAlways")
+    }
+
+    var alwaysAllowScopeNotice: String? {
+        guard canAcceptAlways else { return nil }
+        let prefersChinese = L10n.text("ui.always_allowed").range(of: "\\p{Han}", options: .regularExpression) != nil
+        if alwaysAllowScopeUncertain == true {
+            return prefersChinese
+                ? "上游未说明该持续授权的精确范围，可能对后续会话持续生效。"
+                : "Scope is not specified by the agent and may persist across future sessions."
+        }
+        return prefersChinese
+            ? "该持续授权由代理保存，可能对后续会话生效。"
+            : "This persistent grant is managed by the agent and may apply to future sessions."
     }
 
     var canPersistPermission: Bool {
@@ -1236,6 +1252,7 @@ struct AgentApprovalRequest: Codable, Hashable {
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
     let alwaysAllowLabel: String?
+    let alwaysAllowScopeUncertain: Bool?
 
     init(
         id: String,
@@ -1245,7 +1262,8 @@ struct AgentApprovalRequest: Codable, Hashable {
         risk: String?,
         availableDecisions: [String]? = nil,
         persistentPermissionRules: [String]? = nil,
-        alwaysAllowLabel: String? = nil
+        alwaysAllowLabel: String? = nil,
+        alwaysAllowScopeUncertain: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -1255,6 +1273,7 @@ struct AgentApprovalRequest: Codable, Hashable {
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
         self.alwaysAllowLabel = alwaysAllowLabel
+        self.alwaysAllowScopeUncertain = alwaysAllowScopeUncertain
     }
 }
 

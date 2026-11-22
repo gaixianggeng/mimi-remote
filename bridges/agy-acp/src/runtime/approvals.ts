@@ -57,41 +57,57 @@ const CROSS_SESSION_SCOPE_PATTERNS: readonly RegExp[] = [
   /\bevery\s+(conversation|session|chat|thread)\b/i,
   /\ball\s+(conversations|sessions|chats|threads|projects)\b/i,
   /\bfuture\s+(conversations|sessions|chats|threads)\b/i,
+  /\bother\s+(conversations|sessions|chats|threads)\b/i,
   /\bremember\s+for\s+every\b/i,
-  /\b(global|globally|permanent|permanently|forever|settings\.json)\b/i,
-  /跨会话|所有会话|全部会话|永久/,
+  /\b(global|globally|permanent|permanently|forever|settings\.json|workspace|project)\b/i,
+  /跨会话|跨对话|所有会话|全部会话|后续会话|永久|记住|保存至|项目范围|工作区范围/,
 ];
 
-const SESSION_ONLY_NAME_PATTERNS: readonly RegExp[] = [
-  /\b(this|current)\s+(session|conversation|chat|thread)\b/i,
-  /\bfor\s+(this\s+)?(session|conversation)\b/i,
-  /\bsession[\s_-]?only\b/i,
-  /本会话|当前会话|本次会话/,
+// ACP 规范约定：optionId 只是不透明标识符，绝不可用于推断授权范围；
+// 只有运行时通过结构化 scope 元数据，或通过无歧义的完整单会话范围文案明确承诺仅限本会话时，
+// 才允许映射为 acceptForSession（B01/B05）。
+const EXPLICIT_SESSION_ONLY_NAME_PATTERNS: readonly RegExp[] = [
+  /^(?:allow|approve|permit)(?:\s+always)?\s+(?:for\s+)?(?:this|the\s+current|current)\s+(?:session|conversation|chat|thread)(?:\s+only)?\.?$/i,
+  /^(?:allow|approve|permit)\s+in\s+(?:this|the\s+current|current)\s+(?:session|conversation|chat|thread)(?:\s+only)?\.?$/i,
+  /^(?:this\s+|current\s+)?(?:session|conversation)[\s_-]?only\.?$/i,
+  /^(?:仅限?|只在?)?(?:本|当前|本次)(?:会话|对话)(?:内)?(?:允许|批准|放行)(?:（仅限本会话）)?$/,
+  /^(?:允许|批准)(?:本|当前|本次)(?:会话|对话)(?:（仅限本会话）)?$/,
 ];
 
-function isExplicitSessionScopedAllowOption(option: AcpPermissionOption): boolean {
-  if (option.kind !== "allow_always") return false;
+const TRUSTED_SESSION_SCOPES = new Set(["session", "this_session", "current_session", "session_only"]);
+const EXPLICIT_PERSISTENT_SCOPES = new Set(["always", "persistent", "global", "workspace", "project", "cross_session", "all_sessions"]);
+
+type AllowAlwaysScopeClassification = "session" | "persistent" | "uncertain";
+
+function readStructuredOptionScope(option: AcpPermissionOption): string | undefined {
+  const direct = typeof option.scope === "string" ? option.scope.trim().toLowerCase() : "";
+  if (direct) return direct;
+  const metaScope = option._meta && typeof option._meta.scope === "string" ? option._meta.scope.trim().toLowerCase() : "";
+  return metaScope || undefined;
+}
+
+function classifyAllowAlwaysOption(option: AcpPermissionOption): AllowAlwaysScopeClassification {
+  if (option.kind !== "allow_always") return "uncertain";
   const name = (option.name ?? "").trim();
-  const optionId = (option.optionId ?? "").trim();
-  const combined = `${name} ${optionId}`;
-  if (CROSS_SESSION_SCOPE_PATTERNS.some((pattern) => pattern.test(combined))) {
-    return false;
+  const structuredScope = readStructuredOptionScope(option);
+  const nameHasCrossSession = name.length > 0 && CROSS_SESSION_SCOPE_PATTERNS.some((pattern) => pattern.test(name));
+
+  if (structuredScope) {
+    if (TRUSTED_SESSION_SCOPES.has(structuredScope) && !nameHasCrossSession) {
+      return "session";
+    }
+    if (EXPLICIT_PERSISTENT_SCOPES.has(structuredScope)) {
+      return "persistent";
+    }
   }
-  if (SESSION_ONLY_NAME_PATTERNS.some((pattern) => pattern.test(name))) {
-    return true;
+
+  if (nameHasCrossSession) {
+    return "persistent";
   }
-  // 仅当 optionId 明确带 session 语义且不含 global/all/every/always 歧义词时才认可为本会话范围。
-  const normalizedId = optionId.toLowerCase();
-  if (
-    normalizedId.includes("session")
-    && !normalizedId.includes("all")
-    && !normalizedId.includes("every")
-    && !normalizedId.includes("global")
-    && !normalizedId.includes("always")
-  ) {
-    return true;
+  if (name.length > 0 && EXPLICIT_SESSION_ONLY_NAME_PATTERNS.some((pattern) => pattern.test(name))) {
+    return "session";
   }
-  return false;
+  return "uncertain";
 }
 
 export function serverApprovalFor(
@@ -110,10 +126,15 @@ export function serverApprovalFor(
     rawInput: tool.rawInput,
   };
   const allowOnceOption = request.options.find((opt) => opt.kind === "allow_once");
-  const sessionAllowOption = request.options.find((opt) => isExplicitSessionScopedAllowOption(opt));
-  const persistentAllowOption = request.options.find(
-    (opt) => opt.kind === "allow_always" && !isExplicitSessionScopedAllowOption(opt),
+  const sessionAllowOption = request.options.find(
+    (opt) => opt.kind === "allow_always" && classifyAllowAlwaysOption(opt) === "session",
   );
+  const persistentAllowOption = request.options.find(
+    (opt) => opt.kind === "allow_always" && classifyAllowAlwaysOption(opt) !== "session",
+  );
+  const persistentClassification = persistentAllowOption
+    ? classifyAllowAlwaysOption(persistentAllowOption)
+    : undefined;
   const rejectOption =
     request.options.find((opt) => opt.kind === "reject_once")
     ?? request.options.find((opt) => opt.kind === "reject_always");
@@ -135,6 +156,7 @@ export function serverApprovalFor(
   availableDecisions.push("decline");
 
   const alwaysAllowLabel = persistentAllowOption?.name?.trim() || null;
+  const alwaysAllowScopeUncertain = persistentAllowOption ? persistentClassification === "uncertain" : undefined;
 
   const common = {
     threadId: context.threadId,
@@ -145,6 +167,7 @@ export function serverApprovalFor(
     inputSummary: summarizeInput(tool.rawInput),
     toolName: tool.title || kind,
     ...(alwaysAllowLabel ? { alwaysAllowLabel } : {}),
+    ...(alwaysAllowScopeUncertain !== undefined ? { alwaysAllowScopeUncertain } : {}),
   };
 
   // B01/B05 严格校验：只接受本次请求实际公布的决议并绑定到精确 optionId，

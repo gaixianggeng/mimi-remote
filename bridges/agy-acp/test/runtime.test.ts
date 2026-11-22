@@ -97,9 +97,67 @@ test("B05: generic unqualified allow_always does not advertise acceptForSession"
   }, { threadId: "session-1", turnId: "turn-1", cwd: "/workspace" });
 
   expect(approval.params.availableDecisions).toEqual(["accept", "acceptAlways", "decline"]);
+  expect(approval.params.alwaysAllowLabel).toBe("Always allow");
+  expect(approval.params.alwaysAllowScopeUncertain).toBe(true);
   expect(approval.toAcpResult({ decision: "acceptForSession" })).toEqual({ outcome: { outcome: "cancelled" } });
   expect(approval.toAcpResult({ decision: "acceptAlways" })).toEqual({
     outcome: { outcome: "selected", optionId: "opt-always" },
+  });
+});
+
+test("B05 round3: opaque optionId containing 'session' NEVER downgrades persistent or uncertain allow_always into acceptForSession", () => {
+  const opaqueWithGenericLabel = serverApprovalFor({
+    sessionId: "session-1",
+    toolCall: { toolCallId: "cmd-opaque-1", kind: "execute", title: "Run rm -rf tmp" },
+    options: [
+      { optionId: "allow-session", name: "Allow always", kind: "allow_always" },
+      { optionId: "reject-1", name: "Reject", kind: "reject_once" },
+    ],
+  }, { threadId: "session-1", turnId: "turn-1", cwd: "/workspace" });
+
+  expect(opaqueWithGenericLabel.params.availableDecisions).toEqual(["acceptAlways", "decline"]);
+  expect(opaqueWithGenericLabel.params.alwaysAllowLabel).toBe("Allow always");
+  expect(opaqueWithGenericLabel.params.alwaysAllowScopeUncertain).toBe(true);
+  expect(opaqueWithGenericLabel.toAcpResult({ decision: "acceptForSession" })).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(opaqueWithGenericLabel.toAcpResult({ decision: "acceptAlways" })).toEqual({
+    outcome: { outcome: "selected", optionId: "allow-session" },
+  });
+
+  const opaqueWithCrossSessionLabel = serverApprovalFor({
+    sessionId: "session-1",
+    toolCall: { toolCallId: "cmd-opaque-2", kind: "execute", title: "Run echo" },
+    options: [
+      { optionId: "session_rule_v1", name: "Remember for every conversation", kind: "allow_always" },
+      { optionId: "reject-2", name: "Reject", kind: "reject_once" },
+    ],
+  }, { threadId: "session-1", turnId: "turn-1", cwd: "/workspace" });
+
+  expect(opaqueWithCrossSessionLabel.params.availableDecisions).toEqual(["acceptAlways", "decline"]);
+  expect(opaqueWithCrossSessionLabel.params.alwaysAllowLabel).toBe("Remember for every conversation");
+  expect(opaqueWithCrossSessionLabel.params.alwaysAllowScopeUncertain).toBe(false);
+  expect(opaqueWithCrossSessionLabel.toAcpResult({ decision: "acceptForSession" })).toEqual({ outcome: { outcome: "cancelled" } });
+
+  const ambiguousCombinedLabel = serverApprovalFor({
+    sessionId: "session-1",
+    toolCall: { toolCallId: "cmd-opaque-3", kind: "execute", title: "Run echo" },
+    options: [
+      { optionId: "opt-mixed", name: "Allow for this session and future sessions", kind: "allow_always" },
+    ],
+  }, { threadId: "session-1", turnId: "turn-1", cwd: "/workspace" });
+  expect(ambiguousCombinedLabel.params.availableDecisions).toEqual(["acceptAlways", "decline"]);
+  expect(ambiguousCombinedLabel.toAcpResult({ decision: "acceptForSession" })).toEqual({ outcome: { outcome: "cancelled" } });
+
+  const trustedStructuredScope = serverApprovalFor({
+    sessionId: "session-1",
+    toolCall: { toolCallId: "cmd-structured", kind: "execute", title: "Run pwd" },
+    options: [
+      { optionId: "opaque-id-99", name: "Allow", kind: "allow_always", _meta: { scope: "session" } },
+      { optionId: "reject-3", name: "Reject", kind: "reject_once" },
+    ],
+  }, { threadId: "session-1", turnId: "turn-1", cwd: "/workspace" });
+  expect(trustedStructuredScope.params.availableDecisions).toEqual(["acceptForSession", "decline"]);
+  expect(trustedStructuredScope.toAcpResult({ decision: "acceptForSession" })).toEqual({
+    outcome: { outcome: "selected", optionId: "opaque-id-99" },
   });
 });
 

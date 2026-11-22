@@ -233,11 +233,29 @@ final class RuntimeFoundationTests: XCTestCase {
             kind: "command",
             count: nil,
             availableDecisions: ["accept", "acceptAlways", "decline"],
-            alwaysAllowLabel: "Remember for every conversation"
+            alwaysAllowLabel: "Remember for every conversation",
+            alwaysAllowScopeUncertain: false
         )
         XCTAssertTrue(crossSessionAlways.canApproveOnce)
         XCTAssertFalse(crossSessionAlways.canAcceptForSession)
         XCTAssertTrue(crossSessionAlways.canAcceptAlways)
+        XCTAssertNotNil(crossSessionAlways.alwaysAllowScopeNotice)
+
+        let uncertainAlways = ApprovalSummary(
+            id: "req-cmd-uncertain-always",
+            title: "Run ls",
+            body: "ls",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["acceptAlways", "decline"],
+            alwaysAllowLabel: "Allow always",
+            alwaysAllowScopeUncertain: true
+        )
+        XCTAssertFalse(uncertainAlways.canApproveOnce)
+        XCTAssertFalse(uncertainAlways.canAcceptForSession)
+        XCTAssertTrue(uncertainAlways.canAcceptAlways)
+        XCTAssertNotNil(uncertainAlways.alwaysAllowScopeNotice)
+        XCTAssertNotEqual(uncertainAlways.alwaysAllowScopeNotice, crossSessionAlways.alwaysAllowScopeNotice)
 
         let fileSessionOnly = ApprovalSummary(
             id: "req-file-session",
