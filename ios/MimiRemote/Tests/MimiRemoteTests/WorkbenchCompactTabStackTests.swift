@@ -201,6 +201,46 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertEqual(path.count, 2, "子 Agent 页属于父会话，不能被当作残留栈清掉")
     }
 
+    func testPhoneTabKeepsOneDetailWithoutTreatingItAsVisible() {
+        var state = WorkbenchNavigationState(route: .session(id: "first", source: .sessions))
+
+        XCTAssertNil(state.reduce(.compactTabChanged(.workspaces), usesCompactNavigation: true,
+                                  selectedSessionID: "first", usesPhoneIntegratedBottomChrome: true))
+        XCTAssertEqual(state.selection, .workspaces)
+        XCTAssertEqual(state.compactSessionPath, [.session("first")])
+        XCTAssertNil(state.visibleSessionID(usesCompactNavigation: true))
+
+        XCTAssertNil(state.reduce(.compactTabChanged(.sessions), usesCompactNavigation: true,
+                                  selectedSessionID: "first", usesPhoneIntegratedBottomChrome: true))
+        XCTAssertEqual(state.visibleSessionID(usesCompactNavigation: true), "first")
+
+        XCTAssertEqual(state.reduce(.open(.session("second"), source: .workspaces), usesCompactNavigation: true,
+                                    selectedSessionID: "first", usesPhoneIntegratedBottomChrome: true),
+                       .selectSession("second"))
+        XCTAssertTrue(state.compactSessionPath.isEmpty)
+        XCTAssertEqual(state.compactWorkspacePath, [.session("second")])
+    }
+
+    func testPhoneBackgroundSelectionAndInvalidationDoNotTakeOverTheTab() {
+        var state = WorkbenchNavigationState(route: .session(id: "first", source: .sessions))
+        state.reduce(.compactTabChanged(.workspaces), usesCompactNavigation: true,
+                     selectedSessionID: nil, usesPhoneIntegratedBottomChrome: true)
+
+        state.reduce(.selectionCommitted(SessionSelectionCommit(
+            sequence: 1, projectID: "project", sessionID: "first", reason: .userOpen
+        )), usesCompactNavigation: true, selectedSessionID: "first", usesPhoneIntegratedBottomChrome: true)
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertEqual(state.compactSessionPath, [.session("first")])
+        XCTAssertNil(state.visibleSessionID(usesCompactNavigation: true))
+
+        state.reduce(.selectionCommitted(SessionSelectionCommit(
+            sequence: 2, projectID: "project", sessionID: nil, reason: .invalidation
+        )), usesCompactNavigation: true, selectedSessionID: nil, usesPhoneIntegratedBottomChrome: true)
+        XCTAssertEqual(state.compactSelectedTab, .workspaces)
+        XCTAssertEqual(state.route, .workspaces)
+        XCTAssertTrue(state.compactSessionPath.isEmpty)
+    }
+
     private func assertTappingWorkspacesShowsList(
         _ state: inout WorkbenchNavigationState,
         selectedSessionID: SessionID?,

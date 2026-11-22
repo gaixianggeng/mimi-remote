@@ -201,12 +201,14 @@ struct WorkbenchNavigationState: Equatable {
     mutating func reduce(
         _ event: WorkbenchNavigationEvent,
         usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
+        selectedSessionID: SessionID?,
+        usesPhoneIntegratedBottomChrome: Bool = false
     ) -> WorkbenchNavigationEffect? {
         let effect = apply(
             event,
             usesCompactNavigation: usesCompactNavigation,
-            selectedSessionID: selectedSessionID
+            selectedSessionID: selectedSessionID,
+            usesPhoneIntegratedBottomChrome: usesPhoneIntegratedBottomChrome
         )
         alignCompactPathsWithRoute()
         return effect
@@ -215,7 +217,8 @@ struct WorkbenchNavigationState: Equatable {
     private mutating func apply(
         _ event: WorkbenchNavigationEvent,
         usesCompactNavigation: Bool,
-        selectedSessionID: SessionID?
+        selectedSessionID: SessionID?,
+        usesPhoneIntegratedBottomChrome: Bool
     ) -> WorkbenchNavigationEffect? {
         switch event {
         case .open(let destination, let requestedSource):
@@ -248,16 +251,21 @@ struct WorkbenchNavigationState: Equatable {
             return nil
 
         case .selectionCommitted(let commit):
-            let preservedGlobalTab = globalSettingsTab(usesCompactNavigation: usesCompactNavigation)
+            let preservedTab = tabCoveringSession(
+                usesCompactNavigation: usesCompactNavigation,
+                usesPhoneIntegratedBottomChrome: usesPhoneIntegratedBottomChrome
+            )
+            let currentSessionID = route.detailSessionID
             pendingSessionSelectionID = nil
             switch commit.reason {
             case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
+                if let preservedTab, !preservedTab.isGlobalSettings {
+                    applyRoot(Self.rootPage(for: preservedTab))
+                    return nil
+                }
                 applyRoot(route.rootPage)
-                restoreGlobalSettingsIfNeeded(
-                    preservedGlobalTab,
-                    usesCompactNavigation: usesCompactNavigation
-                )
+                restoreCoveringTab(preservedTab, usesCompactNavigation: usesCompactNavigation)
 
             case .identityReplacement(let previousID):
                 guard route.detailSessionID == previousID,
@@ -268,10 +276,7 @@ struct WorkbenchNavigationState: Equatable {
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
                 )
-                restoreGlobalSettingsIfNeeded(
-                    preservedGlobalTab,
-                    usesCompactNavigation: usesCompactNavigation
-                )
+                restoreCoveringTab(preservedTab, usesCompactNavigation: usesCompactNavigation)
 
             case .restoration:
                 // Root 只允许仍与启动快照一致的恢复提交；这里再约束一次，
@@ -284,10 +289,7 @@ struct WorkbenchNavigationState: Equatable {
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: true
                 )
-                restoreGlobalSettingsIfNeeded(
-                    preservedGlobalTab,
-                    usesCompactNavigation: usesCompactNavigation
-                )
+                restoreCoveringTab(preservedTab, usesCompactNavigation: usesCompactNavigation)
 
             case .notification:
                 guard let sessionID = commit.sessionID else { return nil }
@@ -309,6 +311,9 @@ struct WorkbenchNavigationState: Equatable {
                     usesCompactNavigation: usesCompactNavigation,
                     replacesCompactPath: false
                 )
+                if usesPhoneIntegratedBottomChrome, sessionID == currentSessionID {
+                    restoreCoveringTab(preservedTab, usesCompactNavigation: usesCompactNavigation)
+                }
             }
             return nil
 
@@ -351,6 +356,12 @@ struct WorkbenchNavigationState: Equatable {
                 return nil
             }
             let path = tab == .sessions ? compactSessionPath : compactWorkspacePath
+            // iPhone 可直接从详情切去另一个根页。保留单一会话路由和选择，
+            // selection 单独表示屏幕现在显示的根页，通知也据此判断会话是否可见。
+            if usesPhoneIntegratedBottomChrome, path.isEmpty, route.detailSessionID != nil {
+                selection = Self.rootDestination(for: tab)
+                return nil
+            }
             let destination = path.last ?? Self.rootDestination(for: tab)
             selection = destination
             switch destination {
@@ -378,9 +389,9 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
-    /// 紧凑栈始终是路由的投影。详情页会隐藏 Tab 栏，用户不可能把详情“留”在另一个 Tab 里；
-    /// 那里的残留栈只来自通知、旋转后的侧栏选择等程序化跳转，下次点那个 Tab 就会打开早已
-    /// 离开的旧会话（#787），所以路由不指向的 Tab 一律清空。宽屏打开会话或替换乐观 ID 时
+    /// 紧凑栈始终是路由的投影。iPhone 切 Tab 可以保留会话路由，但最多只有一路详情。
+    /// 打开另一条会话时清空旧宿主的栈，避免返回后打开早已离开的旧会话（#787）。
+    /// 宽屏打开会话或替换乐观 ID 时
     /// 不改写紧凑栈，路由所在 Tab 的栈顶可能落后于路由；改成路由会话，转回紧凑布局时无论
     /// Shell 是否重放路由（停在“我的”“设备”时不重放），都打开同一个详情。紧凑布局不挂载
     /// 于宽屏，这里的改写在宽屏期间不可见。
@@ -400,9 +411,20 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
-    /// “我的”和“设备”是覆盖在工作台路由之上的全局页面。后台恢复、失效或会话 ID 替换
-    /// 可以更新隐藏路由，但不能在没有用户导航意图时把当前页面抢走。
-    private mutating func restoreGlobalSettingsIfNeeded(
+    private func tabCoveringSession(
+        usesCompactNavigation: Bool,
+        usesPhoneIntegratedBottomChrome: Bool
+    ) -> CompactWorkbenchTab? {
+        if let settings = globalSettingsTab(usesCompactNavigation: usesCompactNavigation) {
+            return settings
+        }
+        guard usesPhoneIntegratedBottomChrome, case .session(_, let source) = route else { return nil }
+        return compactSelectedTab == (source == .sessions ? .sessions : .workspaces)
+            ? nil : compactSelectedTab
+    }
+
+    /// 后台会话的恢复、失效或 ID 替换可以更新隐藏路由，不能抢走当前 Tab。
+    private mutating func restoreCoveringTab(
         _ tab: CompactWorkbenchTab?,
         usesCompactNavigation: Bool
     ) {
@@ -699,6 +721,10 @@ struct WorkbenchLayout: Equatable {
     }
 
     var usesCompactPhoneNavigationTypography: Bool {
+        usesCompactNavigation && isPhone
+    }
+
+    var usesPhoneIntegratedBottomChrome: Bool {
         usesCompactNavigation && isPhone
     }
 
