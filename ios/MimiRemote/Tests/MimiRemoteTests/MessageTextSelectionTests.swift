@@ -84,6 +84,52 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertFalse(MessageTextSelectionPolicy.copyText(document.text.string).contains("\u{fffc}"))
     }
 
+    func testOrderedListMarkersUseSecondaryColorAndHeadingsAddTopSpacing() throws {
+        let document = markdown("""
+        # 每日摘要
+
+        这是一段导语说明。
+
+        ## AI 资讯
+
+        1. **首个重点结论。** 后接常规字重正文。
+        2. **第二条结论。** 序号应当使用次级灰，突出加粗导语。
+        """)
+        let source = document.text.string as NSString
+
+        let firstHeadingRange = source.range(of: "每日摘要")
+        let firstHeadingParagraph = try XCTUnwrap(
+            document.text.attribute(.paragraphStyle, at: firstHeadingRange.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let firstHeadingFont = try XCTUnwrap(
+            document.text.attribute(.font, at: firstHeadingRange.location, effectiveRange: nil) as? UIFont
+        )
+        XCTAssertEqual(firstHeadingParagraph.paragraphSpacingBefore, 0, "首行标题不应增加多余顶部留白")
+        XCTAssertLessThan(firstHeadingParagraph.paragraphSpacing, style.markdown.blockSpacing)
+        XCTAssertTrue(firstHeadingFont.fontDescriptor.symbolicTraits.contains(.traitBold))
+
+        let sectionHeadingRange = source.range(of: "AI 资讯")
+        let sectionHeadingParagraph = try XCTUnwrap(
+            document.text.attribute(.paragraphStyle, at: sectionHeadingRange.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        XCTAssertEqual(sectionHeadingParagraph.paragraphSpacingBefore, 10, "章节二级标题应与上文拉开呼吸间距")
+
+        let markerRange = source.range(of: "1.")
+        let markerColor = try XCTUnwrap(
+            document.text.attribute(.foregroundColor, at: markerRange.location, effectiveRange: nil) as? UIColor
+        )
+        let leadRange = source.range(of: "首个重点结论。")
+        let leadColor = try XCTUnwrap(
+            document.text.attribute(.foregroundColor, at: leadRange.location, effectiveRange: nil) as? UIColor
+        )
+        let leadFont = try XCTUnwrap(
+            document.text.attribute(.font, at: leadRange.location, effectiveRange: nil) as? UIFont
+        )
+        XCTAssertEqual(markerColor, style.secondaryForeground)
+        XCTAssertEqual(leadColor, style.foreground)
+        XCTAssertTrue(leadFont.fontDescriptor.symbolicTraits.contains(.traitBold))
+    }
+
     func testPlainAndMarkdownParagraphsHaveSameTypography() throws {
         let content = "同样的正文，保持相同的行距。\n第二行继续阅读。"
         let plain = MessageTextDocument.plain(content, style: style)
