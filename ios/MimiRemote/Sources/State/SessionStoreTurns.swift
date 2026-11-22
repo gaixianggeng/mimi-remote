@@ -190,8 +190,10 @@ extension SessionStore {
             threadGoalRuntimeProviders.formUnion(
                 self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
             )
+            let diagnostics = await client.runtimeChannelDiagnostics()
+            guard appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
-            self.runtimeChannelDiagnosticsByProvider = await client.runtimeChannelDiagnostics()
+            self.runtimeChannelDiagnosticsByProvider = diagnostics
             self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
             if availableRuntimeProviders.contains(Self.nativeHarnessRuntimeProvider) {
                 // 用户已启用、agentd 能力兼容且 Harness 健康后，才建立宿主级事件流。
@@ -314,7 +316,9 @@ extension SessionStore {
             let available = try await clientFactory().runtimeChannelAvailable(runtimeProvider: provider)
             guard appStore.activeHostScope == hostScope else { return false }
             if let client = try? clientFactory() {
-                runtimeChannelDiagnosticsByProvider = await client.runtimeChannelDiagnostics()
+                let diagnostics = await client.runtimeChannelDiagnostics()
+                guard appStore.activeHostScope == hostScope else { return false }
+                runtimeChannelDiagnosticsByProvider = diagnostics
             }
             if available {
                 availableRuntimeProviders.insert(provider)

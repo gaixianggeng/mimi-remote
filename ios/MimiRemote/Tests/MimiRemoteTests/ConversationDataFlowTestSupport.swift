@@ -523,6 +523,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var createSessionResults: [Result<CreateSessionResponse, Error>]
     /// 结束会话的结果；nil 时保持历史行为（抛 unimplemented），只有显式设置时才返回成功或指定错误。
     var stopSessionResult: Result<Void, Error>?
+    var runtimeChannelDiagnosticsHandler: (() async -> [String: RuntimeChannelDiagnostic])?
     let sessionArchiveResults: [String: Result<Void, Error>]
     let sessionArchiveHandler: ((String, Bool) async throws -> Void)?
     let sessionForkResults: [String: Result<AgentSession, Error>]
@@ -827,6 +828,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
             throw MockError.unimplemented
         }
         return runtimeChannelAvailability[runtimeProvider] ?? false
+    }
+
+    func runtimeChannelDiagnostics() async -> [String: RuntimeChannelDiagnostic] {
+        if let runtimeChannelDiagnosticsHandler {
+            return await runtimeChannelDiagnosticsHandler()
+        }
+        return [:]
     }
 
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {

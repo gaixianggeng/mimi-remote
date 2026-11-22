@@ -480,4 +480,77 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertFalse(store.isProtocolReadOnlySession(store.selectedSession!))
         XCTAssertNil(store.selectedOwnershipNotice)
     }
+
+    @MainActor
+    func testB14Round2StaleHostDiagnosticResponseDoesNotOverwriteSwitchedHealthyHost() async throws {
+        let appStore = makeIsolatedAppStore()
+        var startedWaiting: CheckedContinuation<Void, Never>?
+        var releaseStaleDiagnostics: CheckedContinuation<[String: RuntimeChannelDiagnostic], Never>?
+
+        let staleDiagnostic = RuntimeChannelDiagnostic(
+            provider: "agy",
+            status: "agy_unsupported",
+            cliVersion: "1.4.99",
+            minimumCLIVersion: "1.5.0",
+            lastProbeError: "Antigravity CLI 1.4.99 is outdated",
+            fix: "Upgrade agy"
+        )
+        let slowOldHostClient = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": true, "agy": false]
+        )
+        slowOldHostClient.runtimeChannelDiagnosticsHandler = {
+            await withCheckedContinuation { continuation in
+                releaseStaleDiagnostics = continuation
+                startedWaiting?.resume()
+                startedWaiting = nil
+            }
+        }
+        let healthyNewHostClient = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": true, "agy": true]
+        )
+
+        var useHealthyHost = false
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { useHealthyHost ? healthyNewHostClient : slowOldHostClient }
+        )
+
+        let enteredDiagnostics = Task {
+            await withCheckedContinuation { continuation in
+                startedWaiting = continuation
+            }
+        }
+        let oldHostRefresh = Task {
+            await store.refreshAppServerModelOptions(force: true)
+        }
+        await enteredDiagnostics.value
+
+        // Switch to healthy Host B while Host A's slow diagnostics call is still in flight.
+        let oldScope = appStore.activeHostScope
+        useHealthyHost = true
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.21:8787",
+            token: "healthy-host-token",
+            profileTarget: .newProfile(id: "host-healthy", displayName: "Healthy Host"),
+            installationID: "install-healthy"
+        ))
+        XCTAssertNotEqual(appStore.activeHostScope, oldScope)
+        store.availableRuntimeProviders = ["codex", "agy"]
+        store.runtimeChannelDiagnosticsByProvider = [:]
+
+        // Now Host A's stale outdated-agy diagnostic resolves asynchronously.
+        releaseStaleDiagnostics?.resume(returning: ["agy": staleDiagnostic])
+        await oldHostRefresh.value
+
+        // Host B's healthy runtime state MUST remain untouched!
+        XCTAssertTrue(store.availableRuntimeProviders.contains("agy"))
+        XCTAssertNil(store.runtimeChannelDiagnosticsByProvider["agy"])
+        XCTAssertNil(store.workspaceRuntimeNotice(for: .agy))
+    }
 }
