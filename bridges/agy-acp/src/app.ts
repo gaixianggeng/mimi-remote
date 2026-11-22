@@ -117,6 +117,7 @@ export function createApp(options: AppOptions): App {
       historyRef?.invalidate(threadId);
       void overlay.recordSession(threadId, patch);
     },
+    reserveTurnAttempt: (threadId, info) => overlay.reserveTurnAttempt(threadId, info),
     existingTurnCount: (threadId) => historyRef?.persistedTurnCount(threadId) ?? Promise.resolve(0),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
     inspectTranscriptState: (threadId) => catalogRef?.transcriptState(threadId) ?? Promise.resolve(undefined),
@@ -137,6 +138,7 @@ export function createApp(options: AppOptions): App {
     (sessionId) => manager.liveTurns(sessionId),
     (turnId) => manager.clientIdForTurn(turnId),
     (sessionId, turnId) => overlay.getTurnOutcome(sessionId, turnId),
+    (sessionId) => overlay.getTurnAttempts(sessionId),
   );
   historyRef = history;
 

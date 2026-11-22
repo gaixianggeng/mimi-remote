@@ -1230,4 +1230,155 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("B10 round2: early failure before persistence stays visible after restart and next successful turn gets a new ID without inheriting old error", async () => {
+    let callCount = 0;
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ session, emitUpdate }) => {
+        callCount += 1;
+        if (callCount === 1) {
+          emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "first ok" } });
+          return { stopReason: "end_turn" };
+        }
+        if (callCount === 2) {
+          // Simulate failure BEFORE upstream writes the user message to DB/replay.
+          session.replayUpdates.pop();
+          throw new Error("EARLY_FAILURE: failed before user message persisted");
+        }
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "recovered ok" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    let threadId = "";
+    let failedTurnId = "";
+    let nextSuccessTurnId = "";
+
+    const first = await createTestHarness(world);
+    try {
+      const started = await first.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir });
+      threadId = started.thread.id;
+      await writeFile(
+        path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${threadId}.db`),
+        "sqlite-placeholder",
+      );
+
+      // Turn 1: succeeds
+      await first.rpc("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "turn one", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && first.notifications.filter((n) => n.method === "turn/completed").length < 1; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      // Turn 2: fails BEFORE user message persists
+      const failedStart = await first.rpc<{ turn: { id: string } }>("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "retry me", text_elements: [] }],
+      });
+      failedTurnId = failedStart.turn.id;
+      for (let i = 0; i < 40 && first.notifications.filter((n) => n.method === "turn/completed").length < 2; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    } finally {
+      await first.close();
+    }
+
+    // Restart #1: verify early failure did NOT disappear, then run next successful turn (even with same prompt!).
+    const second = await createTestHarness(world);
+    try {
+      const afterEarlyFail = await second.rpc<{
+        data: Array<{ id: string; status: string; error: { message: string } | null }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(afterEarlyFail.data).toHaveLength(2);
+      expect(afterEarlyFail.data[0]?.status).toBe("completed");
+      expect(afterEarlyFail.data[1]?.id).toBe(failedTurnId);
+      expect(afterEarlyFail.data[1]?.status).toBe("failed");
+      expect(afterEarlyFail.data[1]?.error?.message).toContain("EARLY_FAILURE");
+
+      // Next turn succeeds — must allocate a NEW non-reused turn ID!
+      const nextStart = await second.rpc<{ turn: { id: string } }>("turn/start", {
+        threadId,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "retry me", text_elements: [] }],
+      });
+      nextSuccessTurnId = nextStart.turn.id;
+      expect(nextSuccessTurnId).not.toBe(failedTurnId);
+      for (let i = 0; i < 40 && second.notifications.filter((n) => n.method === "turn/completed").length < 1; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    } finally {
+      await second.close();
+    }
+
+    // Restart #2: cold read on BOTH ACP replay and transcript paths must keep failedTurnId as failed
+    // and nextSuccessTurnId as completed (error: null)!
+    const third = await createTestHarness(world);
+    try {
+      const replayTurns = await third.rpc<{
+        data: Array<{ id: string; status: string; error: { message: string } | null }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(replayTurns.data).toHaveLength(3);
+      expect(replayTurns.data[0]?.status).toBe("completed");
+      expect(replayTurns.data[1]?.id).toBe(failedTurnId);
+      expect(replayTurns.data[1]?.status).toBe("failed");
+      expect(replayTurns.data[1]?.error?.message).toContain("EARLY_FAILURE");
+      expect(replayTurns.data[2]?.id).toBe(nextSuccessTurnId);
+      expect(replayTurns.data[2]?.status).toBe("completed");
+      expect(replayTurns.data[2]?.error).toBeNull();
+
+      // Also test cold transcript read (transcript only persisted turn 1 and turn 3).
+      const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", threadId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      await writeFile(
+        path.join(logsDir, "transcript_full.jsonl"),
+        [
+          JSON.stringify({
+            step_index: 0,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-22T01:00:00Z",
+            content: "<USER_REQUEST>\nturn one\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 1,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-22T01:00:01Z",
+            content: "first ok",
+          }),
+          JSON.stringify({
+            step_index: 2,
+            type: "USER_INPUT",
+            status: "DONE",
+            created_at: "2026-11-22T01:00:05Z",
+            content: "<USER_REQUEST>\nretry me\n</USER_REQUEST>",
+          }),
+          JSON.stringify({
+            step_index: 3,
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            created_at: "2026-11-22T01:00:06Z",
+            content: "recovered ok",
+          }),
+        ].join("\n") + "\n",
+      );
+
+      const transcriptTurns = await third.rpc<{
+        data: Array<{ id: string; status: string; error: { message: string } | null }>;
+      }>("thread/turns/list", { threadId, sortDirection: "asc", itemsView: "full" });
+      expect(transcriptTurns.data).toHaveLength(3);
+      expect(transcriptTurns.data[1]?.id).toBe(failedTurnId);
+      expect(transcriptTurns.data[1]?.status).toBe("failed");
+      expect(transcriptTurns.data[1]?.error?.message).toContain("EARLY_FAILURE");
+      expect(transcriptTurns.data[2]?.id).toBe(nextSuccessTurnId);
+      expect(transcriptTurns.data[2]?.status).toBe("completed");
+      expect(transcriptTurns.data[2]?.error).toBeNull();
+    } finally {
+      await third.close();
+    }
+  });
 });

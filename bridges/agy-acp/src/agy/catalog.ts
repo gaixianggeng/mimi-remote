@@ -6,7 +6,7 @@ import { SharedReadonlyAcp } from "./binary.ts";
 import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
 import { directoryExists, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
-import type { AgyOverlay, TurnOutcomeRecord } from "./overlay.ts";
+import type { AgyOverlay, TurnAttemptRecord, TurnOutcomeRecord } from "./overlay.ts";
 import {
   inspectTranscriptActivity,
   readTranscriptTurns,
@@ -320,6 +320,8 @@ export class AgyHistoryStore {
     private readonly clientIdForTurn?: (turnId: string) => string | undefined,
     /** 回填持久化在 overlay 中的失败/中断回合终态与结构化错误（B10）。 */
     private readonly turnOutcomeForTurn?: (sessionId: string, turnId: string) => TurnOutcomeRecord | undefined,
+    /** 读取按不可复用尝试 ID 持久化的回合尝试记录，用于合并早失败与避免旧错误覆盖新回合（B10）。 */
+    private readonly turnAttemptsForSession?: (sessionId: string) => TurnAttemptRecord[],
   ) {}
 
   invalidate(sessionId: string): void {
@@ -361,8 +363,8 @@ export class AgyHistoryStore {
       const updates = await this.backend.loadReplay(sessionId, record.cwd, record.origin);
       turns = updatesToTurns(sessionId, record.cwd, updates, running);
     }
-    turns = this.attachKnownClientIds(turns);
     turns = this.applyKnownTurnOutcomes(sessionId, turns);
+    turns = this.attachKnownClientIds(turns);
 
     this.cache.delete(sessionId);
     this.cache.set(sessionId, { revision, running, holderActive, turns });
@@ -392,6 +394,10 @@ export class AgyHistoryStore {
   }
 
   private applyKnownTurnOutcomes(sessionId: string, turns: Turn[]): Turn[] {
+    const attempts = this.turnAttemptsForSession?.(sessionId) ?? [];
+    if (attempts.length > 0) {
+      return mergeTurnsWithAttempts(turns, attempts);
+    }
     if (!this.turnOutcomeForTurn) return turns;
     return turns.map((turn) => {
       if (turn.status === "inProgress") return turn;
@@ -419,4 +425,131 @@ export class AgyHistoryStore {
       return turn;
     });
   }
+}
+
+function normalizeTurnPrompt(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function extractTurnUserPrompt(turn: Turn): string {
+  for (const item of turn.items) {
+    if (item.type !== "userMessage") continue;
+    const parts: string[] = [];
+    for (const part of item.content) {
+      if (part.type === "text" && part.text) {
+        parts.push(part.text);
+      }
+    }
+    const joined = normalizeTurnPrompt(parts.join(" "));
+    if (joined) return joined;
+  }
+  return "";
+}
+
+function rewriteTurnId(turn: Turn, targetTurnId: string): Turn {
+  if (turn.id === targetTurnId) return turn;
+  const oldPrefix = `${turn.id}:`;
+  return {
+    ...turn,
+    id: targetTurnId,
+    items: turn.items.map((item) =>
+      item.id.startsWith(oldPrefix) ? { ...item, id: `${targetTurnId}:${item.id.slice(oldPrefix.length)}` } : item,
+    ),
+  };
+}
+
+function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
+  const aligned = rewriteTurnId(turn, attempt.turnId);
+  if (aligned.status === "inProgress") return aligned;
+  if (attempt.status === "completed") {
+    return aligned;
+  }
+  if (attempt.status === "failed") {
+    return {
+      ...aligned,
+      status: "failed",
+      error: aligned.error ?? {
+        message: attempt.error ?? "Antigravity turn failed",
+        codexErrorInfo: null,
+        additionalDetails: null,
+        misalignment: null,
+      },
+    };
+  }
+  if (attempt.status === "interrupted" && aligned.status === "completed") {
+    return {
+      ...aligned,
+      status: "interrupted",
+      error: null,
+    };
+  }
+  return aligned;
+}
+
+function mergeTurnsWithAttempts(nativeTurns: readonly Turn[], attempts: readonly TurnAttemptRecord[]): Turn[] {
+  const finishedAttempts = attempts.filter((entry) => entry.status !== "inProgress");
+  if (finishedAttempts.length === 0) return [...nativeTurns];
+
+  const out: Turn[] = [];
+  let nativeIdx = 0;
+
+  for (let i = 0; i < finishedAttempts.length; i += 1) {
+    const attempt = finishedAttempts[i]!;
+    while (nativeIdx < nativeTurns.length && nativeIdx < attempt.afterPersistedTurnCount) {
+      out.push(nativeTurns[nativeIdx]!);
+      nativeIdx += 1;
+    }
+
+    const candidate = nativeTurns[nativeIdx];
+    const attemptPrompt = normalizeTurnPrompt(attempt.promptText);
+    const candidatePrompt = candidate ? extractTurnUserPrompt(candidate) : "";
+    const promptsCompatible =
+      Boolean(candidate)
+      && (attemptPrompt === "" || candidatePrompt === "" || candidatePrompt === attemptPrompt || candidatePrompt.includes(attemptPrompt) || attemptPrompt.includes(candidatePrompt));
+
+    let shouldTreatAsUnpersisted = attempt.persisted === false || !candidate || !promptsCompatible;
+    if (!shouldTreatAsUnpersisted && attempt.status !== "completed" && attemptPrompt) {
+      // 同提示词连续重试：前一次早失败未落盘、后一次成功落盘时，剩余原生回合数少于剩余同提示词尝试数，
+      // 必须把原生回合留给后续成功尝试，不能把早失败错误贴到新成功回合上（B10）。
+      let remainingSamePromptAttempts = 0;
+      let hasLaterCompletedSamePrompt = false;
+      for (let j = i; j < finishedAttempts.length; j += 1) {
+        const other = finishedAttempts[j]!;
+        if (other.persisted === false) continue;
+        const otherPrompt = normalizeTurnPrompt(other.promptText);
+        if (otherPrompt === attemptPrompt) {
+          remainingSamePromptAttempts += 1;
+          if (j > i && other.status === "completed") {
+            hasLaterCompletedSamePrompt = true;
+          }
+        }
+      }
+      let remainingSamePromptNative = 0;
+      for (let k = nativeIdx; k < nativeTurns.length; k += 1) {
+        const p = extractTurnUserPrompt(nativeTurns[k]!);
+        if (p === attemptPrompt || p.includes(attemptPrompt) || attemptPrompt.includes(p)) {
+          remainingSamePromptNative += 1;
+        }
+      }
+      if (hasLaterCompletedSamePrompt && remainingSamePromptNative < remainingSamePromptAttempts) {
+        shouldTreatAsUnpersisted = true;
+      }
+    }
+
+    if (shouldTreatAsUnpersisted) {
+      if (attempt.status !== "completed" && attempt.syntheticTurn) {
+        out.push(attempt.syntheticTurn);
+      }
+      continue;
+    }
+
+    out.push(applyAttemptOutcome(candidate!, attempt));
+    nativeIdx += 1;
+  }
+
+  while (nativeIdx < nativeTurns.length) {
+    out.push(nativeTurns[nativeIdx]!);
+    nativeIdx += 1;
+  }
+  return out;
 }

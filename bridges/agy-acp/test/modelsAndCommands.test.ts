@@ -274,4 +274,58 @@ D1–D6 的倾向
       await rm(tempRoot, { recursive: true, force: true });
     }
   });
+
+  test("B10 round2: readTranscriptTurns treats recoverable intermediate ERROR_MESSAGE followed by DONE planner reply as completed", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-recover-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:00Z",
+          content: "<USER_REQUEST>\nrun tool that fails once then recovers\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"false\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "GENERIC",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "command exited 1",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "Transient tool failure",
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:03Z",
+          content: "Handled the command failure and finished cleanly.",
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10-recover", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.status).toBe("completed");
+      expect(turns[0]?.error).toBeNull();
+      const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
+      expect(cmdItem && cmdItem.type === "commandExecution" ? cmdItem.status : null).toBe("failed");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

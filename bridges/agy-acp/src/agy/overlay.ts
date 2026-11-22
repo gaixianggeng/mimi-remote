@@ -1,9 +1,24 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 
 export interface TurnOutcomeRecord {
-  status: "failed" | "interrupted";
+  status: "completed" | "failed" | "interrupted";
   error?: string | null;
+}
+
+export interface TurnAttemptRecord {
+  attemptId: string;
+  turnId: string;
+  promptText: string;
+  afterPersistedTurnCount: number;
+  status: "inProgress" | "completed" | "failed" | "interrupted";
+  error?: string | null;
+  /** 若明确确认未落盘（如写用户消息前早失败），为 false；成功落盘为 true；未知（如无 transcript 文件）为 undefined。 */
+  persisted?: boolean;
+  /** 仅针对未落盘的失败/中断尝试保存完整快照，以便冷读历史时保留（B10）。 */
+  syntheticTurn?: Turn;
+  createdAt: number;
 }
 
 interface OverlayEntry {
@@ -13,10 +28,14 @@ interface OverlayEntry {
   updatedAt?: number;
   cwd?: string;
   archived?: boolean;
+  nextTurnOrdinal?: number;
+  nextAttemptSeq?: number;
   turnOutcomes?: Record<string, TurnOutcomeRecord>;
+  turnAttempts?: TurnAttemptRecord[];
 }
 
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
+const MAX_TURN_ATTEMPTS_PER_SESSION = 200;
 
 interface OverlayData {
   version: 1;
@@ -62,6 +81,46 @@ export class AgyOverlay {
     return this.data.sessions[sessionId]?.turnOutcomes?.[turnId];
   }
 
+  getTurnAttempts(sessionId: string): TurnAttemptRecord[] {
+    return this.data.sessions[sessionId]?.turnAttempts ?? [];
+  }
+
+  /**
+   * 发布回合前预留不可复用的回合序号与尝试 ID（B10）：
+   * 即使本次尝试在用户消息落盘前失败，下一次成功尝试也不会复用同一 turnId。
+   */
+  async reserveTurnAttempt(
+    sessionId: string,
+    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+  ): Promise<{ turnId: string; attemptId: string }> {
+    await this.load();
+    const current = this.data.sessions[sessionId] ?? {};
+    const ordinal = Math.max(info.minTurnOrdinal, (current.nextTurnOrdinal ?? 0) + 1);
+    const attemptSeq = (current.nextAttemptSeq ?? 0) + 1;
+    const turnId = `${sessionId}:turn:${ordinal}`;
+    const attemptId = `${sessionId}:attempt:${attemptSeq}`;
+    const attempts = [...(current.turnAttempts ?? [])];
+    attempts.push({
+      attemptId,
+      turnId,
+      promptText: info.promptText,
+      afterPersistedTurnCount: info.afterPersistedTurnCount,
+      status: "inProgress",
+      createdAt: Math.floor(Date.now() / 1000),
+    });
+    while (attempts.length > MAX_TURN_ATTEMPTS_PER_SESSION) {
+      attempts.shift();
+    }
+    this.data.sessions[sessionId] = {
+      ...current,
+      nextTurnOrdinal: ordinal,
+      nextAttemptSeq: attemptSeq,
+      turnAttempts: attempts,
+    };
+    await this.persist();
+    return { turnId, attemptId };
+  }
+
   async recordSession(
     sessionId: string,
     patch: {
@@ -71,6 +130,16 @@ export class AgyOverlay {
       updatedAt?: number;
       customTitle?: string;
       turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+      turnAttemptUpdate?: {
+        attemptId: string;
+        turnId: string;
+        promptText?: string;
+        afterPersistedTurnCount?: number;
+        status: "completed" | "failed" | "interrupted";
+        error?: string | null;
+        persisted?: boolean;
+        syntheticTurn?: Turn;
+      };
     },
   ): Promise<void> {
     await this.load();
@@ -90,6 +159,38 @@ export class AgyOverlay {
       }
       turnOutcomes = nextOutcomes;
     }
+    let turnAttempts = current.turnAttempts;
+    if (patch.turnAttemptUpdate) {
+      const update = patch.turnAttemptUpdate;
+      const nextAttempts = [...(current.turnAttempts ?? [])];
+      const idx = nextAttempts.findIndex((entry) => entry.attemptId === update.attemptId);
+      if (idx >= 0) {
+        const existing = nextAttempts[idx]!;
+        nextAttempts[idx] = {
+          ...existing,
+          status: update.status,
+          ...(update.error !== undefined ? { error: update.error } : {}),
+          ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+          ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
+        };
+      } else {
+        nextAttempts.push({
+          attemptId: update.attemptId,
+          turnId: update.turnId,
+          promptText: update.promptText ?? "",
+          afterPersistedTurnCount: update.afterPersistedTurnCount ?? 0,
+          status: update.status,
+          ...(update.error !== undefined ? { error: update.error } : {}),
+          ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+          ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
+          createdAt: Math.floor(Date.now() / 1000),
+        });
+      }
+      while (nextAttempts.length > MAX_TURN_ATTEMPTS_PER_SESSION) {
+        nextAttempts.shift();
+      }
+      turnAttempts = nextAttempts;
+    }
     const next: OverlayEntry = {
       ...current,
       ...(patch.cwd ? { cwd: patch.cwd } : {}),
@@ -98,6 +199,7 @@ export class AgyOverlay {
       ...(patch.updatedAt !== undefined ? { updatedAt: Math.max(current.updatedAt ?? 0, patch.updatedAt) } : {}),
       ...(patch.customTitle !== undefined ? { customTitle: patch.customTitle } : {}),
       ...(turnOutcomes ? { turnOutcomes } : {}),
+      ...(turnAttempts ? { turnAttempts } : {}),
     };
     this.data.sessions[sessionId] = next;
     await this.persist();

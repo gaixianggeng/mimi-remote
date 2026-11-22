@@ -48,8 +48,22 @@ export interface RuntimeHost {
       preview?: string;
       updatedAt?: number;
       turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+      turnAttemptUpdate?: {
+        attemptId: string;
+        turnId: string;
+        promptText?: string;
+        afterPersistedTurnCount?: number;
+        status: "completed" | "failed" | "interrupted";
+        error?: string | null;
+        persisted?: boolean;
+        syntheticTurn?: Turn;
+      };
     },
   ): void;
+  reserveTurnAttempt?(
+    threadId: string,
+    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+  ): Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?(threadId: string): Promise<number>;
   recordTurnClientId?(turnId: string, clientId: string): void;
   inspectTranscriptState?(threadId: string): Promise<TranscriptTurnSnapshot | undefined>;
@@ -70,6 +84,7 @@ export class ThreadRuntime {
   private appliedModel: string | undefined;
   private appliedEffort: string | undefined;
   private currentTurn: LiveTurn | undefined;
+  private currentAttempt: { attemptId: string; turnId: string; promptText: string; afterPersistedTurnCount: number } | undefined;
   private startingTurn = false;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -184,8 +199,20 @@ export class ThreadRuntime {
       await this.applySessionControls(client, this.settings);
 
       const diskTurnCount = this.persisted ? ((await this.host.existingTurnCount?.(this.threadId).catch(() => 0)) ?? 0) : 0;
+      const persistedBefore = Math.max(this.historyTurns?.filter((t) => t.status === "completed").length ?? 0, diskTurnCount);
       const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskTurnCount) + 1;
-      const turnId = `${this.threadId}:turn:${nextTurnIndex}`;
+      const reserved = await this.host.reserveTurnAttempt?.(this.threadId, {
+        minTurnOrdinal: nextTurnIndex,
+        afterPersistedTurnCount: persistedBefore,
+        promptText: preview,
+      });
+      const turnId = reserved?.turnId ?? `${this.threadId}:turn:${nextTurnIndex}`;
+      const attemptMeta = {
+        attemptId: reserved?.attemptId ?? `${turnId}:attempt`,
+        turnId,
+        promptText: preview,
+        afterPersistedTurnCount: persistedBefore,
+      };
       if (req.clientUserMessageId) {
         this.host.recordTurnClientId?.(turnId, req.clientUserMessageId);
       }
@@ -193,6 +220,7 @@ export class ThreadRuntime {
         this.host.publish(this.threadId, method, params);
       });
       this.currentTurn = turn;
+      this.currentAttempt = attemptMeta;
       this.startingTurn = false;
 
       this.host.publish(this.threadId, "thread/status/changed", {
@@ -216,7 +244,7 @@ export class ThreadRuntime {
       };
       this.startExternalWriteMonitor(turn);
 
-      void this.runPrompt(client, turn, blocks);
+      void this.runPrompt(client, turn, blocks, attemptMeta, initialSnapshot);
       return turn.snapshot(false);
     } catch (error) {
       this.stopExternalWriteMonitor();
@@ -224,6 +252,7 @@ export class ThreadRuntime {
       this.externalWriteConflict = undefined;
       this.startingTurn = false;
       this.currentTurn = undefined;
+      this.currentAttempt = undefined;
       this.scheduleIdleClose();
       throw error;
     }
@@ -249,11 +278,25 @@ export class ThreadRuntime {
       this.currentTurn.markInterrupted();
       const { turn } = this.currentTurn.finish(undefined, "session closed", this.totalUsage);
       this.historyTurns = [...(this.historyTurns ?? []), turn];
+      const attempt = this.currentAttempt;
       this.host.onTurnPersisted?.(this.threadId, {
         updatedAt: Math.floor(Date.now() / 1000),
-        turnOutcome: { turnId: turn.id, status: "interrupted" },
+        ...(attempt
+          ? {
+              turnAttemptUpdate: {
+                attemptId: attempt.attemptId,
+                turnId: turn.id,
+                promptText: attempt.promptText,
+                afterPersistedTurnCount: attempt.afterPersistedTurnCount,
+                status: "interrupted",
+                error: null,
+                syntheticTurn: turn,
+              },
+            }
+          : { turnOutcome: { turnId: turn.id, status: "interrupted" } }),
       });
       this.currentTurn = undefined;
+      this.currentAttempt = undefined;
     }
     await this.closeClient();
   }
@@ -262,6 +305,8 @@ export class ThreadRuntime {
     client: AcpClient,
     turn: LiveTurn,
     blocks: Parameters<AcpClient["sessionPrompt"]>[1],
+    attemptMeta: { attemptId: string; turnId: string; promptText: string; afterPersistedTurnCount: number },
+    initialSnapshot: TranscriptTurnSnapshot | undefined,
   ): Promise<void> {
     let finishedTurn: Turn | undefined;
     try {
@@ -288,19 +333,36 @@ export class ThreadRuntime {
       if (this.currentTurn === turn) {
         this.externalWriteConflict = undefined;
         this.currentTurn = undefined;
+        this.currentAttempt = undefined;
       }
       this.updatedAt = Math.floor(Date.now() / 1000);
-      const turnOutcome =
-        finishedTurn && (finishedTurn.status === "failed" || finishedTurn.status === "interrupted")
-          ? {
-              turnId: finishedTurn.id,
-              status: finishedTurn.status,
-              error: finishedTurn.error?.message ?? null,
-            }
-          : undefined;
+      const afterSnapshot = await this.host.inspectTranscriptState?.(this.threadId).catch(() => undefined);
+      let attemptPersisted: boolean | undefined;
+      if (finishedTurn?.status === "completed") {
+        attemptPersisted = true;
+      } else if (initialSnapshot !== undefined && afterSnapshot !== undefined) {
+        attemptPersisted = afterSnapshot.userInputs.length > initialSnapshot.userInputs.length;
+      } else if (afterSnapshot !== undefined && afterSnapshot.userInputs.length > attemptMeta.afterPersistedTurnCount) {
+        attemptPersisted = true;
+      }
+      const attemptStatus: "completed" | "failed" | "interrupted" =
+        finishedTurn?.status === "failed"
+          ? "failed"
+          : finishedTurn?.status === "interrupted"
+            ? "interrupted"
+            : "completed";
       this.host.onTurnPersisted?.(this.threadId, {
         updatedAt: this.updatedAt,
-        ...(turnOutcome ? { turnOutcome } : {}),
+        turnAttemptUpdate: {
+          attemptId: attemptMeta.attemptId,
+          turnId: finishedTurn?.id ?? attemptMeta.turnId,
+          promptText: attemptMeta.promptText,
+          afterPersistedTurnCount: attemptMeta.afterPersistedTurnCount,
+          status: attemptStatus,
+          error: finishedTurn?.error?.message ?? null,
+          ...(attemptPersisted !== undefined ? { persisted: attemptPersisted } : {}),
+          ...(attemptStatus !== "completed" && finishedTurn ? { syntheticTurn: finishedTurn } : {}),
+        },
       });
       const ext = hadConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)

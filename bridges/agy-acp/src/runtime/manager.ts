@@ -29,8 +29,22 @@ export interface ManagerOptions {
       preview?: string;
       updatedAt?: number;
       turnOutcome?: { turnId: string; status: "failed" | "interrupted"; error?: string | null };
+      turnAttemptUpdate?: {
+        attemptId: string;
+        turnId: string;
+        promptText?: string;
+        afterPersistedTurnCount?: number;
+        status: "completed" | "failed" | "interrupted";
+        error?: string | null;
+        persisted?: boolean;
+        syntheticTurn?: Turn;
+      };
     },
   ) => void;
+  reserveTurnAttempt?: (
+    threadId: string,
+    info: { minTurnOrdinal: number; afterPersistedTurnCount: number; promptText: string },
+  ) => Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?: (threadId: string) => Promise<number>;
   hasCustomTitle?: (threadId: string) => boolean;
   inspectTranscriptState?: (threadId: string) => Promise<TranscriptTurnSnapshot | undefined>;
@@ -78,6 +92,7 @@ export class ThreadManager {
         }
       },
       onTurnPersisted: options.onTurnPersisted,
+      reserveTurnAttempt: options.reserveTurnAttempt,
       existingTurnCount: options.existingTurnCount,
       recordTurnClientId: (turnId, clientId) => this.recordTurnClientId(turnId, clientId),
       inspectTranscriptState: options.inspectTranscriptState,
