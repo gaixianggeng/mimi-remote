@@ -1085,4 +1085,149 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       await harness.close();
     }
   });
+
+  test("B05 round2: cross-session allow_always is never advertised as acceptForSession and second distinct session still prompts", async () => {
+    const outcomes: Array<{ sessionId: string; toolCallId: string; outcome: unknown }> = [];
+    const persistentAllowedTools = new Set<string>();
+    const sessionAllowedTools = new Map<string, Set<string>>();
+    const world = new FakeAgyWorld({
+      onPrompt: async ({ session, prompt, emitUpdate, requestPermission }) => {
+        const text = prompt.find((p): p is { type: "text"; text: string } => p.type === "text")?.text ?? "";
+        if (text === "cross-session-test") {
+          if (!persistentAllowedTools.has("cmd:pwd")) {
+            const res = await requestPermission(
+              { toolCallId: "cross-cmd", title: "Run pwd", kind: "execute", rawInput: { CommandLine: "pwd" } },
+              [
+                { optionId: "cross-always", name: "Remember for every conversation", kind: "allow_always" },
+                { optionId: "cross-reject", name: "Reject", kind: "reject_once" },
+              ],
+            );
+            outcomes.push({ sessionId: session.sessionId, toolCallId: "cross-cmd", outcome: res });
+            const selected = (res as { outcome?: { outcome?: string; optionId?: string } })?.outcome;
+            if (selected?.outcome === "selected" && selected.optionId === "cross-always") {
+              persistentAllowedTools.add("cmd:pwd");
+            }
+          }
+        } else if (text === "session-scoped-cmd-and-file") {
+          const allowed = sessionAllowedTools.get(session.sessionId) ?? new Set<string>();
+          sessionAllowedTools.set(session.sessionId, allowed);
+          if (!allowed.has("cmd:pwd")) {
+            const cmdRes = await requestPermission(
+              { toolCallId: "sess-cmd", title: "Run pwd", kind: "execute", rawInput: { CommandLine: "pwd" } },
+              [
+                { optionId: "cmd-once", name: "Allow once", kind: "allow_once" },
+                { optionId: "cmd-session", name: "Allow for this session", kind: "allow_always" },
+                { optionId: "cmd-reject", name: "Reject", kind: "reject_once" },
+              ],
+            );
+            outcomes.push({ sessionId: session.sessionId, toolCallId: "sess-cmd", outcome: cmdRes });
+            const selected = (cmdRes as { outcome?: { outcome?: string; optionId?: string } })?.outcome;
+            if (selected?.outcome === "selected" && selected.optionId === "cmd-session") {
+              allowed.add("cmd:pwd");
+            }
+          }
+          if (!allowed.has("file:notes")) {
+            const fileRes = await requestPermission(
+              { toolCallId: "sess-file", title: "Edit notes.txt", kind: "edit", rawInput: { Path: path.join(workspaceDir, "notes.txt") } },
+              [
+                { optionId: "file-once", name: "Allow once", kind: "allow_once" },
+                { optionId: "file-session", name: "Allow for this session", kind: "allow_always" },
+                { optionId: "file-reject", name: "Reject", kind: "reject_once" },
+              ],
+            );
+            outcomes.push({ sessionId: session.sessionId, toolCallId: "sess-file", outcome: fileRes });
+            const selected = (fileRes as { outcome?: { outcome?: string; optionId?: string } })?.outcome;
+            if (selected?.outcome === "selected" && selected.optionId === "file-session") {
+              allowed.add("file:notes");
+            }
+          }
+        }
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+
+    const harness = await createTestHarness(world);
+    try {
+      const s1 = (await harness.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir })).thread.id;
+      const s2 = (await harness.rpc<{ thread: { id: string } }>("thread/start", { cwd: workspaceDir })).thread.id;
+
+      // 1) Cross-session upstream option ("Remember for every conversation") in Session 1:
+      // Must NOT advertise acceptForSession; sending acceptForSession must cancel, never select cross-always.
+      await harness.rpc("turn/start", {
+        threadId: s1,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "cross-session-test", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && harness.serverRequests.length < 1; i += 1) await new Promise((r) => setTimeout(r, 15));
+      const req1 = harness.serverRequests[0]!;
+      expect((req1.params as { availableDecisions?: string[] }).availableDecisions).toEqual(["acceptAlways", "decline"]);
+      expect((req1.params as { alwaysAllowLabel?: string }).alwaysAllowLabel).toBe("Remember for every conversation");
+      harness.respondServerRequest(req1.id, { decision: "acceptForSession" });
+      for (let i = 0; i < 40 && harness.notifications.filter((n) => n.method === "turn/completed").length < 1; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      expect(outcomes[0]?.outcome).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(persistentAllowedTools.has("cmd:pwd")).toBe(false);
+
+      // Session 2 MUST still prompt because cross-session option was never escalated.
+      await harness.rpc("turn/start", {
+        threadId: s2,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "cross-session-test", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && harness.serverRequests.length < 2; i += 1) await new Promise((r) => setTimeout(r, 15));
+      expect(harness.serverRequests).toHaveLength(2);
+      harness.respondServerRequest(harness.serverRequests[1]!.id, { decision: "decline" });
+      for (let i = 0; i < 40 && harness.notifications.filter((n) => n.method === "turn/completed").length < 2; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      // 2) Session-scoped options for command and file in Session 1 -> selects exact session optionId,
+      // does NOT allow Session 2 without prompting.
+      await harness.rpc("turn/start", {
+        threadId: s1,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "session-scoped-cmd-and-file", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && harness.serverRequests.length < 3; i += 1) await new Promise((r) => setTimeout(r, 15));
+      expect(harness.serverRequests[2]?.method).toBe("item/commandExecution/requestApproval");
+      expect((harness.serverRequests[2]?.params as { availableDecisions?: string[] }).availableDecisions).toEqual([
+        "accept",
+        "acceptForSession",
+        "decline",
+      ]);
+      harness.respondServerRequest(harness.serverRequests[2]!.id, { decision: "acceptForSession" });
+
+      for (let i = 0; i < 40 && harness.serverRequests.length < 4; i += 1) await new Promise((r) => setTimeout(r, 15));
+      expect(harness.serverRequests[3]?.method).toBe("item/fileChange/requestApproval");
+      expect((harness.serverRequests[3]?.params as { availableDecisions?: string[] }).availableDecisions).toEqual([
+        "accept",
+        "acceptForSession",
+        "decline",
+      ]);
+      harness.respondServerRequest(harness.serverRequests[3]!.id, { decision: "acceptForSession" });
+      for (let i = 0; i < 40 && harness.notifications.filter((n) => n.method === "turn/completed").length < 3; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      // Session 2 still prompts for both command and file!
+      await harness.rpc("turn/start", {
+        threadId: s2,
+        cwd: workspaceDir,
+        input: [{ type: "text", text: "session-scoped-cmd-and-file", text_elements: [] }],
+      });
+      for (let i = 0; i < 40 && harness.serverRequests.length < 5; i += 1) await new Promise((r) => setTimeout(r, 15));
+      expect(harness.serverRequests[4]?.method).toBe("item/commandExecution/requestApproval");
+      harness.respondServerRequest(harness.serverRequests[4]!.id, { decision: "decline" });
+      for (let i = 0; i < 40 && harness.serverRequests.length < 6; i += 1) await new Promise((r) => setTimeout(r, 15));
+      expect(harness.serverRequests[5]?.method).toBe("item/fileChange/requestApproval");
+      harness.respondServerRequest(harness.serverRequests[5]!.id, { decision: "decline" });
+      for (let i = 0; i < 40 && harness.notifications.filter((n) => n.method === "turn/completed").length < 4; i += 1) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    } finally {
+      await harness.close();
+    }
+  });
 });

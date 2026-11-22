@@ -53,6 +53,47 @@ export function selectPermissionOption(
   return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
 }
 
+const CROSS_SESSION_SCOPE_PATTERNS: readonly RegExp[] = [
+  /\bevery\s+(conversation|session|chat|thread)\b/i,
+  /\ball\s+(conversations|sessions|chats|threads|projects)\b/i,
+  /\bfuture\s+(conversations|sessions|chats|threads)\b/i,
+  /\bremember\s+for\s+every\b/i,
+  /\b(global|globally|permanent|permanently|forever|settings\.json)\b/i,
+  /跨会话|所有会话|全部会话|永久/,
+];
+
+const SESSION_ONLY_NAME_PATTERNS: readonly RegExp[] = [
+  /\b(this|current)\s+(session|conversation|chat|thread)\b/i,
+  /\bfor\s+(this\s+)?(session|conversation)\b/i,
+  /\bsession[\s_-]?only\b/i,
+  /本会话|当前会话|本次会话/,
+];
+
+function isExplicitSessionScopedAllowOption(option: AcpPermissionOption): boolean {
+  if (option.kind !== "allow_always") return false;
+  const name = (option.name ?? "").trim();
+  const optionId = (option.optionId ?? "").trim();
+  const combined = `${name} ${optionId}`;
+  if (CROSS_SESSION_SCOPE_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return false;
+  }
+  if (SESSION_ONLY_NAME_PATTERNS.some((pattern) => pattern.test(name))) {
+    return true;
+  }
+  // 仅当 optionId 明确带 session 语义且不含 global/all/every/always 歧义词时才认可为本会话范围。
+  const normalizedId = optionId.toLowerCase();
+  if (
+    normalizedId.includes("session")
+    && !normalizedId.includes("all")
+    && !normalizedId.includes("every")
+    && !normalizedId.includes("global")
+    && !normalizedId.includes("always")
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function serverApprovalFor(
   request: AcpRequestPermissionParams,
   context: ApprovalContext,
@@ -68,12 +109,32 @@ export function serverApprovalFor(
     locations: tool.locations,
     rawInput: tool.rawInput,
   };
-  const hasOnceOption = request.options.some((opt) => opt.kind === "allow_once");
-  const hasAlwaysOption = request.options.some((opt) => opt.kind === "allow_always");
+  const allowOnceOption = request.options.find((opt) => opt.kind === "allow_once");
+  const sessionAllowOption = request.options.find((opt) => isExplicitSessionScopedAllowOption(opt));
+  const persistentAllowOption = request.options.find(
+    (opt) => opt.kind === "allow_always" && !isExplicitSessionScopedAllowOption(opt),
+  );
+  const rejectOption =
+    request.options.find((opt) => opt.kind === "reject_once")
+    ?? request.options.find((opt) => opt.kind === "reject_always");
+
   const availableDecisions: string[] = [];
-  if (hasOnceOption) availableDecisions.push("accept");
-  if (hasAlwaysOption) availableDecisions.push("acceptForSession");
+  const decisionOptionIds = new Map<string, string>();
+  if (allowOnceOption) {
+    availableDecisions.push("accept");
+    decisionOptionIds.set("accept", allowOnceOption.optionId);
+  }
+  if (sessionAllowOption) {
+    availableDecisions.push("acceptForSession");
+    decisionOptionIds.set("acceptForSession", sessionAllowOption.optionId);
+  }
+  if (persistentAllowOption) {
+    availableDecisions.push("acceptAlways");
+    decisionOptionIds.set("acceptAlways", persistentAllowOption.optionId);
+  }
   availableDecisions.push("decline");
+
+  const alwaysAllowLabel = persistentAllowOption?.name?.trim() || null;
 
   const common = {
     threadId: context.threadId,
@@ -83,21 +144,27 @@ export function serverApprovalFor(
     reason: tool.title ?? null,
     inputSummary: summarizeInput(tool.rawInput),
     toolName: tool.title || kind,
+    ...(alwaysAllowLabel ? { alwaysAllowLabel } : {}),
   };
 
+  // B01/B05 严格校验：只接受本次请求实际公布的决议并绑定到精确 optionId，
+  // 拒绝未公布的决议及旧别名（如 acceptWithPermissionUpdate / acceptWithExecpolicyAmendment），
+  // 绝不把跨会话持久授权（如 "Remember for every conversation"）伪装或放行给 acceptForSession。
   const toAcpResult = (response: unknown): AcpRequestPermissionResult => {
-    switch (decisionTag(response)) {
-      case "acceptForSession":
-      case "acceptWithPermissionUpdate":
-      case "acceptWithExecpolicyAmendment":
-        return selectPermissionOption(request.options, "allow_always");
-      case "accept":
-        return selectPermissionOption(request.options, "allow_once");
-      case "cancel":
-        return { outcome: { outcome: "cancelled" } };
-      default:
-        return selectPermissionOption(request.options, "reject_once");
+    const tag = decisionTag(response);
+    if (tag === "cancel") {
+      return { outcome: { outcome: "cancelled" } };
     }
+    if (tag === "decline") {
+      return rejectOption
+        ? { outcome: { outcome: "selected", optionId: rejectOption.optionId } }
+        : { outcome: { outcome: "cancelled" } };
+    }
+    if (!availableDecisions.includes(tag)) {
+      return { outcome: { outcome: "cancelled" } };
+    }
+    const optionId = decisionOptionIds.get(tag);
+    return optionId ? { outcome: { outcome: "selected", optionId } } : { outcome: { outcome: "cancelled" } };
   };
 
   const changes = extractDiffChanges(state);

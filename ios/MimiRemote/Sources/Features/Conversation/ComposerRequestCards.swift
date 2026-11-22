@@ -785,6 +785,23 @@ struct PendingApprovalActionCard: View {
             )
         }
 
+        if approval.canAcceptAlways {
+            let alwaysTitle: String = {
+                if let label = approval.alwaysAllowLabel, !label.isEmpty {
+                    return "\(L10n.text("ui.always_allowed")) (\(label))"
+                }
+                return L10n.text("ui.always_allowed")
+            }()
+            sessionTrustButton(
+                title: alwaysTitle,
+                systemImage: "checkmark.shield",
+                decision: "acceptAlways",
+                identifier: "approval.allowAlways",
+                accessibilityHint: approval.alwaysAllowLabel,
+                tokens: tokens
+            )
+        }
+
         if approval.canAcceptMCPToolForSession {
             sessionTrustButton(
                 title: L10n.text("ui.allow_for_this_session"),

@@ -181,9 +181,13 @@ final class RuntimeFoundationTests: XCTestCase {
             body: "pwd",
             kind: "command",
             count: nil,
-            availableDecisions: ["acceptForSession", "decline"]
+            availableDecisions: ["acceptAlways", "decline"],
+            alwaysAllowLabel: "Remember for every conversation"
         )
         XCTAssertFalse(alwaysOnly.canApproveOnce)
+        XCTAssertFalse(alwaysOnly.canAcceptForSession)
+        XCTAssertTrue(alwaysOnly.canAcceptAlways)
+        XCTAssertEqual(alwaysOnly.alwaysAllowLabel, "Remember for every conversation")
 
         let onceAndSession = ApprovalSummary(
             id: "req-once-and-session",
@@ -194,6 +198,8 @@ final class RuntimeFoundationTests: XCTestCase {
             availableDecisions: ["accept", "acceptForSession", "decline"]
         )
         XCTAssertTrue(onceAndSession.canApproveOnce)
+        XCTAssertTrue(onceAndSession.canAcceptForSession)
+        XCTAssertFalse(onceAndSession.canAcceptAlways)
 
         let legacyNilDecisions = ApprovalSummary(
             id: "req-legacy",
@@ -217,9 +223,23 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertTrue(commandWithSession.canApproveOnce)
         XCTAssertTrue(commandWithSession.canAcceptForSession)
+        XCTAssertFalse(commandWithSession.canAcceptAlways)
         XCTAssertFalse(commandWithSession.canAcceptMCPToolForSession)
 
-        let fileAlwaysOnly = ApprovalSummary(
+        let crossSessionAlways = ApprovalSummary(
+            id: "req-cmd-cross-session",
+            title: "Run pwd",
+            body: "pwd",
+            kind: "command",
+            count: nil,
+            availableDecisions: ["accept", "acceptAlways", "decline"],
+            alwaysAllowLabel: "Remember for every conversation"
+        )
+        XCTAssertTrue(crossSessionAlways.canApproveOnce)
+        XCTAssertFalse(crossSessionAlways.canAcceptForSession)
+        XCTAssertTrue(crossSessionAlways.canAcceptAlways)
+
+        let fileSessionOnly = ApprovalSummary(
             id: "req-file-session",
             title: "Edit file",
             body: "diff",
@@ -227,8 +247,9 @@ final class RuntimeFoundationTests: XCTestCase {
             count: nil,
             availableDecisions: ["acceptForSession", "decline"]
         )
-        XCTAssertFalse(fileAlwaysOnly.canApproveOnce)
-        XCTAssertTrue(fileAlwaysOnly.canAcceptForSession)
+        XCTAssertFalse(fileSessionOnly.canApproveOnce)
+        XCTAssertTrue(fileSessionOnly.canAcceptForSession)
+        XCTAssertFalse(fileSessionOnly.canAcceptAlways)
 
         let commandOnceOnly = ApprovalSummary(
             id: "req-cmd-once",
@@ -240,6 +261,7 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertTrue(commandOnceOnly.canApproveOnce)
         XCTAssertFalse(commandOnceOnly.canAcceptForSession)
+        XCTAssertFalse(commandOnceOnly.canAcceptAlways)
 
         let mcpWithSession = ApprovalSummary(
             id: "req-mcp-session",
@@ -250,15 +272,22 @@ final class RuntimeFoundationTests: XCTestCase {
             availableDecisions: ["accept", "acceptForSession", "decline"]
         )
         XCTAssertFalse(mcpWithSession.canAcceptForSession)
+        XCTAssertFalse(mcpWithSession.canAcceptAlways)
         XCTAssertTrue(mcpWithSession.canAcceptMCPToolForSession)
 
         let runtime = CodexAppServerSessionRuntime(endpoint: "http://127.0.0.1:8787", token: "test", runtimeProvider: "agy")
-        let response = await runtime.approvalResponse(
+        let sessionResp = await runtime.approvalResponse(
             method: "item/commandExecution/requestApproval",
             params: [:],
             decision: "acceptForSession"
         )
-        XCTAssertEqual(response, .object(["decision": .string("acceptForSession")]))
+        XCTAssertEqual(sessionResp, .object(["decision": .string("acceptForSession")]))
+        let alwaysResp = await runtime.approvalResponse(
+            method: "item/commandExecution/requestApproval",
+            params: [:],
+            decision: "acceptAlways"
+        )
+        XCTAssertEqual(alwaysResp, .object(["decision": .string("acceptAlways")]))
     }
 
     func testB14OutdatedAntigravityBridgeSurfacesVersionUpgradeDiagnosticInWorkspace() {

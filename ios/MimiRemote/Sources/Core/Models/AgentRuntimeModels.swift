@@ -781,6 +781,7 @@ struct ApprovalSummary: Codable, Hashable {
     // 规则仅用于确认展示，真正回传的 PermissionUpdate 由 bridge 按 request id 保存并校验。
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
+    let alwaysAllowLabel: String?
 
     init(
         id: String,
@@ -790,10 +791,12 @@ struct ApprovalSummary: Codable, Hashable {
         risk: String? = nil,
         count: Int?,
         availableDecisions: [String]? = nil,
-        persistentPermissionRules: [String]? = nil
+        persistentPermissionRules: [String]? = nil,
+        alwaysAllowLabel: String? = nil
     ) {
         let normalizedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalizedRisk = risk?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedAlwaysLabel = alwaysAllowLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.id = id
         self.title = title
         self.body = normalizedBody.isEmpty ? nil : normalizedBody
@@ -802,6 +805,7 @@ struct ApprovalSummary: Codable, Hashable {
         self.count = count
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
+        self.alwaysAllowLabel = normalizedAlwaysLabel.isEmpty ? nil : normalizedAlwaysLabel
     }
 
     var hasDecisionContext: Bool {
@@ -825,6 +829,11 @@ struct ApprovalSummary: Codable, Hashable {
     var canAcceptForSession: Bool {
         guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
         return supportsDecision("acceptForSession")
+    }
+
+    var canAcceptAlways: Bool {
+        guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
+        return supportsDecision("acceptAlways")
     }
 
     var canPersistPermission: Bool {
@@ -1226,6 +1235,7 @@ struct AgentApprovalRequest: Codable, Hashable {
     let risk: String?
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
+    let alwaysAllowLabel: String?
 
     init(
         id: String,
@@ -1234,7 +1244,8 @@ struct AgentApprovalRequest: Codable, Hashable {
         kind: String,
         risk: String?,
         availableDecisions: [String]? = nil,
-        persistentPermissionRules: [String]? = nil
+        persistentPermissionRules: [String]? = nil,
+        alwaysAllowLabel: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -1243,6 +1254,7 @@ struct AgentApprovalRequest: Codable, Hashable {
         self.risk = risk
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
+        self.alwaysAllowLabel = alwaysAllowLabel
     }
 }
 
