@@ -53,6 +53,7 @@ export interface TranscriptTurnSnapshot {
 export interface ExternalWriteBaseline {
   userInputCount: number;
   expectedPromptText: string;
+  hasTranscript?: boolean;
   approvalUserInputCount?: number;
   approvalPlannerResponseCount?: number;
 }

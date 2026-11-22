@@ -26,6 +26,11 @@ import { toAcpPromptBlocks } from "./userInput.ts";
 export const EXTERNAL_WRITE_CONFLICT_MESSAGE =
   "Another Antigravity process on this computer wrote to this session; this turn and any pending approval were stopped to avoid conflicting changes. Refresh to view the latest messages.";
 
+export const EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE =
+  "Could not verify whether another Antigravity process modified this session before applying your approval; the approval was cancelled to protect session state. Refresh to view the latest messages.";
+
+type ExternalWriteCheckResult = "ok" | "conflict" | "unknown";
+
 const DEFAULT_EXTERNAL_WRITE_POLL_MS = 500;
 
 export interface RuntimeHost {
@@ -69,10 +74,15 @@ export class ThreadRuntime {
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private externalWriteTimer: ReturnType<typeof setInterval> | undefined;
-  private externalWriteChecking = false;
+  private externalWriteCheckInFlight: {
+    turn: LiveTurn;
+    startedAt: number;
+    promise: Promise<ExternalWriteCheckResult>;
+  } | undefined;
   private externalWriteBaseline: ExternalWriteBaseline | undefined;
   private externalWriteConflict: string | undefined;
   private approvalAbortController: AbortController | undefined;
+  private approvalAbortTurn: LiveTurn | undefined;
   private historyTurns: Turn[] | undefined;
   private availableCommands: AcpAvailableCommand[] | undefined;
   readonly createdAt: number;
@@ -198,11 +208,13 @@ export class ThreadRuntime {
 
       const initialSnapshot = await this.host.inspectTranscriptState?.(this.threadId).catch(() => undefined);
       this.externalWriteConflict = undefined;
+      this.externalWriteCheckInFlight = undefined;
       this.externalWriteBaseline = {
         userInputCount: initialSnapshot?.userInputs.length ?? 0,
         expectedPromptText: preview,
+        hasTranscript: initialSnapshot !== undefined,
       };
-      this.startExternalWriteMonitor();
+      this.startExternalWriteMonitor(turn);
 
       void this.runPrompt(client, turn, blocks);
       return turn.snapshot(false);
@@ -268,10 +280,13 @@ export class ThreadRuntime {
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } finally {
       this.stopExternalWriteMonitor();
-      this.externalWriteBaseline = undefined;
-      const hadConflict = Boolean(this.externalWriteConflict);
-      this.externalWriteConflict = undefined;
       if (this.currentTurn === turn) {
+        this.externalWriteBaseline = undefined;
+        this.externalWriteCheckInFlight = undefined;
+      }
+      const hadConflict = Boolean(this.externalWriteConflict);
+      if (this.currentTurn === turn) {
+        this.externalWriteConflict = undefined;
         this.currentTurn = undefined;
       }
       this.updatedAt = Math.floor(Date.now() / 1000);
@@ -396,39 +411,75 @@ export class ThreadRuntime {
         return selectPermissionOption(params.options, "reject_once");
       }
     }
-    const turnId = this.currentTurn?.id ?? `${this.threadId}:approval`;
-    const itemId = this.currentTurn?.itemIdForToolCall(params.toolCall.toolCallId);
+    const boundTurn = this.currentTurn;
+    const boundTurnId = boundTurn?.id ?? `${this.threadId}:approval`;
+    const approvalId = params.toolCall.toolCallId;
+    if (signal.aborted || (boundTurn && boundTurn.finished)) {
+      return { outcome: { outcome: "cancelled" } };
+    }
+    const itemId = boundTurn?.itemIdForToolCall(approvalId);
     const spec = serverApprovalFor(params, {
       threadId: this.threadId,
-      turnId,
+      turnId: boundTurnId,
       cwd: this.cwd,
       ...(itemId ? { itemId } : {}),
     });
-    if (await this.checkExternalWriteConflict()) {
-      return { outcome: { outcome: "cancelled" } };
-    }
-    if (this.externalWriteBaseline) {
-      const preApproval = await this.host.inspectTranscriptState?.(this.threadId).catch(() => undefined);
-      if (preApproval) {
-        this.externalWriteBaseline = {
-          ...this.externalWriteBaseline,
-          approvalUserInputCount: preApproval.userInputs.length,
-          approvalPlannerResponseCount: preApproval.plannerResponseCount,
-        };
+
+    const localAbort = new AbortController();
+    const isStillOwned = (): boolean => {
+      if (signal.aborted || localAbort.signal.aborted || this.externalWriteConflict) return false;
+      if (boundTurn && (this.currentTurn !== boundTurn || boundTurn.finished)) return false;
+      return true;
+    };
+
+    if (boundTurn) {
+      const preCheck = await this.checkExternalWriteConflict(boundTurn, { failClosedOnUnknown: true });
+      if (preCheck !== "ok" || !isStillOwned()) {
+        return { outcome: { outcome: "cancelled" } };
+      }
+      if (this.externalWriteBaseline && this.host.inspectTranscriptState) {
+        let preApproval: TranscriptTurnSnapshot | undefined;
+        try {
+          preApproval = await this.host.inspectTranscriptState(this.threadId);
+        } catch {
+          this.triggerExternalWriteFailure(boundTurn, boundTurnId, EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE, "pre_approval_inspect_failed");
+          return { outcome: { outcome: "cancelled" } };
+        }
+        if (!isStillOwned()) {
+          return { outcome: { outcome: "cancelled" } };
+        }
+        if (this.externalWriteBaseline && preApproval) {
+          this.externalWriteBaseline = {
+            ...this.externalWriteBaseline,
+            hasTranscript: true,
+            approvalUserInputCount: preApproval.userInputs.length,
+            approvalPlannerResponseCount: preApproval.plannerResponseCount,
+          };
+        }
       }
     }
-    const localAbort = new AbortController();
+
     const onUpstreamAbort = () => localAbort.abort();
     signal.addEventListener("abort", onUpstreamAbort, { once: true });
     this.approvalAbortController = localAbort;
+    this.approvalAbortTurn = boundTurn;
     this.host.publish(this.threadId, "thread/status/changed", {
       threadId: this.threadId,
       status: { type: "active", activeFlags: ["waitingOnApproval"] },
     });
     try {
       const response = await this.host.request(this.threadId, spec.method, spec.params, localAbort.signal);
-      if (await this.checkExternalWriteConflict()) {
+      if (!isStillOwned()) {
         return { outcome: { outcome: "cancelled" } };
+      }
+      if (boundTurn) {
+        const postCheck = await this.checkExternalWriteConflict(boundTurn, {
+          requireFresh: true,
+          failClosedOnUnknown: true,
+        });
+        if (postCheck !== "ok" || !isStillOwned()) {
+          return { outcome: { outcome: "cancelled" } };
+        }
       }
       return spec.toAcpResult(response);
     } catch {
@@ -437,14 +488,17 @@ export class ThreadRuntime {
       signal.removeEventListener("abort", onUpstreamAbort);
       if (this.approvalAbortController === localAbort) {
         this.approvalAbortController = undefined;
+        this.approvalAbortTurn = undefined;
       }
-      if (this.externalWriteBaseline) {
+      const sameActiveTurn = !boundTurn || (this.currentTurn === boundTurn && !boundTurn.finished);
+      if (sameActiveTurn && this.externalWriteBaseline) {
         this.externalWriteBaseline = {
           userInputCount: this.externalWriteBaseline.userInputCount,
           expectedPromptText: this.externalWriteBaseline.expectedPromptText,
+          hasTranscript: this.externalWriteBaseline.hasTranscript,
         };
       }
-      if (this.currentTurn && !this.currentTurn.finished && !this.externalWriteConflict) {
+      if (sameActiveTurn && this.currentTurn && !this.currentTurn.finished && !this.externalWriteConflict) {
         this.host.publish(this.threadId, "thread/status/changed", {
           threadId: this.threadId,
           status: { type: "active", activeFlags: [] },
@@ -453,13 +507,13 @@ export class ThreadRuntime {
     }
   }
 
-  private startExternalWriteMonitor(): void {
+  private startExternalWriteMonitor(boundTurn: LiveTurn): void {
     this.stopExternalWriteMonitor();
     if (!this.host.inspectTranscriptState) return;
     const pollMs = this.host.externalWritePollMs ?? DEFAULT_EXTERNAL_WRITE_POLL_MS;
     if (pollMs <= 0) return;
     this.externalWriteTimer = setInterval(() => {
-      void this.checkExternalWriteConflict();
+      void this.checkExternalWriteConflict(boundTurn);
     }, pollMs);
     this.externalWriteTimer.unref?.();
   }
@@ -471,30 +525,110 @@ export class ThreadRuntime {
     }
   }
 
-  private async checkExternalWriteConflict(): Promise<boolean> {
-    if (this.externalWriteConflict) return true;
-    const baseline = this.externalWriteBaseline;
-    if (!baseline || !this.currentTurn || this.currentTurn.finished || !this.host.inspectTranscriptState) {
-      return false;
+  private triggerExternalWriteFailure(
+    boundTurn: LiveTurn,
+    boundTurnId: string,
+    message: string,
+    reason: string,
+  ): void {
+    if (this.currentTurn !== boundTurn || boundTurn.finished) return;
+    if (!this.externalWriteConflict) {
+      this.externalWriteConflict = message;
     }
-    if (this.externalWriteChecking) return false;
-    this.externalWriteChecking = true;
-    try {
-      const current = await this.host.inspectTranscriptState(this.threadId).catch(() => undefined);
-      const detection = detectExternalConcurrentWrite(baseline, current);
-      if (!detection.detected) return false;
-      this.externalWriteConflict = EXTERNAL_WRITE_CONFLICT_MESSAGE;
-      logger.info("agy.concurrent_write.detected", {
-        thread: this.threadId,
-        turn: this.currentTurn.id,
-        reason: detection.reason ?? "external_write",
-      });
-      this.stopExternalWriteMonitor();
+    logger.info("agy.concurrent_write.detected", {
+      thread: this.threadId,
+      turn: boundTurnId,
+      reason,
+    });
+    this.stopExternalWriteMonitor();
+    if (this.approvalAbortTurn === boundTurn) {
       this.approvalAbortController?.abort();
-      this.client?.sessionCancel(this.threadId);
-      return true;
+    }
+    this.client?.sessionCancel(this.threadId);
+  }
+
+  private async checkExternalWriteConflict(
+    boundTurn: LiveTurn,
+    options: { requireFresh?: boolean; failClosedOnUnknown?: boolean } = {},
+  ): Promise<ExternalWriteCheckResult> {
+    if (this.currentTurn !== boundTurn || boundTurn.finished) {
+      return "ok";
+    }
+    if (this.externalWriteConflict) return "conflict";
+    const baseline = this.externalWriteBaseline;
+    if (!baseline || !this.host.inspectTranscriptState) {
+      return "ok";
+    }
+
+    const boundTurnId = boundTurn.id;
+    const requestedAt = Date.now();
+    const inFlight = this.externalWriteCheckInFlight;
+    if (inFlight && inFlight.turn === boundTurn) {
+      const existingResult = await inFlight.promise;
+      if (this.currentTurn !== boundTurn || boundTurn.finished) {
+        return "ok";
+      }
+      if (existingResult === "conflict") {
+        return "conflict";
+      }
+      if (existingResult === "unknown") {
+        if (options.failClosedOnUnknown) {
+          this.triggerExternalWriteFailure(boundTurn, boundTurnId, EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE, "transcript_inspect_unknown");
+        }
+        return "unknown";
+      }
+      // 审批提交要求在提交动作之后取得新鲜复核结果；若在途检查早于审批提交发起，再补做一次。
+      if (!options.requireFresh || inFlight.startedAt >= requestedAt) {
+        return "ok";
+      }
+    }
+
+    const runCheck = async (): Promise<ExternalWriteCheckResult> => {
+      let current: TranscriptTurnSnapshot | undefined;
+      try {
+        current = await this.host.inspectTranscriptState!(this.threadId);
+      } catch {
+        if (this.currentTurn !== boundTurn || boundTurn.finished) return "ok";
+        if (options.failClosedOnUnknown) {
+          this.triggerExternalWriteFailure(boundTurn, boundTurnId, EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE, "transcript_inspect_error");
+        }
+        return "unknown";
+      }
+      if (this.currentTurn !== boundTurn || boundTurn.finished) {
+        return "ok";
+      }
+      if (baseline.hasTranscript && current === undefined) {
+        if (options.failClosedOnUnknown) {
+          this.triggerExternalWriteFailure(boundTurn, boundTurnId, EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE, "transcript_missing_unexpectedly");
+        }
+        return "unknown";
+      }
+      const activeBaseline = this.externalWriteBaseline ?? baseline;
+      const detection = detectExternalConcurrentWrite(activeBaseline, current);
+      if (!detection.detected) {
+        if (current && this.externalWriteBaseline) {
+          this.externalWriteBaseline.hasTranscript = true;
+        }
+        return "ok";
+      }
+      this.triggerExternalWriteFailure(
+        boundTurn,
+        boundTurnId,
+        EXTERNAL_WRITE_CONFLICT_MESSAGE,
+        detection.reason ?? "external_write",
+      );
+      return "conflict";
+    };
+
+    const promise = runCheck();
+    const entry = { turn: boundTurn, startedAt: Date.now(), promise };
+    this.externalWriteCheckInFlight = entry;
+    try {
+      return await promise;
     } finally {
-      this.externalWriteChecking = false;
+      if (this.externalWriteCheckInFlight === entry) {
+        this.externalWriteCheckInFlight = undefined;
+      }
     }
   }
 
