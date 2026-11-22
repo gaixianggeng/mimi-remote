@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { AcpClient } from "../src/acp/client.ts";
 import type { AcpRequestPermissionParams, AcpRequestPermissionResult } from "../src/acp/types.ts";
-import type { TranscriptTurnSnapshot } from "../src/agy/transcript.ts";
+import type { TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../src/agy/transcript.ts";
 import { serverApprovalFor } from "../src/runtime/approvals.ts";
 import { LiveTurn } from "../src/runtime/liveTurn.ts";
 import {
@@ -457,4 +457,238 @@ test("C12 round2: stale transcript check from aborted turn does not poison or ca
   const turn2 = (turnCompletedEvents[1]?.params as { turn?: { status?: string; error?: unknown } })?.turn;
   expect(turn2?.status).toBe("completed");
   expect(turn2?.error).toBeNull();
+});
+
+test("C12 round3: initial transcript read failure fails closed on approval instead of treating error as missing", async () => {
+  const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const promptDone = deferred<{ stopReason: string }>();
+  let requestCalled = false;
+  const mockAcp = makeMockAcpClient(() => promptDone.promise);
+
+  const host: RuntimeHost = {
+    publish: (_tid, method, params) => notifications.push({ method, params }),
+    request: async () => {
+      requestCalled = true;
+      return { decision: "accept" };
+    },
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+    inspectTranscriptState: async (): Promise<TranscriptSnapshotResult> => ({
+      kind: "error",
+      reason: "transcript_read_failed",
+      error: "EACCES: permission denied",
+    }),
+  };
+
+  const runtime = new ThreadRuntime(
+    "",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+  await runtime.startTurn({
+    input: [{ type: "text", text: "first", text_elements: [] }],
+    clientUserMessageId: null,
+    settings: {},
+  });
+
+  const outcome = await mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-init-err", title: "Run pwd", kind: "execute" },
+    options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+  });
+  expect(outcome).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(requestCalled).toBe(false);
+  expect(mockAcp.cancelledSessions).toContain("race-session");
+
+  promptDone.resolve({ stopReason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 20));
+  const completed = notifications.find((n) => n.method === "turn/completed");
+  const turn = (completed?.params as { turn?: { status?: string; error?: { message?: string } | null } })?.turn;
+  expect(turn?.status).toBe("failed");
+  expect(turn?.error?.message).toBe(EXTERNAL_WRITE_VERIFY_UNKNOWN_MESSAGE);
+});
+
+test("C12 round3: multiple concurrent approvals in the same turn keep isolated baselines and controllers", async () => {
+  const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const promptDone = deferred<{ stopReason: string }>();
+  const approvalAResponse = deferred<unknown>();
+  const approvalBResponse = deferred<unknown>();
+  const abortedFlags: Record<string, boolean> = {};
+  let plannerResponses = 1;
+  const mockAcp = makeMockAcpClient(() => promptDone.promise);
+
+  const host: RuntimeHost = {
+    publish: (_tid, method, params) => notifications.push({ method, params }),
+    request: (_tid, _method, params, signal) => {
+      const itemId = String(params.itemId ?? "");
+      abortedFlags[itemId] = false;
+      const target = itemId.includes("tc-a") ? approvalAResponse : approvalBResponse;
+      return new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            abortedFlags[itemId] = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+        void target.promise.then(resolve, reject);
+      });
+    },
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+    inspectTranscriptState: async (): Promise<TranscriptSnapshotResult> => ({
+      kind: "present",
+      snapshot: {
+        path: "/tmp/t.jsonl",
+        size: 100,
+        mtimeMs: 1,
+        userInputs: ["concurrent approvals"],
+        plannerResponseCount: plannerResponses,
+        stepCount: plannerResponses + 1,
+      },
+    }),
+  };
+
+  const runtime = new ThreadRuntime(
+    "",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+  await runtime.startTurn({
+    input: [{ type: "text", text: "concurrent approvals", text_elements: [] }],
+    clientUserMessageId: null,
+    settings: {},
+  });
+
+  const promiseA = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-a", title: "Run cmd A", kind: "execute" },
+    options: [{ optionId: "allow-a", name: "Allow once", kind: "allow_once" }],
+  });
+  const promiseB = mockAcp.triggerPermission({
+    sessionId: "race-session",
+    toolCall: { toolCallId: "tc-b", title: "Run cmd B", kind: "execute" },
+    options: [{ optionId: "allow-b", name: "Allow once", kind: "allow_once" }],
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Approval A finishes first while Approval B is still waiting.
+  approvalAResponse.resolve({ decision: "accept" });
+  expect(await promiseA).toEqual({ outcome: { outcome: "selected", optionId: "allow-a" } });
+
+  // External process writes a new planner response while Approval B is still pending.
+  // Approval A finishing MUST NOT have wiped Approval B's baseline or abort controller!
+  plannerResponses = 2;
+  approvalBResponse.resolve({ decision: "accept" });
+  expect(await promiseB).toEqual({ outcome: { outcome: "cancelled" } });
+  expect(mockAcp.cancelledSessions).toContain("race-session");
+
+  promptDone.resolve({ stopReason: "cancelled" });
+  await new Promise((r) => setTimeout(r, 20));
+  const completed = notifications.find((n) => n.method === "turn/completed");
+  const turn = (completed?.params as { turn?: { status?: string; error?: { message?: string } | null } })?.turn;
+  expect(turn?.status).toBe("failed");
+  expect(turn?.error?.message).toBe(EXTERNAL_WRITE_CONFLICT_MESSAGE);
+});
+
+test("C12 round3: same-millisecond approval re-check still runs a fresh verification via monotonic sequence", async () => {
+  const realDateNow = Date.now;
+  Date.now = () => 1_700_000_000_000;
+  try {
+    const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const blockingPoll = deferred<TranscriptSnapshotResult>();
+    const approvalResponse = deferred<unknown>();
+    const promptDone = deferred<{ stopReason: string }>();
+    let inspectCall = 0;
+    const mockAcp = makeMockAcpClient(() => promptDone.promise);
+
+    const host: RuntimeHost = {
+      publish: (_tid, method, params) => notifications.push({ method, params }),
+      request: (_tid, _method, _params, signal) =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          void approvalResponse.promise.then(resolve, reject);
+        }),
+      acquireClient: async () => mockAcp.client,
+      idleCloseMs: 0,
+      externalWritePollMs: 15,
+      inspectTranscriptState: async (): Promise<TranscriptSnapshotResult> => {
+        inspectCall += 1;
+        if (inspectCall <= 3) {
+          return {
+            kind: "present",
+            snapshot: { path: "/tmp/t.jsonl", size: 10, mtimeMs: 1, userInputs: ["same-ms"], plannerResponseCount: 0, stepCount: 1 },
+          };
+        }
+        if (inspectCall === 4) {
+          // Poll #4 started BEFORE user approval, in the exact same Date.now() millisecond, and returns clean.
+          return blockingPoll.promise;
+        }
+        // Fresh post-approval check (#5) sees the external write that landed before approval submission.
+        return {
+          kind: "present",
+          snapshot: {
+            path: "/tmp/t.jsonl",
+            size: 50,
+            mtimeMs: 2,
+            userInputs: ["same-ms", "external same-ms write"],
+            plannerResponseCount: 0,
+            stepCount: 2,
+          },
+        };
+      },
+    };
+
+    const runtime = new ThreadRuntime(
+      "",
+      "/workspace",
+      host,
+      { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+      false,
+    );
+    await runtime.initializeNewSession();
+    await runtime.startTurn({
+      input: [{ type: "text", text: "same-ms", text_elements: [] }],
+      clientUserMessageId: null,
+      settings: {},
+    });
+
+    const permissionPromise = mockAcp.triggerPermission({
+      sessionId: "race-session",
+      toolCall: { toolCallId: "tc-same-ms", title: "Run pwd", kind: "execute" },
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+    });
+    for (let i = 0; i < 40 && inspectCall < 4; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(inspectCall).toBe(4);
+
+    // Submit approval in the exact same Date.now() millisecond as poll #4!
+    approvalResponse.resolve({ decision: "accept" });
+    await new Promise((r) => setTimeout(r, 10));
+    // Poll #4 resolves as clean (stale from before approval submission).
+    blockingPoll.resolve({
+      kind: "present",
+      snapshot: { path: "/tmp/t.jsonl", size: 10, mtimeMs: 1, userInputs: ["same-ms"], plannerResponseCount: 0, stepCount: 1 },
+    });
+
+    const outcome = await permissionPromise;
+    expect(inspectCall).toBeGreaterThanOrEqual(5);
+    expect(outcome).toEqual({ outcome: { outcome: "cancelled" } });
+    expect(mockAcp.cancelledSessions).toContain("race-session");
+
+    promptDone.resolve({ stopReason: "cancelled" });
+    await new Promise((r) => setTimeout(r, 20));
+  } finally {
+    Date.now = realDateNow;
+  }
 });

@@ -10,6 +10,7 @@ import {
   formatTranscriptUserText,
   inspectTranscriptActivity,
   readTranscriptTurns,
+  snapshotTranscriptStateDetailed,
 } from "../src/agy/transcript.ts";
 import { agyModeFor, runSettingsFor } from "../src/runtime/settings.ts";
 
@@ -376,6 +377,51 @@ D1–D6 的倾向
       expect(afterIdle[1]?.status).toBe("completed");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C12 round3: snapshotTranscriptStateDetailed distinguishes missing, present, malformed JSONL, and non-file/IO errors", async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), "agy-c12-inspect-"));
+    try {
+      const env = { HOME: tempHome };
+
+      // 1) Truly missing transcript
+      const missing = await snapshotTranscriptStateDetailed("sess-missing", "cli", env);
+      expect(missing).toEqual({ kind: "missing" });
+
+      // 2) Valid transcript -> present
+      const validLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-valid", ".system_generated", "logs");
+      await mkdir(validLogsDir, { recursive: true });
+      await writeFile(
+        path.join(validLogsDir, "transcript_full.jsonl"),
+        `${JSON.stringify({ step_index: 0, type: "USER_INPUT", content: "<USER_REQUEST>\nhi\n</USER_REQUEST>" })}\n`,
+      );
+      const present = await snapshotTranscriptStateDetailed("sess-valid", "cli", env);
+      expect(present.kind).toBe("present");
+      if (present.kind === "present") {
+        expect(present.snapshot.userInputs).toEqual(["hi"]);
+      }
+
+      // 3) Malformed JSONL -> error (NOT missing)
+      const corruptLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-corrupt", ".system_generated", "logs");
+      await mkdir(corruptLogsDir, { recursive: true });
+      await writeFile(path.join(corruptLogsDir, "transcript_full.jsonl"), "{not-valid-json\n");
+      const corrupt = await snapshotTranscriptStateDetailed("sess-corrupt", "cli", env);
+      expect(corrupt.kind).toBe("error");
+      if (corrupt.kind === "error") {
+        expect(corrupt.reason).toBe("malformed_transcript");
+      }
+
+      // 4) Non-file (directory at transcript path) -> error (NOT missing)
+      const dirLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-dir", ".system_generated", "logs");
+      await mkdir(path.join(dirLogsDir, "transcript_full.jsonl"), { recursive: true });
+      const nonFile = await snapshotTranscriptStateDetailed("sess-dir", "cli", env);
+      expect(nonFile.kind).toBe("error");
+      if (nonFile.kind === "error") {
+        expect(nonFile.reason).toBe("transcript_not_a_file");
+      }
+    } finally {
+      await rm(tempHome, { recursive: true, force: true });
     }
   });
 });

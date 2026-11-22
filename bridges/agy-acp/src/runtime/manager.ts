@@ -6,7 +6,7 @@ import { logger } from "../util/logging.ts";
 import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
 import type { PersistedToolMapping } from "../agy/overlay.ts";
-import type { TranscriptActivityInfo, TranscriptTurnSnapshot } from "../agy/transcript.ts";
+import type { TranscriptActivityInfo, TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../agy/transcript.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
 
@@ -49,7 +49,7 @@ export interface ManagerOptions {
   ) => Promise<{ turnId: string; attemptId: string }>;
   existingTurnCount?: (threadId: string) => Promise<number>;
   hasCustomTitle?: (threadId: string) => boolean;
-  inspectTranscriptState?: (threadId: string) => Promise<TranscriptTurnSnapshot | undefined>;
+  inspectTranscriptState?: (threadId: string) => Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
   externalActivity?: (threadId: string) => Promise<TranscriptActivityInfo | undefined>;
 }
 

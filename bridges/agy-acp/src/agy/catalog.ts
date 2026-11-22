@@ -13,7 +13,9 @@ import {
   readTranscriptTurns,
   resolveTranscriptPath,
   snapshotTranscriptState,
+  snapshotTranscriptStateDetailed,
   type TranscriptActivityInfo,
+  type TranscriptSnapshotResult,
   type TranscriptTurnSnapshot,
 } from "./transcript.ts";
 
@@ -45,6 +47,7 @@ export interface AgySessionBackend {
   diskRevision?(sessionId: string, origin: AgySessionOrigin): Promise<DiskRevisionInfo | undefined>;
   inspectExternalActivity?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptActivityInfo | undefined>;
   snapshotTranscriptState?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptTurnSnapshot | undefined>;
+  snapshotTranscriptStateDetailed?(sessionId: string, origin: AgySessionOrigin): Promise<TranscriptSnapshotResult>;
   loadTranscriptTurns?(
     sessionId: string,
     cwd: string,
@@ -186,6 +189,10 @@ export function createAcpSessionBackend(
       return snapshotTranscriptState(sessionId, origin, env());
     },
 
+    snapshotTranscriptStateDetailed(sessionId: string, origin: AgySessionOrigin) {
+      return snapshotTranscriptStateDetailed(sessionId, origin, env());
+    },
+
     loadTranscriptTurns(sessionId: string, cwd: string, transcriptPath: string, running: boolean, holderActive: boolean) {
       return readTranscriptTurns(sessionId, cwd, transcriptPath, running, holderActive);
     },
@@ -229,6 +236,26 @@ export class AgyCatalog {
     if (!this.deps.backend.snapshotTranscriptState) return undefined;
     const origin = (await this.deps.backend.resolveSessionOrigin(sessionId)) ?? "cli";
     return this.deps.backend.snapshotTranscriptState(sessionId, origin);
+  }
+
+  async transcriptStateDetailed(sessionId: string): Promise<TranscriptSnapshotResult> {
+    const origin = (await this.deps.backend.resolveSessionOrigin(sessionId)) ?? "cli";
+    if (this.deps.backend.snapshotTranscriptStateDetailed) {
+      return this.deps.backend.snapshotTranscriptStateDetailed(sessionId, origin);
+    }
+    if (!this.deps.backend.snapshotTranscriptState) {
+      return { kind: "missing" };
+    }
+    try {
+      const snapshot = await this.deps.backend.snapshotTranscriptState(sessionId, origin);
+      return snapshot ? { kind: "present", snapshot } : { kind: "missing" };
+    } catch (error) {
+      return {
+        kind: "error",
+        reason: "transcript_inspect_failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   async list(dirs?: readonly string[]): Promise<SessionRecord[]> {

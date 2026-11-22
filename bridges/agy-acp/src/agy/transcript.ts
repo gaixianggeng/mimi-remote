@@ -52,10 +52,16 @@ export interface TranscriptTurnSnapshot {
   stepCount: number;
 }
 
+export type TranscriptSnapshotResult =
+  | { kind: "present"; snapshot: TranscriptTurnSnapshot }
+  | { kind: "missing" }
+  | { kind: "error"; reason: string; error?: string };
+
 export interface ExternalWriteBaseline {
   userInputCount: number;
   expectedPromptText: string;
   hasTranscript?: boolean;
+  initialReadFailed?: boolean;
   approvalUserInputCount?: number;
   approvalPlannerResponseCount?: number;
 }
@@ -71,23 +77,54 @@ function brainDirForOrigin(origin: AgySessionOrigin, env: NodeJS.ProcessEnv): st
   return path.join(root, "brain");
 }
 
-export async function resolveTranscriptPath(
+function isNotExistError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+type TranscriptPathLookupResult =
+  | { kind: "present"; path: string }
+  | { kind: "missing" }
+  | { kind: "error"; reason: string; error?: string };
+
+async function resolveTranscriptPathDetailed(
   sessionId: string,
   origin: AgySessionOrigin,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<string | undefined> {
-  if (!SAFE_SESSION_ID.test(sessionId)) return undefined;
+): Promise<TranscriptPathLookupResult> {
+  if (!SAFE_SESSION_ID.test(sessionId)) {
+    return { kind: "error", reason: "invalid_session_id" };
+  }
   const logsDir = path.join(brainDirForOrigin(origin, env), sessionId, ".system_generated", "logs");
   for (const name of ["transcript_full.jsonl", "transcript.jsonl"]) {
     const candidate = path.join(logsDir, name);
     try {
       const info = await stat(candidate);
-      if (info.isFile() && info.size > 0) return candidate;
-    } catch {
-      // 不存在时尝试下一个候选文件。
+      if (!info.isFile()) {
+        return { kind: "error", reason: "transcript_not_a_file" };
+      }
+      if (info.size > 0) return { kind: "present", path: candidate };
+    } catch (error) {
+      if (isNotExistError(error)) {
+        continue;
+      }
+      return {
+        kind: "error",
+        reason: "transcript_stat_failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
-  return undefined;
+  return { kind: "missing" };
+}
+
+export async function resolveTranscriptPath(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  const resolved = await resolveTranscriptPathDetailed(sessionId, origin, env);
+  return resolved.kind === "present" ? resolved.path : undefined;
 }
 
 async function readTailSteps(filePath: string, fileSize: number): Promise<TranscriptStep[]> {
@@ -162,27 +199,41 @@ function normalizePromptCompare(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-export async function snapshotTranscriptState(
+export async function snapshotTranscriptStateDetailed(
   sessionId: string,
   origin: AgySessionOrigin,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<TranscriptTurnSnapshot | undefined> {
-  const filePath = await resolveTranscriptPath(sessionId, origin, env);
-  if (!filePath) return undefined;
+): Promise<TranscriptSnapshotResult> {
+  const resolved = await resolveTranscriptPathDetailed(sessionId, origin, env);
+  if (resolved.kind !== "present") {
+    return resolved;
+  }
+  const filePath = resolved.path;
   try {
     const [info, raw] = await Promise.all([stat(filePath), readFile(filePath, "utf8")]);
+    if (!info.isFile()) {
+      return { kind: "error", reason: "transcript_not_a_file" };
+    }
     const userInputs: string[] = [];
     let plannerResponseCount = 0;
     let stepCount = 0;
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let step: TranscriptStep;
+      let parsed: unknown;
       try {
-        step = JSON.parse(trimmed) as TranscriptStep;
-      } catch {
-        continue;
+        parsed = JSON.parse(trimmed);
+      } catch (error) {
+        return {
+          kind: "error",
+          reason: "malformed_transcript",
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { kind: "error", reason: "malformed_transcript" };
+      }
+      const step = parsed as TranscriptStep;
       stepCount += 1;
       if (step.type === "USER_INPUT") {
         userInputs.push(normalizePromptCompare(formatTranscriptUserText(step.content ?? "")));
@@ -191,16 +242,35 @@ export async function snapshotTranscriptState(
       }
     }
     return {
-      path: filePath,
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-      userInputs,
-      plannerResponseCount,
-      stepCount,
+      kind: "present",
+      snapshot: {
+        path: filePath,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        userInputs,
+        plannerResponseCount,
+        stepCount,
+      },
     };
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (isNotExistError(error)) {
+      return { kind: "missing" };
+    }
+    return {
+      kind: "error",
+      reason: "transcript_read_failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
+}
+
+export async function snapshotTranscriptState(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TranscriptTurnSnapshot | undefined> {
+  const result = await snapshotTranscriptStateDetailed(sessionId, origin, env);
+  return result.kind === "present" ? result.snapshot : undefined;
 }
 
 export function detectExternalConcurrentWrite(
