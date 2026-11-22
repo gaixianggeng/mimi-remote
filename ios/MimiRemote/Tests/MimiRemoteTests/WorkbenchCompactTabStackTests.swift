@@ -671,29 +671,30 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         )
 
         XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: phoneLayout))
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 不启用悬浮胶囊顶栏")
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 不启用悬浮胶囊顶栏")
-        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 不启用悬浮胶囊顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 不启用悬浮玻璃顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 不启用悬浮玻璃顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 不启用悬浮玻璃顶栏")
 
-        // 固定最大宽度落在 280–320pt 区间（当前取值 304pt），圆角恒为高度一半。
+        // 三件等高（44pt），中间胶囊与左右按钮最小间距 8pt，最大宽度按 min(304, 可用宽度) 兜底。
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.itemHeight, 44)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.buttonSize, 44)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin, 16)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.interItemSpacing, 8)
         XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.maximumWidth, 304)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402), 304)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 375), 304)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 440), 304)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320), 288)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 48), 24)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 56), 28)
 
-        let titleBudget = PhoneSessionFloatingCapsuleMetrics.titleRegionMaxWidth(capsuleMaxWidth: 304)
-        XCTAssertEqual(titleBudget, 200)
-        XCTAssertGreaterThanOrEqual(
-            titleBudget,
-            PhoneSessionFloatingCapsuleMetrics.titleRegionMinWidth(capsuleMaxWidth: 304)
-        )
+        // 可用宽度 = containerWidth - 2 * (16 + 44 + 8) = containerWidth - 136
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.availableCenterWidth(containerWidth: 402), 266)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402), 266)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 375), 239)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 440), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 520), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320), 184)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 44), 22)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 56), 28)
     }
 
     @MainActor
-    func testPhoneFloatingCapsuleHeaderCapsMaxWidthAndTruncatesLongTitle() throws {
+    func testPhoneFloatingCapsuleHeaderThreePieceLayoutAlignmentAndTruncation() throws {
         let defaultsSuite = "PhoneFloatingCapsuleHeaderTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
         defaults.removePersistentDomain(forName: defaultsSuite)
@@ -703,12 +704,12 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         let themeStore = ThemeStore(defaults: defaults)
         let tokens = themeStore.tokens(for: .light)
 
-        func measureCapsule(
+        func measureHeader(
             title: String,
             subtitle: String,
             containerWidth: CGFloat
-        ) -> CGSize {
-            var measured = CGSize.zero
+        ) -> PhoneSessionFloatingHeaderLayoutSnapshot {
+            var measured = PhoneSessionFloatingHeaderLayoutSnapshot()
             let data = SessionNavigationTitleDisplayData(
                 title: title,
                 subtitle: subtitle,
@@ -724,8 +725,8 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
                 availableWidth: containerWidth,
                 isMenuDisabled: false,
                 onBack: {},
-                onMeasuredCapsuleSize: { size in
-                    measured = size
+                onMeasuredLayout: { snapshot in
+                    measured = snapshot
                 },
                 moreMenuContent: {
                     Button("Refresh") {}
@@ -756,50 +757,185 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
             return measured
         }
 
-        let shortSize = measureCapsule(
-            title: "整理开源发布说明",
+        func assertThreePieceInvariants(
+            _ snapshot: PhoneSessionFloatingHeaderLayoutSnapshot,
+            expectedContainerWidth: CGFloat,
+            context: String,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            XCTAssertTrue(snapshot.isComplete, "\(context)：应测量到三件完整布局几何", file: file, line: line)
+            XCTAssertEqual(snapshot.containerWidth, expectedContainerWidth, accuracy: 1.0, context, file: file, line: line)
+
+            // 1. 左返回按钮：44×44 圆形，紧贴屏幕左边距（16pt）。
+            XCTAssertEqual(
+                snapshot.backButtonFrame.minX,
+                PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin,
+                accuracy: 1.0,
+                "\(context)：左返回按钮必须贴屏幕左边距",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.width,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.height,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+
+            // 2. 右更多按钮：44×44 圆形，紧贴屏幕右边距（16pt）。
+            XCTAssertEqual(
+                expectedContainerWidth - snapshot.moreButtonFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin,
+                accuracy: 1.0,
+                "\(context)：右菜单按钮必须贴屏幕右边距",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.width,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.height,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+
+            // 3. 中间胶囊水平居中且不超过当前容器允许的最大宽度。
+            let resolvedMax = PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(
+                containerWidth: expectedContainerWidth
+            )
+            XCTAssertLessThanOrEqual(
+                snapshot.centerCapsuleFrame.width,
+                resolvedMax + 0.5,
+                "\(context)：中间胶囊宽度不得超过 \(resolvedMax)pt",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.centerCapsuleFrame.midX,
+                expectedContainerWidth / 2,
+                accuracy: 1.0,
+                "\(context)：中间胶囊必须水平居中",
+                file: file,
+                line: line
+            )
+
+            // 4. 三者不重叠且与左右按钮之间至少保留 8pt 间距。
+            XCTAssertFalse(
+                snapshot.backButtonFrame.intersects(snapshot.centerCapsuleFrame),
+                "\(context)：左按钮与中间胶囊不能重叠",
+                file: file,
+                line: line
+            )
+            XCTAssertFalse(
+                snapshot.centerCapsuleFrame.intersects(snapshot.moreButtonFrame),
+                "\(context)：中间胶囊与右按钮不能重叠",
+                file: file,
+                line: line
+            )
+            XCTAssertGreaterThanOrEqual(
+                snapshot.centerCapsuleFrame.minX - snapshot.backButtonFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.interItemSpacing - 0.5,
+                "\(context)：左按钮与中间胶囊间距必须 >= 8pt",
+                file: file,
+                line: line
+            )
+            XCTAssertGreaterThanOrEqual(
+                snapshot.moreButtonFrame.minX - snapshot.centerCapsuleFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.interItemSpacing - 0.5,
+                "\(context)：中间胶囊与右按钮间距必须 >= 8pt",
+                file: file,
+                line: line
+            )
+
+            // 5. 三者高度一致且垂直居中对齐。
+            XCTAssertEqual(
+                snapshot.centerCapsuleFrame.height,
+                snapshot.backButtonFrame.height,
+                accuracy: 1.0,
+                "\(context)：中间胶囊应与左右圆形按钮高度一致",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.midY,
+                snapshot.centerCapsuleFrame.midY,
+                accuracy: 1.0,
+                "\(context)：左按钮与中间胶囊应垂直居中对齐",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.midY,
+                snapshot.centerCapsuleFrame.midY,
+                accuracy: 1.0,
+                "\(context)：右按钮与中间胶囊应垂直居中对齐",
+                file: file,
+                line: line
+            )
+        }
+
+        let shortSnapshot = measureHeader(
+            title: "dr eggbot v2",
             subtitle: "mimi-remote",
             containerWidth: 402
         )
-        let longSize = measureCapsule(
+        assertThreePieceInvariants(shortSnapshot, expectedContainerWidth: 402, context: "402pt 短标题")
+        XCTAssertLessThan(
+            shortSnapshot.centerCapsuleFrame.width,
+            PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402) - 20,
+            "短标题胶囊应紧贴内容宽度，不撑满整个可用槽位"
+        )
+
+        let longSnapshot = measureHeader(
             title: "这是一个非常非常长的会话标题用来验证悬浮胶囊顶栏在内容过长时会单行尾部截断而绝不撑破容器边界",
             subtitle: "very-long-workspace-repository-name-with-deep-nested-subpath",
             containerWidth: 402
         )
-        let narrowSize = measureCapsule(
-            title: "这是一个非常非常长的会话标题用来验证窄屏悬浮胶囊顶栏不会溢出屏幕左右安全边距",
+        assertThreePieceInvariants(longSnapshot, expectedContainerWidth: 402, context: "402pt 超长标题")
+        XCTAssertLessThanOrEqual(
+            abs(longSnapshot.centerCapsuleFrame.height - shortSnapshot.centerCapsuleFrame.height),
+            1.0,
+            "超长标题必须保持单行截断，不能折行撑高中间胶囊"
+        )
+
+        let wideLongSnapshot = measureHeader(
+            title: "这是一个非常非常长的会话标题用来验证宽屏容器下中间胶囊严格封顶在 304pt 上限",
+            subtitle: "mimi-remote",
+            containerWidth: 520
+        )
+        assertThreePieceInvariants(wideLongSnapshot, expectedContainerWidth: 520, context: "520pt 超长标题")
+        XCTAssertLessThanOrEqual(
+            wideLongSnapshot.centerCapsuleFrame.width,
+            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5,
+            "宽容器下中间胶囊宽度应严格封顶在 304pt"
+        )
+
+        let narrowLongSnapshot = measureHeader(
+            title: "这是一个非常非常长的会话标题用来验证极窄屏下三件绝不重叠且保持 8pt 间距",
             subtitle: "mimi-remote",
             containerWidth: 320
         )
-
-        XCTAssertGreaterThan(shortSize.width, 0, "应测量到悬浮胶囊真实渲染宽度")
-        XCTAssertLessThanOrEqual(
-            shortSize.width,
-            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5
-        )
-        XCTAssertGreaterThanOrEqual(
-            shortSize.height,
-            PhoneSessionFloatingCapsuleMetrics.minimumHeight - 0.5
-        )
-
-        XCTAssertGreaterThan(longSize.width, 0)
-        XCTAssertLessThanOrEqual(
-            longSize.width,
-            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5,
-            "超长标题与副标题必须截断在固定最大宽度 \(PhoneSessionFloatingCapsuleMetrics.maximumWidth)pt 内，不能撑破胶囊"
-        )
-        XCTAssertLessThanOrEqual(
-            abs(longSize.height - shortSize.height),
-            2.0,
-            "超长标题必须保持单行截断，不能折行撑高悬浮胶囊"
-        )
-
-        XCTAssertGreaterThan(narrowSize.width, 0)
-        XCTAssertLessThanOrEqual(
-            narrowSize.width,
-            PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320) + 0.5,
-            "窄屏容器下胶囊应进一步收缩并保留左右安全边距"
-        )
+        assertThreePieceInvariants(narrowLongSnapshot, expectedContainerWidth: 320, context: "320pt 超长标题")
     }
 
     private func assertSingleActiveDetailInvariant(
