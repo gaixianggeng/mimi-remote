@@ -76,12 +76,28 @@ async function statSizeAndMtime(targetPath: string | undefined): Promise<{ size:
 }
 
 const DEFAULT_OTHER_LIST_TIMEOUT_MS = 2_500;
+const DEFAULT_OTHER_LIST_HARD_TIMEOUT_MS = 12_000;
+const OTHER_WARM_SNAPSHOT_REUSE_MS = 1_500;
 
-function otherListTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const raw = env.AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS?.trim();
-  if (!raw) return DEFAULT_OTHER_LIST_TIMEOUT_MS;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OTHER_LIST_TIMEOUT_MS;
+function parsePositiveMs(raw: string | undefined): number | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function otherListBudgets(env: NodeJS.ProcessEnv): { foregroundMs: number; hardMs: number } {
+  const explicitFg = parsePositiveMs(env.AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS);
+  const explicitHard = parsePositiveMs(env.AGY_ADAPTER_OTHER_LIST_HARD_TIMEOUT_MS);
+  const foregroundMs = explicitFg ?? DEFAULT_OTHER_LIST_TIMEOUT_MS;
+  // 默认分离前台等待（2.5s）与后台冷索引完成上限（12s），避免真实 4.5s 的 Other 冷索引被反复取消重启（C10 round4）。
+  // 若调用方/测试显式覆盖单超时 AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS 且未指定硬上限，则沿用同一上限保持确定性。
+  const hardMs = explicitHard !== undefined
+    ? Math.max(foregroundMs, explicitHard)
+    : explicitFg !== undefined
+      ? foregroundMs
+      : Math.max(foregroundMs, DEFAULT_OTHER_LIST_HARD_TIMEOUT_MS);
+  return { foregroundMs, hardMs };
 }
 
 export function createAcpSessionBackend(
@@ -92,6 +108,14 @@ export function createAcpSessionBackend(
   onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void,
 ): AgySessionBackend {
   let lastOtherDegraded = false;
+  let lastOtherSnapshot: { at: number; summaries: AcpSessionSummary[] } | undefined;
+  let otherQueryInFlight:
+    | {
+        promise: Promise<{ ok: boolean; summaries: AcpSessionSummary[] }>;
+        startedAt: number;
+      }
+    | undefined;
+
   const recordOtherDiag = (diag: OtherListDiagnostic) => {
     lastOtherDegraded = diag.status === "timeout" || diag.status === "failed";
     if (diag.status === "timeout") {
@@ -106,6 +130,55 @@ export function createAcpSessionBackend(
     onOtherListDiagnostic?.(diag);
   };
 
+  const ensureOtherQueryInFlight = (hardMs: number) => {
+    if (otherQueryInFlight) return otherQueryInFlight;
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    let hardTimedOut = false;
+    const hardTimer = setTimeout(() => {
+      hardTimedOut = true;
+      controller.abort();
+    }, hardMs);
+    hardTimer.unref?.();
+
+    const flight = {
+      startedAt,
+      promise: undefined as unknown as Promise<{ ok: boolean; summaries: AcpSessionSummary[] }>,
+    };
+    flight.promise = (async (): Promise<{ ok: boolean; summaries: AcpSessionSummary[] }> => {
+      try {
+        const list = await otherSharedAcp.use(
+          (client) => client.sessionList(hardMs, controller.signal),
+          { timeoutMs: hardMs, signal: controller.signal },
+        );
+        const elapsedMs = Date.now() - startedAt;
+        lastOtherSnapshot = { at: Date.now(), summaries: list };
+        if (list.length === 0) {
+          recordOtherDiag({ status: "empty", count: 0, elapsedMs });
+        } else {
+          recordOtherDiag({ status: "ok", count: list.length, elapsedMs });
+        }
+        return { ok: true, summaries: list };
+      } catch (error) {
+        const elapsedMs = Date.now() - startedAt;
+        if (hardTimedOut || controller.signal.aborted) {
+          recordOtherDiag({ status: "timeout", timeoutMs: hardMs, elapsedMs });
+        } else {
+          recordOtherDiag({ status: "failed", error: errorText(error), elapsedMs });
+        }
+        return { ok: false, summaries: lastOtherSnapshot?.summaries ?? [] };
+      } finally {
+        clearTimeout(hardTimer);
+        if (otherQueryInFlight === flight) {
+          otherQueryInFlight = undefined;
+        }
+      }
+    })();
+
+    otherQueryInFlight = flight;
+    return flight;
+  };
+
   return {
     wasLastOtherListDegraded() {
       return lastOtherDegraded;
@@ -118,45 +191,50 @@ export function createAcpSessionBackend(
         lastOtherDegraded = false;
         return cliSharedAcp.use((client) => client.sessionList());
       }
-      const timeoutMs = otherListTimeoutMs(currentEnv);
-      const queryOtherWithCancellation = async (): Promise<AcpSessionSummary[]> => {
-        const startedAt = Date.now();
-        const controller = new AbortController();
-        let timedOut = false;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, timeoutMs);
-        timer.unref?.();
+      const { foregroundMs, hardMs } = otherListBudgets(currentEnv);
+      const queryOtherBounded = async (): Promise<AcpSessionSummary[]> => {
+        // 后台预热刚刚成功时直接复用新鲜快照，避免立即二次重复拉取。
+        if (!otherQueryInFlight && lastOtherSnapshot && Date.now() - lastOtherSnapshot.at < OTHER_WARM_SNAPSHOT_REUSE_MS) {
+          lastOtherDegraded = false;
+          return lastOtherSnapshot.summaries;
+        }
+        const flight = ensureOtherQueryInFlight(hardMs);
+        if (hardMs <= foregroundMs) {
+          const result = await flight.promise;
+          return result.summaries;
+        }
+        let fgTimedOut = false;
+        const fgStartedAt = Date.now();
+        let fgTimer: ReturnType<typeof setTimeout> | undefined;
+        const timeoutSentinel = new Promise<"fg_timeout">((resolve) => {
+          fgTimer = setTimeout(() => {
+            fgTimedOut = true;
+            resolve("fg_timeout");
+          }, foregroundMs);
+          fgTimer.unref?.();
+        });
         try {
-          const list = await otherSharedAcp.use(
-            (client) => client.sessionList(timeoutMs, controller.signal),
-            { timeoutMs, signal: controller.signal },
-          );
-          const elapsedMs = Date.now() - startedAt;
-          if (list.length === 0) {
-            recordOtherDiag({ status: "empty", count: 0, elapsedMs });
-          } else {
-            recordOtherDiag({ status: "ok", count: list.length, elapsedMs });
+          const raced = await Promise.race([flight.promise, timeoutSentinel]);
+          if (raced === "fg_timeout") {
+            // 前台不等死，但保留后台健康预热继续完成；若已有上次成功快照则先回退展示。
+            recordOtherDiag({
+              status: "timeout",
+              timeoutMs: foregroundMs,
+              elapsedMs: Date.now() - fgStartedAt,
+            });
+            return lastOtherSnapshot?.summaries ?? [];
           }
-          return list;
-        } catch (error) {
-          const elapsedMs = Date.now() - startedAt;
-          if (timedOut || controller.signal.aborted) {
-            await otherSharedAcp.reset().catch(() => {});
-            recordOtherDiag({ status: "timeout", timeoutMs, elapsedMs });
-          } else {
-            recordOtherDiag({ status: "failed", error: errorText(error), elapsedMs });
-          }
-          return [];
+          return raced.summaries;
         } finally {
-          clearTimeout(timer);
+          if (fgTimer && !fgTimedOut) {
+            clearTimeout(fgTimer);
+          }
         }
       };
 
       const [cliList, otherList] = await Promise.all([
         cliSharedAcp.use((client) => client.sessionList()),
-        queryOtherWithCancellation(),
+        queryOtherBounded(),
       ]);
       if (otherList.length === 0) return cliList;
       const merged = new Map<string, AcpSessionSummary>();

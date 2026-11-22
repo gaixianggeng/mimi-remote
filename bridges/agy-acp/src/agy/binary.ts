@@ -310,8 +310,13 @@ export class SharedReadonlyAcp {
 
   /**
    * 主动关闭并清理卡死的常驻子进程而不置 disposed，使下一次请求可重新拉起健康进程（C10）。
+   * 若传入 expectedClient，则仅回收发起超时的对应实例，避免误杀已恢复的新实例（C10 round4）。
    */
-  async reset(): Promise<void> {
+  async reset(expectedClient?: AcpClient): Promise<void> {
+    if (expectedClient && this.client !== expectedClient) {
+      await expectedClient.close().catch(() => {});
+      return;
+    }
     const current = this.client;
     this.client = undefined;
     if (current) {
@@ -325,7 +330,7 @@ export class SharedReadonlyAcp {
       return await fn(client);
     } catch (error) {
       if (options?.signal?.aborted) {
-        await this.reset();
+        await this.reset(client);
         throw error;
       }
       if (client.isClosed && !this.disposed) {

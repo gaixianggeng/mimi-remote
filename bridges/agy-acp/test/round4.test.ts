@@ -466,4 +466,122 @@ describe("mimi-agy-adapter round4 fixes", () => {
       await harness.close();
     }
   });
+
+  test("C10 round4: slow-but-healthy Other cold index finishes warming in background instead of abort-restarting every 2.5s", async () => {
+    const cliId = "c10-r4-cli-1";
+    const otherId = "c10-r4-other-slow-1";
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${cliId}.db`), "sqlite");
+    await mkdir(path.join(fakeHome, ".gemini", "antigravity", "conversations"), { recursive: true });
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity", "conversations", `${otherId}.db`), "sqlite");
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId: cliId,
+          cwd: workspaceDir,
+          title: "CLI Fast",
+          updatedAt: "2026-11-22T03:00:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+          appDataDirName: "antigravity-cli",
+        },
+        {
+          sessionId: otherId,
+          cwd: workspaceDir,
+          title: "Other Slow Warmup",
+          updatedAt: "2026-11-22T02:59:00Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [
+            { sessionUpdate: "user_message_chunk", content: { type: "text", text: "from other" } },
+            { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "other reply" } },
+          ],
+          appDataDirName: "antigravity",
+        },
+      ],
+    });
+
+    let otherSpawns = 0;
+    let otherClosedCount = 0;
+    let firstOtherListDelayed = false;
+    const diags: OtherListDiagnostic[] = [];
+
+    const harness = await createHarness(world, {
+      env: () => ({
+        ...process.env,
+        HOME: fakeHome,
+        AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS: "80",
+        AGY_ADAPTER_OTHER_LIST_HARD_TIMEOUT_MS: "1500",
+      }),
+      onOtherListDiagnostic: (d) => diags.push(d),
+      spawnTransport: (opts) => {
+        if (opts.appDataDirName !== "antigravity") {
+          return world.spawnTransport(opts);
+        }
+        otherSpawns += 1;
+        const inner = world.spawnTransport(opts);
+        const delayedIn = new PassThrough();
+        delayedIn.on("data", (chunk: Buffer) => {
+          const text = chunk.toString("utf8");
+          if (!firstOtherListDelayed && text.includes("\"session/list\"")) {
+            firstOtherListDelayed = true;
+            // Simulates real 4.5s cold Other session/list (> 80ms foreground budget, < 1500ms hard budget).
+            setTimeout(() => inner.stdin.write(chunk), 220);
+          } else {
+            inner.stdin.write(chunk);
+          }
+        });
+        delayedIn.on("end", () => inner.stdin.end());
+        return {
+          stdin: delayedIn,
+          stdout: inner.stdout,
+          get pid() {
+            return inner.pid;
+          },
+          async close() {
+            otherClosedCount += 1;
+            await inner.close();
+          },
+        };
+      },
+    });
+
+    try {
+      // 1) First request returns CLI promptly at ~80ms WITHOUT killing the warming Other subprocess.
+      const t0 = Date.now();
+      const first = await harness.rpc<{ data: Array<{ id: string }> }>("thread/list", { limit: 10 });
+      expect(Date.now() - t0).toBeLessThan(180);
+      expect(first.data.map((d) => d.id)).toEqual([cliId]);
+      expect(otherSpawns).toBe(1);
+      expect(otherClosedCount).toBe(0);
+
+      // 2) Wait for background warmup (~220ms total) and refresh: discovers Other in BOTH global & scoped lists without respawning!
+      await new Promise((r) => setTimeout(r, 200));
+      const globalAfter = await harness.rpc<{ data: Array<{ id: string; sessionOrigin?: string }> }>("thread/list", { limit: 10 });
+      expect(globalAfter.data.map((d) => d.id)).toContain(otherId);
+      expect(otherSpawns).toBe(1);
+      expect(otherClosedCount).toBe(0);
+
+      const scopedAfter = await harness.rpc<{ data: Array<{ id: string }> }>("thread/list", {
+        limit: 10,
+        cwd: workspaceDir,
+      });
+      expect(scopedAfter.data.map((d) => d.id)).toContain(otherId);
+
+      // 3) Direct thread/read by Other session ID succeeds!
+      const readOther = await harness.rpc<{ thread: { id: string; turns: Array<{ status: string }> } }>("thread/read", {
+        threadId: otherId,
+        includeTurns: true,
+      });
+      expect(readOther.thread.id).toBe(otherId);
+      expect(readOther.thread.turns).toHaveLength(1);
+      expect(diags).toContainEqual(expect.objectContaining({ status: "timeout", timeoutMs: 80 }));
+      expect(diags).toContainEqual(expect.objectContaining({ status: "ok", count: 1 }));
+    } finally {
+      await harness.close();
+    }
+  });
 });
