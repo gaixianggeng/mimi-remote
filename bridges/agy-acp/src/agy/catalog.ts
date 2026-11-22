@@ -10,6 +10,8 @@ import { updatesToTurns } from "./history.ts";
 import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
 import { toolItemFingerprint, toolItemOutputFingerprint } from "./tools.ts";
 import {
+  areNativeToolsProvablySerial,
+  copyNativeToolStepLifecycle,
   copyNativeTranscriptTurnMeta,
   getNativeTranscriptTurnMeta,
   inspectTranscriptActivity,
@@ -745,9 +747,9 @@ export class AgyHistoryStore {
 
         // 3) 多个同签名调用且输出指纹未命中时：
         // - 新格式：仅当串行无并发重叠（overlappedConcurrent !== true）且带 invocationIndex 时按启动顺序对齐；
-        // - 旧版 overlay 兼容（B15 round4）：b36 等旧格式映射未写入 invocationIndex / outputFingerprint，
-        //   且无 overlappedConcurrent 标记，保留原数组记录顺序对齐，避免升级后旧工具 ID 退化为序号；
-        // - 并发重叠导致关联不唯一时仍保留确定性回退 ID，绝不误绑。
+        // - 旧版 overlay 兼容（B15 round5）：b36 等旧格式映射按工具完成顺序存储且缺少 invocationIndex/outputFingerprint，
+        //   仅当原生 transcript 步骤结构证明它们严格串行（单工具步、发起时无在途工具、前一步已终态完成后才发起后一步）时，
+        //   才按原数组顺序恢复原稳定 ID；若原生步骤存在并发重叠则绝不猜测绑定，安全保留确定性回退 ID（:tool:seq）。
         const isNewSequential =
           remainingItems.length === remainingMappingIndices.length
           && remainingMappingIndices.every((idx) => {
@@ -760,7 +762,8 @@ export class AgyHistoryStore {
           && remainingMappingIndices.every((idx) => {
             const m = mappings[idx]!;
             return m.invocationIndex === undefined && m.overlappedConcurrent !== true;
-          });
+          })
+          && areNativeToolsProvablySerial(remainingItems.map((entry) => entry.item));
         if (isNewSequential || isLegacySequential) {
           const ordered = isNewSequential
             ? [...remainingMappingIndices].sort(
@@ -810,9 +813,12 @@ function rewriteTurnId(turn: Turn, targetTurnId: string): Turn {
   const rewritten: Turn = {
     ...turn,
     id: targetTurnId,
-    items: turn.items.map((item) =>
-      item.id.startsWith(oldPrefix) ? { ...item, id: `${targetTurnId}:${item.id.slice(oldPrefix.length)}` } : item,
-    ),
+    items: turn.items.map((item) => {
+      if (!item.id.startsWith(oldPrefix)) return item;
+      const cloned = { ...item, id: `${targetTurnId}:${item.id.slice(oldPrefix.length)}` };
+      copyNativeToolStepLifecycle(item, cloned);
+      return cloned;
+    }),
   };
   copyNativeTranscriptTurnMeta(turn, rewritten);
   return rewritten;

@@ -61,12 +61,20 @@ export interface TranscriptTurnSnapshot {
   stepCount: number;
 }
 
+export interface NativeToolStepLifecycle {
+  callStepOrder: number;
+  callBatchSize: number;
+  hadInFlightAtCall: boolean;
+  endStepOrder: number | null;
+}
+
 export interface NativeTranscriptTurnMeta {
   userStepIndex?: number;
   userCreatedAtMs?: number;
 }
 
 const nativeTurnMetaMap = new WeakMap<Turn, NativeTranscriptTurnMeta>();
+const nativeToolLifecycleMap = new WeakMap<ThreadItem, NativeToolStepLifecycle>();
 
 export function getNativeTranscriptTurnMeta(turn: Turn): NativeTranscriptTurnMeta | undefined {
   return nativeTurnMetaMap.get(turn);
@@ -77,6 +85,37 @@ export function copyNativeTranscriptTurnMeta(from: Turn, to: Turn): void {
   if (meta) {
     nativeTurnMetaMap.set(to, meta);
   }
+}
+
+export function copyNativeToolStepLifecycle(from: ThreadItem, to: ThreadItem): void {
+  const lifecycle = nativeToolLifecycleMap.get(from);
+  if (lifecycle) {
+    nativeToolLifecycleMap.set(to, lifecycle);
+  }
+}
+
+/**
+ * 基于原生 transcript 步骤证据判断一组工具项是否严格串行（无并发重叠，B15 round5）：
+ * 仅当每个工具都来自单工具 PLANNER_RESPONSE、发起时无在途工具、且前一个工具在后一个发起前
+ * 已收到终态 GENERIC 结果时返回 true。只有此时旧版按完成顺序记录的 toolMappings 才必然与
+ * transcript 顺序一致，不会把逆序完成的旧并发工具错绑到彼此 ID。
+ */
+export function areNativeToolsProvablySerial(items: readonly ThreadItem[]): boolean {
+  if (items.length < 2) return true;
+  let prev: NativeToolStepLifecycle | undefined;
+  for (const item of items) {
+    const lifecycle = nativeToolLifecycleMap.get(item);
+    if (!lifecycle) return false;
+    if (lifecycle.callBatchSize !== 1 || lifecycle.hadInFlightAtCall) {
+      return false;
+    }
+    if (prev) {
+      if (prev.callStepOrder >= lifecycle.callStepOrder) return false;
+      if (prev.endStepOrder === null || prev.endStepOrder >= lifecycle.callStepOrder) return false;
+    }
+    prev = lifecycle;
+  }
+  return true;
 }
 
 export type TranscriptSnapshotResult =
@@ -663,6 +702,7 @@ interface PendingToolSlot {
   turnIndex: number;
   itemIndex: number;
   state: AcpToolState;
+  lifecycle: NativeToolStepLifecycle;
 }
 
 export async function readTranscriptTurns(
@@ -695,6 +735,7 @@ export async function readTranscriptTurns(
     completedAtMs: number | null;
     userStepIndex?: number;
     toolStates: Map<string, AcpToolState>;
+    toolLifecyclesByItemIndex: Map<number, NativeToolStepLifecycle>;
     terminalStatus?: "failed" | "interrupted";
     errorMessage?: string;
   }
@@ -715,13 +756,15 @@ export async function readTranscriptTurns(
       startedAtMs,
       completedAtMs: startedAtMs,
       toolStates: new Map(),
+      toolLifecyclesByItemIndex: new Map(),
     };
     turns.push(draft);
     current = draft;
     return draft;
   };
 
-  for (const step of steps) {
+  for (let stepOrder = 0; stepOrder < steps.length; stepOrder += 1) {
+    const step = steps[stepOrder]!;
     const stepMs = parseIsoMs(step.created_at);
     if (step.type === "USER_INPUT") {
       pendingTools.length = 0;
@@ -795,6 +838,8 @@ export async function readTranscriptTurns(
       }
       if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
         const turnIndex = turns.length - 1;
+        const callBatchSize = step.tool_calls.length;
+        const hadInFlightAtCall = pendingTools.length > 0;
         for (const call of step.tool_calls) {
           const name = call.name?.trim() || "tool";
           const args = decodeToolArgs(call.args);
@@ -814,8 +859,15 @@ export async function readTranscriptTurns(
           };
           draft.toolStates.set(toolCallId, state);
           const itemIndex = draft.items.length;
+          const lifecycle: NativeToolStepLifecycle = {
+            callStepOrder: stepOrder,
+            callBatchSize,
+            hadInFlightAtCall,
+            endStepOrder: null,
+          };
+          draft.toolLifecyclesByItemIndex.set(itemIndex, lifecycle);
           draft.items.push(acpToolToThreadItem(state, cwd, true));
-          pendingTools.push({ turnIndex, itemIndex, state });
+          pendingTools.push({ turnIndex, itemIndex, state, lifecycle });
         }
       }
       continue;
@@ -828,6 +880,9 @@ export async function readTranscriptTurns(
       const draft = turns[slot.turnIndex];
       if (!draft) continue;
       const status = step.status === "ERROR" ? "failed" : step.status === "RUNNING" ? "in_progress" : "completed";
+      if (status === "completed" || status === "failed") {
+        slot.lifecycle.endStepOrder = stepOrder;
+      }
       const updated: AcpToolState = {
         ...slot.state,
         status,
@@ -864,10 +919,14 @@ export async function readTranscriptTurns(
     const isLastTurn = draft === lastTurn;
     const isActiveTurn = isLastTurn && (running || holderActive);
     const toolsPending = isActiveTurn;
-    const finalizedItems = draft.items.map((item) => {
+    const finalizedItems = draft.items.map((item, itemIndex) => {
       const state = draft.toolStates.get(item.id);
-      if (!state) return item;
-      return acpToolToThreadItem(state, cwd, toolsPending);
+      const finalized = state ? acpToolToThreadItem(state, cwd, toolsPending) : item;
+      const lifecycle = draft.toolLifecyclesByItemIndex.get(itemIndex);
+      if (lifecycle) {
+        nativeToolLifecycleMap.set(finalized, lifecycle);
+      }
+      return finalized;
     });
     const status: TurnStatus = isActiveTurn ? "inProgress" : (draft.terminalStatus ?? "completed");
     const error =

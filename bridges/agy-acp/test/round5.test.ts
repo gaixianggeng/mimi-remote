@@ -655,4 +655,266 @@ describe("mimi-agy-adapter round5 fixes", () => {
       await hB.close();
     }
   });
+
+  test("B15 round5: legacy overlapped reverse-completion mappings do NOT misbind FIRST/SECOND, while legacy provably serial mappings still restore original IDs (including after B10 turnId rewrite)", async () => {
+    const sessionId = "b15-r5-legacy-overlap-and-serial";
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`), "sqlite");
+
+    const prompt263 = `${"B".repeat(239)} serial-and-overlap-tail`;
+    expect(prompt263.length).toBe(263);
+    expect(prompt263[239]).toBe(" ");
+
+    const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+    await mkdir(logsDir, { recursive: true });
+    const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+    await writeFile(
+      transcriptPath,
+      [
+        // Native Turn 1 (will be rewritten to :turn:2 by B10 because Attempt 1 was an unpersisted early failure):
+        // Two provably serial identical commands (separate PLANNER_RESPONSE steps with GENERIC DONE in between).
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: `<USER_REQUEST>\n${prompt263}\n</USER_REQUEST>`,
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "SERIAL FIRST RESULT",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:03Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:04Z",
+          content: "SERIAL SECOND RESULT",
+        }),
+        JSON.stringify({
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:05Z",
+          content: "Serial done.",
+        }),
+
+        // Native Turn 2 (will be rewritten to :turn:3):
+        // Two overlapped concurrent identical commands emitted in a SINGLE PLANNER_RESPONSE batch,
+        // where legacy b36 recorded completion order [SECOND, FIRST] (reverse completion!).
+        JSON.stringify({
+          step_index: 6,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:00Z",
+          content: "<USER_REQUEST>\nrun overlapped legacy commands\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 7,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:01Z",
+          tool_calls: [
+            { name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } },
+            { name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } },
+          ],
+        }),
+        JSON.stringify({
+          step_index: 8,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:02Z",
+          content: "OVERLAP FIRST RESULT",
+        }),
+        JSON.stringify({
+          step_index: 9,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:03Z",
+          content: "OVERLAP SECOND RESULT",
+        }),
+        JSON.stringify({
+          step_index: 10,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:04Z",
+          content: "Overlap done.",
+        }),
+      ].join("\n") + "\n",
+    );
+    const oldTime = new Date(Date.now() - 5 * 60_000);
+    await utimes(transcriptPath, oldTime, oldTime);
+
+    const serialFirstId = `${sessionId}:turn:2:tool:legacy-serial-FIRST`;
+    const serialSecondId = `${sessionId}:turn:2:tool:legacy-serial-SECOND`;
+    const overlapFirstId = `${sessionId}:turn:3:tool:legacy-overlap-FIRST`;
+    const overlapSecondId = `${sessionId}:turn:3:tool:legacy-overlap-SECOND`;
+
+    // Seed legacy overlay with:
+    // - Turn 1: unpersisted early failure (forces B10 turnId rewrite on Native Turns 1 & 2 -> :turn:2 and :turn:3)
+    // - Turn 2: 263-char space-at-240 completed attempt + legacy serial toolMappings (no invocationIndex)
+    // - Turn 3: completed attempt + legacy overlapped toolMappings stored in reverse completion order [SECOND, FIRST]
+    await writeFile(
+      path.join(stateDir, "overlay.json"),
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          [sessionId]: {
+            cwd: workspaceDir,
+            nextTurnOrdinal: 3,
+            nextAttemptSeq: 3,
+            turnAttempts: [
+              {
+                attemptId: `${sessionId}:attempt:1`,
+                turnId: `${sessionId}:turn:1`,
+                promptText: "early failure before tools",
+                afterPersistedTurnCount: 0,
+                status: "failed",
+                error: "EARLY_FAIL",
+                persisted: false,
+                syntheticTurn: {
+                  id: `${sessionId}:turn:1`,
+                  rootTurnId: null,
+                  items: [
+                    {
+                      type: "userMessage",
+                      id: `${sessionId}:turn:1:user`,
+                      clientId: null,
+                      content: [{ type: "text", text: "early failure before tools", text_elements: [] }],
+                    },
+                  ],
+                  itemsView: "full",
+                  status: "failed",
+                  error: { message: "EARLY_FAIL", codexErrorInfo: null, additionalDetails: null, misalignment: null },
+                  startedAt: 1700000000,
+                  completedAt: 1700000001,
+                  durationMs: 1000,
+                },
+                createdAt: 1700000000,
+              },
+              {
+                attemptId: `${sessionId}:attempt:2`,
+                turnId: `${sessionId}:turn:2`,
+                promptText: prompt263.slice(0, 240),
+                afterPersistedTurnCount: 0,
+                status: "completed",
+                error: null,
+                persisted: true,
+                createdAt: 1700000010,
+              },
+              {
+                attemptId: `${sessionId}:attempt:3`,
+                turnId: `${sessionId}:turn:3`,
+                promptText: "run overlapped legacy commands",
+                afterPersistedTurnCount: 1,
+                status: "completed",
+                error: null,
+                persisted: true,
+                createdAt: 1700000020,
+              },
+            ],
+            toolMappings: {
+              [`${sessionId}:turn:2`]: [
+                {
+                  rawToolCallId: "legacy-serial-FIRST",
+                  itemId: serialFirstId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+                {
+                  rawToolCallId: "legacy-serial-SECOND",
+                  itemId: serialSecondId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+              ],
+              // Legacy b36 stored completion order: SECOND finished before FIRST!
+              [`${sessionId}:turn:3`]: [
+                {
+                  rawToolCallId: "legacy-overlap-SECOND",
+                  itemId: overlapSecondId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+                {
+                  rawToolCallId: "legacy-overlap-FIRST",
+                  itemId: overlapFirstId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "Legacy Serial + Overlap",
+          updatedAt: "2026-11-22T01:01:04Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+    });
+
+    const harness = await createHarness(world);
+    try {
+      const read = await harness.rpc<{
+        thread: {
+          turns: Array<{
+            id: string;
+            status: string;
+            items: Array<{ type: string; id: string; aggregatedOutput?: string | null }>;
+          }>;
+        };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      expect(read.thread.turns).toHaveLength(3);
+      expect(read.thread.turns.map((t) => t.id)).toEqual([
+        `${sessionId}:turn:1`,
+        `${sessionId}:turn:2`,
+        `${sessionId}:turn:3`,
+      ]);
+
+      // Turn 2 (provably serial + rewritten by B10): MUST restore original stable legacy serial IDs!
+      const serialCmds = read.thread.turns[1]!.items.filter((i) => i.type === "commandExecution");
+      expect(serialCmds).toHaveLength(2);
+      expect(serialCmds[0]).toMatchObject({ id: serialFirstId, aggregatedOutput: "SERIAL FIRST RESULT" });
+      expect(serialCmds[1]).toMatchObject({ id: serialSecondId, aggregatedOutput: "SERIAL SECOND RESULT" });
+
+      // Turn 3 (overlapped concurrent batch in legacy overlay without outputFingerprint/invocationIndex):
+      // MUST NOT misbind SECOND -> FIRST RESULT or FIRST -> SECOND RESULT; MUST keep neutral deterministic IDs!
+      const overlapCmds = read.thread.turns[2]!.items.filter((i) => i.type === "commandExecution");
+      expect(overlapCmds).toHaveLength(2);
+      expect(overlapCmds[0]).toMatchObject({ id: `${sessionId}:turn:3:tool:1`, aggregatedOutput: "OVERLAP FIRST RESULT" });
+      expect(overlapCmds[1]).toMatchObject({ id: `${sessionId}:turn:3:tool:2`, aggregatedOutput: "OVERLAP SECOND RESULT" });
+      expect(overlapCmds[0]?.id).not.toBe(overlapSecondId);
+      expect(overlapCmds[1]?.id).not.toBe(overlapFirstId);
+    } finally {
+      await harness.close();
+    }
+  });
 });
