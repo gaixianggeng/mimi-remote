@@ -130,6 +130,96 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertTrue(leadFont.fontDescriptor.symbolicTraits.contains(.traitBold))
     }
 
+    func testLongMarkdownAndCompactReturnToTailRenderInPhoneWidth() throws {
+        let suiteName = "MessageTextSelectionTests.grokbot.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let themeStore = ThemeStore(defaults: defaults)
+        let tokens = themeStore.tokens(for: .light)
+        let markdownStyle = MarkdownStyle.make(role: .assistant, colorScheme: .light, tokens: tokens)
+        let longReply = """
+        **AI 热门资讯和工具日报 · 2026年11月22日**
+
+        这份整理的是过去大约 24 到 36 小时里社区互动比较高的讨论，数字都来自原帖，没经官方确认的传言单独标出来了。
+
+        ## AI 资讯
+
+        1. **模型推理与缓存优化获得开发者积极反馈。** 官方表示新版本主打编程、科学与知识工作，在同类任务上成本降低约 50% 到 80%，[发布说明](https://example.com/release) · [社区点评](https://example.com/discussion)。
+        2. **IDE 同步扩大缓存并重置使用额度。** 工程团队表示缓存改进以后，同样的额度能多完成约 22% 的任务，[缓存说明](https://example.com/cache) · [额度重置](https://example.com/quota)。
+        3. **多模型对比评测引发持续热议。** 开发者重点关注长上下文代码重构与端侧响应速度。
+        """
+        let blocks = MarkdownParser.shared.parse(longReply).blocks
+        let metrics = ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: true)
+
+        let preview = ZStack(alignment: .bottom) {
+            tokens.conversationCanvasBackground.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 14) {
+                Text("\(L10n.text("ui.today")) 10:55")
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                MessageMarkdownBody(blocks: blocks, style: markdownStyle, fillsWidth: true)
+                    .environmentObject(themeStore)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 96)
+
+            VStack(spacing: 6) {
+                Image(systemName: metrics.symbolName)
+                    .font(.system(size: metrics.symbolSize, weight: metrics.symbolWeight))
+                    .foregroundStyle(tokens.primaryText)
+                    .frame(width: metrics.visualDiameter, height: metrics.visualDiameter)
+                    .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
+                    .overlay { Circle().stroke(Color.black.opacity(0.10), lineWidth: 0.75) }
+                    .shadow(color: Color.black.opacity(0.07), radius: 5, y: 2)
+                    .frame(width: metrics.hitDiameter, height: metrics.hitDiameter)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(tokens.conversationPrimaryText)
+                        .frame(width: 34, height: 34)
+                        .background(Color.black.opacity(0.055), in: Circle())
+                    Text(L10n.format("ui.ask_context_value", "mimi-remote"))
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(tokens.conversationTertiaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "mic")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(tokens.conversationPrimaryText)
+                        .frame(width: 36, height: 36)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(tokens.inputBackground, in: Capsule(style: .continuous))
+                .overlay { Capsule(style: .continuous).strokeBorder(Color.black.opacity(0.09), lineWidth: 0.75) }
+                .shadow(color: Color.black.opacity(0.06), radius: 6, y: 2)
+                .padding(.horizontal, 8)
+            }
+            .padding(.bottom, 16)
+        }
+        .frame(width: 402, height: 760)
+        .environment(\.colorScheme, .light)
+
+        let controller = UIHostingController(rootView: preview)
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 760)
+        controller.view.frame = bounds
+        let window = UIWindow(frame: bounds)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        controller.view.layoutIfNeeded()
+
+        let textView = try XCTUnwrap(messageTextView(in: controller.view))
+        XCTAssertTrue(textView.textStorage.string.contains("AI 资讯"))
+        XCTAssertTrue(textView.textStorage.string.contains("1.\t"))
+        attachImage(of: controller.view, name: "grokbot-long-markdown-and-return-to-tail")
+    }
+
     func testPlainAndMarkdownParagraphsHaveSameTypography() throws {
         let content = "同样的正文，保持相同的行距。\n第二行继续阅读。"
         let plain = MessageTextDocument.plain(content, style: style)
