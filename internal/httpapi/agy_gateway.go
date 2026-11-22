@@ -64,13 +64,21 @@ type agyAuthProbeCache struct {
 	checkedAt time.Time
 }
 
+type agyAuthProbeFlight struct {
+	key     string
+	done    chan struct{}
+	state   agybridge.AgyAuthState
+	message string
+}
+
 const (
 	agyAuthSignedInCacheTTL  = 2 * time.Minute
 	agyAuthSignedOutCacheTTL = 5 * time.Second
 	agyAuthUnknownCacheTTL   = 2 * time.Second
 )
 
-var agyAuthProbeTimeout = 4 * time.Second
+// 真实 `agy 1.5.14` 首次冷探测远端模型目录实测耗时约 7-10 秒；预留 15 秒避免正常已登录账号被误判为超时未知态（B11）。
+var agyAuthProbeTimeout = 15 * time.Second
 
 func (p agyAdapterProbe) supportsMethod(method string) bool {
 	return p.Healthy && p.Capabilities != nil && p.Capabilities.Supports(method)
@@ -110,10 +118,10 @@ func agyAdapterFix(probe agyAdapterProbe) string {
 
 func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybridge.AgyAuthState, string) {
 	now := time.Now().UTC()
-	envKey := strings.Join(agybridge.AgyAccountArgs(env), "\x00")
+	envKey := agybridge.AgyAuthCacheKey(env)
+	flightKey := agyPath + "\x00" + envKey
 	r.agyMu.Lock()
 	cached := r.agyAuth
-	r.agyMu.Unlock()
 	if cached.path == agyPath && cached.envKey == envKey && cached.state != "" && !cached.checkedAt.IsZero() {
 		ttl := agyAuthSignedInCacheTTL
 		switch cached.state {
@@ -123,12 +131,27 @@ func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybrid
 			ttl = agyAuthUnknownCacheTTL
 		}
 		if now.Sub(cached.checkedAt) < ttl {
+			r.agyMu.Unlock()
 			return cached.state, cached.message
 		}
 	}
+	if r.agyAuthInFlight != nil && r.agyAuthInFlight.key == flightKey {
+		flight := r.agyAuthInFlight
+		r.agyMu.Unlock()
+		<-flight.done
+		return flight.state, flight.message
+	}
+	flight := &agyAuthProbeFlight{
+		key:  flightKey,
+		done: make(chan struct{}),
+	}
+	r.agyAuthInFlight = flight
+	r.agyMu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), agyAuthProbeTimeout)
 	defer cancel()
 	state, msg := agybridge.CheckAgyAuthStatus(ctx, agyPath, env)
+
 	r.agyMu.Lock()
 	r.agyAuth = agyAuthProbeCache{
 		path:      agyPath,
@@ -137,6 +160,12 @@ func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybrid
 		message:   msg,
 		checkedAt: time.Now().UTC(),
 	}
+	flight.state = state
+	flight.message = msg
+	if r.agyAuthInFlight == flight {
+		r.agyAuthInFlight = nil
+	}
+	close(flight.done)
 	r.agyMu.Unlock()
 	return state, msg
 }

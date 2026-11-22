@@ -129,6 +129,7 @@ type Router struct {
 	agyMu             sync.Mutex
 	agyProbe          agyAdapterProbe
 	agyAuth           agyAuthProbeCache
+	agyAuthInFlight   *agyAuthProbeFlight
 	activeAgySessions int
 	agyForeground     map[string]*claudeForegroundLease
 	agyAdapter        *claudeBridgeSupervisor

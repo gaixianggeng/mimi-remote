@@ -870,14 +870,23 @@ func TestB11Round2SlowOrUnknownAuthProbeDoesNotReportReadyAndPassesIsolatedAccou
 	argsLog := filepath.Join(dir, "models-args.txt")
 
 	// 1) Slow/hanging probe must yield agy_auth_unknown (Healthy=false), NEVER ready!
+	// Strict script mirrors real `agy 1.5.14`: only accepts global --gemini_dir / --app_data_dir BEFORE `models`.
 	slowScript := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "1.5.14"; exit 0; fi
-if [ "$1" = "models" ]; then
-  echo "$@" > "` + argsLog + `"
-  /bin/sleep 2
-  exit 0
-fi
-exit 0
+echo "$@" > "` + argsLog + `"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --gemini_dir|--app_data_dir) shift 2 ;;
+    models)
+      shift
+      if [ $# -gt 0 ]; then echo "Usage: agy models [flags]" >&2; exit 2; fi
+      /bin/sleep 2
+      exit 0
+      ;;
+    *) echo "flags provided but not defined: $1" >&2; exit 2 ;;
+  esac
+done
+exit 2
 `
 	if err := os.WriteFile(agyPath, []byte(slowScript), 0o755); err != nil {
 		t.Fatal(err)
@@ -912,21 +921,33 @@ exit 0
 		t.Fatalf("runtime status should report unavailable/agy_auth_unknown, got %+v", rt)
 	}
 
-	// Verify isolated ACP account flags were forwarded to `agy models`.
+	// Verify isolated ACP account flags were forwarded in global underscore form BEFORE `models`.
 	recordedArgsBytes, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("expected agy models to record args: %v", err)
 	}
 	recordedArgs := strings.TrimSpace(string(recordedArgsBytes))
-	if !strings.Contains(recordedArgs, "--gemini-dir .gemini-isolated") || !strings.Contains(recordedArgs, "--app-data-dir antigravity-custom") {
-		t.Fatalf("expected isolated ACP account flags in agy models invocation, got %q", recordedArgs)
+	wantArgs := "--gemini_dir .gemini-isolated --app_data_dir antigravity-custom models"
+	if recordedArgs != wantArgs {
+		t.Fatalf("expected %q, got %q", wantArgs, recordedArgs)
 	}
 
-	// 2) Once probe becomes fast & signed-in, short unknown cache TTL expires and probe recovers cleanly.
+	// 2) Once probe becomes fast & signed-in (still validating strict real-CLI flag order), short unknown cache TTL expires and probe recovers cleanly.
 	fastSignedIn := `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "1.5.14"; exit 0; fi
-if [ "$1" = "models" ]; then echo "gemini-4-carbon"; exit 0; fi
-exit 0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --gemini_dir|--app_data_dir) shift 2 ;;
+    models)
+      shift
+      if [ $# -gt 0 ]; then echo "Usage: agy models [flags]" >&2; exit 2; fi
+      echo "gemini-4-carbon"
+      exit 0
+      ;;
+    *) echo "flags provided but not defined: $1" >&2; exit 2 ;;
+  esac
+done
+exit 2
 `
 	if err := os.WriteFile(agyPath, []byte(fastSignedIn), 0o755); err != nil {
 		t.Fatal(err)
