@@ -9,6 +9,7 @@ struct ConversationView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
     @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
+    @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
@@ -54,6 +55,10 @@ struct ConversationView: View {
                 safeAreaInsets: proxy.safeAreaInsets
             )
             let composerWidth = min(layout.composerAvailableWidth, layout.composerMaxWidth)
+            // 使用详情当前实际可用高度，先为正文和输入区留空间。
+            let phoneApprovalHeight = phoneKeyboardVisible.map { keyboardVisible in
+                keyboardVisible ? 0 : max(0, min(240, proxy.size.height * 0.32, proxy.size.height - 300))
+            }
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
@@ -117,6 +122,7 @@ struct ConversationView: View {
                                 availableWidth: composerWidth,
                                 initialGoalStatusExpanded: initialGoalStatusExpanded
                             )
+                            .environment(\.phoneApprovalMaximumHeight, phoneApprovalHeight)
                         }
                     }
                         // 确定宽度阻止固定尺寸的工具按钮反向撑大输入卡和上方目标栏。
@@ -125,7 +131,7 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, layout.composerHorizontalInset)
                 .padding(.top, layout.composerTopPadding)
-                .padding(.bottom, layout.composerBottomPadding)
+                .padding(.bottom, phoneKeyboardVisible.map { $0 ? 6 : 8 } ?? layout.composerBottomPadding)
                 .background {
                     composerReadabilityBackdrop(tokens: tokens)
                 }
@@ -350,7 +356,7 @@ struct ConversationView: View {
                 )
             }
         }
-        .ignoresSafeArea(edges: .bottom)
+        .ignoresSafeArea(edges: phoneKeyboardVisible == nil ? .bottom : [])
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

@@ -1038,7 +1038,7 @@ struct UnifiedWorkbenchShell: View {
                     relation: relation,
                     parentSessionID: parentID,
                     showsCloseButton: false,
-                    shouldHideTabBar: shouldHideTabBar,
+                    shouldHideTabBar: shouldHideTabBar || layout.usesPhoneIntegratedBottomChrome,
                     onClose: {}
                 )
             } else {
@@ -1047,6 +1047,7 @@ struct UnifiedWorkbenchShell: View {
                     systemImage: "person.2.slash",
                     description: Text(L10n.text("ui.sub_agent_unavailable"))
                 )
+                .toolbar(layout.usesPhoneIntegratedBottomChrome ? .hidden : .automatic, for: .tabBar)
             }
         }
     }
@@ -1151,9 +1152,9 @@ struct UnifiedWorkbenchShell: View {
         // 紧凑导航的退出页必须保留自己的会话身份。pop 同帧全局 route 已回到根页，
         // 若继续从 route 取 ID，退出中的标题会在转场结束前被替换。
         let detailSessionID = destinationSessionID ?? navigationState.route.detailSessionID
-        let canPresentSessionDetail = navigationState.canPresentSessionDetail(
-            selectedSessionID: sessionStore.selectedSessionID
-        )
+        let canPresentSessionDetail = layout.usesPhoneIntegratedBottomChrome
+            ? detailSessionID == sessionStore.selectedSessionID
+            : navigationState.canPresentSessionDetail(selectedSessionID: sessionStore.selectedSessionID)
         let detailSession = detailSessionID.flatMap { sessionStore.sessionsByID[$0] }
         let transcriptScope = detailSessionID.map { sessionStore.conversationStore.scopedSessionID(for: $0) }
         let detailedTranscript = Binding(
@@ -1299,7 +1300,10 @@ struct UnifiedWorkbenchShell: View {
             }
         }
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
-        .toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
+        .modifier(SessionBottomTabBarModifier(
+            usesPhoneIntegratedBottomChrome: layout.usesPhoneIntegratedBottomChrome,
+            shouldHideTabBar: shouldHideTabBar
+        ))
         .modifier(
             SessionNavigationMaterialModifier(
                 usesCompactNavigation: layout.usesCompactNavigation,
