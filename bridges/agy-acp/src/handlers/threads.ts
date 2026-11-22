@@ -66,7 +66,7 @@ export function toThread(
     name: record.name,
     turns,
     canAcceptDirectInput: record.cwdMissing ? false : live.canAcceptDirectInput,
-    ...(record.cwdMissing || live.cwdMissing ? { cwdMissing: true } : {}),
+    cwdMissing: Boolean(record.cwdMissing || live.cwdMissing),
     ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
   };
 }

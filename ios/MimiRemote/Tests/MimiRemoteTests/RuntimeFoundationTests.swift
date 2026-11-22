@@ -377,5 +377,26 @@ final class RuntimeFoundationTests: XCTestCase {
         store.selectedSessionID = session.id
         XCTAssertTrue(store.isProtocolReadOnlySession(session))
         XCTAssertNotNil(store.selectedSessionControlNotice)
+
+        // Path restoration clears cwdMissing and restores direct input on the same store.
+        let restored = AgentSession(
+            id: session.id,
+            projectID: session.projectID,
+            project: session.project,
+            dir: session.dir,
+            title: session.title,
+            status: "completed",
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            canAcceptDirectInput: true,
+            cwdMissing: false
+        )
+        store.applyLiveSessionIndexUpdate(restored)
+        XCTAssertEqual(store.selectedSession?.cwdMissing, false)
+        XCTAssertEqual(store.selectedSession?.allowsDirectInput, true)
+        XCTAssertNil(store.selectedSessionControlNotice)
     }
 }

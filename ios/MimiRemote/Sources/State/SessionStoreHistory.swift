@@ -3071,6 +3071,7 @@ extension SessionStore {
             writerHeldElsewhere: item.writerHeldElsewhere,
             spawnedFromThreadID: item.spawnedFromThreadID,
             sessionOrigin: item.sessionOrigin,
+            cwdMissing: item.cwdMissing,
             context: item.context
         )
     }

@@ -171,7 +171,19 @@ func (p *appServerGatewayPolicy) sanitizeGlobalThreadListResponse(
 			project = projectByPath[scope.realPath]
 		}
 		if strings.TrimSpace(project.ID) == "" {
-			continue
+			if scope.browse && scope.missing && normalizeAppServerRuntimeID(p.runtimeID) == appServerRuntimeAgyID {
+				// Antigravity 仅位于 browse_roots 内且原目录已删除的只读历史（C15）：
+				// 目录缺失后无法再通过目录浏览器进入，也无法运行 Git 归属查询；
+				// 为其生成只读缺失工作区标识，使已登记目录与仅浏览目录在全局历史发现中行为一致，
+				// 同时保持 Codex 全局发现严格要求 Git 归属已登记项目的既有语义。
+				project = projects.Project{
+					ID:   scope.id,
+					Name: filepath.Base(scope.realPath),
+					Path: scope.realPath,
+				}
+			} else {
+				continue
+			}
 		}
 
 		// 外部 browse-root Worktree、原目录已移动/删除的历史会话以及显式 parent 子会话

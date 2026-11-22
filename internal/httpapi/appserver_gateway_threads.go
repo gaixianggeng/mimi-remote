@@ -463,7 +463,11 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 				target: "client",
 			}
 		}
+		// 先按本次最新响应更新授权缓存（含目录恢复后解除 cwdMissing/readOnly 状态），
+		// 再按最新缓存决定是否强制只读，避免目录恢复后详情仍被旧缺失缓存卡在只读（C14）。
+		p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
 		payload = p.enforceReadOnlyThreadResponse(payload, pending.threadID)
+		return payload, true, nil
 	}
 	p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
@@ -1437,7 +1441,7 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 		}
 		cwd := firstNonEmpty(item.CWD, item.Path, pending.cwd)
 		scope, ok := p.router.gatewayScopeForPath(cwd)
-		if !ok && pending.method == "thread/list" {
+		if !ok && (pending.method == "thread/list" || pending.method == "thread/read") {
 			scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
 		}
 		if !ok {
@@ -1638,15 +1642,16 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 		return appServerGatewayAllowedThread{}, false
 	}
 	if existing, ok := p.allowedThread(thread.id); ok {
-		if existing.readOnly {
+		pathRestored := existing.cwdMissing && !thread.cwdMissing
+		if existing.readOnly && !pathRestored {
 			thread.readOnly = true
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = false
-		} else if !thread.directInputKnown && existing.directInputKnown {
+		} else if !pathRestored && !thread.directInputKnown && existing.directInputKnown {
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = existing.canAcceptDirectInput
 		}
-		if existing.cwdMissing {
+		if existing.cwdMissing && !pathRestored {
 			thread.cwdMissing = true
 		}
 	}
@@ -1721,15 +1726,16 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()
 	if existing, ok := r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)]; ok {
-		if existing.readOnly {
+		pathRestored := existing.cwdMissing && !thread.cwdMissing
+		if existing.readOnly && !pathRestored {
 			thread.readOnly = true
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = false
-		} else if !thread.directInputKnown && existing.directInputKnown {
+		} else if !pathRestored && !thread.directInputKnown && existing.directInputKnown {
 			thread.directInputKnown = true
 			thread.canAcceptDirectInput = existing.canAcceptDirectInput
 		}
-		if existing.cwdMissing {
+		if existing.cwdMissing && !pathRestored {
 			thread.cwdMissing = true
 		}
 	}

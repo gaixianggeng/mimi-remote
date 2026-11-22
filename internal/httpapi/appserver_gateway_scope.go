@@ -605,16 +605,37 @@ func (r *Router) gatewayScopeForPathWithPendingUse(raw string, acquirePendingUse
 	return gatewayScope{}, "", false
 }
 
-// canonicalMissingPath 解析已移动或删除目录的规范路径：沿父目录向上找到最近存在的祖先，
-// 对祖先执行 EvalSymlinks 防符号链接越界，再拼回剩余路径段（C14/C15）。
+// canonicalMissingPath 解析已移动或删除目录的规范路径（C14/C15）：
+// 仅当目标路径本身在磁盘上真实缺失（os.Lstat 返回 os.ErrNotExist）时才进入兜底；
+// 若目标实际存在（含指向授权范围外的末端符号链接、悬空链接）或遇到权限/循环错误，直接拒绝。
+// 向上回溯时同样逐段检查 os.Lstat，对最近存在的祖先执行 EvalSymlinks 并确认其为目录后再拼回缺失尾段。
 func canonicalMissingPath(abs string) (string, bool) {
 	cleaned := filepath.Clean(abs)
 	if !filepath.IsAbs(cleaned) {
 		return "", false
 	}
+	if _, err := os.Lstat(cleaned); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return "", false
+	}
 	var tail []string
 	cur := cleaned
 	for {
+		_, err := os.Lstat(cur)
+		if err == nil {
+			realAncestor, evalErr := filepath.EvalSymlinks(cur)
+			if evalErr != nil {
+				return "", false
+			}
+			info, statErr := os.Stat(realAncestor)
+			if statErr != nil || !info.IsDir() {
+				return "", false
+			}
+			parts := append([]string{realAncestor}, tail...)
+			return filepath.Join(parts...), true
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			return "", false
@@ -625,12 +646,6 @@ func canonicalMissingPath(abs string) (string, bool) {
 		}
 		tail = append([]string{base}, tail...)
 		cur = parent
-		realAncestor, err := filepath.EvalSymlinks(cur)
-		if err != nil {
-			continue
-		}
-		parts := append([]string{realAncestor}, tail...)
-		return filepath.Join(parts...), true
 	}
 }
 

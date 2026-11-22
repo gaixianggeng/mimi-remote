@@ -112,3 +112,42 @@ func TestFindByPathCachesMatchesAndBoundsMisses(t *testing.T) {
 		t.Fatalf("路径匹配缓存应有硬上限，实际 %d", cacheSize)
 	}
 }
+
+func TestRegistryAllowsMissingRegisteredProjectAsReadOnlyMissingState(t *testing.T) {
+	parent := t.TempDir()
+	missingDir := filepath.Join(parent, "moved-project")
+	registry, err := NewRegistry([]config.ProjectConfig{{ID: "moved", Name: "Moved", Path: missingDir}})
+	if err != nil {
+		t.Fatalf("已登记目录缺失时不应阻止网关启动：%v", err)
+	}
+	project, ok := registry.Get("moved")
+	if !ok {
+		t.Fatal("缺失目录项目应保留在注册表中以便历史回溯")
+	}
+	if !project.Missing {
+		t.Fatalf("期望 Missing=true，实际 %+v", project)
+	}
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReal := filepath.Join(realParent, "moved-project")
+	if project.RealPath != wantReal {
+		t.Fatalf("缺失项目规范路径不符：got=%q want=%q", project.RealPath, wantReal)
+	}
+	// 非目录文件与悬空符号链接仍必须拒绝。
+	filePath := filepath.Join(parent, "not-a-dir.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry([]config.ProjectConfig{{ID: "file", Name: "File", Path: filePath}}); err == nil {
+		t.Fatal("普通文件作为项目路径必须继续拒绝")
+	}
+	dangling := filepath.Join(parent, "dangling-link")
+	if err := os.Symlink(filepath.Join(parent, "does-not-exist-target"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry([]config.ProjectConfig{{ID: "link", Name: "Link", Path: dangling}}); err == nil {
+		t.Fatal("悬空符号链接作为项目路径必须继续拒绝")
+	}
+}

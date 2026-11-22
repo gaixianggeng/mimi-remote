@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,5 +348,227 @@ func TestC14C15GlobalListAndReadPreserveMissingDirectorySessionsAsReadOnly(t *te
 		threadID: "sess-removed",
 	}); err != nil {
 		t.Fatalf("expected validateReadOnlyThreadResponse to allow missing-dir history read, got %v", err)
+	}
+}
+
+func TestC14C15Round2RejectsOutOfScopeSymlinkEscapeInMissingPathFallback(t *testing.T) {
+	allowedRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+	projectDir := filepath.Join(allowedRoot, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "proj", Name: "Proj", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		cfg: config.Config{
+			BrowseRoots: []string{allowedRoot},
+		},
+	}
+
+	// 1) Leaf symlink inside project pointing to an existing directory outside allowed scope.
+	escapeLink := filepath.Join(projectDir, "escape-link")
+	if err := os.Symlink(outsideRoot, escapeLink); err != nil {
+		t.Fatal(err)
+	}
+	if scope, ok := router.gatewayReadOnlyScopeForHistoryPath(escapeLink); ok {
+		t.Fatalf("out-of-scope leaf symlink MUST NOT be accepted via missing-path fallback: scope=%+v", scope)
+	}
+
+	// 2) Non-existent child underneath an out-of-scope symlink.
+	escapeChild := filepath.Join(escapeLink, "missing-child")
+	if scope, ok := router.gatewayReadOnlyScopeForHistoryPath(escapeChild); ok {
+		t.Fatalf("missing child under out-of-scope symlink MUST NOT be accepted: scope=%+v", scope)
+	}
+
+	// 3) Dangling symlink inside project pointing outside scope.
+	danglingLink := filepath.Join(projectDir, "dangling-link")
+	if err := os.Symlink(filepath.Join(outsideRoot, "nonexistent"), danglingLink); err != nil {
+		t.Fatal(err)
+	}
+	if scope, ok := router.gatewayReadOnlyScopeForHistoryPath(danglingLink); ok {
+		t.Fatalf("dangling symlink MUST NOT be accepted as missing dir: scope=%+v", scope)
+	}
+	if scope, ok := router.gatewayReadOnlyScopeForHistoryPath(filepath.Join(danglingLink, "sub")); ok {
+		t.Fatalf("child under dangling symlink MUST NOT be accepted: scope=%+v", scope)
+	}
+}
+
+func TestC15Round2GlobalListDiscoversDeletedBrowseOnlyDirectoryAsReadOnly(t *testing.T) {
+	browseRoot := t.TempDir()
+	otherProject := filepath.Join(t.TempDir(), "other-proj")
+	if err := os.MkdirAll(otherProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	browseOnlyDir := filepath.Join(browseRoot, "ephemeral-browse-dir")
+	if err := os.MkdirAll(browseOnlyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(browseOnlyDir); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "other", Name: "Other", Path: otherProject},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+		cfg: config.Config{
+			BrowseRoots: []string{browseRoot},
+		},
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+
+	upstreamPayload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"data": []map[string]any{
+				{
+					"id":                   "sess-browse-deleted",
+					"cwd":                  browseOnlyDir,
+					"name":                 "Browse Only Deleted Session",
+					"canAcceptDirectInput": true,
+				},
+			},
+			"nextCursor": nil,
+		},
+	})
+	rewritten, allowed, err := policy.sanitizeGlobalThreadListResponse(upstreamPayload, appServerGatewayPendingThreadRequest{
+		method: "thread/list",
+	})
+	if err != nil {
+		t.Fatalf("sanitizeGlobalThreadListResponse failed: %v", err)
+	}
+	if len(allowed) != 1 || !allowed[0].readOnly || !allowed[0].cwdMissing || allowed[0].canAcceptDirectInput {
+		t.Fatalf("deleted browse-only dir must be preserved in global list as readOnly+cwdMissing, got %+v", allowed)
+	}
+	if !strings.Contains(string(rewritten), `"cwdMissing":true`) {
+		t.Fatalf("expected cwdMissing=true in rewritten global list: %s", string(rewritten))
+	}
+	policy.allowThread(allowed[0])
+
+	readRaw, _ := json.Marshal(map[string]any{
+		"thread": map[string]any{
+			"id":  "sess-browse-deleted",
+			"cwd": browseOnlyDir,
+		},
+	})
+	if err := policy.validateReadOnlyThreadResponse(readRaw, appServerGatewayPendingThreadRequest{
+		method:   "thread/read",
+		threadID: "sess-browse-deleted",
+	}); err != nil {
+		t.Fatalf("expected cold thread/read to succeed for deleted browse-only dir, got %v", err)
+	}
+}
+
+func TestC14Round2RestoredDirectoryRefreshesListAndDetailPermissionsOnSameConnection(t *testing.T) {
+	parentDir := t.TempDir()
+	projectDir := filepath.Join(parentDir, "move-fixture")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{
+		{ID: "move-fixture", Name: "Move Fixture", Path: projectDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(projectDir); err != nil {
+		t.Fatal(err)
+	}
+
+	router := &Router{
+		projects:       registry,
+		gatewayThreads: map[string]appServerGatewayAllowedThread{},
+	}
+	policy := &appServerGatewayPolicy{
+		router:         router,
+		runtimeID:      appServerRuntimeAgyID,
+		pendingThreads: map[string]appServerGatewayPendingThreadRequest{},
+		allowedThreads: map[string]appServerGatewayAllowedThread{},
+	}
+
+	// Step 1: While directory is missing, global list caches the thread as readOnly + cwdMissing.
+	listPayload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"data": []map[string]any{
+				{"id": "sess-move", "cwd": projectDir, "canAcceptDirectInput": true},
+			},
+			"nextCursor": nil,
+		},
+	})
+	_, missingAllowed, err := policy.sanitizeGlobalThreadListResponse(listPayload, appServerGatewayPendingThreadRequest{method: "thread/list"})
+	if err != nil || len(missingAllowed) != 1 || !missingAllowed[0].cwdMissing || !missingAllowed[0].readOnly {
+		t.Fatalf("expected missing-dir thread cached as readOnly+cwdMissing, got %+v err=%v", missingAllowed, err)
+	}
+	policy.allowThread(missingAllowed[0])
+
+	// Step 2: Restore directory on disk!
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: On the SAME connection, thread/read must clear stale cwdMissing/readOnly cache and return writable!
+	reqID := json.RawMessage(`2`)
+	if err := policy.rememberPendingThreadRequest(&reqID, appServerGatewayPendingThreadRequest{
+		method:   "thread/read",
+		threadID: "sess-move",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readPayload, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"result": map[string]any{
+			"thread": map[string]any{
+				"id":                   "sess-move",
+				"cwd":                  projectDir,
+				"canAcceptDirectInput": true,
+				"cwdMissing":           false,
+			},
+		},
+	})
+	var readFrame appServerGatewayFrame
+	if err := json.Unmarshal(readPayload, &readFrame); err != nil {
+		t.Fatal(err)
+	}
+	outPayload, forward, policyErr := policy.finishUpstreamThreadResponse(readPayload, readFrame)
+	if policyErr != nil || !forward {
+		t.Fatalf("expected restored thread/read to succeed, forward=%v err=%+v", forward, policyErr)
+	}
+	var readDecoded struct {
+		Result struct {
+			Thread struct {
+				CanAcceptDirectInput bool `json:"canAcceptDirectInput"`
+				CwdMissing           bool `json:"cwdMissing"`
+			} `json:"thread"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(outPayload, &readDecoded); err != nil {
+		t.Fatal(err)
+	}
+	if !readDecoded.Result.Thread.CanAcceptDirectInput || readDecoded.Result.Thread.CwdMissing {
+		t.Fatalf("restored directory detail MUST be writable (not stuck read-only): %s", string(outPayload))
+	}
+	refreshed, ok := policy.allowedThread("sess-move")
+	if !ok || refreshed.readOnly || refreshed.cwdMissing || !refreshed.canAcceptDirectInput {
+		t.Fatalf("expected allowedThread cache to refresh after path restore, got %+v", refreshed)
 	}
 }

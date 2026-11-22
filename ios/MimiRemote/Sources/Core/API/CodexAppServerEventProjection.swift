@@ -766,7 +766,7 @@ extension CodexAppServerSessionRuntime {
             sessionOrigin: antigravitySessionOrigin(from: thread, cached: cached?.sessionOrigin),
             cwdMissing: thread["cwdMissing"]?.boolValue
                 ?? thread["mimiRemote"]?.objectValue?["cwdMissing"]?.boolValue
-                ?? cached?.cwdMissing,
+                ?? false,
             context: context
         )
         if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }
