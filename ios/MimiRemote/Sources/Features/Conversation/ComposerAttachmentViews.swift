@@ -1241,6 +1241,7 @@ struct ComposerImageAttachmentThumbnail: View {
             .overlay {
                 shape.strokeBorder(tokens.border.opacity(0.75), lineWidth: 0.75)
             }
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
         .disabled(!canPreview)
