@@ -36,6 +36,7 @@ export interface ManagerOptions {
         promptText?: string;
         promptHash?: string;
         promptTruncated?: boolean;
+        clientId?: string;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
@@ -56,6 +57,7 @@ export interface ManagerOptions {
       promptText: string;
       promptHash?: string;
       promptTruncated?: boolean;
+      clientId?: string;
       startedAtMs?: number;
     },
   ) => Promise<{ turnId: string; attemptId: string }>;

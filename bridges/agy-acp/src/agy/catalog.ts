@@ -859,20 +859,104 @@ function visibleItemDedupKey(item: Turn["items"][number]): string {
   return `${item.type}:${item.id}`;
 }
 
-function mergeVisibleTurnItems(aligned: Turn, synthetic: Turn): Turn["items"] {
+function normalizeComparableText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function preferFullerStreamedText(nativeText: string, synthText: string): string | undefined {
+  const normSynth = normalizeComparableText(synthText);
+  if (!normSynth) return undefined;
+  const normNative = normalizeComparableText(nativeText);
+  if (!normNative) return synthText;
+  if (synthText.startsWith(nativeText) && synthText.length > nativeText.length) {
+    return synthText;
+  }
+  const trimmedNative = nativeText.trim();
+  const trimmedSynth = synthText.trim();
+  if (trimmedSynth.startsWith(trimmedNative) && trimmedSynth.length > trimmedNative.length) {
+    return synthText;
+  }
+  if (normSynth.startsWith(normNative) && normSynth.length > normNative.length) {
+    return synthText;
+  }
+  return undefined;
+}
+
+function mergeSameIdVisibleItem(
+  nativeItem: Turn["items"][number],
+  synthItem: Turn["items"][number],
+): Turn["items"][number] {
+  if (nativeItem.type === "agentMessage" && synthItem.type === "agentMessage") {
+    const fuller = preferFullerStreamedText(nativeItem.text, synthItem.text);
+    if (fuller !== undefined) {
+      return {
+        ...nativeItem,
+        text: fuller,
+        phase: nativeItem.phase ?? synthItem.phase,
+        memoryCitation: nativeItem.memoryCitation ?? synthItem.memoryCitation,
+        delivery: nativeItem.delivery ?? synthItem.delivery,
+        questions: nativeItem.questions ?? synthItem.questions,
+      };
+    }
+    return nativeItem;
+  }
+  if (nativeItem.type === "plan" && synthItem.type === "plan") {
+    const fuller = preferFullerStreamedText(nativeItem.text, synthItem.text);
+    if (fuller !== undefined) {
+      return { ...nativeItem, text: fuller };
+    }
+    return nativeItem;
+  }
+  if (nativeItem.type === "reasoning" && synthItem.type === "reasoning") {
+    const fuller = preferFullerStreamedText(nativeItem.content.join("\n"), synthItem.content.join("\n"));
+    if (fuller !== undefined) {
+      return {
+        ...nativeItem,
+        content: synthItem.content,
+        summary: nativeItem.summary.length > 0 ? nativeItem.summary : synthItem.summary,
+      };
+    }
+    return nativeItem;
+  }
+  return nativeItem;
+}
+
+function applyUserMessageClientId(turn: Turn, clientId: string | undefined): Turn {
+  if (!clientId) return turn;
+  let changed = false;
+  const items = turn.items.map((item) => {
+    if (item.type === "userMessage" && !item.clientId) {
+      changed = true;
+      return { ...item, clientId };
+    }
+    return item;
+  });
+  if (!changed) return turn;
+  const updated: Turn = { ...turn, items };
+  copyNativeTranscriptTurnMeta(turn, updated);
+  return updated;
+}
+
+function mergeVisibleTurnItems(aligned: Turn, synthetic: Turn, attemptClientId?: string): Turn["items"] {
   const synthUser = synthetic.items.find((item) => item.type === "userMessage");
   const synthNonUsers = synthetic.items.filter((item) => item.type !== "userMessage");
   const alignedHasNonUser = aligned.items.some((item) => item.type !== "userMessage");
+  const resolvedClientId =
+    (synthUser?.type === "userMessage" && synthUser.clientId) || attemptClientId || undefined;
 
   const mergedItems: Turn["items"] = aligned.items.map((item) => {
-    if (item.type === "userMessage" && !item.clientId && synthUser?.type === "userMessage" && synthUser.clientId) {
-      return { ...item, clientId: synthUser.clientId };
+    if (item.type === "userMessage" && !item.clientId && resolvedClientId) {
+      return { ...item, clientId: resolvedClientId };
     }
     return item;
   });
 
   if (!mergedItems.some((item) => item.type === "userMessage") && synthUser) {
-    mergedItems.unshift(synthUser);
+    mergedItems.unshift(
+      synthUser.type === "userMessage" && !synthUser.clientId && resolvedClientId
+        ? { ...synthUser, clientId: resolvedClientId }
+        : synthUser,
+    );
   }
 
   if (synthNonUsers.length === 0) {
@@ -885,11 +969,25 @@ function mergeVisibleTurnItems(aligned: Turn, synthetic: Turn): Turn["items"] {
   }
 
   const existingKeys = new Set(mergedItems.filter((item) => item.type !== "userMessage").map(visibleItemDedupKey));
-  const existingIds = new Set(mergedItems.map((item) => item.id));
+  const existingIdIndex = new Map<string, number>();
+  mergedItems.forEach((item, idx) => {
+    existingIdIndex.set(item.id, idx);
+  });
   for (const item of synthNonUsers) {
+    const existingIdx = existingIdIndex.get(item.id);
+    if (existingIdx !== undefined) {
+      // 同 ID 项（如助手回复仅落盘前半段）合并时保留本地已展示的更完整内容后缀（B10 round6）。
+      const existing = mergedItems[existingIdx]!;
+      const merged = mergeSameIdVisibleItem(existing, item);
+      if (merged !== existing) {
+        mergedItems[existingIdx] = merged;
+        existingKeys.add(visibleItemDedupKey(merged));
+      }
+      continue;
+    }
     const key = visibleItemDedupKey(item);
-    if (existingIds.has(item.id) || existingKeys.has(key)) continue;
-    existingIds.add(item.id);
+    if (existingKeys.has(key)) continue;
+    existingIdIndex.set(item.id, mergedItems.length);
     existingKeys.add(key);
     mergedItems.push(item);
   }
@@ -903,7 +1001,7 @@ function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
   let mergedBase = aligned;
   if (attempt.syntheticTurn) {
     const synthAligned = rewriteTurnId(attempt.syntheticTurn, attempt.turnId);
-    const mergedItems = mergeVisibleTurnItems(aligned, synthAligned);
+    const mergedItems = mergeVisibleTurnItems(aligned, synthAligned, attempt.clientId);
     if (
       mergedItems !== aligned.items
       || (aligned.startedAt === null && synthAligned.startedAt !== null)
@@ -918,6 +1016,8 @@ function applyAttemptOutcome(turn: Turn, attempt: TurnAttemptRecord): Turn {
       };
       copyNativeTranscriptTurnMeta(aligned, mergedBase);
     }
+  } else if (attempt.clientId) {
+    mergedBase = applyUserMessageClientId(aligned, attempt.clientId);
   }
 
   if (attempt.status === "completed") {
@@ -973,6 +1073,46 @@ function promptsMatchAttempt(attempt: TurnAttemptRecord, candidatePrompt: string
 function turnHasAssistantOrToolProgress(turn: Turn | undefined): boolean {
   if (!turn) return false;
   return turn.items.some((item) => item.type !== "userMessage");
+}
+
+function isCandidateVisiblePrefixOfAttempt(candidate: Turn, attempt: TurnAttemptRecord): boolean {
+  if (!attempt.syntheticTurn) return false;
+  const aligned = rewriteTurnId(candidate, attempt.turnId);
+  const synthAligned = rewriteTurnId(attempt.syntheticTurn, attempt.turnId);
+  const candidateNonUsers = aligned.items.filter((item) => item.type !== "userMessage");
+  if (candidateNonUsers.length === 0) return false;
+
+  const synthById = new Map<string, Turn["items"][number]>();
+  for (const item of synthAligned.items) {
+    if (item.type !== "userMessage") {
+      synthById.set(item.id, item);
+    }
+  }
+
+  let matchedAnyTextPrefix = false;
+  for (const item of candidateNonUsers) {
+    const synthItem = synthById.get(item.id);
+    if (!synthItem || synthItem.type !== item.type) return false;
+    if (item.type === "agentMessage" && synthItem.type === "agentMessage") {
+      const normNative = normalizeComparableText(item.text);
+      const normSynth = normalizeComparableText(synthItem.text);
+      if (!normNative || !normSynth.startsWith(normNative)) return false;
+      matchedAnyTextPrefix = true;
+    } else if (item.type === "plan" && synthItem.type === "plan") {
+      const normNative = normalizeComparableText(item.text);
+      const normSynth = normalizeComparableText(synthItem.text);
+      if (!normNative || !normSynth.startsWith(normNative)) return false;
+      matchedAnyTextPrefix = true;
+    } else if (item.type === "reasoning" && synthItem.type === "reasoning") {
+      const normNative = normalizeComparableText(item.content.join("\n"));
+      const normSynth = normalizeComparableText(synthItem.content.join("\n"));
+      if (!normNative || !normSynth.startsWith(normNative)) return false;
+      matchedAnyTextPrefix = true;
+    } else if (visibleItemDedupKey(item) !== visibleItemDedupKey(synthItem)) {
+      return false;
+    }
+  }
+  return matchedAnyTextPrefix;
 }
 
 function isLatePersistedTimingCompatible(attempt: TurnAttemptRecord, candidate: Turn): boolean {
@@ -1102,6 +1242,7 @@ function mergeTurnsWithAttempts(
           && (
             candidate.status === attempt.status
             || (!candidateHasProgress && (attempt.status === "interrupted" || attemptHasProgress))
+            || (attemptHasProgress && isCandidateVisiblePrefixOfAttempt(candidate, attempt))
           );
         if (!isLatePersistedSameAttempt) {
           shouldTreatAsUnpersisted = true;

@@ -28,6 +28,8 @@ export interface TurnAttemptRecord {
   promptHash?: string;
   /** 显式标记 promptText 是否因 240 字符预览上限被截断（B10 round5）。 */
   promptTruncated?: boolean;
+  /** 持久化客户端用户消息关联 ID，确保成功/失败/中断回合在冷重开后均保留 clientId（B10 round6）。 */
+  clientId?: string;
   afterPersistedTurnCount: number;
   status: "inProgress" | "completed" | "failed" | "interrupted";
   error?: string | null;
@@ -145,6 +147,7 @@ export class AgyOverlay {
       promptText: string;
       promptHash?: string;
       promptTruncated?: boolean;
+      clientId?: string;
       startedAtMs?: number;
     },
   ): Promise<{ turnId: string; attemptId: string }> {
@@ -168,6 +171,7 @@ export class AgyOverlay {
       promptText: info.promptText,
       ...(info.promptHash ? { promptHash: info.promptHash } : {}),
       ...(info.promptTruncated !== undefined ? { promptTruncated: info.promptTruncated } : {}),
+      ...(info.clientId ? { clientId: info.clientId } : {}),
       ...(info.startedAtMs !== undefined ? { startedAtMs: info.startedAtMs } : {}),
       afterPersistedTurnCount: info.afterPersistedTurnCount,
       status: "inProgress",
@@ -201,6 +205,7 @@ export class AgyOverlay {
         promptText?: string;
         promptHash?: string;
         promptTruncated?: boolean;
+        clientId?: string;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
@@ -242,6 +247,7 @@ export class AgyOverlay {
           status: update.status,
           ...(update.promptHash ? { promptHash: update.promptHash } : {}),
           ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
+          ...(update.clientId ? { clientId: update.clientId } : {}),
           ...(update.error !== undefined ? { error: update.error } : {}),
           ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
           ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
@@ -256,6 +262,7 @@ export class AgyOverlay {
           promptText: update.promptText ?? "",
           ...(update.promptHash ? { promptHash: update.promptHash } : {}),
           ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
+          ...(update.clientId ? { clientId: update.clientId } : {}),
           afterPersistedTurnCount: update.afterPersistedTurnCount ?? 0,
           status: update.status,
           ...(update.error !== undefined ? { error: update.error } : {}),

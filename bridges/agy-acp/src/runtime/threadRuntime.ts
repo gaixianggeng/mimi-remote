@@ -75,6 +75,7 @@ export interface RuntimeHost {
         promptText?: string;
         promptHash?: string;
         promptTruncated?: boolean;
+        clientId?: string;
         afterPersistedTurnCount?: number;
         status: "completed" | "failed" | "interrupted";
         error?: string | null;
@@ -95,6 +96,7 @@ export interface RuntimeHost {
       promptText: string;
       promptHash?: string;
       promptTruncated?: boolean;
+      clientId?: string;
       startedAtMs?: number;
     },
   ): Promise<{ turnId: string; attemptId: string }>;
@@ -126,6 +128,7 @@ export class ThreadRuntime {
         promptText: string;
         promptHash?: string;
         promptTruncated: boolean;
+        clientId?: string;
         afterPersistedTurnCount: number;
         startedAtMs: number;
       }
@@ -266,12 +269,14 @@ export class ThreadRuntime {
       const persistedBefore = Math.max(historyCompletedCount, diskInfo.nativeTurnCount);
       const nextTurnIndex = Math.max(this.historyTurns?.length ?? 0, diskInfo.nativeTurnCount, diskInfo.maxTurnOrdinal) + 1;
       const startedAtMs = Date.now();
+      const clientId = req.clientUserMessageId?.trim() ? req.clientUserMessageId : undefined;
       const reserved = await this.host.reserveTurnAttempt?.(this.threadId, {
         minTurnOrdinal: nextTurnIndex,
         afterPersistedTurnCount: persistedBefore,
         promptText: preview,
         ...(promptHash ? { promptHash } : {}),
         promptTruncated,
+        ...(clientId ? { clientId } : {}),
         startedAtMs,
       });
       const turnId = reserved?.turnId ?? `${this.threadId}:turn:${nextTurnIndex}`;
@@ -281,11 +286,12 @@ export class ThreadRuntime {
         promptText: preview,
         ...(promptHash ? { promptHash } : {}),
         promptTruncated,
+        ...(clientId ? { clientId } : {}),
         afterPersistedTurnCount: persistedBefore,
         startedAtMs,
       };
-      if (req.clientUserMessageId) {
-        this.host.recordTurnClientId?.(turnId, req.clientUserMessageId);
+      if (clientId) {
+        this.host.recordTurnClientId?.(turnId, clientId);
       }
       turn = new LiveTurn(turnId, this.threadId, this.cwd, (method, params) => {
         this.host.publish(this.threadId, method, params);
@@ -370,6 +376,7 @@ export class ThreadRuntime {
                 promptText: attempt.promptText,
                 ...(attempt.promptHash ? { promptHash: attempt.promptHash } : {}),
                 promptTruncated: attempt.promptTruncated,
+                ...(attempt.clientId ? { clientId: attempt.clientId } : {}),
                 afterPersistedTurnCount: attempt.afterPersistedTurnCount,
                 status: "interrupted",
                 error: null,
@@ -396,6 +403,7 @@ export class ThreadRuntime {
       promptText: string;
       promptHash?: string;
       promptTruncated: boolean;
+      clientId?: string;
       afterPersistedTurnCount: number;
       startedAtMs: number;
     },
@@ -468,6 +476,7 @@ export class ThreadRuntime {
           promptText: attemptMeta.promptText,
           ...(attemptMeta.promptHash ? { promptHash: attemptMeta.promptHash } : {}),
           promptTruncated: attemptMeta.promptTruncated,
+          ...(attemptMeta.clientId ? { clientId: attemptMeta.clientId } : {}),
           afterPersistedTurnCount: attemptMeta.afterPersistedTurnCount,
           status: attemptStatus,
           error: finishedTurn?.error?.message ?? null,
