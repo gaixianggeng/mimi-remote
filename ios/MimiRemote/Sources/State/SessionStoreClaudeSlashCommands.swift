@@ -9,8 +9,12 @@ extension SessionStore {
     func claudeSlashCommandCatalogKey(
         cwd: String?,
         runtimeProvider: String?,
-        sandboxMode: CodexAppServerSandboxMode
+        sandboxMode: CodexAppServerSandboxMode,
+        cwdMissing: Bool = false
     ) -> ClaudeSlashCommandCatalogKey? {
+        guard !cwdMissing else {
+            return nil
+        }
         let normalized = Self.normalizedRuntimeProvider(runtimeProvider)
         guard RuntimeFeatureSupport.supportsRuntimeSlashCommandCatalog(for: normalized),
               let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines),

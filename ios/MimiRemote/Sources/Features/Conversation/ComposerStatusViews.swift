@@ -361,6 +361,8 @@ struct ComposerStatusTray: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let sessionControlNotice: String?
+    /// 会话原工作目录已移动或删除时的显式只读原因（C14/C15 round4），首屏直接可见而非藏在折叠/无障碍提示内。
+    var missingDirectoryNotice: String? = nil
     /// Claude 会话被 Mac 上的终端 / 桌面版持有。和 Codex 的「仅观察」同处一个位置，
     /// 两者同时存在时由调用方只传这一个，避免同一个只读原因出现两枚 chip。
     var ownershipNotice: SessionOwnershipNotice? = nil
@@ -447,24 +449,31 @@ struct ComposerStatusTray: View {
         // `visualHeight` 的行高里居中；直接给 ScrollView 加 minHeight 会让它自己撑满，
         // 内容随之顶到行首。
         HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    if let ownershipNotice {
-                        collapsedChip(title: ownershipNotice.title, systemImage: "desktopcomputer", tint: tokens.secondaryText, tokens: tokens)
-                    } else if sessionControlNotice != nil {
-                        collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
-                    }
-                    if quotaNotice != nil {
-                        collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
-                    } else if usage != nil {
-                        collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
-                    }
-                    if let goal {
-                        collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
+            if let missingDirectoryNotice, ownershipNotice == nil, quotaNotice == nil, usage == nil, goal == nil {
+                missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
+                    .layoutPriority(1)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        if let missingDirectoryNotice {
+                            missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
+                        } else if let ownershipNotice {
+                            collapsedChip(title: ownershipNotice.title, systemImage: "desktopcomputer", tint: tokens.secondaryText, tokens: tokens)
+                        } else if sessionControlNotice != nil {
+                            collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
+                        }
+                        if quotaNotice != nil {
+                            collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
+                        } else if usage != nil {
+                            collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
+                        }
+                        if let goal {
+                            collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
+                        }
                     }
                 }
+                .layoutPriority(1)
             }
-            .layoutPriority(1)
         }
         // 内嵌时与编辑器文字共享左边缘；独立托盘继续保留原有卡片内距。
         .padding(.leading, placement.collapsedLeadingPadding)
@@ -511,7 +520,7 @@ struct ComposerStatusTray: View {
     }
 
     private var hasStatusModules: Bool {
-        ownershipNotice != nil || sessionControlNotice != nil || quotaNotice != nil || usage != nil
+        missingDirectoryNotice != nil || ownershipNotice != nil || sessionControlNotice != nil || quotaNotice != nil || usage != nil
     }
 
     /// 展开只为真正的次级内容或操作保留：目标详情、额度完整文案和刷新入口，
@@ -611,7 +620,9 @@ struct ComposerStatusTray: View {
 
     @ViewBuilder
     private func statusModuleContent(tokens: ThemeTokens) -> some View {
-        if let ownershipNotice {
+        if let missingDirectoryNotice {
+            missingDirectorySegment(missingDirectoryNotice, tokens: tokens)
+        } else if let ownershipNotice {
             ownershipSegment(ownershipNotice, tokens: tokens)
         } else if let sessionControlNotice {
             observingSegment(sessionControlNotice, tokens: tokens)
@@ -621,6 +632,48 @@ struct ComposerStatusTray: View {
         } else if let usage {
             usageSegment(usage, tokens: tokens)
         }
+    }
+
+    private func missingDirectoryBanner(_ notice: String, tokens: ThemeTokens) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(themeStore.uiFont(size: 13, weight: .semibold))
+                .foregroundStyle(tokens.warning)
+            Text(notice)
+                .font(themeStore.uiFont(.caption2, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, placement.usesEmbeddedStatusChip ? 8 : 4)
+        .background {
+            if placement.usesEmbeddedStatusChip {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(embeddedStatusChipFill(tokens: tokens))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(embeddedStatusChipBorder(tokens: tokens), lineWidth: 0.5)
+                    }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("composer.missingDirectoryNotice")
+    }
+
+    private func missingDirectorySegment(_ notice: String, tokens: ThemeTokens) -> some View {
+        traySegment(tokens: tokens, minWidth: 160, layoutPriority: 1) {
+            HStack(spacing: 7) {
+                segmentIcon("folder.badge.questionmark", tint: tokens.warning)
+                Text(notice)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 4)
+            }
+        }
+        .accessibilityIdentifier("composer.missingDirectoryNotice")
     }
 
     private func observingSegment(_ notice: String, tokens: ThemeTokens) -> some View {

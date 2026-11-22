@@ -737,5 +737,48 @@ final class RuntimeFoundationTests: XCTestCase {
         // Quiet background refresh for a missing browse projectID must NOT overwrite UI with "workspace expired".
         await store.refreshSessionListQuietlyIfStillSelected(projectID: browseMissingSession.projectID)
         XCTAssertNil(store.errorMessage)
+
+        // C14/C15 round4: missing directory must skip cwd-dependent slash command prefetch.
+        XCTAssertNil(
+            store.claudeSlashCommandCatalogKey(
+                cwd: browseMissingSession.dir,
+                runtimeProvider: "agy",
+                sandboxMode: .workspaceWrite,
+                cwdMissing: true
+            )
+        )
+        XCTAssertNotNil(
+            store.claudeSlashCommandCatalogKey(
+                cwd: browseMissingSession.dir,
+                runtimeProvider: "agy",
+                sandboxMode: .workspaceWrite,
+                cwdMissing: false
+            )
+        )
+
+        // ComposerStatusTray receives explicit missingDirectoryNotice directly on first screen (no disclosure needed).
+        let tray = ComposerStatusTray(
+            sessionControlNotice: nil,
+            missingDirectoryNotice: store.selectedSessionControlNotice,
+            ownershipNotice: nil,
+            quotaNotice: nil,
+            usage: nil,
+            goal: nil,
+            placement: .standalone,
+            isGoalExpanded: false,
+            isGoalUpdating: false,
+            goalErrorMessage: nil,
+            isRefreshDisabled: false,
+            allowsTakeOver: false,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+        XCTAssertFalse(tray.hasExpandableDetail)
+        XCTAssertEqual(tray.missingDirectoryNotice, store.selectedSessionControlNotice)
     }
 }
