@@ -71,6 +71,7 @@ final class ComposerMetadataBudgetTests: XCTestCase {
         let cards = [
             ("composerCard", ViewTypeMetrics.result(of: ComposerView.composerCard)),
             ("phoneComposerCard", ViewTypeMetrics.result(of: ComposerView.phoneComposerCard)),
+            ("integratedPhoneComposerCard", ViewTypeMetrics.result(of: ComposerView.integratedPhoneComposerCard)),
             ("collapsedIPadComposerCard", ViewTypeMetrics.result(of: ComposerView.collapsedIPadComposerCard)),
         ]
 

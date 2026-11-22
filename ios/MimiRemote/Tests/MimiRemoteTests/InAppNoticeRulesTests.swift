@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import XCTest
 @testable import MimiRemote
@@ -304,6 +305,134 @@ final class InAppNoticeRulesTests: XCTestCase {
         XCTAssertEqual(placement.topBoundary(), 130)
         placement.reportProtectedRegion(historyCard, bottom: nil)
         XCTAssertEqual(placement.topBoundary(), 44)
+    }
+
+    func testComposerBottomPillPaddingAndSummaryText() {
+        let placement = InAppNoticePlacement()
+        XCTAssertNil(placement.composerTopBoundary)
+        XCTAssertNil(InAppNoticePlacement.toastBottomPadding(composerTopY: nil, hostMaxY: 874))
+
+        let first = UUID()
+        let second = UUID()
+        placement.reportComposerTopAnchor(first, topY: 710)
+        XCTAssertEqual(placement.composerTopBoundary, 710)
+        XCTAssertEqual(InAppNoticePlacement.toastBottomPadding(composerTopY: 710, hostMaxY: 874), 174)
+
+        // 同时出现审批卡或更靠上的输入容器时，小药丸取最上沿避免遮挡按钮。
+        placement.reportComposerTopAnchor(second, topY: 520)
+        XCTAssertEqual(placement.composerTopBoundary, 520)
+        XCTAssertEqual(InAppNoticePlacement.toastBottomPadding(composerTopY: 520, hostMaxY: 874), 364)
+
+        placement.reportComposerTopAnchor(second, topY: nil)
+        XCTAssertEqual(placement.composerTopBoundary, 710)
+        placement.reportComposerTopAnchor(first, topY: nil)
+        XCTAssertNil(placement.composerTopBoundary)
+
+        let withSubtitle = InAppToast(id: "t1", style: .success, title: "整理开源发布说明", subtitle: "已完成")
+        XCTAssertEqual(InAppToastPill.summaryText(for: withSubtitle), "整理开源发布说明 — 已完成")
+
+        let titleOnly = InAppToast(id: "t2", style: .success, title: "任务已完成", subtitle: nil)
+        XCTAssertEqual(InAppToastPill.summaryText(for: titleOnly), "任务已完成")
+    }
+
+    func testBottomPillAndAttachmentThumbnailRenderInPhoneWidth() throws {
+        let suite = "RefineVisualTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let themeStore = ThemeStore(defaults: defaults)
+        let tokens = themeStore.tokens(for: .light)
+        let toast = InAppToast(
+            id: "bg-complete",
+            style: .success,
+            title: "检查连接恢复测试",
+            subtitle: "已完成",
+            tapAction: {}
+        )
+
+        // 构造一张纯内存 64×64 测试图片用于缩略图与左上角删除「X」渲染验收。
+        let sampleImage = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64)).image { ctx in
+            UIColor.systemIndigo.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(x: 10, y: 24, width: 44, height: 28))
+        }
+        let dataURL = "data:image/png;base64,\(try XCTUnwrap(sampleImage.pngData()).base64EncodedString())"
+
+        let preview = VStack(spacing: 16) {
+            Spacer()
+            InAppToastPill(toast: toast, onDismiss: {})
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ComposerImageAttachmentThumbnail(
+                        id: "refine-sample-1",
+                        source: .dataURL(dataURL),
+                        accessibilityLabel: "图片附件 1",
+                        canPreview: true,
+                        onPreview: {},
+                        onRemove: {}
+                    )
+                    ComposerImageAttachmentThumbnail(
+                        id: "refine-sample-2",
+                        source: .dataURL(dataURL),
+                        accessibilityLabel: "图片附件 2",
+                        canPreview: true,
+                        onPreview: {},
+                        onRemove: {}
+                    )
+                    Spacer()
+                }
+                Text("请帮我检查这两张截图里的布局间距")
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(tokens.conversationPrimaryText)
+                    .padding(.horizontal, 4)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tokens.inputBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.09), lineWidth: 0.75)
+            }
+        }
+        .padding(16)
+        .frame(width: 402, height: 340)
+        .background(tokens.conversationCanvasBackground)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 340)
+        let host = UIHostingController(rootView: preview)
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+            window.frame = bounds
+        } else {
+            window = UIWindow(frame: bounds)
+        }
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+        host.view.frame = bounds
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        host.view.layoutIfNeeded()
+
+        XCTAssertGreaterThan(host.sizeThatFits(in: bounds.size).height, 0)
+        let rendered = UIGraphicsImageRenderer(bounds: bounds).image { ctx in
+            if !window.drawHierarchy(in: bounds, afterScreenUpdates: true) {
+                host.view.layer.render(in: ctx.cgContext)
+            }
+        }
+        let attachment = XCTAttachment(image: rendered)
+        attachment.name = "refine-pill-and-attachment-thumbnail"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     // MARK: - Helpers

@@ -83,7 +83,8 @@ extension UnifiedWorkbenchShell {
         let effect = nextState.reduce(
             event,
             usesCompactNavigation: layout.usesCompactNavigation,
-            selectedSessionID: sessionStore.selectedSessionID
+            selectedSessionID: sessionStore.selectedSessionID,
+            usesPhoneIntegratedBottomChrome: layout.usesPhoneIntegratedBottomChrome
         )
         // 忽略 SwiftUI 对相同 path/tab 的回写；真实交互在视觉事务内撤销旧通知。
         if nextState != navigationState || effect != nil {
@@ -106,6 +107,12 @@ extension UnifiedWorkbenchShell {
     ) {
         if restorationRoute != commit.state.route {
             restorationRoute = commit.state.route
+        }
+        if layout.usesPhoneIntegratedBottomChrome {
+            let tabRawValue = commit.state.compactSelectedTab.rawValue
+            if storedCompactSelectedTabRawValue != tabRawValue {
+                storedCompactSelectedTabRawValue = tabRawValue
+            }
         }
 
         switch commit.effect {

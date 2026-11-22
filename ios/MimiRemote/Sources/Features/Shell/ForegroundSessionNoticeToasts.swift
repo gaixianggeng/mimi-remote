@@ -45,10 +45,13 @@ private struct ForegroundSessionNoticeToastHost: ViewModifier {
     @EnvironmentObject private var adapter: SessionNotificationResponseAdapter
     @EnvironmentObject private var sessionStore: SessionStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.inAppNoticePlacement) private var placement
     @State private var sceneID = UUID()
     @State private var hostWindow = WeakWindowBox()
 
     func body(content: Content) -> some View {
+        let usesBottomPill = UIDevice.current.userInterfaceIdiom == .phone
+            && placement?.composerTopBoundary != nil
         content
             .background {
                 HostWindowReader { window in
@@ -57,7 +60,10 @@ private struct ForegroundSessionNoticeToastHost: ViewModifier {
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
             }
-            .inAppToast(visibleToast) { id in
+            .inAppToast(
+                visibleToast,
+                presentation: usesBottomPill ? .bottomPill : .topCard
+            ) { id in
                 guard let id = id.base as? UUID else { return }
                 adapter.dismissForegroundNotice(id)
             }

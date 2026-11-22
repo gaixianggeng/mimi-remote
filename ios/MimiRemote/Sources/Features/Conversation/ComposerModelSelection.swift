@@ -134,39 +134,116 @@ extension ComposerView {
         .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
         .accessibilityIdentifier("composer.model")
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
-            ModelReasoningGridPicker(
-                options: modelOptionsForMenu,
-                layout: modelReasoningGridLayout,
-                selection: selectedModelGridSelection,
-                selectedModelID: composerState.turnOptions.model,
-                isRefreshing: sessionStore.isRefreshingAppServerModels,
-                selectedServiceTier: composerState.turnOptions.serviceTier,
-                onSelectModel: { option, effort in
-                    selectModel(option, effort: effort)
-                },
-                onSelectDefaultModel: { option, effort in
-                    selectDefaultModel(option, effort: effort)
-                },
-                onServiceTierChange: { serviceTier in
-                    composerState.updateTurnOptions {
-                        $0.serviceTier = serviceTier
-                    }
-                },
-                onRefresh: {
-                    Task { await refreshModelOptionsForComposerRuntime(force: true) }
-                }
-            )
-            // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
-            .task { await ensureModelOptionsForComposerRuntime() }
-            .environmentObject(themeStore)
-            .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
-            // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
-            // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
-            // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
-            .presentationDetents(modelPickerPresentationDetents)
-            .presentationDragIndicator(.visible)
-            .presentationBackground(themeStore.tokens(for: colorScheme).surface)
+            modelGridPickerPopoverContent
         }
+    }
+
+    /// iPhone 展开输入卡内、文字输入区上方的小药丸模型选择器；点开后以半屏 Sheet 展示。
+    func phoneModelPillControl(tokens: ThemeTokens) -> some View {
+        Button {
+            showsModelGridPicker.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Text(modelPickerTriggerTitle)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if hasAcceleratedServiceTierSelected {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(tokens.accent)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(minHeight: 30)
+            .background(tokens.elevatedSurface, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(tokens.border.opacity(0.7), lineWidth: 0.75)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
+        .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
+        .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
+        .accessibilityIdentifier("composer.model")
+        .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
+            modelGridPickerPopoverContent
+        }
+    }
+
+    func unavailablePhoneModelPill(tokens: ThemeTokens) -> some View {
+        Menu {
+            Section {
+                Button(action: {}) {
+                    Label(L10n.text("ui.model"), systemImage: "cpu")
+                }
+                .disabled(true)
+
+                Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(tokens.tertiaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(minHeight: 30)
+            .background(tokens.elevatedSurface, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(tokens.border.opacity(0.6), lineWidth: 0.75)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.model"))
+        .accessibilityValue(ComposerTurnSettingsPolicy.unavailableMenuNotice)
+        .accessibilityIdentifier("composer.model.unavailable")
+        .help(ComposerTurnSettingsPolicy.unavailableMenuNotice)
+    }
+
+    private var modelGridPickerPopoverContent: some View {
+        ModelReasoningGridPicker(
+            options: modelOptionsForMenu,
+            layout: modelReasoningGridLayout,
+            selection: selectedModelGridSelection,
+            selectedModelID: composerState.turnOptions.model,
+            isRefreshing: sessionStore.isRefreshingAppServerModels,
+            selectedServiceTier: composerState.turnOptions.serviceTier,
+            onSelectModel: { option, effort in
+                selectModel(option, effort: effort)
+            },
+            onSelectDefaultModel: { option, effort in
+                selectDefaultModel(option, effort: effort)
+            },
+            onServiceTierChange: { serviceTier in
+                composerState.updateTurnOptions {
+                    $0.serviceTier = serviceTier
+                }
+            },
+            onRefresh: {
+                Task { await refreshModelOptionsForComposerRuntime(force: true) }
+            }
+        )
+        // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
+        .task { await ensureModelOptionsForComposerRuntime() }
+        .environmentObject(themeStore)
+        .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
+        // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
+        // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
+        // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
+        .presentationDetents(modelPickerPresentationDetents)
+        .presentationDragIndicator(.visible)
+        .presentationBackground(themeStore.tokens(for: colorScheme).surface)
     }
 
     /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录（#778），或启动时

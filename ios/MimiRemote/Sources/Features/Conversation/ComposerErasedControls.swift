@@ -39,7 +39,15 @@ extension ComposerView {
 
     @inline(never)
     func phoneComposerCardBox(tokens: ThemeTokens) -> AnyView {
-        AnyView(phoneComposerCard(tokens: tokens))
+        if phoneKeyboardVisible != nil {
+            return AnyView(integratedPhoneComposerCard(tokens: tokens))
+        }
+        return AnyView(phoneComposerCard(tokens: tokens))
+    }
+
+    @inline(never)
+    func integratedPhoneEditorBox(tokens: ThemeTokens, singleLine: Bool) -> AnyView {
+        AnyView(expandedPhoneComposerContent(tokens: tokens, singleLine: singleLine))
     }
 
     @inline(never)
@@ -57,7 +65,11 @@ extension ComposerView {
     // 所以两边都只经下面的方法放控件。
 
     @inline(never)
-    func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
+    func compactLeadingControlsBox(
+        showsModelTitle: Bool,
+        includesAddContent: Bool,
+        includesModel: Bool = true
+    ) -> AnyView {
         // iPhone 运行态把投递方式收进设置菜单，避免第六个控件挤破 320–390pt 工具栏。
         // iPad 保留原有平铺入口。
         let deliveryControl = compactToolbarShowsInlineDeliveryControl
@@ -65,24 +77,39 @@ extension ComposerView {
             : nil
         return AnyView(
             CompactComposerLeadingControlsShell(
-                addControl: addContentControlBox(),
-                modelControl: modelControlBox(showsTitle: showsModelTitle),
+                addControl: includesAddContent
+                    ? addContentControlBox()
+                    : AnyView(Color.clear.frame(width: 44, height: 44)),
+                modelControl: includesModel ? modelControlBox(showsTitle: showsModelTitle) : nil,
                 deliveryControl: deliveryControl
             )
         )
     }
 
     @inline(never)
-    func compactToolControlsBox() -> AnyView {
+    func phoneModelPillBox(tokens: ThemeTokens) -> AnyView {
+        guard composerTurnSettingsPolicy.allowsTurnSettingsEditing else {
+            return AnyView(unavailablePhoneModelPill(tokens: tokens))
+        }
+        return AnyView(phoneModelPillControl(tokens: tokens))
+    }
+
+    @inline(never)
+    func compactToolControlsBox(includesMicrophone: Bool = true) -> AnyView {
         return AnyView(
             HStack(spacing: 2) {
                 contextWindowControlBox()
                 CompactComposerToolControlsShell(
                     optionsControl: optionsControlBox(),
-                    microphoneControl: microphoneControlBox()
+                    microphoneControl: includesMicrophone ? microphoneControlBox() : nil
                 )
             }
         )
+    }
+
+    @inline(never)
+    func phoneTrailingActionBox() -> AnyView {
+        AnyView(phoneTrailingActionControl)
     }
 
     @inline(never)
