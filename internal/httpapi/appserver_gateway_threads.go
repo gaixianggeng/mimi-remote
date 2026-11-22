@@ -1637,12 +1637,13 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 func mergeGatewayAllowedThread(existing, incoming appServerGatewayAllowedThread) appServerGatewayAllowedThread {
 	pathRestored := existing.cwdMissing && !incoming.cwdMissing
 	existingPermanentReadOnly := existing.readOnlySubagent || existing.readOnlyBrowseScope || (existing.readOnly && !existing.cwdMissing)
+	incomingPermanentReadOnly := incoming.readOnlySubagent || incoming.readOnlyBrowseScope || (incoming.readOnly && !incoming.cwdMissing)
 	incoming.readOnlySubagent = incoming.readOnlySubagent || existing.readOnlySubagent
 	incoming.readOnlyBrowseScope = incoming.readOnlyBrowseScope || existing.readOnlyBrowseScope
 	if existing.cwdMissing && !pathRestored {
 		incoming.cwdMissing = true
 	}
-	permanentReadOnly := existingPermanentReadOnly || incoming.readOnlySubagent || incoming.readOnlyBrowseScope
+	permanentReadOnly := existingPermanentReadOnly || incomingPermanentReadOnly
 	incoming.readOnly = permanentReadOnly || incoming.cwdMissing
 	if incoming.readOnly {
 		incoming.directInputKnown = true

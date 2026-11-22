@@ -589,8 +589,7 @@ final class RuntimeFoundationTests: XCTestCase {
             lifecycle: "per_connection",
             bridge: nil,
             methods: ["initialize", "initialized", "thread/turns/list"],
-            capabilities: nil,
-            policy: nil
+            capabilities: nil
         )
         let agyChannelWithRead = CodexAppServerChannelMetadata(
             id: "agy",
@@ -607,8 +606,7 @@ final class RuntimeFoundationTests: XCTestCase {
             lifecycle: "per_connection",
             bridge: nil,
             methods: ["initialize", "initialized", "thread/read", "thread/turns/list"],
-            capabilities: nil,
-            policy: nil
+            capabilities: nil
         )
 
         // 1) When channel omits `thread/read` capability, messagesPage MUST skip `thread/read` and call `thread/turns/list` directly.
@@ -700,16 +698,17 @@ final class RuntimeFoundationTests: XCTestCase {
         let client = MockSessionStoreClient(
             projects: [],
             sessions: [browseMissingSession],
-            messagesBySessionID: [
-                browseMissingSession.id: [
-                    AgentMessage(
-                        id: "msg-1",
-                        sessionID: browseMissingSession.id,
-                        role: .assistant,
-                        content: "Historical reply preserved read-only",
-                        createdAt: Date()
-                    )
-                ]
+            historyPages: [
+                browseMissingSession.id: HistoryMessagesPage(
+                    messages: [
+                        CodexHistoryMessage(
+                            id: "msg-1",
+                            role: "assistant",
+                            content: "Historical reply preserved read-only",
+                            createdAt: Date()
+                        )
+                    ]
+                )
             ]
         )
         let store = SessionStore(
@@ -724,7 +723,7 @@ final class RuntimeFoundationTests: XCTestCase {
         let selected = await store.selectSession(browseMissingSession)
         XCTAssertTrue(selected)
         // Must NEVER open write-side WebSocket (which triggers thread/resume) for cwdMissing!
-        XCTAssertNil(socket.connectedSessionID)
+        XCTAssertTrue(socket.connectedSessionIDs.isEmpty)
         XCTAssertNil(store.connectedSessionID)
         // Must preserve dedicated missing-path notice and NOT surface "workspace expired" error!
         XCTAssertNil(store.errorMessage)
