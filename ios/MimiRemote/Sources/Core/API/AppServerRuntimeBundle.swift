@@ -342,6 +342,23 @@ final class AppServerRuntimeBundle {
         Self.channelAvailable(runtimeProvider: runtimeProvider, in: try await currentConfiguration())
     }
 
+    func channelDiagnostics() async -> [String: RuntimeChannelDiagnostic] {
+        guard let config = try? await currentConfiguration() else {
+            return [:]
+        }
+        return Self.channelDiagnostics(in: config)
+    }
+
+    static func channelDiagnostics(in config: CodexAppServerConfigResponse) -> [String: RuntimeChannelDiagnostic] {
+        var result: [String: RuntimeChannelDiagnostic] = [:]
+        for channel in config.channels {
+            if let diagnostic = RuntimeChannelDiagnostic.from(channel: channel) {
+                result[diagnostic.provider] = diagnostic
+            }
+        }
+        return result
+    }
+
     func nativeHarnessConfigured() async throws -> Bool {
         try Self.nativeHarnessIsConfigured(in: try await currentConfiguration())
     }
@@ -398,6 +415,10 @@ final class AppServerRuntimeBundle {
     func prepareForHostActivation(handshakeTimeout: TimeInterval? = nil) async throws {
         let config = try await currentConfiguration()
         guard let preferred = Self.preferredAvailableRuntimeProvider(in: config) else {
+            let diagnostics = Self.channelDiagnostics(in: config)
+            if let diagnostic = diagnostics["agy"] ?? diagnostics.values.first {
+                throw CodexAppServerSessionRuntimeError.channelUnavailable(diagnostic)
+            }
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
         if preferred == Self.nativeRuntimeProvider {

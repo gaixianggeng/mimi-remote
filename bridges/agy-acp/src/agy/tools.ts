@@ -1,8 +1,75 @@
+import { createHash } from "node:crypto";
 import type { JsonValue } from "@mimi/appserver-kit/protocol/codex/serde_json/JsonValue.ts";
 import type { CommandAction } from "@mimi/appserver-kit/protocol/codex/v2/CommandAction.ts";
 import type { FileUpdateChange } from "@mimi/appserver-kit/protocol/codex/v2/FileUpdateChange.ts";
 import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
 import type { AcpPlanEntry, AcpToolCallContent, AcpToolCallLocation, AcpToolCallStatus } from "../acp/types.ts";
+
+const SAFE_TOOL_CALL_ID = /^[A-Za-z0-9._-]{1,80}$/;
+
+/**
+ * 基于稳定原生 toolCallId 构造与顺序无关的确定性工具项目 ID（B15/C05）。
+ * 审批先到、多工具交错或 ACP 回放顺序与实时不一致时，同一原生工具始终映射到同一 ID。
+ */
+export function stableToolItemId(turnId: string, rawToolCallId: string): string {
+  const trimmed = rawToolCallId.trim();
+  const token = SAFE_TOOL_CALL_ID.test(trimmed)
+    ? trimmed
+    : createHash("sha256").update(trimmed).digest("hex").slice(0, 16);
+  return `${turnId}:tool:${token}`;
+}
+
+export function toolItemFingerprint(item: ThreadItem): string | undefined {
+  if (item.type === "commandExecution") {
+    const cmd = item.command.replace(/\s+/g, " ").trim();
+    return cmd ? `cmd:${cmd}` : undefined;
+  }
+  if (item.type === "fileChange") {
+    const paths = item.changes
+      .map((change) => change.path.trim().replace(/\/+$/, ""))
+      .filter(Boolean)
+      .sort();
+    return paths.length > 0 ? `file:${paths.join("|")}` : undefined;
+  }
+  if (item.type === "dynamicToolCall") {
+    const name = item.tool.trim();
+    return name ? `dyn:${name}` : undefined;
+  }
+  return undefined;
+}
+
+function normalizeOutputForFingerprint(text: string | null | undefined): string {
+  if (!text) return "";
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+/**
+ * 基于工具结果内容生成规范化输出指纹，用于在无原生 toolCallId 的 transcript 冷读中
+ * 精确区分同命令逆序完成的多个调用（B15/C05）。
+ */
+export function toolItemOutputFingerprint(item: ThreadItem): string | undefined {
+  if (item.type === "commandExecution") {
+    const out = normalizeOutputForFingerprint(item.aggregatedOutput);
+    if (!out) return undefined;
+    return createHash("sha256").update(`cmd-out:${item.status}:${out}`).digest("hex").slice(0, 16);
+  }
+  if (item.type === "fileChange") {
+    const diffs = item.changes
+      .map((change) => `${change.path.trim().replace(/\/+$/, "")}:${normalizeOutputForFingerprint(change.diff)}`)
+      .filter((entry) => !entry.endsWith(":"))
+      .sort();
+    if (diffs.length === 0) return undefined;
+    return createHash("sha256").update(`file-out:${item.status}:${diffs.join("\n")}`).digest("hex").slice(0, 16);
+  }
+  if (item.type === "dynamicToolCall") {
+    const texts = (item.contentItems ?? [])
+      .map((entry) => (entry.type === "inputText" ? normalizeOutputForFingerprint(entry.text) : ""))
+      .filter(Boolean);
+    if (texts.length === 0) return undefined;
+    return createHash("sha256").update(`dyn-out:${item.status}:${texts.join("\n")}`).digest("hex").slice(0, 16);
+  }
+  return undefined;
+}
 
 export interface AcpToolState {
   toolCallId: string;

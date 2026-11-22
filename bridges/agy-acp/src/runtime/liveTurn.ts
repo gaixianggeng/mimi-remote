@@ -3,7 +3,16 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import type { AcpPromptResult, AcpSessionUpdate } from "../acp/types.ts";
-import { acpToolToThreadItem, formatPlanMarkdown, mergeToolState, type AcpToolState } from "../agy/tools.ts";
+import {
+  acpToolToThreadItem,
+  formatPlanMarkdown,
+  mergeToolState,
+  stableToolItemId,
+  toolItemFingerprint,
+  toolItemOutputFingerprint,
+  type AcpToolState,
+} from "../agy/tools.ts";
+import type { PersistedToolMapping } from "../agy/overlay.ts";
 
 export type Emit = (method: string, params: Record<string, unknown>) => void;
 
@@ -27,10 +36,16 @@ export class LiveTurn {
   private userSeq = 0;
   private reasoningSeq = 0;
   private msgSeq = 0;
+  private toolSeq = 0;
   private openThought: { id: string; text: string } | null = null;
   private openMessage: { id: string; text: string } | null = null;
   private planItem: { id: string; text: string } | null = null;
+  private readonly toolItemIds = new Map<string, string>();
+  private readonly rawIdByItemId = new Map<string, string>();
   private readonly toolStates = new Map<string, AcpToolState>();
+  private readonly toolInvocationIndex = new Map<string, number>();
+  private readonly overlappedToolItemIds = new Set<string>();
+  private nextToolInvocationIndex = 0;
   private readonly completedItems: ThreadItem[] = [];
   private contextWindow: number | null = null;
   private contextUsed: number | null = null;
@@ -55,6 +70,46 @@ export class LiveTurn {
   private nextMessageItemId(): string {
     this.msgSeq += 1;
     return `${this.id}:msg:${this.msgSeq}`;
+  }
+
+  /** 为工具调用分配与审批、流式及 ACP 回放顺序无关的确定性 ID（B15/C05）。 */
+  itemIdForToolCall(rawToolCallId: string): string {
+    const existing = this.toolItemIds.get(rawToolCallId);
+    if (existing) return existing;
+    const itemId = rawToolCallId.trim()
+      ? stableToolItemId(this.id, rawToolCallId)
+      : `${this.id}:tool:${++this.toolSeq}`;
+    this.toolItemIds.set(rawToolCallId, itemId);
+    this.rawIdByItemId.set(itemId, rawToolCallId);
+    return itemId;
+  }
+
+  /** 导出本回合已观测到的工具映射（按调用顺序并携带输出指纹），供缺原生 ID 的 transcript 冷读精确关联（B15/C05）。 */
+  toolMappings(): PersistedToolMapping[] {
+    const mappings: PersistedToolMapping[] = [];
+    const seen = new Set<string>();
+    for (const item of this.completedItems) {
+      if (item.type !== "commandExecution" && item.type !== "fileChange" && item.type !== "dynamicToolCall") {
+        continue;
+      }
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      const fingerprint = toolItemFingerprint(item);
+      if (!fingerprint) continue;
+      const outputFingerprint = toolItemOutputFingerprint(item);
+      const invocationIndex = this.toolInvocationIndex.get(item.id);
+      mappings.push({
+        rawToolCallId: this.rawIdByItemId.get(item.id) ?? item.id,
+        itemId: item.id,
+        itemType: item.type,
+        fingerprint,
+        ...(invocationIndex !== undefined ? { invocationIndex } : {}),
+        ...(outputFingerprint ? { outputFingerprint } : {}),
+        ...(this.overlappedToolItemIds.has(item.id) ? { overlappedConcurrent: true } : {}),
+      });
+    }
+    mappings.sort((a, b) => (a.invocationIndex ?? Number.MAX_SAFE_INTEGER) - (b.invocationIndex ?? Number.MAX_SAFE_INTEGER));
+    return mappings;
   }
 
   private scoped(params: Record<string, unknown>): Record<string, unknown> {
@@ -184,12 +239,13 @@ export class LiveTurn {
 
       case "tool_call":
       case "tool_call_update": {
-        const toolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
-        if (!toolCallId) return;
+        const rawToolCallId = typeof update.toolCallId === "string" ? update.toolCallId : "";
+        if (!rawToolCallId) return;
         this.closeOpenText();
-        const isFirst = !this.toolStates.has(toolCallId);
-        const merged = mergeToolState(this.toolStates.get(toolCallId), {
-          toolCallId,
+        const itemId = this.itemIdForToolCall(rawToolCallId);
+        const isFirst = !this.toolStates.has(rawToolCallId);
+        const merged = mergeToolState(this.toolStates.get(rawToolCallId), {
+          toolCallId: itemId,
           title: typeof update.title === "string" ? update.title : undefined,
           kind: typeof update.kind === "string" ? update.kind : undefined,
           status: typeof update.status === "string" ? update.status : undefined,
@@ -201,13 +257,22 @@ export class LiveTurn {
         const terminal = merged.status === "completed" || merged.status === "failed";
         const item = acpToolToThreadItem(merged, this.cwd, !terminal);
         if (isFirst) {
-          this.toolStates.set(toolCallId, merged);
+          if (!this.toolInvocationIndex.has(itemId)) {
+            this.toolInvocationIndex.set(itemId, this.nextToolInvocationIndex++);
+          }
+          if (this.toolStates.size > 0) {
+            this.overlappedToolItemIds.add(itemId);
+            for (const otherState of this.toolStates.values()) {
+              this.overlappedToolItemIds.add(otherState.toolCallId);
+            }
+          }
+          this.toolStates.set(rawToolCallId, merged);
           this.emitStarted(acpToolToThreadItem({ ...merged, status: "in_progress" }, this.cwd, true));
         } else {
-          this.toolStates.set(toolCallId, merged);
+          this.toolStates.set(rawToolCallId, merged);
         }
         if (terminal) {
-          this.toolStates.delete(toolCallId);
+          this.toolStates.delete(rawToolCallId);
           this.emitCompleted(item);
         }
         return;
@@ -267,10 +332,12 @@ export class LiveTurn {
     this.toolStates.clear();
 
     const stopReason = result?.stopReason;
-    if (this.explicitlyInterrupted || stopReason === "cancelled") {
+    if (this.explicitlyInterrupted) {
       this.status = "interrupted";
     } else if (errorMessage) {
       this.status = "failed";
+    } else if (stopReason === "cancelled") {
+      this.status = "interrupted";
     } else {
       this.status = "completed";
     }

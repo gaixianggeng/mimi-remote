@@ -113,3 +113,33 @@ func TestCheckConfigReusesServePipelineForUnsupportedTransport(t *testing.T) {
 		t.Fatalf("App 依赖的失败码必须表示需要升级安装包：%q", got)
 	}
 }
+
+func TestCheckConfigAllowsMissingRegisteredProjectDirectoryForReadOnlyHistory(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	missingProject := filepath.Join(dir, "moved-or-removed-project")
+	raw, err := json.Marshal(map[string]any{
+		"listen":     "127.0.0.1:8787",
+		"auth":       map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		"codex":      map[string]any{"enabled": false},
+		"runtime":    map[string]any{"type": "codex_app_server"},
+		"app_server": map[string]any{"transport": "ssh", "ssh_target": "127.0.0.1"},
+		"projects": []map[string]any{{
+			"id": "moved", "name": "Moved", "path": missingProject,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	asJSON, checkErr := checkConfig([]string{"agentd", "--config", configPath, "--json"})
+	if !asJSON {
+		t.Fatal("--json 必须传到结果渲染层")
+	}
+	if checkErr != nil {
+		t.Fatalf("已登记目录缺失时 check-config 应降级为只读状态并允许网关启动，实际报错：%v", checkErr)
+	}
+}

@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ type Project struct {
 	Name     string `json:"name"`
 	Path     string `json:"path"`
 	RealPath string `json:"-"`
+	Missing  bool   `json:"missing,omitempty"`
 }
 
 type Registry struct {
@@ -81,6 +83,18 @@ func normalize(item config.ProjectConfig) (Project, error) {
 	if err != nil {
 		return Project{}, fmt.Errorf("解析项目路径失败：%w", err)
 	}
+	if _, lstatErr := os.Lstat(abs); lstatErr != nil {
+		if errors.Is(lstatErr, os.ErrNotExist) {
+			// 已登记目录被移动或删除时降级为只读缺失状态，不阻止整个网关启动（C14/C15）。
+			// 写路径授权仍要求目录在磁盘上真实存在，仅只读历史回溯使用规范化后的缺失路径。
+			canonicalMissing, ok := canonicalMissingProjectPath(abs)
+			if !ok {
+				return Project{}, fmt.Errorf("项目路径不可访问 %s：%w", abs, lstatErr)
+			}
+			return Project{ID: item.ID, Name: item.Name, Path: abs, RealPath: canonicalMissing, Missing: true}, nil
+		}
+		return Project{}, fmt.Errorf("项目路径不可访问 %s：%w", abs, lstatErr)
+	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return Project{}, fmt.Errorf("项目路径不可访问 %s：%w", abs, err)
@@ -95,15 +109,87 @@ func normalize(item config.ProjectConfig) (Project, error) {
 	return Project{ID: item.ID, Name: item.Name, Path: abs, RealPath: realPath}, nil
 }
 
+// canonicalMissingProjectPath 仅在目标路径真实不存在时，沿不存在的尾段向上找到最近存在的祖先目录，
+// 对该祖先执行 EvalSymlinks 并确认其为目录后再拼回缺失尾段；若中间遇到越界/悬空符号链接或权限错误则返回 false。
+func canonicalMissingProjectPath(abs string) (string, bool) {
+	cleaned := filepath.Clean(abs)
+	if !filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	var tail []string
+	cur := cleaned
+	for {
+		_, err := os.Lstat(cur)
+		if err == nil {
+			realAncestor, evalErr := filepath.EvalSymlinks(cur)
+			if evalErr != nil {
+				return "", false
+			}
+			info, statErr := os.Stat(realAncestor)
+			if statErr != nil || !info.IsDir() {
+				return "", false
+			}
+			parts := append([]string{realAncestor}, tail...)
+			return filepath.Join(parts...), true
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		base := filepath.Base(cur)
+		if base == "" || base == "." || base == ".." {
+			return "", false
+		}
+		tail = append([]string{base}, tail...)
+		cur = parent
+	}
+}
+
+// refreshProjectAvailability 实时核对已登记项目目录当前是否存在于磁盘（C14）：
+// 目录在网关运行期间被移走或恢复后，`/api/projects` 与 `/api/app-server/config`
+// 立即反映最新 `Missing` 状态，无需等待下一次网关重启。
+func refreshProjectAvailability(project Project) Project {
+	if project.Path == "" {
+		return project
+	}
+	if _, err := os.Lstat(project.Path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			project.Missing = true
+		}
+		return project
+	}
+	realPath, err := filepath.EvalSymlinks(project.Path)
+	if err != nil {
+		project.Missing = true
+		return project
+	}
+	info, err := os.Stat(realPath)
+	if err != nil || !info.IsDir() {
+		project.Missing = true
+		return project
+	}
+	project.Missing = false
+	project.RealPath = realPath
+	return project
+}
+
 func (r *Registry) List() []Project {
 	out := make([]Project, len(r.list))
-	copy(out, r.list)
+	for i, project := range r.list {
+		out[i] = refreshProjectAvailability(project)
+	}
 	return out
 }
 
 func (r *Registry) Get(id string) (Project, bool) {
 	project, ok := r.projects[id]
-	return project, ok
+	if !ok {
+		return Project{}, false
+	}
+	return refreshProjectAvailability(project), true
 }
 
 func (r *Registry) FindByPath(path string) (Project, bool) {

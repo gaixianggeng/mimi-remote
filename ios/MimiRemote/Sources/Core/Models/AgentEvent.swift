@@ -800,7 +800,9 @@ struct CodexAppServerEventProjector {
                 kind: kind,
                 risk: firstString(in: params, keys: ["risk"]) ?? "high",
                 availableDecisions: availableDecisions,
-                persistentPermissionRules: eligiblePersistentPermissionRules(from: params)
+                persistentPermissionRules: eligiblePersistentPermissionRules(from: params),
+                alwaysAllowLabel: firstString(in: params, keys: ["alwaysAllowLabel"]),
+                alwaysAllowScopeUncertain: params["alwaysAllowScopeUncertain"]?.boolValue
             ),
             metadata
         )

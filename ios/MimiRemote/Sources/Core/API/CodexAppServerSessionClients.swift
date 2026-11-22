@@ -435,6 +435,10 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
         return try await bundle.channelAvailable(runtimeProvider: runtimeProvider)
     }
 
+    func runtimeChannelDiagnostics() async -> [String: RuntimeChannelDiagnostic] {
+        await bundle.channelDiagnostics()
+    }
+
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
         // 原生 Harness 不消费 goal 参数；app-server 通道读共享快照里的声明。
         guard bundle.nativeClient(for: runtimeProvider) == nil else { return false }

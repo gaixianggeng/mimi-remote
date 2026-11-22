@@ -27,6 +27,7 @@ extension SessionStore {
             item.activeTurnID = incoming.activeTurnID
             item.canAcceptDirectInput = incoming.canAcceptDirectInput
             item.claudeOwner = incoming.claudeOwner
+            item.cwdMissing = incoming.cwdMissing
             // 待处理的审批 / 补充输入也以快照为准：别的客户端答复后会话转为运行或空闲，
             // 这里不清掉旧请求，列表就会一直把它归在「待你处理」。仍在等待但快照没带载荷
             // （列表快照不含请求正文）时保留已有的可操作请求。

@@ -377,17 +377,27 @@ func preflightAgy(ctx context.Context, cfg config.Config) agyPreflightResult {
 		}
 	}
 
-	signedIn, signErr := agybridge.CheckAgySignedIn(ctx, bestBin, env)
-	loggedIn := signedIn
-	if !signedIn {
+	authState, authMsg := agybridge.CheckAgyAuthStatus(ctx, bestBin, env)
+	switch authState {
+	case agybridge.AgyAuthSignedOut:
+		loggedIn := false
 		return agyPreflightResult{
 			AgyBin:     bestBin,
 			AgyVersion: bestVersion,
 			LoggedIn:   &loggedIn,
 			Reason:     "agy_signed_out",
-			Message:    signErr,
+			Message:    authMsg,
+		}
+	case agybridge.AgyAuthUnknown:
+		return agyPreflightResult{
+			AgyBin:     bestBin,
+			AgyVersion: bestVersion,
+			LoggedIn:   nil,
+			Reason:     "agy_auth_unknown",
+			Message:    authMsg,
 		}
 	}
+	loggedIn := true
 	return agyPreflightResult{
 		OK:         true,
 		AgyBin:     bestBin,

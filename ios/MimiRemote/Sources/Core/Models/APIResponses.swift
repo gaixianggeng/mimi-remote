@@ -285,18 +285,166 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
 struct CodexAppServerChannelBridgeMetadata: Codable, Hashable {
     let name: String?
     let version: String?
+    let minimumVersion: String?
+    let cliVersion: String?
+    let minimumCLIVersion: String?
     let path: String?
     let status: String?
     let healthy: Bool?
     let lastProbeError: String?
+    let fix: String?
+
+    init(
+        name: String? = nil,
+        version: String? = nil,
+        minimumVersion: String? = nil,
+        cliVersion: String? = nil,
+        minimumCLIVersion: String? = nil,
+        path: String? = nil,
+        status: String? = nil,
+        healthy: Bool? = nil,
+        lastProbeError: String? = nil,
+        fix: String? = nil
+    ) {
+        self.name = name
+        self.version = version
+        self.minimumVersion = minimumVersion
+        self.cliVersion = cliVersion
+        self.minimumCLIVersion = minimumCLIVersion
+        self.path = path
+        self.status = status
+        self.healthy = healthy
+        self.lastProbeError = lastProbeError
+        self.fix = fix
+    }
 
     enum CodingKeys: String, CodingKey {
         case name
         case version
+        case minimumVersion = "minimum_version"
+        case cliVersion = "cli_version"
+        case minimumCLIVersion = "minimum_cli_version"
         case path
         case status
         case healthy
         case lastProbeError = "last_probe_error"
+        case fix
+    }
+}
+
+/// 通道不可用时的结构化诊断（B11/B13/B14），供工作区与错误提示直接向用户说明版本、安装或登录修复路径。
+struct RuntimeChannelDiagnostic: Equatable, Hashable, Sendable {
+    let provider: String
+    let status: String
+    let cliVersion: String?
+    let minimumCLIVersion: String?
+    let lastProbeError: String?
+    let fix: String?
+
+    static func from(channel: CodexAppServerChannelMetadata) -> Self? {
+        guard channel.enabled != false,
+              !channel.gatewayAvailable,
+              let bridge = channel.bridge else {
+            return nil
+        }
+        let status = bridge.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let error = bridge.lastProbeError?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !status.isEmpty || (error?.isEmpty == false) else {
+            return nil
+        }
+        let provider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.runtimeID ?? channel.provider)
+        let extracted = Self.extractVersions(from: error)
+        return Self(
+            provider: provider.isEmpty ? channel.id : provider,
+            status: status,
+            cliVersion: bridge.cliVersion?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? extracted.current,
+            minimumCLIVersion: bridge.minimumCLIVersion?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? extracted.minimum,
+            lastProbeError: error?.nilIfEmpty,
+            fix: bridge.fix?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        )
+    }
+
+    private static var prefersChinese: Bool {
+        UserFacingError.message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
+    }
+
+    var localizedTitle: String {
+        let zh = Self.prefersChinese
+        switch status {
+        case "agy_unsupported":
+            return zh ? "需要升级 Antigravity CLI" : "Antigravity CLI Update Required"
+        case "agy_missing":
+            return zh ? "未检测到 Antigravity CLI" : "Antigravity CLI Not Found"
+        case "agy_signed_out":
+            return zh ? "Antigravity 尚未登录" : "Antigravity Sign-In Required"
+        case "claude_unsupported":
+            return zh ? "需要升级 Claude Code" : "Claude Code Update Required"
+        default:
+            return zh ? "通道暂不可用" : "Channel Unavailable"
+        }
+    }
+
+    var localizedMessage: String {
+        let zh = Self.prefersChinese
+        switch status {
+        case "agy_unsupported":
+            if let current = cliVersion, let minimum = minimumCLIVersion {
+                return zh
+                    ? "Antigravity CLI \(current) 过旧，Mimi Remote 需要 \(minimum) 或更新版本。请在电脑升级 agy 后重试。"
+                    : "Antigravity CLI \(current) is too old. Mimi Remote requires \(minimum) or newer. Update agy on your computer and try again."
+            }
+            if let minimum = minimumCLIVersion {
+                return zh
+                    ? "Antigravity CLI 版本过旧，Mimi Remote 需要 \(minimum) 或更新版本。请在电脑升级 agy 后重试。"
+                    : "Antigravity CLI is too old. Mimi Remote requires \(minimum) or newer. Update agy on your computer and try again."
+            }
+            return zh
+                ? "Antigravity CLI 版本过旧，请在电脑升级 agy 后重试。"
+                : "Antigravity CLI is too old. Update agy on your computer and try again."
+        case "agy_missing":
+            return zh
+                ? "电脑上未检测到 Antigravity CLI (agy)。请先安装 agy 并完成登录，然后重试。"
+                : "Antigravity CLI (agy) was not found on your computer. Install agy and sign in, then try again."
+        case "agy_signed_out":
+            return zh
+                ? "电脑上的 Antigravity CLI 尚未登录。请在终端运行 agy 完成登录，然后重试。"
+                : "Antigravity CLI is not signed in on your computer. Run `agy` in Terminal to sign in, then try again."
+        case "claude_unsupported":
+            if let current = cliVersion, let minimum = minimumCLIVersion {
+                return zh
+                    ? "Claude Code \(current) 过旧，需要 \(minimum) 或更新版本。请在电脑运行 claude update 后重试。"
+                    : "Claude Code \(current) is too old. Mimi Remote requires \(minimum) or newer. Run `claude update` on your computer and try again."
+            }
+            return zh
+                ? "Claude Code 版本过旧，请在电脑运行 claude update 后重试。"
+                : "Claude Code is too old. Run `claude update` on your computer and try again."
+        default:
+            if let error = lastProbeError, let presentable = UserFacingError.presentableComputerReason(error) {
+                return presentable
+            }
+            return zh ? "电脑上的运行通道当前不可用，请检查电脑端状态后重试。" : "This runtime channel is currently unavailable on your computer. Check your computer and try again."
+        }
+    }
+
+    private static func extractVersions(from text: String?) -> (current: String?, minimum: String?) {
+        guard let text, !text.isEmpty,
+              let regex = try? NSRegularExpression(pattern: "\\b(\\d+\\.\\d+\\.\\d+)\\b") else {
+            return (nil, nil)
+        }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match -> String? in
+            guard let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        if matches.count >= 2 {
+            return (matches[0], matches[1])
+        }
+        return (matches.first, nil)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

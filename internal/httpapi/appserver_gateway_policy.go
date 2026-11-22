@@ -237,7 +237,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
+			return gatewayWriteRejectionError(method, thread, "不能执行写操作")
 		}
 		if !scopeOK {
 			return fmt.Errorf("%s.cwd 必须来自已授权工作区", method)
@@ -260,7 +260,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayMethodMutatesThread(method) && gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
+			return gatewayWriteRejectionError(method, thread, "不能执行写操作")
 		}
 		if method == "thread/read" {
 			if err := p.rememberPendingThreadRequest(frame.ID, appServerGatewayPendingThreadRequest{
@@ -298,7 +298,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 		}
 		if method == "thread/settings/update" {
 			if gatewayThreadRejectsWrites(thread) {
-				return fmt.Errorf("%s.threadId 是只读子会话，不能修改设置", method)
+				return gatewayWriteRejectionError(method, thread, "不能修改设置")
 			}
 			if validated.hasCWD && (!scopeOK || scope.id != thread.scopeID) {
 				return fmt.Errorf("%s.cwd 必须匹配已授权 thread 的工作区", method)
@@ -329,7 +329,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
+			return gatewayWriteRejectionError(method, thread, "不能执行写操作")
 		}
 	case "turn/start":
 		threadID, ok := gatewayStringParam(params, "threadId")
@@ -341,7 +341,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
+			return gatewayWriteRejectionError(method, thread, "不能接受直接输入")
 		}
 		// 项目作用域：同项目内目录都可用；browse 作用域：scope id 是 canonical cwd 的
 		// hash，等价于精确目录绑定，不允许切到允许根下的 sibling 目录。
@@ -358,7 +358,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能接受输入", method)
+			return gatewayWriteRejectionError(method, thread, "不能接受输入")
 		}
 		if _, ok := gatewayStringParam(params, "clientUserMessageId"); !ok {
 			return fmt.Errorf("%s.clientUserMessageId 不能为空", method)
@@ -376,7 +376,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能接受直接输入", method)
+			return gatewayWriteRejectionError(method, thread, "不能接受直接输入")
 		}
 		if _, ok := gatewayStringParam(params, "expectedTurnId"); !ok {
 			return fmt.Errorf("%s.expectedTurnId 不能为空", method)
@@ -394,7 +394,7 @@ func (p *appServerGatewayPolicy) validateThreadCapability(frame *appServerGatewa
 			return fmt.Errorf("%s.threadId 未由当前 gateway 连接授权", method)
 		}
 		if gatewayThreadRejectsWrites(thread) {
-			return fmt.Errorf("%s.threadId 是只读子会话，不能执行写操作", method)
+			return gatewayWriteRejectionError(method, thread, "无法从远程中断")
 		}
 	}
 	return nil
@@ -427,6 +427,20 @@ func gatewayMimiTaskProposalParam(runtimeID string, method string, params map[st
 
 func gatewayThreadRejectsWrites(thread appServerGatewayAllowedThread) bool {
 	return thread.readOnly || (thread.directInputKnown && !thread.canAcceptDirectInput)
+}
+
+// gatewayWriteRejectionError 区分三类只读拒绝原因（C11/C14）：
+// 1) 原工作目录已移动或删除（cwdMissing）；
+// 2) 结构性只读子会话 / browse 只读（readOnly）；
+// 3) 电脑端其他进程正在持有或运行该会话（!readOnly && directInputKnown && !canAcceptDirectInput）。
+func gatewayWriteRejectionError(method string, thread appServerGatewayAllowedThread, action string) error {
+	if thread.cwdMissing {
+		return fmt.Errorf("%s.threadId 原工作目录已移动或删除，当前仅支持只读查看，%s", method, action)
+	}
+	if thread.readOnly {
+		return fmt.Errorf("%s.threadId 是只读子会话，%s", method, action)
+	}
+	return fmt.Errorf("%s.threadId 当前正由电脑端其他进程持有或运行，%s，请等待结束后刷新", method, action)
 }
 
 func gatewayMethodMutatesThread(method string) bool {

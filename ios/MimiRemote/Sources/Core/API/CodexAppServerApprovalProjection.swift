@@ -124,7 +124,9 @@ extension CodexAppServerSessionRuntime {
                 session.pendingApproval = ApprovalSummary(
                     id: request.id, title: request.title, body: request.body, kind: request.kind,
                     risk: request.risk, count: nil, availableDecisions: request.availableDecisions,
-                    persistentPermissionRules: request.persistentPermissionRules
+                    persistentPermissionRules: request.persistentPermissionRules,
+                    alwaysAllowLabel: request.alwaysAllowLabel,
+                    alwaysAllowScopeUncertain: request.alwaysAllowScopeUncertain
                 )
             }
         case .userInputRequest(let request, let metadata):

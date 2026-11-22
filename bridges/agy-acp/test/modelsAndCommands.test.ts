@@ -5,7 +5,13 @@ import path from "node:path";
 import { sanitizeAgyEnv } from "../src/agy/env.ts";
 import { catalogAgyCommands } from "../src/agy/commands.ts";
 import { catalogAgyModels } from "../src/agy/models.ts";
-import { formatTranscriptUserText, inspectTranscriptActivity, readTranscriptTurns } from "../src/agy/transcript.ts";
+import {
+  detectExternalConcurrentWrite,
+  formatTranscriptUserText,
+  inspectTranscriptActivity,
+  readTranscriptTurns,
+  snapshotTranscriptStateDetailed,
+} from "../src/agy/transcript.ts";
 import { agyModeFor, runSettingsFor } from "../src/runtime/settings.ts";
 
 describe("agy env & settings & catalogs", () => {
@@ -164,13 +170,400 @@ D1–D6 的倾向
 
       const turns = await readTranscriptTurns(sessionId, "/workspace", transcriptPath, false, true);
       expect(turns).toHaveLength(1);
-      expect(turns[0]?.status).toBe("completed");
+      expect(turns[0]?.status).toBe("inProgress");
       const userItem = turns[0]?.items.find((item) => item.type === "userMessage");
       expect(userItem?.type === "userMessage" ? userItem.content.map((c) => c.type) : []).toEqual(["text", "image"]);
       const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
       expect(cmdItem?.type === "commandExecution" ? cmdItem.status : "").toBe("inProgress");
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C12: detectExternalConcurrentWrite flags external USER_INPUT and approval-window writes without false positives", () => {
+    const baseline = {
+      userInputCount: 1,
+      expectedPromptText: "Run pwd and wait for approval",
+    };
+    // Own USER_INPUT matching prompt is NOT a conflict.
+    expect(
+      detectExternalConcurrentWrite(baseline, {
+        path: "/tmp/t.jsonl",
+        size: 100,
+        mtimeMs: Date.now(),
+        userInputs: ["prior turn", "Run pwd and wait for approval"],
+        plannerResponseCount: 1,
+        stepCount: 3,
+      }).detected,
+    ).toBe(false);
+
+    // Second new USER_INPUT during active turn IS a conflict.
+    expect(
+      detectExternalConcurrentWrite(baseline, {
+        path: "/tmp/t.jsonl",
+        size: 200,
+        mtimeMs: Date.now(),
+        userInputs: ["prior turn", "Run pwd and wait for approval", "CROSS MAC CONTENDING"],
+        plannerResponseCount: 2,
+        stepCount: 5,
+      }),
+    ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
+
+    // Benign local PLANNER_RESPONSE progress without new USER_INPUT is NOT a conflict (C12 round4).
+    expect(
+      detectExternalConcurrentWrite(
+        {
+          ...baseline,
+          approvalUserInputCount: 2,
+          approvalPlannerResponseCount: 1,
+        },
+        {
+          path: "/tmp/t.jsonl",
+          size: 240,
+          mtimeMs: Date.now(),
+          userInputs: ["prior turn", "Run pwd and wait for approval"],
+          plannerResponseCount: 2,
+          stepCount: 4,
+        },
+      ),
+    ).toEqual({ detected: false });
+
+    // New USER_INPUT during pending approval IS a conflict.
+    expect(
+      detectExternalConcurrentWrite(
+        {
+          ...baseline,
+          approvalUserInputCount: 2,
+          approvalPlannerResponseCount: 1,
+        },
+        {
+          path: "/tmp/t.jsonl",
+          size: 260,
+          mtimeMs: Date.now(),
+          userInputs: ["prior turn", "Run pwd and wait for approval", "external prompt"],
+          plannerResponseCount: 1,
+          stepCount: 4,
+        },
+      ),
+    ).toEqual({ detected: true, reason: "multiple_user_inputs_during_active_turn" });
+  });
+
+  test("B10: readTranscriptTurns preserves failed ERROR_MESSAGE and cancelled/interrupted turn status", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:00Z",
+          content: "<USER_REQUEST>\ntrigger error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:01Z",
+          content: "Error: EDGE_FIXTURE_E42: injected turn failure",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "<USER_REQUEST>\nstop me\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "CANCELLED",
+          created_at: "2026-11-21T10:00:03Z",
+          content: "partial output",
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(2);
+      expect(turns[0]?.status).toBe("failed");
+      expect(turns[0]?.error?.message).toBe("Error: EDGE_FIXTURE_E42: injected turn failure");
+      expect(turns[1]?.status).toBe("interrupted");
+      expect(turns[1]?.error).toBeNull();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("B10 round2: readTranscriptTurns treats recoverable intermediate ERROR_MESSAGE followed by DONE planner reply as completed", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-recover-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:00Z",
+          content: "<USER_REQUEST>\nrun tool that fails once then recovers\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"false\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "GENERIC",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "command exited 1",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-21T10:00:02Z",
+          content: "Transient tool failure",
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-21T10:00:03Z",
+          content: "Handled the command failure and finished cleanly.",
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10-recover", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.status).toBe("completed");
+      expect(turns[0]?.error).toBeNull();
+      const cmdItem = turns[0]?.items.find((item) => item.type === "commandExecution");
+      expect(cmdItem && cmdItem.type === "commandExecution" ? cmdItem.status : null).toBe("failed");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C11 round2: readTranscriptTurns marks the last turn inProgress while external Mac holder is busy and completed when idle", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-c11-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: "<USER_REQUEST>\nfirst completed turn\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "first done",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:00Z",
+          content: "<USER_REQUEST>\nrun sleep 55\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "RUNNING",
+          created_at: "2026-11-22T01:01:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"sleep 55\"" } }],
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const whileBusy = await readTranscriptTurns("sess-c11", "/workspace", transcriptPath, false, true);
+      expect(whileBusy).toHaveLength(2);
+      expect(whileBusy[0]?.status).toBe("completed");
+      expect(whileBusy[1]?.status).toBe("inProgress");
+      expect(whileBusy[1]?.completedAt).toBeNull();
+
+      const afterIdle = await readTranscriptTurns("sess-c11", "/workspace", transcriptPath, false, false);
+      expect(afterIdle).toHaveLength(2);
+      expect(afterIdle[1]?.status).toBe("completed");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C12 round3: snapshotTranscriptStateDetailed distinguishes missing, present, malformed JSONL, and non-file/IO errors", async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), "agy-c12-inspect-"));
+    try {
+      const env = { HOME: tempHome };
+
+      // 1) Truly missing transcript
+      const missing = await snapshotTranscriptStateDetailed("sess-missing", "cli", env);
+      expect(missing).toEqual({ kind: "missing" });
+
+      // 2) Valid transcript -> present
+      const validLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-valid", ".system_generated", "logs");
+      await mkdir(validLogsDir, { recursive: true });
+      await writeFile(
+        path.join(validLogsDir, "transcript_full.jsonl"),
+        `${JSON.stringify({ step_index: 0, type: "USER_INPUT", content: "<USER_REQUEST>\nhi\n</USER_REQUEST>" })}\n`,
+      );
+      const present = await snapshotTranscriptStateDetailed("sess-valid", "cli", env);
+      expect(present.kind).toBe("present");
+      if (present.kind === "present") {
+        expect(present.snapshot.userInputs).toEqual(["hi"]);
+      }
+
+      // 3) Malformed JSONL -> error (NOT missing)
+      const corruptLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-corrupt", ".system_generated", "logs");
+      await mkdir(corruptLogsDir, { recursive: true });
+      await writeFile(path.join(corruptLogsDir, "transcript_full.jsonl"), "{not-valid-json\n");
+      const corrupt = await snapshotTranscriptStateDetailed("sess-corrupt", "cli", env);
+      expect(corrupt.kind).toBe("error");
+      if (corrupt.kind === "error") {
+        expect(corrupt.reason).toBe("malformed_transcript");
+      }
+
+      // 4) Non-file (directory at transcript path) -> error (NOT missing)
+      const dirLogsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", "sess-dir", ".system_generated", "logs");
+      await mkdir(path.join(dirLogsDir, "transcript_full.jsonl"), { recursive: true });
+      const nonFile = await snapshotTranscriptStateDetailed("sess-dir", "cli", env);
+      expect(nonFile.kind).toBe("error");
+      if (nonFile.kind === "error") {
+        expect(nonFile.reason).toBe("transcript_not_a_file");
+      }
+    } finally {
+      await rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  test("B10 round3: non-terminal or tool-calling planner text after ERROR_MESSAGE does NOT clear failed turn status", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agy-transcript-b10-nonterminal-"));
+    try {
+      const transcriptPath = path.join(tempRoot, "transcript_full.jsonl");
+      const lines = [
+        // Turn 1: ERROR_MESSAGE followed by RUNNING planner text (non-terminal) -> MUST stay failed!
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: "<USER_REQUEST>\nturn with running partial text after error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-22T01:00:01Z",
+          content: "FATAL_UPSTREAM_ERR_1",
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "PLANNER_RESPONSE",
+          status: "RUNNING",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "Trying to recover...",
+        }),
+        // Turn 2: ERROR_MESSAGE followed by DONE planner step that still invokes a tool (no final answer) -> MUST stay failed!
+        JSON.stringify({
+          step_index: 3,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:00Z",
+          content: "<USER_REQUEST>\nturn with tool call after error\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "ERROR_MESSAGE",
+          status: "ERROR",
+          created_at: "2026-11-22T01:01:01Z",
+          content: "FATAL_UPSTREAM_ERR_2",
+        }),
+        JSON.stringify({
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:01:02Z",
+          content: "Retrying tool",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"echo retry\"" } }],
+        }),
+      ];
+      await writeFile(transcriptPath, `${lines.join("\n")}\n`);
+
+      const turns = await readTranscriptTurns("sess-b10-nt", "/workspace", transcriptPath, false, false);
+      expect(turns).toHaveLength(2);
+      expect(turns[0]?.status).toBe("failed");
+      expect(turns[0]?.error?.message).toBe("FATAL_UPSTREAM_ERR_1");
+      expect(turns[1]?.status).toBe("failed");
+      expect(turns[1]?.error?.message).toBe("FATAL_UPSTREAM_ERR_2");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("C11 round3: interim DONE planner reply while native GENERIC tool is still RUNNING keeps externallyBusy true until completion signal + final reply", async () => {
+    const tempHome = await mkdtemp(path.join(os.tmpdir(), "agy-c11-interim-"));
+    try {
+      const sessionId = "sess-c11-long-tool";
+      const logsDir = path.join(tempHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+      await mkdir(logsDir, { recursive: true });
+      const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+      const env = { HOME: tempHome };
+
+      const earlySteps = [
+        { step_index: 0, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:00Z", content: "<USER_REQUEST>\nbase\n</USER_REQUEST>" },
+        { step_index: 1, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:01Z", content: "BASE OK" },
+        { step_index: 2, type: "USER_INPUT", status: "DONE", created_at: "2026-11-22T02:28:57Z", content: "<USER_REQUEST>\nrun sleep 55\n</USER_REQUEST>" },
+        { step_index: 3, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:28:57Z" },
+        { step_index: 4, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:28:57Z", tool_calls: [{ name: "run_command", args: { CommandLine: "\"sleep 55\"" } }] },
+        { step_index: 5, type: "GENERIC", status: "RUNNING", created_at: "2026-11-22T02:29:04Z" },
+      ];
+      await writeFile(transcriptPath, `${earlySteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+
+      // Stage 1 (early): GENERIC RUNNING -> externallyBusy === true
+      const earlyInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(earlyInfo?.externallyBusy).toBe(true);
+
+      // Stage 2 (mid-flight): native CLI writes interim PLANNER_RESPONSE (DONE, "Waiting for sleep 55 to finish.") while step 5 is STILL RUNNING!
+      const midFlightSteps = [
+        ...earlySteps,
+        { step_index: 6, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:14Z", content: "Waiting for `sleep 55` to finish." },
+      ];
+      await writeFile(transcriptPath, `${midFlightSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      const midFlightInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(midFlightInfo?.externallyBusy).toBe(true);
+
+      // Stage 3 (post-exit): command finishes -> SYSTEM_MESSAGE + final PLANNER_RESPONSE -> externallyBusy === false
+      const finishedSteps = [
+        ...midFlightSteps,
+        { step_index: 7, type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-11-22T02:29:59Z" },
+        { step_index: 8, type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-11-22T02:29:59Z", content: "VERIFY C11 MAC BUSY FINISH" },
+      ];
+      await writeFile(transcriptPath, `${finishedSteps.map((s) => JSON.stringify(s)).join("\n")}\n`);
+      const finishedInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => null,
+      });
+      expect(finishedInfo?.externallyBusy).toBe(false);
+
+      // Stage 4: Live external holder PID keeps externallyBusy true even before transcript updates!
+      const pidHeldInfo = await inspectTranscriptActivity(sessionId, "cli", env, {
+        findExternalHolderPid: async () => 55246,
+      });
+      expect(pidHeldInfo?.externallyBusy).toBe(true);
+      expect(pidHeldInfo?.holderPid).toBe(55246);
+    } finally {
+      await rm(tempHome, { recursive: true, force: true });
     }
   });
 });

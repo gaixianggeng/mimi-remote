@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -75,6 +75,22 @@ async function fileExists(targetPath: string | undefined): Promise<boolean> {
 
 export async function hasCliConversationDb(sessionId: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   return fileExists(conversationDbPath(sessionId, env, "cli"));
+}
+
+/**
+ * 检查独立的 Other（桌面版 / 自定义 `AGY_ADAPTER_OTHER_APP_DATA_DIR`）目录下是否存在有效会话 `.db`，
+ * 仅在存在时才按需查询 `otherSharedAcp` 的 `session/list`，避免无 Other 数据时多起子进程（C10）。
+ */
+export async function hasOtherConversations(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const paths = resolveAgyDataPaths(env);
+  if (paths.otherAppDataRoot === paths.appDataRoot) return false;
+  const dir = path.join(paths.otherAppDataRoot, "conversations");
+  try {
+    const entries = await readdir(dir);
+    return entries.some((name) => name.endsWith(".db"));
+  } catch {
+    return false;
+  }
 }
 
 /**

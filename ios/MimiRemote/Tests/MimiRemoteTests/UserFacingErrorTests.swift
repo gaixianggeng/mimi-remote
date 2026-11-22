@@ -600,4 +600,36 @@ final class OperationFeedbackStoreTests: XCTestCase {
         XCTAssertNotNil(other.errorMessage)
         XCTAssertNotNil(other.errorPresentation)
     }
+
+    func testB11AntigravitySignedOutAndAuthenticationRequiredDoNotSuggestReconnect() {
+        let structured = CodexAppServerError(
+            code: -32602,
+            message: "Antigravity CLI is not signed in.",
+            data: .object(["code": .string("agy_authentication_required"), "loginCommand": .string("agy")])
+        )
+        let structuredPresentation = UserFacingError(CodexAppServerConnectionError.appServer(structured))
+        XCTAssertEqual(structuredPresentation.category, .described)
+        XCTAssertFalse(structuredPresentation.suggestsReconnect)
+        XCTAssertTrue(structuredPresentation.message.contains("agy"))
+
+        let rawAuthRequired = CodexAppServerError(
+            code: -32000,
+            message: "Authentication required",
+            data: nil
+        )
+        let rawPresentation = UserFacingError(CodexAppServerConnectionError.appServer(rawAuthRequired))
+        XCTAssertEqual(rawPresentation.category, .described)
+        XCTAssertFalse(rawPresentation.suggestsReconnect)
+        XCTAssertNotEqual(rawPresentation.message, L10n.text("ui.error_host_error"))
+
+        let bridgeSignedOut = CodexAppServerError(
+            code: -32081,
+            message: "AGY_ADAPTER_UNAVAILABLE: Antigravity CLI 尚未登录",
+            data: .object(["bridgeStatus": .string("agy_signed_out")])
+        )
+        let bridgePresentation = UserFacingError(CodexAppServerConnectionError.appServer(bridgeSignedOut))
+        XCTAssertEqual(bridgePresentation.category, .described)
+        XCTAssertFalse(bridgePresentation.suggestsReconnect)
+        XCTAssertTrue(bridgePresentation.message.contains("agy"))
+    }
 }

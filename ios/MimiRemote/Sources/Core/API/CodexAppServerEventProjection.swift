@@ -764,6 +764,9 @@ extension CodexAppServerSessionRuntime {
             // 派生来源只在 thread/list 上出现；状态推送与历史分页的 thread 不带它，沿用已知值。
             spawnedFromThreadID: nonEmpty(thread["spawnedFromThreadId"]?.stringValue) ?? cached?.spawnedFromThreadID,
             sessionOrigin: antigravitySessionOrigin(from: thread, cached: cached?.sessionOrigin),
+            cwdMissing: thread["cwdMissing"]?.boolValue
+                ?? thread["mimiRemote"]?.objectValue?["cwdMissing"]?.boolValue
+                ?? false,
             context: context
         )
         if preservesIndependentApproval { session.pendingApproval = cached?.pendingApproval }

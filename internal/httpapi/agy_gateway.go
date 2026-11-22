@@ -45,14 +45,40 @@ var appServerAgyAllowedMethods = map[string]struct{}{
 }
 
 type agyAdapterProbe struct {
-	Status       string
-	Path         string
-	Version      string
-	Healthy      bool
-	Error        string
-	CheckedAt    time.Time
-	Capabilities *agybridge.AdapterCapabilities
+	Status            string
+	Path              string
+	Version           string
+	CLIVersion        string
+	MinimumCLIVersion string
+	Healthy           bool
+	Error             string
+	CheckedAt         time.Time
+	Capabilities      *agybridge.AdapterCapabilities
 }
+
+type agyAuthProbeCache struct {
+	path      string
+	envKey    string
+	state     agybridge.AgyAuthState
+	message   string
+	checkedAt time.Time
+}
+
+type agyAuthProbeFlight struct {
+	key     string
+	done    chan struct{}
+	state   agybridge.AgyAuthState
+	message string
+}
+
+const (
+	agyAuthSignedInCacheTTL  = 2 * time.Minute
+	agyAuthSignedOutCacheTTL = 5 * time.Second
+	agyAuthUnknownCacheTTL   = 2 * time.Second
+)
+
+// 真实 `agy 1.5.14` 首次冷探测远端模型目录实测耗时约 7-10 秒；预留 15 秒避免正常已登录账号被误判为超时未知态（B11）。
+var agyAuthProbeTimeout = 15 * time.Second
 
 func (p agyAdapterProbe) supportsMethod(method string) bool {
 	return p.Healthy && p.Capabilities != nil && p.Capabilities.Supports(method)
@@ -81,9 +107,67 @@ func agyAdapterFix(probe agyAdapterProbe) string {
 		return "安装 Antigravity CLI (agy) 并在终端登录"
 	case "agy_unsupported":
 		return "升级 Antigravity CLI (agy)"
+	case "agy_signed_out":
+		return "在终端运行 agy 完成登录"
+	case "agy_auth_unknown":
+		return "请稍后重试，或在终端运行 agy 确认登录状态"
 	default:
 		return agybridge.InstallHint
 	}
+}
+
+func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybridge.AgyAuthState, string) {
+	now := time.Now().UTC()
+	envKey := agybridge.AgyAuthCacheKey(env)
+	flightKey := agyPath + "\x00" + envKey
+	r.agyMu.Lock()
+	cached := r.agyAuth
+	if cached.path == agyPath && cached.envKey == envKey && cached.state != "" && !cached.checkedAt.IsZero() {
+		ttl := agyAuthSignedInCacheTTL
+		switch cached.state {
+		case agybridge.AgyAuthSignedOut:
+			ttl = agyAuthSignedOutCacheTTL
+		case agybridge.AgyAuthUnknown:
+			ttl = agyAuthUnknownCacheTTL
+		}
+		if now.Sub(cached.checkedAt) < ttl {
+			r.agyMu.Unlock()
+			return cached.state, cached.message
+		}
+	}
+	if r.agyAuthInFlight != nil && r.agyAuthInFlight.key == flightKey {
+		flight := r.agyAuthInFlight
+		r.agyMu.Unlock()
+		<-flight.done
+		return flight.state, flight.message
+	}
+	flight := &agyAuthProbeFlight{
+		key:  flightKey,
+		done: make(chan struct{}),
+	}
+	r.agyAuthInFlight = flight
+	r.agyMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), agyAuthProbeTimeout)
+	defer cancel()
+	state, msg := agybridge.CheckAgyAuthStatus(ctx, agyPath, env)
+
+	r.agyMu.Lock()
+	r.agyAuth = agyAuthProbeCache{
+		path:      agyPath,
+		envKey:    envKey,
+		state:     state,
+		message:   msg,
+		checkedAt: time.Now().UTC(),
+	}
+	flight.state = state
+	flight.message = msg
+	if r.agyAuthInFlight == flight {
+		r.agyAuthInFlight = nil
+	}
+	close(flight.done)
+	r.agyMu.Unlock()
+	return state, msg
 }
 
 func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
@@ -132,20 +216,40 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 		return probe
 	}
 	probe.Capabilities = &capabilities
+	probe.MinimumCLIVersion = strings.TrimSpace(capabilities.Agy.MinimumVersion)
 
 	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
 	if agyBin == "" {
 		agyBin = "agy"
 	}
-	if agyPath, lookErr := claudebridge.LookPathIn(agyBin, env); lookErr == nil {
-		if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
-			if !capabilities.AgySupported(agyVer) {
-				probe.Status = "agy_unsupported"
-				probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
-				r.setAgyAdapterProbe(probe)
-				return probe
-			}
+	agyPath, lookErr := claudebridge.LookPathIn(agyBin, env)
+	if lookErr != nil {
+		probe.Status = "agy_missing"
+		probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
+		r.setAgyAdapterProbe(probe)
+		return probe
+	}
+	if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
+		probe.CLIVersion = agyVer
+		if !capabilities.AgySupported(agyVer) {
+			probe.Status = "agy_unsupported"
+			probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
+			r.setAgyAdapterProbe(probe)
+			return probe
 		}
+	}
+	authState, authMsg := r.checkAgyAuthStatusCached(agyPath, env)
+	switch authState {
+	case agybridge.AgyAuthSignedOut:
+		probe.Status = "agy_signed_out"
+		probe.Error = authMsg
+		r.setAgyAdapterProbe(probe)
+		return probe
+	case agybridge.AgyAuthUnknown:
+		probe.Status = "agy_auth_unknown"
+		probe.Error = authMsg
+		r.setAgyAdapterProbe(probe)
+		return probe
 	}
 
 	probe.Status = "ready"
@@ -183,15 +287,63 @@ func (r *Router) refreshAgyAdapterProbeIfStale() {
 	}
 	r.agyMu.Lock()
 	checkedAt := r.agyProbe.CheckedAt
+	status := r.agyProbe.Status
 	r.agyMu.Unlock()
-	if checkedAt.IsZero() || time.Since(checkedAt) >= claudeBridgeProbeCacheTTL {
+	ttl := claudeBridgeProbeCacheTTL
+	if status == "agy_auth_unknown" {
+		ttl = agyAuthUnknownCacheTTL
+	}
+	if checkedAt.IsZero() || time.Since(checkedAt) >= ttl {
 		r.refreshAgyAdapterProbe()
 	}
 }
 
+func (r *Router) configuredAgyBinary(env []string) (string, error) {
+	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
+	if agyBin == "" {
+		agyBin = "agy"
+	}
+	return claudebridge.LookPathIn(agyBin, env)
+}
+
+func (r *Router) invalidateAgyMissingProbe() agyAdapterProbe {
+	r.agyMu.Lock()
+	probe := r.agyProbe
+	probe.Status = "agy_missing"
+	probe.Healthy = false
+	probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
+	probe.CheckedAt = time.Now().UTC()
+	r.agyProbe = probe
+	r.agyAuth = agyAuthProbeCache{}
+	r.agyMu.Unlock()
+	return probe
+}
+
+// currentAgyAdapterProbe 统一返回 config、runtime/status 与新 WS 握手共享的就绪状态（B13）。
+// 每次读取都在微秒级校验 agy 可执行入口是否仍在；若二进制已消失，立即令就绪缓存失效，
+// 消除 5 秒 TTL 窗口内三者结论不一致的问题。
+func (r *Router) currentAgyAdapterProbe() agyAdapterProbe {
+	if !r.cfg.Agy.Enabled {
+		return r.agyAdapterProbeSnapshot()
+	}
+	r.refreshAgyAdapterProbeIfStale()
+	probe := r.agyAdapterProbeSnapshot()
+	env := agybridge.BuildEnv(r.cfg.Agy.Env)
+	if _, err := r.configuredAgyBinary(env); err != nil {
+		if probe.Healthy || probe.Status != "agy_missing" {
+			return r.invalidateAgyMissingProbe()
+		}
+		return probe
+	}
+	if probe.Status == "agy_missing" {
+		return r.refreshAgyAdapterProbe()
+	}
+	return probe
+}
+
 func (r *Router) agyChannelConfig(req *http.Request) appServerChannel {
 	agySpec, _ := appServerRuntimeSpecFor(appServerRuntimeAgyID)
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	methods := appServerAllowedMethodListForRuntime(agySpec.ID)
 	if probe.Capabilities != nil {
 		methods = filterAppServerMethods(methods, probe.Capabilities.Supports)
@@ -236,14 +388,16 @@ func (r *Router) agyChannelConfig(req *http.Request) appServerChannel {
 		Experimental:     agySpec.Experimental,
 		Lifecycle:        "per_connection",
 		Bridge: &appServerBridgeMetadata{
-			Name:           agybridge.AdapterName,
-			Version:        probe.Version,
-			MinimumVersion: agybridge.MinimumVersion,
-			Path:           probe.Path,
-			Status:         probe.Status,
-			Healthy:        probe.Healthy,
-			LastProbeError: probe.Error,
-			Fix:            agyAdapterFix(probe),
+			Name:              agybridge.AdapterName,
+			Version:           probe.Version,
+			MinimumVersion:    agybridge.MinimumVersion,
+			CLIVersion:        probe.CLIVersion,
+			MinimumCLIVersion: probe.MinimumCLIVersion,
+			Path:              probe.Path,
+			Status:            probe.Status,
+			Healthy:           probe.Healthy,
+			LastProbeError:    probe.Error,
+			Fix:               agyAdapterFix(probe),
 		},
 		Methods:      methods,
 		Capabilities: capabilities,
@@ -410,14 +564,19 @@ func (r *Router) appServerAgyGatewayWS(w http.ResponseWriter, req *http.Request)
 		writeGatewayRuntimeError(client, "AGY_DISABLED", "Antigravity runtime 未启用")
 		return
 	}
-	r.refreshAgyAdapterProbeIfStale()
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	if !probe.Healthy {
+		minVer := agybridge.MinimumVersion
+		if probe.Status == "agy_unsupported" && probe.MinimumCLIVersion != "" {
+			minVer = probe.MinimumCLIVersion
+		}
 		writeGatewayRuntimeErrorWithData(client, "AGY_ADAPTER_UNAVAILABLE", firstNonEmpty(probe.Error, "Antigravity 适配器不可用"), map[string]any{
-			"bridgeStatus":   probe.Status,
-			"bridgeVersion":  probe.Version,
-			"minimumVersion": agybridge.MinimumVersion,
-			"fix":            agyAdapterFix(probe),
+			"bridgeStatus":      probe.Status,
+			"bridgeVersion":     probe.Version,
+			"minimumVersion":    minVer,
+			"cliVersion":        probe.CLIVersion,
+			"minimumCLIVersion": probe.MinimumCLIVersion,
+			"fix":               agyAdapterFix(probe),
 		})
 		return
 	}
@@ -567,21 +726,20 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	}
 	status.State = runtimeStateUnavailable
 	status.Reason = "adapter_unavailable"
-	r.refreshAgyAdapterProbeIfStale()
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	if !probe.Healthy {
+		switch probe.Status {
+		case "agy_missing", "agy_unsupported", "agy_auth_unknown":
+			status.Reason = probe.Status
+		case "agy_signed_out":
+			status.State = runtimeStateSignedOut
+			status.Reason = "agy_signed_out"
+		}
 		return status
 	}
 
-	env := agybridge.BuildEnv(r.cfg.Agy.Env)
-	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
-	if agyBin == "" {
-		agyBin = "agy"
-	}
-	if _, err := claudebridge.LookPathIn(agyBin, env); err != nil {
-		status.Reason = "agy_missing"
-		return status
-	}
+	connectCtx, cancelConnect := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
+	defer cancelConnect()
 
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Agy.AdapterBin))
 	ensureDone := make(chan error, 1)
@@ -590,7 +748,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		ensureDone <- err
 	}()
 	select {
-	case <-ctx.Done():
+	case <-connectCtx.Done():
 		return status
 	case err := <-ensureDone:
 		if err != nil {
@@ -598,7 +756,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		}
 	}
 	status.StartedAt = r.agyAdapter.runningSince()
-	if ctx.Err() != nil {
+	if connectCtx.Err() != nil {
 		return status
 	}
 	conn, _, err := r.agyAdapter.dial()
@@ -615,7 +773,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		},
 	})
 	defer func() { _ = client.Close() }()
-	initialization, err := client.Initialize(ctx)
+	initialization, err := client.Initialize(connectCtx)
 	if err != nil {
 		return status
 	}

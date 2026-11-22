@@ -1,9 +1,20 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { AcpContentBlock } from "../acp/types.ts";
+
+export const PROMPT_PREVIEW_MAX_CHARS = 240;
+
+export function normalizePromptForIdentity(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export function hashNormalizedPrompt(normalizedText: string): string {
+  return createHash("sha256").update(normalizedText).digest("hex").slice(0, 32);
+}
 
 function parseDataUrl(url: string): { mimeType: string; data: string } | undefined {
   const match = /^data:([^;,]+);base64,([\s\S]+)$/.exec(url.trim());
@@ -25,7 +36,9 @@ function mimeForExtension(filePath: string): string {
   }
 }
 
-export async function toAcpPromptBlocks(inputs: readonly UserInput[]): Promise<{ blocks: AcpContentBlock[]; preview: string }> {
+export async function toAcpPromptBlocks(
+  inputs: readonly UserInput[],
+): Promise<{ blocks: AcpContentBlock[]; preview: string; promptHash?: string; promptTruncated: boolean }> {
   const blocks: AcpContentBlock[] = [];
   const previewParts: string[] = [];
   const skills: string[] = [];
@@ -114,6 +127,9 @@ export async function toAcpPromptBlocks(inputs: readonly UserInput[]): Promise<{
     throw RpcError.invalidParams("turn/start.input 不包含可发送的内容");
   }
 
-  const preview = previewParts.join(" ").trim().replace(/\s+/g, " ").slice(0, 240);
-  return { blocks, preview };
+  const normalizedPrompt = normalizePromptForIdentity(previewParts.join(" "));
+  const promptTruncated = normalizedPrompt.length > PROMPT_PREVIEW_MAX_CHARS;
+  const preview = normalizedPrompt.slice(0, PROMPT_PREVIEW_MAX_CHARS);
+  const promptHash = normalizedPrompt ? hashNormalizedPrompt(normalizedPrompt) : undefined;
+  return { blocks, preview, ...(promptHash ? { promptHash } : {}), promptTruncated };
 }

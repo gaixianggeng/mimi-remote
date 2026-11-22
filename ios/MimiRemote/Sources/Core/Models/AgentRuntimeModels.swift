@@ -781,6 +781,8 @@ struct ApprovalSummary: Codable, Hashable {
     // 规则仅用于确认展示，真正回传的 PermissionUpdate 由 bridge 按 request id 保存并校验。
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
+    let alwaysAllowLabel: String?
+    let alwaysAllowScopeUncertain: Bool?
 
     init(
         id: String,
@@ -790,10 +792,13 @@ struct ApprovalSummary: Codable, Hashable {
         risk: String? = nil,
         count: Int?,
         availableDecisions: [String]? = nil,
-        persistentPermissionRules: [String]? = nil
+        persistentPermissionRules: [String]? = nil,
+        alwaysAllowLabel: String? = nil,
+        alwaysAllowScopeUncertain: Bool? = nil
     ) {
         let normalizedBody = body?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalizedRisk = risk?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let normalizedAlwaysLabel = alwaysAllowLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.id = id
         self.title = title
         self.body = normalizedBody.isEmpty ? nil : normalizedBody
@@ -802,6 +807,8 @@ struct ApprovalSummary: Codable, Hashable {
         self.count = count
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
+        self.alwaysAllowLabel = normalizedAlwaysLabel.isEmpty ? nil : normalizedAlwaysLabel
+        self.alwaysAllowScopeUncertain = alwaysAllowScopeUncertain
     }
 
     var hasDecisionContext: Bool {
@@ -815,6 +822,34 @@ struct ApprovalSummary: Codable, Hashable {
         // 旧事件只带 title。含参数、路径或命令分隔符的标题仍能明确表达动作；
         // “运行命令”这类泛化标题则必须等服务端补齐 body 后才能批准。
         return command.contains(" ") || command.contains("/") || command.contains("：") || command.contains(":")
+    }
+
+    var canApproveOnce: Bool {
+        guard let availableDecisions else { return true }
+        return supportsDecision("accept")
+    }
+
+    var canAcceptForSession: Bool {
+        guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
+        return supportsDecision("acceptForSession")
+    }
+
+    var canAcceptAlways: Bool {
+        guard kind != CodexMCPToolApprovalProtocol.kind else { return false }
+        return supportsDecision("acceptAlways")
+    }
+
+    var alwaysAllowScopeNotice: String? {
+        guard canAcceptAlways else { return nil }
+        let prefersChinese = L10n.text("ui.always_allowed").range(of: "\\p{Han}", options: .regularExpression) != nil
+        if alwaysAllowScopeUncertain == true {
+            return prefersChinese
+                ? "上游未说明该持续授权的精确范围，可能对后续会话持续生效。"
+                : "Scope is not specified by the agent and may persist across future sessions."
+        }
+        return prefersChinese
+            ? "该持续授权由代理保存，可能对后续会话生效。"
+            : "This persistent grant is managed by the agent and may apply to future sessions."
     }
 
     var canPersistPermission: Bool {
@@ -1216,6 +1251,8 @@ struct AgentApprovalRequest: Codable, Hashable {
     let risk: String?
     let availableDecisions: [String]?
     let persistentPermissionRules: [String]?
+    let alwaysAllowLabel: String?
+    let alwaysAllowScopeUncertain: Bool?
 
     init(
         id: String,
@@ -1224,7 +1261,9 @@ struct AgentApprovalRequest: Codable, Hashable {
         kind: String,
         risk: String?,
         availableDecisions: [String]? = nil,
-        persistentPermissionRules: [String]? = nil
+        persistentPermissionRules: [String]? = nil,
+        alwaysAllowLabel: String? = nil,
+        alwaysAllowScopeUncertain: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -1233,6 +1272,8 @@ struct AgentApprovalRequest: Codable, Hashable {
         self.risk = risk
         self.availableDecisions = availableDecisions
         self.persistentPermissionRules = persistentPermissionRules
+        self.alwaysAllowLabel = alwaysAllowLabel
+        self.alwaysAllowScopeUncertain = alwaysAllowScopeUncertain
     }
 }
 

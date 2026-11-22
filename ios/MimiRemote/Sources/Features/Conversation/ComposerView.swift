@@ -977,15 +977,21 @@ struct ComposerView: View {
         let visibleGoal = selectedVisibleThreadGoal
         let usageNotice = selectedComposerUsageNotice
         let ownershipNotice = sessionStore.selectedOwnershipNotice
-        // Claude 被 Mac 持有本身就是只读的原因；运行中的持有会话同时满足「仅观察」，
-        // 只保留信息更完整的持有态，不叠两枚 chip。
-        let sessionControlNotice = ownershipNotice == nil ? sessionStore.selectedSessionControlNotice : nil
-        if ownershipNotice != nil ||
+        let missingDirectoryNotice = sessionStore.selectedSession?.cwdMissing == true
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        // Claude 被 Mac 持有或原工作目录缺失本身就是明确的只读原因，避免叠加通用「仅观察」chip。
+        let sessionControlNotice = (ownershipNotice == nil && missingDirectoryNotice == nil)
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        if missingDirectoryNotice != nil ||
+            ownershipNotice != nil ||
             sessionControlNotice != nil ||
             usageNotice != nil ||
             visibleGoal != nil {
             ComposerStatusTray(
                 sessionControlNotice: sessionControlNotice,
+                missingDirectoryNotice: missingDirectoryNotice,
                 ownershipNotice: ownershipNotice,
                 // 阻断额度已经由 Conversation 顶部唯一状态区展示，Composer 不再重复一份。
                 quotaNotice: nil,

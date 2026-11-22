@@ -1525,7 +1525,8 @@ extension SessionStore {
     }
 
     func reconcileSessionStateAfterHistoryRefresh(_ session: AgentSession) async {
-        if session.isRunning {
+        let provider = Self.normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
+        if session.isRunning || provider == "agy" || provider == "claude" {
             do {
                 let client = try clientFactory()
                 let response = try await client.session(id: session.id, afterSeq: logStore.lastSeq(for: session.id))
@@ -1534,6 +1535,8 @@ extension SessionStore {
                 if !refreshed.isRunning {
                     clearForegroundActivity(sessionID: session.id)
                     clearRuntimeActivity(sessionID: session.id)
+                } else if !canControlSession(refreshed), connectedSessionID == refreshed.id {
+                    disconnectWebSocket()
                 }
                 if let recentOutput = response.recentOutput, !recentOutput.isEmpty {
                     // recent_output 只作为诊断日志展示；对话内容以 app-server 结构化 history/event 为准。
@@ -1577,7 +1580,9 @@ extension SessionStore {
         }
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
-            if canReportForeground() {
+            // 静默后台刷新或当前正在查看目录缺失的只读历史（如 C15 仅浏览已删除目录）时，
+            // 不能用泛化的“工作区已过期”覆盖目录缺失的专门说明。
+            if reportErrorOnFailure, canReportForeground(), selectedSession?.cwdMissing != true {
                 setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
             }
             return
@@ -2750,6 +2755,10 @@ extension SessionStore {
         }
         await loadHistoryIfNeeded(for: session)
         guard isSelectionLeaseCurrent(selectionLease) else { return }
+        if session.cwdMissing == true {
+            disconnectWebSocket()
+            return
+        }
         if session.isRunning {
             if autoAttach && (canControlSession(session) || isProtocolReadOnlySession(session)) {
                 // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做
@@ -3071,6 +3080,7 @@ extension SessionStore {
             writerHeldElsewhere: item.writerHeldElsewhere,
             spawnedFromThreadID: item.spawnedFromThreadID,
             sessionOrigin: item.sessionOrigin,
+            cwdMissing: item.cwdMissing,
             context: item.context
         )
     }

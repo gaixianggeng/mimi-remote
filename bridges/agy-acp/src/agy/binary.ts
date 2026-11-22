@@ -189,7 +189,11 @@ export async function startAgyAcpClient(
   spawnTransport: SpawnAgyTransport,
   spawnOptions: SpawnAgyAcpOptions,
   clientOptions: Omit<AcpClientOptions, "clientInfo"> = {},
+  initOptions?: { timeoutMs?: number; signal?: AbortSignal },
 ): Promise<AcpClient> {
+  if (initOptions?.signal?.aborted) {
+    throw new RpcError(ErrorCode.internalError, "ACP startup aborted");
+  }
   const transport = spawnTransport(spawnOptions);
   const client = new AcpClient(transport, {
     ...clientOptions,
@@ -198,7 +202,7 @@ export async function startAgyAcpClient(
     clientCapabilities: {},
   });
   try {
-    await client.initialize();
+    await client.initialize(initOptions?.timeoutMs, initOptions?.signal);
     return client;
   } catch (error) {
     await client.close().catch(() => {});
@@ -232,16 +236,39 @@ export class SharedReadonlyAcp {
     };
   }
 
-  async acquire(): Promise<AcpClient> {
+  get pid(): number | undefined {
+    return this.client && !this.client.isClosed ? this.client.pid : undefined;
+  }
+
+  async acquire(options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<AcpClient> {
     if (this.disposed) {
       throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp has been closed");
+    }
+    if (options?.signal?.aborted) {
+      throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp acquire aborted");
     }
     if (this.client && !this.client.isClosed) {
       return this.client;
     }
     if (this.connecting) {
-      return this.connecting;
+      const inflight = this.connecting;
+      if (!options?.signal) return inflight;
+      return await new Promise<AcpClient>((resolve, reject) => {
+        const onAbort = () => reject(new RpcError(ErrorCode.internalError, "SharedReadonlyAcp acquire aborted"));
+        options.signal!.addEventListener("abort", onAbort, { once: true });
+        inflight.then(
+          (value) => {
+            options.signal!.removeEventListener("abort", onAbort);
+            resolve(value);
+          },
+          (err) => {
+            options.signal!.removeEventListener("abort", onAbort);
+            reject(err);
+          },
+        );
+      });
     }
+    let createdClient: AcpClient | undefined;
     const connectPromise = startAgyAcpClient(
       this.spawnTransport,
       {
@@ -263,12 +290,12 @@ export class SharedReadonlyAcp {
           }
         },
       },
+      options,
     );
-    let createdClient: AcpClient | undefined;
     this.connecting = connectPromise;
     try {
       createdClient = await connectPromise;
-      if (this.disposed) {
+      if (this.disposed || options?.signal?.aborted) {
         await createdClient.close().catch(() => {});
         throw new RpcError(ErrorCode.internalError, "SharedReadonlyAcp closed while connecting");
       }
@@ -281,13 +308,33 @@ export class SharedReadonlyAcp {
     }
   }
 
-  async use<T>(fn: (client: AcpClient) => Promise<T>): Promise<T> {
-    const client = await this.acquire();
+  /**
+   * 主动关闭并清理卡死的常驻子进程而不置 disposed，使下一次请求可重新拉起健康进程（C10）。
+   * 若传入 expectedClient，则仅回收发起超时的对应实例，避免误杀已恢复的新实例（C10 round4）。
+   */
+  async reset(expectedClient?: AcpClient): Promise<void> {
+    if (expectedClient && this.client !== expectedClient) {
+      await expectedClient.close().catch(() => {});
+      return;
+    }
+    const current = this.client;
+    this.client = undefined;
+    if (current) {
+      await current.close().catch(() => {});
+    }
+  }
+
+  async use<T>(fn: (client: AcpClient) => Promise<T>, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<T> {
+    const client = await this.acquire(options);
     try {
       return await fn(client);
     } catch (error) {
+      if (options?.signal?.aborted) {
+        await this.reset(client);
+        throw error;
+      }
       if (client.isClosed && !this.disposed) {
-        const retryClient = await this.acquire();
+        const retryClient = await this.acquire(options);
         return await fn(retryClient);
       }
       throw error;

@@ -9,21 +9,23 @@ import { USER_AGENT } from "../version.ts";
 
 export type AdapterThread = Thread & {
   canAcceptDirectInput: boolean;
+  cwdMissing?: boolean;
   claudeOwner?: Record<string, unknown>;
 };
 
 export interface LiveState {
   canAcceptDirectInput: boolean;
+  cwdMissing?: boolean;
   status?: Thread["status"];
   claudeOwner?: Record<string, unknown>;
 }
 
-export function desktopOwnerSummary(mtimeMs: number): Record<string, unknown> {
+export function desktopOwnerSummary(mtimeMs: number, pid: number | null = null): Record<string, unknown> {
   return {
     entrypoint: "desktop",
     kind: "desktop",
     status: "busy",
-    pid: null,
+    pid,
     statusUpdatedAt: new Date(mtimeMs).toISOString(),
     waitingKind: null,
   };
@@ -63,7 +65,8 @@ export function toThread(
     gitInfo: record.gitBranch ? { sha: null, branch: record.gitBranch, originUrl: null } : null,
     name: record.name,
     turns,
-    canAcceptDirectInput: live.canAcceptDirectInput,
+    canAcceptDirectInput: record.cwdMissing ? false : live.canAcceptDirectInput,
+    cwdMissing: Boolean(record.cwdMissing || live.cwdMissing),
     ...(live.claudeOwner ? { claudeOwner: live.claudeOwner } : {}),
   };
 }
@@ -114,7 +117,7 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
         live: {
           canAcceptDirectInput: false,
           status: { type: "active", activeFlags: [] },
-          claudeOwner: desktopOwnerSummary(ext.mtimeMs),
+          claudeOwner: desktopOwnerSummary(ext.mtimeMs, ext.holderPid ?? null),
         },
         holderActive: true,
       };
