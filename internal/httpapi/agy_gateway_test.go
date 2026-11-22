@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -570,5 +573,121 @@ func TestC14Round2RestoredDirectoryRefreshesListAndDetailPermissionsOnSameConnec
 	refreshed, ok := policy.allowedThread("sess-move")
 	if !ok || refreshed.readOnly || refreshed.cwdMissing || !refreshed.canAcceptDirectInput {
 		t.Fatalf("expected allowedThread cache to refresh after path restore, got %+v", refreshed)
+	}
+}
+
+func TestB13Round2ImmediateConsistencyAcrossConfigStatusAndWSHandshakeAfterBinaryRemoval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture requires POSIX")
+	}
+	dir := t.TempDir()
+	adapterPath := filepath.Join(dir, "fake-agy-adapter")
+	agyBin := filepath.Join(dir, "agy")
+	adapterScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "mimi-agy-adapter 0.1.0"
+  exit 0
+fi
+if [ "$1" = "--capabilities" ]; then
+  echo '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["initialize","thread/list","thread/read","thread/start","turn/start"],"fullAccess":true,"agy":{"minimumVersion":"1.5.0"}}'
+  exit 0
+fi
+exit 0
+`
+	agyScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "1.5.14"
+  exit 0
+fi
+if [ "$1" = "models" ]; then
+  echo "gemini-4-carbon"
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(adapterPath, []byte(adapterScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agyBin, []byte(agyScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(dir, "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := projects.NewRegistry([]config.ProjectConfig{{ID: "proj", Name: "Proj", Path: projectDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Auth: config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Agy: config.AgyConfig{
+			Enabled:    true,
+			AdapterBin: adapterPath,
+			Env: map[string]string{
+				"PATH":                    dir,
+				agybridge.AgyBinaryEnvKey: agyBin,
+			},
+		},
+	}
+	router := &Router{
+		cfg:        cfg,
+		projects:   registry,
+		agyAdapter: newAgyAdapterSupervisor(),
+		upgrader:   websocket.Upgrader{},
+	}
+
+	// Warm probe cache: agy is healthy and fresh (well inside 5s cache TTL).
+	if p := router.refreshAgyAdapterProbe(); !p.Healthy || p.Status != "ready" {
+		t.Fatalf("expected initial probe ready, got %+v", p)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(router.appServerAgyGatewayWS))
+	defer srv.Close()
+
+	// Remove the agy binary and IMMEDIATELY (0ms wait!) check config, runtime status, and WS handshake.
+	if err := os.Remove(agyBin); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) /api/app-server/config must IMMEDIATELY report gateway_available=false and agy_missing.
+	cfgReq := httptest.NewRequest("GET", srv.URL+"/api/app-server/config", nil)
+	ch := router.agyChannelConfig(cfgReq)
+	if ch.GatewayAvailable || ch.Bridge == nil || ch.Bridge.Status != "agy_missing" {
+		t.Fatalf("config MUST immediately reflect agy_missing with 0ms wait, got %+v", ch)
+	}
+
+	// 2) runtime/status probe must IMMEDIATELY report agy_missing.
+	rt := router.probeAgyRuntime(context.Background())
+	if rt.State != runtimeStateUnavailable || rt.Reason != "agy_missing" {
+		t.Fatalf("runtime/status MUST immediately report agy_missing, got %+v", rt)
+	}
+
+	// 3) New WS handshake must IMMEDIATELY reject with -32081 / AGY_ADAPTER_UNAVAILABLE / agy_missing.
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/app-server/ws?runtime=agy"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, map[string][]string{
+		"Authorization": {"Bearer " + cfg.Auth.Token},
+	})
+	if err != nil {
+		t.Fatalf("dial ws failed: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected immediate gateway error frame on WS, got err=%v", err)
+	}
+	var errFrame struct {
+		Error struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(msg, &errFrame); err != nil {
+		t.Fatalf("unmarshal ws error frame: %v raw=%s", err, string(msg))
+	}
+	if errFrame.Error.Code != -32081 || errFrame.Error.Data["bridgeStatus"] != "agy_missing" {
+		t.Fatalf("expected -32081 with bridgeStatus=agy_missing immediately on WS, got %s", string(msg))
 	}
 }

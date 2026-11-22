@@ -246,9 +246,52 @@ func (r *Router) refreshAgyAdapterProbeIfStale() {
 	}
 }
 
+func (r *Router) configuredAgyBinary(env []string) (string, error) {
+	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
+	if agyBin == "" {
+		agyBin = "agy"
+	}
+	return claudebridge.LookPathIn(agyBin, env)
+}
+
+func (r *Router) invalidateAgyMissingProbe() agyAdapterProbe {
+	r.agyMu.Lock()
+	probe := r.agyProbe
+	probe.Status = "agy_missing"
+	probe.Healthy = false
+	probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
+	probe.CheckedAt = time.Now().UTC()
+	r.agyProbe = probe
+	r.agyAuth = agyAuthProbeCache{}
+	r.agyMu.Unlock()
+	return probe
+}
+
+// currentAgyAdapterProbe 统一返回 config、runtime/status 与新 WS 握手共享的就绪状态（B13）。
+// 每次读取都在微秒级校验 agy 可执行入口是否仍在；若二进制已消失，立即令就绪缓存失效，
+// 消除 5 秒 TTL 窗口内三者结论不一致的问题。
+func (r *Router) currentAgyAdapterProbe() agyAdapterProbe {
+	if !r.cfg.Agy.Enabled {
+		return r.agyAdapterProbeSnapshot()
+	}
+	r.refreshAgyAdapterProbeIfStale()
+	probe := r.agyAdapterProbeSnapshot()
+	env := agybridge.BuildEnv(r.cfg.Agy.Env)
+	if _, err := r.configuredAgyBinary(env); err != nil {
+		if probe.Healthy || probe.Status != "agy_missing" {
+			return r.invalidateAgyMissingProbe()
+		}
+		return probe
+	}
+	if probe.Status == "agy_missing" {
+		return r.refreshAgyAdapterProbe()
+	}
+	return probe
+}
+
 func (r *Router) agyChannelConfig(req *http.Request) appServerChannel {
 	agySpec, _ := appServerRuntimeSpecFor(appServerRuntimeAgyID)
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	methods := appServerAllowedMethodListForRuntime(agySpec.ID)
 	if probe.Capabilities != nil {
 		methods = filterAppServerMethods(methods, probe.Capabilities.Supports)
@@ -469,8 +512,7 @@ func (r *Router) appServerAgyGatewayWS(w http.ResponseWriter, req *http.Request)
 		writeGatewayRuntimeError(client, "AGY_DISABLED", "Antigravity runtime 未启用")
 		return
 	}
-	r.refreshAgyAdapterProbeIfStale()
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	if !probe.Healthy {
 		minVer := agybridge.MinimumVersion
 		if probe.Status == "agy_unsupported" && probe.MinimumCLIVersion != "" {
@@ -632,8 +674,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	}
 	status.State = runtimeStateUnavailable
 	status.Reason = "adapter_unavailable"
-	r.refreshAgyAdapterProbeIfStale()
-	probe := r.agyAdapterProbeSnapshot()
+	probe := r.currentAgyAdapterProbe()
 	if !probe.Healthy {
 		switch probe.Status {
 		case "agy_missing", "agy_unsupported":
@@ -642,16 +683,6 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 			status.State = runtimeStateSignedOut
 			status.Reason = "agy_signed_out"
 		}
-		return status
-	}
-
-	env := agybridge.BuildEnv(r.cfg.Agy.Env)
-	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
-	if agyBin == "" {
-		agyBin = "agy"
-	}
-	if _, err := claudebridge.LookPathIn(agyBin, env); err != nil {
-		status.Reason = "agy_missing"
 		return status
 	}
 
