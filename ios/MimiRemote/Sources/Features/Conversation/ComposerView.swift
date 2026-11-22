@@ -407,14 +407,14 @@ struct ComposerView: View {
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
-        .onChange(of: isPhoneDetailActive) { _, isActive in
-            handlePhoneDetailActiveChange(isActive)
-        }
     }
 
     /// 草稿与模型选择的保存、上传完成和外部追加的正文。
     func composerDraftObservers(_ content: AnyView) -> some View {
         content
+        .onChange(of: isPhoneDetailActive) { _, isActive in
+            handlePhoneDetailActiveChange(isActive)
+        }
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
