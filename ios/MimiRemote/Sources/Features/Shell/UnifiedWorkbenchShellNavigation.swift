@@ -1,65 +1,53 @@
 import SwiftUI
 import UIKit
 
-/// iPhone 会话详情页悬浮胶囊顶栏的度量与开关策略。
+/// iPhone 会话详情页三件式悬浮玻璃顶栏的度量与开关策略。
+/// 视觉结构为三块独立悬浮玻璃件：左侧圆形返回按钮、中间水平居中单行标题胶囊（工作区图标 + 标题）、
+/// 右侧圆形更多菜单按钮；三者高度一致、垂直居中对齐、视觉完全分离。
 enum PhoneSessionFloatingCapsuleMetrics {
-    /// 胶囊最小高度（同时容纳 44pt 按钮热区与两行紧凑标题）。
-    static let minimumHeight: CGFloat = 48
-    /// 胶囊最小宽度，避免极短标题时左右按钮贴得过近。
-    static let minimumWidth: CGFloat = 200
-    /// 胶囊固定最大宽度（iPhone 上权衡 280–320pt 区间取 304pt）。
-    /// - 402pt 标准 iPhone（如 iPhone 17）两侧各留 49pt，悬浮纵深感明显；
-    /// - 375pt 小屏（如 iPhone SE / 13 mini）两侧各留 35.5pt，不贴边；
-    /// - 扣除内部 2pt×2 外边距、两枚 44pt 按钮及 6pt×2 间距后，标题+图标区最多 200pt，
-    ///   长标题干净尾部截断、绝不撑破胶囊。
+    /// 三件统一标准高度（44pt，满足 HIG 触控目标且与左右圆形按钮直径一致）。
+    static let itemHeight: CGFloat = 44
+    /// 左右独立圆形玻璃按钮直径。
+    static let buttonSize: CGFloat = itemHeight
+    /// 中间标题胶囊最小高度（与左右按钮等高；大字体下向上自适应而不裁切）。
+    static let minimumHeight: CGFloat = itemHeight
+    /// 中间标题胶囊固定最大宽度上限；较窄屏幕上按 `min(304, 可用宽度)` 兜底。
     static let maximumWidth: CGFloat = 304
-    /// 胶囊与屏幕左右边缘的最小安全留白（用于极窄容器兜底）。
+    /// 左右圆形按钮贴屏幕左右边缘的边距。
     static let horizontalScreenMargin: CGFloat = 16
-    /// 胶囊顶部距安全区（状态栏 / 动态岛下沿）的呼吸间距。
+    /// 中间胶囊与左右圆形按钮之间的最小水平间距（至少 8pt，确保三者永不重叠或粘连）。
+    static let interItemSpacing: CGFloat = 8
+    /// 顶栏距顶部安全区（状态栏 / 动态岛下沿）的呼吸间距。
     static let topPadding: CGFloat = 4
-    /// 胶囊底部与列表首条消息之间的呼吸间距。
+    /// 顶栏底部与列表首条消息之间的呼吸间距。
     static let bottomPadding: CGFloat = 8
-    /// 胶囊内边距：2pt + 44pt/2 = 24pt = 48pt/2，让按钮与胶囊圆弧几何同心。
-    static let horizontalContentPadding: CGFloat = 2
-    static let verticalContentPadding: CGFloat = 2
-    /// 胶囊内左右按钮触控命中区（满足 HIG 44pt）。
-    static let buttonHitSize: CGFloat = 44
-    /// 胶囊内左按钮、中间标题区、右按钮之间的水平间距。
-    static let itemSpacing: CGFloat = 6
-    /// 图标与文字之间的间距。
-    static let iconTitleSpacing: CGFloat = 7
-    /// 工作区图标尺寸（与原有顶栏保持一致）。
-    static let workspaceIconSize: CGFloat = 22
+    /// 中间胶囊水平内边距（有工作区图标时左侧略紧以匹配圆弧视觉重心，右侧给文字/省略号留足余量）。
+    static let centerCapsuleLeadingPaddingWithIcon: CGFloat = 12
+    static let centerCapsuleTrailingPaddingWithIcon: CGFloat = 16
+    static let centerCapsuleHorizontalPaddingTextOnly: CGFloat = 16
+    static let centerCapsuleVerticalPadding: CGFloat = 8
+    /// 工作区图标与标题文字之间的水平间距。
+    static let iconTitleSpacing: CGFloat = 8
+    /// 中间胶囊内工作区图标尺寸。
+    static let workspaceIconSize: CGFloat = 24
 
-    /// 仅对 iPhone 紧凑导航启用悬浮胶囊顶栏；iPad（窄窗、竖屏、横屏）保持原有系统导航栏不变。
+    /// 仅对 iPhone 紧凑导航启用悬浮玻璃顶栏；iPad（窄窗、竖屏、横屏）保持原有系统导航栏不变。
     static func isEnabled(layout: WorkbenchLayout) -> Bool {
         layout.usesPhoneIntegratedBottomChrome
     }
 
-    /// 计算当前容器宽度下胶囊允许的最大宽度，严格不超过 `maximumWidth`。
-    static func resolvedMaxWidth(containerWidth: CGFloat) -> CGFloat {
+    /// 计算当前容器宽度下中间胶囊可用的最大空间（扣除左右屏边距、左右按钮及最小间距）。
+    static func availableCenterWidth(containerWidth: CGFloat) -> CGFloat {
         guard containerWidth.isFinite, containerWidth > 0 else {
             return maximumWidth
         }
-        let available = max(0, containerWidth - horizontalScreenMargin * 2)
-        return min(maximumWidth, available)
+        let reserved = (horizontalScreenMargin + buttonSize + interItemSpacing) * 2
+        return max(0, containerWidth - reserved)
     }
 
-    /// 胶囊内标题+图标区可用的最大宽度，约束长标题截断而不挤压左右按钮。
-    static func titleRegionMaxWidth(capsuleMaxWidth: CGFloat) -> CGFloat {
-        let reserved = horizontalContentPadding * 2
-            + buttonHitSize * 2
-            + itemSpacing * 2
-        return max(60, capsuleMaxWidth - reserved)
-    }
-
-    /// 胶囊内标题+图标区的最小宽度，确保短标题时胶囊维持稳定最小宽度且按钮紧贴两端。
-    static func titleRegionMinWidth(capsuleMaxWidth: CGFloat) -> CGFloat {
-        let reserved = horizontalContentPadding * 2
-            + buttonHitSize * 2
-            + itemSpacing * 2
-        let targetMin = max(0, minimumWidth - reserved)
-        return min(targetMin, titleRegionMaxWidth(capsuleMaxWidth: capsuleMaxWidth))
+    /// 计算当前容器宽度下中间胶囊允许的最大宽度，按 `min(304, 可用宽度)` 兜底。
+    static func resolvedMaxWidth(containerWidth: CGFloat) -> CGFloat {
+        min(maximumWidth, availableCenterWidth(containerWidth: containerWidth))
     }
 
     /// 胶囊圆角始终等于高度一半。
@@ -68,7 +56,22 @@ enum PhoneSessionFloatingCapsuleMetrics {
     }
 }
 
-/// 顶栏标题、副标题与工作区图标的展示数据，供 iPad 原生导航栏与 iPhone 悬浮胶囊共用。
+/// 供布局回归测试读取的三件式悬浮顶栏真实渲染几何（顶栏容器局部坐标系）。
+struct PhoneSessionFloatingHeaderLayoutSnapshot: Equatable {
+    var containerWidth: CGFloat = 0
+    var backButtonFrame: CGRect = .zero
+    var centerCapsuleFrame: CGRect = .zero
+    var moreButtonFrame: CGRect = .zero
+
+    var isComplete: Bool {
+        containerWidth > 0
+            && backButtonFrame.width > 0
+            && centerCapsuleFrame.width > 0
+            && moreButtonFrame.width > 0
+    }
+}
+
+/// 顶栏标题、副标题与工作区图标的展示数据，供 iPad 原生导航栏与 iPhone 悬浮顶栏共用。
 struct SessionNavigationTitleDisplayData {
     let title: String
     let subtitle: String
@@ -79,10 +82,12 @@ struct SessionNavigationTitleDisplayData {
     let workspaceIcon: WorkspaceProjectIconContent?
 }
 
-/// iPhone 会话详情页居中悬浮胶囊顶栏。
-/// 把返回按钮、工作区图标、会话标题/副标题与右侧更多菜单收进同一枚居中玻璃胶囊，
-/// 悬于消息列表之上，并按系统版本自动采用 iOS 26 Liquid Glass 或旧版 `.ultraThinMaterial`。
+/// iPhone 会话详情页三件式悬浮玻璃顶栏：
+/// 左侧独立圆形返回按钮、中间独立居中标题胶囊（仅含工作区图标 + 单行截断标题）、右侧独立圆形更多菜单按钮。
+/// 三者高度一致、垂直居中对齐，按系统版本自动采用 iOS 26 Liquid Glass、旧版 `.ultraThinMaterial` 或减少透明度实色。
 struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
+    private static var coordinateSpaceName: String { "phoneSessionFloatingHeader" }
+
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -92,8 +97,10 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
     let availableWidth: CGFloat
     let isMenuDisabled: Bool
     let onBack: () -> Void
-    let onMeasuredCapsuleSize: ((CGSize) -> Void)?
+    let onMeasuredLayout: ((PhoneSessionFloatingHeaderLayoutSnapshot) -> Void)?
     private let moreMenuContent: MoreMenuContent
+
+    @State private var measuredSnapshot = PhoneSessionFloatingHeaderLayoutSnapshot()
 
     init(
         data: SessionNavigationTitleDisplayData,
@@ -101,7 +108,7 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
         availableWidth: CGFloat,
         isMenuDisabled: Bool,
         onBack: @escaping () -> Void,
-        onMeasuredCapsuleSize: ((CGSize) -> Void)? = nil,
+        onMeasuredLayout: ((PhoneSessionFloatingHeaderLayoutSnapshot) -> Void)? = nil,
         @ViewBuilder moreMenuContent: () -> MoreMenuContent
     ) {
         self.data = data
@@ -109,55 +116,228 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
         self.availableWidth = availableWidth
         self.isMenuDisabled = isMenuDisabled
         self.onBack = onBack
-        self.onMeasuredCapsuleSize = onMeasuredCapsuleSize
+        self.onMeasuredLayout = onMeasuredLayout
         self.moreMenuContent = moreMenuContent()
     }
 
-    private var capsuleMaxWidth: CGFloat {
+    private var centerCapsuleMaxWidth: CGFloat {
         PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: availableWidth)
     }
 
-    private var titleRegionMaxWidth: CGFloat {
-        PhoneSessionFloatingCapsuleMetrics.titleRegionMaxWidth(capsuleMaxWidth: capsuleMaxWidth)
-    }
-
-    private var titleRegionMinWidth: CGFloat {
-        PhoneSessionFloatingCapsuleMetrics.titleRegionMinWidth(capsuleMaxWidth: capsuleMaxWidth)
-    }
-
     var body: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            capsuleChrome
-                .background {
-                    if let onMeasuredCapsuleSize {
-                        GeometryReader { proxy in
-                            Color.clear
-                                .onAppear { onMeasuredCapsuleSize(proxy.size) }
-                                .onChange(of: proxy.size) { _, newSize in
-                                    onMeasuredCapsuleSize(newSize)
-                                }
-                        }
+        headerRowContainer
+            .padding(.horizontal, PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin)
+            .padding(.top, PhoneSessionFloatingCapsuleMetrics.topPadding)
+            .padding(.bottom, PhoneSessionFloatingCapsuleMetrics.bottomPadding)
+            .coordinateSpace(name: Self.coordinateSpaceName)
+            .background {
+                if onMeasuredLayout != nil {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { updateMeasuredContainerWidth(proxy.size.width) }
+                            .onChange(of: proxy.size.width) { _, newWidth in
+                                updateMeasuredContainerWidth(newWidth)
+                            }
                     }
                 }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin)
-        .padding(.top, PhoneSessionFloatingCapsuleMetrics.topPadding)
-        .padding(.bottom, PhoneSessionFloatingCapsuleMetrics.bottomPadding)
-        // 隐藏系统导航栏后，登记悬浮胶囊下沿作为应用内顶部提示的保护边界，防止提示条压住胶囊。
-        .inAppNoticeProtectedRegion()
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sessionDetail.floatingCapsuleHeader")
+            }
+            // 隐藏系统导航栏后，登记悬浮顶栏下沿作为应用内顶部提示的保护边界，防止提示条压住顶栏。
+            .inAppNoticeProtectedRegion()
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sessionDetail.floatingCapsuleHeader")
     }
 
     @ViewBuilder
-    private var capsuleChrome: some View {
+    private var headerRowContainer: some View {
+        if !reduceTransparency, #available(iOS 26.0, *) {
+            // spacing: 0 让三件共享同一组 Liquid Glass 渲染通道，同时严格保持三块分离形状不粘连。
+            GlassEffectContainer(spacing: 0) {
+                headerRow
+            }
+        } else {
+            headerRow
+        }
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: 0) {
+            backButton
+                .background { frameReporter { updateMeasuredBackFrame($0) } }
+
+            Spacer(minLength: PhoneSessionFloatingCapsuleMetrics.interItemSpacing)
+
+            centerTitleCapsule
+                .background { frameReporter { updateMeasuredCenterFrame($0) } }
+                .frame(maxWidth: centerCapsuleMaxWidth, alignment: .center)
+                .layoutPriority(0)
+
+            Spacer(minLength: PhoneSessionFloatingCapsuleMetrics.interItemSpacing)
+
+            moreMenuButton
+                .background { frameReporter { updateMeasuredMoreFrame($0) } }
+        }
+    }
+
+    private var backButton: some View {
+        Button(action: onBack) {
+            WorkbenchChromeIcon(systemName: "chevron.backward")
+                .foregroundStyle(tokens.primaryText.opacity(0.92))
+                .frame(
+                    width: PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                    height: PhoneSessionFloatingCapsuleMetrics.buttonSize
+                )
+                .contentShape(Circle())
+                .modifier(
+                    PhoneFloatingGlassChromeModifier(
+                        shape: Circle(),
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency,
+                        interactive: true
+                    )
+                )
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityLabel(L10n.text("ui.return_to_previous_level"))
+        .accessibilityIdentifier("sessionDetail.back")
+    }
+
+    private var centerTitleCapsule: some View {
+        let hasIcon = data.workspaceIcon != nil
+        let leadingPadding = hasIcon
+            ? PhoneSessionFloatingCapsuleMetrics.centerCapsuleLeadingPaddingWithIcon
+            : PhoneSessionFloatingCapsuleMetrics.centerCapsuleHorizontalPaddingTextOnly
+        let trailingPadding = hasIcon
+            ? PhoneSessionFloatingCapsuleMetrics.centerCapsuleTrailingPaddingWithIcon
+            : PhoneSessionFloatingCapsuleMetrics.centerCapsuleHorizontalPaddingTextOnly
+
+        return HStack(spacing: PhoneSessionFloatingCapsuleMetrics.iconTitleSpacing) {
+            if let workspaceIcon = data.workspaceIcon {
+                WorkspaceProjectIconTile(
+                    content: workspaceIcon,
+                    size: PhoneSessionFloatingCapsuleMetrics.workspaceIconSize,
+                    tokens: tokens
+                )
+                .fixedSize()
+            }
+
+            Text(data.title)
+                .font(.headline)
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.leading, leadingPadding)
+        .padding(.trailing, trailingPadding)
+        .padding(.vertical, PhoneSessionFloatingCapsuleMetrics.centerCapsuleVerticalPadding)
+        .frame(minHeight: PhoneSessionFloatingCapsuleMetrics.minimumHeight)
+        .clipShape(Capsule())
+        .modifier(
+            PhoneFloatingGlassChromeModifier(
+                shape: Capsule(),
+                tokens: tokens,
+                colorScheme: colorScheme,
+                reduceTransparency: reduceTransparency,
+                interactive: false
+            )
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(data.title)
+        .accessibilityValue(data.accessibilityValue)
+        .accessibilityIdentifier("sessionDetail.title")
+    }
+
+    private var moreMenuButton: some View {
+        Menu {
+            moreMenuContent
+        } label: {
+            WorkbenchChromeIcon(systemName: "ellipsis")
+                .foregroundStyle(tokens.primaryText.opacity(0.92))
+                .frame(
+                    width: PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                    height: PhoneSessionFloatingCapsuleMetrics.buttonSize
+                )
+                .contentShape(Circle())
+                .modifier(
+                    PhoneFloatingGlassChromeModifier(
+                        shape: Circle(),
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency,
+                        interactive: true
+                    )
+                )
+        }
+        .menuOrder(.fixed)
+        .disabled(isMenuDisabled)
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityLabel(L10n.text("ui.options"))
+        .accessibilityIdentifier("sessionDetail.more")
+    }
+
+    @ViewBuilder
+    private func frameReporter(_ report: @escaping (CGRect) -> Void) -> some View {
+        if onMeasuredLayout != nil {
+            GeometryReader { proxy in
+                let frame = proxy.frame(in: .named(Self.coordinateSpaceName))
+                Color.clear
+                    .onAppear { report(frame) }
+                    .onChange(of: frame) { _, newFrame in
+                        report(newFrame)
+                    }
+            }
+        }
+    }
+
+    private func updateMeasuredContainerWidth(_ width: CGFloat) {
+        guard measuredSnapshot.containerWidth != width else { return }
+        measuredSnapshot.containerWidth = width
+        emitMeasuredLayoutIfReady()
+    }
+
+    private func updateMeasuredBackFrame(_ frame: CGRect) {
+        guard measuredSnapshot.backButtonFrame != frame else { return }
+        measuredSnapshot.backButtonFrame = frame
+        emitMeasuredLayoutIfReady()
+    }
+
+    private func updateMeasuredCenterFrame(_ frame: CGRect) {
+        guard measuredSnapshot.centerCapsuleFrame != frame else { return }
+        measuredSnapshot.centerCapsuleFrame = frame
+        emitMeasuredLayoutIfReady()
+    }
+
+    private func updateMeasuredMoreFrame(_ frame: CGRect) {
+        guard measuredSnapshot.moreButtonFrame != frame else { return }
+        measuredSnapshot.moreButtonFrame = frame
+        emitMeasuredLayoutIfReady()
+    }
+
+    private func emitMeasuredLayoutIfReady() {
+        guard let onMeasuredLayout, measuredSnapshot.isComplete else { return }
+        onMeasuredLayout(measuredSnapshot)
+    }
+}
+
+/// 三件式悬浮顶栏统一玻璃材质：
+/// iOS 26 采用原生 Liquid Glass；旧系统采用 `.ultraThinMaterial` + 细描边 + 轻阴影；
+/// 开启减少透明度时退回实色表面以保持可读性。
+private struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModifier {
+    let shape: ChromeShape
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+    let interactive: Bool
+
+    func body(content: Content) -> some View {
         if reduceTransparency {
-            capsuleContent
-                .background(tokens.elevatedSurface, in: Capsule())
+            content
+                .background(tokens.elevatedSurface, in: shape)
                 .overlay {
-                    Capsule()
+                    shape
                         .strokeBorder(
                             colorScheme == .light
                                 ? Color.black.opacity(0.14)
@@ -172,15 +352,16 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
                     y: 3
                 )
         } else if #available(iOS 26.0, *) {
-            GlassEffectContainer {
-                capsuleContent
-                    .glassEffect(.regular.interactive(), in: Capsule())
-            }
+            content
+                .glassEffect(
+                    interactive ? .regular.interactive() : .regular,
+                    in: shape
+                )
         } else {
-            capsuleContent
-                .background(.ultraThinMaterial, in: Capsule())
+            content
+                .background(.ultraThinMaterial, in: shape)
                 .overlay {
-                    Capsule()
+                    shape
                         .strokeBorder(
                             colorScheme == .light
                                 ? Color.black.opacity(0.08)
@@ -195,103 +376,6 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
                     y: 4
                 )
         }
-    }
-
-    private var capsuleContent: some View {
-        HStack(spacing: PhoneSessionFloatingCapsuleMetrics.itemSpacing) {
-            Button(action: onBack) {
-                WorkbenchChromeIcon(systemName: "chevron.backward")
-                    .foregroundStyle(tokens.primaryText.opacity(0.86))
-                    .frame(
-                        width: PhoneSessionFloatingCapsuleMetrics.buttonHitSize,
-                        height: PhoneSessionFloatingCapsuleMetrics.buttonHitSize
-                    )
-                    .contentShape(Circle())
-            }
-            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-            .fixedSize()
-            .layoutPriority(1)
-            .accessibilityLabel(L10n.text("ui.return_to_previous_level"))
-            .accessibilityIdentifier("sessionDetail.back")
-
-            titleCluster
-                .frame(
-                    minWidth: titleRegionMinWidth,
-                    maxWidth: titleRegionMaxWidth,
-                    alignment: .center
-                )
-                .layoutPriority(0)
-
-            Menu {
-                moreMenuContent
-            } label: {
-                WorkbenchChromeIcon(systemName: "ellipsis")
-                    .foregroundStyle(tokens.primaryText.opacity(0.80))
-                    .frame(
-                        width: PhoneSessionFloatingCapsuleMetrics.buttonHitSize,
-                        height: PhoneSessionFloatingCapsuleMetrics.buttonHitSize
-                    )
-                    .contentShape(Circle())
-            }
-            .menuOrder(.fixed)
-            .disabled(isMenuDisabled)
-            .fixedSize()
-            .layoutPriority(1)
-            .accessibilityLabel(L10n.text("ui.options"))
-            .accessibilityIdentifier("sessionDetail.more")
-        }
-        .padding(.horizontal, PhoneSessionFloatingCapsuleMetrics.horizontalContentPadding)
-        .padding(.vertical, PhoneSessionFloatingCapsuleMetrics.verticalContentPadding)
-        .frame(minHeight: PhoneSessionFloatingCapsuleMetrics.minimumHeight)
-        .frame(maxWidth: capsuleMaxWidth)
-        .clipShape(Capsule())
-    }
-
-    private var titleCluster: some View {
-        let textAlignment: HorizontalAlignment = data.workspaceIcon == nil ? .center : .leading
-        let titleStack = VStack(alignment: textAlignment, spacing: 1) {
-            Text(data.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tokens.primaryText)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            HStack(spacing: 4) {
-                if data.showsStatus {
-                    Circle()
-                        .fill(data.subtitleColor)
-                        .frame(width: 5, height: 5)
-                        .accessibilityHidden(true)
-                }
-                Text(data.subtitle)
-                    .font(data.subtitleFont)
-                    .monospacedDigit()
-                    .foregroundStyle(data.subtitleColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .multilineTextAlignment(data.workspaceIcon == nil ? .center : .leading)
-
-        return Group {
-            if let workspaceIcon = data.workspaceIcon {
-                HStack(spacing: PhoneSessionFloatingCapsuleMetrics.iconTitleSpacing) {
-                    WorkspaceProjectIconTile(
-                        content: workspaceIcon,
-                        size: PhoneSessionFloatingCapsuleMetrics.workspaceIconSize,
-                        tokens: tokens
-                    )
-                    .fixedSize()
-                    titleStack
-                }
-            } else {
-                titleStack
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(data.title)
-        .accessibilityValue(data.accessibilityValue)
-        .accessibilityIdentifier("sessionDetail.title")
     }
 }
 
@@ -619,43 +703,21 @@ extension UnifiedWorkbenchShell {
         onBack: @escaping () -> Void,
         @ViewBuilder moreMenuContent: @escaping () -> MoreMenuContent
     ) -> some View {
-        Group {
-            if canPresentSessionDetail,
-               isDetailActiveOnScreen,
-               sessionStore.selectedRuntimeActivitySnapshot != nil {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    PhoneSessionFloatingCapsuleHeader(
-                        data: sessionNavigationTitleDisplayData(
-                            session: session,
-                            usesSelectedSessionState: true,
-                            layout: layout,
-                            tokens: tokens,
-                            now: context.date
-                        ),
-                        tokens: tokens,
-                        availableWidth: layout.containerWidth,
-                        isMenuDisabled: false,
-                        onBack: onBack,
-                        moreMenuContent: moreMenuContent
-                    )
-                }
-            } else {
-                PhoneSessionFloatingCapsuleHeader(
-                    data: sessionNavigationTitleDisplayData(
-                        session: session,
-                        usesSelectedSessionState: canPresentSessionDetail,
-                        layout: layout,
-                        tokens: tokens,
-                        now: Date()
-                    ),
-                    tokens: tokens,
-                    availableWidth: layout.containerWidth,
-                    isMenuDisabled: !canPresentSessionDetail,
-                    onBack: onBack,
-                    moreMenuContent: moreMenuContent
-                )
-            }
-        }
+        // 中间胶囊仅展示工作区图标与单行标题，无需秒级定时刷新副标题；状态摘要仍保留在无障碍值中。
+        PhoneSessionFloatingCapsuleHeader(
+            data: sessionNavigationTitleDisplayData(
+                session: session,
+                usesSelectedSessionState: canPresentSessionDetail,
+                layout: layout,
+                tokens: tokens,
+                now: Date()
+            ),
+            tokens: tokens,
+            availableWidth: layout.containerWidth,
+            isMenuDisabled: !canPresentSessionDetail,
+            onBack: onBack,
+            moreMenuContent: moreMenuContent
+        )
     }
 
     func sessionDetailNavigationTitle(
