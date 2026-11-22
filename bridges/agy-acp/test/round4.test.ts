@@ -349,4 +349,121 @@ describe("mimi-agy-adapter round4 fixes", () => {
       await harness.close();
     }
   });
+
+  test("B15 round4: legacy overlay tool mappings without invocationIndex/outputFingerprint preserve original tool IDs on cold read", async () => {
+    const sessionId = "b15-r4-legacy-serial";
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`), "sqlite");
+
+    const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+    await mkdir(logsDir, { recursive: true });
+    await writeFile(
+      path.join(logsDir, "transcript_full.jsonl"),
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:00Z",
+          content: "<USER_REQUEST>\nrun duplicate serial commands\n</USER_REQUEST>",
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:01Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 2,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:02Z",
+          content: "FIXTURE FIRST RESULT",
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:03Z",
+          tool_calls: [{ name: "run_command", args: { CommandLine: "\"printf fixture-repeat\"" } }],
+        }),
+        JSON.stringify({
+          step_index: 4,
+          type: "GENERIC",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:04Z",
+          content: "FIXTURE SECOND RESULT",
+        }),
+        JSON.stringify({
+          step_index: 5,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: "2026-11-22T01:00:05Z",
+          content: "Done.",
+        }),
+      ].join("\n") + "\n",
+    );
+
+    // Seed round2 legacy overlay toolMappings (no invocationIndex, no outputFingerprint, no overlappedConcurrent).
+    const firstId = `${sessionId}:turn:1:tool:legacy-serial-FIRST`;
+    const secondId = `${sessionId}:turn:1:tool:legacy-serial-SECOND`;
+    await writeFile(
+      path.join(stateDir, "overlay.json"),
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          [sessionId]: {
+            cwd: workspaceDir,
+            toolMappings: {
+              [`${sessionId}:turn:1`]: [
+                {
+                  rawToolCallId: "legacy-serial-FIRST",
+                  itemId: firstId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+                {
+                  rawToolCallId: "legacy-serial-SECOND",
+                  itemId: secondId,
+                  itemType: "commandExecution",
+                  fingerprint: "cmd:printf fixture-repeat",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    );
+
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "Legacy Serial Tools",
+          updatedAt: "2026-11-22T01:00:05Z",
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+    });
+
+    const harness = await createHarness(world);
+    try {
+      const read = await harness.rpc<{
+        thread: { turns: Array<{ items: Array<{ type: string; id: string; aggregatedOutput?: string }> }> };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      const cmds = read.thread.turns[0]?.items.filter((item) => item.type === "commandExecution") ?? [];
+      expect(cmds).toHaveLength(2);
+      expect(cmds[0]?.id).toBe(firstId);
+      expect(cmds[0]?.aggregatedOutput).toContain("FIXTURE FIRST RESULT");
+      expect(cmds[1]?.id).toBe(secondId);
+      expect(cmds[1]?.aggregatedOutput).toContain("FIXTURE SECOND RESULT");
+    } finally {
+      await harness.close();
+    }
+  });
 });

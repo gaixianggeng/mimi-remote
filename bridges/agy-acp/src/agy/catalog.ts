@@ -662,18 +662,30 @@ export class AgyHistoryStore {
           continue;
         }
 
-        // 3) 多个同签名调用且输出不可区分：仅当串行无并发重叠且启动顺序明确时按出现顺序对齐；
-        // 并发重叠导致关联不唯一时保留可识别的确定性回退 ID，绝不把已知 ID 误绑到另一条结果。
-        const canOrderSafely =
+        // 3) 多个同签名调用且输出指纹未命中时：
+        // - 新格式：仅当串行无并发重叠（overlappedConcurrent !== true）且带 invocationIndex 时按启动顺序对齐；
+        // - 旧版 overlay 兼容（B15 round4）：b36 等旧格式映射未写入 invocationIndex / outputFingerprint，
+        //   且无 overlappedConcurrent 标记，保留原数组记录顺序对齐，避免升级后旧工具 ID 退化为序号；
+        // - 并发重叠导致关联不唯一时仍保留确定性回退 ID，绝不误绑。
+        const isNewSequential =
           remainingItems.length === remainingMappingIndices.length
           && remainingMappingIndices.every((idx) => {
             const m = mappings[idx]!;
             return m.invocationIndex !== undefined && m.overlappedConcurrent !== true;
           });
-        if (canOrderSafely) {
-          const ordered = [...remainingMappingIndices].sort(
-            (a, b) => (mappings[a]!.invocationIndex ?? 0) - (mappings[b]!.invocationIndex ?? 0),
-          );
+        const isLegacySequential =
+          !isNewSequential
+          && remainingItems.length === remainingMappingIndices.length
+          && remainingMappingIndices.every((idx) => {
+            const m = mappings[idx]!;
+            return m.invocationIndex === undefined && m.overlappedConcurrent !== true;
+          });
+        if (isNewSequential || isLegacySequential) {
+          const ordered = isNewSequential
+            ? [...remainingMappingIndices].sort(
+                (a, b) => (mappings[a]!.invocationIndex ?? 0) - (mappings[b]!.invocationIndex ?? 0),
+              )
+            : [...remainingMappingIndices];
           for (let i = 0; i < remainingItems.length; i += 1) {
             const mapIdx = ordered[i]!;
             usedMappingIdx.add(mapIdx);
