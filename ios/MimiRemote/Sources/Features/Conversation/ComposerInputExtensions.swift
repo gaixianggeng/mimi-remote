@@ -395,6 +395,19 @@ enum PhoneComposerPresentation {
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    func handlePhoneDetailActiveChange(_ isActive: Bool) {
+        if isActive {
+            sessionStore.activeComposerInstanceID = composerInstanceID
+            return
+        }
+        if sessionStore.activeComposerInstanceID == composerInstanceID {
+            sessionStore.activeComposerInstanceID = nil
+        }
+        isComposerTextEditing = false
+        synchronizeComposerTextBeforeDraftScopeChange()
+        sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+    }
+
     var singleLinePhoneEditorHeight: CGFloat {
         max(44, ceil(composerUIFont.lineHeight) + 12)
     }
@@ -406,7 +419,10 @@ extension ComposerView {
             isComposing: isComposerTextComposing,
             draft: composerState
         )
-        let shape = RoundedRectangle(cornerRadius: singleLine ? singleLinePhoneEditorHeight / 2 + 4 : 26)
+        let shape = RoundedRectangle(
+            cornerRadius: singleLine ? singleLinePhoneEditorHeight / 2 + 4 : 26,
+            style: .continuous
+        )
 
         return VStack(alignment: .leading, spacing: 4) {
             if !singleLine {

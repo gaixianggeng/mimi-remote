@@ -10,6 +10,7 @@ struct ConversationView: View {
     // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
     @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
     @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
+    @Environment(\.phoneConversationDetailIsActive) private var isPhoneDetailActive
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
@@ -137,7 +138,8 @@ struct ConversationView: View {
                 }
             }
             .background(tokens.conversationCanvasBackground.ignoresSafeArea())
-            .task(id: sessionStore.selectedSession?.id) {
+            .task(id: isPhoneDetailActive ? sessionStore.selectedSession?.id : nil) {
+                guard isPhoneDetailActive else { return }
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
         }

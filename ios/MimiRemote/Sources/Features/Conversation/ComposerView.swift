@@ -27,6 +27,7 @@ struct ComposerView: View {
     @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @Environment(\.composerLayoutHandoff) var composerLayoutHandoff
     @Environment(\.phoneConversationKeyboardVisible) var phoneKeyboardVisible
+    @Environment(\.phoneConversationDetailIsActive) var isPhoneDetailActive
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -160,7 +161,9 @@ struct ComposerView: View {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
-            sessionStore.activeComposerInstanceID = composerInstanceID
+            if isPhoneDetailActive {
+                sessionStore.activeComposerInstanceID = composerInstanceID
+            }
             switchComposerDraftScope(to: currentComposerDraftScope)
             restoreFollowUpDeliveryForReappearance()
             composerState.setSendMode(
@@ -402,6 +405,9 @@ struct ComposerView: View {
         .onChange(of: pendingUserInputSelectionIdentity) { previous, current in
             synchronizePendingUserInputPresentation(previous: previous, current: current)
         }
+        .onChange(of: isPhoneDetailActive) { _, isActive in
+            handlePhoneDetailActiveChange(isActive)
+        }
     }
 
     /// 草稿与模型选择的保存、上传完成和外部追加的正文。
@@ -416,7 +422,8 @@ struct ComposerView: View {
             sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
         }
         .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
-            guard let completion,
+            guard isPhoneDetailActive,
+                  let completion,
                   completion.targetScope == activeComposerDraftScope,
                   !composerState.attachments.contains(where: {
                       $0.id == "uploadedFile:\(completion.attachment.uploadID)"
@@ -427,6 +434,7 @@ struct ComposerView: View {
             composerState.addAttachment(.uploadedFile(completion.attachment))
         }
         .onReceive(sessionStore.composerDraftAppends) { event in
+            guard isPhoneDetailActive else { return }
             applyExternalDraftAppend(event)
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in

@@ -1321,7 +1321,8 @@ struct UnifiedWorkbenchShell: View {
         .background(tokens.conversationCanvasBackground.ignoresSafeArea())
         .modifier(SessionBottomTabBarModifier(
             usesPhoneIntegratedBottomChrome: layout.usesPhoneIntegratedBottomChrome,
-            shouldHideTabBar: shouldHideTabBar || hidesTabBarForRelatedSession
+            shouldHideTabBar: shouldHideTabBar || hidesTabBarForRelatedSession,
+            isActiveDetail: isDetailActiveOnScreen
         ))
         .modifier(
             SessionNavigationMaterialModifier(
