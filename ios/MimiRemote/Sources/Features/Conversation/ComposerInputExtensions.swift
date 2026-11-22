@@ -799,7 +799,8 @@ extension ComposerView {
 
     @ViewBuilder
     func attachmentChip(_ item: CodexAppServerUserInput, index: Int) -> some View {
-        if case .skill(let name, let path) = item {
+        switch item {
+        case .skill(let name, let path):
             let capability = enabledSkillShortcuts.first { $0.path == path || $0.name == name }
             SkillAttachmentToken(
                 metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
@@ -807,7 +808,27 @@ extension ComposerView {
                 onRemove: { removeAttachment(item, at: index) }
             )
             .environmentObject(themeStore)
-        } else {
+        case .image(let url, _):
+            ComposerImageAttachmentThumbnail(
+                id: item.id,
+                source: .dataURL(url),
+                accessibilityLabel: item.previewText,
+                canPreview: canPreviewAttachment(item),
+                onPreview: { previewAttachment(item, at: index) },
+                onRemove: { removeAttachment(item, at: index) }
+            )
+            .environmentObject(themeStore)
+        case .localImage(let path, _):
+            ComposerImageAttachmentThumbnail(
+                id: item.id,
+                source: .localPath(path),
+                accessibilityLabel: item.previewText,
+                canPreview: canPreviewAttachment(item),
+                onPreview: { previewAttachment(item, at: index) },
+                onRemove: { removeAttachment(item, at: index) }
+            )
+            .environmentObject(themeStore)
+        default:
             HStack(spacing: 6) {
                 Button {
                     previewAttachment(item, at: index)
