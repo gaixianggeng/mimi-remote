@@ -83,16 +83,21 @@ extension ComposerView {
     }
 
     @inline(never)
-    func compactToolControlsBox() -> AnyView {
+    func compactToolControlsBox(includesMicrophone: Bool = true) -> AnyView {
         return AnyView(
             HStack(spacing: 2) {
                 contextWindowControlBox()
                 CompactComposerToolControlsShell(
                     optionsControl: optionsControlBox(),
-                    microphoneControl: microphoneControlBox()
+                    microphoneControl: includesMicrophone ? microphoneControlBox() : nil
                 )
             }
         )
+    }
+
+    @inline(never)
+    func phoneTrailingActionBox() -> AnyView {
+        AnyView(phoneTrailingActionControl)
     }
 
     @inline(never)

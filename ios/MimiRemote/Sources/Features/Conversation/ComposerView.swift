@@ -1423,13 +1423,17 @@ struct ComposerView: View {
             && !compactToolbarShowsInlineDeliveryControl
     }
 
-    func compactPrimaryComposerToolbar(showsModelTitle: Bool, includesAddContent: Bool = true) -> some View {
+    func compactPrimaryComposerToolbar(
+        showsModelTitle: Bool,
+        includesAddContent: Bool = true,
+        usesIntegratedPhoneTrailingSlot: Bool = false
+    ) -> some View {
         CompactComposerToolbarShell(
             leadingControls: compactLeadingControlsBox(
                 showsModelTitle: showsModelTitle, includesAddContent: includesAddContent
             ),
-            toolControls: compactToolControlsBox(),
-            submitControl: submitControlBox(),
+            toolControls: compactToolControlsBox(includesMicrophone: !usesIntegratedPhoneTrailingSlot),
+            submitControl: usesIntegratedPhoneTrailingSlot ? phoneTrailingActionBox() : submitControlBox(),
             spacing: usesNarrowComposerLayout ? 6 : 10
         )
     }

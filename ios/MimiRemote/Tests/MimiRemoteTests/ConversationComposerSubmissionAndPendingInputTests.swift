@@ -253,6 +253,25 @@ extension ConversationDataFlowTests {
         ))
     }
 
+    func testPhoneComposerTrailingActionSwitchesBetweenVoiceSendAndStop() {
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: false, isStopPrimaryAction: false),
+            .voice
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: true, isStopPrimaryAction: false),
+            .send
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: false, isStopPrimaryAction: true),
+            .stop
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: true, isStopPrimaryAction: true),
+            .stop
+        )
+    }
+
     func testPhoneKeyboardVisibilityFiltersHardwareBarAndOffscreenFrames() {
         let portraitScreen = CGRect(x: 0, y: 0, width: 393, height: 852)
         // 正常软键盘（高 336pt）占用屏幕底部。

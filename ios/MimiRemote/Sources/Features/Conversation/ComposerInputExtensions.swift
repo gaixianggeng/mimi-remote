@@ -353,12 +353,14 @@ struct CompactComposerToolbarShell: View {
 /// 不再用一整块胶囊把两个不同动作粘在一起。
 struct CompactComposerToolControlsShell: View {
     let optionsControl: AnyView
-    let microphoneControl: AnyView
+    let microphoneControl: AnyView?
 
     var body: some View {
         HStack(spacing: 6) {
             optionsControl
-            microphoneControl
+            if let microphoneControl {
+                microphoneControl
+            }
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -383,6 +385,12 @@ struct CompactComposerLeadingControlsShell: View {
     }
 }
 
+enum PhoneComposerTrailingAction: Equatable {
+    case voice
+    case send
+    case stop
+}
+
 enum PhoneComposerPresentation {
     static func showsSingleLine(
         keyboardVisible: Bool?, isEditing: Bool, isComposing: Bool, draft: ComposerState
@@ -390,6 +398,17 @@ enum PhoneComposerPresentation {
         // 等系统移开软键盘，也等 TextKit 完成失焦和输入法提交，再收起空输入框。
         keyboardVisible == false && !isEditing && !isComposing
             && draft.draft.isEmpty && draft.attachments.isEmpty && !draft.voiceDraftNeedsReview
+    }
+
+    /// iPhone 右侧主按钮：运行中可停止优先显示停止，有可发送内容时平滑切换为发送箭头，空态为语音。
+    static func trailingAction(
+        canSubmitDraft: Bool,
+        isStopPrimaryAction: Bool
+    ) -> PhoneComposerTrailingAction {
+        if isStopPrimaryAction {
+            return .stop
+        }
+        return canSubmitDraft ? .send : .voice
     }
 }
 
@@ -410,6 +429,28 @@ extension ComposerView {
 
     var singleLinePhoneEditorHeight: CGFloat {
         max(44, ceil(composerUIFont.lineHeight) + 12)
+    }
+
+    var phoneTrailingAction: PhoneComposerTrailingAction {
+        PhoneComposerPresentation.trailingAction(
+            canSubmitDraft: canSubmitDraft,
+            isStopPrimaryAction: primaryComposerAction == .stopCurrentReply
+        )
+    }
+
+    var phoneTrailingActionControl: some View {
+        let action = phoneTrailingAction
+        return ZStack {
+            switch action {
+            case .voice:
+                microphoneControlBox()
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+            case .send, .stop:
+                submitControlBox()
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : composerMotionAnimation, value: action)
     }
 
     func integratedPhoneComposerCard(tokens: ThemeTokens) -> some View {
@@ -435,13 +476,15 @@ extension ComposerView {
                 // 编辑器始终留在同一位置，展开时只改变外壳和旁边的控件。
                 integratedPhoneEditorBox(tokens: tokens, singleLine: singleLine)
                 if singleLine {
-                    (primaryComposerAction == .stopCurrentReply ? submitControlBox() : microphoneControlBox())
+                    phoneTrailingActionBox()
                         .transition(.opacity)
                 }
             }
             if !singleLine {
                 compactPrimaryComposerToolbar(
-                    showsModelTitle: compactToolbarShowsModelTitle, includesAddContent: false
+                    showsModelTitle: compactToolbarShowsModelTitle,
+                    includesAddContent: false,
+                    usesIntegratedPhoneTrailingSlot: true
                 )
                 .transition(.opacity)
             }
@@ -727,6 +770,11 @@ extension ComposerView {
         composerTextSubmitBridge.resetTextAfterSubmit(to: composerState.draft)
         measuredComposerTextHeight = 0
         activeSkillQuery = nil
+        if phoneKeyboardVisible != nil {
+            // iPhone 集成底栏发送后立刻收起键盘并收回单行胶囊。
+            composerTextSubmitBridge.resignFirstResponder()
+            isComposerTextEditing = false
+        }
     }
 
     @ViewBuilder
