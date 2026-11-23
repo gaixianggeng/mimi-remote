@@ -95,6 +95,22 @@ extension ComposerView {
     }
 
     @inline(never)
+    func phoneComposerHeaderBox(tokens: ThemeTokens) -> AnyView {
+        if hasComposerStatusTrayContent {
+            return AnyView(
+                composerStatusTray(
+                    inlineAccessory: phoneModelPillBox(tokens: tokens)
+                )
+            )
+        }
+        return AnyView(
+            phoneModelPillBox(tokens: tokens)
+                .padding(.horizontal, 2)
+                .padding(.top, 2)
+        )
+    }
+
+    @inline(never)
     func compactToolControlsBox(includesMicrophone: Bool = true) -> AnyView {
         return AnyView(
             HStack(spacing: 2) {

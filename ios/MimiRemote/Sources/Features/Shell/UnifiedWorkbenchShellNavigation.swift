@@ -317,31 +317,68 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
     }
 }
 
-/// 三件式悬浮顶栏统一玻璃材质：
+/// 手机悬浮顶栏与底部玻璃输入卡共用的玻璃表面策略，便于单元测试核对各环境回退分支。
+enum FloatingGlassChromeStyle: Equatable {
+    case opaqueFallback
+    case liquidGlass
+    case ultraThinMaterial
+
+    static func resolve(
+        reduceTransparency: Bool,
+        increasedContrast: Bool = false,
+        supportsLiquidGlass: Bool
+    ) -> Self {
+        if reduceTransparency || increasedContrast {
+            return .opaqueFallback
+        }
+        return supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
+    }
+}
+
+/// 悬浮顶栏与底部输入框共用的统一玻璃材质：
 /// iOS 26 采用原生 Liquid Glass；旧系统采用 `.ultraThinMaterial` + 细描边 + 轻阴影；
-/// 开启减少透明度时退回实色表面以保持可读性。
-private struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModifier {
+/// 开启减少透明度或增强对比度时退回实色表面以保持可读性。
+struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModifier {
     let shape: ChromeShape
     let tokens: ThemeTokens
     let colorScheme: ColorScheme
     let reduceTransparency: Bool
     let interactive: Bool
+    var increasedContrast: Bool = false
+    var opaqueFillColor: Color? = nil
+    var accentBorderColor: Color? = nil
+    var accentBorderWidth: CGFloat = 0.75
+    var opaqueBorderColor: Color? = nil
+    var opaqueBorderWidth: CGFloat = 0.75
+
+    private var defaultOpaqueBorderColor: Color {
+        colorScheme == .light
+            ? Color.black.opacity(0.14)
+            : Color.white.opacity(0.22)
+    }
+
+    private var defaultMaterialBorderColor: Color {
+        colorScheme == .light
+            ? Color.black.opacity(0.08)
+            : Color.white.opacity(0.16)
+    }
 
     func body(content: Content) -> some View {
-        if reduceTransparency {
+        if reduceTransparency || increasedContrast {
+            let shadowOpacity: Double = increasedContrast
+                ? 0.05
+                : (colorScheme == .light ? 0.10 : 0.30)
             content
-                .background(tokens.elevatedSurface, in: shape)
+                .background(opaqueFillColor ?? tokens.elevatedSurface, in: shape)
                 .overlay {
                     shape
                         .strokeBorder(
-                            colorScheme == .light
-                                ? Color.black.opacity(0.14)
-                                : Color.white.opacity(0.22),
-                            lineWidth: 0.75
+                            accentBorderColor ?? opaqueBorderColor ?? defaultOpaqueBorderColor,
+                            lineWidth: accentBorderColor != nil ? accentBorderWidth : opaqueBorderWidth
                         )
                 }
                 .shadow(
-                    color: Color.black.opacity(colorScheme == .light ? 0.10 : 0.30),
+                    color: Color.black.opacity(shadowOpacity),
                     radius: 8,
                     x: 0,
                     y: 3
@@ -352,16 +389,19 @@ private struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: V
                     interactive ? .regular.interactive() : .regular,
                     in: shape
                 )
+                .overlay {
+                    if let accentBorderColor {
+                        shape.strokeBorder(accentBorderColor, lineWidth: accentBorderWidth)
+                    }
+                }
         } else {
             content
                 .background(.ultraThinMaterial, in: shape)
                 .overlay {
                     shape
                         .strokeBorder(
-                            colorScheme == .light
-                                ? Color.black.opacity(0.08)
-                                : Color.white.opacity(0.16),
-                            lineWidth: 0.75
+                            accentBorderColor ?? defaultMaterialBorderColor,
+                            lineWidth: accentBorderColor != nil ? accentBorderWidth : 0.75
                         )
                 }
                 .shadow(
