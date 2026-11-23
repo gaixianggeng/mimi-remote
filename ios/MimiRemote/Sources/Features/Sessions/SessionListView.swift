@@ -169,6 +169,7 @@ struct SessionListView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
     /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
@@ -387,6 +388,7 @@ struct SessionListView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             if !showsToolbarSearchField {
                 let usesLiquidGlassInset = WorkbenchGlassChromeStyle.resolve(
+                    interfaceStyle: interfaceStyle,
                     reduceTransparency: reduceTransparency,
                     increasedContrast: colorSchemeContrast == .increased,
                     supportsLiquidGlass: WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
@@ -517,18 +519,14 @@ struct SessionListView: View {
                 .accessibilityLabel(L10n.text("ui.clear_search"))
             }
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 38)
+        .padding(.horizontal, interfaceStyle == .glass ? 14 : 12)
+        .frame(minHeight: interfaceStyle == .glass ? 38 : 36)
         .frame(
             minWidth: fillsWidth ? nil : 260,
             idealWidth: fillsWidth ? nil : 360,
             maxWidth: fillsWidth ? .infinity : 420
         )
-        .workbenchGlassSurface(
-            shape: Capsule(style: .continuous),
-            tokens: tokens,
-            interactive: false
-        )
+        .modifier(SessionSearchFieldChromeModifier(interfaceStyle: interfaceStyle, tokens: tokens))
     }
 
     @ToolbarContentBuilder
@@ -1416,6 +1414,28 @@ struct SessionRenameSheet: View {
             self.failure = failure
             sessionStore.dismissOperationFeedback(id: failure.id)
             AccessibilityNotification.Announcement(failure.message).post()
+        }
+    }
+}
+
+private struct SessionSearchFieldChromeModifier: ViewModifier {
+    let interfaceStyle: ThemeInterfaceStyle
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        if interfaceStyle == .glass {
+            content.workbenchGlassSurface(
+                shape: Capsule(style: .continuous),
+                tokens: tokens,
+                interactive: false
+            )
+        } else {
+            content
+                .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(tokens.border.opacity(0.52), lineWidth: 1)
+                }
         }
     }
 }

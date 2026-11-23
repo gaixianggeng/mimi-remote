@@ -1054,7 +1054,12 @@ private struct ConversationReturnToTailButton: View {
         baseLabel
             // 与顶栏玻璃按钮、底部透明输入框、工作区胶囊共用同一套透明玻璃材质，
             // iOS 26+ 原生交互式 Liquid Glass，旧系统与辅助功能由修饰符统一回退描边与阴影。
-            .workbenchGlassSurface(shape: Circle(), tokens: tokens, interactive: true)
+            .workbenchGlassSurface(
+                shape: Circle(),
+                tokens: tokens,
+                interactive: true,
+                showsClassicBorder: true
+            )
     }
 
     private var baseLabel: some View {

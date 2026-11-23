@@ -1099,12 +1099,14 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
     let solidBorderColor: Color
     let borderWidth: CGFloat
 
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
+
     private var solidFillColor: Color {
         colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
     }
 
     func body(content: Content) -> some View {
-        if usesFloatingGlass {
+        if usesFloatingGlass && interfaceStyle == .glass {
             content.modifier(
                 PhoneFloatingGlassChromeModifier(
                     shape: shape,

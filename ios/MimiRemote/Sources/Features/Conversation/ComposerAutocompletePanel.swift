@@ -60,7 +60,8 @@ struct ComposerAutocompletePanel: View {
         .workbenchGlassSurface(
             shape: RoundedRectangle(cornerRadius: 16, style: .continuous),
             tokens: tokens,
-            interactive: false
+            interactive: false,
+            showsClassicBorder: true
         )
         .accessibilityIdentifier("composer.autocomplete")
     }

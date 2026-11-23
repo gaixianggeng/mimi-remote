@@ -964,6 +964,24 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         )
         XCTAssertEqual(
             WorkbenchGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .classicFrosted
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
                 reduceTransparency: false,
                 increasedContrast: true,
                 supportsLiquidGlass: true
