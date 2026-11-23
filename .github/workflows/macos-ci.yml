@@ -33,6 +33,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          # embed-agentd.sh 同时构建主模块 agentd 与 experiments/tailcat sidecar，
+          # 把两个 go.sum 纳入缓存键，避免 Tailcat 依赖与 Go 1.27 工具链每次冷下载。
+          cache-dependency-path: |
+            go.sum
+            experiments/tailcat/go.sum
 
       - name: Setup Bun
         # 安装包内嵌的 Claude 适配器用 Bun 编译，版本固定为 .bun-version（#660）。
@@ -41,14 +46,39 @@ jobs:
           bun-version-file: bridges/claude-sdk/.bun-version
 
       - name: Show toolchain
+        id: toolchain
+        shell: bash
         run: |
           xcodebuild -version
           go version
           rustc --version
           bun --version
+          rustc_key="$(rustc --version | tr ' ()' '---')"
+          echo "rustc_key=$rustc_key" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Cargo registry and Mac embed Rust target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.temp }}/MimiRemoteMacEmbedCache/Debug/rust
+          key: macos-embed-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.rustc_key }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-embed-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.rustc_key }}-
+
+      - name: Cache Bun install cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-sdk-adapters-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bridges/claude-sdk/.bun-version', 'bridges/claude-sdk/bun.lock', 'bridges/agy-acp/.bun-version', 'bridges/agy-acp/bun.lock') }}
+          restore-keys: |
+            bun-sdk-adapters-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build and test Mac App
         env:
+          CARGO_INCREMENTAL: "0"
           MACOS_DERIVED_DATA_PATH: ${{ runner.temp }}/MimiRemoteMacDerivedData
           # Build phase 总是执行；把 Go/Rust 增量产物放到 runner 临时目录，
           # 同一 job 内可复用且不会污染 checkout。脚本仍会按配置/架构隔离。
