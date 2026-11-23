@@ -494,8 +494,31 @@ def command_skip_args(args: argparse.Namespace) -> int:
 EXECUTED_CASE_RESULTS = frozenset({"Passed", "Failed", "Expected Failure"})
 
 
+def is_valid_utf8_text(text: str) -> bool:
+    """检查字符串能否安全编码为 UTF-8（拒绝 JSON 孤立 UTF-16 代理项等非法码点）。"""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def parse_test_case_identifier(identifier: str) -> tuple[str, str] | None:
+    """解析 Test Case 的 nodeIdentifier（[Bundle/]ClassName/testMethod[()]），不做套件名/显示名回退。"""
+    if not identifier or not identifier.strip():
+        return None
+    parts = identifier.split("/")
+    if len(parts) < 2:
+        return None
+    class_name = parts[-2]
+    method = re.sub(r"\(\)$", "", parts[-1])
+    if not class_name or not class_name.strip() or not method or not method.strip():
+        return None
+    return class_name, method
+
+
 def validate_test_results_tree(test_nodes: list[object]) -> str | None:
-    """校验 xcresulttool testNodes 结果树结构，避免遍历时抛出 AttributeError/TypeError。"""
+    """校验 xcresulttool testNodes 结果树结构，避免遍历时抛出 AttributeError/TypeError/UnicodeEncodeError。"""
     stack: list[tuple[object, str]] = [
         (node, f"testNodes[{idx}]") for idx, node in reversed(list(enumerate(test_nodes)))
     ]
@@ -507,17 +530,30 @@ def validate_test_results_tree(test_nodes: list[object]) -> str | None:
         node_type = node.get("nodeType")
         if not isinstance(node_type, str) or not node_type:
             return f"结果树节点 {path}.nodeType 必须是非空字符串"
+        if not is_valid_utf8_text(node_type):
+            return f"结果树节点 {path}.nodeType 包含无法编码为 UTF-8 的字符"
 
-        if "name" in node and not isinstance(node["name"], str):
-            return f"结果树节点 {path}.name 必须是字符串"
+        if "name" in node:
+            node_name = node["name"]
+            if not isinstance(node_name, str):
+                return f"结果树节点 {path}.name 必须是字符串"
+            if not is_valid_utf8_text(node_name):
+                return f"结果树节点 {path}.name 包含无法编码为 UTF-8 的字符"
 
-        if "nodeIdentifier" in node:
+        if node_type == "Test Case":
+            identifier = node.get("nodeIdentifier")
+            if not isinstance(identifier, str) or not identifier.strip():
+                return f"结果树节点 {path}.nodeIdentifier 必须是非空字符串"
+            if not is_valid_utf8_text(identifier):
+                return f"结果树节点 {path}.nodeIdentifier 包含无法编码为 UTF-8 的字符"
+            if parse_test_case_identifier(identifier) is None:
+                return f"结果树节点 {path}.nodeIdentifier 必须包含有效的 类名/方法名 标识"
+        elif "nodeIdentifier" in node and node["nodeIdentifier"] is not None:
             identifier = node["nodeIdentifier"]
-            if identifier is None:
-                if node_type == "Test Case":
-                    return f"结果树节点 {path}.nodeIdentifier 必须是字符串"
-            elif not isinstance(identifier, str):
+            if not isinstance(identifier, str):
                 return f"结果树节点 {path}.nodeIdentifier 必须是字符串"
+            if not is_valid_utf8_text(identifier):
+                return f"结果树节点 {path}.nodeIdentifier 包含无法编码为 UTF-8 的字符"
 
         if "result" in node:
             result = node["result"]
@@ -526,6 +562,8 @@ def validate_test_results_tree(test_nodes: list[object]) -> str | None:
                     return f"结果树节点 {path}.result 必须是字符串"
             elif not isinstance(result, str):
                 return f"结果树节点 {path}.result 必须是字符串"
+            elif not is_valid_utf8_text(result):
+                return f"结果树节点 {path}.result 包含无法编码为 UTF-8 的字符"
 
         if "children" in node and node["children"] is not None:
             children = node["children"]
@@ -543,19 +581,15 @@ def collect_results(
     retried_passed: set[str],
     case_outcomes: dict[str, set[str]],
 ) -> None:
-    stack: list[tuple[dict, str | None]] = [(node, None) for node in reversed(root_nodes)]
+    stack: list[dict] = list(reversed(root_nodes))
     while stack:
-        node, suite = stack.pop()
+        node = stack.pop()
         node_type = node.get("nodeType")
-        name = node.get("name", "")
-        if node_type == "Test Suite":
-            suite = name
         if node_type == "Test Case":
-            identifier = node.get("nodeIdentifier", "")
-            parts = identifier.split("/") if identifier else []
-            class_name = parts[-2] if len(parts) >= 2 else (suite or "?")
-            method = parts[-1] if parts else name
-            method = re.sub(r"\(\)$", "", method)
+            parsed = parse_test_case_identifier(node["nodeIdentifier"])
+            if parsed is None:
+                raise ValueError("Test Case 缺少有效的 nodeIdentifier")
+            class_name, method = parsed
             result = node.get("result", "unknown")
             results.setdefault(class_name, {})[method] = result
             case = f"{class_name}/{method}"
@@ -575,7 +609,7 @@ def collect_results(
                 retried_passed.add(case)
             continue
         for child in reversed(node.get("children") or []):
-            stack.append((child, suite))
+            stack.append(child)
 
 
 def is_disallowed_path_char(ch: str) -> bool:
@@ -593,7 +627,7 @@ def sanitize_display_text(text: str) -> str:
         code = ord(ch)
         if code < 32 or code == 127 or 0x80 <= code <= 0x9F:
             out.append(f"\\x{code:02x}")
-        elif ch in ("\u2028", "\u2029"):
+        elif ch in ("\u2028", "\u2029") or 0xD800 <= code <= 0xDFFF:
             out.append(f"\\u{code:04x}")
         else:
             out.append(ch)
@@ -828,7 +862,7 @@ def command_verify_results(args: argparse.Namespace) -> int:
 
     if results_error is not None or payload is None:
         final_results_error = results_error or "测试结果不可用"
-        print(final_results_error, file=sys.stderr)
+        print(sanitize_display_text(final_results_error), file=sys.stderr)
         if collection_errors:
             print(f"\n重录快照采集失败（{len(collection_errors)}）：", file=sys.stderr)
             for err in collection_errors:

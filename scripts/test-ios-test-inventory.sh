@@ -1172,4 +1172,132 @@ if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
   fail "仅含 Skipped Repetition 时不得把其余重试通过用例标为抖动。"
 fi
 
+# 夹具：无重录快照时，所有应执行用例均通过，但删除某个 Test Case 的 nodeIdentifier、将其设为空串，
+# 或仅给无类名的单段标识，均不得通过套件名/显示名回退放行，必须进入「测试结果不可用」分支并退出非零。
+new_fixture
+gamma_missing_id=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","result":"Passed"}]}'
+gamma_empty_id=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"","result":"Passed"}]}'
+gamma_method_only_id=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"testShot()","result":"Passed"}]}'
+gamma_blank_method_id=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/","result":"Passed"}]}'
+write_results "$work_root/missing-id-pass.json" "$gamma_missing_id" "Passed"
+write_results "$work_root/empty-id-pass.json" "$gamma_empty_id" "Passed"
+write_results "$work_root/method-only-id-pass.json" "$gamma_method_only_id" "Passed"
+write_results "$work_root/blank-method-id-pass.json" "$gamma_blank_method_id" "Passed"
+for bad_id_case in missing-id-pass empty-id-pass method-only-id-pass blank-method-id-pass; do
+  rm -f "$work_root/${bad_id_case}.md"
+  if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+    "$work_root/${bad_id_case}.json" \
+    --markdown "$work_root/${bad_id_case}.md" > "$work_root/out.txt" 2>&1; then
+    cat "$work_root/out.txt" >&2
+    fail "无重录快照时 ${bad_id_case} 不得通过门禁。"
+  fi
+  if grep -Eq "Traceback|AttributeError|TypeError|UnicodeEncodeError" "$work_root/out.txt"; then
+    cat "$work_root/out.txt" >&2
+    fail "${bad_id_case} 不得抛出未捕获异常。"
+  fi
+  [[ -s "$work_root/${bad_id_case}.md" ]] || fail "${bad_id_case} 应生成非空 summary.md。"
+  grep -Fq "测试结果不可用，无法生成按类执行数统计" "$work_root/${bad_id_case}.md" \
+    || { cat "$work_root/${bad_id_case}.md" >&2; fail "${bad_id_case} 应进入测试结果不可用分支。"; }
+  grep -Fq "测试结果 JSON 结构无效" "$work_root/${bad_id_case}.md" \
+    || { cat "$work_root/${bad_id_case}.md" >&2; fail "${bad_id_case} 摘要缺少结构无效原因。"; }
+  grep -Fq "nodeIdentifier" "$work_root/${bad_id_case}.md" \
+    || { cat "$work_root/${bad_id_case}.md" >&2; fail "${bad_id_case} 摘要应指出 nodeIdentifier 校验失败。"; }
+done
+
+# 夹具：缺失或为空的 nodeIdentifier 搭配重录快照时，进入测试结果不可用分支并保留摘要与未知归属注解。
+new_fixture
+for bad_id_case in missing-id-pass empty-id-pass; do
+  rm -f "$work_root/${bad_id_case}-rerecorded.md"
+  if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+    "$work_root/${bad_id_case}.json" \
+    --markdown "$work_root/${bad_id_case}-rerecorded.md" \
+    --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+    cat "$work_root/out.txt" >&2
+    fail "有重录快照时 ${bad_id_case} 应判失败。"
+  fi
+  [[ -s "$work_root/${bad_id_case}-rerecorded.md" ]] || fail "${bad_id_case}（有重录）应生成非空 summary.md。"
+  grep -Fq "测试结果不可用，无法生成按类执行数统计" "$work_root/${bad_id_case}-rerecorded.md" \
+    || { cat "$work_root/${bad_id_case}-rerecorded.md" >&2; fail "${bad_id_case}（有重录）应进入测试结果不可用分支。"; }
+  grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/${bad_id_case}-rerecorded.md" \
+    || { cat "$work_root/${bad_id_case}-rerecorded.md" >&2; fail "${bad_id_case}（有重录）摘要应标明未知归属。"; }
+  grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+    || { cat "$work_root/out.txt" >&2; fail "${bad_id_case}（有重录）缺少未知归属 error 注解。"; }
+  if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+    cat "$work_root/out.txt" >&2
+    fail "${bad_id_case}（有重录）不得标为已确认快照漂移。"
+  fi
+done
+
+# 夹具：损坏的状态字符串（JSON 孤立代理项 "\ud800"）搭配重录快照及无重录时，
+# 必须在结构校验阶段拒绝，不得抛出 UnicodeEncodeError 留下 0 字节 summary.md 或丢失未知归属注解。
+new_fixture
+cat > "$work_root/surrogate-result.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Plan","name":"MimiRemote","children":[
+  {"nodeType":"Unit test bundle","name":"MimiRemoteTests","children":[
+    {"nodeType":"Test Suite","name":"AlphaTests","children":[
+      {"nodeType":"Test Case","name":"testOne()","nodeIdentifier":"AlphaTests/testOne()","result":"Passed"},
+      {"nodeType":"Test Case","name":"testTwo()","nodeIdentifier":"AlphaTests/testTwo()","result":"Passed"},
+      {"nodeType":"Test Case","name":"testThree()","nodeIdentifier":"AlphaTests/testThree()","result":"Passed"}
+    ]},
+    {"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[
+      {"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/testShot()","result":"\ud800"}
+    ]}
+  ]}
+]}]}
+EOF
+cat > "$work_root/surrogate-rep-result.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Plan","name":"MimiRemote","children":[
+  {"nodeType":"Unit test bundle","name":"MimiRemoteTests","children":[
+    {"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[
+      {"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/testShot()","result":"Skipped","children":[
+        {"nodeType":"Repetition","name":"First Run","result":"\ud800"}
+      ]}
+    ]}
+  ]}
+]}]}
+EOF
+for surrogate_case in surrogate-result surrogate-rep-result; do
+  rm -f "$work_root/${surrogate_case}.md"
+  if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+    "$work_root/${surrogate_case}.json" \
+    --markdown "$work_root/${surrogate_case}.md" \
+    --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+    cat "$work_root/out.txt" >&2
+    fail "${surrogate_case} 损坏状态字符串应判失败。"
+  fi
+  if grep -Eq "Traceback|UnicodeEncodeError|AttributeError|TypeError" "$work_root/out.txt"; then
+    cat "$work_root/out.txt" >&2
+    fail "${surrogate_case} 不得抛出未捕获编码异常。"
+  fi
+  [[ -s "$work_root/${surrogate_case}.md" ]] \
+    || { cat "$work_root/out.txt" >&2; fail "${surrogate_case} 必须保留非空 summary.md，不得为 0 字节。"; }
+  grep -Fq "测试结果不可用，无法生成按类执行数统计" "$work_root/${surrogate_case}.md" \
+    || { cat "$work_root/${surrogate_case}.md" >&2; fail "${surrogate_case} 应进入测试结果不可用分支。"; }
+  grep -Fq "无法编码为 UTF-8" "$work_root/${surrogate_case}.md" \
+    || { cat "$work_root/${surrogate_case}.md" >&2; fail "${surrogate_case} 摘要缺少 UTF-8 校验失败说明。"; }
+  grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/${surrogate_case}.md" \
+    || { cat "$work_root/${surrogate_case}.md" >&2; fail "${surrogate_case} 摘要未保留未知归属快照诊断。"; }
+  grep -Fq "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" "$work_root/${surrogate_case}.md" \
+    || { cat "$work_root/${surrogate_case}.md" >&2; fail "${surrogate_case} 摘要未保留重录快照路径。"; }
+  grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+    || { cat "$work_root/out.txt" >&2; fail "${surrogate_case} 缺少未知归属 error 注解。"; }
+  if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+    cat "$work_root/out.txt" >&2
+    fail "${surrogate_case} 不得把重录快照标为已确认归属。"
+  fi
+done
+
+# 无重录快照时，损坏状态字符串 "\ud800" 同样必须判失败并保留非空 summary.md。
+rm -f "$work_root/surrogate-result-no-rerecorded.md"
+if python3 "$inventory" --root "$root" verify-results \
+  "$work_root/surrogate-result.json" \
+  --markdown "$work_root/surrogate-result-no-rerecorded.md" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "无重录快照时损坏状态字符串 \\ud800 也必须判失败。"
+fi
+[[ -s "$work_root/surrogate-result-no-rerecorded.md" ]] \
+  || fail "无重录快照时损坏状态字符串 \\ud800 仍应生成非空 summary.md。"
+grep -Fq "无法编码为 UTF-8" "$work_root/surrogate-result-no-rerecorded.md" \
+  || { cat "$work_root/surrogate-result-no-rerecorded.md" >&2; fail "无重录快照时缺少 UTF-8 校验失败说明。"; }
+
 echo "iOS 测试清单自测通过：${fixture_index} 个夹具覆盖失效 selector、文件名 selector、归属、隔离、工程登记、按类执行数、重试抖动、重录快照分类与全量脚本端到端语义。"
