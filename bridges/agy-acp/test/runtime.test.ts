@@ -838,3 +838,177 @@ test("C12 round3: same-millisecond approval re-check still runs a fresh verifica
     Date.now = realDateNow;
   }
 });
+
+test("delayed final transcript inspection from previous turn does not publish idle over a newer active turn", async () => {
+  const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const persistedAttempts: string[] = [];
+  const prompt1Done = deferred<{ stopReason: string }>();
+  const prompt2Done = deferred<{ stopReason: string }>();
+  const turn1AfterInspect = deferred<TranscriptSnapshotResult>();
+  let promptCall = 0;
+  let inspectCall = 0;
+
+  const mockAcp = makeMockAcpClient(() => {
+    promptCall += 1;
+    return promptCall === 1 ? prompt1Done.promise : prompt2Done.promise;
+  });
+
+  const host: RuntimeHost = {
+    publish: (_tid, method, params) => notifications.push({ method, params }),
+    request: async () => ({ decision: "decline" }),
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+    onTurnPersisted: (_tid, patch) => {
+      if (patch.turnAttemptUpdate) {
+        persistedAttempts.push(patch.turnAttemptUpdate.turnId);
+      }
+    },
+    inspectTranscriptState: async () => {
+      inspectCall += 1;
+      if (inspectCall === 1) {
+        return { kind: "missing" };
+      }
+      if (inspectCall === 2) {
+        return turn1AfterInspect.promise;
+      }
+      return {
+        kind: "present",
+        snapshot: { path: "/tmp/t.jsonl", size: 20, mtimeMs: 2, userInputs: ["turn-1", "turn-2"], plannerResponseCount: 1, stepCount: 3 },
+      };
+    },
+  };
+
+  const runtime = new ThreadRuntime(
+    "race-session",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+
+  const turn1 = await runtime.startTurn({
+    input: [{ type: "text", text: "turn-1", text_elements: [] }],
+    clientUserMessageId: "client-1",
+    settings: {},
+  });
+  expect(runtime.activeTurnId).toBe(turn1.id);
+
+  // Turn 1 finishes prompt and enters finally, blocking on its final inspectTranscriptState (#2).
+  prompt1Done.resolve({ stopReason: "end_turn" });
+  for (let i = 0; i < 40 && inspectCall < 2; i += 1) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  expect(inspectCall).toBe(2);
+  expect(runtime.activeTurnId).toBeUndefined();
+
+  // Follow-up turn 2 starts while turn 1 finalization is still pending.
+  const turn2 = await runtime.startTurn({
+    input: [{ type: "text", text: "turn-2", text_elements: [] }],
+    clientUserMessageId: "client-2",
+    settings: {},
+  });
+  expect(runtime.activeTurnId).toBe(turn2.id);
+
+  // Unblock turn 1's delayed inspection; turn 1 must still persist its attempt but MUST NOT emit idle over turn 2.
+  turn1AfterInspect.resolve({
+    kind: "present",
+    snapshot: { path: "/tmp/t.jsonl", size: 10, mtimeMs: 1, userInputs: ["turn-1"], plannerResponseCount: 1, stepCount: 2 },
+  });
+  for (let i = 0; i < 40 && !persistedAttempts.includes(turn1.id); i += 1) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await new Promise((r) => setTimeout(r, 10));
+
+  const statusesWhileTurn2Active = notifications
+    .filter((n) => n.method === "thread/status/changed")
+    .map((n) => (n.params.status as { type?: string } | undefined)?.type);
+  expect(statusesWhileTurn2Active).toEqual(["active", "active"]);
+  expect(runtime.activeTurnId).toBe(turn2.id);
+  expect(persistedAttempts).toContain(turn1.id);
+
+  // Completing turn 2 publishes idle normally.
+  prompt2Done.resolve({ stopReason: "end_turn" });
+  for (let i = 0; i < 40 && !persistedAttempts.includes(turn2.id); i += 1) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  await new Promise((r) => setTimeout(r, 10));
+
+  const statusesAfterTurn2Done = notifications
+    .filter((n) => n.method === "thread/status/changed")
+    .map((n) => (n.params.status as { type?: string } | undefined)?.type);
+  expect(statusesAfterTurn2Done).toEqual(["active", "active", "idle"]);
+  expect(runtime.activeTurnId).toBeUndefined();
+});
+
+test("delayed final transcript inspection still publishes idle when a follow-up startTurn fails before becoming active", async () => {
+  const notifications: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const prompt1Done = deferred<{ stopReason: string }>();
+  const turn1AfterInspect = deferred<TranscriptSnapshotResult>();
+  let inspectCall = 0;
+  let extBusy = false;
+
+  const mockAcp = makeMockAcpClient(() => prompt1Done.promise);
+
+  const host: RuntimeHost = {
+    publish: (_tid, method, params) => notifications.push({ method, params }),
+    request: async () => ({ decision: "decline" }),
+    acquireClient: async () => mockAcp.client,
+    idleCloseMs: 0,
+    externalWritePollMs: 0,
+    externalActivity: async () =>
+      extBusy ? { path: "/tmp/t.jsonl", size: 10, externallyBusy: true, mtimeMs: Date.now(), holderPid: 4242 } : undefined,
+    inspectTranscriptState: async () => {
+      inspectCall += 1;
+      if (inspectCall === 1) return { kind: "missing" };
+      return turn1AfterInspect.promise;
+    },
+  };
+
+  const runtime = new ThreadRuntime(
+    "race-session",
+    "/workspace",
+    host,
+    { model: undefined, effort: undefined, mode: "default", executionPolicy: { type: "workspaceWrite", networkAccess: false } },
+    false,
+  );
+  await runtime.initializeNewSession();
+
+  await runtime.startTurn({
+    input: [{ type: "text", text: "turn-1", text_elements: [] }],
+    clientUserMessageId: "client-1",
+    settings: {},
+  });
+
+  prompt1Done.resolve({ stopReason: "end_turn" });
+  for (let i = 0; i < 40 && inspectCall < 2; i += 1) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  expect(inspectCall).toBe(2);
+
+  // Follow-up fails before publishing active (external busy guard).
+  extBusy = true;
+  await expect(
+    runtime.startTurn({
+      input: [{ type: "text", text: "turn-2-rejected", text_elements: [] }],
+      clientUserMessageId: "client-2",
+      settings: {},
+    }),
+  ).rejects.toThrow(/Another Antigravity process/);
+
+  // Turn 1 finalization finishes and must still publish idle so clients do not stay stuck in active.
+  turn1AfterInspect.resolve({ kind: "missing" });
+  for (let i = 0; i < 40; i += 1) {
+    const types = notifications
+      .filter((n) => n.method === "thread/status/changed")
+      .map((n) => (n.params.status as { type?: string } | undefined)?.type);
+    if (types.includes("idle")) break;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+
+  const statuses = notifications
+    .filter((n) => n.method === "thread/status/changed")
+    .map((n) => (n.params.status as { type?: string } | undefined)?.type);
+  expect(statuses).toEqual(["active", "idle"]);
+});
