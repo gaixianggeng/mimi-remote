@@ -208,6 +208,12 @@ gamma=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeT
 write_results "$work_root/pass.json" "$gamma" "Passed"
 python3 "$inventory" --root "$root" verify-results "$work_root/pass.json" --markdown "$work_root/summary.md" \
   > "$work_root/out.txt" 2>&1 || { cat "$work_root/out.txt" >&2; fail "全部执行且通过时应成功。"; }
+grep -Fq '| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 其中已确认抖动 | 失败 | 跳过 |' "$work_root/summary.md" \
+  || { cat "$work_root/summary.md" >&2; fail "按类统计表表头应明确标注「其中已确认抖动」。"; }
+if grep -Fq '| 其中重试后通过 |' "$work_root/summary.md"; then
+  cat "$work_root/summary.md" >&2
+  fail "按类统计表不得保留易与重录/未知混淆的「其中重试后通过」列名。"
+fi
 grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 0 | 0 | 1 |' "$work_root/summary.md" \
   || { cat "$work_root/summary.md" >&2; fail "按类统计表不正确。"; }
 
@@ -511,6 +517,10 @@ elif [[ "${MOCK_RERECORD_MODE:-none}" == "symlink" ]]; then
   snap_root="ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests"
   mkdir -p "$snap_root"
   ln -sf /etc/hosts "$snap_root/testShot.link.png"
+elif [[ "${MOCK_RERECORD_MODE:-none}" == "vt_control" ]]; then
+  snap_root="ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests"
+  mkdir -p "$snap_root"
+  printf 'bad-ctrl-png' > "$snap_root/testShot.1.png"$'\x0b'
 fi
 exit "${MOCK_IOS_DEV_EXIT:-0}"
 EOF
@@ -524,10 +534,16 @@ EOF
 
 mock_bin="$work_root/mock-bin"
 mkdir -p "$mock_bin"
+real_git="$(command -v git)"
+real_cp="$(command -v cp)"
 cat > "$mock_bin/xcrun" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "xcresulttool" && "${2:-}" == "get" && "${3:-}" == "test-results" && "${4:-}" == "tests" ]]; then
+  if [[ "${MOCK_XCRESULT_TESTS_EXIT:-0}" -ne 0 ]]; then
+    echo "mock xcresulttool tests extract failure" >&2
+    exit "${MOCK_XCRESULT_TESTS_EXIT}"
+  fi
   cat "$MOCK_TESTS_JSON"
   exit 0
 fi
@@ -539,6 +555,49 @@ echo "unexpected xcrun invocation: $*" >&2
 exit 1
 EOF
 chmod +x "$mock_bin/xcrun"
+
+cat > "$mock_bin/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+real_git="$real_git"
+if [[ "\${1:-}" == "status" ]]; then
+  has_z=false
+  for arg in "\$@"; do
+    if [[ "\$arg" == "-z" ]]; then
+      has_z=true
+      break
+    fi
+  done
+  if [[ "\${MOCK_GIT_FAIL_PHASE:-none}" == "pre" && "\$has_z" == false ]]; then
+    echo "fatal: mock pre-test git status failed" >&2
+    exit "\${MOCK_GIT_FAIL_EXIT:-128}"
+  fi
+  if [[ "\${MOCK_GIT_FAIL_PHASE:-none}" == "post" && "\$has_z" == true ]]; then
+    echo "fatal: mock post-test git status failed" >&2
+    exit "\${MOCK_GIT_FAIL_EXIT:-128}"
+  fi
+fi
+exec "\$real_git" "\$@"
+EOF
+chmod +x "$mock_bin/git"
+
+cat > "$mock_bin/cp" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+real_cp="$real_cp"
+if [[ -n "\${MOCK_FAIL_COPY_SUFFIX:-}" ]]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      *"\${MOCK_FAIL_COPY_SUFFIX}")
+        echo "cp: mock copy failure for \$arg" >&2
+        exit 1
+        ;;
+    esac
+  done
+fi
+exec "\$real_cp" "\$@"
+EOF
+chmod +x "$mock_bin/cp"
 
 # 端到端 1：重录快照（含中文与空格命名变体）+ 真抖动同时出现，重录必须先采集再分类并判失败。
 fixture_index=$((fixture_index + 1))
@@ -676,5 +735,276 @@ PATH="$mock_bin:$PATH" \
   || { cat "$work_root/out.txt" >&2; fail "无重录快照且全部通过时应返回 0。"; }
 [[ -f "$suite_result/rerecorded-snapshots.txt" && ! -s "$suite_result/rerecorded-snapshots.txt" ]] \
   || fail "无重录快照时 rerecorded-snapshots.txt 应为空文件。"
+
+# 夹具：清单含 0x0B（垂直制表符）、\r、\x0C 等控制字符时按 LF 读取完整路径，不得被 splitlines() 切分成合法 PNG。
+new_fixture
+printf 'ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png\x0b\n' \
+  > "$work_root/vt-rerecorded.txt"
+printf 'ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.2.png\r\n' \
+  >> "$work_root/vt-rerecorded.txt"
+printf 'ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.3.png\x0c\n' \
+  >> "$work_root/vt-rerecorded.txt"
+if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+  "$work_root/mixed.json" \
+  --markdown "$work_root/vt.md" \
+  --rerecorded-list "$work_root/vt-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "含 0x0B 等控制字符的重录路径必须判失败。"
+fi
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：3 条" "$work_root/vt.md" \
+  || { cat "$work_root/vt.md" >&2; fail "含 0x0B/\\r/0x0C 控制字符的路径应全部标为未知。"; }
+grep -Fq 'testShot.1.png\x0b（未知：路径包含控制字符）' "$work_root/vt.md" \
+  || { cat "$work_root/vt.md" >&2; fail "含 0x0B 控制字符的路径应给出控制字符未知原因。"; }
+grep -Fq 'testShot.2.png\x0d（未知：路径包含控制字符）' "$work_root/vt.md" \
+  || { cat "$work_root/vt.md" >&2; fail "含 CR（\\r）控制字符的路径不得被 universal newlines 剥离。"; }
+grep -Fq 'testShot.3.png\x0c（未知：路径包含控制字符）' "$work_root/vt.md" \
+  || { cat "$work_root/vt.md" >&2; fail "含 0x0C 控制字符的路径应给出控制字符未知原因。"; }
+if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "含 0x0B 控制字符的路径不得被误归类为合法重录快照。"
+fi
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "含 0x0B 控制字符的路径缺少未知 error 注解。"; }
+grep -Fq "::warning title=重试后通过（归属未知）::GammaSnapshotTests/testShot" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "含 0x0B 控制字符场景下重试通过用例应标为归属未知。"; }
+grep -Fq '| GammaSnapshotTests | 1 | 0 | 1 | 1 | 1 | 0 | 0 | 0 |' "$work_root/vt.md" \
+  || { cat "$work_root/vt.md" >&2; fail "含 0x0B 控制字符场景下已确认抖动列应为 0。"; }
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "含 0x0B 控制字符场景下不得输出已确认抖动告警。"
+fi
+
+# 夹具：结果损坏（无效 JSON）+ 已采集重录快照时，保留摘要诊断并明确标为未知归属。
+new_fixture
+if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+  "$work_root/bad.json" \
+  --markdown "$work_root/bad-rerecorded.md" \
+  --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "结果损坏且存在重录快照时应判失败。"
+fi
+grep -Fq "无法解析测试结果 JSON" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果损坏时缺少 JSON 解析错误提示。"; }
+[[ -f "$work_root/bad-rerecorded.md" ]] || fail "结果损坏且有重录快照时仍应生成 summary.md 诊断。"
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/bad-rerecorded.md" \
+  || { cat "$work_root/bad-rerecorded.md" >&2; fail "结果损坏时已采集重录快照应标明未知归属。"; }
+grep -Fq "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" "$work_root/bad-rerecorded.md" \
+  || { cat "$work_root/bad-rerecorded.md" >&2; fail "结果损坏摘要未列出已采集的重录快照路径。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果损坏且有重录快照时应输出未知归属 error 注解。"; }
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  fail "结果损坏场景不得输出抖动告警。"
+fi
+
+# 端到端 7：测试前 git status 查询失败时必须立即阻断，不得放行进入测试。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-pre-git-fail"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-pre-git-fail-result"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/pass.json" \
+  MOCK_GIT_FAIL_PHASE="pre" \
+  MOCK_GIT_FAIL_EXIT=128 \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 128 ]] || { cat "$work_root/out.txt" >&2; fail "测试前 git status 失败时必须返回退出码 128，实际 ${suite_status}。"; }
+grep -Fq "重录前查询" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "测试前 git status 失败时缺少明确提示。"; }
+[[ ! -d "$suite_result/full.xcresult" ]] || fail "测试前 git status 失败时不应继续执行测试。"
+
+# 端到端 8a：XCTest 返回 0、全部通过，但测试后 git status 尚未输出即失败，必须保持非零并报告采集失败与归属未知。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-post-git-fail-pass"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-post-git-fail-pass-result"
+suite_summary="$work_root/suite-post-git-fail-pass-summary.md"
+: > "$suite_summary"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/pass.json" \
+  MOCK_RERECORD_MODE="none" \
+  MOCK_IOS_DEV_EXIT=0 \
+  MOCK_GIT_FAIL_PHASE="post" \
+  MOCK_GIT_FAIL_EXIT=128 \
+  GITHUB_ACTIONS=true \
+  GITHUB_STEP_SUMMARY="$suite_summary" \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -ne 0 ]] || { cat "$work_root/out.txt" >&2; fail "XCTest 返回 0 但测试后 git status 失败时必须返回非零。"; }
+[[ -f "$suite_result/tests.json" && -f "$suite_result/summary.md" ]] \
+  || fail "测试后 git status 失败时仍应保留 tests.json 与 summary.md。"
+grep -Fq "测试后查询" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "测试后 git status 失败应在 summary.md 报告采集失败。"; }
+grep -Fq "无法确认完整清单/归属未知" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "测试后 git status 失败应在 summary.md 报告归属未知。"; }
+grep -Fq "::error title=重录快照采集失败::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "测试后 git status 失败应输出采集失败 error 注解。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "测试后 git status 失败应输出归属未知 error 注解。"; }
+grep -Fq "## 重录快照（采集失败，清单不完整" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "GITHUB_STEP_SUMMARY 应标明重录快照采集失败且清单不完整。"; }
+
+# 端到端 8b：XCTest 返回 0 且存在重试通过用例，但测试后 git status 失败，重试通过必须标为归属未知而非抖动。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-post-git-fail-retry"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-post-git-fail-retry-result"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/flaky.json" \
+  MOCK_RERECORD_MODE="none" \
+  MOCK_IOS_DEV_EXIT=0 \
+  MOCK_GIT_FAIL_PHASE="post" \
+  MOCK_GIT_FAIL_EXIT=128 \
+  GITHUB_ACTIONS=true \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -ne 0 ]] || { cat "$work_root/out.txt" >&2; fail "存在重试通过且测试后 git status 失败时必须返回非零。"; }
+grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 0 | 0 | 1 |' "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "测试后 git status 失败时已确认抖动列必须为 0。"; }
+grep -Fq "::warning title=重试后通过（归属未知）::AlphaTests/testThree" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "测试后 git status 失败时重试通过用例应标为归属未知。"; }
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "测试后 git status 失败时不得把重试通过误标为抖动。"
+fi
+
+# 端到端 9：真实文件名 testShot.1.png 后接 0x0B 时保持失败、拒绝复制并标为未知。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-vt-control"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-vt-control-result"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/mixed.json" \
+  MOCK_RERECORD_MODE="vt_control" \
+  MOCK_IOS_DEV_EXIT=0 \
+  GITHUB_ACTIONS=true \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 1 ]] || { cat "$work_root/out.txt" >&2; fail "含 0x0B 文件名的重录快照必须返回 1，实际 ${suite_status}。"; }
+[[ -f "$suite_result/tests.json" && -f "$suite_result/summary.md" ]] \
+  || fail "含 0x0B 文件名场景仍应保留 tests.json 与 summary.md。"
+if [[ -d "$suite_result/rerecorded-snapshots" ]] && find "$suite_result/rerecorded-snapshots" -type f | grep -q .; then
+  fail "含 0x0B 控制字符的快照文件不得被复制到 artifact 目录。"
+fi
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "含 0x0B 文件名的重录快照应标为未知。"; }
+if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "含 0x0B 文件名的快照不得误归类为 GammaSnapshotTests/testShot 已确认重录。"
+fi
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "含 0x0B 文件名场景下不得输出已确认抖动告警。"
+fi
+
+# 端到端 10：结果提取失败（xcresulttool get test-results tests 非零）时维持非零，保留重录摘要、快照与诊断。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-extract-fail"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-extract-fail-result"
+suite_summary="$work_root/suite-extract-fail-summary.md"
+: > "$suite_summary"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_XCRESULT_TESTS_EXIT=2 \
+  MOCK_RERECORD_MODE="single" \
+  MOCK_IOS_DEV_EXIT=0 \
+  GITHUB_ACTIONS=true \
+  GITHUB_STEP_SUMMARY="$suite_summary" \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 2 ]] || { cat "$work_root/out.txt" >&2; fail "结果提取返回 2 时必须保留非零退出码 2，实际 ${suite_status}。"; }
+[[ -f "$suite_result/rerecorded-snapshots/ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" ]] \
+  || fail "结果提取失败时必须保留已采集的重录快照 artifact。"
+[[ -f "$suite_result/summary.md" ]] || fail "结果提取失败时应保留 summary.md 诊断。"
+grep -Fq "提取测试结果失败" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "结果提取失败时 summary.md 应说明提取失败。"; }
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "结果提取失败时 summary.md 应把已采集重录标为未知归属。"; }
+grep -Fq "## 重录快照（1 张，需逐张核对后再提交）" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "结果提取失败时不得跳过 GITHUB_STEP_SUMMARY 的重录摘要。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果提取失败且有重录快照时应输出未知归属 error 注解。"; }
+grep -Fq "MOCK_SUMMARY_DIAGNOSTIC" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果提取失败时应保留 xcresulttool summary 诊断。"; }
+grep -Fq "结果目录：${suite_result}" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果提取失败时仍应打印结果目录。"; }
+
+# 端到端 11：结果 JSON 损坏时维持非零，保留快照、损坏结果、未知归属摘要与 GITHUB_STEP_SUMMARY。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-bad-json"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-bad-json-result"
+suite_summary="$work_root/suite-bad-json-summary.md"
+: > "$suite_summary"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/bad.json" \
+  MOCK_RERECORD_MODE="single" \
+  MOCK_IOS_DEV_EXIT=0 \
+  GITHUB_ACTIONS=true \
+  GITHUB_STEP_SUMMARY="$suite_summary" \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 1 ]] || { cat "$work_root/out.txt" >&2; fail "结果 JSON 损坏时必须返回 1，实际 ${suite_status}。"; }
+[[ -f "$suite_result/tests.json" && -f "$suite_result/summary.md" ]] \
+  || fail "结果 JSON 损坏时应保留 tests.json 与 summary.md。"
+[[ -f "$suite_result/rerecorded-snapshots/ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" ]] \
+  || fail "结果 JSON 损坏时应保留已采集的重录快照。"
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "结果 JSON 损坏时应把已采集重录标为未知归属。"; }
+grep -Fq "## 重录快照（1 张，需逐张核对后再提交）" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "结果 JSON 损坏时 GITHUB_STEP_SUMMARY 应保留重录快照摘要。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果 JSON 损坏且有重录快照时应输出未知归属 error 注解。"; }
+
+# 端到端 12：单张快照复制失败时不得中断后续采集，保留其余快照、tests.json、summary.md 与诊断并维持非零。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-copy-fail"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-copy-fail-result"
+suite_summary="$work_root/suite-copy-fail-summary.md"
+: > "$suite_summary"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/mixed.json" \
+  MOCK_RERECORD_MODE="mixed" \
+  MOCK_FAIL_COPY_SUFFIX="testShot.1.png" \
+  MOCK_IOS_DEV_EXIT=0 \
+  GITHUB_ACTIONS=true \
+  GITHUB_STEP_SUMMARY="$suite_summary" \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 1 ]] || { cat "$work_root/out.txt" >&2; fail "单张快照复制失败时必须返回 1，实际 ${suite_status}。"; }
+[[ ! -e "$suite_result/rerecorded-snapshots/ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" ]] \
+  || fail "被 mock 复制失败的 testShot.1.png 不应存在于 artifact 目录。"
+[[ -f "$suite_result/rerecorded-snapshots/ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.深色 模式.png" ]] \
+  || fail "单张复制失败不得中断后续正常快照的采集与复制。"
+[[ -f "$suite_result/tests.json" && -f "$suite_result/summary.md" ]] \
+  || fail "单张复制失败不得丢失 tests.json 与 summary.md。"
+grep -Fqx "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" "$suite_result/rerecorded-snapshots.txt" \
+  || fail "复制失败的快照路径仍应保留在 rerecorded-snapshots.txt 清单中。"
+grep -Fqx "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.深色 模式.png" "$suite_result/rerecorded-snapshots.txt" \
+  || fail "后续正常快照路径应保留在 rerecorded-snapshots.txt 清单中。"
+grep -Fq "复制重录快照失败" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "summary.md 应记录单张快照复制失败诊断。"; }
+grep -Fq "::error title=重录快照采集失败::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "单张快照复制失败应输出采集失败 error 注解。"; }
+grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot（2 张）" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "单张快照复制失败仍应保留已识别的快照漂移分类。"; }
+grep -Fq "::warning title=抖动用例（重试后通过）::AlphaTests/testThree" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "单张复制失败但清单完整时仍应保留非快照真抖动分类。"; }
+grep -Fq "重录快照采集错误：" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "GITHUB_STEP_SUMMARY 应包含单张复制失败诊断。"; }
 
 echo "iOS 测试清单自测通过：${fixture_index} 个夹具覆盖失效 selector、文件名 selector、归属、隔离、工程登记、按类执行数、重试抖动、重录快照分类与全量脚本端到端语义。"

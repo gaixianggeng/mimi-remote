@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -519,8 +520,26 @@ def collect_results(
         collect_results(child, results, retried_passed, suite)
 
 
+def is_disallowed_path_char(ch: str) -> bool:
+    code = ord(ch)
+    if code < 32 or code == 127 or 0x80 <= code <= 0x9F:
+        return True
+    if ch in ("\u2028", "\u2029"):
+        return True
+    return unicodedata.category(ch) == "Cc"
+
+
 def sanitize_display_text(text: str) -> str:
-    return "".join(f"\\x{ord(ch):02x}" if ord(ch) < 32 or ord(ch) == 127 else ch for ch in text)
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if code < 32 or code == 127 or 0x80 <= code <= 0x9F:
+            out.append(f"\\x{code:02x}")
+        elif ch in ("\u2028", "\u2029"):
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def escape_github_annotation(text: str) -> str:
@@ -539,8 +558,12 @@ def parse_snapshot_path(raw_path: str) -> tuple[ParsedSnapshotPath | None, str |
     """路径安全地解析 SnapshotTesting 重录快照路径（<TEST_DIR>/[subdirs/]__Snapshots__/<folder>/<method>.<variant>.png）。"""
     if not raw_path:
         return None, "路径为空"
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_path):
+    if any(is_disallowed_path_char(ch) for ch in raw_path):
         return None, "路径包含控制字符"
+    if raw_path.startswith("UNSAFE_PATH:"):
+        return None, "采集阶段检测到不安全路径"
+    if raw_path.startswith("INVALID_SNAPSHOT_FILE:"):
+        return None, "采集阶段检测到非常规文件（可能已删除或为符号链接）"
     if "\\" in raw_path:
         return None, "路径包含反斜杠，不是规范 POSIX 相对路径"
     if raw_path.startswith("/") or raw_path.endswith("/"):
@@ -639,18 +662,57 @@ def read_rerecorded_list(path: Path) -> tuple[list[str] | None, str | None]:
     if not path.is_file():
         return None, f"重录快照清单不存在：{path}"
     try:
-        raw_text = path.read_text(encoding="utf-8")
+        raw_bytes = path.read_bytes()
     except OSError as exc:
         return None, f"无法读取重录快照清单（{path}）：{exc}"
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return None, f"重录快照清单不是有效 UTF-8（{path}）：{exc}"
+    # 清单按 LF（\n）分隔，不启用 universal newlines 或 splitlines()，
+    # 避免文件名中的 \r、\x0b、\x0c、\x1c-\x1e、\x85、\u2028、\u2029 被误拆成多行。
+    raw_entries = raw_text.split("\n")
+    if raw_entries and raw_entries[-1] == "":
+        raw_entries.pop()
     entries: list[str] = []
     seen: set[str] = set()
-    for raw_line in raw_text.splitlines():
-        if not raw_line.strip():
+    for raw_entry in raw_entries:
+        if raw_entry == "":
             continue
-        if raw_line not in seen:
-            seen.add(raw_line)
-            entries.append(raw_line)
+        if raw_entry not in seen:
+            seen.add(raw_entry)
+            entries.append(raw_entry)
     return entries, None
+
+
+def emit_collection_and_snapshot_annotations(
+    collection_errors: list[str],
+    rerecorded_incomplete: bool,
+    snapshot_drifted: dict[str, list[str]],
+    unmapped_rerecorded: list[tuple[str, str]],
+    unknown_retried: set[str],
+    flaky: set[str],
+) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    for err in collection_errors:
+        print(f"::error title=重录快照采集失败::{escape_github_annotation(err)}")
+    if rerecorded_incomplete and not unmapped_rerecorded:
+        print(
+            "::error title=快照漂移（已重录，未知）::"
+            + escape_github_annotation("重录快照采集失败，无法确认重录快照清单与归属")
+        )
+    for case in sorted(snapshot_drifted):
+        paths = snapshot_drifted[case]
+        suffix = f"（{len(paths)} 张）" if len(paths) > 1 else ""
+        print(f"::error title=快照漂移（已重录）::{escape_github_annotation(case + suffix)}")
+    for raw_path, reason in unmapped_rerecorded:
+        detail = f"未知归属：{raw_path}（{reason}）"
+        print(f"::error title=快照漂移（已重录，未知）::{escape_github_annotation(detail)}")
+    for case in sorted(unknown_retried):
+        print(f"::warning title=重试后通过（归属未知）::{escape_github_annotation(case)}")
+    for case in sorted(flaky):
+        print(f"::warning title=抖动用例（重试后通过）::{escape_github_annotation(case)}")
 
 
 def command_verify_results(args: argparse.Namespace) -> int:
@@ -660,26 +722,86 @@ def command_verify_results(args: argparse.Namespace) -> int:
             print(f"iOS 测试 selector 检查失败：{error}", file=sys.stderr)
         return 1
 
-    tests_json_path = Path(args.tests_json)
-    if not tests_json_path.is_file():
-        print(f"测试结果文件不存在：{tests_json_path}", file=sys.stderr)
-        return 1
-    try:
-        payload = json.loads(tests_json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"无法解析测试结果 JSON（{tests_json_path}）：{exc}", file=sys.stderr)
-        return 1
-    if not isinstance(payload, dict) or not isinstance(payload.get("testNodes"), list):
-        print(f"测试结果 JSON 缺少有效的 testNodes：{tests_json_path}", file=sys.stderr)
-        return 1
-
+    collection_errors: list[str] = [item for item in (args.collection_error or []) if item]
+    rerecorded_incomplete = bool(args.rerecorded_incomplete)
     rerecorded_paths: list[str] = []
     if args.rerecorded_list:
         loaded_paths, list_error = read_rerecorded_list(Path(args.rerecorded_list))
         if list_error or loaded_paths is None:
-            print(list_error or "无法读取重录快照清单。", file=sys.stderr)
-            return 1
-        rerecorded_paths = loaded_paths
+            collection_errors.append(list_error or "无法读取重录快照清单。")
+            rerecorded_incomplete = True
+        else:
+            rerecorded_paths = loaded_paths
+
+    payload: dict | None = None
+    results_error: str | None = args.results_error or None
+    if results_error is None:
+        tests_json_path = Path(args.tests_json)
+        if not tests_json_path.is_file():
+            results_error = f"测试结果文件不存在：{tests_json_path}"
+        else:
+            try:
+                loaded = json.loads(tests_json_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                results_error = f"无法解析测试结果 JSON（{tests_json_path}）：{exc}"
+            else:
+                if not isinstance(loaded, dict) or not isinstance(loaded.get("testNodes"), list):
+                    results_error = f"测试结果 JSON 缺少有效的 testNodes：{tests_json_path}"
+                else:
+                    payload = loaded
+
+    if results_error is not None or payload is None:
+        final_results_error = results_error or "测试结果不可用"
+        print(final_results_error, file=sys.stderr)
+        if collection_errors:
+            print(f"\n重录快照采集失败（{len(collection_errors)}）：", file=sys.stderr)
+            for err in collection_errors:
+                print(f"- {sanitize_display_text(err)}", file=sys.stderr)
+        unmapped_rerecorded: list[tuple[str, str]] = []
+        for raw_path in rerecorded_paths:
+            _, path_error = parse_snapshot_path(raw_path)
+            if path_error:
+                reason = f"{path_error}；且测试结果不可用，无法验证归属"
+            else:
+                reason = f"测试结果不可用，无法验证归属（{final_results_error}）"
+            unmapped_rerecorded.append((raw_path, reason))
+        lines: list[str] = [
+            f"测试结果不可用，无法生成按类执行数统计：{sanitize_display_text(final_results_error)}",
+        ]
+        if collection_errors:
+            lines += [
+                "",
+                f"重录快照采集失败（判失败）：{len(collection_errors)} 项",
+                "",
+            ]
+            for err in collection_errors:
+                lines.append(f"- {sanitize_display_text(err)}")
+        if rerecorded_incomplete:
+            lines += [
+                "",
+                "快照漂移（已重录，无法确认完整清单/归属未知，判失败）：采集阶段无法确认重录快照清单。",
+            ]
+        if unmapped_rerecorded:
+            lines += [
+                "",
+                f"快照漂移（已重录，无法映射/未知，判失败）：{len(unmapped_rerecorded)} 条",
+                "",
+            ]
+            for raw_path, reason in unmapped_rerecorded:
+                lines.append(f"- {sanitize_display_text(raw_path)}（未知：{sanitize_display_text(reason)}）")
+        report = "\n".join(lines)
+        if args.markdown:
+            Path(args.markdown).write_text(report + "\n", encoding="utf-8")
+        print(report)
+        emit_collection_and_snapshot_annotations(
+            collection_errors=collection_errors,
+            rerecorded_incomplete=rerecorded_incomplete,
+            snapshot_drifted={},
+            unmapped_rerecorded=unmapped_rerecorded,
+            unknown_retried=set(),
+            flaky=set(),
+        )
+        return 1
 
     results: dict[str, dict[str, str]] = {}
     retried_passed: set[str] = set()
@@ -695,8 +817,8 @@ def command_verify_results(args: argparse.Namespace) -> int:
         rerecorded_paths, plan.inventory, runnable, results
     )
     remaining_retried = retried_passed - set(snapshot_drifted)
-    if unmapped_rerecorded:
-        # 存在无法映射的重录快照时，不能把剩余重试通过用例误标为抖动，统一标为归属未知。
+    if unmapped_rerecorded or rerecorded_incomplete:
+        # 存在无法映射的重录快照或采集清单不完整时，不能把剩余重试通过用例误标为抖动，统一标为归属未知。
         flaky: set[str] = set()
         unknown_retried = remaining_retried
     else:
@@ -705,7 +827,7 @@ def command_verify_results(args: argparse.Namespace) -> int:
 
     problems: list[str] = []
     lines = [
-        "| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 其中重试后通过 | 失败 | 跳过 |",
+        "| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 其中已确认抖动 | 失败 | 跳过 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     totals = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -713,12 +835,12 @@ def command_verify_results(args: argparse.Namespace) -> int:
         expected_methods = set(runnable[name]) - quarantined.get(name, set())
         executed = results.get(name, {})
         passed = sum(1 for value in executed.values() if value == "Passed")
-        retried = sum(1 for method in executed if f"{name}/{method}" in flaky)
+        flaky_count = sum(1 for method in executed if f"{name}/{method}" in flaky)
         failed = sum(1 for value in executed.values() if value == "Failed")
         skipped = sum(1 for value in executed.values() if value == "Skipped")
         row = [
             len(runnable[name]), len(quarantined.get(name, ())), len(expected_methods), len(executed),
-            passed, retried, failed, skipped,
+            passed, flaky_count, failed, skipped,
         ]
         totals = [a + b for a, b in zip(totals, row)]
         lines.append(f"| {name} | " + " | ".join(str(value) for value in row) + " |")
@@ -736,6 +858,19 @@ def command_verify_results(args: argparse.Namespace) -> int:
         problems.append(f"结果里出现静态清单之外的类 {name}，解析器与编译结果不一致。")
     lines.append("| **合计** | " + " | ".join(f"**{value}**" for value in totals) + " |")
 
+    if collection_errors:
+        lines += [
+            "",
+            f"重录快照采集失败（判失败）：{len(collection_errors)} 项",
+            "",
+        ]
+        for err in collection_errors:
+            lines.append(f"- {sanitize_display_text(err)}")
+    if rerecorded_incomplete:
+        lines += [
+            "",
+            "快照漂移（已重录，无法确认完整清单/归属未知，判失败）：采集阶段无法确认重录快照清单，剩余重试通过用例不计为抖动。",
+        ]
     if snapshot_drifted:
         drifted_image_count = sum(len(paths) for paths in snapshot_drifted.values())
         lines += [
@@ -754,11 +889,17 @@ def command_verify_results(args: argparse.Namespace) -> int:
             "",
         ]
         for raw_path, reason in unmapped_rerecorded:
-            lines.append(f"- {sanitize_display_text(raw_path)}（未知：{reason}）")
+            lines.append(f"- {sanitize_display_text(raw_path)}（未知：{sanitize_display_text(reason)}）")
     if unknown_retried:
+        if rerecorded_incomplete and unmapped_rerecorded:
+            unknown_cause = "重录快照清单不完整且存在无法映射的重录快照"
+        elif rerecorded_incomplete:
+            unknown_cause = "重录快照采集失败，无法确认清单"
+        else:
+            unknown_cause = "存在无法映射的重录快照"
         lines += [
             "",
-            f"重试后通过（归属未知：存在无法映射的重录快照，不计为抖动）：{len(unknown_retried)} 个",
+            f"重试后通过（归属未知：{unknown_cause}，不计为抖动）：{len(unknown_retried)} 个",
             "",
         ]
         lines += [f"- {case}" for case in sorted(unknown_retried)]
@@ -783,23 +924,25 @@ def command_verify_results(args: argparse.Namespace) -> int:
         print(f"\n失败用例（{len(failed_cases)}）：")
         for case in failed_cases:
             print(f"- {case}")
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        for case in sorted(snapshot_drifted):
-            paths = snapshot_drifted[case]
-            suffix = f"（{len(paths)} 张）" if len(paths) > 1 else ""
-            print(f"::error title=快照漂移（已重录）::{escape_github_annotation(case + suffix)}")
-        for raw_path, reason in unmapped_rerecorded:
-            detail = f"未知归属：{raw_path}（{reason}）"
-            print(f"::error title=快照漂移（已重录，未知）::{escape_github_annotation(detail)}")
-        for case in sorted(unknown_retried):
-            print(f"::warning title=重试后通过（归属未知）::{escape_github_annotation(case)}")
-        for case in sorted(flaky):
-            print(f"::warning title=抖动用例（重试后通过）::{escape_github_annotation(case)}")
+    emit_collection_and_snapshot_annotations(
+        collection_errors=collection_errors,
+        rerecorded_incomplete=rerecorded_incomplete,
+        snapshot_drifted=snapshot_drifted,
+        unmapped_rerecorded=unmapped_rerecorded,
+        unknown_retried=unknown_retried,
+        flaky=flaky,
+    )
+    if collection_errors:
+        print(f"\n重录快照采集失败（{len(collection_errors)}）：", file=sys.stderr)
+        for err in collection_errors:
+            print(f"- {sanitize_display_text(err)}", file=sys.stderr)
     if problems:
         print(f"\n执行数校验失败（{len(problems)}）：", file=sys.stderr)
         for problem in problems:
             print(f"- {problem}", file=sys.stderr)
-    has_rerecorded_failure = bool(snapshot_drifted or unmapped_rerecorded)
+    has_rerecorded_failure = bool(
+        snapshot_drifted or unmapped_rerecorded or collection_errors or rerecorded_incomplete
+    )
     return 1 if problems or failed_cases or has_rerecorded_failure else 0
 
 
@@ -814,7 +957,22 @@ def main() -> int:
     verify_parser = subcommands.add_parser("verify-results", help="按类核对 xcresult 实际执行数")
     verify_parser.add_argument("tests_json", help="xcresulttool get test-results tests 的 JSON 输出")
     verify_parser.add_argument("--markdown", help="把按类统计表写入该文件")
-    verify_parser.add_argument("--rerecorded-list", help="本次运行重录的快照路径清单文件（每行一个仓库相对路径）")
+    verify_parser.add_argument("--rerecorded-list", help="本次运行重录的快照路径清单文件（每行一个仓库相对路径，LF 分隔）")
+    verify_parser.add_argument(
+        "--rerecorded-incomplete",
+        action="store_true",
+        help="重录快照清单不完整（例如测试后 git status 失败），无法确认重录归属",
+    )
+    verify_parser.add_argument(
+        "--collection-error",
+        action="append",
+        default=[],
+        help="采集重录快照阶段发生的错误（可重复传入）",
+    )
+    verify_parser.add_argument(
+        "--results-error",
+        help="提取测试结果阶段发生的错误（传入时跳过解析 tests_json，但保留重录诊断）",
+    )
     args = parser.parse_args()
     handlers = {
         "check": command_check,

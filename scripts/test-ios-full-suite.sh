@@ -73,20 +73,38 @@ done < <(python3 ./scripts/ios-test-inventory.py skip-args)
 echo "==> iOS full XCTest（隔离 ${#skip_args[@]} 个用例）"
 
 snapshot_dir="ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__"
+snapshot_git_status_file=""
+cleanup_temp_files() {
+  if [[ -n "$snapshot_git_status_file" ]]; then
+    rm -f -- "$snapshot_git_status_file"
+  fi
+}
+trap cleanup_temp_files EXIT
+
 if [[ "$record_failed_snapshots" == true ]]; then
   # xcodebuild 把 TEST_RUNNER_ 前缀的变量去掉前缀后传给测试进程；SnapshotTesting 只重写不匹配的基线。
   export TEST_RUNNER_SNAPSHOT_TESTING_RECORD=failed
-  [[ -z "$(git status --porcelain --untracked-files=all -- "$snapshot_dir")" ]] || {
+  pre_status_output=""
+  pre_status_code=0
+  pre_status_output="$(git status --porcelain --untracked-files=all -- "$snapshot_dir")" || pre_status_code=$?
+  if [[ "$pre_status_code" -ne 0 ]]; then
+    echo "重录前查询 ${snapshot_dir} 的 git 状态失败（退出码 ${pre_status_code}）。" >&2
+    exit "$pre_status_code"
+  fi
+  if [[ -n "$pre_status_output" ]]; then
     echo "${snapshot_dir} 有未提交改动，重录前请先清理，避免混入重录结果。" >&2
     exit 2
-  }
+  fi
 fi
 
 is_safe_snapshot_path() {
   local path="$1"
+  local LC_ALL=C
   [[ -n "$path" ]] || return 1
   [[ "$path" != /* ]] || return 1
-  [[ "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 1
+  case "$path" in
+    *[[:cntrl:]]*) return 1 ;;
+  esac
   [[ "$path" != *\\* ]] || return 1
   [[ "$path" == "${snapshot_dir}/"* ]] || return 1
   case "/${path}/" in
@@ -95,18 +113,51 @@ is_safe_snapshot_path() {
   return 0
 }
 
+sanitize_label() {
+  local raw="$1"
+  local sanitized=""
+  if sanitized="$(python3 -c 'import sys; s = sys.argv[1]; print("".join(f"\\x{ord(c) - 0xdc00:02x}" if 0xdc80 <= ord(c) <= 0xdcff else (f"\\x{ord(c):02x}" if (ord(c) < 32 or ord(c) == 127 or 0x80 <= ord(c) <= 0x9f) else (f"\\u{ord(c):04x}" if c in ("\u2028", "\u2029") else c)) for c in s))' "$raw" 2>/dev/null)"; then
+    printf '%s' "$sanitized"
+    return 0
+  fi
+  sanitized="${raw//$'\n'/\\n}"
+  sanitized="${sanitized//$'\r'/\\r}"
+  printf '%s' "$sanitized"
+}
+
+escape_github_annotation() {
+  local text
+  text="$(sanitize_label "$1")"
+  text="${text//%/%25}"
+  printf '%s' "$text"
+}
+
 rerecorded_list=""
 rerecorded_count=0
+rerecorded_copied_count=0
 snapshot_collection_error=false
+snapshot_list_incomplete=false
+collection_errors=()
 
 append_rerecorded_summary() {
-  if [[ -n "${GITHUB_STEP_SUMMARY:-}" && "$record_failed_snapshots" == true && -f "$rerecorded_list" ]]; then
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" && "$record_failed_snapshots" == true && ( -f "$rerecorded_list" || "${#collection_errors[@]}" -gt 0 ) ]]; then
     {
       echo
-      echo "## 重录快照（${rerecorded_count} 张，需逐张核对后再提交）"
+      if [[ "$snapshot_list_incomplete" == true ]]; then
+        echo "## 重录快照（采集失败，清单不完整，已采集 ${rerecorded_count} 张）"
+      else
+        echo "## 重录快照（${rerecorded_count} 张，需逐张核对后再提交）"
+      fi
       echo
-      if [[ "$rerecorded_count" -gt 0 ]]; then
-        while IFS= read -r item; do
+      if [[ "${#collection_errors[@]}" -gt 0 ]]; then
+        echo "重录快照采集错误："
+        for err_item in "${collection_errors[@]}"; do
+          printf -- '- %s\n' "$err_item"
+        done
+        echo
+      fi
+      if [[ -f "$rerecorded_list" && "$rerecorded_count" -gt 0 ]]; then
+        while IFS= read -r item || [[ -n "$item" ]]; do
           [[ -n "$item" ]] || continue
           printf -- '- %s\n' "$item"
         done < "$rerecorded_list"
@@ -131,38 +182,62 @@ bash ./scripts/ios-dev.sh test \
 if [[ "$record_failed_snapshots" == true ]]; then
   rerecorded_list="$result_dir/rerecorded-snapshots.txt"
   : > "$rerecorded_list"
-  while IFS= read -r -d '' entry; do
-    [[ -n "$entry" ]] || continue
-    xy="${entry:0:2}"
-    snapshot_path="${entry:3}"
-    # -z 模式下 rename/copy 记录后面紧跟 NUL 分隔的原路径，需一并消费。
-    if [[ "$xy" == *R* || "$xy" == *C* ]]; then
-      IFS= read -r -d '' _old_snapshot_path || true
-    fi
-    if ! is_safe_snapshot_path "$snapshot_path"; then
-      safe_label="${snapshot_path//$'\n'/\\n}"
-      safe_label="${safe_label//$'\r'/\\r}"
-      echo "检测到不安全的快照路径变更，拒绝复制：${safe_label}" >&2
-      printf 'UNSAFE_PATH:%s\n' "$safe_label" >> "$rerecorded_list"
+  snapshot_git_status_file="$(mktemp "${TMPDIR:-/tmp}/mimi-ios-snapshot-status.XXXXXX")"
+  post_status_code=0
+  git status --porcelain -z --untracked-files=all -- "$snapshot_dir" > "$snapshot_git_status_file" || post_status_code=$?
+  if [[ "$post_status_code" -ne 0 ]]; then
+    err_msg="测试后查询 ${snapshot_dir} 的 git 状态失败（退出码 ${post_status_code}），无法确认重录快照清单"
+    echo "${err_msg}。" >&2
+    collection_errors+=("$err_msg")
+    snapshot_collection_error=true
+    snapshot_list_incomplete=true
+    snapshot_status=1
+  fi
+  if [[ -s "$snapshot_git_status_file" ]]; then
+    while IFS= read -r -d '' entry || [[ -n "$entry" ]]; do
+      [[ -n "$entry" ]] || continue
+      xy="${entry:0:2}"
+      snapshot_path="${entry:3}"
+      # -z 模式下 rename/copy 记录后面紧跟 NUL 分隔的原路径，需一并消费。
+      if [[ "$xy" == *R* || "$xy" == *C* ]]; then
+        IFS= read -r -d '' _old_snapshot_path || true
+      fi
+      if ! is_safe_snapshot_path "$snapshot_path"; then
+        safe_label="$(sanitize_label "$snapshot_path")"
+        echo "检测到不安全的快照路径变更，拒绝复制：${safe_label}" >&2
+        printf 'UNSAFE_PATH:%s\n' "$safe_label" >> "$rerecorded_list"
+        rerecorded_count=$((rerecorded_count + 1))
+        snapshot_collection_error=true
+        snapshot_status=1
+        continue
+      fi
+      if [[ ! -f "$snapshot_path" || -L "$snapshot_path" ]]; then
+        safe_label="$(sanitize_label "$snapshot_path")"
+        echo "快照路径不是常规文件（可能已删除或是符号链接），无法作为重录图复制：${safe_label}" >&2
+        printf 'INVALID_SNAPSHOT_FILE:%s\n' "$safe_label" >> "$rerecorded_list"
+        rerecorded_count=$((rerecorded_count + 1))
+        snapshot_collection_error=true
+        snapshot_status=1
+        continue
+      fi
+      printf '%s\n' "$snapshot_path" >> "$rerecorded_list"
       rerecorded_count=$((rerecorded_count + 1))
-      snapshot_collection_error=true
-      snapshot_status=1
-      continue
-    fi
-    if [[ ! -f "$snapshot_path" || -L "$snapshot_path" ]]; then
-      echo "快照路径不是常规文件（可能已删除或是符号链接），无法作为重录图复制：${snapshot_path}" >&2
-      printf 'INVALID_SNAPSHOT_FILE:%s\n' "$snapshot_path" >> "$rerecorded_list"
-      rerecorded_count=$((rerecorded_count + 1))
-      snapshot_collection_error=true
-      snapshot_status=1
-      continue
-    fi
-    printf '%s\n' "$snapshot_path" >> "$rerecorded_list"
-    mkdir -p -- "$result_dir/rerecorded-snapshots/$(dirname -- "$snapshot_path")"
-    cp -- "$snapshot_path" "$result_dir/rerecorded-snapshots/$snapshot_path"
-    rerecorded_count=$((rerecorded_count + 1))
-  done < <(git status --porcelain -z --untracked-files=all -- "$snapshot_dir")
-  echo "重录快照：${rerecorded_count} 张（清单：${rerecorded_list}）"
+      copy_target_dir="$result_dir/rerecorded-snapshots/$(dirname -- "$snapshot_path")"
+      if mkdir -p -- "$copy_target_dir" && cp -- "$snapshot_path" "$result_dir/rerecorded-snapshots/$snapshot_path"; then
+        rerecorded_copied_count=$((rerecorded_copied_count + 1))
+      else
+        safe_label="$(sanitize_label "$snapshot_path")"
+        err_msg="复制重录快照失败：${safe_label}"
+        echo "${err_msg}。" >&2
+        collection_errors+=("$err_msg")
+        snapshot_collection_error=true
+        snapshot_status=1
+      fi
+    done < "$snapshot_git_status_file"
+  fi
+  rm -f -- "$snapshot_git_status_file"
+  snapshot_git_status_file=""
+  echo "重录快照：${rerecorded_count} 张（已复制 ${rerecorded_copied_count} 张，清单：${rerecorded_list}）"
   if [[ "$rerecorded_count" -gt 0 ]]; then
     # 首次比对失败时已写入新图，重试会对着新图通过；快照不匹配一律判失败，不算抖动。
     snapshot_status=1
@@ -171,19 +246,45 @@ fi
 
 if [[ ! -d "$result_bundle" ]]; then
   append_rerecorded_summary
-  if [[ "${GITHUB_ACTIONS:-}" == "true" && "$rerecorded_count" -gt 0 ]]; then
-    echo "::error title=快照漂移（已重录，未知）::未生成测试结果包，无法把 ${rerecorded_count} 张重录快照映射到具体用例"
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    if [[ "${#collection_errors[@]}" -gt 0 ]]; then
+      for err_item in "${collection_errors[@]}"; do
+        echo "::error title=重录快照采集失败::$(escape_github_annotation "$err_item")"
+      done
+    fi
+    if [[ "$rerecorded_count" -gt 0 ]]; then
+      echo "::error title=快照漂移（已重录，未知）::未生成测试结果包，无法把 ${rerecorded_count} 张重录快照映射到具体用例"
+    elif [[ "$snapshot_list_incomplete" == true ]]; then
+      echo "::error title=快照漂移（已重录，未知）::未生成测试结果包且重录快照采集失败，无法确认重录清单与归属"
+    fi
   fi
   echo "没有生成 ${result_bundle}（xcodebuild 退出码 ${test_status}），无法核对执行数。" >&2
   echo "结果目录：$result_dir"
   exit "$(( test_status == 0 ? 1 : test_status ))"
 fi
 
-xcrun xcresulttool get test-results tests --path "$result_bundle" > "$result_dir/tests.json"
+extract_status=0
+xcrun xcresulttool get test-results tests --path "$result_bundle" > "$result_dir/tests.json" || extract_status=$?
+if [[ "$extract_status" -ne 0 ]]; then
+  echo "从 ${result_bundle} 提取测试结果失败（xcresulttool 退出码 ${extract_status}），无法核对执行数。" >&2
+fi
+
 verify_args=()
 if [[ "$record_failed_snapshots" == true ]]; then
   verify_args+=(--rerecorded-list "$rerecorded_list")
+  if [[ "$snapshot_list_incomplete" == true ]]; then
+    verify_args+=(--rerecorded-incomplete)
+  fi
+  if [[ "${#collection_errors[@]}" -gt 0 ]]; then
+    for err_item in "${collection_errors[@]}"; do
+      verify_args+=(--collection-error "$err_item")
+    done
+  fi
 fi
+if [[ "$extract_status" -ne 0 ]]; then
+  verify_args+=(--results-error "从 ${result_bundle} 提取测试结果失败（xcresulttool 退出码 ${extract_status}）")
+fi
+
 verify_status=0
 python3 ./scripts/ios-test-inventory.py verify-results \
   "$result_dir/tests.json" \
@@ -199,7 +300,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" && -f "$result_dir/summary.md" ]]; then
 fi
 append_rerecorded_summary
 
-if [[ "$test_status" -ne 0 ]]; then
+if [[ "$test_status" -ne 0 || "$extract_status" -ne 0 ]]; then
   # quiet 日志只列用例名；保留具体断言，诊断失败也不能覆盖原退出码。
   xcrun xcresulttool get test-results summary --path "$result_bundle" || true
 fi
@@ -207,9 +308,15 @@ echo "结果目录：$result_dir"
 if [[ "$test_status" -ne 0 ]]; then
   exit "$test_status"
 fi
+if [[ "$extract_status" -ne 0 ]]; then
+  if [[ "$snapshot_status" -ne 0 ]]; then
+    echo "存在未完成归属的重录快照或采集错误，请同时检查 summary.md 与 rerecorded-snapshots/。" >&2
+  fi
+  exit "$extract_status"
+fi
 if [[ "$snapshot_status" -ne 0 ]]; then
   if [[ "$snapshot_collection_error" == true ]]; then
-    echo "采集重录快照时检测到异常路径或非文件变更，已阻断通过。" >&2
+    echo "采集重录快照时发生错误（含状态查询失败、复制失败或异常路径/非文件变更），已阻断通过。" >&2
   else
     echo "有快照与基线不匹配并已重录；逐张核对 rerecorded-snapshots/ 后再提交。" >&2
   fi
