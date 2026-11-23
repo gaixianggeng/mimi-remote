@@ -29,6 +29,9 @@ jobs:
     # 仓库里的快照基线以这个环境为准。
     runs-on: macos-26
     timeout-minutes: 75
+    env:
+      IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/ios-derived-data
+      TAILCAT_MOBILE_TOOL_DIR: ${{ runner.temp }}/tailcat-mobile-tools
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -41,15 +44,23 @@ jobs:
           go-version-file: experiments/tailcat/go.mod
           cache-dependency-path: experiments/tailcat/go.sum
 
-      - name: Show toolchain
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
-
-      - name: Resolve fixed CI simulator
+      - name: Show toolchain and resolve fixed CI simulator
+        id: toolchain
         shell: bash
         run: |
           set -euo pipefail
+          xcode_version="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version"
+          xcrun simctl list runtimes
+
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-build-version)"
+          simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-build-version)"
+          go_version="$(cd experiments/tailcat && go version && go env GOVERSION GOHOSTOS GOHOSTARCH)"
+          tailcat_key="$(printf '%s\n%s\n%s\n' "$go_version" "$iphoneos_sdk" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          xcode_key="$(printf '%s\n%s\n' "$xcode_version" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          echo "tailcat_key=$tailcat_key" >> "$GITHUB_OUTPUT"
+          echo "xcode_key=$xcode_key" >> "$GITHUB_OUTPUT"
+
           # 必须与 ios-ci.yml 的 PR 回归保持同一 runtime（check-critical-regressions.sh 校验）。
           simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
             devices = JSON.parse(STDIN.read).fetch("devices").fetch("com.apple.CoreSimulator.SimRuntime.iOS-26-2", [])
@@ -60,6 +71,24 @@ jobs:
           destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
           echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
+
+      - name: Cache Tailcat XCFramework and tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ios/MimiRemote/Generated
+            ${{ runner.temp }}/tailcat-mobile-tools
+          key: tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-${{ hashFiles('experiments/tailcat/go.mod', 'experiments/tailcat/go.sum', 'experiments/tailcat/**/*.go', 'experiments/tailcat/**/*.c', 'experiments/tailcat/**/*.h', 'experiments/tailcat/**/*.m', 'scripts/build-tailcat-mobile.sh') }}
+          restore-keys: |
+            tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-
+
+      - name: Cache Xcode SPM and DerivedData
+        id: ios-derived-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/ios-derived-data
+          key: ios-spm-derived-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode_key }}-${{ hashFiles('ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Run full MimiRemoteTests
         # 全部测试类（含全部快照类）按类核对执行数；失败用例重试一次，重试后通过的记为抖动（warning），
@@ -82,3 +111,13 @@ jobs:
             ${{ runner.temp }}/ios-full-suite/rerecorded-snapshots/
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Prune DerivedData before cache save
+        if: steps.ios-derived-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf \
+            "$IOS_DERIVED_DATA_PATH/Logs" \
+            "$IOS_DERIVED_DATA_PATH/Index.noindex" \
+            "$IOS_DERIVED_DATA_PATH/MimiBuildEvidence" \
+            "$IOS_DERIVED_DATA_PATH"/*.xcresult
