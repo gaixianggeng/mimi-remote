@@ -988,6 +988,14 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(seconds))
         }
 
+        func waitUntil(timeout: TimeInterval = 2.0, _ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+        }
+
         let model = HostModel()
         let bounds = CGRect(x: 0, y: 0, width: 402, height: 874)
         let host = UIHostingController(rootView: TabNavigationHost(model: model))
@@ -1011,7 +1019,13 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
 
         // 1. 首次进入详情：隐藏原生导航栏后仍必须接管左缘及 iOS 26+ 内容区交互式返回手势。
         model.path = ["session-1"]
-        pump(0.45)
+        waitUntil {
+            guard let n = findNavigationControllers(in: host).first(where: { $0.viewControllers.count == 2 }) else {
+                return false
+            }
+            return n.transitionCoordinator == nil
+                && n.interactivePopGestureRecognizer?.delegate is NavigationInteractivePopEnabler.Controller
+        }
 
         let nav = try XCTUnwrap(
             findNavigationControllers(in: host).first(where: { $0.viewControllers.count == 2 }),
@@ -1037,13 +1051,20 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
                 contentGesture.delegate === edgeDelegate,
                 "iOS 26+ 隐藏导航栏时内容区返回手势同样必须由 NavigationInteractivePopEnabler 接管"
             )
+            XCTAssertTrue(
+                edgeDelegate.gestureRecognizerShouldBegin(contentGesture),
+                "iOS 26+ 首次进详情后内容区返回手势应允许开始"
+            )
         }
 
         // 2. 跨 Tab 切走再切回：恢复详情后两条手势仍必须保持接管与启用。
         model.selectedTab = 1
         pump(0.35)
         model.selectedTab = 0
-        pump(0.45)
+        waitUntil {
+            nav.transitionCoordinator == nil
+                && nav.interactivePopGestureRecognizer?.delegate is NavigationInteractivePopEnabler.Controller
+        }
 
         XCTAssertEqual(nav.viewControllers.count, 2)
         XCTAssertTrue(edgeGesture.isEnabled, "跨 Tab 恢复后左缘返回手势必须保持启用")
@@ -1062,7 +1083,11 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
 
         // 3. 返回列表根页后应恢复系统原代理，避免根页卡死。
         model.path = []
-        pump(0.45)
+        waitUntil {
+            nav.viewControllers.count == 1
+                && nav.transitionCoordinator == nil
+                && !(edgeGesture.delegate is NavigationInteractivePopEnabler.Controller)
+        }
 
         XCTAssertEqual(nav.viewControllers.count, 1)
         XCTAssertFalse(

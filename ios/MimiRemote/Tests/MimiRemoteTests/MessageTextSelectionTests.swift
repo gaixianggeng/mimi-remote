@@ -183,8 +183,10 @@ final class MessageTextSelectionTests: XCTestCase {
             markdown: .make(role: .assistant, colorScheme: .light, fontScale: 1.6)
         )
         let sourceMarkdown = """
-        10. 大字号下两位序号不能把正文挤到下一行。
+        99. 大字号下两位序号不能把正文挤到下一行。
         100. 大字号下三位序号同样应保持与正文同行并正确对齐。
+
+        - 大字号下无序列表项目符号同样保持同行悬挂缩进。
         """
         let view = MessageTextView()
         let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sourceMarkdown).blocks)
@@ -194,10 +196,15 @@ final class MessageTextSelectionTests: XCTestCase {
         view.layoutIfNeeded()
 
         let text = view.textStorage.string as NSString
-        let range10 = text.range(of: "10.")
-        let range10Body = text.range(of: "大字号下两位")
+        let range99 = text.range(of: "99.")
+        let range99Body = text.range(of: "大字号下两位")
         let range100 = text.range(of: "100.")
         let range100Body = text.range(of: "大字号下三位")
+        let rangeBullet = text.range(of: "•")
+        let rangeBulletBody = text.range(of: "大字号下无序")
+        XCTAssertNotEqual(range99.location, NSNotFound)
+        XCTAssertNotEqual(range100.location, NSNotFound)
+        XCTAssertNotEqual(rangeBullet.location, NSNotFound)
 
         let paragraph100 = try XCTUnwrap(
             view.textStorage.attribute(.paragraphStyle, at: range100.location, effectiveRange: nil) as? NSParagraphStyle
@@ -206,16 +213,22 @@ final class MessageTextSelectionTests: XCTestCase {
 
         let lm = view.layoutManager
         XCTAssertEqual(
-            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range10.location), effectiveRange: nil).minY,
-            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range10Body.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range99.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range99Body.location), effectiveRange: nil).minY,
             accuracy: 0.5,
-            "大字号下 10. 与正文必须同行"
+            "大字号下 99. 与正文必须同行"
         )
         XCTAssertEqual(
             lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100.location), effectiveRange: nil).minY,
             lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100Body.location), effectiveRange: nil).minY,
             accuracy: 0.5,
             "大字号下 100. 与正文必须同行"
+        )
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: rangeBullet.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: rangeBulletBody.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下无序项目符号与正文必须同行"
         )
     }
 

@@ -447,8 +447,13 @@ struct NavigationInteractivePopEnabler: UIViewControllerRepresentable {
             guard let nav = navigationController else {
                 return
             }
+            if nav.viewControllers.count <= 1 {
+                restoreIfNeeded()
+                return
+            }
             if let stackEntry = stackEntryViewController(in: nav),
                nav.topViewController !== stackEntry {
+                restoreIfNeeded()
                 return
             }
 
@@ -467,15 +472,14 @@ struct NavigationInteractivePopEnabler: UIViewControllerRepresentable {
                 didOverrideDelegates = true
             }
 
-            let canPop = nav.viewControllers.count > 1
             if let edgeGesture = nav.interactivePopGestureRecognizer {
                 edgeGesture.delegate = self
-                edgeGesture.isEnabled = canPop
+                edgeGesture.isEnabled = true
             }
             if #available(iOS 26.0, *),
                let contentGesture = nav.interactiveContentPopGestureRecognizer {
                 contentGesture.delegate = self
-                contentGesture.isEnabled = canPop
+                contentGesture.isEnabled = true
             }
         }
 
