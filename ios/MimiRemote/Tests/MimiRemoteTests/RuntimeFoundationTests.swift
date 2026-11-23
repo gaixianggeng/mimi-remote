@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import MimiRemote
 
@@ -780,5 +781,183 @@ final class RuntimeFoundationTests: XCTestCase {
         )
         XCTAssertFalse(tray.hasExpandableDetail)
         XCTAssertEqual(tray.missingDirectoryNotice, store.selectedSessionControlNotice)
+    }
+
+    func testCombinedUsageItemSupportsGeminiAcrossSingleDualAndTripleRuntimes() {
+        let codexDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                limitID: "codex",
+                limitName: "Codex",
+                secondaryUsedPercent: 72,
+                secondaryResetsAt: 1_795_500_000,
+                secondaryWindowDurationMins: 7 * 24 * 60
+            ),
+            fallbackDisplayName: "Codex"
+        )
+        let claudeDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                limitID: "claude",
+                limitName: "Claude",
+                primaryUsedPercent: 12,
+                secondaryUsedPercent: 35,
+                primaryResetsAt: 1_795_460_000,
+                secondaryResetsAt: 1_795_600_000,
+                primaryWindowDurationMins: 5 * 60,
+                secondaryWindowDurationMins: 7 * 24 * 60
+            ),
+            fallbackDisplayName: "Claude"
+        )
+        let agyDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: RateLimitSummary(
+                limitID: "agy",
+                limitName: "Antigravity",
+                primaryUsedPercent: 2,
+                secondaryUsedPercent: 29,
+                primaryResetsAt: 1_795_460_000,
+                secondaryResetsAt: 1_795_700_000,
+                primaryWindowDurationMins: 5 * 60,
+                secondaryWindowDurationMins: 7 * 24 * 60,
+                availability: "available"
+            ),
+            fallbackDisplayName: "Gemini"
+        )
+        let emptyDisplay = CodexUsageWindowsDisplay.make(rateLimit: nil, fallbackDisplayName: "Empty")
+
+        // 1) Codex + Gemini (without Claude): fills 3 rings with Codex 7d, Gemini 7d, Gemini 5h.
+        let codexAndGemini = CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: emptyDisplay,
+            includesClaude: false,
+            agyDisplay: agyDisplay,
+            includesAgy: true,
+            colorScheme: .dark
+        )
+        XCTAssertEqual(codexAndGemini.map(\.runtimeProvider), ["codex", "agy", "agy"])
+        XCTAssertEqual(codexAndGemini.map(\.providerName), ["Codex", "Gemini", "Gemini"])
+        XCTAssertEqual(codexAndGemini.map(\.window.label), ["7d", "7d", "5h"])
+        XCTAssertEqual(codexAndGemini[1].window.remainingPercentText, "71%")
+        XCTAssertEqual(codexAndGemini[2].window.remainingPercentText, "98%")
+
+        // 2) Codex + Claude + Gemini: prioritizes one long window per runtime across the 3 rings.
+        let allThree = CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: claudeDisplay,
+            includesClaude: true,
+            agyDisplay: agyDisplay,
+            includesAgy: true,
+            colorScheme: .light
+        )
+        XCTAssertEqual(allThree.map(\.runtimeProvider), ["codex", "claude", "agy"])
+        XCTAssertEqual(allThree.map(\.providerName), ["Codex", "Claude", "Gemini"])
+        XCTAssertEqual(allThree.map(\.window.label), ["7d", "7d", "7d"])
+
+        // 3) Codex + Claude (without Gemini): preserves existing order & windows.
+        let codexAndClaude = CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: claudeDisplay,
+            includesClaude: true,
+            agyDisplay: agyDisplay,
+            includesAgy: false,
+            colorScheme: .light
+        )
+        XCTAssertEqual(codexAndClaude.map(\.runtimeProvider), ["codex", "claude", "claude"])
+        XCTAssertEqual(codexAndClaude.map(\.window.label), ["7d", "7d", "5h"])
+
+        // 4) Gemini only: shows Gemini 7d + 5h.
+        let geminiOnly = CombinedUsageItem.make(
+            codexDisplay: emptyDisplay,
+            claudeDisplay: emptyDisplay,
+            includesClaude: false,
+            agyDisplay: agyDisplay,
+            includesAgy: true,
+            colorScheme: .dark
+        )
+        XCTAssertEqual(geminiOnly.map(\.runtimeProvider), ["agy", "agy"])
+        XCTAssertEqual(geminiOnly.map(\.window.label), ["7d", "5h"])
+    }
+
+    func testAgyUsageRefreshUpdatesProjectionAndSettingsAccountOverview() async {
+        let agyRateLimit = RateLimitSummary(
+            limitID: "agy",
+            limitName: "Gemini",
+            planType: "Google AI Ultra",
+            primaryUsedPercent: 3,
+            secondaryUsedPercent: 29,
+            primaryResetsAt: 1_795_460_000,
+            secondaryResetsAt: 1_795_700_000,
+            primaryWindowDurationMins: 5 * 60,
+            secondaryWindowDurationMins: 7 * 24 * 60,
+            availability: "available"
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": true, "agy": true],
+            rateLimitsByRuntime: ["agy": agyRateLimit]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSettingsAccountOverview()
+
+        XCTAssertTrue(store.isAgyRuntimeChannelAvailable)
+        XCTAssertTrue(store.hasAgyRuntimeChannel)
+        XCTAssertTrue(client.requestedRateLimitProviders.contains("codex"))
+        XCTAssertTrue(client.requestedRateLimitProviders.contains("agy"))
+        XCTAssertEqual(store.accountAgyUsageWindowsDisplay.displayName, "Gemini")
+        XCTAssertTrue(store.accountAgyUsageWindowsDisplay.hasLiveData)
+        XCTAssertEqual(store.accountAgyUsageWindowsDisplay.windows.map(\.label), ["5h", "7d"])
+        XCTAssertEqual(store.accountAgyUsageWindowsDisplay.windows.last?.remainingPercentText, "71%")
+    }
+
+    func testGeminiOnlyWithoutCodexHidesActivityPlaceholderUsesTwoRingsAndSkipsCodexRefresh() async {
+        let agyRateLimit = RateLimitSummary(
+            limitID: "agy",
+            limitName: "Gemini",
+            primaryUsedPercent: 4,
+            secondaryUsedPercent: 30,
+            primaryResetsAt: 1_795_460_000,
+            secondaryResetsAt: 1_795_700_000,
+            primaryWindowDurationMins: 5 * 60,
+            secondaryWindowDurationMins: 7 * 24 * 60,
+            availability: "available"
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": false, "agy": true],
+            rateLimitsByRuntime: ["agy": agyRateLimit]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSettingsAccountOverview()
+
+        XCTAssertFalse(store.isCodexRuntimeChannelAvailable)
+        XCTAssertFalse(store.hasCodexUsageChannel)
+        XCTAssertTrue(store.hasAgyRuntimeChannel)
+        XCTAssertEqual(client.requestedRateLimitProviders, ["agy"])
+
+        let items = CombinedUsageItem.make(
+            codexDisplay: store.accountCodexUsageWindowsDisplay,
+            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
+            includesCodex: false,
+            includesClaude: false,
+            agyDisplay: store.accountAgyUsageWindowsDisplay,
+            includesAgy: true,
+            colorScheme: .dark
+        )
+        XCTAssertEqual(items.map(\.runtimeProvider), ["agy", "agy"])
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: items.count), 2)
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 3), 3)
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 0), 3)
     }
 }

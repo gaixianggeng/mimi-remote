@@ -1,4 +1,3 @@
-import type { RateLimitSnapshot } from "@mimi/appserver-kit/protocol/codex/v2/RateLimitSnapshot.ts";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import { notificationFrame } from "@mimi/appserver-kit/rpc/frames.ts";
 import type { Session } from "@mimi/appserver-kit/session/session.ts";
@@ -6,9 +5,12 @@ import { logger } from "../util/logging.ts";
 import type { AcpClient } from "../acp/client.ts";
 import type { AcpAvailableCommand, AcpSessionOpenResult } from "../acp/types.ts";
 import type { PersistedToolMapping } from "../agy/overlay.ts";
+import { unavailableAgyRateLimits } from "../agy/rateLimits.ts";
 import type { TranscriptActivityInfo, TranscriptSnapshotResult, TranscriptTurnSnapshot } from "../agy/transcript.ts";
 import type { AgyRunSettings } from "./settings.ts";
 import { ThreadRuntime, type RuntimeHost } from "./threadRuntime.ts";
+
+export { unavailableAgyRateLimits };
 
 interface PendingRequest {
   threadId: string;
@@ -66,23 +68,6 @@ export interface ManagerOptions {
   hasCustomTitle?: (threadId: string) => boolean;
   inspectTranscriptState?: (threadId: string) => Promise<TranscriptSnapshotResult | TranscriptTurnSnapshot | undefined>;
   externalActivity?: (threadId: string, options?: { bypassProcessCache?: boolean }) => Promise<TranscriptActivityInfo | undefined>;
-}
-
-export function unavailableAgyRateLimits(): RateLimitSnapshot {
-  return {
-    limitId: "agy",
-    limitName: "Antigravity",
-    normalModelSlug: null,
-    primary: null,
-    secondary: null,
-    credits: null,
-    individualLimit: null,
-    spendControlReached: null,
-    planType: null,
-    rateLimitReachedType: null,
-    availability: "unavailable",
-    unavailableReason: "headless_statusline_unavailable",
-  } as RateLimitSnapshot;
 }
 
 export class ThreadManager {
@@ -247,6 +232,13 @@ export class ThreadManager {
   publish(threadId: string, method: string, params: Record<string, unknown>): void {
     const frame = notificationFrame(method, params);
     for (const session of this.subscribers.get(threadId) ?? []) {
+      session.publish(frame);
+    }
+  }
+
+  broadcast(method: string, params: Record<string, unknown>): void {
+    const frame = notificationFrame(method, params);
+    for (const session of this.subscriptions.keys()) {
       session.publish(frame);
     }
   }

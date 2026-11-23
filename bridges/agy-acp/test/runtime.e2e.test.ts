@@ -9,6 +9,7 @@ import { capabilityDeclaration, createApp } from "../src/app.ts";
 import type { AcpSessionUpdate } from "../src/acp/types.ts";
 import type { SpawnAgyTransport } from "../src/agy/binary.ts";
 import type { OtherListDiagnostic } from "../src/agy/catalog.ts";
+import { parseAgyUsageOutput, type FetchAgyRateLimits } from "../src/agy/rateLimits.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
 describe("mimi-agy-adapter end-to-end runtime", () => {
@@ -39,6 +40,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       spawnTransport?: SpawnAgyTransport;
       env?: () => NodeJS.ProcessEnv;
       onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void;
+      fetchRateLimits?: FetchAgyRateLimits;
     } = {},
   ) {
     const env = extra.env ?? (() => ({ HOME: fakeHome }));
@@ -49,6 +51,7 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       probeAgy: async () => ({ version: "1.5.10" }),
       spawnTransport: extra.spawnTransport ?? world.spawnTransport,
       env,
+      fetchRateLimits: extra.fetchRateLimits,
       ...(extra.externalWritePollMs !== undefined ? { externalWritePollMs: extra.externalWritePollMs } : {}),
       ...(extra.onOtherListDiagnostic ? { onOtherListDiagnostic: extra.onOtherListDiagnostic } : {}),
     });
@@ -132,8 +135,20 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
 
   test("declares capabilities, sends clientCapabilities: {}, streams turns, usage, auto-title, and slash commands", async () => {
     const world = new FakeAgyWorld();
-    const harness = await createTestHarness(world);
+    let quotaFetches = 0;
+    const harness = await createTestHarness(world, {
+      fetchRateLimits: async () => {
+        quotaFetches += 1;
+        return parseAgyUsageOutput(JSON.stringify({
+          groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 - quotaFetches / 10 }] }],
+        }));
+      },
+    });
     try {
+      harness.app.rateLimits.warm();
+      await harness.app.rateLimits.read();
+      expect(quotaFetches).toBe(1);
+
       const caps = capabilityDeclaration(harness.app.router);
       expect(caps.name).toBe("mimi-agy-adapter");
       expect(caps.fullAccess).toBe(true);
@@ -181,6 +196,8 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
       expect(harness.notifications.some((n) => n.method === "item/agentMessage/delta")).toBe(true);
       expect(harness.notifications.some((n) => n.method === "thread/tokenUsage/updated")).toBe(true);
       expect(harness.notifications.some((n) => n.method === "thread/name/updated")).toBe(true);
+      expect(quotaFetches).toBe(2);
+      expect(harness.notifications.filter((n) => n.method === "account/rateLimits/updated")).toHaveLength(1);
 
       const turnsPage = await harness.rpc<{ data: Array<{ itemsView: string; items: Array<{ type: string }> }> }>(
         "thread/turns/list",

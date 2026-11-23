@@ -317,8 +317,16 @@ actor CodexAppServerSessionRuntime {
     let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
-        // 该请求仍在独立 actor/transport 上等待，不阻塞主线程。Codex 保持原 5 秒上限。
-        runtimeProvider == "claude" ? min(requestTimeout, 15) : min(requestTimeout, 5)
+        // Antigravity (`agy`) 首次读取需要运行 `agy --print /usage` 获取云端额度；
+        // 请求仍在独立 actor/transport 上等待，不阻塞主线程。Codex 保持原 5 秒上限。
+        switch runtimeProvider {
+        case "claude":
+            return min(requestTimeout, 15)
+        case "agy":
+            return min(requestTimeout, 20)
+        default:
+            return min(requestTimeout, 5)
+        }
     }
     // 每个 thread 最近一次收到上游实时通知的时间。thread/list、thread/read 偶发把正在执行的
     // turn 误读成 idle/notLoaded；刚收到过实时信号的 thread 在这个时间窗内不接受 history 降级。

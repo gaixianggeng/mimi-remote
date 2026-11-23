@@ -205,6 +205,14 @@ extension SessionStore {
         CodexUsageWindowsDisplay.make(rateLimit: latestRateLimit(runtimeProvider: "claude"), fallbackDisplayName: "Claude")
     }
 
+    var accountAgyUsageWindowsDisplay: CodexUsageWindowsDisplay {
+        CodexUsageWindowsDisplay.make(rateLimit: latestRateLimit(runtimeProvider: "agy"), fallbackDisplayName: "Gemini")
+    }
+
+    var hasCodexUsageChannel: Bool {
+        isCodexRuntimeChannelAvailable || accountCodexUsageWindowsDisplay.hasLiveData
+    }
+
     func latestRateLimit(runtimeProvider: String) -> RateLimitSummary? {
         let normalizedProvider = Self.normalizedRuntimeProvider(runtimeProvider)
         if let cached = accountRateLimitsByRuntime[normalizedProvider] {

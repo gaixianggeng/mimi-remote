@@ -230,42 +230,39 @@ struct SettingsView: View {
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
         let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
+        let agyUsage = sessionStore.accountAgyUsageWindowsDisplay
+        let includesCodex = sessionStore.hasCodexUsageChannel
+        let isRefreshingQuota = (
+                includesCodex && sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+            )
+            || (
+                sessionStore.hasClaudeRuntimeChannel
+                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
+            )
+            || (
+                sessionStore.hasAgyRuntimeChannel
+                    && sessionStore.isRefreshingUsage(runtimeProvider: "agy")
+            )
 
         return Form {
             Section {
                 AccountTokenUsageCard(
                     codexDisplay: codexUsage,
                     claudeDisplay: claudeUsage,
+                    includesCodex: includesCodex,
                     includesClaude: sessionStore.hasClaudeRuntimeChannel,
-                    snapshot: sessionStore.accountTokenUsage,
-                    activity: sessionStore.accountTokenActivity,
-                    // 刷新按钮代表整卡刷新，配额或活动任一在飞都转；
-                    // 活动面板的状态只看 activity 自己，不受配额刷新影响。
-                    isRefreshing: sessionStore.isRefreshingAccountTokenActivity
-                        || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
-                        || (
-                            sessionStore.hasClaudeRuntimeChannel
-                                && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
-                        ),
+                    agyDisplay: agyUsage,
+                    includesAgy: sessionStore.hasAgyRuntimeChannel,
+                    isRefreshing: isRefreshingQuota,
                     onRefresh: refreshAccountUsage
                 )
                 // 卡片底由分组给出（settingsGroupRowStyle），与其它设置卡同一底色和圆角。
                 .listRowInsets(EdgeInsets())
                 .accessibilityIdentifier("settings.tokenUsage")
             } header: {
-                // 四个分组都带标题，页面语法才一致。顶部两块原先没有标题，
-                // 读起来就是一坨没有标签的大块，底部却是分好组的列表。
-                // 累计值和刷新按钮挂在标题这一行的右端，卡片里就不必再留一层标题。
                 SettingsGroupHeader(title: L10n.text("ui.token_usage"), showsDivider: false) {
-                    lifetimeTokenLabel(tokens: tokens)
-
                     AccountUsageRefreshButton(
-                        isRefreshing: sessionStore.isRefreshingAccountTokenActivity
-                            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
-                            || (
-                                sessionStore.hasClaudeRuntimeChannel
-                                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
-                            ),
+                        isRefreshing: isRefreshingQuota,
                         onRefresh: refreshAccountUsage
                     )
                 }
@@ -418,29 +415,17 @@ struct SettingsView: View {
         }
     }
 
-    /// 累计值未知时整行不出现。渲染成 `累计 Token · —` 会被读成「累计是 0」。
-    @ViewBuilder
-    private func lifetimeTokenLabel(tokens: ThemeTokens) -> some View {
-        if let lifetimeTokens = sessionStore.accountTokenUsage?.summary.lifetimeTokens {
-            Text(
-                L10n.format(
-                    "ui.lifetime_token_value",
-                    TokenCountFormatter.string(lifetimeTokens)
-                )
-            )
-            .font(themeStore.uiFont(.caption))
-            .foregroundStyle(tokens.secondaryText)
-            .lineLimit(1)
-        }
-    }
-
     private func refreshAccountUsage() async {
-        async let codexQuota: Void = sessionStore.refreshCodexUsage()
-        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
-        if sessionStore.hasClaudeRuntimeChannel {
-            await sessionStore.refreshClaudeUsage()
-        }
-        _ = await (codexQuota, tokenActivity)
+        async let codexQuota: Void = sessionStore.isCodexRuntimeChannelAvailable
+            ? sessionStore.refreshCodexUsage()
+            : ()
+        async let claudeQuota: Void = sessionStore.hasClaudeRuntimeChannel
+            ? sessionStore.refreshClaudeUsage()
+            : ()
+        async let agyQuota: Void = sessionStore.hasAgyRuntimeChannel
+            ? sessionStore.refreshAgyUsage()
+            : ()
+        _ = await (codexQuota, claudeQuota, agyQuota)
     }
 
     private var compactConnectionStatusText: String {
@@ -616,70 +601,30 @@ struct AccountTokenUsageCard: View {
 
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
+    var includesCodex: Bool = true
     let includesClaude: Bool
-    let snapshot: AccountTokenUsageSnapshot?
-    let activity: AccountTokenActivityState
+    var agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
+        rateLimit: nil,
+        fallbackDisplayName: "Gemini"
+    )
+    var includesAgy: Bool = false
     let isRefreshing: Bool
     let onRefresh: () async -> Void
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let ringDiameter: CGFloat = horizontalSizeClass == .compact ? 84 : 96
 
-        ViewThatFits(in: .horizontal) {
-            // 只有一个窗口时配额那栏只是一条进度条，撑不起 252pt 的左栏、下方会空出一片；
-            // 这种情况无论屏幕多宽都用上下排。
-            if !dynamicTypeSize.isAccessibilitySize, singleUsageItem == nil {
-                wideLayout(tokens: tokens)
-                    .frame(minWidth: 620)
-            }
-            stackedLayout(tokens: tokens)
-        }
-        // 卡片底由所在分组给出（#615）。左右与设置行同一条 16pt 边线；上下留同样的 16pt，
-        // 圆环和热力图不贴卡片边。
-        .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
-        .padding(.vertical, SettingsLayoutMetrics.rowHorizontalInset)
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .contain)
+        quotaPanel(tokens: tokens, ringDiameter: ringDiameter)
+            // 卡片底由所在分组给出（#615）。左右与设置行同一条 16pt 边线；上下留同样的 16pt。
+            .padding(.horizontal, SettingsLayoutMetrics.rowHorizontalInset)
+            .padding(.vertical, SettingsLayoutMetrics.rowHorizontalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .contain)
     }
 
-    private func wideLayout(tokens: ThemeTokens) -> some View {
-        // 156pt 的最小高度会比左右内容多出一段空间；居中分配这段空间，
-        // 避免所有内容贴近卡片上缘、只在底部留下明显空白。
-        HStack(alignment: .center, spacing: 20) {
-            quotaPanel(tokens: tokens, ringDiameter: 100)
-                .frame(width: 252)
-
-            Divider()
-                .overlay(tokens.border.opacity(0.72))
-                // 分隔线跟着较高的一侧拉长时，尾段会悬在另一侧内容之外。
-                .frame(maxHeight: 132)
-
-            // 右侧格子按左栏高度放大，不再固定 86pt 而在下方空出一块。
-            activityPanel(tokens: tokens, gridHeight: 132)
-                .frame(maxWidth: .infinity)
-        }
-        .frame(minHeight: 156)
-    }
-
-    /// 窄屏不再左右各占一半。点格图本来就是横向的，宽度给足才成立；
-    /// 配额那半也终于放得下环形图和完整图例，不用再挤成两列。
-    private func stackedLayout(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            quotaPanel(tokens: tokens, ringDiameter: 84)
-            // 上下排在 iPad 上也会用到（单窗口时强制走这条），宽屏要给点格图更大的高度，
-            // 否则一条进度条上面很轻、下面 86pt 的网格撑不住整张卡。
-            activityPanel(
-                tokens: tokens,
-                gridHeight: horizontalSizeClass == .compact
-                    ? TokenActivityGridMetrics.totalHeight
-                    : 150
-            )
-        }
-    }
-
-    /// 卡片内不再有「当前剩余」「Token 活动」两个小标题：外层分组已经叫「Token 使用量」，
-    /// 中间那层是重复的层级；而且一边带 44pt 刷新按钮、一边只有文字，两行基线永远对不齐。
-    /// 图形本身自解释，文字标签改由 accessibilityLabel 承担。
+    /// 卡片内只保留多运行时配额环与图例；外层分组标题已标明「Token 使用量」，
+    /// 图形本身自解释，文字标签由 accessibilityLabel 承担。
     private func quotaPanel(tokens: ThemeTokens, ringDiameter: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if let onlyItem = singleUsageItem {
@@ -705,12 +650,19 @@ struct AccountTokenUsageCard: View {
         return items.count == 1 ? items[0] : nil
     }
 
+    /// 只有 2 个有效窗口时（例如仅启用 Gemini 或仅启用 Claude），画 2 环而非 3 环，
+    /// 避免最内侧永远留一条空灰轨；空态占位或 3 窗口时保持 3 环。
+    static func ringCount(forItemCount itemCount: Int) -> Int {
+        itemCount == 2 ? 2 : 3
+    }
+
     private func usageRings(tokens: ThemeTokens, diameter: CGFloat) -> some View {
-        VStack(spacing: 6) {
+        let ringCount = Self.ringCount(forItemCount: usageItems.count)
+        return VStack(spacing: 6) {
             ZStack {
                 CombinedUsageRingsGraphic(
                     items: usageItems,
-                    expectedRingCount: 3,
+                    expectedRingCount: ringCount,
                     diameter: diameter,
                     lineWidth: Self.ringLineWidth,
                     ringSpacing: Self.ringSpacing
@@ -730,7 +682,7 @@ struct AccountTokenUsageCard: View {
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
-                        .frame(width: Self.ringInnerHoleDiameter(for: diameter))
+                        .frame(width: Self.ringInnerHoleDiameter(for: diameter, ringCount: ringCount))
                 }
             }
             .frame(width: diameter, height: diameter)
@@ -745,10 +697,11 @@ struct AccountTokenUsageCard: View {
     // 环间距直接决定环心可用宽度：8pt 时 84 直径只剩 22pt，放不下「17%」会被截成「1...」。
     private static let ringSpacing: CGFloat = 6
 
-    /// 三环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
-    private static func ringInnerHoleDiameter(for diameter: CGFloat) -> CGFloat {
+    /// N 环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
+    private static func ringInnerHoleDiameter(for diameter: CGFloat, ringCount: Int = 3) -> CGFloat {
         let step = (ringLineWidth + ringSpacing) * 2
-        return max(diameter - step * 2 - ringLineWidth, 24)
+        let innerIndex = max(ringCount - 1, 0)
+        return max(diameter - step * CGFloat(innerIndex) - ringLineWidth, 24)
     }
 
     /// 剩余比例最低的窗口，也就是最先耗尽的那个。没有可用进度时不猜。
@@ -774,9 +727,14 @@ struct AccountTokenUsageCard: View {
 
         if items.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Text(codexDisplay.creditText)
+                if includesCodex {
+                    Text(codexDisplay.creditText)
+                }
                 if includesClaude {
                     Text(claudeDisplay.creditText)
+                }
+                if includesAgy {
+                    Text(agyDisplay.creditText)
                 }
             }
             .font(themeStore.uiFont(.caption))
@@ -899,9 +857,7 @@ struct AccountTokenUsageCard: View {
                         .fill(tokens.tertiaryText.opacity(0.18))
 
                     Capsule()
-                        // 单窗口没有三环的颜色编码要对应，用点格图的主题紫色保持一套配色；
-                        // item.tint 那套青/粉/紫只在多环并列、需要靠颜色区分窗口时才有意义。
-                        .fill(tokens.tokenActivityAccent)
+                        .fill(item.tint)
                         .frame(width: max(proxy.size.width * progress, progress > 0 ? 6 : 0))
                         .animation(
                             reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
@@ -916,231 +872,15 @@ struct AccountTokenUsageCard: View {
         .accessibilityValue(ringsAccessibilityValue)
     }
 
-    private func activityPanel(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // 主内容和占位文案都在同一个高度预算里测量；这样状态切换不会因某条
-            // 本地化文案换行而改变卡片高度，同时不以固定高度裁掉 Dynamic Type 文本。
-            activityBody(tokens: tokens, gridHeight: gridHeight)
-            activityCaptionArea(tokens: tokens)
-        }
-        // 先声明为容器，标识才只属于这一列；否则会覆盖点格的 settings.tokenActivity.grid（#678）。
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("settings.tokenUsage.activity")
-    }
-
-    private func activityBody(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            activityContent(tokens: tokens, gridHeight: gridHeight)
-
-            // 占位态的最长本地化文案决定最小高度。隐藏测量视图仍参与布局，
-            // 但完全从 VoiceOver 树移除；网格态也预留同样的空间，状态切换不会跳。
-            ZStack {
-                ForEach(
-                    Array(activityPlaceholderCandidates.enumerated()),
-                    id: \.offset
-                ) { candidate in
-                    HStack(spacing: 10) {
-                        Color.clear
-                            .frame(width: 18, height: 18)
-
-                        Text(candidate.element)
-                            .font(themeStore.uiFont(.caption))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .hidden()
-                    .accessibilityHidden(true)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .accessibilityHidden(true)
-        }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: gridHeight,
-            alignment: .topLeading
-        )
-    }
-
-    @ViewBuilder
-    private func activityContent(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
-        switch activity {
-        case .loaded(let buckets, let asOf):
-            activityGrid(
-                buckets: buckets,
-                endingAt: asOf,
-                gridHeight: gridHeight
-            )
-
-        case .empty(let asOf):
-            // 画成一整片未活动的格子，比一句话更能说明“接口是通的，只是还没有记录”。
-            activityGrid(
-                buckets: [],
-                endingAt: asOf,
-                gridHeight: gridHeight
-            )
-
-        case .failed(let previous):
-            if let previous, !previous.buckets.isEmpty {
-                activityGrid(
-                    buckets: previous.buckets,
-                    endingAt: previous.asOf,
-                    gridHeight: gridHeight
-                )
-            } else {
-                activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
-            }
-
-        case .idle, .loading, .unsupported:
-            activityPlaceholder(tokens: tokens, gridHeight: gridHeight)
-        }
-    }
-
-    private func activityGrid(
-        buckets: [AccountTokenUsageDailyBucket],
-        endingAt: Date,
-        gridHeight: CGFloat
-    ) -> some View {
-        TokenActivityDotGrid(
-            buckets: buckets,
-            endingAt: endingAt,
-            height: gridHeight
-        )
-    }
-
-    // 没有提示文字时不保留空白；loading 与 loaded 仍同高，empty/stale 出现时才增加提示区。
-    @ViewBuilder
-    private func activityCaptionArea(tokens: ThemeTokens) -> some View {
-        if let caption = activityCaptionText {
-            ZStack(alignment: .topLeading) {
-                // 测量候选本地化文案，避免提示切换跳高或大字号被固定高度裁切。
-                ForEach(
-                    Array(activityCaptionCandidates.enumerated()),
-                    id: \.offset
-                ) { candidate in
-                    Text(candidate.element)
-                        .font(themeStore.uiFont(.caption2))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .hidden()
-                        .accessibilityHidden(true)
-                }
-
-                Text(caption)
-                    .font(themeStore.uiFont(.caption2))
-                    .foregroundStyle(activityCaptionTint(tokens: tokens))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier(activityCaptionIdentifier)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private var activityCaptionText: String? {
-        switch activity {
-        case .empty:
-            return L10n.text("ui.token_activity_empty")
-        case .failed(let previous):
-            return previous?.buckets.isEmpty == false
-                ? L10n.text("ui.token_activity_stale")
-                : nil
-        case .idle, .loading, .loaded, .unsupported:
-            return nil
-        }
-    }
-
-    private func activityCaptionTint(tokens: ThemeTokens) -> Color {
-        if case .failed(let previous) = activity,
-           previous?.buckets.isEmpty == false
-        {
-            return tokens.warning
-        }
-        return tokens.secondaryText
-    }
-
-    private var activityCaptionIdentifier: String {
-        switch activity {
-        case .empty:
-            return "settings.tokenActivity.empty"
-        case .failed:
-            return "settings.tokenActivity.stale"
-        case .idle, .loading, .loaded, .unsupported:
-            return "settings.tokenActivity.caption"
-        }
-    }
-
-    private var activityCaptionCandidates: [String] {
-        [
-            L10n.text("ui.token_activity_empty"),
-            L10n.text("ui.token_activity_stale")
-        ]
-    }
-
-    private var activityPlaceholderCandidates: [String] {
-        [
-            L10n.text("ui.loading_token_activity"),
-            L10n.text("ui.token_activity_unavailable"),
-            L10n.text("ui.token_activity_failed"),
-            L10n.text("ui.token_activity_waiting")
-        ]
-    }
-
-    /// 占位高度和真实点格图一致，状态之间切换时卡片不跳。
-    private func activityPlaceholder(tokens: ThemeTokens, gridHeight: CGFloat) -> some View {
-        HStack(spacing: 10) {
-            if case .loading = activity {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: activityPlaceholderSymbol)
-                    .foregroundStyle(
-                        isActivityFailure ? tokens.warning : tokens.tertiaryText
-                    )
-            }
-            Text(activityPlaceholderText)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: gridHeight,
-            alignment: .center
-        )
-        .accessibilityIdentifier("settings.tokenActivity.unavailable")
-    }
-
-    private var isActivityFailure: Bool {
-        if case .failed = activity { return true }
-        return false
-    }
-
-    private var activityPlaceholderSymbol: String {
-        isActivityFailure ? "exclamationmark.triangle" : "chart.dots.scatter"
-    }
-
-    private var activityPlaceholderText: String {
-        switch activity {
-        case .loading:
-            return L10n.text("ui.loading_token_activity")
-        case .unsupported:
-            return L10n.text("ui.token_activity_unavailable")
-        case .failed:
-            return L10n.text("ui.token_activity_failed")
-        case .idle, .empty, .loaded:
-            // empty 与 loaded 都走点格图分支，不会落到占位。
-            return L10n.text("ui.token_activity_waiting")
-        }
-    }
-
-    /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。
     /// 服务端的 primary/secondary 槽位并不稳定，因此按真实时长选择而不是写死槽位。
     private var usageItems: [CombinedUsageItem] {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
+            includesCodex: includesCodex,
             includesClaude: includesClaude,
+            agyDisplay: agyDisplay,
+            includesAgy: includesAgy,
             colorScheme: colorScheme
         )
     }

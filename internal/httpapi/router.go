@@ -84,6 +84,10 @@ type Router struct {
 	claudeRuntimeQuotaMu        sync.RWMutex
 	claudeRuntimeQuota          *runtimeRateLimits
 	claudeRuntimeQuotaCheckedAt time.Time
+	// Antigravity (agy) 额度同样按短展示预算探测并在 Router 内缓存脱敏窗口。
+	agyRuntimeQuotaMu        sync.RWMutex
+	agyRuntimeQuota          *runtimeRateLimits
+	agyRuntimeQuotaCheckedAt time.Time
 	// Token 活动只是低频展示数据。缓存成功响应可以让 iOS 重进「我的」页或重连后
 	// 立即拿到最近快照，避免每次都等待 account/usage/read 的慢查询。
 	accountTokenUsageMu       sync.RWMutex
