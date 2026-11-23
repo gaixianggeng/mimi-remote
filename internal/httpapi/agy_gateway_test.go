@@ -40,10 +40,21 @@ func TestAgyRuntimeNormalizationAndChannelDeclaration(t *testing.T) {
 		t.Fatalf("expected accept_edits reviewer to pass sanitization, got %s/%s", policy, reviewer)
 	}
 
+	fakeAgyBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
 	router := &Router{
 		cfg: config.Config{
 			Listen: "127.0.0.1:8787",
-			Agy:    config.AgyConfig{Enabled: true, AdapterBin: "mimi-agy-adapter", MaxConcurrentSessions: 3},
+			Agy: config.AgyConfig{
+				Enabled:               true,
+				AdapterBin:            "mimi-agy-adapter",
+				MaxConcurrentSessions: 3,
+				Env: map[string]string{
+					agybridge.AgyBinaryEnvKey: fakeAgyBin,
+				},
+			},
 		},
 		agyAdapter: newAgyAdapterSupervisor(),
 	}
