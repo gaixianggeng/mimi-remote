@@ -937,6 +937,51 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkbenchGlassChromeStyleAndMaterialKeepExpectedFallbackAndGeometry() {
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .liquidGlass
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: false
+            ),
+            .ultraThinMaterial
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: true,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+
+        let tokens = ThemeStore().tokens(for: .dark)
+        let circle = WorkbenchChromeIcon(systemName: "plus")
+            .workbenchChromeCircle(tokens: tokens)
+            .environment(\.colorScheme, .dark)
+        let circleSize = UIHostingController(rootView: circle)
+            .sizeThatFits(in: CGSize(width: 100, height: 100))
+        XCTAssertEqual(circleSize.width, WorkbenchChromeIconMetrics.minimumHitTarget, accuracy: 0.5)
+        XCTAssertEqual(circleSize.height, WorkbenchChromeIconMetrics.minimumHitTarget, accuracy: 0.5)
+    }
+
+    @MainActor
     func testNavigationInteractivePopEnablerSurvivesHiddenNavBarFirstEntryAndTabRestore() throws {
         final class HostModel: ObservableObject {
             @Published var selectedTab: Int = 0

@@ -1536,18 +1536,18 @@ private struct WorkspaceProjectChip: View {
             }
             .padding(.horizontal, 8 + 4 * progress)
             .frame(height: WorkspaceStripLayout.chipHeight)
-            // 中性提亮和名称宽度读取同一份 0...1 进度，旧项目退场与新项目进入同帧发生。
-            .background {
-                WorkbenchChromeMaterial(
-                    shape: Capsule(),
-                    tokens: tokens,
-                    tintLevel: Double(progress)
-                )
-            }
+            // 统一使用交互式透明玻璃胶囊；中性提亮和名称宽度读取同一份 0...1 进度，
+            // 旧项目退场与新项目进入同帧发生。
+            .contentShape(Capsule())
+            .workbenchGlassSurface(
+                shape: Capsule(),
+                tokens: tokens,
+                tintLevel: Double(progress),
+                interactive: true
+            )
             // 波形衰减：越远离选中项越淡。只动透明度，不动行高——
             // 行高一旦随选中位置起伏，横向滚动时整条控件带会上下抖。
             .opacity(max(distanceOpacityFloor, 1 - Double(visualDistance) * 0.16))
-            .contentShape(Capsule())
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .contextMenu { contextActions }
