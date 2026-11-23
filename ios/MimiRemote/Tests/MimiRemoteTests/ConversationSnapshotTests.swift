@@ -2136,7 +2136,7 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
         )
     }
 
-    func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() {
+    func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() async throws {
         let options = (1...6).map { index in
             AgentUserInputOption(
                 label: "选项 \(index)",
@@ -2175,16 +2175,30 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
             onSubmit: { _ in true }
         )
         .environmentObject(themeStore)
-        .environment(\.colorScheme, .light)
-        .frame(width: 390, height: 844)
 
-        assertSnapshot(
-            of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
-            )
+        // 让 UIKit 按实际模态展示解析取消按钮和导航栏配色。
+        let size = CGSize(width: 390, height: 844)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        let previousKeyWindow = scene.keyWindow
+        window.frame = CGRect(origin: .zero, size: size)
+        window.overrideUserInterfaceStyle = .light
+        window.traitOverrides.horizontalSizeClass = .compact
+        window.rootViewController = UIHostingController(
+            rootView: Color(uiColor: .systemBackground)
+                .sheet(isPresented: .constant(true)) { view }
         )
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            previousKeyWindow?.makeKey()
+        }
+        try await Task.sleep(for: .milliseconds(800))
+        _ = try XCTUnwrap(window.rootViewController?.presentedViewController)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        assertSnapshot(of: image, as: .image(precision: 0.98))
     }
 }
 
