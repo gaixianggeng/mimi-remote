@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	AgyBinaryEnvKey       = "AGY_ADAPTER_AGY_BIN"
-	AgyGeminiDirEnvKey    = "AGY_ADAPTER_GEMINI_DIR"
-	AgyAppDataDirEnvKey   = "AGY_ADAPTER_APP_DATA_DIR"
+	AgyBinaryEnvKey     = "AGY_ADAPTER_AGY_BIN"
+	AgyGeminiDirEnvKey  = "AGY_ADAPTER_GEMINI_DIR"
+	AgyAppDataDirEnvKey = "AGY_ADAPTER_APP_DATA_DIR"
 )
 
 type AgyAuthState string
