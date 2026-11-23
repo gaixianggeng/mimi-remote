@@ -207,4 +207,147 @@ extension View {
     func workbenchSidebarTopScrollEdgeFade(color: Color) -> some View {
         modifier(WorkbenchSidebarTopScrollEdgeFade(color: color))
     }
+
+    /// 全 App 悬浮控件、顶栏按钮、工作区胶囊与搜索条共用的透明玻璃表面。
+    /// iOS 26+ 使用原生 Liquid Glass；旧系统使用 `.ultraThinMaterial` + 细描边 + 轻阴影；
+    /// 辅助功能「减少透明度」或「增强对比度」时退回可确定对比度的实色底板。
+    func workbenchGlassSurface<ChromeShape: InsettableShape>(
+        shape: ChromeShape,
+        tokens: ThemeTokens,
+        tintLevel: Double = 0,
+        interactive: Bool = false
+    ) -> some View {
+        modifier(
+            WorkbenchGlassSurfaceModifier(
+                shape: shape,
+                tokens: tokens,
+                tintLevel: tintLevel,
+                interactive: interactive
+            )
+        )
+    }
+}
+
+/// 全局玻璃材质的三档回退策略，供 UI 修饰符与单元测试共用。
+enum WorkbenchGlassChromeStyle: Equatable {
+    case opaqueFallback
+    case liquidGlass
+    case ultraThinMaterial
+
+    static var supportsSystemLiquidGlass: Bool {
+        if #available(iOS 26.0, *) {
+            return true
+        }
+        return false
+    }
+
+    static func resolve(
+        reduceTransparency: Bool,
+        increasedContrast: Bool = false,
+        supportsLiquidGlass: Bool
+    ) -> Self {
+        if reduceTransparency || increasedContrast {
+            return .opaqueFallback
+        }
+        return supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
+    }
+}
+
+/// 统一全 App chrome 的透明玻璃修饰符，与会话详情悬浮玻璃栏保持同一材质浓度。
+struct WorkbenchGlassSurfaceModifier<ChromeShape: InsettableShape>: ViewModifier {
+    let shape: ChromeShape
+    let tokens: ThemeTokens
+    var tintLevel: Double = 0
+    var interactive: Bool = false
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var increasedContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    func body(content: Content) -> some View {
+        if reduceTransparency || increasedContrast {
+            let borderOpacity: Double = colorScheme == .light
+                ? (increasedContrast ? 0.24 : 0.14)
+                : (increasedContrast ? 0.30 : 0.22)
+            let shadowOpacity: Double = increasedContrast
+                ? 0.05
+                : (colorScheme == .light ? 0.08 : 0.24)
+            content
+                .background {
+                    ZStack {
+                        shape.fill(tokens.elevatedSurface)
+                        if tintLevel > 0 {
+                            shape.fill(
+                                WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                    tokens: tokens,
+                                    reduceTransparency: true,
+                                    level: tintLevel
+                                )
+                            )
+                        }
+                    }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        (colorScheme == .light ? Color.black : Color.white).opacity(borderOpacity),
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(
+                    color: Color.black.opacity(shadowOpacity),
+                    radius: 6,
+                    y: 2
+                )
+        } else if #available(iOS 26.0, *) {
+            content
+                .background {
+                    if tintLevel > 0 {
+                        shape.fill(
+                            WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                tokens: tokens,
+                                reduceTransparency: false,
+                                level: tintLevel
+                            )
+                        )
+                    }
+                }
+                .glassEffect(
+                    interactive ? .regular.interactive() : .regular,
+                    in: shape
+                )
+        } else {
+            content
+                .background {
+                    ZStack {
+                        shape.fill(.ultraThinMaterial)
+                        if tintLevel > 0 {
+                            shape.fill(
+                                WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                    tokens: tokens,
+                                    reduceTransparency: false,
+                                    level: tintLevel
+                                )
+                            )
+                        }
+                    }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        colorScheme == .light
+                            ? Color.black.opacity(0.08)
+                            : Color.white.opacity(0.16),
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(
+                    color: Color.black.opacity(colorScheme == .light ? 0.08 : 0.24),
+                    radius: 8,
+                    y: 3
+                )
+        }
+    }
 }

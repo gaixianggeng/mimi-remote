@@ -165,8 +165,10 @@ struct SessionListView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
     /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
@@ -379,16 +381,21 @@ struct SessionListView: View {
         .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        // 紧凑布局不再用系统 `.searchable`：iOS 26 给它套一层 Liquid Glass 外壳（高光描边、
-        // 投影，深色下是一整条偏亮灰块），外壳没有公开 API 可换，成了页面顶部最重的元素（#564）。
-        // 改为与宽屏顶栏同一枚扁平搜索框，固定在列表上方。
+        // 紧凑布局不使用系统 `.searchable`（iOS 26 会强制叠高对比白边外壳，#564）；
+        // 统一改用与顶栏按钮、详情页胶囊同源的透明玻璃搜索胶囊。iOS 26 液态玻璃态下外层保持透明，
+        // 让滚过的会话条目自然透出折射；旧系统与辅助功能下保留画布实底防叠字。
         .safeAreaInset(edge: .top, spacing: 0) {
             if !showsToolbarSearchField {
+                let usesLiquidGlassInset = WorkbenchGlassChromeStyle.resolve(
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: colorSchemeContrast == .increased,
+                    supportsLiquidGlass: WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+                ) == .liquidGlass
                 sessionSearchField(tokens: tokens, fillsWidth: true)
                     .padding(.horizontal, 20)
                     .padding(.top, 4)
                     .padding(.bottom, 8)
-                    .background(tokens.workbenchCanvasBackground)
+                    .background(usesLiquidGlassInset ? Color.clear : tokens.workbenchCanvasBackground)
             }
         }
         // 挂在 safeAreaInset 之后：居中范围包含顶部搜索框，与工作区页（含胶囊行）同一块区域。
@@ -479,7 +486,7 @@ struct SessionListView: View {
         }
     }
 
-    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方（`fillsWidth`）；两处同一种扁平样式。
+    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方（`fillsWidth`）；两处共用透明玻璃胶囊。
     private func sessionSearchField(tokens: ThemeTokens, fillsWidth: Bool = false) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
@@ -510,18 +517,18 @@ struct SessionListView: View {
                 .accessibilityLabel(L10n.text("ui.clear_search"))
             }
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 36)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 38)
         .frame(
             minWidth: fillsWidth ? nil : 260,
             idealWidth: fillsWidth ? nil : 360,
             maxWidth: fillsWidth ? .infinity : 420
         )
-        .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(tokens.border.opacity(0.52), lineWidth: 1)
-        }
+        .workbenchGlassSurface(
+            shape: Capsule(style: .continuous),
+            tokens: tokens,
+            interactive: false
+        )
     }
 
     @ToolbarContentBuilder

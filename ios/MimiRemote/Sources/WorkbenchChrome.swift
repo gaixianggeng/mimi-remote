@@ -886,42 +886,29 @@ enum WorkbenchMaterial {
     static let surface: Material = .regularMaterial
 }
 
-/// 顶栏按钮与工作区项目胶囊共用的扁平磨砂。同一套材质覆盖所有 chrome，
-/// 避免一屏出现两种玻璃浓度。Reduce Transparency 下退成等价实色，尺寸和圆角都不变。
-struct WorkbenchChromeMaterial<ChromeShape: Shape>: View {
+/// 顶栏按钮、工作区项目胶囊、侧栏入口与悬浮按钮共用的统一玻璃材质。
+/// iOS 26+ 使用原生 Liquid Glass；旧系统回退 `.ultraThinMaterial`；
+/// Reduce Transparency / 增强对比度下退成等价实色，尺寸和圆角都不变。
+struct WorkbenchChromeMaterial<ChromeShape: InsettableShape>: View {
     let shape: ChromeShape
     let tokens: ThemeTokens
-    /// 0 是普通磨砂，1 是完整选中提亮；中间值服务手势驱动的连续状态过渡。
+    /// 0 是普通玻璃，1 是完整选中提亮；中间值服务手势驱动的连续状态过渡。
     var tintLevel: Double = 0
-
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    var interactive: Bool = false
 
     var body: some View {
-        ZStack {
-            if reduceTransparency {
-                shape.fill(tokens.elevatedSurface)
-            } else {
-                shape.fill(WorkbenchMaterial.surface)
-            }
-
-            if tintLevel > 0 {
-                // 选中态用中性提亮而不是主题紫填充：这一屏已经有 Codex 和 Claude
-                // 两个无法控制的品牌色，再加一块大面积主题色就是三种颜色互相抢。
-                // tintLevel 让亮度与横滑进度 1:1 对应，不需要额外的主题色相。
-                shape.fill(
-                    Self.selectionTint(
-                        tokens: tokens,
-                        reduceTransparency: reduceTransparency,
-                        level: tintLevel
-                    )
-                )
-            }
-        }
+        Color.clear
+            .workbenchGlassSurface(
+                shape: shape,
+                tokens: tokens,
+                tintLevel: tintLevel,
+                interactive: interactive
+            )
     }
 }
 
 extension WorkbenchChromeMaterial {
-    /// 磨砂表面上的选中提亮。分段胶囊里的选中项只画这一层，不再叠第二层磨砂。
+    /// 玻璃与实色回退表面上的选中提亮。分段胶囊里的选中项只画这一层，不再叠第二层玻璃。
     static func selectionTint(
         tokens: ThemeTokens,
         reduceTransparency: Bool,
@@ -935,14 +922,8 @@ extension WorkbenchChromeMaterial {
 
 /// 顶栏图标控件的统一入口。
 ///
-/// iOS 26 会给每个 `ToolbarItem` 自动附加一层系统 Liquid Glass 底板。那层玻璃有高光
-/// 边缘和折射，和工作区胶囊、侧栏按钮共用的扁平磨砂是两种材质——同屏出现就是最刺眼的
-/// 那档冲突（工作区顶栏磨砂、会话页顶栏玻璃，切 Tab 就能看出来）。这里统一关掉系统
-/// 底板，改由 `WorkbenchChromeMaterial` 提供同一档磨砂。
-///
-/// `content` 自己负责画表面——图标按钮和 Menu 都应该在**自己的 label 上**调用
-/// `workbenchChromeCircle`，而不是套在 `Button` / `Menu` 外面：外层的 44pt 框撑不开
-/// 控件的命中区域，只会让图标保持原尺寸可点。
+/// 显式隐藏 `ToolbarItem` 自带的共享背景，改由统一玻璃材质 `workbenchToolbarChromeCircle`
+/// 独立绘制圆形表面，避免相邻按钮被系统粘成一整条胶囊或叠加双层背景。
 ///
 /// 需要在 `ToolbarItem` 上再挂 `matchedTransitionSource` 的调用方无法复用这个包装，
 /// 请在自己的 `#available(iOS 26.0, *)` 分支里同时补上 `sharedBackgroundVisibility(.hidden)`。
@@ -961,18 +942,14 @@ func workbenchChromeToolbarItem<Content: View>(
 }
 
 extension View {
-    /// 顶栏（`ToolbarItem`）专用：磨砂圆**只作为背景绘制，不参与布局**。
+    /// 顶栏（`ToolbarItem`）专用：玻璃圆**只作为背景绘制，不参与布局**。
     ///
     /// 不能在这里用 `workbenchChromeCircle`。给 ToolbarItem 的 label 硬设 44pt frame
     /// 会和导航栏的高度协商打架：系统会把它压回 40pt，而这次压缩会让详情列算错安全区。
-    /// 表现是宽屏下从工作区点进会话时 Composer 卡在半空、下方一大片空白，唤起并收起
-    /// 键盘（强制重算一次安全区）才恢复。三次隔离构建定位到就是这个 frame。
-    ///
-    /// 背景不影响父视图尺寸，所以这里画多大都不会动导航栏度量；命中区域仍由系统
-    /// 按工具栏项的标准规则提供。
+    /// 背景不影响父视图尺寸，所以这里画多大都不会动导航栏度量；命中区域仍由系统提供。
     func workbenchToolbarChromeCircle(tokens: ThemeTokens) -> some View {
         background {
-            WorkbenchChromeMaterial(shape: Circle(), tokens: tokens)
+            WorkbenchChromeMaterial(shape: Circle(), tokens: tokens, interactive: true)
                 .frame(
                     width: WorkbenchChromeIconMetrics.toolbarCircleDiameter,
                     height: WorkbenchChromeIconMetrics.toolbarCircleDiameter
@@ -980,16 +957,15 @@ extension View {
         }
     }
 
-    /// 顶栏图标按钮统一成 44pt 磨砂圆。放进 `ToolbarItem` 时不要直接用这个，
-    /// 走 `workbenchChromeToolbarItem`：它会同时关掉 iPadOS/iOS 26 自动附加的
-    /// 共享玻璃底板，否则那层玻璃会叠在这层磨砂下面，形成两层背景。
+    /// 独立圆形图标按钮统一成 44pt 交互式透明玻璃圆。放进 `ToolbarItem` 时不要直接用这个，
+    /// 走 `workbenchChromeToolbarItem` + `workbenchToolbarChromeCircle`。
     func workbenchChromeCircle(tokens: ThemeTokens) -> some View {
         frame(
             width: WorkbenchChromeIconMetrics.minimumHitTarget,
             height: WorkbenchChromeIconMetrics.minimumHitTarget
         )
-        .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
         .contentShape(Circle())
+        .workbenchGlassSurface(shape: Circle(), tokens: tokens, interactive: true)
     }
 
     /// 会话滚动边缘统一使用柔和渐隐：顶部正文进入导航控制层、底部正文经过 Composer

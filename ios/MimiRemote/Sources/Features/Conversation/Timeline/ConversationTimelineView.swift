@@ -1030,8 +1030,6 @@ enum ConversationReturnToTailButtonMetrics: Equatable {
 
 /// 回到底部按钮和滚动实现放在同一文件，避免为单个私有控件扩张工程文件清单。
 private struct ConversationReturnToTailButton: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorScheme) private var colorScheme
     let tokens: ThemeTokens
     let accessibilityLabel: String
     var isCompactPhone = false
@@ -1054,25 +1052,9 @@ private struct ConversationReturnToTailButton: View {
 
     private var buttonLabel: some View {
         baseLabel
-            // 与顶栏按钮、侧栏控件、工作区胶囊共用同一档扁平磨砂。这里原本用
-            // `.glassEffect(.regular.interactive())`，浮在 Composer 正上方时就是一屏里
-            // 第二种玻璃浓度——「回到底部」比输入卡还亮，反而抢了视线。
-            // 描边和阴影保留：这枚按钮浮在滚动正文之上，需要边界和高度差才读得出层级。
-            .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
-            .overlay {
-                Circle()
-                    .stroke(
-                        colorScheme == .light
-                            ? Color.black.opacity(reduceTransparency ? 0.22 : 0.10)
-                            : Color.white.opacity(reduceTransparency ? 0.28 : 0.14),
-                        lineWidth: 0.75
-                    )
-            }
-            .shadow(
-                color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
-                radius: isCompactPhone ? 5 : 6,
-                y: 2
-            )
+            // 与顶栏玻璃按钮、底部透明输入框、工作区胶囊共用同一套透明玻璃材质，
+            // iOS 26+ 原生交互式 Liquid Glass，旧系统与辅助功能由修饰符统一回退描边与阴影。
+            .workbenchGlassSurface(shape: Circle(), tokens: tokens, interactive: true)
     }
 
     private var baseLabel: some View {

@@ -205,6 +205,7 @@ struct WorkspaceRuntimePicker: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
     private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
@@ -363,24 +364,21 @@ struct WorkspaceRuntimePicker: View {
                     .frame(minHeight: 32)
                     .background {
                         if isSelected {
-                            // 保留统一的胶囊语言，但用更小的可见高度明确 Runtime 只是次级筛选器。
+                            // 选中项只画一层中性玻璃提亮，与外轨透明玻璃胶囊配合，不叠加第二层玻璃或实色块。
                             let shape = Capsule()
                             shape
-                                .fill(tokens.contentPanelBackground)
+                                .fill(
+                                    WorkbenchChromeMaterial<Capsule>.selectionTint(
+                                        tokens: tokens,
+                                        reduceTransparency: reduceTransparency || colorSchemeContrast == .increased
+                                    )
+                                )
                                 .overlay {
-                                    // 常规模式不描边，避免选中态像获得焦点的输入框；
                                     // 增强对比度仅补中性轮廓，不重新引入紫色边框。
                                     if colorSchemeContrast == .increased {
                                         shape.stroke(tokens.border, lineWidth: 1)
                                     }
                                 }
-                                .shadow(
-                                    color: tokens.primaryAction.opacity(
-                                        colorScheme == .dark ? 0.18 : 0.10
-                                    ),
-                                    radius: 2,
-                                    y: 1
-                                )
                                 .matchedGeometryEffect(
                                     id: "workspace-runtime-selection",
                                     in: selectionNamespace
@@ -408,17 +406,8 @@ struct WorkspaceRuntimePicker: View {
         }
         .padding(.horizontal, 2)
         .background {
-            // 外轨只负责把两个选项映射为同一控件，保持中性并让内容层级更安静。
-            Capsule()
-                .fill(tokens.surface.opacity(colorScheme == .dark ? 0.82 : 0.72))
-                .padding(.vertical, 4)
-        }
-        .overlay {
-            Capsule()
-                .stroke(
-                    tokens.border.opacity(colorSchemeContrast == .increased ? 1 : 0.64),
-                    lineWidth: colorSchemeContrast == .increased ? 1 : 0.5
-                )
+            // 与同排工作区项目胶囊共用同一套透明玻璃外轨，保持 36pt 视觉高度与 44pt 命中区。
+            WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens)
                 .padding(.vertical, 4)
         }
     }
