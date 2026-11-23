@@ -76,32 +76,53 @@ is_excluded() {
   esac
 }
 
+files_to_check=()
 while IFS= read -r -d '' source_file; do
   relative_path="${source_file#"$ROOT_DIR"/}"
   if is_excluded "$relative_path"; then
     continue
   fi
-
-  limit=$PRODUCTION_LIMIT
-  case "$relative_path" in
-    *_test.go|*/Tests/*|*Tests.swift|*TestSupport.swift|*/tests/*|*Tests.cs)
-      limit=$TEST_LIMIT
-      ;;
-  esac
-
-  line_count="$(wc -l < "$source_file" | tr -d '[:space:]')"
-  if (( line_count <= limit )); then
-    continue
-  fi
-
-  if reason="$(exception_reason "$relative_path")"; then
-    printf '源码体积例外：%s (%s 行，上限 %s)：%s\n' "$relative_path" "$line_count" "$limit" "$reason"
-    continue
-  fi
-
-  printf '源码体积超限：%s (%s 行，上限 %s)\n' "$relative_path" "$line_count" "$limit" >&2
-  failed=1
+  files_to_check+=("$source_file")
 done < <(find "$ROOT_DIR" -type f \( -name '*.swift' -o -name '*.go' -o -name '*.cs' -o -name '*.xaml' \) -print0)
+
+total_files="${#files_to_check[@]}"
+batch_size=200
+offset=0
+while (( offset < total_files )); do
+  batch=("${files_to_check[@]:offset:batch_size}")
+  batch_len="${#batch[@]}"
+  idx=0
+  while IFS= read -r wc_line; do
+    if (( idx >= batch_len )); then
+      break
+    fi
+    source_file="${batch[$idx]}"
+    idx=$((idx + 1))
+    relative_path="${source_file#"$ROOT_DIR"/}"
+
+    limit=$PRODUCTION_LIMIT
+    case "$relative_path" in
+      *_test.go|*/Tests/*|*Tests.swift|*TestSupport.swift|*/tests/*|*Tests.cs)
+        limit=$TEST_LIMIT
+        ;;
+    esac
+
+    line_count="${wc_line#"${wc_line%%[![:space:]]*}"}"
+    line_count="${line_count%%[[:space:]]*}"
+    if (( line_count <= limit )); then
+      continue
+    fi
+
+    if reason="$(exception_reason "$relative_path")"; then
+      printf '源码体积例外：%s (%s 行，上限 %s)：%s\n' "$relative_path" "$line_count" "$limit" "$reason"
+      continue
+    fi
+
+    printf '源码体积超限：%s (%s 行，上限 %s)\n' "$relative_path" "$line_count" "$limit" >&2
+    failed=1
+  done < <(wc -l -- "${batch[@]}")
+  offset=$((offset + batch_size))
+done
 
 if (( failed != 0 )); then
   printf '请按职责拆分文件；确需例外时，在 scripts/check-source-size.sh 中写明精确路径和原因。\n' >&2
