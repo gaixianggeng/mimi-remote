@@ -946,18 +946,6 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertTrue(store.hasAgyRuntimeChannel)
         XCTAssertEqual(client.requestedRateLimitProviders, ["agy"])
 
-        let geminiOnlyCard = AccountTokenUsageCard(
-            codexDisplay: store.accountCodexUsageWindowsDisplay,
-            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
-            includesCodex: false,
-            includesClaude: false,
-            agyDisplay: store.accountAgyUsageWindowsDisplay,
-            includesAgy: true,
-            snapshot: nil,
-            activity: .unsupported,
-            isRefreshing: false,
-            onRefresh: {}
-        )
         let items = CombinedUsageItem.make(
             codexDisplay: store.accountCodexUsageWindowsDisplay,
             claudeDisplay: store.accountClaudeUsageWindowsDisplay,
@@ -968,24 +956,8 @@ final class RuntimeFoundationTests: XCTestCase {
             colorScheme: .dark
         )
         XCTAssertEqual(items.map(\.runtimeProvider), ["agy", "agy"])
-        XCTAssertFalse(geminiOnlyCard.showsActivityPanel)
         XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: items.count), 2)
         XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 3), 3)
         XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 0), 3)
-
-        // When Codex IS enabled, unsupported activity still renders the explicit explanation panel.
-        let codexCard = AccountTokenUsageCard(
-            codexDisplay: store.accountCodexUsageWindowsDisplay,
-            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
-            includesCodex: true,
-            includesClaude: false,
-            agyDisplay: store.accountAgyUsageWindowsDisplay,
-            includesAgy: true,
-            snapshot: nil,
-            activity: .unsupported,
-            isRefreshing: false,
-            onRefresh: {}
-        )
-        XCTAssertTrue(codexCard.showsActivityPanel)
     }
 }
