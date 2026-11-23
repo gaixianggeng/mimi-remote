@@ -133,6 +133,76 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertEqual(appStore.connectionProfiles.count, 1)
     }
 
+    func testLANPairingGuidanceMentionsMimiRelayWhenEntitlementIsActive() {
+        let error = URLError(.cannotConnectToHost)
+        let withMimi = ConnectionFailureGuidance.message(
+            for: error,
+            route: .lan,
+            hasActiveMimiEntitlement: true
+        )
+        let withoutMimi = ConnectionFailureGuidance.message(
+            for: error,
+            route: .lan,
+            hasActiveMimiEntitlement: false
+        )
+
+        XCTAssertEqual(withMimi, L10n.text("ui.connection_failure_guidance_lan_with_mimi"))
+        XCTAssertEqual(withoutMimi, L10n.text("ui.connection_failure_guidance_lan"))
+        XCTAssertNotEqual(withMimi, withoutMimi)
+    }
+
+    func testShortSchemeLANPairingURLResolvesToLANRoute() {
+        let shortLAN = URL(string: "mimi://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787&token=t")!
+        let standardLAN = URL(string: "mimiremote://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787&token=t")!
+
+        XCTAssertEqual(ConnectionProfileRoute.fromPairingURL(shortLAN), .lan)
+        XCTAssertEqual(ConnectionProfileRoute.fromPairingURL(standardLAN), .lan)
+    }
+
+    func testClaimPairingRetriesTransientTransportErrorAndStopsOnAuthError() async throws {
+        var attempts = 0
+        var sleepDelays: [UInt64] = []
+        let expected = PairingClaimResponse(
+            endpoint: "http://192.168.1.20:8787",
+            token: "claimed-token",
+            tailscaleDNSName: nil,
+            tailscaleDeviceName: nil,
+            tailcatAddress: nil
+        )
+        let claimed = try await AppStore.claimPairingWithRetry(
+            maxAttempts: 3,
+            retryDelaysNanoseconds: [10, 20],
+            sleep: { sleepDelays.append($0) },
+            operation: {
+                attempts += 1
+                if attempts == 1 {
+                    throw URLError(.cannotConnectToHost)
+                }
+                return expected
+            }
+        )
+        XCTAssertEqual(claimed, expected)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(sleepDelays, [10])
+
+        var authAttempts = 0
+        do {
+            _ = try await AppStore.claimPairingWithRetry(
+                maxAttempts: 3,
+                retryDelaysNanoseconds: [10, 20],
+                sleep: { _ in XCTFail("鉴权/过期等业务错误不应重试") },
+                operation: { () async throws -> PairingClaimResponse in
+                    authAttempts += 1
+                    throw PairingLinkError.expired
+                }
+            )
+            XCTFail("应立即抛出 PairingLinkError.expired")
+        } catch let error as PairingLinkError {
+            XCTAssertEqual(error, .expired)
+            XCTAssertEqual(authAttempts, 1)
+        }
+    }
+
     private func makeStores(routeProbe: @escaping ConnectionRouteProbe) -> (SessionStore, AppStore) {
         let suiteName = "ExternalPairingLinkTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

@@ -237,4 +237,131 @@ final class ConnectionSettingsDraftTests: XCTestCase {
         XCTAssertFalse(ManagedConnectionSubscriptionView.shouldSelectMimiAfterPairing(route: .tailscale))
         XCTAssertFalse(ManagedConnectionSubscriptionView.shouldSelectMimiAfterPairing(route: nil))
     }
+
+    func testRootWorkbenchPresentationAllowsExplicitExitFromInitialSetup() {
+        var presentation = RootWorkbenchPresentation()
+        XCTAssertFalse(
+            presentation.showsWorkbench(
+                canEnterWorkbench: false,
+                hasSavedProfiles: false,
+                isInitialSetupScannerPresented: false
+            )
+        )
+
+        presentation.enterWorkbench()
+
+        XCTAssertTrue(presentation.hasEnteredWorkbench)
+        XCTAssertTrue(
+            presentation.showsWorkbench(
+                canEnterWorkbench: false,
+                hasSavedProfiles: false,
+                isInitialSetupScannerPresented: false
+            )
+        )
+    }
+
+    func testInitialSetupWorkbenchExitVisibilityRules() {
+        // 真正全新首次启动（无中转权益、未配对失败）保持干净，不额外增加退出按钮。
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false
+            )
+        )
+        // 已开通 Mimi 中转时，即使无电脑也提供回到工作台的出口。
+        XCTAssertTrue(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: true,
+                hasPairingError: false
+            )
+        )
+        // 配对失败后，提供回到工作台的出口。
+        XCTAssertTrue(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: true
+            )
+        )
+        // 设备 Tab 与独立设置 Sheet 已有 Tab 栏或「完成」按钮，不重复显示。
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: true,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: true,
+                hasPairingError: true
+            )
+        )
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: true,
+                hasActiveMimiEntitlement: true,
+                hasPairingError: true
+            )
+        )
+    }
+
+    func testScannerPresentationKeepsCoverPresentedUntilDidDismiss() {
+        let presentation = ConnectionQRCodeScannerPresentation()
+        var dismissCallbackCount = 0
+        presentation.configure(
+            onSubmit: { _, _ in .accepted("OK") },
+            onChooseManualConnection: { _ in },
+            onDismiss: { dismissCallbackCount += 1 }
+        )
+
+        presentation.request(.initialConnection, from: .connectionSettings)
+        XCTAssertEqual(presentation.intent, .initialConnection)
+        XCTAssertTrue(presentation.isCoverPresented)
+
+        // 发起收起动画后 intent 立即清空，但 Cover 仍在动画退场中，宿主不可提前替换。
+        presentation.dismiss()
+        XCTAssertNil(presentation.intent)
+        XCTAssertTrue(presentation.isCoverPresented)
+        XCTAssertEqual(dismissCallbackCount, 0)
+
+        // 系统收起动画结束触发 didDismiss 后，Cover 生命周期才真正结束。
+        presentation.didDismiss()
+        XCTAssertFalse(presentation.isCoverPresented)
+        XCTAssertEqual(dismissCallbackCount, 1)
+    }
+
+    func testScheduleManagedConnectionWaitsForScannerDismissWithoutPrematureClear() {
+        let presentation = ConnectionQRCodeScannerPresentation()
+        presentation.request(.repairCurrentProfile(expectedProfileID: "mac-1"), from: .connectionSettings)
+        XCTAssertEqual(presentation.intent, .repairCurrentProfile(expectedProfileID: "mac-1"))
+
+        presentation.scheduleManagedConnectionOnDismiss()
+        // 不提前清空 intent，保留扫码页成功态展示。
+        XCTAssertEqual(presentation.intent, .repairCurrentProfile(expectedProfileID: "mac-1"))
+        XCTAssertTrue(presentation.isCoverPresented)
+        XCTAssertNil(presentation.managedConnectionHost)
+
+        presentation.dismiss()
+        XCTAssertNil(presentation.intent)
+        XCTAssertTrue(presentation.isCoverPresented)
+        XCTAssertNil(presentation.managedConnectionHost)
+
+        presentation.didDismiss()
+        XCTAssertFalse(presentation.isCoverPresented)
+        XCTAssertEqual(presentation.managedConnectionHost, .connectionSettings)
+    }
+
+    func testPendingRelaySetupTriggerTracksScannerCoverLifecycle() {
+        let presenting = UnifiedWorkbenchShell.PendingRelaySetupTrigger(
+            profileID: "mac-1",
+            isScannerCoverPresented: true
+        )
+        let dismissed = UnifiedWorkbenchShell.PendingRelaySetupTrigger(
+            profileID: "mac-1",
+            isScannerCoverPresented: false
+        )
+        XCTAssertNotEqual(presenting, dismissed)
+    }
 }
