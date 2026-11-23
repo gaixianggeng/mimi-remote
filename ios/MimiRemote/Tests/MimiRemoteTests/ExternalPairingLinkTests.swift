@@ -110,6 +110,29 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertNil(store.lastPairingLinkRoute)
     }
 
+    func testBackgroundPairingLinkWaitsForForegroundResumeBeforeApplying() async throws {
+        var probeCallCount = 0
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in
+            probeCallCount += 1
+        })
+        store.suspendForBackground()
+        XCTAssertTrue(store.isAppInBackground)
+
+        let opening = Task {
+            await store.openPairingLink(Self.tokenLink, foregroundWaitTimeoutNanoseconds: 2_000_000_000)
+        }
+        try await waitUntil { store.pairingLinkAttempt == .connecting }
+        XCTAssertEqual(probeCallCount, 0, "前台恢复落地前不应提前触发会被后台门禁取消的连接变更")
+
+        await store.resumeFromForeground()
+        await opening.value
+
+        XCTAssertEqual(probeCallCount, 1)
+        XCTAssertEqual(store.pairingLinkAttempt, .idle)
+        XCTAssertTrue(appStore.isConfigured)
+        XCTAssertEqual(appStore.connectionProfiles.count, 1)
+    }
+
     private func makeStores(routeProbe: @escaping ConnectionRouteProbe) -> (SessionStore, AppStore) {
         let suiteName = "ExternalPairingLinkTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
