@@ -691,8 +691,7 @@ struct SessionIndexRow: View {
             Spacer(minLength: 12)
 
             if session.cwdMissing == true {
-                let prefersChinese = UserFacingError.message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
-                Text(prefersChinese ? "目录缺失" : "Missing path")
+                Text(L10n.text("ui.session_cwd_missing_badge"))
                     .font(themeStore.uiFont(.caption2, weight: .medium))
                     .foregroundStyle(tokens.warning)
                     .padding(.horizontal, 6)

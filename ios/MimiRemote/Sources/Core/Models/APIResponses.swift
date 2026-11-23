@@ -364,65 +364,45 @@ struct RuntimeChannelDiagnostic: Equatable, Hashable, Sendable {
         )
     }
 
-    private static var prefersChinese: Bool {
-        UserFacingError.message(for: .unknown).range(of: "\\p{Han}", options: .regularExpression) != nil
-    }
-
     var localizedTitle: String {
-        let zh = Self.prefersChinese
         switch status {
         case "agy_unsupported":
-            return zh ? "需要升级 Antigravity CLI" : "Antigravity CLI Update Required"
+            return L10n.text("ui.runtime_diagnostic_agy_unsupported_title")
         case "agy_missing":
-            return zh ? "未检测到 Antigravity CLI" : "Antigravity CLI Not Found"
+            return L10n.text("ui.runtime_diagnostic_agy_missing_title")
         case "agy_signed_out":
-            return zh ? "Antigravity 尚未登录" : "Antigravity Sign-In Required"
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_title")
         case "claude_unsupported":
-            return zh ? "需要升级 Claude Code" : "Claude Code Update Required"
+            return L10n.text("ui.runtime_diagnostic_claude_unsupported_title")
         default:
-            return zh ? "通道暂不可用" : "Channel Unavailable"
+            return L10n.text("ui.runtime_diagnostic_channel_unavailable_title")
         }
     }
 
     var localizedMessage: String {
-        let zh = Self.prefersChinese
         switch status {
         case "agy_unsupported":
             if let current = cliVersion, let minimum = minimumCLIVersion {
-                return zh
-                    ? "Antigravity CLI \(current) 过旧，Mimi Remote 需要 \(minimum) 或更新版本。请在电脑升级 agy 后重试。"
-                    : "Antigravity CLI \(current) is too old. Mimi Remote requires \(minimum) or newer. Update agy on your computer and try again."
+                return L10n.format("ui.runtime_diagnostic_agy_unsupported_versions_message", current, minimum)
             }
             if let minimum = minimumCLIVersion {
-                return zh
-                    ? "Antigravity CLI 版本过旧，Mimi Remote 需要 \(minimum) 或更新版本。请在电脑升级 agy 后重试。"
-                    : "Antigravity CLI is too old. Mimi Remote requires \(minimum) or newer. Update agy on your computer and try again."
+                return L10n.format("ui.runtime_diagnostic_agy_unsupported_minimum_message", minimum)
             }
-            return zh
-                ? "Antigravity CLI 版本过旧，请在电脑升级 agy 后重试。"
-                : "Antigravity CLI is too old. Update agy on your computer and try again."
+            return L10n.text("ui.runtime_diagnostic_agy_unsupported_message")
         case "agy_missing":
-            return zh
-                ? "电脑上未检测到 Antigravity CLI (agy)。请先安装 agy 并完成登录，然后重试。"
-                : "Antigravity CLI (agy) was not found on your computer. Install agy and sign in, then try again."
+            return L10n.text("ui.runtime_diagnostic_agy_missing_message")
         case "agy_signed_out":
-            return zh
-                ? "电脑上的 Antigravity CLI 尚未登录。请在终端运行 agy 完成登录，然后重试。"
-                : "Antigravity CLI is not signed in on your computer. Run `agy` in Terminal to sign in, then try again."
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_message")
         case "claude_unsupported":
             if let current = cliVersion, let minimum = minimumCLIVersion {
-                return zh
-                    ? "Claude Code \(current) 过旧，需要 \(minimum) 或更新版本。请在电脑运行 claude update 后重试。"
-                    : "Claude Code \(current) is too old. Mimi Remote requires \(minimum) or newer. Run `claude update` on your computer and try again."
+                return L10n.format("ui.runtime_diagnostic_claude_unsupported_versions_message", current, minimum)
             }
-            return zh
-                ? "Claude Code 版本过旧，请在电脑运行 claude update 后重试。"
-                : "Claude Code is too old. Run `claude update` on your computer and try again."
+            return L10n.text("ui.runtime_diagnostic_claude_unsupported_message")
         default:
             if let error = lastProbeError, let presentable = UserFacingError.presentableComputerReason(error) {
                 return presentable
             }
-            return zh ? "电脑上的运行通道当前不可用，请检查电脑端状态后重试。" : "This runtime channel is currently unavailable on your computer. Check your computer and try again."
+            return L10n.text("ui.runtime_diagnostic_channel_unavailable_message")
         }
     }
 

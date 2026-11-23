@@ -841,15 +841,10 @@ struct ApprovalSummary: Codable, Hashable {
 
     var alwaysAllowScopeNotice: String? {
         guard canAcceptAlways else { return nil }
-        let prefersChinese = L10n.text("ui.always_allowed").range(of: "\\p{Han}", options: .regularExpression) != nil
         if alwaysAllowScopeUncertain == true {
-            return prefersChinese
-                ? "上游未说明该持续授权的精确范围，可能对后续会话持续生效。"
-                : "Scope is not specified by the agent and may persist across future sessions."
+            return L10n.text("ui.always_allow_scope_uncertain_notice")
         }
-        return prefersChinese
-            ? "该持续授权由代理保存，可能对后续会话生效。"
-            : "This persistent grant is managed by the agent and may apply to future sessions."
+        return L10n.text("ui.always_allow_scope_managed_notice")
     }
 
     var canPersistPermission: Bool {
