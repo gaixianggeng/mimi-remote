@@ -139,14 +139,17 @@ extension ComposerView {
     }
 
     /// iPhone 展开输入卡内、文字输入区上方的小药丸模型选择器；点开后以半屏 Sheet 展示。
+    /// 与顶部内嵌状态胶囊共用 28pt 视觉高度与轻透色板，同排并列时不出现高低差或实色灰块。
     func phoneModelPillControl(tokens: ThemeTokens) -> some View {
-        Button {
+        let pillShape = Capsule(style: .continuous)
+        let increasedContrast = colorSchemeContrast == .increased
+        return Button {
             showsModelGridPicker.toggle()
         } label: {
             HStack(spacing: 5) {
                 Text(modelPickerTriggerTitle)
                     .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.secondaryText)
+                    .foregroundStyle(tokens.primaryText.opacity(0.86))
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if hasAcceleratedServiceTierSelected {
@@ -156,16 +159,30 @@ extension ComposerView {
                 }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(tokens.tertiaryText)
+                    .foregroundStyle(tokens.secondaryText)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(minHeight: 30)
-            .background(tokens.elevatedSurface, in: Capsule())
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .frame(minHeight: 28)
+            .background(
+                ComposerEmbeddedPillPalette.fill(
+                    tokens: tokens,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: increasedContrast
+                ),
+                in: pillShape
+            )
             .overlay {
-                Capsule().strokeBorder(tokens.border.opacity(0.7), lineWidth: 0.75)
+                pillShape.strokeBorder(
+                    ComposerEmbeddedPillPalette.border(
+                        tokens: tokens,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    ),
+                    lineWidth: 0.5
+                )
             }
-            .contentShape(Capsule())
+            .contentShape(pillShape)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
@@ -178,7 +195,9 @@ extension ComposerView {
     }
 
     func unavailablePhoneModelPill(tokens: ThemeTokens) -> some View {
-        Menu {
+        let pillShape = Capsule(style: .continuous)
+        let increasedContrast = colorSchemeContrast == .increased
+        return Menu {
             Section {
                 Button(action: {}) {
                     Label(L10n.text("ui.model"), systemImage: "cpu")
@@ -188,21 +207,35 @@ extension ComposerView {
                 Text(ComposerTurnSettingsPolicy.unavailableMenuNotice)
             }
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: "cpu")
                     .font(.system(size: 11, weight: .medium))
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10, weight: .semibold))
             }
-            .foregroundStyle(tokens.tertiaryText)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(minHeight: 30)
-            .background(tokens.elevatedSurface, in: Capsule())
+            .foregroundStyle(tokens.secondaryText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .frame(minHeight: 28)
+            .background(
+                ComposerEmbeddedPillPalette.fill(
+                    tokens: tokens,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: increasedContrast
+                ),
+                in: pillShape
+            )
             .overlay {
-                Capsule().strokeBorder(tokens.border.opacity(0.6), lineWidth: 0.75)
+                pillShape.strokeBorder(
+                    ComposerEmbeddedPillPalette.border(
+                        tokens: tokens,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    ),
+                    lineWidth: 0.5
+                )
             }
-            .contentShape(Capsule())
+            .contentShape(pillShape)
         }
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.model"))
