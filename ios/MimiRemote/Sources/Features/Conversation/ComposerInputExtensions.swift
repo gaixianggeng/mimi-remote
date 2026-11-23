@@ -497,11 +497,8 @@ extension ComposerView {
 
         return VStack(alignment: .leading, spacing: 4) {
             if !singleLine {
-                composerStatusTray.transition(.opacity)
-                // 模型选择器以小药丸放在文字输入区上方，不与底栏按钮争抢宽度，点开即为半屏 Sheet。
-                phoneModelPillBox(tokens: tokens)
-                    .padding(.horizontal, 2)
-                    .padding(.top, 2)
+                // 状态条与模型/模型锁小组件在收起态合并排布为同一排；无状态时仅保留模型药丸。
+                phoneComposerHeaderBox(tokens: tokens)
                     .transition(.opacity)
             }
             HStack(spacing: 2) {
@@ -539,8 +536,19 @@ extension ComposerView {
         .padding(.horizontal, singleLine ? 6 : 8)
         .padding(.vertical, singleLine ? 4 : 8)
         .frame(maxWidth: .infinity)
-        .background { composerContainerBackground(shape: shape, tokens: tokens) }
-        .overlay { shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth) }
+        .modifier(
+            ComposerCardSurfaceModifier(
+                shape: shape,
+                tokens: tokens,
+                colorScheme: colorScheme,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: colorSchemeContrast == .increased,
+                usesFloatingGlass: true,
+                voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
+                solidBorderColor: composerCardBorderColor(tokens),
+                borderWidth: composerCardBorderWidth
+            )
+        )
         .tint(tokens.accent)
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
