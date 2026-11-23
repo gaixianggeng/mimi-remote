@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { serveConnection } from "@mimi/appserver-kit/server/connection.ts";
 import { SessionRegistry } from "@mimi/appserver-kit/session/registry.ts";
+import { AgyOverlay } from "../src/agy/overlay.ts";
 import { createApp } from "../src/app.ts";
+import { hashNormalizedPrompt } from "../src/runtime/userInput.ts";
 import { FakeAgyWorld } from "./support/fake-agy.ts";
 
 describe("mimi-agy-adapter round6 fixes (B10)", () => {
@@ -532,5 +534,244 @@ describe("mimi-agy-adapter round6 fixes (B10)", () => {
     } finally {
       await cold.close();
     }
+  });
+
+  test("pruning turnAttempts past 200 preserves historical turn identities, clientIds, and unpersisted synthetic turns across cold restart", async () => {
+    const sessionId = "prune-history-205";
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`), "sqlite");
+
+    const logsDir = path.join(fakeHome, ".gemini", "antigravity-cli", "brain", sessionId, ".system_generated", "logs");
+    await mkdir(logsDir, { recursive: true });
+    const transcriptPath = path.join(logsDir, "transcript_full.jsonl");
+
+    const overlayPath = path.join(stateDir, "overlay.json");
+    const overlay = new AgyOverlay(overlayPath);
+    const baseMs = Date.now() - 300_000;
+
+    // Attempt 1: unpersisted early failure assigned turn:1 with a synthetic turn and clientId.
+    const failPrompt = "early failed prompt before persist";
+    const failReserved = await overlay.reserveTurnAttempt(sessionId, {
+      minTurnOrdinal: 1,
+      afterPersistedTurnCount: 0,
+      promptText: failPrompt,
+      promptHash: hashNormalizedPrompt(failPrompt),
+      promptTruncated: false,
+      clientId: "client-fail-1",
+      startedAtMs: baseMs,
+    });
+    expect(failReserved.turnId).toBe(`${sessionId}:turn:1`);
+    await overlay.recordSession(sessionId, {
+      cwd: workspaceDir,
+      updatedAt: Math.floor(baseMs / 1000),
+      turnAttemptUpdate: {
+        attemptId: failReserved.attemptId,
+        turnId: failReserved.turnId,
+        promptText: failPrompt,
+        promptHash: hashNormalizedPrompt(failPrompt),
+        promptTruncated: false,
+        clientId: "client-fail-1",
+        afterPersistedTurnCount: 0,
+        status: "failed",
+        error: "quota exceeded before persist",
+        persisted: false,
+        startedAtMs: baseMs,
+        completedAtMs: baseMs + 500,
+        syntheticTurn: {
+          id: failReserved.turnId,
+          rootTurnId: null,
+          items: [
+            {
+              type: "userMessage",
+              id: `${failReserved.turnId}:user`,
+              clientId: "client-fail-1",
+              content: [{ type: "text", text: failPrompt, text_elements: [] }],
+            },
+          ],
+          itemsView: "full",
+          status: "failed",
+          error: {
+            message: "quota exceeded before persist",
+            codexErrorInfo: null,
+            additionalDetails: null,
+            misalignment: null,
+          },
+          startedAt: Math.floor(baseMs / 1000),
+          completedAt: Math.floor((baseMs + 500) / 1000),
+          durationMs: 500,
+        },
+      },
+    });
+
+    // Attempts 2..205: 204 persisted native turns (total 205 attempts -> exceeds 200-attempt active window).
+    const transcriptLines: string[] = [];
+    const totalNativeTurns = 204;
+    for (let nativeIdx = 0; nativeIdx < totalNativeTurns; nativeIdx += 1) {
+      const turnNumber = nativeIdx + 2;
+      const prompt = `native prompt number ${turnNumber}`;
+      const promptHash = hashNormalizedPrompt(prompt);
+      const clientId = `client-ok-${turnNumber}`;
+      const userStepIndex = nativeIdx * 2;
+      const startedAtMs = baseMs + turnNumber * 1_000;
+      const reserved = await overlay.reserveTurnAttempt(sessionId, {
+        minTurnOrdinal: turnNumber,
+        afterPersistedTurnCount: nativeIdx,
+        promptText: prompt,
+        promptHash,
+        promptTruncated: false,
+        clientId,
+        startedAtMs,
+      });
+      expect(reserved.turnId).toBe(`${sessionId}:turn:${turnNumber}`);
+      await overlay.recordSession(sessionId, {
+        updatedAt: Math.floor((startedAtMs + 500) / 1000),
+        turnAttemptUpdate: {
+          attemptId: reserved.attemptId,
+          turnId: reserved.turnId,
+          promptText: prompt,
+          promptHash,
+          promptTruncated: false,
+          clientId,
+          afterPersistedTurnCount: nativeIdx,
+          status: "completed",
+          error: null,
+          persisted: true,
+          nativeUserStepIndex: userStepIndex,
+          startedAtMs,
+          completedAtMs: startedAtMs + 500,
+        },
+      });
+      transcriptLines.push(
+        JSON.stringify({
+          step_index: userStepIndex,
+          type: "USER_INPUT",
+          status: "DONE",
+          created_at: new Date(startedAtMs).toISOString(),
+          content: `<USER_REQUEST>\n${prompt}\n</USER_REQUEST>`,
+        }),
+        JSON.stringify({
+          step_index: userStepIndex + 1,
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          created_at: new Date(startedAtMs + 400).toISOString(),
+          content: `reply ${turnNumber}`,
+        }),
+      );
+    }
+    await overlay.flush();
+
+    await writeFile(transcriptPath, `${transcriptLines.join("\n")}\n`);
+    const oldTime = new Date(Date.now() - 5 * 60_000);
+    await utimes(transcriptPath, oldTime, oldTime);
+
+    // Verify on-disk overlay keeps active turnAttempts bounded to 200 while compacting evicted entries into archivedTurnAttempts.
+    const rawOverlay = JSON.parse(await readFile(overlayPath, "utf8")) as {
+      sessions?: Record<
+        string,
+        {
+          turnAttempts?: Array<{ turnId: string; promptText: string; promptHash?: string; clientId?: string }>;
+          archivedTurnAttempts?: Array<{
+            turnId: string;
+            status: string;
+            promptText: string;
+            promptHash?: string;
+            clientId?: string;
+            startedAtMs?: number;
+            syntheticTurn?: unknown;
+          }>;
+        }
+      >;
+    };
+    const sessionOverlay = rawOverlay.sessions?.[sessionId];
+    expect(sessionOverlay?.turnAttempts).toHaveLength(200);
+    expect(sessionOverlay?.archivedTurnAttempts).toHaveLength(5);
+    expect(sessionOverlay?.archivedTurnAttempts?.[0]).toMatchObject({
+      turnId: `${sessionId}:turn:1`,
+      status: "failed",
+      clientId: "client-fail-1",
+    });
+    expect(sessionOverlay?.archivedTurnAttempts?.[0]?.syntheticTurn).toBeDefined();
+    expect(sessionOverlay?.archivedTurnAttempts?.[1]).toMatchObject({
+      turnId: `${sessionId}:turn:2`,
+      status: "completed",
+      promptText: "",
+      promptHash: hashNormalizedPrompt("native prompt number 2"),
+      clientId: "client-ok-2",
+    });
+    expect(sessionOverlay?.archivedTurnAttempts?.[1]?.startedAtMs).toBeUndefined();
+
+    // Cold reopen must reconstruct all 205 turns with exact historical IDs and clientIds.
+    const world = new FakeAgyWorld({
+      sessions: [
+        {
+          sessionId,
+          cwd: workspaceDir,
+          title: "Long History 205",
+          updatedAt: new Date(baseMs + 206_000).toISOString(),
+          modeId: "default",
+          model: "gemini-4-carbon",
+          thoughtLevel: "medium",
+          replayUpdates: [],
+        },
+      ],
+    });
+    const cold = await createHarness(world);
+    try {
+      const read = await cold.rpc<{
+        thread: {
+          turns: Array<{
+            id: string;
+            status: string;
+            error?: { message?: string } | null;
+            items: Array<{ type: string; id: string; clientId?: string | null; text?: string }>;
+          }>;
+        };
+      }>("thread/read", { threadId: sessionId, includeTurns: true });
+      expect(read.thread.turns).toHaveLength(205);
+
+      // Turn 1: unpersisted synthetic failure preserved intact.
+      expect(read.thread.turns[0]).toMatchObject({
+        id: `${sessionId}:turn:1`,
+        status: "failed",
+        error: { message: "quota exceeded before persist" },
+      });
+      expect(read.thread.turns[0]?.items.find((i) => i.type === "userMessage")).toMatchObject({
+        id: `${sessionId}:turn:1:user`,
+        clientId: "client-fail-1",
+      });
+
+      // Turn 2: first persisted native turn MUST remain turn:2 with client-ok-2 (not shift down to turn:1 without clientId).
+      expect(read.thread.turns[1]).toMatchObject({
+        id: `${sessionId}:turn:2`,
+        status: "completed",
+      });
+      expect(read.thread.turns[1]?.items.find((i) => i.type === "userMessage")).toMatchObject({
+        id: `${sessionId}:turn:2:user`,
+        clientId: "client-ok-2",
+      });
+
+      // Turn 205: latest turn preserved intact.
+      expect(read.thread.turns[204]).toMatchObject({
+        id: `${sessionId}:turn:205`,
+        status: "completed",
+      });
+      expect(read.thread.turns[204]?.items.find((i) => i.type === "userMessage")).toMatchObject({
+        id: `${sessionId}:turn:205:user`,
+        clientId: "client-ok-205",
+      });
+    } finally {
+      await cold.close();
+    }
+
+    // Reserving after an external native turn (afterPersistedTurnCount=205) still counts the archived unpersisted failure.
+    const reloadedOverlay = new AgyOverlay(overlayPath);
+    const nextReserved = await reloadedOverlay.reserveTurnAttempt(sessionId, {
+      minTurnOrdinal: 206,
+      afterPersistedTurnCount: 205,
+      promptText: "after external native append",
+      promptHash: hashNormalizedPrompt("after external native append"),
+      promptTruncated: false,
+      clientId: "client-ok-207",
+    });
+    expect(nextReserved.turnId).toBe(`${sessionId}:turn:207`);
   });
 });

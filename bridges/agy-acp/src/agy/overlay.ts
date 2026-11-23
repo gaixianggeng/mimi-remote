@@ -55,12 +55,68 @@ interface OverlayEntry {
   nextTurnOrdinal?: number;
   nextAttemptSeq?: number;
   turnOutcomes?: Record<string, TurnOutcomeRecord>;
+  /** 超出活跃窗口后紧凑化归档的历史身份映射与未落盘合成回合，避免历史回放丢失 turnId/clientId 与失败记录。 */
+  archivedTurnAttempts?: TurnAttemptRecord[];
   turnAttempts?: TurnAttemptRecord[];
   toolMappings?: Record<string, PersistedToolMapping[]>;
 }
 
 const MAX_TURN_OUTCOMES_PER_SESSION = 200;
 const MAX_TURN_ATTEMPTS_PER_SESSION = 200;
+
+function compactHistoricalAttempt(attempt: TurnAttemptRecord): TurnAttemptRecord | undefined {
+  // 长期停留在 inProgress 的僵尸尝试不会被历史合并使用，序号已由 nextTurnOrdinal 保护，可直接丢弃。
+  if (attempt.status === "inProgress") {
+    return undefined;
+  }
+  const hasPromptHash = Boolean(attempt.promptHash);
+  const base: TurnAttemptRecord = {
+    attemptId: attempt.attemptId,
+    turnId: attempt.turnId,
+    promptText: hasPromptHash ? "" : attempt.promptText,
+    ...(hasPromptHash ? { promptHash: attempt.promptHash } : {}),
+    ...(!hasPromptHash && attempt.promptTruncated !== undefined ? { promptTruncated: attempt.promptTruncated } : {}),
+    ...(attempt.clientId ? { clientId: attempt.clientId } : {}),
+    afterPersistedTurnCount: attempt.afterPersistedTurnCount,
+    status: attempt.status,
+    ...(attempt.persisted !== undefined ? { persisted: attempt.persisted } : {}),
+    ...(attempt.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: attempt.nativeUserStepIndex } : {}),
+    createdAt: attempt.createdAt,
+  };
+  if (attempt.status === "completed") {
+    return base;
+  }
+  return {
+    ...base,
+    ...(attempt.error !== undefined ? { error: attempt.error } : {}),
+    ...(attempt.persisted !== true && attempt.startedAtMs !== undefined ? { startedAtMs: attempt.startedAtMs } : {}),
+    ...(attempt.persisted !== true && attempt.completedAtMs !== undefined ? { completedAtMs: attempt.completedAtMs } : {}),
+    ...(attempt.syntheticTurn ? { syntheticTurn: attempt.syntheticTurn } : {}),
+  };
+}
+
+function pruneTurnAttempts(
+  archivedInput: readonly TurnAttemptRecord[] | undefined,
+  active: TurnAttemptRecord[],
+): { archived: TurnAttemptRecord[] | undefined; active: TurnAttemptRecord[] } {
+  const archived = [...(archivedInput ?? [])];
+  while (active.length > MAX_TURN_ATTEMPTS_PER_SESSION) {
+    const evicted = active.shift();
+    if (!evicted) break;
+    const compacted = compactHistoricalAttempt(evicted);
+    if (!compacted) continue;
+    const existingIdx = archived.findIndex((entry) => entry.attemptId === compacted.attemptId);
+    if (existingIdx >= 0) {
+      archived[existingIdx] = compacted;
+    } else {
+      archived.push(compacted);
+    }
+  }
+  return {
+    archived: archived.length > 0 ? archived : undefined,
+    active,
+  };
+}
 
 export function parseTurnOrdinal(sessionId: string, turnId: string): number {
   const prefix = `${sessionId}:turn:`;
@@ -76,6 +132,9 @@ function maxRecordedTurnOrdinal(sessionId: string, entry: OverlayEntry | undefin
   let maxOrd = entry.nextTurnOrdinal ?? 0;
   for (const key of Object.keys(entry.turnOutcomes ?? {})) {
     maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, key));
+  }
+  for (const attempt of entry.archivedTurnAttempts ?? []) {
+    maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, attempt.turnId));
   }
   for (const attempt of entry.turnAttempts ?? []) {
     maxOrd = Math.max(maxOrd, parseTurnOrdinal(sessionId, attempt.turnId));
@@ -128,7 +187,12 @@ export class AgyOverlay {
   }
 
   getTurnAttempts(sessionId: string): TurnAttemptRecord[] {
-    return this.data.sessions[sessionId]?.turnAttempts ?? [];
+    const entry = this.data.sessions[sessionId];
+    const archived = entry?.archivedTurnAttempts;
+    const active = entry?.turnAttempts;
+    if (!archived?.length) return active ?? [];
+    if (!active?.length) return archived;
+    return [...archived, ...active];
   }
 
   getToolMappings(sessionId: string, turnId: string): PersistedToolMapping[] {
@@ -156,7 +220,8 @@ export class AgyOverlay {
     const existingMaxOrdinal = maxRecordedTurnOrdinal(sessionId, current);
     // 未落盘的失败/中断尝试在历史中各自占有一个独立回合位，因此后续外部原生追加回合会占用
     // `afterPersistedTurnCount + unpersistedCount` 之前的序号；新尝试必须从其后分配，绝不抢占外部回合 ID（B10）。
-    const unpersistedCount = (current.turnAttempts ?? []).filter(
+    const allAttempts = [...(current.archivedTurnAttempts ?? []), ...(current.turnAttempts ?? [])];
+    const unpersistedCount = allAttempts.filter(
       (entry) => entry.status !== "completed" && entry.status !== "inProgress" && entry.persisted !== true && Boolean(entry.syntheticTurn),
     ).length;
     const minVisibleOrdinal = info.afterPersistedTurnCount + unpersistedCount + 1;
@@ -177,14 +242,13 @@ export class AgyOverlay {
       status: "inProgress",
       createdAt: Math.floor(Date.now() / 1000),
     });
-    while (attempts.length > MAX_TURN_ATTEMPTS_PER_SESSION) {
-      attempts.shift();
-    }
+    const pruned = pruneTurnAttempts(current.archivedTurnAttempts, attempts);
     this.data.sessions[sessionId] = {
       ...current,
       nextTurnOrdinal: ordinal,
       nextAttemptSeq: attemptSeq,
-      turnAttempts: attempts,
+      ...(pruned.archived ? { archivedTurnAttempts: pruned.archived } : {}),
+      turnAttempts: pruned.active,
     };
     await this.persist();
     return { turnId, attemptId };
@@ -235,10 +299,12 @@ export class AgyOverlay {
       }
       turnOutcomes = nextOutcomes;
     }
+    let archivedTurnAttempts = current.archivedTurnAttempts;
     let turnAttempts = current.turnAttempts;
     if (patch.turnAttemptUpdate) {
       const update = patch.turnAttemptUpdate;
       const nextAttempts = [...(current.turnAttempts ?? [])];
+      let nextArchived = current.archivedTurnAttempts ? [...current.archivedTurnAttempts] : undefined;
       const idx = nextAttempts.findIndex((entry) => entry.attemptId === update.attemptId);
       if (idx >= 0) {
         const existing = nextAttempts[idx]!;
@@ -256,28 +322,49 @@ export class AgyOverlay {
           ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
         };
       } else {
-        nextAttempts.push({
-          attemptId: update.attemptId,
-          turnId: update.turnId,
-          promptText: update.promptText ?? "",
-          ...(update.promptHash ? { promptHash: update.promptHash } : {}),
-          ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
-          ...(update.clientId ? { clientId: update.clientId } : {}),
-          afterPersistedTurnCount: update.afterPersistedTurnCount ?? 0,
-          status: update.status,
-          ...(update.error !== undefined ? { error: update.error } : {}),
-          ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
-          ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
-          ...(update.startedAtMs !== undefined ? { startedAtMs: update.startedAtMs } : {}),
-          ...(update.completedAtMs !== undefined ? { completedAtMs: update.completedAtMs } : {}),
-          ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
-          createdAt: Math.floor(Date.now() / 1000),
-        });
+        const archivedIdx = nextArchived?.findIndex((entry) => entry.attemptId === update.attemptId) ?? -1;
+        if (archivedIdx >= 0 && nextArchived) {
+          const existing = nextArchived[archivedIdx]!;
+          const merged: TurnAttemptRecord = {
+            ...existing,
+            status: update.status,
+            ...(update.promptHash ? { promptHash: update.promptHash } : {}),
+            ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
+            ...(update.clientId ? { clientId: update.clientId } : {}),
+            ...(update.error !== undefined ? { error: update.error } : {}),
+            ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+            ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
+            ...(update.startedAtMs !== undefined ? { startedAtMs: update.startedAtMs } : {}),
+            ...(update.completedAtMs !== undefined ? { completedAtMs: update.completedAtMs } : {}),
+            ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
+          };
+          const compacted = compactHistoricalAttempt(merged);
+          if (compacted) {
+            nextArchived[archivedIdx] = compacted;
+          }
+        } else {
+          nextAttempts.push({
+            attemptId: update.attemptId,
+            turnId: update.turnId,
+            promptText: update.promptText ?? "",
+            ...(update.promptHash ? { promptHash: update.promptHash } : {}),
+            ...(update.promptTruncated !== undefined ? { promptTruncated: update.promptTruncated } : {}),
+            ...(update.clientId ? { clientId: update.clientId } : {}),
+            afterPersistedTurnCount: update.afterPersistedTurnCount ?? 0,
+            status: update.status,
+            ...(update.error !== undefined ? { error: update.error } : {}),
+            ...(update.persisted !== undefined ? { persisted: update.persisted } : {}),
+            ...(update.nativeUserStepIndex !== undefined ? { nativeUserStepIndex: update.nativeUserStepIndex } : {}),
+            ...(update.startedAtMs !== undefined ? { startedAtMs: update.startedAtMs } : {}),
+            ...(update.completedAtMs !== undefined ? { completedAtMs: update.completedAtMs } : {}),
+            ...(update.syntheticTurn ? { syntheticTurn: update.syntheticTurn } : {}),
+            createdAt: Math.floor(Date.now() / 1000),
+          });
+        }
       }
-      while (nextAttempts.length > MAX_TURN_ATTEMPTS_PER_SESSION) {
-        nextAttempts.shift();
-      }
-      turnAttempts = nextAttempts;
+      const pruned = pruneTurnAttempts(nextArchived, nextAttempts);
+      archivedTurnAttempts = pruned.archived;
+      turnAttempts = pruned.active;
     }
     let toolMappings = current.toolMappings;
     if (patch.toolMappings && patch.toolMappings.entries.length > 0) {
@@ -299,6 +386,7 @@ export class AgyOverlay {
       ...(patch.updatedAt !== undefined ? { updatedAt: Math.max(current.updatedAt ?? 0, patch.updatedAt) } : {}),
       ...(patch.customTitle !== undefined ? { customTitle: patch.customTitle } : {}),
       ...(turnOutcomes ? { turnOutcomes } : {}),
+      ...(archivedTurnAttempts ? { archivedTurnAttempts } : {}),
       ...(turnAttempts ? { turnAttempts } : {}),
       ...(toolMappings ? { toolMappings } : {}),
     };
