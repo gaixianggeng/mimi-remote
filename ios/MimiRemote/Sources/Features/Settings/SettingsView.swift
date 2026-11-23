@@ -231,8 +231,13 @@ struct SettingsView: View {
         let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
         let agyUsage = sessionStore.accountAgyUsageWindowsDisplay
-        let isRefreshingQuotaOrActivity = sessionStore.isRefreshingAccountTokenActivity
-            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+        let includesCodex = sessionStore.hasCodexUsageChannel
+        let isRefreshingQuotaOrActivity = (
+                includesCodex && (
+                    sessionStore.isRefreshingAccountTokenActivity
+                        || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+                )
+            )
             || (
                 sessionStore.hasClaudeRuntimeChannel
                     && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
@@ -247,6 +252,7 @@ struct SettingsView: View {
                 AccountTokenUsageCard(
                     codexDisplay: codexUsage,
                     claudeDisplay: claudeUsage,
+                    includesCodex: includesCodex,
                     includesClaude: sessionStore.hasClaudeRuntimeChannel,
                     agyDisplay: agyUsage,
                     includesAgy: sessionStore.hasAgyRuntimeChannel,
@@ -438,8 +444,12 @@ struct SettingsView: View {
     }
 
     private func refreshAccountUsage() async {
-        async let codexQuota: Void = sessionStore.refreshCodexUsage()
-        async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
+        async let codexQuota: Void = sessionStore.isCodexRuntimeChannelAvailable
+            ? sessionStore.refreshCodexUsage()
+            : ()
+        async let tokenActivity: Void = sessionStore.isCodexRuntimeChannelAvailable
+            ? sessionStore.refreshAccountTokenUsage(forceRefresh: true)
+            : ()
         async let claudeQuota: Void = sessionStore.hasClaudeRuntimeChannel
             ? sessionStore.refreshClaudeUsage()
             : ()
@@ -622,6 +632,7 @@ struct AccountTokenUsageCard: View {
 
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
+    var includesCodex: Bool = true
     let includesClaude: Bool
     var agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
         rateLimit: nil,
@@ -637,9 +648,8 @@ struct AccountTokenUsageCard: View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         ViewThatFits(in: .horizontal) {
-            // 只有一个窗口时配额那栏只是一条进度条，撑不起 252pt 的左栏、下方会空出一片；
-            // 这种情况无论屏幕多宽都用上下排。
-            if !dynamicTypeSize.isAccessibilitySize, singleUsageItem == nil {
+            // 只有一个窗口或隐藏活动面板时，左栏/右栏无需分栏；无论屏幕多宽都用上下排。
+            if !dynamicTypeSize.isAccessibilitySize, singleUsageItem == nil, showsActivityPanel {
                 wideLayout(tokens: tokens)
                     .frame(minWidth: 620)
             }
@@ -677,14 +687,32 @@ struct AccountTokenUsageCard: View {
     private func stackedLayout(tokens: ThemeTokens) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             quotaPanel(tokens: tokens, ringDiameter: 84)
-            // 上下排在 iPad 上也会用到（单窗口时强制走这条），宽屏要给点格图更大的高度，
-            // 否则一条进度条上面很轻、下面 86pt 的网格撑不住整张卡。
-            activityPanel(
-                tokens: tokens,
-                gridHeight: horizontalSizeClass == .compact
-                    ? TokenActivityGridMetrics.totalHeight
-                    : 150
-            )
+            if showsActivityPanel {
+                // 上下排在 iPad 上也会用到（单窗口时强制走这条），宽屏要给点格图更大的高度，
+                // 否则一条进度条上面很轻、下面 86pt 的网格撑不住整张卡。
+                activityPanel(
+                    tokens: tokens,
+                    gridHeight: horizontalSizeClass == .compact
+                        ? TokenActivityGridMetrics.totalHeight
+                        : 150
+                )
+            }
+        }
+    }
+
+    /// 日粒度活动热力图仅由 Codex 账号接口提供；未启用 Codex 且没有历史活动时收起占位区，
+    /// 避免纯 Gemini / Claude 用户在额度下方看到整块“当前电脑不提供 Token 活动历史”。
+    var showsActivityPanel: Bool {
+        if includesCodex {
+            return true
+        }
+        switch activity {
+        case .loaded, .empty:
+            return true
+        case .failed(let previous):
+            return previous?.buckets.isEmpty == false
+        case .idle, .loading, .unsupported:
+            return false
         }
     }
 
@@ -716,12 +744,19 @@ struct AccountTokenUsageCard: View {
         return items.count == 1 ? items[0] : nil
     }
 
+    /// 只有 2 个有效窗口时（例如仅启用 Gemini 或仅启用 Claude），画 2 环而非 3 环，
+    /// 避免最内侧永远留一条空灰轨；空态占位或 3 窗口时保持 3 环。
+    static func ringCount(forItemCount itemCount: Int) -> Int {
+        itemCount == 2 ? 2 : 3
+    }
+
     private func usageRings(tokens: ThemeTokens, diameter: CGFloat) -> some View {
-        VStack(spacing: 6) {
+        let ringCount = Self.ringCount(forItemCount: usageItems.count)
+        return VStack(spacing: 6) {
             ZStack {
                 CombinedUsageRingsGraphic(
                     items: usageItems,
-                    expectedRingCount: 3,
+                    expectedRingCount: ringCount,
                     diameter: diameter,
                     lineWidth: Self.ringLineWidth,
                     ringSpacing: Self.ringSpacing
@@ -741,7 +776,7 @@ struct AccountTokenUsageCard: View {
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
-                        .frame(width: Self.ringInnerHoleDiameter(for: diameter))
+                        .frame(width: Self.ringInnerHoleDiameter(for: diameter, ringCount: ringCount))
                 }
             }
             .frame(width: diameter, height: diameter)
@@ -756,10 +791,11 @@ struct AccountTokenUsageCard: View {
     // 环间距直接决定环心可用宽度：8pt 时 84 直径只剩 22pt，放不下「17%」会被截成「1...」。
     private static let ringSpacing: CGFloat = 6
 
-    /// 三环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
-    private static func ringInnerHoleDiameter(for diameter: CGFloat) -> CGFloat {
+    /// N 环由外到内每层缩小 (lineWidth + ringSpacing) * 2；环心可用宽度是最内环再去掉一个线宽。
+    private static func ringInnerHoleDiameter(for diameter: CGFloat, ringCount: Int = 3) -> CGFloat {
         let step = (ringLineWidth + ringSpacing) * 2
-        return max(diameter - step * 2 - ringLineWidth, 24)
+        let innerIndex = max(ringCount - 1, 0)
+        return max(diameter - step * CGFloat(innerIndex) - ringLineWidth, 24)
     }
 
     /// 剩余比例最低的窗口，也就是最先耗尽的那个。没有可用进度时不猜。
@@ -785,7 +821,9 @@ struct AccountTokenUsageCard: View {
 
         if items.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Text(codexDisplay.creditText)
+                if includesCodex {
+                    Text(codexDisplay.creditText)
+                }
                 if includesClaude {
                     Text(claudeDisplay.creditText)
                 }
@@ -1153,6 +1191,7 @@ struct AccountTokenUsageCard: View {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
+            includesCodex: includesCodex,
             includesClaude: includesClaude,
             agyDisplay: agyDisplay,
             includesAgy: includesAgy,

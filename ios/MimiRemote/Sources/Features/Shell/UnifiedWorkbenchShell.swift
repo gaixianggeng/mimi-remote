@@ -829,12 +829,15 @@ struct UnifiedWorkbenchShell: View {
             AIUsageRingsControl(
                 codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
                 claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
+                includesCodex: sessionStore.hasCodexUsageChannel,
                 includesClaude: sessionStore.hasClaudeRuntimeChannel,
                 agyDisplay: sessionStore.accountAgyUsageWindowsDisplay,
                 includesAgy: sessionStore.hasAgyRuntimeChannel,
                 usesCondensedVisual: usesFloatingChrome,
                 onRefresh: {
-                    async let codexQuota: Void = sessionStore.refreshCodexUsage()
+                    async let codexQuota: Void = sessionStore.isCodexRuntimeChannelAvailable
+                        ? sessionStore.refreshCodexUsage()
+                        : ()
                     async let claudeQuota: Void = sessionStore.hasClaudeRuntimeChannel
                         ? sessionStore.refreshClaudeUsage()
                         : ()

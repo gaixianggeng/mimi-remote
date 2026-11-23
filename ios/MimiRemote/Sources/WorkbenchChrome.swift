@@ -1777,6 +1777,7 @@ struct CombinedUsageItem: Identifiable {
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
+        includesCodex: Bool = true,
         includesClaude: Bool,
         agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
             rateLimit: nil,
@@ -1786,7 +1787,7 @@ struct CombinedUsageItem: Identifiable {
         colorScheme: ColorScheme
     ) -> [CombinedUsageItem] {
         let palette = colorScheme == .dark ? Self.darkPalette : Self.lightPalette
-        let codexLong = preferredLongWindow(in: codexDisplay)
+        let codexLong = includesCodex ? preferredLongWindow(in: codexDisplay) : nil
         let claudeLong = includesClaude ? preferredLongWindow(in: claudeDisplay) : nil
         let claudeShort = claudeLong.flatMap { preferredShortWindow(in: claudeDisplay, excluding: $0) }
         let agyLong = includesAgy ? preferredLongWindow(in: agyDisplay) : nil

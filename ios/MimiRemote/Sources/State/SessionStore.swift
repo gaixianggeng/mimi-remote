@@ -178,6 +178,7 @@ final class SessionStore: ObservableObject {
     /// 不再为每个 provider 各开一个 Bool。
     @Published var availableRuntimeProviders: Set<String> = ["codex"]
     @Published var runtimeChannelDiagnosticsByProvider: [String: RuntimeChannelDiagnostic] = [:]
+    var isCodexRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("codex") }
     var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
     var isAgyRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("agy") }
 

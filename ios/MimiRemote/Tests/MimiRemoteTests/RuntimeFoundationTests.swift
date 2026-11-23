@@ -913,4 +913,79 @@ final class RuntimeFoundationTests: XCTestCase {
         XCTAssertEqual(store.accountAgyUsageWindowsDisplay.windows.map(\.label), ["5h", "7d"])
         XCTAssertEqual(store.accountAgyUsageWindowsDisplay.windows.last?.remainingPercentText, "71%")
     }
+
+    func testGeminiOnlyWithoutCodexHidesActivityPlaceholderUsesTwoRingsAndSkipsCodexRefresh() async {
+        let agyRateLimit = RateLimitSummary(
+            limitID: "agy",
+            limitName: "Gemini",
+            primaryUsedPercent: 4,
+            secondaryUsedPercent: 30,
+            primaryResetsAt: 1_795_460_000,
+            secondaryResetsAt: 1_795_700_000,
+            primaryWindowDurationMins: 5 * 60,
+            secondaryWindowDurationMins: 7 * 24 * 60,
+            availability: "available"
+        )
+        let client = MockSessionStoreClient(
+            projects: [],
+            sessions: [],
+            runtimeChannelAvailability: ["codex": false, "agy": true],
+            rateLimitsByRuntime: ["agy": agyRateLimit]
+        )
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshSettingsAccountOverview()
+
+        XCTAssertFalse(store.isCodexRuntimeChannelAvailable)
+        XCTAssertFalse(store.hasCodexUsageChannel)
+        XCTAssertTrue(store.hasAgyRuntimeChannel)
+        XCTAssertEqual(client.requestedRateLimitProviders, ["agy"])
+
+        let geminiOnlyCard = AccountTokenUsageCard(
+            codexDisplay: store.accountCodexUsageWindowsDisplay,
+            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
+            includesCodex: false,
+            includesClaude: false,
+            agyDisplay: store.accountAgyUsageWindowsDisplay,
+            includesAgy: true,
+            snapshot: nil,
+            activity: .unsupported,
+            isRefreshing: false,
+            onRefresh: {}
+        )
+        let items = CombinedUsageItem.make(
+            codexDisplay: store.accountCodexUsageWindowsDisplay,
+            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
+            includesCodex: false,
+            includesClaude: false,
+            agyDisplay: store.accountAgyUsageWindowsDisplay,
+            includesAgy: true,
+            colorScheme: .dark
+        )
+        XCTAssertEqual(items.map(\.runtimeProvider), ["agy", "agy"])
+        XCTAssertFalse(geminiOnlyCard.showsActivityPanel)
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: items.count), 2)
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 3), 3)
+        XCTAssertEqual(AccountTokenUsageCard.ringCount(forItemCount: 0), 3)
+
+        // When Codex IS enabled, unsupported activity still renders the explicit explanation panel.
+        let codexCard = AccountTokenUsageCard(
+            codexDisplay: store.accountCodexUsageWindowsDisplay,
+            claudeDisplay: store.accountClaudeUsageWindowsDisplay,
+            includesCodex: true,
+            includesClaude: false,
+            agyDisplay: store.accountAgyUsageWindowsDisplay,
+            includesAgy: true,
+            snapshot: nil,
+            activity: .unsupported,
+            isRefreshing: false,
+            onRefresh: {}
+        )
+        XCTAssertTrue(codexCard.showsActivityPanel)
+    }
 }
