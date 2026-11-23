@@ -217,6 +217,14 @@ extension ConversationDataFlowTests {
             source: "claude",
             resumeID: "claude-global"
         )
+        let agySession = makeSession(
+            id: "agy-global",
+            projectID: project.id,
+            title: "Antigravity 会话",
+            status: "history",
+            source: "agy",
+            resumeID: "agy-global"
+        )
         let harnessSession = makeSession(
             id: "harness-global",
             projectID: project.id,
@@ -236,6 +244,8 @@ extension ConversationDataFlowTests {
                     return SessionsPage(sessions: [codexSession])
                 case "claude":
                     return SessionsPage(sessions: [claudeSession])
+                case "agy":
+                    return SessionsPage(sessions: [agySession])
                 case "deepseek":
                     return SessionsPage(sessions: [harnessSession])
                 default:
@@ -255,13 +265,13 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(
             client.requestedControlledGlobalRuntimes,
-            ["codex", "claude", "deepseek"],
-            "三条 runtime 都要遍历，且顺序稳定"
+            ["codex", "claude", "agy", "deepseek"],
+            "每个支持的 runtime 都要遍历，且顺序稳定"
         )
         XCTAssertEqual(
             Set(store.sessions.map(\.id)),
-            ["codex-global", "claude-global", "harness-global"],
-            "三趟结果并进同一份 canonical sessions"
+            ["codex-global", "claude-global", "agy-global", "harness-global"],
+            "各 runtime 的结果并进同一份 canonical sessions"
         )
     }
 

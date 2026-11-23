@@ -2136,7 +2136,7 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
         )
     }
 
-    func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() {
+    func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() async throws {
         let options = (1...6).map { index in
             AgentUserInputOption(
                 label: "选项 \(index)",
@@ -2175,16 +2175,51 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
             onSubmit: { _ in true }
         )
         .environmentObject(themeStore)
-        .environment(\.colorScheme, .light)
-        .frame(width: 390, height: 844)
 
-        assertSnapshot(
-            of: view,
-            as: .wait(
-                for: 0.8,
-                on: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
-            )
+        // 让 UIKit 按实际模态展示解析取消按钮和导航栏配色。
+        let size = CGSize(width: 390, height: 844)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        let previousKeyWindow = scene.keyWindow
+        window.frame = CGRect(origin: .zero, size: size)
+        window.overrideUserInterfaceStyle = .light
+        window.traitOverrides.horizontalSizeClass = .compact
+        window.rootViewController = UIHostingController(
+            rootView: Color(uiColor: .systemBackground)
+                .sheet(isPresented: .constant(true)) { view }
         )
+        let animationsWereEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            previousKeyWindow?.makeKey()
+            UIView.setAnimationsEnabled(animationsWereEnabled)
+        }
+        // 等实际呈现并完成布局，避免在 CI 上按固定时间截到不同阶段。
+        var previousFrame: CGRect?
+        var stableFrames = 0
+        for _ in 0..<60 {
+            window.layoutIfNeeded()
+            if let sheet = window.rootViewController?.presentedViewController,
+               sheet.view.window === window,
+               !sheet.isBeingPresented,
+               sheet.transitionCoordinator == nil {
+                let frame = sheet.view.convert(sheet.view.bounds, to: window)
+                stableFrames = frame == previousFrame ? stableFrames + 1 : 0
+                if stableFrames == 3 { break }
+                previousFrame = frame
+            } else {
+                previousFrame = nil
+                stableFrames = 0
+            }
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(stableFrames, 3, "问答弹窗应完成呈现并稳定布局后再截图")
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        assertSnapshot(of: image, as: .image(precision: 0.98))
     }
 }
 

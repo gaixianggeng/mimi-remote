@@ -308,7 +308,8 @@ final class ConnectionSettingsDraftTests: XCTestCase {
     }
 
     func testScannerPresentationKeepsCoverPresentedUntilDidDismiss() {
-        let presentation = ConnectionQRCodeScannerPresentation()
+        // 这里只验证 Cover 生命周期，相机权限由已授权状态固定，避免受系统弹窗干扰。
+        let presentation = ConnectionQRCodeScannerPresentation(cameraAuthorizationStatus: { .authorized })
         var dismissCallbackCount = 0
         presentation.configure(
             onSubmit: { _, _ in .accepted("OK") },
@@ -333,7 +334,7 @@ final class ConnectionSettingsDraftTests: XCTestCase {
     }
 
     func testScheduleManagedConnectionWaitsForScannerDismissWithoutPrematureClear() {
-        let presentation = ConnectionQRCodeScannerPresentation()
+        let presentation = ConnectionQRCodeScannerPresentation(cameraAuthorizationStatus: { .authorized })
         presentation.request(.repairCurrentProfile(expectedProfileID: "mac-1"), from: .connectionSettings)
         XCTAssertEqual(presentation.intent, .repairCurrentProfile(expectedProfileID: "mac-1"))
 

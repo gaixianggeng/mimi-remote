@@ -79,9 +79,16 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     @Published private(set) var managedConnectionHost: ConnectionQRCodeScannerHost?
     private var pendingManagedConnectionHost: ConnectionQRCodeScannerHost?
 
+    private let cameraAuthorizationStatus: () -> AVAuthorizationStatus
     private var submissionHandler: SubmissionHandler?
     private var manualConnectionHandler: ((ConnectionQRCodeScanIntent) -> Void)?
     private var dismissalHandler: (() -> Void)?
+
+    init(cameraAuthorizationStatus: @escaping () -> AVAuthorizationStatus = {
+        AVCaptureDevice.authorizationStatus(for: .video)
+    }) {
+        self.cameraAuthorizationStatus = cameraAuthorizationStatus
+    }
 
     func configure(
         onSubmit: @escaping SubmissionHandler,
@@ -126,7 +133,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 
         self.host = host
 
-        guard AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined else {
+        guard cameraAuthorizationStatus() == .notDetermined else {
             intent = requestedIntent
             isCoverPresented = true
             return

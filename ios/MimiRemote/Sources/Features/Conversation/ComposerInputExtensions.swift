@@ -412,10 +412,38 @@ enum PhoneComposerPresentation {
         }
         return canSubmitDraft ? .send : .voice
     }
+
+    /// iPhone 常规输入态在占位符里带出当前工作区名，减少多工作区并行时的发错风险。
+    static func contextualPlaceholder(
+        defaultPlaceholder: String,
+        targetName: String?,
+        usesContextualPrompt: Bool
+    ) -> String {
+        guard usesContextualPrompt,
+              let trimmed = targetName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return defaultPlaceholder
+        }
+        return L10n.format("ui.ask_context_value", trimmed)
+    }
 }
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    var resolvedComposerPlaceholderText: String {
+        let isDefaultInputMode = !composerState.isGoalModeSelected
+            && !(composerTurnSettingsPolicy.allowsTurnSettingsEditing && composerState.isPlanModeSelected)
+            && !canChooseRunningFollowUpDelivery
+            && sessionStore.selectedThreadGoal == nil
+        let sessionProject = sessionStore.selectedSession?.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetName = (sessionProject?.isEmpty == false ? sessionProject : nil)
+            ?? sessionStore.selectedProject?.name
+        return PhoneComposerPresentation.contextualPlaceholder(
+            defaultPlaceholder: composerPlaceholderText,
+            targetName: targetName,
+            usesContextualPrompt: phoneKeyboardVisible != nil && isDefaultInputMode
+        )
+    }
     func handlePhoneDetailActiveChange(_ isActive: Bool) {
         if isActive {
             sessionStore.activeComposerInstanceID = composerInstanceID
@@ -497,8 +525,16 @@ extension ComposerView {
             }
         }
         // 两种形态共用「+」的弹出面板锚点，面板里的搜索键盘不会把它移除。
+        // 单行胶囊态给「+」叠加柔和圆形底衬，明确左侧触控锚点而不改变展开态工具栏一致性。
         .overlay(alignment: singleLine ? .leading : .bottomLeading) {
             addContentControlBox()
+                .background {
+                    Circle()
+                        .fill(colorScheme == .light ? Color.black.opacity(0.055) : Color.white.opacity(0.10))
+                        .frame(width: 34, height: 34)
+                        .opacity(singleLine ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
         }
         .padding(.horizontal, singleLine ? 6 : 8)
         .padding(.vertical, singleLine ? 4 : 8)

@@ -23,8 +23,7 @@ final class ConversationImageRecoveryUITests: XCTestCase {
     func testLocalImageRetriesAndOpensPreviewWithoutRecreatingView() {
         waitForReadCount(1)
         let retry = app.buttons["重试"]
-        XCTAssertTrue(retry.waitForExistence(timeout: 5), "自动加载失败后，唯一图片卡必须提供重试")
-        retry.tap()
+        tapRetry(retry)
         waitForReadCount(2)
         let preview = app.buttons["预览图片"]
         XCTAssertTrue(preview.waitForExistence(timeout: 8))
@@ -39,15 +38,22 @@ final class ConversationImageRecoveryUITests: XCTestCase {
     func testLocalImageRetryStillRespectsDeniedFileAccess() {
         waitForReadCount(1)
         let retry = app.buttons["重试"]
-        XCTAssertTrue(retry.waitForExistence(timeout: 5))
-        retry.tap()
+        tapRetry(retry)
         waitForReadCount(2)
         XCTAssertTrue(retry.waitForExistence(timeout: 8), "授权拒绝后应保留错误和重试入口")
         XCTAssertFalse(app.buttons["预览图片"].exists)
-        retry.tap()
+        tapRetry(retry)
         waitForReadCount(3)
         XCTAssertTrue(retry.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["预览图片"].exists)
+    }
+
+    private func tapRetry(_ retry: XCUIElement) {
+        let hittable = NSPredicate(format: "hittable == true")
+        expectation(for: hittable, evaluatedWith: retry)
+        waitForExpectations(timeout: 5)
+        // 默认命中点在 CI 上曾偏离图片错误卡，直接点当前按钮中心。
+        retry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
     private func waitForReadCount(_ count: Int) {

@@ -42,6 +42,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             [
                 L10n.text("ui.runtime_default"),
                 L10n.text("ui.runtime_optional"),
+                "Antigravity",
                 "DeepSeek"
             ]
         )
@@ -443,11 +444,11 @@ final class WorkspaceStripPresentationTests: XCTestCase {
     func testEnabledRuntimesParsingPreservesOrderAndGuardsLastEnabled() {
         XCTAssertEqual(
             WorkspaceSessionRuntimeChoice.enabledRuntimes(from: nil),
-            [.codex, .claude, .deepseek]
+            [.codex, .claude, .agy, .deepseek]
         )
         XCTAssertEqual(
             WorkspaceSessionRuntimeChoice.enabledRuntimes(from: ""),
-            [.codex, .claude, .deepseek]
+            [.codex, .claude, .agy, .deepseek]
         )
         XCTAssertEqual(
             WorkspaceSessionRuntimeChoice.enabledRuntimes(from: "deepseek,codex"),
