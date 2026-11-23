@@ -491,33 +491,91 @@ def command_skip_args(args: argparse.Namespace) -> int:
     return 0
 
 
+EXECUTED_CASE_RESULTS = frozenset({"Passed", "Failed", "Expected Failure"})
+
+
+def validate_test_results_tree(test_nodes: list[object]) -> str | None:
+    """校验 xcresulttool testNodes 结果树结构，避免遍历时抛出 AttributeError/TypeError。"""
+    stack: list[tuple[object, str]] = [
+        (node, f"testNodes[{idx}]") for idx, node in reversed(list(enumerate(test_nodes)))
+    ]
+    while stack:
+        node, path = stack.pop()
+        if not isinstance(node, dict):
+            return f"结果树节点 {path} 必须是对象，实际为 {type(node).__name__}"
+
+        node_type = node.get("nodeType")
+        if not isinstance(node_type, str) or not node_type:
+            return f"结果树节点 {path}.nodeType 必须是非空字符串"
+
+        if "name" in node and not isinstance(node["name"], str):
+            return f"结果树节点 {path}.name 必须是字符串"
+
+        if "nodeIdentifier" in node:
+            identifier = node["nodeIdentifier"]
+            if identifier is None:
+                if node_type == "Test Case":
+                    return f"结果树节点 {path}.nodeIdentifier 必须是字符串"
+            elif not isinstance(identifier, str):
+                return f"结果树节点 {path}.nodeIdentifier 必须是字符串"
+
+        if "result" in node:
+            result = node["result"]
+            if result is None:
+                if node_type in ("Test Case", "Repetition"):
+                    return f"结果树节点 {path}.result 必须是字符串"
+            elif not isinstance(result, str):
+                return f"结果树节点 {path}.result 必须是字符串"
+
+        if "children" in node and node["children"] is not None:
+            children = node["children"]
+            if not isinstance(children, list):
+                return f"结果树节点 {path}.children 必须是数组，实际为 {type(children).__name__}"
+            for idx in range(len(children) - 1, -1, -1):
+                stack.append((children[idx], f"{path}.children[{idx}]"))
+
+    return None
+
+
 def collect_results(
-    node: dict,
+    root_nodes: list[dict],
     results: dict[str, dict[str, str]],
     retried_passed: set[str],
-    suite: str | None = None,
+    case_outcomes: dict[str, set[str]],
 ) -> None:
-    node_type = node.get("nodeType")
-    name = node.get("name", "")
-    if node_type == "Test Suite":
-        suite = name
-    if node_type == "Test Case":
-        identifier = node.get("nodeIdentifier", "")
-        parts = identifier.split("/")
-        class_name = parts[-2] if len(parts) >= 2 else (suite or "?")
-        method = parts[-1] if parts else name
-        method = re.sub(r"\(\)$", "", method)
-        result = node.get("result", "unknown")
-        results.setdefault(class_name, {})[method] = result
-        # -retry-tests-on-failure 下，重试后通过的用例结果是 Passed，失败的那次以 Repetition 子节点保留。
-        if result == "Passed" and any(
-            child.get("nodeType") == "Repetition" and child.get("result") == "Failed"
-            for child in node.get("children", []) or []
-        ):
-            retried_passed.add(f"{class_name}/{method}")
-        return
-    for child in node.get("children", []) or []:
-        collect_results(child, results, retried_passed, suite)
+    stack: list[tuple[dict, str | None]] = [(node, None) for node in reversed(root_nodes)]
+    while stack:
+        node, suite = stack.pop()
+        node_type = node.get("nodeType")
+        name = node.get("name", "")
+        if node_type == "Test Suite":
+            suite = name
+        if node_type == "Test Case":
+            identifier = node.get("nodeIdentifier", "")
+            parts = identifier.split("/") if identifier else []
+            class_name = parts[-2] if len(parts) >= 2 else (suite or "?")
+            method = parts[-1] if parts else name
+            method = re.sub(r"\(\)$", "", method)
+            result = node.get("result", "unknown")
+            results.setdefault(class_name, {})[method] = result
+            case = f"{class_name}/{method}"
+            outcomes = case_outcomes.setdefault(case, set())
+            outcomes.add(result)
+            children = node.get("children") or []
+            for child in children:
+                if child.get("nodeType") == "Repetition":
+                    child_result = child.get("result")
+                    if isinstance(child_result, str):
+                        outcomes.add(child_result)
+            # -retry-tests-on-failure 下，重试后通过的用例结果是 Passed，失败的那次以 Repetition 子节点保留。
+            if result == "Passed" and any(
+                child.get("nodeType") == "Repetition" and child.get("result") == "Failed"
+                for child in children
+            ):
+                retried_passed.add(case)
+            continue
+        for child in reversed(node.get("children") or []):
+            stack.append((child, suite))
 
 
 def is_disallowed_path_char(ch: str) -> bool:
@@ -606,6 +664,7 @@ def resolve_rerecorded_snapshots(
     inventory: Inventory,
     runnable: dict[str, list[str]],
     results: dict[str, dict[str, str]],
+    case_outcomes: dict[str, set[str]],
 ) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
     """把重录快照路径映射为经静态清单与本次测试结果双重验证的 Class/method。"""
     snapshot_drifted: dict[str, list[str]] = {}
@@ -651,6 +710,19 @@ def resolve_rerecorded_snapshots(
         case = f"{matched_class}/{parsed.method}"
         if parsed.method not in results.get(matched_class, {}):
             unmapped.append((raw_path, f"映射到 {case}，但本次测试结果中未执行该用例"))
+            continue
+
+        outcomes = case_outcomes.get(case, set())
+        if not (outcomes & EXECUTED_CASE_RESULTS):
+            if outcomes == {"Skipped"}:
+                unmapped.append(
+                    (raw_path, f"映射到 {case}，但本次测试结果中该用例仅有跳过记录（Skipped），无法确认快照归属")
+                )
+            else:
+                status_text = ", ".join(sorted(o or "empty" for o in outcomes)) if outcomes else "unknown"
+                unmapped.append(
+                    (raw_path, f"映射到 {case}，但本次测试结果状态为 {status_text}，无法确认该用例已执行")
+                )
             continue
 
         snapshot_drifted.setdefault(case, []).append(raw_path)
@@ -742,13 +814,17 @@ def command_verify_results(args: argparse.Namespace) -> int:
         else:
             try:
                 loaded = json.loads(tests_json_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
                 results_error = f"无法解析测试结果 JSON（{tests_json_path}）：{exc}"
             else:
                 if not isinstance(loaded, dict) or not isinstance(loaded.get("testNodes"), list):
                     results_error = f"测试结果 JSON 缺少有效的 testNodes：{tests_json_path}"
                 else:
-                    payload = loaded
+                    tree_error = validate_test_results_tree(loaded["testNodes"])
+                    if tree_error is not None:
+                        results_error = f"测试结果 JSON 结构无效（{tests_json_path}）：{tree_error}"
+                    else:
+                        payload = loaded
 
     if results_error is not None or payload is None:
         final_results_error = results_error or "测试结果不可用"
@@ -805,8 +881,8 @@ def command_verify_results(args: argparse.Namespace) -> int:
 
     results: dict[str, dict[str, str]] = {}
     retried_passed: set[str] = set()
-    for node in payload.get("testNodes", []):
-        collect_results(node, results, retried_passed)
+    case_outcomes: dict[str, set[str]] = {}
+    collect_results(payload["testNodes"], results, retried_passed, case_outcomes)
 
     quarantined: dict[str, set[str]] = {}
     for entry in plan.quarantine:
@@ -814,7 +890,7 @@ def command_verify_results(args: argparse.Namespace) -> int:
 
     runnable = plan.inventory.runnable_classes()
     snapshot_drifted, unmapped_rerecorded = resolve_rerecorded_snapshots(
-        rerecorded_paths, plan.inventory, runnable, results
+        rerecorded_paths, plan.inventory, runnable, results, case_outcomes
     )
     remaining_retried = retried_passed - set(snapshot_drifted)
     if unmapped_rerecorded or rerecorded_incomplete:

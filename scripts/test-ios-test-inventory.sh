@@ -1007,4 +1007,169 @@ grep -Fq "::warning title=抖动用例（重试后通过）::AlphaTests/testThre
 grep -Fq "重录快照采集错误：" "$suite_summary" \
   || { cat "$suite_summary" >&2; fail "GITHUB_STEP_SUMMARY 应包含单张复制失败诊断。"; }
 
+# 夹具：结果树结构损坏（如 {"testNodes":[null]}、非法 children、空节点、非字符串字段）搭配有效重录清单时，
+# 不得抛出 AttributeError/TypeError 漏掉摘要，必须进入测试结果不可用分支并保留未知归属诊断。
+new_fixture
+printf '{"testNodes":[null]}\n' > "$work_root/null-node.json"
+if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+  "$work_root/null-node.json" \
+  --markdown "$work_root/null-node.md" \
+  --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "结果树含 null 节点时应判失败。"
+fi
+if grep -Eq "Traceback|AttributeError|TypeError" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "结果树含 null 节点时不得抛出未捕获异常。"
+fi
+grep -Fq "测试结果 JSON 结构无效" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果树含 null 节点时缺少结构无效提示。"; }
+[[ -f "$work_root/null-node.md" ]] || fail "结果树含 null 节点时仍应生成 summary.md。"
+grep -Fq "测试结果不可用，无法生成按类执行数统计" "$work_root/null-node.md" \
+  || { cat "$work_root/null-node.md" >&2; fail "结果树含 null 节点时 summary.md 应说明测试结果不可用。"; }
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/null-node.md" \
+  || { cat "$work_root/null-node.md" >&2; fail "结果树含 null 节点时已采集重录快照应标明未知归属。"; }
+grep -Fq "ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" "$work_root/null-node.md" \
+  || { cat "$work_root/null-node.md" >&2; fail "结果树含 null 节点时 summary.md 未保留重录快照路径。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果树含 null 节点时缺少未知归属 error 注解。"; }
+if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "结果树含 null 节点时不得把重录快照标为已确认归属。"
+fi
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "结果树含 null 节点时不得输出抖动告警。"
+fi
+
+# 夹具：嵌套非法结果树（Test Case 子节点含 null、children 非数组、nodeIdentifier 为 null）均进入结果不可用分支。
+new_fixture
+cat > "$work_root/bad-nested-children.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[
+  {"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/testShot()","result":"Passed","children":[null]}
+]}]}
+EOF
+cat > "$work_root/bad-children-type.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Plan","name":"MimiRemote","children":"not-a-list"}]}
+EOF
+cat > "$work_root/bad-null-identifier.json" <<'EOF'
+{"testNodes":[{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[
+  {"nodeType":"Test Case","name":"testShot()","nodeIdentifier":null,"result":"Passed"}
+]}]}
+EOF
+for bad_tree_case in bad-nested-children bad-children-type bad-null-identifier; do
+  rm -f "$work_root/${bad_tree_case}.md"
+  if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+    "$work_root/${bad_tree_case}.json" \
+    --markdown "$work_root/${bad_tree_case}.md" \
+    --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+    cat "$work_root/out.txt" >&2
+    fail "${bad_tree_case} 损坏结果树应判失败。"
+  fi
+  if grep -Eq "Traceback|AttributeError|TypeError" "$work_root/out.txt"; then
+    cat "$work_root/out.txt" >&2
+    fail "${bad_tree_case} 不得抛出未捕获异常。"
+  fi
+  [[ -f "$work_root/${bad_tree_case}.md" ]] || fail "${bad_tree_case} 未生成 summary.md。"
+  grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/${bad_tree_case}.md" \
+    || { cat "$work_root/${bad_tree_case}.md" >&2; fail "${bad_tree_case} 摘要未保留未知归属诊断。"; }
+  grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+    || { cat "$work_root/out.txt" >&2; fail "${bad_tree_case} 缺少未知归属 error 注解。"; }
+done
+
+# 端到端 13：结果树损坏（{"testNodes":[null]}）搭配重录快照时维持非零，保留快照、summary.md 与未知归属注解。
+fixture_index=$((fixture_index + 1))
+suite_repo="$work_root/suite-null-node"
+make_suite_repo "$suite_repo"
+suite_result="$work_root/suite-null-node-result"
+suite_summary="$work_root/suite-null-node-summary.md"
+: > "$suite_summary"
+suite_status=0
+PATH="$mock_bin:$PATH" \
+  MOCK_TESTS_JSON="$work_root/null-node.json" \
+  MOCK_RERECORD_MODE="single" \
+  MOCK_IOS_DEV_EXIT=0 \
+  GITHUB_ACTIONS=true \
+  GITHUB_STEP_SUMMARY="$suite_summary" \
+  bash "$suite_repo/scripts/test-ios-full-suite.sh" \
+    --result-dir "$suite_result" \
+    --record-failed-snapshots > "$work_root/out.txt" 2>&1 || suite_status=$?
+[[ "$suite_status" -eq 1 ]] || { cat "$work_root/out.txt" >&2; fail "结果树含 null 节点时全量脚本必须返回 1，实际 ${suite_status}。"; }
+if grep -Eq "Traceback|AttributeError|TypeError" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "结果树含 null 节点时全量脚本不得出现未捕获异常。"
+fi
+[[ -f "$suite_result/tests.json" && -f "$suite_result/summary.md" ]] \
+  || fail "结果树含 null 节点时应保留 tests.json 与 summary.md。"
+[[ -f "$suite_result/rerecorded-snapshots/ios/MimiRemote/Tests/MimiRemoteTests/__Snapshots__/GammaSnapshotTests/testShot.1.png" ]] \
+  || fail "结果树含 null 节点时应保留已采集的重录快照。"
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$suite_result/summary.md" \
+  || { cat "$suite_result/summary.md" >&2; fail "结果树含 null 节点时全量摘要应把重录快照标为未知归属。"; }
+grep -Fq "## iOS 全量 XCTest 按类执行数" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "结果树含 null 节点时 GITHUB_STEP_SUMMARY 应保留摘要段落。"; }
+grep -Fq "## 重录快照（1 张，需逐张核对后再提交）" "$suite_summary" \
+  || { cat "$suite_summary" >&2; fail "结果树含 null 节点时 GITHUB_STEP_SUMMARY 应保留重录快照摘要。"; }
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "结果树含 null 节点时全量脚本应输出未知归属 error 注解。"; }
+
+# 夹具：快照用例本次仅有 Skipped 记录时，无法确认快照归属，应标为未知并阻止其余重试通过用例被认定为抖动。
+new_fixture
+gamma_skipped=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/testShot()","result":"Skipped"}]}'
+write_results "$work_root/skipped-snapshot.json" "$gamma_skipped" "Passed" "$retry"
+if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+  "$work_root/skipped-snapshot.json" \
+  --markdown "$work_root/skipped-snapshot.md" \
+  --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "同名快照用例仅为 Skipped 时应判失败。"
+fi
+grep -Fq '| AlphaTests | 3 | 0 | 3 | 3 | 2 | 0 | 0 | 1 |' "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "快照归属未知时其余重试通过用例不得计入已确认抖动列。"; }
+grep -Fq '| GammaSnapshotTests | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 1 |' "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "GammaSnapshotTests 跳过统计不正确。"; }
+grep -Fq "快照漂移（已重录，无法映射/未知，判失败）：1 条" "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "仅有跳过记录的快照应归类为无法映射/未知。"; }
+grep -Fq "仅有跳过记录（Skipped），无法确认快照归属" "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "仅有跳过记录的快照缺少明确未知原因。"; }
+grep -Fq "重试后通过（归属未知：存在无法映射的重录快照，不计为抖动）：1 个" "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "存在跳过记录导致的未知归属时，其余重试通过用例应标为归属未知。"; }
+grep -Fq -- "- AlphaTests/testThree" "$work_root/skipped-snapshot.md" \
+  || { cat "$work_root/skipped-snapshot.md" >&2; fail "归属未知清单缺少 AlphaTests/testThree。"; }
+if grep -Fq "快照漂移（已重录，判失败，不计为抖动）：" "$work_root/skipped-snapshot.md"; then
+  cat "$work_root/skipped-snapshot.md" >&2
+  fail "仅有跳过记录的快照不得标为已确认重录。"
+fi
+grep -Fq "::error title=快照漂移（已重录，未知）::" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "仅有跳过记录的快照缺少未知归属 error 注解。"; }
+grep -Fq "::warning title=重试后通过（归属未知）::AlphaTests/testThree" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "存在跳过记录未知归属时 AlphaTests/testThree 应输出归属未知 warning。"; }
+if grep -Fq "::error title=快照漂移（已重录）::GammaSnapshotTests/testShot" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "仅有跳过记录的快照不得输出已确认重录 error 注解。"
+fi
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "仅有跳过记录导致归属未知时，不得把其余重试通过用例误标为抖动。"
+fi
+
+# 夹具：带有 Skipped Repetition 子节点的跳过用例同样无法确认快照归属。
+new_fixture
+gamma_skipped_rep=',{"nodeType":"Test Suite","name":"GammaSnapshotTests","children":[{"nodeType":"Test Case","name":"testShot()","nodeIdentifier":"GammaSnapshotTests/testShot()","result":"Skipped","children":[{"nodeType":"Repetition","name":"First Run","result":"Skipped"}]}]}'
+write_results "$work_root/skipped-rep-snapshot.json" "$gamma_skipped_rep" "Passed" "$retry"
+if GITHUB_ACTIONS=true python3 "$inventory" --root "$root" verify-results \
+  "$work_root/skipped-rep-snapshot.json" \
+  --markdown "$work_root/skipped-rep-snapshot.md" \
+  --rerecorded-list "$work_root/mixed-rerecorded.txt" > "$work_root/out.txt" 2>&1; then
+  cat "$work_root/out.txt" >&2
+  fail "仅含 Skipped Repetition 的同名快照用例应判失败。"
+fi
+grep -Fq "仅有跳过记录（Skipped），无法确认快照归属" "$work_root/skipped-rep-snapshot.md" \
+  || { cat "$work_root/skipped-rep-snapshot.md" >&2; fail "仅含 Skipped Repetition 时应标为未知。"; }
+grep -Fq "::warning title=重试后通过（归属未知）::AlphaTests/testThree" "$work_root/out.txt" \
+  || { cat "$work_root/out.txt" >&2; fail "仅含 Skipped Repetition 时其余重试通过用例应标为归属未知。"; }
+if grep -Fq "抖动用例（重试后通过）" "$work_root/out.txt"; then
+  cat "$work_root/out.txt" >&2
+  fail "仅含 Skipped Repetition 时不得把其余重试通过用例标为抖动。"
+fi
+
 echo "iOS 测试清单自测通过：${fixture_index} 个夹具覆盖失效 selector、文件名 selector、归属、隔离、工程登记、按类执行数、重试抖动、重录快照分类与全量脚本端到端语义。"
