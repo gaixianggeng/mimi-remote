@@ -2188,13 +2188,34 @@ final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCas
             rootView: Color(uiColor: .systemBackground)
                 .sheet(isPresented: .constant(true)) { view }
         )
+        let animationsWereEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
         window.makeKeyAndVisible()
         defer {
             window.isHidden = true
             previousKeyWindow?.makeKey()
+            UIView.setAnimationsEnabled(animationsWereEnabled)
         }
-        try await Task.sleep(for: .milliseconds(800))
-        _ = try XCTUnwrap(window.rootViewController?.presentedViewController)
+        // 等实际呈现并完成布局，避免在 CI 上按固定时间截到不同阶段。
+        var previousFrame: CGRect?
+        var stableFrames = 0
+        for _ in 0..<60 {
+            window.layoutIfNeeded()
+            if let sheet = window.rootViewController?.presentedViewController,
+               sheet.view.window === window,
+               !sheet.isBeingPresented,
+               sheet.transitionCoordinator == nil {
+                let frame = sheet.view.convert(sheet.view.bounds, to: window)
+                stableFrames = frame == previousFrame ? stableFrames + 1 : 0
+                if stableFrames == 3 { break }
+                previousFrame = frame
+            } else {
+                previousFrame = nil
+                stableFrames = 0
+            }
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(stableFrames, 3, "问答弹窗应完成呈现并稳定布局后再截图")
         let image = UIGraphicsImageRenderer(size: size).image { _ in
             window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
         }
