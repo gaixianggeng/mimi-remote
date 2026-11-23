@@ -111,6 +111,12 @@ describe("agy rateLimits parsing", () => {
     expect(parseAgyUsageOutput("not json")).toBeNull();
   });
 
+  test("ignores Claude and GPT quota when Gemini is absent", () => {
+    const payload = JSON.parse(SAMPLE_USAGE_JSON);
+    payload.command.data.groups.shift();
+    expect(parseAgyUsageOutput(JSON.stringify(payload))).toBeNull();
+  });
+
   test("prepends global gemini/app_data flags only when non-default", () => {
     expect(agyUsageCommandArgs({})).toEqual(["--print", "/usage", "--output-format", "json", "--print-timeout", "20s"]);
     expect(
@@ -170,6 +176,16 @@ describe("AgyRateLimitCatalog", () => {
     const stale = await catalog.read();
     expect(calls).toBe(2);
     expect(stale.secondary?.usedPercent).toBe(29);
+    expect(updates).toHaveLength(1);
+
+    clock += 5_000;
+    expect(await catalog.read()).toEqual(stale);
+    expect(calls).toBe(2);
+
+    clock += 10_000;
+    shouldFail = false;
+    expect(await catalog.read()).toEqual(stale);
+    expect(calls).toBe(3);
     expect(updates).toHaveLength(1);
   });
 

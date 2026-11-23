@@ -182,10 +182,7 @@ export function parseAgyUsageOutput(stdout: string, planType?: string | null): R
   if (typeof payload.status === "string" && payload.status.toUpperCase() !== "SUCCESS") {
     return null;
   }
-  const groups = extractGroups(payload);
-  if (groups.length === 0) return null;
-
-  const preferredGroup = groups.find(isGeminiGroup) ?? groups[0];
+  const preferredGroup = extractGroups(payload).find(isGeminiGroup);
   if (!preferredGroup || !Array.isArray(preferredGroup.buckets)) return null;
 
   const parsed = preferredGroup.buckets.map(parseBucket).filter((entry): entry is ParsedBucket => entry !== null);
@@ -313,8 +310,8 @@ export class AgyRateLimitCatalog {
     if (this.inflight) {
       return this.inflight;
     }
-    if (!forceReload && !this.cached && this.failedAt > 0 && currentTime - this.failedAt < cooldownMs) {
-      return unavailableAgyRateLimits();
+    if (!forceReload && this.failedAt > 0 && currentTime - this.failedAt < cooldownMs) {
+      return this.cached ? this.withPlanType(this.cached) : unavailableAgyRateLimits();
     }
 
     const previousKey = this.cached ? JSON.stringify(this.cached) : undefined;

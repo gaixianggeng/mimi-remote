@@ -143,7 +143,9 @@ export function createApp(options: AppOptions): App {
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
       historyRef?.invalidate(threadId);
-      rateLimits.invalidateAfterTurn();
+      if (patch.turnAttemptUpdate || patch.turnOutcome) {
+        rateLimits.invalidateAfterTurn();
+      }
       void overlay.recordSession(threadId, patch);
     },
     reserveTurnAttempt: (threadId, info) => overlay.reserveTurnAttempt(threadId, info),
