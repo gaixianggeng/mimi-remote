@@ -317,13 +317,15 @@ struct PhoneSessionFloatingCapsuleHeader<MoreMenuContent: View>: View {
     }
 }
 
-/// 手机悬浮顶栏与底部玻璃输入卡共用的玻璃表面策略，便于单元测试核对各环境回退分支。
+/// 手机悬浮顶栏与底部玻璃输入卡共用的表面策略，便于单元测试核对各环境回退分支。
 enum FloatingGlassChromeStyle: Equatable {
     case opaqueFallback
+    case classicFrosted
     case liquidGlass
     case ultraThinMaterial
 
     static func resolve(
+        interfaceStyle: ThemeInterfaceStyle = .glass,
         reduceTransparency: Bool,
         increasedContrast: Bool = false,
         supportsLiquidGlass: Bool
@@ -331,12 +333,16 @@ enum FloatingGlassChromeStyle: Equatable {
         if reduceTransparency || increasedContrast {
             return .opaqueFallback
         }
+        if interfaceStyle == .classic {
+            return .classicFrosted
+        }
         return supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
     }
 }
 
-/// 悬浮顶栏与底部输入框共用的统一玻璃材质：
-/// iOS 26 采用原生 Liquid Glass；旧系统采用 `.ultraThinMaterial` + 细描边 + 轻阴影；
+/// 悬浮顶栏与底部输入框共用的统一材质修饰符：
+/// 玻璃模式下 iOS 26 采用原生 Liquid Glass、旧系统采用 `.ultraThinMaterial`；
+/// 经典模式下采用扁平磨砂 `.regularMaterial` + 细描边；
 /// 开启减少透明度或增强对比度时退回实色表面以保持可读性。
 struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModifier {
     let shape: ChromeShape
@@ -350,6 +356,8 @@ struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModif
     var accentBorderWidth: CGFloat = 0.75
     var opaqueBorderColor: Color? = nil
     var opaqueBorderWidth: CGFloat = 0.75
+
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
 
     private var defaultOpaqueBorderColor: Color {
         colorScheme == .light
@@ -382,6 +390,22 @@ struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: ViewModif
                     radius: 8,
                     x: 0,
                     y: 3
+                )
+        } else if interfaceStyle == .classic {
+            content
+                .background(WorkbenchMaterial.surface, in: shape)
+                .overlay {
+                    shape
+                        .strokeBorder(
+                            accentBorderColor ?? defaultMaterialBorderColor,
+                            lineWidth: accentBorderColor != nil ? accentBorderWidth : 0.75
+                        )
+                }
+                .shadow(
+                    color: Color.black.opacity(colorScheme == .light ? 0.07 : 0.22),
+                    radius: 6,
+                    x: 0,
+                    y: 2
                 )
         } else if #available(iOS 26.0, *) {
             content

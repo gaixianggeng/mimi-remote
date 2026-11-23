@@ -1390,6 +1390,24 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         )
         XCTAssertEqual(
             FloatingGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .classicFrosted
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
                 reduceTransparency: false,
                 increasedContrast: true,
                 supportsLiquidGlass: true

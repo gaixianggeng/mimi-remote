@@ -638,6 +638,7 @@ struct MimiRemoteApp: App {
                 .environmentObject(logStore)
                 .environmentObject(contextStore)
                 .environmentObject(themeStore)
+                .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
                 .environmentObject(workspaceAppearanceStore)
                 .environmentObject(notificationResponseAdapter)
                 .environmentObject(hostStatusStore)
