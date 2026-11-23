@@ -130,6 +130,95 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertTrue(leadFont.fontDescriptor.symbolicTraits.contains(.traitBold))
     }
 
+    func testMultiDigitOrderedListMarkersKeepBodyOnSameLineAndAlignHangingIndent() throws {
+        let sourceMarkdown = """
+        98. 检查序号与正文的间距，正文应该保持一致的悬挂缩进。
+        99. 第二项验证下一行正文，尤其是文字较多时如何换行。
+        100. 三位数字开头的项目需要与上一行正文对齐，并且在折行之后继续维持同一条悬挂缩进基准线。
+        """
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sourceMarkdown).blocks)
+        view.apply(content: content, style: style)
+        let size = view.measuredSize(width: 320, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layoutIfNeeded()
+
+        let text = view.textStorage.string as NSString
+        let range98 = text.range(of: "98.")
+        let range99 = text.range(of: "99.")
+        let range100 = text.range(of: "100.")
+        let range100Body = text.range(of: "三位数字")
+        XCTAssertNotEqual(range100.location, NSNotFound)
+        XCTAssertNotEqual(range100Body.location, NSNotFound)
+
+        let paragraph98 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range98.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let paragraph99 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range99.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let paragraph100 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range100.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        // 同列表内的 98.、99.、100. 必须共享按最大序号宽度计算出的同一悬挂缩进。
+        XCTAssertGreaterThan(paragraph100.headIndent, 30, "三位序号列宽必须超过旧固定 30pt")
+        XCTAssertEqual(paragraph98.headIndent, paragraph100.headIndent, accuracy: 0.1)
+        XCTAssertEqual(paragraph99.headIndent, paragraph100.headIndent, accuracy: 0.1)
+
+        // 真实排版验证：100. 与其正文首字「三位数字」必须位于同一行，不得被挤到下一行。
+        let layoutManager = view.layoutManager
+        let glyph100 = layoutManager.glyphIndexForCharacter(at: range100.location)
+        let glyph100Body = layoutManager.glyphIndexForCharacter(at: range100Body.location)
+        let line100 = layoutManager.lineFragmentRect(forGlyphAt: glyph100, effectiveRange: nil)
+        let line100Body = layoutManager.lineFragmentRect(forGlyphAt: glyph100Body, effectiveRange: nil)
+        XCTAssertEqual(line100.minY, line100Body.minY, accuracy: 0.5, "三位序号 100. 必须与正文保持同行")
+
+        // 折行续行的首个字形应严格对齐悬挂缩进位置。
+        let bodyStartLocation = layoutManager.location(forGlyphAt: glyph100Body)
+        XCTAssertEqual(bodyStartLocation.x, paragraph100.headIndent, accuracy: 1.5, "正文起点应对齐列表 tabStop 悬挂缩进")
+    }
+
+    func testOrderedAndBulletListMarkersAdaptWidthAtLargeFontScale() throws {
+        let largeStyle = MessageTextStyle(
+            markdown: .make(role: .assistant, colorScheme: .light, fontScale: 1.6)
+        )
+        let sourceMarkdown = """
+        10. 大字号下两位序号不能把正文挤到下一行。
+        100. 大字号下三位序号同样应保持与正文同行并正确对齐。
+        """
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sourceMarkdown).blocks)
+        view.apply(content: content, style: largeStyle)
+        let size = view.measuredSize(width: 340, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layoutIfNeeded()
+
+        let text = view.textStorage.string as NSString
+        let range10 = text.range(of: "10.")
+        let range10Body = text.range(of: "大字号下两位")
+        let range100 = text.range(of: "100.")
+        let range100Body = text.range(of: "大字号下三位")
+
+        let paragraph100 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range100.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        XCTAssertGreaterThan(paragraph100.headIndent, 50, "1.6x 大字号三位序号列宽应随字形宽度自适应扩大")
+
+        let lm = view.layoutManager
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range10.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range10Body.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下 10. 与正文必须同行"
+        )
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100Body.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下 100. 与正文必须同行"
+        )
+    }
+
     func testLongMarkdownAndCompactReturnToTailRenderInPhoneWidth() throws {
         let suiteName = "MessageTextSelectionTests.grokbot.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

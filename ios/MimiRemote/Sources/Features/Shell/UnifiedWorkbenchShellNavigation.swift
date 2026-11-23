@@ -863,7 +863,8 @@ extension UnifiedWorkbenchShell {
         usesSelectedSessionState: Bool,
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
-        now: Date
+        now: Date,
+        includesLiveElapsedInAccessibilityValue: Bool = true
     ) -> SessionNavigationTitleDisplayData {
         let showsStatus = usesSelectedSessionState && selectedSessionShowsNavigationStatus
         let subtitle = usesSelectedSessionState
@@ -894,7 +895,12 @@ extension UnifiedWorkbenchShell {
                 layout: layout,
                 themeStore: themeStore
             ),
-            accessibilityValue: usesSelectedSessionState ? sessionTitleAccessibilityValue(now: now) : subtitle,
+            accessibilityValue: usesSelectedSessionState
+                ? sessionTitleAccessibilityValue(
+                    now: now,
+                    includesLiveElapsed: includesLiveElapsedInAccessibilityValue
+                )
+                : subtitle,
             workspaceIcon: workspaceIcon
         )
     }
@@ -908,14 +914,16 @@ extension UnifiedWorkbenchShell {
         onBack: @escaping () -> Void,
         @ViewBuilder moreMenuContent: @escaping () -> MoreMenuContent
     ) -> some View {
-        // 中间胶囊仅展示工作区图标与单行标题，无需秒级定时刷新副标题；状态摘要仍保留在无障碍值中。
+        // 中间胶囊仅展示工作区图标与单行标题，无秒级定时器；无障碍值改用不依赖冻结秒数的稳定状态与连接摘要，
+        // 避免 VoiceOver 在长时间无状态变化时播报过期的运行时长（实时计时由底部实时状态行持续更新）。
         PhoneSessionFloatingCapsuleHeader(
             data: sessionNavigationTitleDisplayData(
                 session: session,
                 usesSelectedSessionState: canPresentSessionDetail,
                 layout: layout,
                 tokens: tokens,
-                now: Date()
+                now: Date(),
+                includesLiveElapsedInAccessibilityValue: false
             ),
             tokens: tokens,
             availableWidth: layout.containerWidth,
@@ -1003,7 +1011,10 @@ extension UnifiedWorkbenchShell {
         return project.isEmpty ? session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity).title : project
     }
 
-    private func sessionTitleAccessibilityValue(now: Date) -> String {
+    private func sessionTitleAccessibilityValue(
+        now: Date,
+        includesLiveElapsed: Bool = true
+    ) -> String {
         guard let session = sessionStore.selectedSession else {
             return L10n.text("ui.session")
         }
@@ -1012,15 +1023,42 @@ extension UnifiedWorkbenchShell {
         }
 
         let status = session.displayStatus(foregroundActivity: sessionStore.selectedForegroundActivity)
-        if let runtimeDisplay = RuntimeActivityDisplay.make(
-            snapshot: sessionStore.selectedRuntimeActivitySnapshot,
-            webSocketStatus: sessionStore.webSocketStatus,
-            now: now
-        ) {
+        if includesLiveElapsed,
+           let runtimeDisplay = RuntimeActivityDisplay.make(
+               snapshot: sessionStore.selectedRuntimeActivitySnapshot,
+               webSocketStatus: sessionStore.webSocketStatus,
+               now: now
+           ) {
             // 视觉副标题只留状态和时长；连接诊断仍完整提供给 VoiceOver。
             return "\(status.title) · \(runtimeDisplay.detailText)"
         }
-        return status.title
+        return Self.stableSessionTitleAccessibilityValue(
+            statusTitle: status.title,
+            webSocketStatus: sessionStore.webSocketStatus,
+            hasRuntimeActivity: sessionStore.selectedRuntimeActivitySnapshot != nil
+        )
+    }
+
+    /// 无秒级定时器场景（如 iPhone 三件式悬浮标题胶囊）的无障碍状态值：
+    /// 仅暴露稳定的状态标题与非计时连接状态，避免播报停留在上次重算时的过期秒数。
+    static func stableSessionTitleAccessibilityValue(
+        statusTitle: String,
+        webSocketStatus: WebSocketStatus,
+        hasRuntimeActivity: Bool
+    ) -> String {
+        guard hasRuntimeActivity else {
+            return statusTitle
+        }
+        switch webSocketStatus {
+        case .connected:
+            return statusTitle
+        case .connecting:
+            return "\(statusTitle) · \(L10n.text("ui.live_status_reconnecting"))"
+        case .disconnected, .failed:
+            return "\(statusTitle) · \(L10n.text("ui.live_status_disconnected"))"
+        case .terminated(let reason):
+            return "\(statusTitle) · \(reason.title)"
+        }
     }
 
     private var selectedSessionShowsNavigationStatus: Bool {

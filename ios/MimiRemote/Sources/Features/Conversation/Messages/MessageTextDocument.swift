@@ -173,8 +173,16 @@ private struct MessageTextDocumentBuilder {
         case .orderedList(let start, let items, let tight):
             appendList(items, start: start, tight: tight, indent: indent)
         case .taskList(let items):
-            for item in items {
-                appendListItem(item.blocks, marker: item.checked ? "☑" : "☐", tight: true, indent: indent)
+            let markers = items.map { $0.checked ? "☑" : "☐" }
+            let markerWidth = resolvedListMarkerWidth(markers: markers, ordered: false)
+            for (item, marker) in zip(items, markers) {
+                appendListItem(
+                    item.blocks,
+                    marker: marker,
+                    markerWidth: markerWidth,
+                    tight: true,
+                    indent: indent
+                )
             }
         case .codeBlock(let language, let code):
             appendCode(code, language: language, indent: indent)
@@ -194,15 +202,43 @@ private struct MessageTextDocumentBuilder {
     }
 
     private mutating func appendList(_ items: [MarkdownListItem], start: Int?, tight: Bool, indent: CGFloat) {
-        for (index, item) in items.enumerated() {
-            let marker = item.checkbox.map { $0 ? "☑" : "☐" } ?? start.map { "\($0 + index)." } ?? "•"
-            appendListItem(item.blocks, marker: marker, tight: tight, indent: indent)
+        let markers = items.enumerated().map { index, item in
+            item.checkbox.map { $0 ? "☑" : "☐" } ?? start.map { "\($0 + index)." } ?? "•"
+        }
+        let isOrdered = start != nil && markers.contains { $0.last == "." }
+        let markerWidth = resolvedListMarkerWidth(markers: markers, ordered: isOrdered)
+        for (item, marker) in zip(items, markers) {
+            appendListItem(
+                item.blocks,
+                marker: marker,
+                markerWidth: markerWidth,
+                tight: tight,
+                indent: indent
+            )
         }
     }
 
-    private mutating func appendListItem(_ blocks: [MarkdownBlock], marker: String, tight: Bool, indent: CGFloat) {
+    /// 序号/符号列宽按同列表最大标记字形宽度自适应，同时保留 30pt（有序）/ 22pt（无序）最小基线，
+    /// 避免三位序号（如 `100.`）或大字号下超出 tabStop 把正文挤到下一行。
+    private func resolvedListMarkerWidth(markers: [String], ordered: Bool) -> CGFloat {
+        let baseWidth: CGFloat = ordered ? 30 : 22
+        let markerGap: CGFloat = max(6, ceil(style.markdown.scaled(6)))
+        let maxGlyphWidth = markers.reduce(CGFloat(0)) { currentMax, marker in
+            let font = style.listMarkerFont(ordered: marker.last == ".")
+            let width = (marker as NSString).size(withAttributes: [.font: font]).width
+            return max(currentMax, width)
+        }
+        return max(baseWidth, ceil(maxGlyphWidth) + markerGap)
+    }
+
+    private mutating func appendListItem(
+        _ blocks: [MarkdownBlock],
+        marker: String,
+        markerWidth: CGFloat,
+        tight: Bool,
+        indent: CGFloat
+    ) {
         let isOrdered = marker.last == "."
-        let markerWidth: CGFloat = isOrdered ? 30 : 22
         let markerColor: UIColor = marker == "☑" ? style.linkColor : style.secondaryForeground
         let markerAttributes = style.attributes(
             font: style.listMarkerFont(ordered: isOrdered),

@@ -1154,6 +1154,39 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertTrue(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(horizontalScroll, isRTL: false))
     }
 
+    func testPhoneFloatingHeaderAccessibilityValueUsesNonStaleStatusSummary() {
+        let runningTitle = L10n.text("ui.running")
+
+        let connected = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .connected,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(connected, runningTitle, "无秒级定时器的悬浮标题胶囊在连接正常时只播报稳定状态，不嵌入会过期的秒数")
+        XCTAssertFalse(connected.contains("00:"), "稳定无障碍摘要不得包含冻结的时钟读数")
+
+        let reconnecting = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .connecting,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(reconnecting, "\(runningTitle) · \(L10n.text("ui.live_status_reconnecting"))")
+
+        let disconnected = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .disconnected,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(disconnected, "\(runningTitle) · \(L10n.text("ui.live_status_disconnected"))")
+
+        let noRuntime = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: L10n.text("ui.pending_approval"),
+            webSocketStatus: .disconnected,
+            hasRuntimeActivity: false
+        )
+        XCTAssertEqual(noRuntime, L10n.text("ui.pending_approval"))
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,
