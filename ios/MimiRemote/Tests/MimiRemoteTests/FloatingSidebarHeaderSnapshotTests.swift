@@ -231,17 +231,33 @@ final class FloatingSidebarHeaderSnapshotTests: SimplifiedChineseSnapshotTestCas
         try await settleLayout(of: host.view)
         if scrollsToBottom {
             let scrollView = try XCTUnwrap(firstScrollView(in: host.view), "侧栏 List 应落在真实 UIScrollView 上")
-            let bottomOffset = scrollView.contentSize.height
-                + scrollView.adjustedContentInset.bottom
-                - scrollView.bounds.height
-            XCTAssertGreaterThan(bottomOffset, 80, "样例列表必须比视口高出至少两行，否则滚到底等于没滚")
-            scrollView.setContentOffset(CGPoint(x: 0, y: bottomOffset), animated: false)
-            // 等滚动几何回调写回渐隐强度、overlay 重新排版这几轮更新落定。
-            try await settleLayout(of: host.view)
+            try await scrollToBottom(scrollView, in: host.view)
         }
         return UIGraphicsImageRenderer(size: size).image { _ in
             host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
         }
+    }
+
+    private func scrollToBottom(_ scrollView: UIScrollView, in view: UIView) async throws {
+        let tolerance: CGFloat = 0.25
+        var stableFrames = 0
+        // 滚动后 List 会重算内容高度和安全区。每帧按最新几何贴底，等偏移稳定再截图。
+        for _ in 0..<30 {
+            view.layoutIfNeeded()
+            let bottom = scrollView.contentSize.height
+                + scrollView.adjustedContentInset.bottom
+                - scrollView.bounds.height
+            XCTAssertGreaterThan(bottom, 80, "样例列表必须比视口高出至少两行，否则滚到底等于没滚")
+            if abs(scrollView.contentOffset.y - bottom) > tolerance {
+                scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: bottom), animated: false)
+                stableFrames = 0
+            } else {
+                stableFrames += 1
+                if stableFrames == 3 { return }
+            }
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTFail("侧栏滚动位置未稳定在列表底部")
     }
 
     private func settleLayout(of view: UIView) async throws {
