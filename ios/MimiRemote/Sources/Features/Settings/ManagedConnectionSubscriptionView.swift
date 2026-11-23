@@ -241,7 +241,15 @@ struct ManagedConnectionSubscriptionView: View {
             }
             return .accepted(L10n.text("ui.this_mac_is_connected"))
         } catch {
-            return .rejected(ManagedConnectionDevicesView.pairingErrorMessage(error))
+            let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
+            let message = attemptedRoute == .lan && ConnectionFailureGuidance.isReachabilityFailure(error)
+                ? ConnectionFailureGuidance.message(
+                    for: error,
+                    route: attemptedRoute,
+                    hasActiveMimiEntitlement: entitlementStore.hasActiveEntitlement
+                )
+                : ManagedConnectionDevicesView.pairingErrorMessage(error)
+            return .rejected(message)
         }
     }
 

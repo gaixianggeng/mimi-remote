@@ -47,6 +47,10 @@ struct RootWorkbenchPresentation: Equatable {
         return !isInitialSetupScannerPresented
     }
 
+    mutating func enterWorkbench() {
+        hasEnteredWorkbench = true
+    }
+
     mutating func synchronize(
         canEnterWorkbench: Bool,
         hasSavedProfiles: Bool,
@@ -97,7 +101,9 @@ struct RootView: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let hasSavedProfiles = !appStore.connectionProfiles.isEmpty
-        let isInitialSetupScannerPresented = initialSetupQRScannerPresentation.intent != nil
+        // 观察真实 Cover 生命周期（直至 onDismiss 完成）而非 intent != nil，
+        // 避免 dismiss() 刚发起动画时就拆毁首次连接宿主视图。
+        let isInitialSetupScannerPresented = initialSetupQRScannerPresentation.isCoverPresented
         let showsWorkbench = workbenchPresentation.showsWorkbench(
             canEnterWorkbench: appStore.canEnterWorkbench,
             hasSavedProfiles: hasSavedProfiles,
@@ -113,6 +119,9 @@ struct RootView: View {
                     qrScannerPresentation: initialSetupQRScannerPresentation
                 )
                     .environment(\.themeSystemColorScheme, colorScheme)
+                    .environment(\.enterWorkbenchFromInitialSetup) {
+                        workbenchPresentation.enterWorkbench()
+                    }
             }
         }
         .onAppear {

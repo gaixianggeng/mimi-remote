@@ -135,10 +135,10 @@ struct UnifiedWorkbenchShell: View {
                 }
                 synchronizeSidebarLifecycle()
             }
-            .task(id: sessionStore.mimiRelaySetupProfileID) {
+            .task(id: pendingRelaySetupTaskID) {
                 applyPendingRelaySetup(layout: layout)
             }
-            .task(id: managedConnectionEntitlementStore.pendingRoute) {
+            .task(id: pendingManagedConnectionRouteTaskID) {
                 applyPendingManagedConnectionRoute(layout: layout)
             }
             .onChange(of: sidebarLifecycleObservations) { _, _ in
@@ -564,7 +564,8 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private var settingsModalIsPresented: Bool {
-        settingsQRCodeScanner.intent != nil
+        settingsQRCodeScanner.isCoverPresented
+            || settingsQRCodeScanner.intent != nil
             || settingsQRCodeScanner.isRequestingCameraAuthorization
             || settingsNavigation.profileRenamePresentation.route != nil
     }

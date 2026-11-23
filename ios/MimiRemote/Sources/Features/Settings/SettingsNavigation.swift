@@ -92,12 +92,22 @@ private struct SettingsSheetDismissKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
 
+private struct EnterWorkbenchFromInitialSetupKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
 extension EnvironmentValues {
     /// 独立设置 sheet 传入关闭动作；push 到连接页或添加电脑页后，既保留左上角返回键，
     /// 也在右上角提供「完成」按钮，并在重新配对或添加完成后自动关闭 sheet 回到工作台。
     var settingsSheetDismiss: (() -> Void)? {
         get { self[SettingsSheetDismissKey.self] }
         set { self[SettingsSheetDismissKey.self] = newValue }
+    }
+
+    /// 首次连接根页在已开通 Mimi 中转或配对失败时，通过该动作进入工作台并显示底部 Tab 栏。
+    var enterWorkbenchFromInitialSetup: (() -> Void)? {
+        get { self[EnterWorkbenchFromInitialSetupKey.self] }
+        set { self[EnterWorkbenchFromInitialSetupKey.self] = newValue }
     }
 }
 

@@ -178,7 +178,8 @@ enum ConnectionProfileRoute: String, Codable, Equatable {
     /// 从配对二维码或连接转移链接识别目标连接类型。
     static func fromPairingURL(_ url: URL) -> ConnectionProfileRoute? {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme?.lowercased() == "mimiremote" else {
+              let scheme = components.scheme?.lowercased(),
+              scheme == "mimiremote" || scheme == "mimi" else {
             return nil
         }
         let items = components.queryItems ?? []

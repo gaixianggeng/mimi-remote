@@ -238,9 +238,34 @@ extension UnifiedWorkbenchShell {
 }
 
 extension UnifiedWorkbenchShell {
+    struct PendingRelaySetupTrigger: Equatable {
+        let profileID: String?
+        let isScannerCoverPresented: Bool
+    }
+
+    struct PendingManagedRouteTrigger: Equatable {
+        let route: ManagedConnectionEntitlementStore.PendingRoute?
+        let isScannerCoverPresented: Bool
+    }
+
+    var pendingRelaySetupTaskID: PendingRelaySetupTrigger {
+        PendingRelaySetupTrigger(
+            profileID: sessionStore.mimiRelaySetupProfileID,
+            isScannerCoverPresented: settingsQRCodeScanner.isCoverPresented
+        )
+    }
+
+    var pendingManagedConnectionRouteTaskID: PendingManagedRouteTrigger {
+        PendingManagedRouteTrigger(
+            route: managedConnectionEntitlementStore.pendingRoute,
+            isScannerCoverPresented: settingsQRCodeScanner.isCoverPresented
+        )
+    }
+
     /// 兑换链接可能在首次连接时打开，那时工作台还不存在；工作台出现后再把用户带到下一步（#949）。
     func applyPendingManagedConnectionRoute(layout: WorkbenchLayout) {
-        guard let route = managedConnectionEntitlementStore.consumePendingRoute() else { return }
+        guard !settingsQRCodeScanner.isCoverPresented,
+              let route = managedConnectionEntitlementStore.consumePendingRoute() else { return }
         // 兑换链接只对内置连接算选择了 Mimi；Tailscale、局域网保留原线路。
         if route == .connectComputer, let profile = sessionStore.appStore.activeConnectionProfile,
            profile.connectionRoute.usesTailcat {
@@ -252,7 +277,8 @@ extension UnifiedWorkbenchShell {
     }
 
     func applyPendingRelaySetup(layout: WorkbenchLayout) {
-        guard let profileID = sessionStore.mimiRelaySetupProfileID else { return }
+        guard !settingsQRCodeScanner.isCoverPresented,
+              let profileID = sessionStore.mimiRelaySetupProfileID else { return }
         sessionStore.mimiRelaySetupProfileID = nil
         guard profileID == sessionStore.appStore.activeConnectionProfileID else { return }
         openConnectionSettings(layout: layout)
