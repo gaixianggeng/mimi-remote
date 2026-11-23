@@ -301,38 +301,31 @@ jobs:
           }
 
           lane_targets_and_device() {
+            # 不继承主回归共享的 DerivedData/工具缓存路径：xcodebuild 在 -target/-alltargets
+            # 模式下禁止传 -derivedDataPath，且设备管理自测需要按默认路径验证 UDID 隔离。
+            unset IOS_DERIVED_DATA_PATH IOS_DEVICE_DERIVED_DATA_PATH TAILCAT_MOBILE_TOOL_DIR
             echo "==> Verify iOS 18 deployment target"
-            xcodebuild \
-              -project ios/MimiRemote/MimiRemote.xcodeproj \
-              -alltargets \
-              -configuration Debug \
-              -derivedDataPath "$IOS_DERIVED_DATA_PATH" \
-              -showBuildSettings 2>/dev/null \
-              | awk '
-                /^Build settings for action .* target / {
-                  target = $NF
-                  sub(/:$/, "", target)
-                  next
-                }
-                $1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" && target != "" {
-                  seen[target] = 1
-                  if ($3 != "18.0") {
-                    printf "%s expected iOS deployment target 18.0, got: %s\n", target, $3 > "/dev/stderr"
-                    bad = 1
-                  }
-                }
-                END {
-                  split("MimiRemote MimiCarStatusWidgetExtension MimiNotificationServiceExtension MimiRemoteTests MimiRemoteUITests", required, " ")
-                  for (i in required) {
-                    t = required[i]
-                    if (!seen[t]) {
-                      printf "%s missing IPHONEOS_DEPLOYMENT_TARGET\n", t > "/dev/stderr"
-                      bad = 1
-                    }
-                  }
-                  exit bad ? 1 : 0
-                }
-              '
+            for target_name in \
+              MimiRemote \
+              MimiCarStatusWidgetExtension \
+              MimiNotificationServiceExtension \
+              MimiRemoteTests \
+              MimiRemoteUITests
+            do
+              deployment_targets="$(
+                xcodebuild \
+                  -project ios/MimiRemote/MimiRemote.xcodeproj \
+                  -target "$target_name" \
+                  -configuration Debug \
+                  -showBuildSettings \
+                  | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
+                  | sort -u
+              )"
+              if [[ "$deployment_targets" != "18.0" ]]; then
+                echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
+                exit 1
+              fi
+            done
             echo "==> Check iOS device selection and leases"
             bash ./scripts/test-ios-device-management.sh
             echo "==> Check Tailcat mobile build cache"
