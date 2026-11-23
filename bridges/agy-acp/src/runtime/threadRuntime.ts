@@ -134,6 +134,7 @@ export class ThreadRuntime {
       }
     | undefined;
   private startingTurn = false;
+  private turnGeneration = 0;
   private totalUsage: TurnUsage | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private externalWriteTimer: ReturnType<typeof setInterval> | undefined;
@@ -296,6 +297,7 @@ export class ThreadRuntime {
       turn = new LiveTurn(turnId, this.threadId, this.cwd, (method, params) => {
         this.host.publish(this.threadId, method, params);
       });
+      const turnGeneration = ++this.turnGeneration;
       this.currentTurn = turn;
       this.currentAttempt = attemptMeta;
       this.startingTurn = false;
@@ -323,7 +325,7 @@ export class ThreadRuntime {
       };
       this.startExternalWriteMonitor(turn);
 
-      void this.runPrompt(client, turn, blocks, attemptMeta, initialSnapshot);
+      void this.runPrompt(client, turn, turnGeneration, blocks, attemptMeta, initialSnapshot);
       return turn.snapshot(false);
     } catch (error) {
       this.stopExternalWriteMonitor();
@@ -355,6 +357,7 @@ export class ThreadRuntime {
   }
 
   async close(): Promise<void> {
+    this.turnGeneration += 1;
     this.cancelIdleClose();
     this.stopExternalWriteMonitor();
     for (const entry of this.pendingApprovals.values()) {
@@ -396,6 +399,7 @@ export class ThreadRuntime {
   private async runPrompt(
     client: AcpClient,
     turn: LiveTurn,
+    turnGeneration: number,
     blocks: Parameters<AcpClient["sessionPrompt"]>[1],
     attemptMeta: {
       attemptId: string;
@@ -425,19 +429,18 @@ export class ThreadRuntime {
       finishedTurn = finished.turn;
       this.historyTurns = [...(this.historyTurns ?? []), finished.turn];
     } finally {
-      this.stopExternalWriteMonitor();
-      if (this.currentTurn === turn) {
+      const isCurrentTurn = this.currentTurn === turn;
+      const hadConflict = isCurrentTurn && Boolean(this.externalWriteConflict);
+      if (isCurrentTurn) {
+        this.stopExternalWriteMonitor();
         this.externalWriteBaseline = undefined;
         this.externalWriteCheckInFlight = undefined;
-      }
-      const hadConflict = Boolean(this.externalWriteConflict);
-      if (this.currentTurn === turn) {
         this.externalWriteConflict = undefined;
         this.currentTurn = undefined;
         this.currentAttempt = undefined;
       }
       const completedAtMs = Date.now();
-      this.updatedAt = Math.floor(completedAtMs / 1000);
+      this.updatedAt = Math.max(this.updatedAt, Math.floor(completedAtMs / 1000));
       const afterInspection = await this.inspectTranscript();
       const afterSnapshot = afterInspection.kind === "present" ? afterInspection.snapshot : undefined;
       let attemptPersisted: boolean | undefined;
@@ -488,9 +491,16 @@ export class ThreadRuntime {
         },
         ...(toolEntries.length > 0 ? { toolMappings: { turnId: finishedTurn?.id ?? attemptMeta.turnId, entries: toolEntries } } : {}),
       });
+      // 若在异步收尾期间已有新回合启动或会话已关闭，不得发布旧回合的终态覆盖新状态。
+      if (this.turnGeneration !== turnGeneration) {
+        return;
+      }
       const ext = hadConflict
         ? await this.host.externalActivity?.(this.threadId).catch(() => undefined)
         : undefined;
+      if (this.turnGeneration !== turnGeneration) {
+        return;
+      }
       if (ext?.externallyBusy) {
         this.host.publish(this.threadId, "thread/status/changed", {
           threadId: this.threadId,
@@ -504,7 +514,9 @@ export class ThreadRuntime {
           status: { type: "idle" },
         });
       }
-      this.scheduleIdleClose();
+      if (!this.isBusy()) {
+        this.scheduleIdleClose();
+      }
     }
   }
 
