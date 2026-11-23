@@ -72,6 +72,7 @@ struct ConversationTimelineSnapshot {
     let scope: ScopedSessionID?
     let rows: [ConversationTimelineItem]
     let rowIDs: [String]
+    let timestampSeparators: [String: String]
     let tail: ConversationTimelineTailDescriptor?
     let changes: ConversationTimelineChangeReasons
     let projectionMode: ConversationTimelineProjectionMode
@@ -82,6 +83,7 @@ struct ConversationTimelineSnapshot {
         scope: ScopedSessionID?,
         rows: [ConversationTimelineItem],
         rowIDs: [String],
+        timestampSeparators: [String: String] = [:],
         tail: ConversationTimelineTailDescriptor?,
         changes: ConversationTimelineChangeReasons,
         projectionMode: ConversationTimelineProjectionMode = .full,
@@ -91,6 +93,7 @@ struct ConversationTimelineSnapshot {
         self.scope = scope
         self.rows = rows
         self.rowIDs = rowIDs
+        self.timestampSeparators = timestampSeparators
         self.tail = tail
         self.changes = changes
         self.projectionMode = projectionMode
@@ -102,6 +105,7 @@ struct ConversationTimelineSnapshot {
         scope: nil,
         rows: [],
         rowIDs: [],
+        timestampSeparators: [:],
         tail: nil,
         changes: [],
         projectionMode: .reused,
@@ -125,6 +129,7 @@ final class ConversationTimelineItemCache {
     private var cachedExpandedProcessMessageIDs: Set<UUID> = []
     private var cachedCollapsedProcessMessageIDs: Set<UUID> = []
     private var cachedActiveTurn: ConversationTimelineActiveTurn?
+    private var cachedTimestampContext: ConversationTimestampFormatContext?
     private var deliveredVersions = ConversationTimelineSourceVersions()
     private var presentationRevision = 0
 
@@ -135,7 +140,10 @@ final class ConversationTimelineItemCache {
         expandedProcessMessageIDs: Set<UUID> = [],
         collapsedProcessMessageIDs: Set<UUID> = [],
         activeTurn: ConversationTimelineActiveTurn? = nil,
-        suspendingUpdates: Bool = false
+        suspendingUpdates: Bool = false,
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
     ) -> ConversationTimelineSnapshot {
         let scopeChanged = cachedSnapshot.scope != source.scope
         // 滚动控制器在交互期间不捕获阅读锚点，所以这里必须冻结所有会改变行集或行高的投影。
@@ -152,7 +160,13 @@ final class ConversationTimelineItemCache {
         let detailModeChanged = cachedShowsDetailedTranscript != showsDetailedTranscript
         let expansionChanged = cachedExpandedProcessMessageIDs != expandedProcessMessageIDs
             || cachedCollapsedProcessMessageIDs != collapsedProcessMessageIDs
-        guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || nextKeys != keys else {
+        let nextTimestampContext = ConversationTimestampFormatContext(
+            now: now,
+            calendar: calendar,
+            locale: locale
+        )
+        let timestampContextChanged = cachedTimestampContext != nextTimestampContext
+        guard scopeChanged || sourceChanged || providerChanged || detailModeChanged || expansionChanged || activeTurnChanged || timestampContextChanged || nextKeys != keys else {
             return cachedSnapshot
         }
 
@@ -195,6 +209,15 @@ final class ConversationTimelineItemCache {
             )
         let nextRows = projection.rows
         let nextRowIDs = rowsChanged ? nextRows.map(\.id) : cachedSnapshot.rowIDs
+        // 时间分隔文案随稳定快照预计算并缓存，避免 SwiftUI body 每次重算全量扫描时间线行。
+        let nextTimestampSeparators = (rowsChanged || timestampContextChanged)
+            ? ConversationTimestampSeparatorPolicy.separatorLabels(
+                for: nextRows,
+                now: now,
+                calendar: calendar,
+                locale: locale
+            )
+            : cachedSnapshot.timestampSeparators
         var presentationReasons = providerChanged ? reasons.union(.historyReplacement) : reasons
         if detailModeChanged || expansionChanged {
             presentationReasons.formUnion([.historyReplacement, .presentation])
@@ -232,12 +255,14 @@ final class ConversationTimelineItemCache {
         cachedExpandedProcessMessageIDs = expandedProcessMessageIDs
         cachedCollapsedProcessMessageIDs = collapsedProcessMessageIDs
         cachedActiveTurn = activeTurn
+        cachedTimestampContext = nextTimestampContext
         deliveredVersions = source.versions
         presentationRevision = scopeChanged ? 1 : presentationRevision + 1
         cachedSnapshot = ConversationTimelineSnapshot(
             scope: source.scope,
             rows: nextRows,
             rowIDs: nextRowIDs,
+            timestampSeparators: nextTimestampSeparators,
             tail: tail,
             changes: presentationReasons.isEmpty && rowsChanged ? .live : presentationReasons,
             projectionMode: projection.mode,
@@ -369,7 +394,10 @@ final class ConversationTimelineItemCache {
         collapsedProcessMessageIDs: Set<UUID> = [],
         activeTurn: ConversationTimelineActiveTurn? = nil,
         suspendingUpdates: Bool = false,
-        scope: ScopedSessionID? = nil
+        scope: ScopedSessionID? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
     ) -> ConversationTimelineSnapshot {
         let resolvedScope = scope ?? ScopedSessionID(profileID: "", sessionID: "")
         return snapshot(
@@ -383,7 +411,10 @@ final class ConversationTimelineItemCache {
             expandedProcessMessageIDs: expandedProcessMessageIDs,
             collapsedProcessMessageIDs: collapsedProcessMessageIDs,
             activeTurn: activeTurn,
-            suspendingUpdates: suspendingUpdates
+            suspendingUpdates: suspendingUpdates,
+            now: now,
+            calendar: calendar,
+            locale: locale
         )
     }
 }

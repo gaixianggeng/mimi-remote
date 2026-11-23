@@ -9,6 +9,8 @@ struct ConversationTimelineView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.defaultMinListRowHeight) private var defaultMinListRowHeight
     @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
+    @Environment(\.locale) private var locale
+    @Environment(\.calendar) private var calendar
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
@@ -20,6 +22,7 @@ struct ConversationTimelineView: View {
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
     @State private var scrollController = ConversationTimelineScrollController()
+    @State private var timestampFormattingGeneration = 0
     @Environment(\.conversationDetailedTranscript) private var detailedTranscript
 
     private var showsDetailedTranscript: Bool { detailedTranscript.wrappedValue }
@@ -53,10 +56,10 @@ struct ConversationTimelineView: View {
         let timelineProvider = ConversationTimelineProvider(
             runtimeProvider: displayedSession?.runtimeProvider ?? displayedSession?.source
         )
-        // body 只读来源与已发布列表；投影、旧位置捕获和发布在同一个 onChange 中完成。
+        // body 只读来源与已发布列表；投影、时间分隔、旧位置捕获和发布在同一个 onChange 中完成。
         let timelineSnapshot = presentedSnapshot.scope == scope ? presentedSnapshot : .empty
         let timelineItems = timelineSnapshot.rows
-        let timestampSeparators = ConversationTimestampSeparatorPolicy.separatorLabels(for: timelineItems)
+        let timestampSeparators = timelineSnapshot.timestampSeparators
         let timelineListIdentity = ConversationTimelineListIdentity(
             scope: scope,
             hasTimelineContent: !timelineItems.isEmpty,
@@ -81,6 +84,9 @@ struct ConversationTimelineView: View {
             )
         }
         let activeTurn = liveStatus.map { _ in ConversationTimelineActiveTurn(id: displayedSession?.activeTurnID) }
+        let effectiveTimestampLocale = ConversationTimestampSeparatorPolicy.effectiveLocale(
+            appLocale: locale
+        )
         let incomingIdentity = ConversationTimelineSnapshotIdentity(
             scope: scope,
             revision: source.revision,
@@ -89,7 +95,12 @@ struct ConversationTimelineView: View {
             showsDetailedTranscript: showsDetailedTranscript,
             expandedProcessMessageIDs: expandedProcessMessageIDs,
             collapsedProcessMessageIDs: collapsedProcessMessageIDs,
-            activeTurn: activeTurn
+            activeTurn: activeTurn,
+            timestampFormattingGeneration: timestampFormattingGeneration,
+            localeIdentifier: effectiveTimestampLocale.identifier,
+            hourCycle: effectiveTimestampLocale.hourCycle,
+            calendarIdentifier: calendar.identifier,
+            timeZoneIdentifier: calendar.timeZone.identifier
         )
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
@@ -244,6 +255,15 @@ struct ConversationTimelineView: View {
             }
             .onAppear {
                 publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+                timestampFormattingGeneration &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+                timestampFormattingGeneration &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+                timestampFormattingGeneration &+= 1
             }
             .environment(\.conversationMediaLayoutWillChange, scrollController.mediaLayoutWillChange)
             .environment(\.conversationBindAnchorView, anchorViewBinder())
@@ -704,6 +724,9 @@ struct ConversationTimelineView: View {
             "conversation_timeline_projection",
             metadata: "messages=\(source.messages.count) revision=\(source.revision) interacting=\(scrollController.isInteracting)"
         )
+        let effectiveTimestampLocale = ConversationTimestampSeparatorPolicy.effectiveLocale(
+            appLocale: locale
+        )
         let snapshot = timelineItemCache.snapshot(
             from: source,
             provider: provider,
@@ -711,7 +734,9 @@ struct ConversationTimelineView: View {
             expandedProcessMessageIDs: presentedSnapshot.scope == source.scope ? expandedProcessMessageIDs : [],
             collapsedProcessMessageIDs: presentedSnapshot.scope == source.scope ? collapsedProcessMessageIDs : [],
             activeTurn: activeTurn,
-            suspendingUpdates: scrollController.isInteracting
+            suspendingUpdates: scrollController.isInteracting,
+            calendar: calendar,
+            locale: effectiveTimestampLocale
         )
         let reusedPresentedSnapshot = snapshot.scope == presentedSnapshot.scope
             && snapshot.revision == presentedSnapshot.revision
@@ -820,6 +845,11 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let expandedProcessMessageIDs: Set<UUID>
     let collapsedProcessMessageIDs: Set<UUID>
     let activeTurn: ConversationTimelineActiveTurn?
+    let timestampFormattingGeneration: Int
+    let localeIdentifier: String
+    let hourCycle: Locale.HourCycle
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {

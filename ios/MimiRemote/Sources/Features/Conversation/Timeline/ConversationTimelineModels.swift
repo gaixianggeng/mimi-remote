@@ -143,6 +143,31 @@ struct ConversationTranscriptPresentation: Equatable {
     mutating func reset() { enabledScope = nil }
 }
 
+/// 时间分隔文案所依赖的日历、时区、语言与 12/24 小时制上下文；只在自然日翻转或格式偏好变化时失效。
+struct ConversationTimestampFormatContext: Equatable {
+    let dayStart: Date
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
+    let timeZoneSecondsFromGMT: Int
+    let localeIdentifier: String
+    let hourCycle: Locale.HourCycle
+    let localizedTimeFormat: String
+
+    init(
+        now: Date = Date(),
+        calendar: Calendar = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
+    ) {
+        self.dayStart = calendar.startOfDay(for: now)
+        self.calendarIdentifier = calendar.identifier
+        self.timeZoneIdentifier = calendar.timeZone.identifier
+        self.timeZoneSecondsFromGMT = calendar.timeZone.secondsFromGMT(for: now)
+        self.localeIdentifier = locale.identifier
+        self.hourCycle = locale.hourCycle
+        self.localizedTimeFormat = ConversationTimestampSeparatorPolicy.resolvedTimeFormat(for: locale)
+    }
+}
+
 /// 在跨自然日或对话间隔较长时生成极简居中时间分隔文案，不改动消息分组和快照行结构。
 enum ConversationTimestampSeparatorPolicy {
     static let minimumGap: TimeInterval = 10 * 60
@@ -187,12 +212,13 @@ enum ConversationTimestampSeparatorPolicy {
         calendar: Calendar = .autoupdatingCurrent,
         locale: Locale = .autoupdatingCurrent
     ) -> String {
-        let timeFormatter = DateFormatter()
-        timeFormatter.calendar = calendar
-        timeFormatter.timeZone = calendar.timeZone
-        timeFormatter.locale = Locale(identifier: "en_US_POSIX")
-        timeFormatter.dateFormat = "HH:mm"
-        let timeText = timeFormatter.string(from: date)
+        let timeFormat = resolvedTimeFormat(for: locale)
+        let timeText = formatterCache.string(
+            from: date,
+            calendar: calendar,
+            locale: locale,
+            dateFormat: timeFormat
+        )
 
         if calendar.isDate(date, inSameDayAs: now) {
             return "\(L10n.text("ui.today")) \(timeText)"
@@ -202,14 +228,101 @@ enum ConversationTimestampSeparatorPolicy {
             return "\(L10n.text("ui.yesterday")) \(timeText)"
         }
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.calendar = calendar
-        dateFormatter.timeZone = calendar.timeZone
-        dateFormatter.locale = locale
-        let template = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let dateTemplate = calendar.component(.year, from: date) == calendar.component(.year, from: now)
             ? "MMMd"
             : "yMMMd"
-        dateFormatter.dateFormat = DateFormatter.dateFormat(fromTemplate: template, options: 0, locale: locale) ?? template
-        return "\(dateFormatter.string(from: date)) \(timeText)"
+        let dateFormat = DateFormatter.dateFormat(fromTemplate: dateTemplate, options: 0, locale: locale) ?? dateTemplate
+        let dateText = formatterCache.string(
+            from: date,
+            calendar: calendar,
+            locale: locale,
+            dateFormat: dateFormat
+        )
+        return "\(dateText) \(timeText)"
+    }
+
+    /// 按系统/Locale 的 12/24 小时制偏好解析本地化时分格式（`jm` 模板遵循系统 24 小时开关与 Locale `hours` 标记）。
+    static func resolvedTimeFormat(for locale: Locale) -> String {
+        DateFormatter.dateFormat(fromTemplate: "jm", options: 0, locale: locale) ?? "HH:mm"
+    }
+
+    /// 当应用内显式固定界面语言（如 `zh-Hans` / `en`）时，保留界面语言的同时继承系统 12/24 小时制偏好。
+    static func effectiveLocale(
+        appLocale: Locale,
+        systemLocale: Locale = .autoupdatingCurrent
+    ) -> Locale {
+        if appLocale.identifier.contains("hours=") {
+            return appLocale
+        }
+        var components = Locale.Components(locale: appLocale)
+        components.hourCycle = systemLocale.hourCycle
+        return Locale(components: components)
+    }
+
+    /// 供单元测试验证格式化器复用，不暴露可变 `DateFormatter` 实例。
+    static var cachedFormatterCountForTesting: Int {
+        formatterCache.cachedCount
+    }
+
+    /// `DateFormatter` 是可变引用类型；缓存查找与格式化共用同一把锁，保证并发安全并避免重复创建。
+    private static let formatterCache = FormatterCache()
+
+    private struct FormatterKey: Hashable {
+        let calendarIdentifier: String
+        let calendarLocaleIdentifier: String
+        let localeIdentifier: String
+        let hourCycle: Locale.HourCycle
+        let timeZoneIdentifier: String
+        let timeZoneSecondsFromGMT: Int
+        let dateFormat: String
+    }
+
+    private final class FormatterCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var formatters: [FormatterKey: DateFormatter] = [:]
+
+        var cachedCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return formatters.count
+        }
+
+        func string(
+            from date: Date,
+            calendar: Calendar,
+            locale: Locale,
+            dateFormat: String
+        ) -> String {
+            let timeZone = calendar.timeZone
+            let key = FormatterKey(
+                calendarIdentifier: String(describing: calendar.identifier),
+                calendarLocaleIdentifier: calendar.locale?.identifier ?? "",
+                localeIdentifier: locale.identifier,
+                hourCycle: locale.hourCycle,
+                timeZoneIdentifier: timeZone.identifier,
+                timeZoneSecondsFromGMT: timeZone.secondsFromGMT(for: date),
+                dateFormat: dateFormat
+            )
+            lock.lock()
+            defer { lock.unlock() }
+
+            let formatter: DateFormatter
+            if let cached = formatters[key] {
+                formatter = cached
+            } else {
+                // 控制上限防止测试或异常时区组合无限扩张缓存。
+                if formatters.count >= 64 {
+                    formatters.removeAll(keepingCapacity: true)
+                }
+                let configured = DateFormatter()
+                configured.calendar = calendar
+                configured.timeZone = timeZone
+                configured.locale = locale
+                configured.dateFormat = dateFormat
+                formatters[key] = configured
+                formatter = configured
+            }
+            return formatter.string(from: date)
+        }
     }
 }

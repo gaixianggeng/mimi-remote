@@ -233,7 +233,9 @@ final class ConversationTimelineSnapshotBoundaryTests: XCTestCase {
     func testTimestampSeparatorAppearsAcrossDayAndLongGapOnly() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
-        let locale = Locale(identifier: "zh_Hans_CN")
+        let locale24 = Locale(identifier: "zh_Hans_CN@hours=h23")
+        let locale12EN = Locale(identifier: "en_US@hours=h12")
+        let locale12ZH = Locale(identifier: "zh_Hans_CN@hours=h12")
         let twoDaysAgo = calendar.date(from: DateComponents(year: 2026, month: 11, day: 20, hour: 9, minute: 30))!
         let yesterdayEvening = calendar.date(from: DateComponents(year: 2026, month: 11, day: 21, hour: 23, minute: 50))!
         let day2Morning = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 10, minute: 55))!
@@ -248,18 +250,108 @@ final class ConversationTimelineSnapshotBoundaryTests: XCTestCase {
         let m4 = ConversationMessage(role: .user, content: "隔了十二分钟", createdAt: day2LaterGap)
 
         let items: [ConversationTimelineItem] = [.message(m0), .message(m1), .message(m2), .message(m3), .message(m4)]
-        let labels = ConversationTimestampSeparatorPolicy.separatorLabels(
+        let labels24 = ConversationTimestampSeparatorPolicy.separatorLabels(
             for: items,
             now: now,
             calendar: calendar,
-            locale: locale
+            locale: locale24
         )
 
-        XCTAssertNil(labels[items[0].id], "首条消息前不额外插时间分隔")
-        XCTAssertEqual(labels[items[1].id], "\(L10n.text("ui.yesterday")) 23:50", "跨日到昨天应显示昨天时间")
-        XCTAssertEqual(labels[items[2].id], "\(L10n.text("ui.today")) 10:55", "跨自然日到今天应展示居中时间分隔")
-        XCTAssertNil(labels[items[3].id], "三分钟内的连续对话不应重复插分隔")
-        XCTAssertEqual(labels[items[4].id], "\(L10n.text("ui.today")) 11:10", "超过 10 分钟的新段落应展示时间分隔")
+        XCTAssertNil(labels24[items[0].id], "首条消息前不额外插时间分隔")
+        XCTAssertEqual(labels24[items[1].id], "\(L10n.text("ui.yesterday")) 23:50", "24 小时制跨日到昨天应显示 23:50")
+        XCTAssertEqual(labels24[items[2].id], "\(L10n.text("ui.today")) 10:55", "24 小时制跨自然日到今天应显示 10:55")
+        XCTAssertNil(labels24[items[3].id], "三分钟内的连续对话不应重复插分隔")
+        XCTAssertEqual(labels24[items[4].id], "\(L10n.text("ui.today")) 11:10", "超过 10 分钟的新段落应展示时间分隔")
+
+        // 12 小时制必须尊重系统/Locale 偏好，不再硬编码 24 小时 HH:mm。
+        let labels12EN = ConversationTimestampSeparatorPolicy.separatorLabels(
+            for: items,
+            now: now,
+            calendar: calendar,
+            locale: locale12EN
+        )
+        let yesterdayEN = labels12EN[items[1].id] ?? ""
+        let todayEN = labels12EN[items[2].id] ?? ""
+        XCTAssertTrue(yesterdayEN.contains("11:50") && yesterdayEN.contains("PM"), "英文 12 小时制应显示 11:50 PM，实际：\(yesterdayEN)")
+        XCTAssertFalse(yesterdayEN.contains("23:50"), "12 小时制不应回退成 23:50")
+        XCTAssertTrue(todayEN.contains("10:55") && todayEN.contains("AM"), "英文 12 小时制应显示 10:55 AM，实际：\(todayEN)")
+
+        let labels12ZH = ConversationTimestampSeparatorPolicy.separatorLabels(
+            for: items,
+            now: now,
+            calendar: calendar,
+            locale: locale12ZH
+        )
+        let yesterdayZH = labels12ZH[items[1].id] ?? ""
+        XCTAssertTrue(yesterdayZH.contains("11:50"), "中文 12 小时制应显示 11:50，实际：\(yesterdayZH)")
+        XCTAssertFalse(yesterdayZH.contains("23:50"), "中文 12 小时制不应回退成 23:50")
+
+        // 格式化器按上下文缓存复用：重复调用相同参数不增加缓存项。
+        let countAfterFirstPass = ConversationTimestampSeparatorPolicy.cachedFormatterCountForTesting
+        _ = ConversationTimestampSeparatorPolicy.separatorLabels(
+            for: items,
+            now: now,
+            calendar: calendar,
+            locale: locale12EN
+        )
+        XCTAssertEqual(
+            ConversationTimestampSeparatorPolicy.cachedFormatterCountForTesting,
+            countAfterFirstPass,
+            "相同日历/时区/Locale 重复格式化应复用缓存中的 DateFormatter"
+        )
+    }
+
+    func testTimelineSnapshotPrecomputesAndMemoizesTimestampSeparators() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+        let locale24 = Locale(identifier: "zh_Hans_CN@hours=h23")
+        let locale12 = Locale(identifier: "en_US@hours=h12")
+        let t0 = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 10, minute: 0))!
+        let t1 = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 15, minute: 30))!
+        let nowDay1 = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 16, minute: 0))!
+        let nowDay2 = calendar.date(from: DateComponents(year: 2026, month: 11, day: 23, hour: 9, minute: 0))!
+
+        let m0 = ConversationMessage(role: .user, content: "早安", createdAt: t0)
+        let m1 = ConversationMessage(role: .assistant, content: "下午汇报", createdAt: t1)
+        let cache = ConversationTimelineItemCache()
+
+        let first = cache.snapshot(from: [m0, m1], now: nowDay1, calendar: calendar, locale: locale24)
+        let secondRowID = first.rows[1].id
+        XCTAssertEqual(first.timestampSeparators[secondRowID], "\(L10n.text("ui.today")) 15:30")
+
+        // 同一自然日与格式上下文再次投影：直接复用快照，不递增 revision。
+        let reused = cache.snapshot(
+            from: [m0, m1],
+            now: nowDay1.addingTimeInterval(60),
+            calendar: calendar,
+            locale: locale24
+        )
+        XCTAssertEqual(reused.revision, first.revision)
+        XCTAssertEqual(reused.timestampSeparators, first.timestampSeparators)
+
+        // 切换为 12 小时制 Locale 时，快照重新计算时间分隔文案。
+        let switched12 = cache.snapshot(from: [m0, m1], now: nowDay1, calendar: calendar, locale: locale12)
+        XCTAssertGreaterThan(switched12.revision, first.revision)
+        let label12 = switched12.timestampSeparators[secondRowID] ?? ""
+        XCTAssertTrue(label12.contains("3:30") && label12.contains("PM"), "12 小时制应更新为 3:30 PM，实际：\(label12)")
+
+        // 跨自然日后「今天」自动刷新为「昨天」。
+        let nextDay = cache.snapshot(from: [m0, m1], now: nowDay2, calendar: calendar, locale: locale24)
+        XCTAssertEqual(nextDay.timestampSeparators[secondRowID], "\(L10n.text("ui.yesterday")) 15:30")
+
+        // 应用内固定语言（如 zh-Hans）时，仍需继承系统 12/24 小时制偏好。
+        let zhWithSystem12 = ConversationTimestampSeparatorPolicy.effectiveLocale(
+            appLocale: Locale(identifier: "zh-Hans"),
+            systemLocale: Locale(identifier: "en_US@hours=h12")
+        )
+        let formattedZh12 = ConversationTimestampSeparatorPolicy.format(
+            t1,
+            now: nowDay1,
+            calendar: calendar,
+            locale: zhWithSystem12
+        )
+        XCTAssertTrue(formattedZh12.contains("3:30"), "固定中文语言遇系统 12 小时制应显示 3:30，实际：\(formattedZh12)")
+        XCTAssertFalse(formattedZh12.contains("15:30"), "固定中文语言遇系统 12 小时制不应回退 15:30")
     }
 
     func testReturnToTailButtonUsesCompactVisualDiscWithFullTouchTargetOnPhone() {
