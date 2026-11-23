@@ -16,12 +16,13 @@ import { appDataDirForOrigin, defaultAgyExecutable } from "./agy/env.ts";
 import { GitRepoIndex } from "./agy/git.ts";
 import { acpModelDiscovery, ModelCatalog, type DiscoverAgyModels } from "./agy/models.ts";
 import { AgyOverlay } from "./agy/overlay.ts";
+import { AgyRateLimitCatalog, createCliRateLimitsFetcher, type FetchAgyRateLimits } from "./agy/rateLimits.ts";
 import { createAccountHandlers } from "./handlers/account.ts";
 import { createCommandHandlers } from "./handlers/commands.ts";
 import { createHistoryHandlers } from "./handlers/history.ts";
 import { createThreadHandlers } from "./handlers/threads.ts";
 import { createTurnHandlers } from "./handlers/turns.ts";
-import { ThreadManager, unavailableAgyRateLimits } from "./runtime/manager.ts";
+import { ThreadManager } from "./runtime/manager.ts";
 import { ADAPTER_NAME, ADAPTER_VERSION, MINIMUM_AGY_VERSION, USER_AGENT } from "./version.ts";
 
 export interface CapabilityDeclaration {
@@ -65,6 +66,7 @@ export interface AppOptions {
   sessionBackend?: AgySessionBackend;
   discoverModels?: DiscoverAgyModels;
   discoverCommands?: DiscoverAgyCommands;
+  fetchRateLimits?: FetchAgyRateLimits;
   env?: () => NodeJS.ProcessEnv;
   idleCloseMs?: number;
   externalWritePollMs?: number;
@@ -75,7 +77,17 @@ export interface App {
   router: Router;
   manager: ThreadManager;
   models: ModelCatalog;
+  rateLimits: AgyRateLimitCatalog;
   close(): Promise<void>;
+}
+
+function tierNameFromSessionMeta(meta: Record<string, unknown> | undefined): string | undefined {
+  const antigravity = meta?.antigravity;
+  if (!antigravity || typeof antigravity !== "object") return undefined;
+  const tier = (antigravity as Record<string, unknown>).tier;
+  if (!tier || typeof tier !== "object") return undefined;
+  const name = (tier as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
 }
 
 export function createApp(options: AppOptions): App {
@@ -112,16 +124,26 @@ export function createApp(options: AppOptions): App {
     log: options.log,
   });
 
+  const rateLimits = new AgyRateLimitCatalog({
+    fetch: options.fetchRateLimits ?? createCliRateLimitsFetcher(agyExecutable, env),
+    log: options.log,
+    onUpdated: (snapshot) => managerRef?.broadcast("account/rateLimits/updated", { rateLimits: snapshot }),
+  });
+
   const otherAppDataDir = appDataDirForOrigin("other", env());
   const manager = new ThreadManager({
     acquireClient: (appDataDirName) => (appDataDirName === otherAppDataDir ? otherSharedAcp.acquire() : cliSharedAcp.acquire()),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
     ...(options.externalWritePollMs !== undefined ? { externalWritePollMs: options.externalWritePollMs } : {}),
-    onSessionOpen: (open) => models.observeSessionOpen(open),
+    onSessionOpen: (open) => {
+      models.observeSessionOpen(open);
+      rateLimits.observePlanType(tierNameFromSessionMeta(open._meta));
+    },
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
       historyRef?.invalidate(threadId);
+      rateLimits.invalidateAfterTurn();
       void overlay.recordSession(threadId, patch);
     },
     reserveTurnAttempt: (threadId, info) => overlay.reserveTurnAttempt(threadId, info),
@@ -164,7 +186,7 @@ export function createApp(options: AppOptions): App {
     async (threadId) => Boolean((await catalog.externalActivity(threadId))?.externallyBusy),
   );
   const turns = createTurnHandlers({ manager, catalog, history, overlay, agyGate, env });
-  const account = createAccountHandlers(models, unavailableAgyRateLimits);
+  const account = createAccountHandlers(models, () => rateLimits.read());
   const commandHandlers = createCommandHandlers(commands);
 
   const initialize: Handler = (): InitializeResponse => ({
@@ -195,6 +217,7 @@ export function createApp(options: AppOptions): App {
     router: new Router(handlers, options.log),
     manager,
     models,
+    rateLimits,
     async close() {
       await Promise.allSettled([manager.closeAll(), cliSharedAcp.close(), otherSharedAcp.close()]);
       await overlay.flush().catch(() => {});

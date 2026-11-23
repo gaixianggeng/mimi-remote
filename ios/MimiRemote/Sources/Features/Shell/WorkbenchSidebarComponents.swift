@@ -10,6 +10,8 @@ struct AIUsageRingsControl: View {
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
     let includesClaude: Bool
+    let agyDisplay: CodexUsageWindowsDisplay
+    let includesAgy: Bool
     let usesCondensedVisual: Bool
     let onRefresh: () async -> Void
 
@@ -17,12 +19,19 @@ struct AIUsageRingsControl: View {
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
         includesClaude: Bool,
+        agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: nil,
+            fallbackDisplayName: "Gemini"
+        ),
+        includesAgy: Bool = false,
         usesCondensedVisual: Bool = false,
         onRefresh: @escaping () async -> Void
     ) {
         self.codexDisplay = codexDisplay
         self.claudeDisplay = claudeDisplay
         self.includesClaude = includesClaude
+        self.agyDisplay = agyDisplay
+        self.includesAgy = includesAgy
         self.usesCondensedVisual = usesCondensedVisual
         self.onRefresh = onRefresh
     }
@@ -131,6 +140,9 @@ struct AIUsageRingsControl: View {
                 if includesClaude {
                     usageCreditLine(name: "Claude", display: claudeDisplay)
                 }
+                if includesAgy {
+                    usageCreditLine(name: "Gemini", display: agyDisplay)
+                }
             }
             .foregroundStyle(tokens.secondaryText)
         }
@@ -199,6 +211,8 @@ struct AIUsageRingsControl: View {
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
             includesClaude: includesClaude,
+            agyDisplay: agyDisplay,
+            includesAgy: includesAgy,
             colorScheme: colorScheme
         )
     }
@@ -207,6 +221,9 @@ struct AIUsageRingsControl: View {
         var summaries = [codexDisplay.windowSummaryText]
         if includesClaude {
             summaries.append(claudeDisplay.windowSummaryText)
+        }
+        if includesAgy {
+            summaries.append(agyDisplay.windowSummaryText)
         }
         return summaries.joined(separator: " · ")
     }

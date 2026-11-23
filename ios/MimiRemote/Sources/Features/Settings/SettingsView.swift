@@ -230,6 +230,17 @@ struct SettingsView: View {
     private func settingsForm(tokens: ThemeTokens, canvasBackground: Color) -> some View {
         let codexUsage = sessionStore.accountCodexUsageWindowsDisplay
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
+        let agyUsage = sessionStore.accountAgyUsageWindowsDisplay
+        let isRefreshingQuotaOrActivity = sessionStore.isRefreshingAccountTokenActivity
+            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+            || (
+                sessionStore.hasClaudeRuntimeChannel
+                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
+            )
+            || (
+                sessionStore.hasAgyRuntimeChannel
+                    && sessionStore.isRefreshingUsage(runtimeProvider: "agy")
+            )
 
         return Form {
             Section {
@@ -237,16 +248,13 @@ struct SettingsView: View {
                     codexDisplay: codexUsage,
                     claudeDisplay: claudeUsage,
                     includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                    agyDisplay: agyUsage,
+                    includesAgy: sessionStore.hasAgyRuntimeChannel,
                     snapshot: sessionStore.accountTokenUsage,
                     activity: sessionStore.accountTokenActivity,
                     // 刷新按钮代表整卡刷新，配额或活动任一在飞都转；
                     // 活动面板的状态只看 activity 自己，不受配额刷新影响。
-                    isRefreshing: sessionStore.isRefreshingAccountTokenActivity
-                        || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
-                        || (
-                            sessionStore.hasClaudeRuntimeChannel
-                                && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
-                        ),
+                    isRefreshing: isRefreshingQuotaOrActivity,
                     onRefresh: refreshAccountUsage
                 )
                 // 卡片底由分组给出（settingsGroupRowStyle），与其它设置卡同一底色和圆角。
@@ -260,12 +268,7 @@ struct SettingsView: View {
                     lifetimeTokenLabel(tokens: tokens)
 
                     AccountUsageRefreshButton(
-                        isRefreshing: sessionStore.isRefreshingAccountTokenActivity
-                            || sessionStore.isRefreshingUsage(runtimeProvider: "codex")
-                            || (
-                                sessionStore.hasClaudeRuntimeChannel
-                                    && sessionStore.isRefreshingUsage(runtimeProvider: "claude")
-                            ),
+                        isRefreshing: isRefreshingQuotaOrActivity,
                         onRefresh: refreshAccountUsage
                     )
                 }
@@ -437,10 +440,13 @@ struct SettingsView: View {
     private func refreshAccountUsage() async {
         async let codexQuota: Void = sessionStore.refreshCodexUsage()
         async let tokenActivity: Void = sessionStore.refreshAccountTokenUsage(forceRefresh: true)
-        if sessionStore.hasClaudeRuntimeChannel {
-            await sessionStore.refreshClaudeUsage()
-        }
-        _ = await (codexQuota, tokenActivity)
+        async let claudeQuota: Void = sessionStore.hasClaudeRuntimeChannel
+            ? sessionStore.refreshClaudeUsage()
+            : ()
+        async let agyQuota: Void = sessionStore.hasAgyRuntimeChannel
+            ? sessionStore.refreshAgyUsage()
+            : ()
+        _ = await (codexQuota, tokenActivity, claudeQuota, agyQuota)
     }
 
     private var compactConnectionStatusText: String {
@@ -617,6 +623,11 @@ struct AccountTokenUsageCard: View {
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
     let includesClaude: Bool
+    var agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
+        rateLimit: nil,
+        fallbackDisplayName: "Gemini"
+    )
+    var includesAgy: Bool = false
     let snapshot: AccountTokenUsageSnapshot?
     let activity: AccountTokenActivityState
     let isRefreshing: Bool
@@ -777,6 +788,9 @@ struct AccountTokenUsageCard: View {
                 Text(codexDisplay.creditText)
                 if includesClaude {
                     Text(claudeDisplay.creditText)
+                }
+                if includesAgy {
+                    Text(agyDisplay.creditText)
                 }
             }
             .font(themeStore.uiFont(.caption))
@@ -1134,13 +1148,14 @@ struct AccountTokenUsageCard: View {
         }
     }
 
-    /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。
     /// 服务端的 primary/secondary 槽位并不稳定，因此按真实时长选择而不是写死槽位。
     private var usageItems: [CombinedUsageItem] {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
             includesClaude: includesClaude,
+            agyDisplay: agyDisplay,
+            includesAgy: includesAgy,
             colorScheme: colorScheme
         )
     }

@@ -830,12 +830,18 @@ struct UnifiedWorkbenchShell: View {
                 codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
                 claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
                 includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                agyDisplay: sessionStore.accountAgyUsageWindowsDisplay,
+                includesAgy: sessionStore.hasAgyRuntimeChannel,
                 usesCondensedVisual: usesFloatingChrome,
                 onRefresh: {
-                    await sessionStore.refreshCodexUsage()
-                    if sessionStore.hasClaudeRuntimeChannel {
-                        await sessionStore.refreshClaudeUsage()
-                    }
+                    async let codexQuota: Void = sessionStore.refreshCodexUsage()
+                    async let claudeQuota: Void = sessionStore.hasClaudeRuntimeChannel
+                        ? sessionStore.refreshClaudeUsage()
+                        : ()
+                    async let agyQuota: Void = sessionStore.hasAgyRuntimeChannel
+                        ? sessionStore.refreshAgyUsage()
+                        : ()
+                    _ = await (codexQuota, claudeQuota, agyQuota)
                 }
             )
             .fixedSize()

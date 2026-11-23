@@ -9,11 +9,10 @@ extension SessionStore {
         async let tokenActivity: Void = refreshAccountTokenUsage()
 
         await refreshAppServerModelOptions()
-        await refreshCodexUsage()
-        if hasClaudeRuntimeChannel {
-            await refreshClaudeUsage()
-        }
-        await tokenActivity
+        async let codexQuota: Void = refreshCodexUsage()
+        async let claudeQuota: Void = hasClaudeRuntimeChannel ? refreshClaudeUsage() : ()
+        async let agyQuota: Void = hasAgyRuntimeChannel ? refreshAgyUsage() : ()
+        _ = await (tokenActivity, codexQuota, claudeQuota, agyQuota)
     }
 
     func refreshAccountTokenUsage(forceRefresh: Bool = false) async {
