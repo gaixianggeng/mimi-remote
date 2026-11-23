@@ -938,6 +938,222 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         assertThreePieceInvariants(narrowLongSnapshot, expectedContainerWidth: 320, context: "320pt 超长标题")
     }
 
+    @MainActor
+    func testNavigationInteractivePopEnablerSurvivesHiddenNavBarFirstEntryAndTabRestore() throws {
+        final class HostModel: ObservableObject {
+            @Published var selectedTab: Int = 0
+            @Published var path: [String] = []
+        }
+
+        struct TabNavigationHost: View {
+            @ObservedObject var model: HostModel
+
+            var body: some View {
+                TabView(selection: $model.selectedTab) {
+                    NavigationStack(path: $model.path) {
+                        Color.clear
+                            .navigationDestination(for: String.self) { id in
+                                Color.clear
+                                    .navigationTitle(id)
+                                    .navigationBarTitleDisplayMode(.inline)
+                                    .toolbar(.hidden, for: .navigationBar)
+                                    .background {
+                                        NavigationInteractivePopEnabler()
+                                            .frame(width: 0, height: 0)
+                                    }
+                            }
+                    }
+                    .tabItem { Text("Sessions") }
+                    .tag(0)
+
+                    NavigationStack {
+                        Color.clear
+                    }
+                    .tabItem { Text("Workspaces") }
+                    .tag(1)
+                }
+            }
+        }
+
+        func findNavigationControllers(in vc: UIViewController) -> [UINavigationController] {
+            var result: [UINavigationController] = []
+            if let nav = vc as? UINavigationController {
+                result.append(nav)
+            }
+            for child in vc.children {
+                result.append(contentsOf: findNavigationControllers(in: child))
+            }
+            return result
+        }
+
+        func pump(_ seconds: TimeInterval = 0.25) {
+            RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        }
+
+        let model = HostModel()
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let host = UIHostingController(rootView: TabNavigationHost(model: model))
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+            window.frame = bounds
+        } else {
+            window = UIWindow(frame: bounds)
+        }
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+        host.view.frame = bounds
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        pump(0.35)
+
+        // 1. 首次进入详情：隐藏原生导航栏后仍必须接管左缘及 iOS 26+ 内容区交互式返回手势。
+        model.path = ["session-1"]
+        pump(0.45)
+
+        let nav = try XCTUnwrap(
+            findNavigationControllers(in: host).first(where: { $0.viewControllers.count == 2 }),
+            "应找到已 push 详情页的 UINavigationController"
+        )
+        XCTAssertTrue(nav.isNavigationBarHidden, "详情页应隐藏原生导航栏")
+        let edgeGesture = try XCTUnwrap(nav.interactivePopGestureRecognizer)
+        XCTAssertTrue(edgeGesture.isEnabled, "首次进详情后左缘返回手势必须保持启用")
+        let edgeDelegate = try XCTUnwrap(edgeGesture.delegate as? NavigationInteractivePopEnabler.Controller)
+        XCTAssertTrue(
+            edgeDelegate.gestureRecognizerShouldBegin(edgeGesture),
+            "首次进详情后左缘返回手势应允许开始"
+        )
+        let listPan = UIScrollView().panGestureRecognizer
+        XCTAssertTrue(
+            edgeDelegate.gestureRecognizer(edgeGesture, shouldBeRequiredToFailBy: listPan),
+            "左缘返回手势必须优先于列表滚动手势"
+        )
+        if #available(iOS 26.0, *) {
+            let contentGesture = try XCTUnwrap(nav.interactiveContentPopGestureRecognizer)
+            XCTAssertTrue(contentGesture.isEnabled, "iOS 26+ 首次进详情后内容区右滑返回手势必须保持启用")
+            XCTAssertTrue(
+                contentGesture.delegate === edgeDelegate,
+                "iOS 26+ 隐藏导航栏时内容区返回手势同样必须由 NavigationInteractivePopEnabler 接管"
+            )
+        }
+
+        // 2. 跨 Tab 切走再切回：恢复详情后两条手势仍必须保持接管与启用。
+        model.selectedTab = 1
+        pump(0.35)
+        model.selectedTab = 0
+        pump(0.45)
+
+        XCTAssertEqual(nav.viewControllers.count, 2)
+        XCTAssertTrue(edgeGesture.isEnabled, "跨 Tab 恢复后左缘返回手势必须保持启用")
+        XCTAssertTrue(
+            edgeGesture.delegate is NavigationInteractivePopEnabler.Controller,
+            "跨 Tab 恢复后左缘返回手势代理必须保持接管"
+        )
+        if #available(iOS 26.0, *) {
+            let contentGesture = try XCTUnwrap(nav.interactiveContentPopGestureRecognizer)
+            XCTAssertTrue(contentGesture.isEnabled, "跨 Tab 恢复后内容区右滑返回手势必须保持启用")
+            XCTAssertTrue(
+                contentGesture.delegate is NavigationInteractivePopEnabler.Controller,
+                "跨 Tab 恢复后内容区右滑返回手势代理必须保持接管"
+            )
+        }
+
+        // 3. 返回列表根页后应恢复系统原代理，避免根页卡死。
+        model.path = []
+        pump(0.45)
+
+        XCTAssertEqual(nav.viewControllers.count, 1)
+        XCTAssertFalse(
+            edgeGesture.delegate is NavigationInteractivePopEnabler.Controller,
+            "回到根页后应释放自定义手势代理"
+        )
+        if #available(iOS 26.0, *),
+           let contentGesture = nav.interactiveContentPopGestureRecognizer {
+            XCTAssertFalse(
+                contentGesture.delegate is NavigationInteractivePopEnabler.Controller,
+                "回到根页后应释放内容区自定义手势代理"
+            )
+        }
+    }
+
+    @MainActor
+    func testNavigationInteractivePopDirectionAndGestureArbitrationRules() {
+        // LTR / RTL 方向判断、初始零位移放行与纵向滚动隔离。
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: .zero,
+                isRTL: false,
+                isEdgeGesture: false
+            ),
+            "触发初期零位移必须放行，与 UIKit 原生 interactiveTransition 行为一致"
+        )
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: 24, y: 2),
+                isRTL: false,
+                isEdgeGesture: false
+            )
+        )
+        XCTAssertFalse(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: 4, y: 30),
+                isRTL: false,
+                isEdgeGesture: false
+            ),
+            "内容区纵向滚动不得触发右滑返回"
+        )
+        XCTAssertFalse(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: -24, y: 0),
+                isRTL: false,
+                isEdgeGesture: false
+            )
+        )
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: -24, y: 2),
+                isRTL: true,
+                isEdgeGesture: false
+            ),
+            "RTL 布局应镜像接受向左滑动返回"
+        )
+
+        // 内容区手势避开滑块、编辑中输入框及选区中的文本视图，但不拦截普通只读消息文本。
+        let container = UIView()
+        let slider = UISlider()
+        let readOnlyTextView = UITextView()
+        readOnlyTextView.isEditable = false
+        readOnlyTextView.isSelectable = false
+        let selectingTextView = UITextView()
+        selectingTextView.isEditable = false
+        selectingTextView.isSelectable = true
+        let editableTextView = UITextView()
+        editableTextView.isEditable = true
+        for child in [slider, readOnlyTextView, selectingTextView, editableTextView] {
+            container.addSubview(child)
+        }
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: slider, boundedBy: container))
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: editableTextView, boundedBy: container))
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: selectingTextView, boundedBy: container))
+        XCTAssertTrue(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: readOnlyTextView, boundedBy: container))
+
+        // 横向可滚动容器（如宽代码块/表格）未到前缘时让步，已到前缘或仅纵向滚动时不拦截返回。
+        let verticalScroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 600))
+        verticalScroll.contentSize = CGSize(width: 360, height: 1400)
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(verticalScroll, isRTL: false))
+
+        let horizontalScroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 200))
+        horizontalScroll.contentSize = CGSize(width: 800, height: 200)
+        horizontalScroll.contentOffset = .zero
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(horizontalScroll, isRTL: false))
+        horizontalScroll.contentOffset = CGPoint(x: 48, y: 0)
+        XCTAssertTrue(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(horizontalScroll, isRTL: false))
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,

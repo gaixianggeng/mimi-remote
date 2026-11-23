@@ -379,7 +379,12 @@ private struct PhoneFloatingGlassChromeModifier<ChromeShape: InsettableShape>: V
     }
 }
 
-/// 隐藏系统导航栏后，确保 `NavigationStack` 底层 `UINavigationController` 仍保持左缘右滑返回手势可用。
+/// 隐藏系统导航栏后，确保 `NavigationStack` 底层 `UINavigationController` 仍保持系统原生交互式返回可用。
+/// iOS 26 起系统同时使用 `interactivePopGestureRecognizer`（左缘）与
+/// `interactiveContentPopGestureRecognizer`（内容区右滑）；当 `isNavigationBarHidden == true` 时，
+/// UIKit 默认代理 `_UINavigationInteractiveTransition` 会通过 `_shouldInteractivePopGestureBeEnabled`
+/// 拒绝这两条手势。这里仅在当前详情页位于栈顶时接管代理，保留系统原生转场动画、跟手进度与中途取消语义，
+/// 并在离开栈顶或销毁时恢复系统原代理。
 struct NavigationInteractivePopEnabler: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> Controller {
         Controller()
@@ -395,51 +400,251 @@ struct NavigationInteractivePopEnabler: UIViewControllerRepresentable {
 
     final class Controller: UIViewController, UIGestureRecognizerDelegate {
         private weak var observedNavigationController: UINavigationController?
-        private weak var previousDelegate: (any UIGestureRecognizerDelegate)?
-        private var didOverrideDelegate = false
+        private weak var previousEdgeDelegate: (any UIGestureRecognizerDelegate)?
+        private weak var previousContentDelegate: (any UIGestureRecognizerDelegate)?
+        private var didOverrideDelegates = false
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            if parent == nil {
+                restoreIfNeeded()
+            } else {
+                attachIfPossible()
+            }
+        }
+
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            attachIfPossible()
+        }
 
         override func viewDidAppear(_ animated: Bool) {
             super.viewDidAppear(animated)
             attachIfPossible()
         }
 
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            attachIfPossible()
+        }
+
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            restoreIfNeeded()
+            // 交互式右滑返回一旦开始，UIKit 就会立即触发 viewWillDisappear；
+            // 此时不能提前恢复代理，否则中途松手取消后可能失去接管。
+            transitionCoordinator?.notifyWhenInteractionChanges { [weak self] context in
+                guard let self, context.isCancelled else { return }
+                self.attachIfPossible()
+            }
+        }
+
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            guard let nav = observedNavigationController else { return }
+            let stackEntry = stackEntryViewController(in: nav)
+            let isStillTopOfStack = stackEntry != nil && nav.topViewController === stackEntry
+            if isMovingFromParent || navigationController == nil || !isStillTopOfStack {
+                restoreIfNeeded()
+            }
         }
 
         func attachIfPossible() {
-            guard let nav = navigationController,
-                  let gesture = nav.interactivePopGestureRecognizer else {
+            guard let nav = navigationController else {
                 return
             }
+            if let stackEntry = stackEntryViewController(in: nav),
+               nav.topViewController !== stackEntry {
+                return
+            }
+
             if observedNavigationController !== nav {
                 restoreIfNeeded()
                 observedNavigationController = nav
-                previousDelegate = gesture.delegate
-                didOverrideDelegate = true
+                if let edgeGesture = nav.interactivePopGestureRecognizer,
+                   !(edgeGesture.delegate is Controller) {
+                    previousEdgeDelegate = edgeGesture.delegate
+                }
+                if #available(iOS 26.0, *),
+                   let contentGesture = nav.interactiveContentPopGestureRecognizer,
+                   !(contentGesture.delegate is Controller) {
+                    previousContentDelegate = contentGesture.delegate
+                }
+                didOverrideDelegates = true
             }
-            gesture.delegate = self
-            gesture.isEnabled = nav.viewControllers.count > 1
+
+            let canPop = nav.viewControllers.count > 1
+            if let edgeGesture = nav.interactivePopGestureRecognizer {
+                edgeGesture.delegate = self
+                edgeGesture.isEnabled = canPop
+            }
+            if #available(iOS 26.0, *),
+               let contentGesture = nav.interactiveContentPopGestureRecognizer {
+                contentGesture.delegate = self
+                contentGesture.isEnabled = canPop
+            }
         }
 
         func restoreIfNeeded() {
-            guard didOverrideDelegate,
-                  let nav = observedNavigationController,
-                  let gesture = nav.interactivePopGestureRecognizer else {
+            guard didOverrideDelegates,
+                  let nav = observedNavigationController else {
                 return
             }
-            if gesture.delegate === self {
-                gesture.delegate = previousDelegate
+            if let edgeGesture = nav.interactivePopGestureRecognizer,
+               edgeGesture.delegate === self {
+                edgeGesture.delegate = previousEdgeDelegate
             }
-            didOverrideDelegate = false
+            if #available(iOS 26.0, *),
+               let contentGesture = nav.interactiveContentPopGestureRecognizer,
+               contentGesture.delegate === self {
+                contentGesture.delegate = previousContentDelegate
+            }
+            didOverrideDelegates = false
             observedNavigationController = nil
-            previousDelegate = nil
+            previousEdgeDelegate = nil
+            previousContentDelegate = nil
         }
 
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let nav = observedNavigationController else { return false }
-            return nav.viewControllers.count > 1
+            guard let nav = observedNavigationController ?? navigationController,
+                  nav.viewControllers.count > 1,
+                  nav.transitionCoordinator == nil else {
+                return false
+            }
+            if let stackEntry = stackEntryViewController(in: nav),
+               nav.topViewController !== stackEntry {
+                return false
+            }
+            if let pan = gestureRecognizer as? UIPanGestureRecognizer {
+                let translation = pan.translation(in: pan.view)
+                let isRTL = nav.view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                let isEdgeGesture = gestureRecognizer === nav.interactivePopGestureRecognizer
+                return Self.shouldBeginInteractivePop(
+                    translation: translation,
+                    isRTL: isRTL,
+                    isEdgeGesture: isEdgeGesture
+                )
+            }
+            return true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let nav = observedNavigationController ?? navigationController,
+                  nav.viewControllers.count > 1 else {
+                return false
+            }
+            if gestureRecognizer === nav.interactivePopGestureRecognizer {
+                return true
+            }
+            return Self.shouldContentPopReceiveTouch(on: touch.view, boundedBy: nav.view)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            guard let nav = observedNavigationController ?? navigationController else {
+                return false
+            }
+            // 左缘返回手势优先于列表滚动及其他平移手势，防止 List 抢占左缘右滑。
+            if gestureRecognizer === nav.interactivePopGestureRecognizer,
+               otherGestureRecognizer is UIPanGestureRecognizer {
+                return true
+            }
+            return false
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            guard let nav = observedNavigationController ?? navigationController else {
+                return false
+            }
+            if #available(iOS 26.0, *),
+               gestureRecognizer === nav.interactiveContentPopGestureRecognizer {
+                if otherGestureRecognizer === nav.interactivePopGestureRecognizer {
+                    return true
+                }
+                if let scrollView = otherGestureRecognizer.view as? UIScrollView,
+                   otherGestureRecognizer === scrollView.panGestureRecognizer {
+                    let isRTL = nav.view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                    return Self.shouldYieldToHorizontalScrollView(scrollView, isRTL: isRTL)
+                }
+            }
+            return false
+        }
+
+        static func shouldBeginInteractivePop(
+            translation: CGPoint,
+            isRTL: Bool,
+            isEdgeGesture: Bool
+        ) -> Bool {
+            let primaryDelta = isRTL ? -translation.x : translation.x
+            guard primaryDelta >= 0 else { return false }
+            if isEdgeGesture {
+                return true
+            }
+            // 与 UIKit `_UINavigationInteractiveTransition.gestureRecognizerShouldBegin:` 保持一致：
+            // 触发初期 translation 可能仍为 (0, 0)（由 `_UIParallaxTransitionPanGestureRecognizer`
+            // 内部 hysteresis 与 `exceededYTranslation` 先行把关）；已有位移时要求水平分量不小于纵向，
+            // 避免内容区手势劫持列表纵向滚动。
+            return abs(translation.x) >= abs(translation.y)
+        }
+
+        static func shouldContentPopReceiveTouch(
+            on touchedView: UIView?,
+            boundedBy containerView: UIView?
+        ) -> Bool {
+            var current = touchedView
+            while let view = current, view !== containerView {
+                if view is UISlider || view is UISwitch {
+                    return false
+                }
+                if let textField = view as? UITextField, textField.isFirstResponder {
+                    return false
+                }
+                if let textView = view as? UITextView, textView.isEditable || textView.isSelectable {
+                    return false
+                }
+                current = view.superview
+            }
+            return true
+        }
+
+        static func shouldYieldToHorizontalScrollView(
+            _ scrollView: UIScrollView,
+            isRTL: Bool
+        ) -> Bool {
+            guard scrollView.isScrollEnabled,
+                  scrollView.contentSize.width > scrollView.bounds.width + 1 else {
+                return false
+            }
+            if isRTL {
+                let maxOffsetX = scrollView.contentSize.width
+                    - scrollView.bounds.width
+                    + scrollView.adjustedContentInset.right
+                return scrollView.contentOffset.x < maxOffsetX - 1
+            }
+            let minOffsetX = -scrollView.adjustedContentInset.left
+            return scrollView.contentOffset.x > minOffsetX + 1
+        }
+
+        private func stackEntryViewController(in nav: UINavigationController) -> UIViewController? {
+            var current: UIViewController? = self
+            while let candidate = current {
+                if candidate.parent === nav {
+                    return candidate
+                }
+                current = candidate.parent
+            }
+            return nil
         }
     }
 }
