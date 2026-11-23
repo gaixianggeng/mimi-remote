@@ -432,9 +432,7 @@ extension UserFacingError {
         let bridgeStatus = data?["bridgeStatus"]?.stringValue?.lowercased()
         let loweredMessage = appServerError.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if code == "agy_authentication_required" || bridgeStatus == "agy_signed_out" {
-            return interfaceIsChinese
-                ? "电脑上的 Antigravity CLI 尚未登录。请在终端运行 agy 完成登录，然后重试。"
-                : "Antigravity CLI is not signed in on your computer. Run `agy` in Terminal to sign in, then try again."
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_message")
         }
         if let bridgeStatus, ["agy_unsupported", "agy_missing", "claude_unsupported"].contains(bridgeStatus) {
             let cliVersion = data?["cliVersion"]?.stringValue
@@ -450,9 +448,7 @@ extension UserFacingError {
             return diagnostic.localizedMessage
         }
         if loweredMessage.contains("authentication required") {
-            return interfaceIsChinese
-                ? "电脑上的运行时尚未登录。请在电脑终端完成登录，然后重试。"
-                : "Sign-in is required on your computer. Sign in to the CLI in Terminal and try again."
+            return L10n.text("ui.error_runtime_authentication_required")
         }
         return nil
     }
