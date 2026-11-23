@@ -755,6 +755,7 @@ struct WorkbenchLayout: Equatable {
         let max: CGFloat
     }
 
+    let containerWidth: CGFloat
     let projectColumn: ColumnWidth
     let inspectorColumn: ColumnWidth
     let titleMaxWidth: CGFloat
@@ -784,6 +785,7 @@ struct WorkbenchLayout: Equatable {
         isPhone: Bool = false,
         keepsCompactNavigation: Bool? = nil
     ) {
+        self.containerWidth = containerWidth
         self.isPhone = isPhone
         let usesCompactMetrics = horizontalSizeClass == .compact || containerWidth < 760
         // 768pt 的旧款 iPad mini 竖屏仍是 regular size class，但双栏会自动退成 detail-only。
@@ -1644,6 +1646,15 @@ enum SessionNavigationTitlePresentation {
         return project.isEmpty ? L10n.text("ui.session") : project
     }
 
+    static func showsWorkspaceIcon(layout: WorkbenchLayout, projectID: String?) -> Bool {
+        guard layout.usesPhoneIntegratedBottomChrome,
+              let projectID = projectID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !projectID.isEmpty else {
+            return false
+        }
+        return true
+    }
+
     static func subtitleFont(layout: WorkbenchLayout, themeStore: ThemeStore) -> Font {
         if layout.usesCompactPhoneNavigationTypography {
             // iPhone 与对话消息“发送 / 完成时间”复用同一 caption2 排版规格。
@@ -1670,6 +1681,11 @@ private struct WorkbenchHasCompactTabBarKey: EnvironmentKey {
 /// 两个平台都为真。页面要决定「右下角能不能放浮起按钮」时必须问这一个——
 /// 底部已经站着一条浮动 Tab 栏时再浮一颗按钮，同一个角上叠两层浮动材质，层级会塌。
 private struct WorkbenchHasBottomTabBarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+/// iPhone 会话详情是否启用悬浮胶囊顶栏；启用后顶部由胶囊自身提供玻璃材质，不再叠加全宽加深雾带。
+private struct WorkbenchUsesFloatingCapsuleHeaderKey: EnvironmentKey {
     static let defaultValue = false
 }
 
@@ -1707,6 +1723,11 @@ extension EnvironmentValues {
     var workbenchHasBottomTabBar: Bool {
         get { self[WorkbenchHasBottomTabBarKey.self] }
         set { self[WorkbenchHasBottomTabBarKey.self] = newValue }
+    }
+
+    var workbenchUsesFloatingCapsuleHeader: Bool {
+        get { self[WorkbenchUsesFloatingCapsuleHeaderKey.self] }
+        set { self[WorkbenchUsesFloatingCapsuleHeaderKey.self] = newValue }
     }
 }
 

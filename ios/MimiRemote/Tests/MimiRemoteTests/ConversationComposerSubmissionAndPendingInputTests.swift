@@ -272,6 +272,35 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testPhoneComposerContextualPlaceholderIncludesWorkspaceNameOnlyInDefaultPhoneMode() {
+        let fallback = L10n.text("ui.enter_tasks_or_follow_up_instructions")
+        XCTAssertEqual(
+            PhoneComposerPresentation.contextualPlaceholder(
+                defaultPlaceholder: fallback,
+                targetName: "mimi-remote",
+                usesContextualPrompt: true
+            ),
+            L10n.format("ui.ask_context_value", "mimi-remote")
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.contextualPlaceholder(
+                defaultPlaceholder: fallback,
+                targetName: "   ",
+                usesContextualPrompt: true
+            ),
+            fallback
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.contextualPlaceholder(
+                defaultPlaceholder: fallback,
+                targetName: "mimi-remote",
+                usesContextualPrompt: false
+            ),
+            fallback,
+            "iPad 或计划/目标/运行引导态应继续沿用对应模式占位提示"
+        )
+    }
+
     func testPhoneKeyboardVisibilityFiltersHardwareBarAndOffscreenFrames() {
         let portraitScreen = CGRect(x: 0, y: 0, width: 393, height: 852)
         // 正常软键盘（高 336pt）占用屏幕底部。

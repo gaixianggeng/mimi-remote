@@ -8,6 +8,9 @@ struct ConversationTimelineView: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.defaultMinListRowHeight) private var defaultMinListRowHeight
+    @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
+    @Environment(\.locale) private var locale
+    @Environment(\.calendar) private var calendar
     let layout: ConversationLayout
     let explicitSessionID: SessionID?
     let allowsTopUnderlap: Bool
@@ -19,6 +22,7 @@ struct ConversationTimelineView: View {
     @State private var timelineItemCache = ConversationTimelineItemCache()
     @State private var presentedSnapshot = ConversationTimelineSnapshot.empty
     @State private var scrollController = ConversationTimelineScrollController()
+    @State private var timestampFormattingGeneration = 0
     @Environment(\.conversationDetailedTranscript) private var detailedTranscript
 
     private var showsDetailedTranscript: Bool { detailedTranscript.wrappedValue }
@@ -52,9 +56,10 @@ struct ConversationTimelineView: View {
         let timelineProvider = ConversationTimelineProvider(
             runtimeProvider: displayedSession?.runtimeProvider ?? displayedSession?.source
         )
-        // body 只读来源与已发布列表；投影、旧位置捕获和发布在同一个 onChange 中完成。
+        // body 只读来源与已发布列表；投影、时间分隔、旧位置捕获和发布在同一个 onChange 中完成。
         let timelineSnapshot = presentedSnapshot.scope == scope ? presentedSnapshot : .empty
         let timelineItems = timelineSnapshot.rows
+        let timestampSeparators = timelineSnapshot.timestampSeparators
         let timelineListIdentity = ConversationTimelineListIdentity(
             scope: scope,
             hasTimelineContent: !timelineItems.isEmpty,
@@ -79,6 +84,9 @@ struct ConversationTimelineView: View {
             )
         }
         let activeTurn = liveStatus.map { _ in ConversationTimelineActiveTurn(id: displayedSession?.activeTurnID) }
+        let effectiveTimestampLocale = ConversationTimestampSeparatorPolicy.effectiveLocale(
+            appLocale: locale
+        )
         let incomingIdentity = ConversationTimelineSnapshotIdentity(
             scope: scope,
             revision: source.revision,
@@ -87,7 +95,12 @@ struct ConversationTimelineView: View {
             showsDetailedTranscript: showsDetailedTranscript,
             expandedProcessMessageIDs: expandedProcessMessageIDs,
             collapsedProcessMessageIDs: collapsedProcessMessageIDs,
-            activeTurn: activeTurn
+            activeTurn: activeTurn,
+            timestampFormattingGeneration: timestampFormattingGeneration,
+            localeIdentifier: effectiveTimestampLocale.identifier,
+            hourCycle: effectiveTimestampLocale.hourCycle,
+            calendarIdentifier: calendar.identifier,
+            timeZoneIdentifier: calendar.timeZone.identifier
         )
         let isLoadingEarlierHistory = sessionStore.isLoadingEarlierHistory(sessionID: displayedSessionID)
         let shouldShowInlineHistoryLoading = Self.shouldShowInlineHistoryLoading(
@@ -126,7 +139,9 @@ struct ConversationTimelineView: View {
                                     item,
                                     provider: timelineProvider,
                                     activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-                                    crossSessionOriginMessageID: crossSessionOriginMessageID
+                                    crossSessionOriginMessageID: crossSessionOriginMessageID,
+                                    timestampSeparator: timestampSeparators[item.id],
+                                    tokens: tokens
                                 )
                             }
                             if let tailStatus {
@@ -211,14 +226,16 @@ struct ConversationTimelineView: View {
 
 
                 if shouldShowReturnToTailButton(timelineItems: timelineItems) {
+                    let isCompactPhone = phoneKeyboardVisible != nil
                     ConversationReturnToTailButton(
                         tokens: tokens,
-                        accessibilityLabel: returnToTailAccessibilityLabel
+                        accessibilityLabel: returnToTailAccessibilityLabel,
+                        isCompactPhone: isCompactPhone
                     ) {
                         scrollController.returnToTail()
                     }
                     // 放在输入区正上方的视觉中轴，不与用户气泡或右侧滚动条争抢空间。
-                    .padding(.bottom, 10)
+                    .padding(.bottom, isCompactPhone ? 6 : 10)
                 }
 
                 if !isTimelineReadable {
@@ -239,6 +256,15 @@ struct ConversationTimelineView: View {
             .onAppear {
                 publishTimelineSource(source, provider: timelineProvider, activeTurn: activeTurn)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+                timestampFormattingGeneration &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+                timestampFormattingGeneration &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+                timestampFormattingGeneration &+= 1
+            }
             .environment(\.conversationMediaLayoutWillChange, scrollController.mediaLayoutWillChange)
             .environment(\.conversationBindAnchorView, anchorViewBinder())
             .environment(\.conversationTimelineIsScrolling, scrollController.isInteracting)
@@ -253,14 +279,37 @@ struct ConversationTimelineView: View {
         _ item: ConversationTimelineItem,
         provider: ConversationTimelineProvider,
         activeUserDeliveryMessageID: UUID?,
-        crossSessionOriginMessageID: UUID?
+        crossSessionOriginMessageID: UUID?,
+        timestampSeparator: String?,
+        tokens: ThemeTokens
     ) -> some View {
-        timelineRow(
-            item,
-            provider: provider,
-            activeUserDeliveryMessageID: activeUserDeliveryMessageID,
-            crossSessionOriginMessageID: crossSessionOriginMessageID
-        )
+        Group {
+            if let timestampSeparator {
+                VStack(spacing: 12) {
+                    Text(timestampSeparator)
+                        .font(themeStore.uiFont(.caption2, weight: .medium))
+                        .foregroundStyle(tokens.tertiaryText)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+                        .accessibilityIdentifier("conversation.timeline.timestampSeparator")
+                    timelineRow(
+                        item,
+                        provider: provider,
+                        activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                        crossSessionOriginMessageID: crossSessionOriginMessageID
+                    )
+                }
+            } else {
+                timelineRow(
+                    item,
+                    provider: provider,
+                    activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                    crossSessionOriginMessageID: crossSessionOriginMessageID
+                )
+            }
+        }
         .modifier(ConversationHistoryAnchorGeometryModifier(
             // List 只实例化视口附近的少量 cell。持续量这些真实行，才能在派生行 ID
             // 重建时仍按 raw message UUID 选中锚点。
@@ -675,6 +724,9 @@ struct ConversationTimelineView: View {
             "conversation_timeline_projection",
             metadata: "messages=\(source.messages.count) revision=\(source.revision) interacting=\(scrollController.isInteracting)"
         )
+        let effectiveTimestampLocale = ConversationTimestampSeparatorPolicy.effectiveLocale(
+            appLocale: locale
+        )
         let snapshot = timelineItemCache.snapshot(
             from: source,
             provider: provider,
@@ -682,7 +734,9 @@ struct ConversationTimelineView: View {
             expandedProcessMessageIDs: presentedSnapshot.scope == source.scope ? expandedProcessMessageIDs : [],
             collapsedProcessMessageIDs: presentedSnapshot.scope == source.scope ? collapsedProcessMessageIDs : [],
             activeTurn: activeTurn,
-            suspendingUpdates: scrollController.isInteracting
+            suspendingUpdates: scrollController.isInteracting,
+            calendar: calendar,
+            locale: effectiveTimestampLocale
         )
         let reusedPresentedSnapshot = snapshot.scope == presentedSnapshot.scope
             && snapshot.revision == presentedSnapshot.revision
@@ -791,6 +845,11 @@ private struct ConversationTimelineSnapshotIdentity: Equatable {
     let expandedProcessMessageIDs: Set<UUID>
     let collapsedProcessMessageIDs: Set<UUID>
     let activeTurn: ConversationTimelineActiveTurn?
+    let timestampFormattingGeneration: Int
+    let localeIdentifier: String
+    let hourCycle: Locale.HourCycle
+    let calendarIdentifier: Calendar.Identifier
+    let timeZoneIdentifier: String
 }
 
 struct ConversationHistoryAnchorGeometryModifier: ViewModifier {
@@ -939,20 +998,56 @@ private struct ConversationTimelineStabilizingCover: UIViewRepresentable {
     }
 }
 
+enum ConversationReturnToTailButtonMetrics: Equatable {
+    struct Spec: Equatable {
+        let visualDiameter: CGFloat
+        let hitDiameter: CGFloat
+        let symbolName: String
+        let symbolSize: CGFloat
+        let symbolWeight: Font.Weight
+    }
+
+    static func resolve(isCompactPhone: Bool) -> Spec {
+        if isCompactPhone {
+            // iPhone 输入框上方空间紧凑，视觉收精为 36pt 轻盈圆盘，仍保持 44pt 触控热区。
+            return Spec(
+                visualDiameter: 36,
+                hitDiameter: 44,
+                symbolName: "chevron.down",
+                symbolSize: 14,
+                symbolWeight: .semibold
+            )
+        }
+        return Spec(
+            visualDiameter: 48,
+            hitDiameter: 48,
+            symbolName: "arrow.down",
+            symbolSize: 17,
+            symbolWeight: .medium
+        )
+    }
+}
+
 /// 回到底部按钮和滚动实现放在同一文件，避免为单个私有控件扩张工程文件清单。
 private struct ConversationReturnToTailButton: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     let tokens: ThemeTokens
     let accessibilityLabel: String
+    var isCompactPhone = false
     let action: () -> Void
+
+    private var metrics: ConversationReturnToTailButtonMetrics.Spec {
+        ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: isCompactPhone)
+    }
 
     var body: some View {
         Button(action: action) {
             buttonLabel
+                .frame(width: metrics.hitDiameter, height: metrics.hitDiameter)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .contentShape(Circle())
         .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier("conversation.returnToTail")
     }
@@ -975,16 +1070,16 @@ private struct ConversationReturnToTailButton: View {
             }
             .shadow(
                 color: Color.black.opacity(reduceTransparency ? 0.12 : 0.07),
-                radius: 6,
+                radius: isCompactPhone ? 5 : 6,
                 y: 2
             )
     }
 
     private var baseLabel: some View {
-        Image(systemName: "arrow.down")
-            .font(.system(size: 17, weight: .medium))
+        Image(systemName: metrics.symbolName)
+            .font(.system(size: metrics.symbolSize, weight: metrics.symbolWeight))
             .foregroundStyle(tokens.primaryText)
-            .frame(width: 48, height: 48)
+            .frame(width: metrics.visualDiameter, height: metrics.visualDiameter)
     }
 }
 

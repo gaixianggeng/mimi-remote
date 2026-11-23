@@ -48,11 +48,24 @@ struct MessageTextStyle: Equatable {
     var codeFontPreset: ThemeCodeFontPreset = .systemMono
 
     var foreground: UIColor { UIColor(markdown.textColor) }
+    var secondaryForeground: UIColor { UIColor(markdown.secondaryColor) }
     var linkColor: UIColor { UIColor(markdown.linkColor) }
 
     func headingFont(level: Int) -> UIFont {
         let sizes: [CGFloat] = [24, 21, 19, 18, 17]
-        return font(size: sizes[min(max(level - 1, 0), sizes.count - 1)], weight: .semibold)
+        let weight: UIFont.Weight = level <= 2 ? .bold : .semibold
+        return font(size: sizes[min(max(level - 1, 0), sizes.count - 1)], weight: weight)
+    }
+
+    func listMarkerFont(ordered: Bool) -> UIFont {
+        if ordered {
+            let pointSize = markdown.scaled(17)
+            if fontPreset == .system {
+                return .monospacedDigitSystemFont(ofSize: pointSize, weight: .regular)
+            }
+            return font(size: 17, weight: .regular)
+        }
+        return font(size: 17, weight: .semibold)
     }
 
     func font(size: CGFloat = 17, weight: UIFont.Weight = .regular, code: Bool = false) -> UIFont {
@@ -73,20 +86,38 @@ struct MessageTextStyle: Equatable {
         return font.fontDescriptor.withDesign(design).map { UIFont(descriptor: $0, size: pointSize) } ?? font
     }
 
-    func attributes(font: UIFont? = nil, indent: CGFloat = 0) -> [NSAttributedString.Key: Any] {
+    func attributes(
+        font: UIFont? = nil,
+        foreground: UIColor? = nil,
+        indent: CGFloat = 0,
+        spacingBefore: CGFloat = 0,
+        spacingAfter: CGFloat? = nil
+    ) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = markdown.textLineSpacing
-        paragraph.paragraphSpacing = markdown.blockSpacing
+        paragraph.paragraphSpacingBefore = spacingBefore
+        paragraph.paragraphSpacing = spacingAfter ?? markdown.blockSpacing
         paragraph.firstLineHeadIndent = indent
         paragraph.headIndent = indent
-        return [.font: font ?? self.font(), .foregroundColor: foreground, .paragraphStyle: paragraph]
+        return [.font: font ?? self.font(), .foregroundColor: foreground ?? self.foreground, .paragraphStyle: paragraph]
     }
 
-    func inline(_ inline: MarkdownInlineText, font: UIFont? = nil, indent: CGFloat = 0) -> NSAttributedString {
+    func inline(
+        _ inline: MarkdownInlineText,
+        font: UIFont? = nil,
+        indent: CGFloat = 0,
+        spacingBefore: CGFloat = 0,
+        spacingAfter: CGFloat? = nil
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
         for run in inline.attributed.runs {
             var runFont = font ?? self.font()
-            var attributes = attributes(font: runFont, indent: indent)
+            var attributes = attributes(
+                font: runFont,
+                indent: indent,
+                spacingBefore: spacingBefore,
+                spacingAfter: spacingAfter
+            )
             let intent = run.inlinePresentationIntent
             if intent?.contains(.code) == true {
                 runFont = self.font(size: 15, code: true)
@@ -127,14 +158,31 @@ private struct MessageTextDocumentBuilder {
         case .paragraph(let inline):
             appendParagraph(style.inline(inline, indent: indent))
         case .heading(let level, let inline):
-            appendParagraph(style.inline(inline, font: style.headingFont(level: level), indent: indent))
+            // 章节标题保持上宽下紧：非首段增加前段距与上文分离，下段距收紧以归属紧随内容。
+            let spacingBefore: CGFloat = text.length > 0 ? (level <= 2 ? 10 : 6) : 0
+            let spacingAfter: CGFloat = min(style.markdown.blockSpacing, 6)
+            appendParagraph(style.inline(
+                inline,
+                font: style.headingFont(level: level),
+                indent: indent,
+                spacingBefore: spacingBefore,
+                spacingAfter: spacingAfter
+            ))
         case .bulletList(let items, let tight):
             appendList(items, start: nil, tight: tight, indent: indent)
         case .orderedList(let start, let items, let tight):
             appendList(items, start: start, tight: tight, indent: indent)
         case .taskList(let items):
-            for item in items {
-                appendListItem(item.blocks, marker: item.checked ? "☑" : "☐", tight: true, indent: indent)
+            let markers = items.map { $0.checked ? "☑" : "☐" }
+            let markerWidth = resolvedListMarkerWidth(markers: markers, ordered: false)
+            for (item, marker) in zip(items, markers) {
+                appendListItem(
+                    item.blocks,
+                    marker: marker,
+                    markerWidth: markerWidth,
+                    tight: true,
+                    indent: indent
+                )
             }
         case .codeBlock(let language, let code):
             appendCode(code, language: language, indent: indent)
@@ -154,16 +202,51 @@ private struct MessageTextDocumentBuilder {
     }
 
     private mutating func appendList(_ items: [MarkdownListItem], start: Int?, tight: Bool, indent: CGFloat) {
-        for (index, item) in items.enumerated() {
-            let marker = item.checkbox.map { $0 ? "☑" : "☐" } ?? start.map { "\($0 + index)." } ?? "•"
-            appendListItem(item.blocks, marker: marker, tight: tight, indent: indent)
+        let markers = items.enumerated().map { index, item in
+            item.checkbox.map { $0 ? "☑" : "☐" } ?? start.map { "\($0 + index)." } ?? "•"
+        }
+        let isOrdered = start != nil && markers.contains { $0.last == "." }
+        let markerWidth = resolvedListMarkerWidth(markers: markers, ordered: isOrdered)
+        for (item, marker) in zip(items, markers) {
+            appendListItem(
+                item.blocks,
+                marker: marker,
+                markerWidth: markerWidth,
+                tight: tight,
+                indent: indent
+            )
         }
     }
 
-    private mutating func appendListItem(_ blocks: [MarkdownBlock], marker: String, tight: Bool, indent: CGFloat) {
-        let markerWidth: CGFloat = marker.last == "." ? 30 : 22
+    /// 序号/符号列宽按同列表最大标记字形宽度自适应，同时保留 30pt（有序）/ 22pt（无序）最小基线，
+    /// 避免三位序号（如 `100.`）或大字号下超出 tabStop 把正文挤到下一行。
+    private func resolvedListMarkerWidth(markers: [String], ordered: Bool) -> CGFloat {
+        let baseWidth: CGFloat = ordered ? 30 : 22
+        let markerGap: CGFloat = max(6, ceil(style.markdown.scaled(6)))
+        let maxGlyphWidth = markers.reduce(CGFloat(0)) { currentMax, marker in
+            let font = style.listMarkerFont(ordered: marker.last == ".")
+            let width = (marker as NSString).size(withAttributes: [.font: font]).width
+            return max(currentMax, width)
+        }
+        return max(baseWidth, ceil(maxGlyphWidth) + markerGap)
+    }
+
+    private mutating func appendListItem(
+        _ blocks: [MarkdownBlock],
+        marker: String,
+        markerWidth: CGFloat,
+        tight: Bool,
+        indent: CGFloat
+    ) {
+        let isOrdered = marker.last == "."
+        let markerColor: UIColor = marker == "☑" ? style.linkColor : style.secondaryForeground
+        let markerAttributes = style.attributes(
+            font: style.listMarkerFont(ordered: isOrdered),
+            foreground: markerColor,
+            indent: indent
+        )
         if case .paragraph(let inline) = blocks.first?.kind {
-            let item = NSMutableAttributedString(string: marker + "\t", attributes: style.attributes())
+            let item = NSMutableAttributedString(string: marker + "\t", attributes: markerAttributes)
             item.append(style.inline(inline))
             let paragraph = NSMutableParagraphStyle()
             paragraph.firstLineHeadIndent = indent
@@ -175,7 +258,7 @@ private struct MessageTextDocumentBuilder {
             appendParagraph(item)
             append(Array(blocks.dropFirst()), indent: indent + markerWidth)
         } else {
-            appendParagraph(NSAttributedString(string: marker, attributes: style.attributes(indent: indent)))
+            appendParagraph(NSAttributedString(string: marker, attributes: markerAttributes))
             append(blocks, indent: indent + markerWidth)
         }
     }

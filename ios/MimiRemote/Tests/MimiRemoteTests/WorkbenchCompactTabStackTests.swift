@@ -589,6 +589,627 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         add(attachment)
     }
 
+    @MainActor
+    func testPhoneSessionNavigationTitleShowsWorkspaceIconOnlyOnPhoneWithProject() {
+        let phoneLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: false,
+            isPhone: true
+        )
+        let compactPadLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: true,
+            isPhone: false
+        )
+        let widePadLayout = WorkbenchLayout(
+            containerWidth: 1032,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+
+        XCTAssertTrue(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: "proj_mimi"
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: "   "
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: phoneLayout,
+                projectID: nil
+            )
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: compactPadLayout,
+                projectID: "proj_mimi"
+            ),
+            "窄窗 iPad 顶栏保持原有纯文字排版"
+        )
+        XCTAssertFalse(
+            SessionNavigationTitlePresentation.showsWorkspaceIcon(
+                layout: widePadLayout,
+                projectID: "proj_mimi"
+            ),
+            "宽屏 iPad 顶栏保持原有纯文字排版"
+        )
+    }
+
+    func testPhoneFloatingCapsuleMetricsEnablementAndBounds() {
+        let phoneLayout = WorkbenchLayout(
+            containerWidth: 402,
+            horizontalSizeClass: .compact,
+            isPad: false,
+            isPhone: true
+        )
+        let compactPadLayout = WorkbenchLayout(
+            containerWidth: 375,
+            horizontalSizeClass: .compact,
+            isPad: true,
+            isPhone: false
+        )
+        let miniPortraitPadLayout = WorkbenchLayout(
+            containerWidth: 744,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+        let widePadLayout = WorkbenchLayout(
+            containerWidth: 1032,
+            horizontalSizeClass: .regular,
+            isPad: true,
+            isPhone: false
+        )
+
+        XCTAssertTrue(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: phoneLayout))
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: compactPadLayout), "窄窗 iPad 不启用悬浮玻璃顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: miniPortraitPadLayout), "竖屏 iPad mini 不启用悬浮玻璃顶栏")
+        XCTAssertFalse(PhoneSessionFloatingCapsuleMetrics.isEnabled(layout: widePadLayout), "宽屏 iPad 不启用悬浮玻璃顶栏")
+
+        // 三件等高（44pt），中间胶囊与左右按钮最小间距 8pt，最大宽度按 min(304, 可用宽度) 兜底。
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.itemHeight, 44)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.buttonSize, 44)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin, 16)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.interItemSpacing, 8)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.maximumWidth, 304)
+
+        // 可用宽度 = containerWidth - 2 * (16 + 44 + 8) = containerWidth - 136
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.availableCenterWidth(containerWidth: 402), 266)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402), 266)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 375), 239)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 440), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 520), 304)
+        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320), 184)
+    }
+
+    @MainActor
+    func testPhoneFloatingCapsuleHeaderThreePieceLayoutAlignmentAndTruncation() throws {
+        let defaultsSuite = "PhoneFloatingCapsuleHeaderTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let tokens = themeStore.tokens(for: .light)
+
+        func measureHeader(
+            title: String,
+            subtitle: String,
+            containerWidth: CGFloat
+        ) -> PhoneSessionFloatingHeaderLayoutSnapshot {
+            var measured = PhoneSessionFloatingHeaderLayoutSnapshot()
+            let data = SessionNavigationTitleDisplayData(
+                title: title,
+                subtitle: subtitle,
+                showsStatus: false,
+                subtitleColor: tokens.tertiaryText,
+                subtitleFont: themeStore.uiFont(.caption2, weight: .medium),
+                accessibilityValue: subtitle,
+                workspaceIcon: .emoji("🐱")
+            )
+            let header = PhoneSessionFloatingCapsuleHeader(
+                data: data,
+                tokens: tokens,
+                availableWidth: containerWidth,
+                isMenuDisabled: false,
+                onBack: {},
+                onMeasuredLayout: { snapshot in
+                    measured = snapshot
+                },
+                moreMenuContent: {
+                    Button("Refresh") {}
+                }
+            )
+            .environment(\.colorScheme, .light)
+
+            let bounds = CGRect(x: 0, y: 0, width: containerWidth, height: 120)
+            let host = UIHostingController(rootView: header)
+            let window: UIWindow
+            if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                window = UIWindow(windowScene: scene)
+                window.frame = bounds
+            } else {
+                window = UIWindow(frame: bounds)
+            }
+            window.rootViewController = host
+            window.makeKeyAndVisible()
+            defer {
+                window.rootViewController = nil
+                window.isHidden = true
+            }
+            host.view.frame = bounds
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            host.view.layoutIfNeeded()
+            return measured
+        }
+
+        func assertThreePieceInvariants(
+            _ snapshot: PhoneSessionFloatingHeaderLayoutSnapshot,
+            expectedContainerWidth: CGFloat,
+            context: String,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            XCTAssertTrue(snapshot.isComplete, "\(context)：应测量到三件完整布局几何", file: file, line: line)
+            XCTAssertEqual(snapshot.containerWidth, expectedContainerWidth, accuracy: 1.0, context, file: file, line: line)
+
+            // 1. 左返回按钮：44×44 圆形，紧贴屏幕左边距（16pt）。
+            XCTAssertEqual(
+                snapshot.backButtonFrame.minX,
+                PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin,
+                accuracy: 1.0,
+                "\(context)：左返回按钮必须贴屏幕左边距",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.width,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.height,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+
+            // 2. 右更多按钮：44×44 圆形，紧贴屏幕右边距（16pt）。
+            XCTAssertEqual(
+                expectedContainerWidth - snapshot.moreButtonFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin,
+                accuracy: 1.0,
+                "\(context)：右菜单按钮必须贴屏幕右边距",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.width,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.height,
+                PhoneSessionFloatingCapsuleMetrics.buttonSize,
+                accuracy: 0.5,
+                context,
+                file: file,
+                line: line
+            )
+
+            // 3. 中间胶囊水平居中且不超过当前容器允许的最大宽度。
+            let resolvedMax = PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(
+                containerWidth: expectedContainerWidth
+            )
+            XCTAssertLessThanOrEqual(
+                snapshot.centerCapsuleFrame.width,
+                resolvedMax + 0.5,
+                "\(context)：中间胶囊宽度不得超过 \(resolvedMax)pt",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.centerCapsuleFrame.midX,
+                expectedContainerWidth / 2,
+                accuracy: 1.0,
+                "\(context)：中间胶囊必须水平居中",
+                file: file,
+                line: line
+            )
+
+            // 4. 三者不重叠且与左右按钮之间至少保留 8pt 间距。
+            XCTAssertFalse(
+                snapshot.backButtonFrame.intersects(snapshot.centerCapsuleFrame),
+                "\(context)：左按钮与中间胶囊不能重叠",
+                file: file,
+                line: line
+            )
+            XCTAssertFalse(
+                snapshot.centerCapsuleFrame.intersects(snapshot.moreButtonFrame),
+                "\(context)：中间胶囊与右按钮不能重叠",
+                file: file,
+                line: line
+            )
+            XCTAssertGreaterThanOrEqual(
+                snapshot.centerCapsuleFrame.minX - snapshot.backButtonFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.interItemSpacing - 0.5,
+                "\(context)：左按钮与中间胶囊间距必须 >= 8pt",
+                file: file,
+                line: line
+            )
+            XCTAssertGreaterThanOrEqual(
+                snapshot.moreButtonFrame.minX - snapshot.centerCapsuleFrame.maxX,
+                PhoneSessionFloatingCapsuleMetrics.interItemSpacing - 0.5,
+                "\(context)：中间胶囊与右按钮间距必须 >= 8pt",
+                file: file,
+                line: line
+            )
+
+            // 5. 三者高度一致且垂直居中对齐。
+            XCTAssertEqual(
+                snapshot.centerCapsuleFrame.height,
+                snapshot.backButtonFrame.height,
+                accuracy: 1.0,
+                "\(context)：中间胶囊应与左右圆形按钮高度一致",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.backButtonFrame.midY,
+                snapshot.centerCapsuleFrame.midY,
+                accuracy: 1.0,
+                "\(context)：左按钮与中间胶囊应垂直居中对齐",
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(
+                snapshot.moreButtonFrame.midY,
+                snapshot.centerCapsuleFrame.midY,
+                accuracy: 1.0,
+                "\(context)：右按钮与中间胶囊应垂直居中对齐",
+                file: file,
+                line: line
+            )
+        }
+
+        let shortSnapshot = measureHeader(
+            title: "dr eggbot v2",
+            subtitle: "mimi-remote",
+            containerWidth: 402
+        )
+        assertThreePieceInvariants(shortSnapshot, expectedContainerWidth: 402, context: "402pt 短标题")
+        XCTAssertLessThan(
+            shortSnapshot.centerCapsuleFrame.width,
+            PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 402) - 20,
+            "短标题胶囊应紧贴内容宽度，不撑满整个可用槽位"
+        )
+
+        let longSnapshot = measureHeader(
+            title: "这是一个非常非常长的会话标题用来验证悬浮胶囊顶栏在内容过长时会单行尾部截断而绝不撑破容器边界",
+            subtitle: "very-long-workspace-repository-name-with-deep-nested-subpath",
+            containerWidth: 402
+        )
+        assertThreePieceInvariants(longSnapshot, expectedContainerWidth: 402, context: "402pt 超长标题")
+        XCTAssertLessThanOrEqual(
+            abs(longSnapshot.centerCapsuleFrame.height - shortSnapshot.centerCapsuleFrame.height),
+            1.0,
+            "超长标题必须保持单行截断，不能折行撑高中间胶囊"
+        )
+
+        let wideLongSnapshot = measureHeader(
+            title: "这是一个非常非常长的会话标题用来验证宽屏容器下中间胶囊严格封顶在 304pt 上限",
+            subtitle: "mimi-remote",
+            containerWidth: 520
+        )
+        assertThreePieceInvariants(wideLongSnapshot, expectedContainerWidth: 520, context: "520pt 超长标题")
+        XCTAssertLessThanOrEqual(
+            wideLongSnapshot.centerCapsuleFrame.width,
+            PhoneSessionFloatingCapsuleMetrics.maximumWidth + 0.5,
+            "宽容器下中间胶囊宽度应严格封顶在 304pt"
+        )
+
+        let narrowLongSnapshot = measureHeader(
+            title: "这是一个非常非常长的会话标题用来验证极窄屏下三件绝不重叠且保持 8pt 间距",
+            subtitle: "mimi-remote",
+            containerWidth: 320
+        )
+        assertThreePieceInvariants(narrowLongSnapshot, expectedContainerWidth: 320, context: "320pt 超长标题")
+    }
+
+    @MainActor
+    func testNavigationInteractivePopEnablerSurvivesHiddenNavBarFirstEntryAndTabRestore() throws {
+        final class HostModel: ObservableObject {
+            @Published var selectedTab: Int = 0
+            @Published var path: [String] = []
+        }
+
+        struct TabNavigationHost: View {
+            @ObservedObject var model: HostModel
+
+            var body: some View {
+                TabView(selection: $model.selectedTab) {
+                    NavigationStack(path: $model.path) {
+                        Color.clear
+                            .navigationDestination(for: String.self) { id in
+                                Color.clear
+                                    .navigationTitle(id)
+                                    .navigationBarTitleDisplayMode(.inline)
+                                    .toolbar(.hidden, for: .navigationBar)
+                                    .background {
+                                        NavigationInteractivePopEnabler()
+                                            .frame(width: 0, height: 0)
+                                    }
+                            }
+                    }
+                    .tabItem { Text("Sessions") }
+                    .tag(0)
+
+                    NavigationStack {
+                        Color.clear
+                    }
+                    .tabItem { Text("Workspaces") }
+                    .tag(1)
+                }
+            }
+        }
+
+        func findNavigationControllers(in vc: UIViewController) -> [UINavigationController] {
+            var result: [UINavigationController] = []
+            if let nav = vc as? UINavigationController {
+                result.append(nav)
+            }
+            for child in vc.children {
+                result.append(contentsOf: findNavigationControllers(in: child))
+            }
+            return result
+        }
+
+        func pump(_ seconds: TimeInterval = 0.25) {
+            RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        }
+
+        func waitUntil(timeout: TimeInterval = 2.0, _ condition: () -> Bool) {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+        }
+
+        let model = HostModel()
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let host = UIHostingController(rootView: TabNavigationHost(model: model))
+        let window: UIWindow
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            window = UIWindow(windowScene: scene)
+            window.frame = bounds
+        } else {
+            window = UIWindow(frame: bounds)
+        }
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.rootViewController = nil
+            window.isHidden = true
+        }
+        host.view.frame = bounds
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        pump(0.35)
+
+        // 1. 首次进入详情：隐藏原生导航栏后仍必须接管左缘及 iOS 26+ 内容区交互式返回手势。
+        model.path = ["session-1"]
+        waitUntil {
+            guard let n = findNavigationControllers(in: host).first(where: { $0.viewControllers.count == 2 }) else {
+                return false
+            }
+            return n.transitionCoordinator == nil
+                && n.interactivePopGestureRecognizer?.delegate is NavigationInteractivePopEnabler.Controller
+        }
+
+        let nav = try XCTUnwrap(
+            findNavigationControllers(in: host).first(where: { $0.viewControllers.count == 2 }),
+            "应找到已 push 详情页的 UINavigationController"
+        )
+        XCTAssertTrue(nav.isNavigationBarHidden, "详情页应隐藏原生导航栏")
+        let edgeGesture = try XCTUnwrap(nav.interactivePopGestureRecognizer)
+        XCTAssertTrue(edgeGesture.isEnabled, "首次进详情后左缘返回手势必须保持启用")
+        let edgeDelegate = try XCTUnwrap(edgeGesture.delegate as? NavigationInteractivePopEnabler.Controller)
+        XCTAssertTrue(
+            edgeDelegate.gestureRecognizerShouldBegin(edgeGesture),
+            "首次进详情后左缘返回手势应允许开始"
+        )
+        let listPan = UIScrollView().panGestureRecognizer
+        XCTAssertTrue(
+            edgeDelegate.gestureRecognizer(edgeGesture, shouldBeRequiredToFailBy: listPan),
+            "左缘返回手势必须优先于列表滚动手势"
+        )
+        if #available(iOS 26.0, *) {
+            let contentGesture = try XCTUnwrap(nav.interactiveContentPopGestureRecognizer)
+            XCTAssertTrue(contentGesture.isEnabled, "iOS 26+ 首次进详情后内容区右滑返回手势必须保持启用")
+            XCTAssertTrue(
+                contentGesture.delegate === edgeDelegate,
+                "iOS 26+ 隐藏导航栏时内容区返回手势同样必须由 NavigationInteractivePopEnabler 接管"
+            )
+            XCTAssertTrue(
+                edgeDelegate.gestureRecognizerShouldBegin(contentGesture),
+                "iOS 26+ 首次进详情后内容区返回手势应允许开始"
+            )
+        }
+
+        // 2. 跨 Tab 切走再切回：恢复详情后两条手势仍必须保持接管与启用。
+        model.selectedTab = 1
+        pump(0.35)
+        model.selectedTab = 0
+        waitUntil {
+            nav.transitionCoordinator == nil
+                && nav.interactivePopGestureRecognizer?.delegate is NavigationInteractivePopEnabler.Controller
+        }
+
+        XCTAssertEqual(nav.viewControllers.count, 2)
+        XCTAssertTrue(edgeGesture.isEnabled, "跨 Tab 恢复后左缘返回手势必须保持启用")
+        XCTAssertTrue(
+            edgeGesture.delegate is NavigationInteractivePopEnabler.Controller,
+            "跨 Tab 恢复后左缘返回手势代理必须保持接管"
+        )
+        if #available(iOS 26.0, *) {
+            let contentGesture = try XCTUnwrap(nav.interactiveContentPopGestureRecognizer)
+            XCTAssertTrue(contentGesture.isEnabled, "跨 Tab 恢复后内容区右滑返回手势必须保持启用")
+            XCTAssertTrue(
+                contentGesture.delegate is NavigationInteractivePopEnabler.Controller,
+                "跨 Tab 恢复后内容区右滑返回手势代理必须保持接管"
+            )
+        }
+
+        // 3. 返回列表根页后应恢复系统原代理，避免根页卡死。
+        model.path = []
+        waitUntil {
+            nav.viewControllers.count == 1
+                && nav.transitionCoordinator == nil
+                && !(edgeGesture.delegate is NavigationInteractivePopEnabler.Controller)
+        }
+
+        XCTAssertEqual(nav.viewControllers.count, 1)
+        XCTAssertFalse(
+            edgeGesture.delegate is NavigationInteractivePopEnabler.Controller,
+            "回到根页后应释放自定义手势代理"
+        )
+        if #available(iOS 26.0, *),
+           let contentGesture = nav.interactiveContentPopGestureRecognizer {
+            XCTAssertFalse(
+                contentGesture.delegate is NavigationInteractivePopEnabler.Controller,
+                "回到根页后应释放内容区自定义手势代理"
+            )
+        }
+    }
+
+    @MainActor
+    func testNavigationInteractivePopDirectionAndGestureArbitrationRules() {
+        // LTR / RTL 方向判断、初始零位移放行与纵向滚动隔离。
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: .zero,
+                isRTL: false,
+                isEdgeGesture: false
+            ),
+            "触发初期零位移必须放行，与 UIKit 原生 interactiveTransition 行为一致"
+        )
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: 24, y: 2),
+                isRTL: false,
+                isEdgeGesture: false
+            )
+        )
+        XCTAssertFalse(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: 4, y: 30),
+                isRTL: false,
+                isEdgeGesture: false
+            ),
+            "内容区纵向滚动不得触发右滑返回"
+        )
+        XCTAssertFalse(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: -24, y: 0),
+                isRTL: false,
+                isEdgeGesture: false
+            )
+        )
+        XCTAssertTrue(
+            NavigationInteractivePopEnabler.Controller.shouldBeginInteractivePop(
+                translation: CGPoint(x: -24, y: 2),
+                isRTL: true,
+                isEdgeGesture: false
+            ),
+            "RTL 布局应镜像接受向左滑动返回"
+        )
+
+        // 内容区手势避开滑块、编辑中输入框及选区中的文本视图，但不拦截普通只读消息文本。
+        let container = UIView()
+        let slider = UISlider()
+        let readOnlyTextView = UITextView()
+        readOnlyTextView.isEditable = false
+        readOnlyTextView.isSelectable = false
+        let selectingTextView = UITextView()
+        selectingTextView.isEditable = false
+        selectingTextView.isSelectable = true
+        let editableTextView = UITextView()
+        editableTextView.isEditable = true
+        for child in [slider, readOnlyTextView, selectingTextView, editableTextView] {
+            container.addSubview(child)
+        }
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: slider, boundedBy: container))
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: editableTextView, boundedBy: container))
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: selectingTextView, boundedBy: container))
+        XCTAssertTrue(NavigationInteractivePopEnabler.Controller.shouldContentPopReceiveTouch(on: readOnlyTextView, boundedBy: container))
+
+        // 横向可滚动容器（如宽代码块/表格）未到前缘时让步，已到前缘或仅纵向滚动时不拦截返回。
+        let verticalScroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 600))
+        verticalScroll.contentSize = CGSize(width: 360, height: 1400)
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(verticalScroll, isRTL: false))
+
+        let horizontalScroll = UIScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 200))
+        horizontalScroll.contentSize = CGSize(width: 800, height: 200)
+        horizontalScroll.contentOffset = .zero
+        XCTAssertFalse(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(horizontalScroll, isRTL: false))
+        horizontalScroll.contentOffset = CGPoint(x: 48, y: 0)
+        XCTAssertTrue(NavigationInteractivePopEnabler.Controller.shouldYieldToHorizontalScrollView(horizontalScroll, isRTL: false))
+    }
+
+    func testPhoneFloatingHeaderAccessibilityValueUsesNonStaleStatusSummary() {
+        let runningTitle = L10n.text("ui.running")
+
+        let connected = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .connected,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(connected, runningTitle, "无秒级定时器的悬浮标题胶囊在连接正常时只播报稳定状态，不嵌入会过期的秒数")
+        XCTAssertFalse(connected.contains("00:"), "稳定无障碍摘要不得包含冻结的时钟读数")
+
+        let reconnecting = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .connecting,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(reconnecting, "\(runningTitle) · \(L10n.text("ui.live_status_reconnecting"))")
+
+        let disconnected = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: runningTitle,
+            webSocketStatus: .disconnected,
+            hasRuntimeActivity: true
+        )
+        XCTAssertEqual(disconnected, "\(runningTitle) · \(L10n.text("ui.live_status_disconnected"))")
+
+        let noRuntime = UnifiedWorkbenchShell.stableSessionTitleAccessibilityValue(
+            statusTitle: L10n.text("ui.pending_approval"),
+            webSocketStatus: .disconnected,
+            hasRuntimeActivity: false
+        )
+        XCTAssertEqual(noRuntime, L10n.text("ui.pending_approval"))
+    }
+
     private func assertSingleActiveDetailInvariant(
         _ state: WorkbenchNavigationState,
         file: StaticString = #filePath,

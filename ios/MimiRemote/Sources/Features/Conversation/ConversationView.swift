@@ -9,6 +9,7 @@ struct ConversationView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
     @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
+    @Environment(\.workbenchUsesFloatingCapsuleHeader) private var usesFloatingCapsuleHeader
     @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
     @Environment(\.phoneConversationDetailIsActive) private var isPhoneDetailActive
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
@@ -86,7 +87,9 @@ struct ConversationView: View {
                     ),
                     // 系统 soft edge 太弱，正文滚到标题后方仍能逐字辨读，紧凑导航再叠一层加深。
                     // 宽屏侧栏布局不叠：详情列顶部被提亮后会比相邻侧栏亮一档，界线压在分栏缝上。
-                    deepensTopScrollEdge: usesCompactNavigation
+                    // iPhone 悬浮胶囊顶栏也不叠全宽雾带：由居中玻璃胶囊直接折射后方滚过的内容，
+                    // 两侧保持清澈以突出悬浮感。
+                    deepensTopScrollEdge: usesCompactNavigation && !usesFloatingCapsuleHeader
                 )
             }
             // 测量层必须先占满 NavigationStack 实际分配的详情列，再把结果回写给

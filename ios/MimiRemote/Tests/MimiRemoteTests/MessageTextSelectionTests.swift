@@ -84,6 +84,244 @@ final class MessageTextSelectionTests: XCTestCase {
         XCTAssertFalse(MessageTextSelectionPolicy.copyText(document.text.string).contains("\u{fffc}"))
     }
 
+    func testOrderedListMarkersUseSecondaryColorAndHeadingsAddTopSpacing() throws {
+        let document = markdown("""
+        # 每日摘要
+
+        这是一段导语说明。
+
+        ## AI 资讯
+
+        1. **首个重点结论。** 后接常规字重正文。
+        2. **第二条结论。** 序号应当使用次级灰，突出加粗导语。
+        """)
+        let source = document.text.string as NSString
+
+        let firstHeadingRange = source.range(of: "每日摘要")
+        let firstHeadingParagraph = try XCTUnwrap(
+            document.text.attribute(.paragraphStyle, at: firstHeadingRange.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let firstHeadingFont = try XCTUnwrap(
+            document.text.attribute(.font, at: firstHeadingRange.location, effectiveRange: nil) as? UIFont
+        )
+        XCTAssertEqual(firstHeadingParagraph.paragraphSpacingBefore, 0, "首行标题不应增加多余顶部留白")
+        XCTAssertLessThan(firstHeadingParagraph.paragraphSpacing, style.markdown.blockSpacing)
+        XCTAssertTrue(firstHeadingFont.fontDescriptor.symbolicTraits.contains(.traitBold))
+
+        let sectionHeadingRange = source.range(of: "AI 资讯")
+        let sectionHeadingParagraph = try XCTUnwrap(
+            document.text.attribute(.paragraphStyle, at: sectionHeadingRange.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        XCTAssertEqual(sectionHeadingParagraph.paragraphSpacingBefore, 10, "章节二级标题应与上文拉开呼吸间距")
+
+        let markerRange = source.range(of: "1.")
+        let markerColor = try XCTUnwrap(
+            document.text.attribute(.foregroundColor, at: markerRange.location, effectiveRange: nil) as? UIColor
+        )
+        let leadRange = source.range(of: "首个重点结论。")
+        let leadColor = try XCTUnwrap(
+            document.text.attribute(.foregroundColor, at: leadRange.location, effectiveRange: nil) as? UIColor
+        )
+        let leadFont = try XCTUnwrap(
+            document.text.attribute(.font, at: leadRange.location, effectiveRange: nil) as? UIFont
+        )
+        XCTAssertEqual(markerColor, style.secondaryForeground)
+        XCTAssertEqual(leadColor, style.foreground)
+        XCTAssertTrue(leadFont.fontDescriptor.symbolicTraits.contains(.traitBold))
+    }
+
+    func testMultiDigitOrderedListMarkersKeepBodyOnSameLineAndAlignHangingIndent() throws {
+        let sourceMarkdown = """
+        98. 检查序号与正文的间距，正文应该保持一致的悬挂缩进。
+        99. 第二项验证下一行正文，尤其是文字较多时如何换行。
+        100. 三位数字开头的项目需要与上一行正文对齐，并且在折行之后继续维持同一条悬挂缩进基准线。
+        """
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sourceMarkdown).blocks)
+        view.apply(content: content, style: style)
+        let size = view.measuredSize(width: 320, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layoutIfNeeded()
+
+        let text = view.textStorage.string as NSString
+        let range98 = text.range(of: "98.")
+        let range99 = text.range(of: "99.")
+        let range100 = text.range(of: "100.")
+        let range100Body = text.range(of: "三位数字")
+        XCTAssertNotEqual(range100.location, NSNotFound)
+        XCTAssertNotEqual(range100Body.location, NSNotFound)
+
+        let paragraph98 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range98.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let paragraph99 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range99.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        let paragraph100 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range100.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        // 同列表内的 98.、99.、100. 必须共享按最大序号宽度计算出的同一悬挂缩进。
+        XCTAssertGreaterThan(paragraph100.headIndent, 30, "三位序号列宽必须超过旧固定 30pt")
+        XCTAssertEqual(paragraph98.headIndent, paragraph100.headIndent, accuracy: 0.1)
+        XCTAssertEqual(paragraph99.headIndent, paragraph100.headIndent, accuracy: 0.1)
+
+        // 真实排版验证：100. 与其正文首字「三位数字」必须位于同一行，不得被挤到下一行。
+        let layoutManager = view.layoutManager
+        let glyph100 = layoutManager.glyphIndexForCharacter(at: range100.location)
+        let glyph100Body = layoutManager.glyphIndexForCharacter(at: range100Body.location)
+        let line100 = layoutManager.lineFragmentRect(forGlyphAt: glyph100, effectiveRange: nil)
+        let line100Body = layoutManager.lineFragmentRect(forGlyphAt: glyph100Body, effectiveRange: nil)
+        XCTAssertEqual(line100.minY, line100Body.minY, accuracy: 0.5, "三位序号 100. 必须与正文保持同行")
+
+        // 折行续行的首个字形应严格对齐悬挂缩进位置。
+        let bodyStartLocation = layoutManager.location(forGlyphAt: glyph100Body)
+        XCTAssertEqual(bodyStartLocation.x, paragraph100.headIndent, accuracy: 1.5, "正文起点应对齐列表 tabStop 悬挂缩进")
+    }
+
+    func testOrderedAndBulletListMarkersAdaptWidthAtLargeFontScale() throws {
+        let largeStyle = MessageTextStyle(
+            markdown: .make(role: .assistant, colorScheme: .light, fontScale: 1.6)
+        )
+        let sourceMarkdown = """
+        99. 大字号下两位序号不能把正文挤到下一行。
+        100. 大字号下三位序号同样应保持与正文同行并正确对齐。
+
+        - 大字号下无序列表项目符号同样保持同行悬挂缩进。
+        """
+        let view = MessageTextView()
+        let content = MessageTextContent.markdown(MarkdownParser.shared.parse(sourceMarkdown).blocks)
+        view.apply(content: content, style: largeStyle)
+        let size = view.measuredSize(width: 340, fillsWidth: true)
+        view.frame = CGRect(origin: .zero, size: size)
+        view.layoutIfNeeded()
+
+        let text = view.textStorage.string as NSString
+        let range99 = text.range(of: "99.")
+        let range99Body = text.range(of: "大字号下两位")
+        let range100 = text.range(of: "100.")
+        let range100Body = text.range(of: "大字号下三位")
+        let rangeBullet = text.range(of: "•")
+        let rangeBulletBody = text.range(of: "大字号下无序")
+        XCTAssertNotEqual(range99.location, NSNotFound)
+        XCTAssertNotEqual(range100.location, NSNotFound)
+        XCTAssertNotEqual(rangeBullet.location, NSNotFound)
+
+        let paragraph100 = try XCTUnwrap(
+            view.textStorage.attribute(.paragraphStyle, at: range100.location, effectiveRange: nil) as? NSParagraphStyle
+        )
+        XCTAssertGreaterThan(paragraph100.headIndent, 50, "1.6x 大字号三位序号列宽应随字形宽度自适应扩大")
+
+        let lm = view.layoutManager
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range99.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range99Body.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下 99. 与正文必须同行"
+        )
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: range100Body.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下 100. 与正文必须同行"
+        )
+        XCTAssertEqual(
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: rangeBullet.location), effectiveRange: nil).minY,
+            lm.lineFragmentRect(forGlyphAt: lm.glyphIndexForCharacter(at: rangeBulletBody.location), effectiveRange: nil).minY,
+            accuracy: 0.5,
+            "大字号下无序项目符号与正文必须同行"
+        )
+    }
+
+    func testLongMarkdownAndCompactReturnToTailRenderInPhoneWidth() throws {
+        let suiteName = "MessageTextSelectionTests.grokbot.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let themeStore = ThemeStore(defaults: defaults)
+        let tokens = themeStore.tokens(for: .light)
+        let markdownStyle = MarkdownStyle.make(role: .assistant, colorScheme: .light, tokens: tokens)
+        let longReply = """
+        **AI 热门资讯和工具日报 · 2026年11月22日**
+
+        这份整理的是过去大约 24 到 36 小时里社区互动比较高的讨论，数字都来自原帖，没经官方确认的传言单独标出来了。
+
+        ## AI 资讯
+
+        1. **模型推理与缓存优化获得开发者积极反馈。** 官方表示新版本主打编程、科学与知识工作，在同类任务上成本降低约 50% 到 80%，[发布说明](https://example.com/release) · [社区点评](https://example.com/discussion)。
+        2. **IDE 同步扩大缓存并重置使用额度。** 工程团队表示缓存改进以后，同样的额度能多完成约 22% 的任务，[缓存说明](https://example.com/cache) · [额度重置](https://example.com/quota)。
+        3. **多模型对比评测引发持续热议。** 开发者重点关注长上下文代码重构与端侧响应速度。
+        """
+        let blocks = MarkdownParser.shared.parse(longReply).blocks
+        let metrics = ConversationReturnToTailButtonMetrics.resolve(isCompactPhone: true)
+
+        let preview = ZStack(alignment: .bottom) {
+            tokens.conversationCanvasBackground.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 14) {
+                Text("\(L10n.text("ui.today")) 10:55")
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                MessageMarkdownBody(blocks: blocks, style: markdownStyle, fillsWidth: true)
+                    .environmentObject(themeStore)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 96)
+
+            VStack(spacing: 6) {
+                Image(systemName: metrics.symbolName)
+                    .font(.system(size: metrics.symbolSize, weight: metrics.symbolWeight))
+                    .foregroundStyle(tokens.primaryText)
+                    .frame(width: metrics.visualDiameter, height: metrics.visualDiameter)
+                    .background { WorkbenchChromeMaterial(shape: Circle(), tokens: tokens) }
+                    .overlay { Circle().stroke(Color.black.opacity(0.10), lineWidth: 0.75) }
+                    .shadow(color: Color.black.opacity(0.07), radius: 5, y: 2)
+                    .frame(width: metrics.hitDiameter, height: metrics.hitDiameter)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(tokens.conversationPrimaryText)
+                        .frame(width: 34, height: 34)
+                        .background(Color.black.opacity(0.055), in: Circle())
+                    Text(L10n.format("ui.ask_context_value", "mimi-remote"))
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(tokens.conversationTertiaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "mic")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(tokens.conversationPrimaryText)
+                        .frame(width: 36, height: 36)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(tokens.inputBackground, in: Capsule(style: .continuous))
+                .overlay { Capsule(style: .continuous).strokeBorder(Color.black.opacity(0.09), lineWidth: 0.75) }
+                .shadow(color: Color.black.opacity(0.06), radius: 6, y: 2)
+                .padding(.horizontal, 8)
+            }
+            .padding(.bottom, 16)
+        }
+        .frame(width: 402, height: 760)
+        .environment(\.colorScheme, .light)
+
+        let controller = UIHostingController(rootView: preview)
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 760)
+        controller.view.frame = bounds
+        let window = UIWindow(frame: bounds)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        controller.view.layoutIfNeeded()
+
+        let textView = try XCTUnwrap(messageTextView(in: controller.view))
+        XCTAssertTrue(textView.textStorage.string.contains("AI 资讯"))
+        XCTAssertTrue(textView.textStorage.string.contains("1.\t"))
+        attachImage(of: controller.view, name: "grokbot-long-markdown-and-return-to-tail")
+    }
+
     func testPlainAndMarkdownParagraphsHaveSameTypography() throws {
         let content = "同样的正文，保持相同的行距。\n第二行继续阅读。"
         let plain = MessageTextDocument.plain(content, style: style)

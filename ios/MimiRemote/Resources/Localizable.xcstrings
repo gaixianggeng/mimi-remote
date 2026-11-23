@@ -4334,6 +4334,23 @@
         }
       }
     },
+    "ui.ask_context_value": {
+      "comment": "Contextual composer placeholder on iPhone naming the active workspace or conversation target.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ask %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "向 %@ 提问"
+          }
+        }
+      }
+    },
     "ui.assessment_time": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
