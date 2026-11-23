@@ -9,6 +9,13 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
+        if name.contains("FirstConnection") {
+            app.launchArguments = ["-app.language", "zh-Hans"]
+            app.launch()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25))
+            XCTAssertTrue(element("settings.devices.page").waitForExistence(timeout: 15))
+            return
+        }
         app.launchArguments = [
             "--debug-skip-pairing", "--debug-seed-store-ui",
             "--debug-open-devices", "-app.language", "zh-Hans"
@@ -360,6 +367,81 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         capture("managed-connection-devices")
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(element("settings.profile.debug-store-primary").waitForExistence(timeout: 10))
+    }
+
+    /// 首次连接页局域网配对失败后，必须展示清晰的本地化失败提示，并提供回到工作台（唤起底部 Tab 栏）的出口。
+    func testFirstConnectionLANFailureShowsWorkbenchExitAndRestoresTabBar() throws {
+        let previousClipboardItems = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousClipboardItems }
+
+        // 真正全新首次启动（无已保存电脑、无中转权益、未配对失败）不额外显示顶部退出按钮。
+        XCTAssertFalse(element("settings.firstConnection.enterWorkbench").exists)
+        XCTAssertFalse(element("settings.firstConnection.errorBanner").exists)
+        capture("r2-01-first-launch-clean")
+
+        // 写入不可达局域网链接（RFC 1918 私网地址）并触发粘贴配对。
+        UIPasteboard.general.string = "mimiremote://pair?endpoint=http%3A%2F%2F192.168.254.254%3A18787&token=test-token"
+        let paste = element("settings.connection.pasteConnectionInfo")
+        scrollTo(paste)
+        paste.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allowPaste = springboard.alerts.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "允许粘贴", "Allow Paste")
+        ).firstMatch
+        if allowPaste.waitForExistence(timeout: 3) {
+            allowPaste.tap()
+        }
+
+        // 配对失败后，导航栏右上角与顶部错误横幅均提供「稍后连接」出口，并给出局域网失败指引。
+        let topExit = element("settings.firstConnection.enterWorkbench")
+        XCTAssertTrue(topExit.waitForExistence(timeout: 30), "局域网配对失败后导航栏应提供稍后连接出口")
+        let list = app.collectionViews.firstMatch
+        for _ in 0..<4 where !element("settings.firstConnection.errorBanner").isHittable {
+            if list.exists { list.swipeDown() } else { app.swipeDown() }
+        }
+        let errorBanner = element("settings.firstConnection.errorBanner")
+        XCTAssertTrue(errorBanner.waitForExistence(timeout: 8), "顶部应展示局域网配对失败提示卡片")
+        let lanGuidance = errorBanner.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "局域网", "Wi-Fi")
+        ).firstMatch
+        XCTAssertTrue(lanGuidance.waitForExistence(timeout: 5), "失败提示应展示清晰的局域网连接指引，而不是剪贴板错误")
+        XCTAssertTrue(element("settings.firstConnection.errorEnterWorkbench").waitForExistence(timeout: 5))
+        capture("r2-02-lan-pairing-failed-with-exit")
+
+        // 点击「稍后连接」进入工作台，底部 4 个 Tab 栏完整呈现。
+        topExit.tap()
+        if expectsCompactNavigation {
+            for name in ["sessions", "workspaces", "devices", "me"] {
+                XCTAssertTrue(tab(name).waitForExistence(timeout: 10), "进入工作台后应显示底部 \(name) Tab")
+            }
+        }
+        capture("r2-03-exited-to-workbench-tabbar")
+
+        // 切到「我的」Tab，验证进入工作台后可自由切换所有 Tab 且底部栏持续保留。
+        if expectsCompactNavigation {
+            tab("me").tap()
+            XCTAssertTrue(element("settings.tokenUsage").waitForExistence(timeout: 10))
+            for name in ["sessions", "workspaces", "devices", "me"] {
+                XCTAssertTrue(tab(name).waitForExistence(timeout: 5))
+            }
+            capture("r2-04-me-tab-keeps-tabbar")
+        }
+    }
+
+    func testFirstConnectionScannerCanCancelWithoutReplacingHost() throws {
+        let scan = element("settings.connection.scanQRCode")
+        scrollTo(scan)
+        scan.tap()
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let permission = springboard.alerts.firstMatch
+        if permission.waitForExistence(timeout: 3) {
+            permission.buttons.allElementsBoundByIndex.last?.tap()
+        }
+        let close = element("qrScanner.close")
+        XCTAssertTrue(close.waitForExistence(timeout: 15))
+        capture("r2-05-initial-scanner-cover")
+        close.tap()
+        XCTAssertTrue(element("settings.devices.page").waitForExistence(timeout: 10))
     }
 
     private var expectsCompactNavigation: Bool {

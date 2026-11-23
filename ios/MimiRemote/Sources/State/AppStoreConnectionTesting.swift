@@ -120,6 +120,35 @@ extension AppStore {
         lastError = snapshot.lastError
     }
 
+    /// 局域网首次配对可能触发 iOS「本地网络」权限弹窗，第一发 TCP 连接极易立刻失败；
+    /// `/api/pair/claim` 在服务端无状态且幂等，对可重试传输错误做短退避重试后再上报失败。
+    static func claimPairingWithRetry(
+        maxAttempts: Int = 3,
+        retryDelaysNanoseconds: [UInt64] = [400_000_000, 800_000_000],
+        sleep: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
+        operation: () async throws -> PairingClaimResponse
+    ) async throws -> PairingClaimResponse {
+        let attempts = max(1, maxAttempts)
+        var lastError: Error?
+        for attempt in 0..<attempts {
+            try Task.checkCancellation()
+            do {
+                return try await operation()
+            } catch {
+                lastError = error
+                guard attempt + 1 < attempts,
+                      ConnectionFailureGuidance.isReachabilityFailure(error) else {
+                    throw error
+                }
+                let delay = attempt < retryDelaysNanoseconds.count ? retryDelaysNanoseconds[attempt] : 0
+                if delay > 0 {
+                    try await sleep(delay)
+                }
+            }
+        }
+        throw lastError ?? URLError(.cannotConnectToHost)
+    }
+
     static func isConnectionProbeCancellation(_ error: Error) -> Bool {
         if Task.isCancelled || error is CancellationError {
             return true

@@ -726,11 +726,14 @@ enum ConnectionFailureGuidance {
 
     static func reachabilityGuidance(
         for route: ConnectionProfileRoute?,
-        tailcatExperimentEnabled: Bool = false
+        tailcatExperimentEnabled: Bool = false,
+        hasActiveMimiEntitlement: Bool = false
     ) -> String {
         switch route {
         case .lan:
-            return L10n.text("ui.connection_failure_guidance_lan")
+            return hasActiveMimiEntitlement
+                ? L10n.text("ui.connection_failure_guidance_lan_with_mimi")
+                : L10n.text("ui.connection_failure_guidance_lan")
         case .tailscale:
             return L10n.text("ui.the_current_device_cannot_find_this_mac_at")
         case .managedTailcat:
@@ -792,6 +795,7 @@ enum ConnectionFailureGuidance {
     static func isReachabilityFailureMessage(_ raw: String) -> Bool {
         let reachabilityGuidanceKeys = [
             "ui.connection_failure_guidance_lan",
+            "ui.connection_failure_guidance_lan_with_mimi",
             "ui.the_current_device_cannot_find_this_mac_at",
             "ui.connection_failure_guidance_managed_tailcat",
             "ui.connection_failure_guidance_custom_tailcat",
@@ -843,7 +847,8 @@ enum ConnectionFailureGuidance {
         for error: Error,
         route: ConnectionProfileRoute?,
         repairPlatform: HostPlatform? = nil,
-        tailcatExperimentEnabled: Bool = false
+        tailcatExperimentEnabled: Bool = false,
+        hasActiveMimiEntitlement: Bool = false
     ) -> String {
         if (error as? PairingLinkError) == .expired {
             return (repairPlatform ?? .unknown).pairingQRCodeExpiredGuidance
@@ -859,13 +864,18 @@ enum ConnectionFailureGuidance {
             return L10n.text("ui.this_device_has_not_been_verified_by_mac")
         }
         if isReachabilityFailure(error) {
-            return reachabilityGuidance(for: route, tailcatExperimentEnabled: tailcatExperimentEnabled)
+            return reachabilityGuidance(
+                for: route,
+                tailcatExperimentEnabled: tailcatExperimentEnabled,
+                hasActiveMimiEntitlement: hasActiveMimiEntitlement
+            )
         }
         return friendlyMessage(
             from: error.localizedDescription,
             route: route,
             activeTermination: nil,
-            tailcatExperimentEnabled: tailcatExperimentEnabled
+            tailcatExperimentEnabled: tailcatExperimentEnabled,
+            hasActiveMimiEntitlement: hasActiveMimiEntitlement
         )
     }
 
@@ -873,7 +883,8 @@ enum ConnectionFailureGuidance {
         from raw: String,
         route: ConnectionProfileRoute?,
         activeTermination: ConnectionTerminationStatus? = nil,
-        tailcatExperimentEnabled: Bool = false
+        tailcatExperimentEnabled: Bool = false,
+        hasActiveMimiEntitlement: Bool = false
     ) -> String {
         if let activeTermination {
             return activeTermination.message
@@ -897,7 +908,8 @@ enum ConnectionFailureGuidance {
         if isReachabilityFailureMessage(raw) {
             return reachabilityGuidance(
                 for: route,
-                tailcatExperimentEnabled: tailcatExperimentEnabled
+                tailcatExperimentEnabled: tailcatExperimentEnabled,
+                hasActiveMimiEntitlement: hasActiveMimiEntitlement
             )
         }
         if raw.contains("连接链接缺少访问码") {

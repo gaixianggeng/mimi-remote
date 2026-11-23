@@ -228,16 +228,34 @@ struct ManagedConnectionSubscriptionView: View {
         isScanningConnection = true
         defer { isScanningConnection = false }
         do {
+            let wasConfigured = appStore.isConfigured
             _ = try await sessionStore.applyPairingURL(url)
-            // 手机已明确选了 Mimi；扫描旧电脑的普通二维码也继续同一个开通流程。
-            if let id = appStore.activeConnectionProfileID {
+            // 手机已明确选了 Mimi；内置连接继续同一个开通流程，局域网与 Tailscale 保留原线路。
+            if Self.shouldSelectMimiAfterPairing(route: appStore.activeConnectionProfile?.connectionRoute),
+               let id = appStore.activeConnectionProfileID {
                 tailcatController.selectRelayService(.mimi, profileID: id)
             }
             sessionStore.reconcileMimiRelay(entitlementStore, retry: true)
+            Task { @MainActor in
+                _ = await sessionStore.refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+            }
             return .accepted(L10n.text("ui.this_mac_is_connected"))
         } catch {
-            return .rejected(ManagedConnectionDevicesView.pairingErrorMessage(error))
+            let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
+            let message = attemptedRoute == .lan && ConnectionFailureGuidance.isReachabilityFailure(error)
+                ? ConnectionFailureGuidance.message(
+                    for: error,
+                    route: attemptedRoute,
+                    hasActiveMimiEntitlement: entitlementStore.hasActiveEntitlement
+                )
+                : ManagedConnectionDevicesView.pairingErrorMessage(error)
+            return .rejected(message)
         }
+    }
+
+    /// 中转开通页扫码后，只有内置连接自动选入 Mimi；局域网、Tailscale 与 HTTPS 保留用户所选连接方式。
+    static func shouldSelectMimiAfterPairing(route: ConnectionProfileRoute?) -> Bool {
+        route?.usesTailcat == true
     }
 
     /// 中转服务的短状态。还在检查时不显示，避免一闪而过的占位文字。

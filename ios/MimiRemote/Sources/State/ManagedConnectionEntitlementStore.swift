@@ -553,6 +553,15 @@ final class ManagedConnectionEntitlementStore: ObservableObject {
         return entitlement.productID == ManagedConnectionProductID.betaRedemption
     }
 
+    /// 账号当前已开通 Mimi 中转（含有效订阅与内测兑换码，刷新瞬间凭未过期 grant 保持稳定）。
+    var hasActiveEntitlement: Bool {
+        ManagedConnectionDevicesView.hasEntitlementForUpgrade(
+            status: status,
+            grant: currentGrant,
+            now: now()
+        )
+    }
+
     func purchase(productID: String) async {
         guard activeTransactionOperations == 0,
               ManagedConnectionProductID.all.contains(productID) else { return }

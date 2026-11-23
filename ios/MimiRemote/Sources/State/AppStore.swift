@@ -1466,7 +1466,10 @@ final class AppStore: ObservableObject {
     }
 
     private func claimPairing(_ ticket: PairingTicket) async throws -> PairingCredentials {
-        let response = try await AgentAPIClient(endpoint: ticket.endpoint, token: "").claimPairing(ticket.claimRequest)
+        let client = AgentAPIClient(endpoint: ticket.endpoint, token: "", session: agentAPISession)
+        let response = try await Self.claimPairingWithRetry {
+            try await client.claimPairing(ticket.claimRequest)
+        }
         return PairingCredentials(
             endpoint: try Self.validatedEndpoint(response.endpoint.isEmpty ? ticket.endpoint : response.endpoint),
             token: response.token,

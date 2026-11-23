@@ -166,6 +166,7 @@ struct SettingsView: View {
             }
         }
         .environment(\.settingsUsesWorkbenchCanvas, !showsDoneButton)
+        .environment(\.settingsSheetDismiss, (!isInitialSetup && showsDoneButton) ? { dismiss() } : nil)
         .onAppear(perform: applyDebugLaunchRouteIfNeeded)
     }
 

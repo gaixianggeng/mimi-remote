@@ -60,6 +60,57 @@ struct FallbackRouteProbe: Equatable {
     let succeeded: Bool
 }
 
+/// 配对成功时若仍在全屏扫码页内展示完成态，等扫码页关闭后再执行返回或续接中转配置。
+struct PendingConnectionPairingCompletion: Equatable {
+    let opensManagedConnectionInStack: Bool
+    let deferredMimiRelaySetupProfileID: String?
+
+    /// 统一决定扫码或粘贴配对成功后的跳转归属，避免首次连接、添加电脑与设置 sheet 各自处理竞态。
+    static func resolve(
+        wasConfigured: Bool,
+        isPresentedInScanner: Bool,
+        wantsMimiRelaySetup: Bool,
+        mode: ConnectionSettingsSectionsMode,
+        isPresentedInSettingsSheet: Bool,
+        activeProfileID: String?
+    ) -> Self {
+        let opensManagedInCurrentStack = wantsMimiRelaySetup
+            && wasConfigured
+            && isPresentedInScanner
+            && !(mode == .addComputer && !isPresentedInSettingsSheet)
+        let deferredMimiProfileID = wantsMimiRelaySetup && !opensManagedInCurrentStack
+            ? activeProfileID
+            : nil
+        return Self(
+            opensManagedConnectionInStack: opensManagedInCurrentStack,
+            deferredMimiRelaySetupProfileID: deferredMimiProfileID
+        )
+    }
+}
+
+private struct SettingsSheetDismissKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+private struct EnterWorkbenchFromInitialSetupKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    /// 独立设置 sheet 传入关闭动作；push 到连接页或添加电脑页后，既保留左上角返回键，
+    /// 也在右上角提供「完成」按钮，并在重新配对或添加完成后自动关闭 sheet 回到工作台。
+    var settingsSheetDismiss: (() -> Void)? {
+        get { self[SettingsSheetDismissKey.self] }
+        set { self[SettingsSheetDismissKey.self] = newValue }
+    }
+
+    /// 首次连接根页在已开通 Mimi 中转或配对失败时，通过该动作进入工作台并显示底部 Tab 栏。
+    var enterWorkbenchFromInitialSetup: (() -> Void)? {
+        get { self[EnterWorkbenchFromInitialSetupKey.self] }
+        set { self[EnterWorkbenchFromInitialSetupKey.self] = newValue }
+    }
+}
+
 /// 仅保留当前工作台内的连接表单草稿；输入不触发会话外壳重绘，旋转也不会重置访问码。
 @MainActor
 final class ConnectionSettingsDraft: ObservableObject {
@@ -67,6 +118,8 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var token = ""
     @Published var didLoadInitialConnection = false
     @Published var pendingManualConnectionIntent: ConnectionQRCodeScanIntent?
+    /// 扫码成功后暂存的收尾动作：等全屏扫码页播完完成态并关闭后再触发，避免在 Cover 活跃期间拆页面。
+    @Published var pendingPairingCompletion: PendingConnectionPairingCompletion?
     /// 工作台横幅的「重新配对」要把用户直接带到扫码页，但扫码页由连接页持有并呈现：
     /// 横幅只能先打开这一页，再把一次性的请求交给它消费（#554）。
     @Published var pendingRepairRequest = false
@@ -97,6 +150,7 @@ final class ConnectionSettingsDraft: ObservableObject {
     func beginAddingComputer() {
         addComputerError = nil
         addComputerErrorRoute = nil
+        pendingPairingCompletion = nil
     }
 
     /// 旋转只重建页面，不会改变来源值，因此保留用户输入。外部连接切换或凭据更新时，

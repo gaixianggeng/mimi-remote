@@ -272,17 +272,56 @@ extension SessionStore {
         }
     }
 
+    func notifyForegroundResumed() {
+        let waiters = foregroundResumeWaiters.values
+        foregroundResumeWaiters.removeAll()
+        for continuation in waiters {
+            continuation.resume()
+        }
+    }
+
+    /// 外部配对链接（如系统相机扫二维码切回 App）到达时，前台恢复任务可能尚未跑完
+    /// `resumeFromForeground()`；等待其落地再发起连接变更，避免被后台门禁直接取消。
+    func waitForForegroundResumeIfNeeded(
+        timeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async {
+        guard isAppInBackground else { return }
+        let waiterID = UUID()
+        let timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+            self?.foregroundResumeWaiters.removeValue(forKey: waiterID)?.resume()
+        }
+        defer { timeoutTask.cancel() }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                guard isAppInBackground, !Task.isCancelled else {
+                    continuation.resume()
+                    return
+                }
+                foregroundResumeWaiters[waiterID] = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.foregroundResumeWaiters.removeValue(forKey: waiterID)?.resume()
+            }
+        }
+    }
+
     /// 系统相机扫码或其它 App 打开的配对链接。配对仍在 App 层执行，停在哪一页都能连上；
     /// 但首次配对页按 #557 只显示本页操作的反馈、不读全局 `lastError`，所以还没有任何电脑时
     /// 要把进度和失败原因经 `pairingLinkAttempt` 交给它，否则失败时页面毫无变化（#728）。
     /// 只存了其它电脑、没有当前电脑时同理：设备页没有当前电脑卡片，全局错误也无处显示（#959）。
-    func openPairingLink(_ url: URL) async {
-        let wasConfigured = appStore.isConfigured
+    func openPairingLink(
+        _ url: URL,
+        foregroundWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
+    ) async {
         let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
         lastPairingLinkRoute = ConnectionProfileRoute.fromPairingURL(url)
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
         }
+        await waitForForegroundResumeIfNeeded(timeoutNanoseconds: foregroundWaitTimeoutNanoseconds)
+        let wasConfigured = appStore.isConfigured
         do {
             _ = try await applyPairingURL(url)
             lastPairingLinkRoute = nil

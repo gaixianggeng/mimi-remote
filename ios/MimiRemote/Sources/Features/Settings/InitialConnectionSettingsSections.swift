@@ -71,6 +71,9 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     ) async -> QRCodeScannerSubmissionResult
 
     @Published var intent: ConnectionQRCodeScanIntent?
+    /// 真实 Cover 生命周期：从呈现开始到系统 `onDismiss` 回调完成为止保持为 true。
+    /// `dismiss()` 会立即清空 `intent` 以触发收起动画，但宿主视图必须等到 `didDismiss()` 后再切换。
+    @Published private(set) var isCoverPresented = false
     @Published private(set) var isRequestingCameraAuthorization = false
     @Published private(set) var host: ConnectionQRCodeScannerHost = .connectionSettings
     @Published private(set) var managedConnectionHost: ConnectionQRCodeScannerHost?
@@ -125,6 +128,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
 
         guard AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined else {
             intent = requestedIntent
+            isCoverPresented = true
             return
         }
 
@@ -143,6 +147,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
                 self.isRequestingCameraAuthorization = false
                 if self.intent == nil {
                     self.intent = requestedIntent
+                    self.isCoverPresented = true
                 }
             }
         }
@@ -156,6 +161,12 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     func openManagedConnection() {
         pendingManagedConnectionHost = host
         intent = nil
+    }
+
+    /// 扫码成功后需要同栈推出中转页时，只登记目标而不提前清空 `intent`，
+    /// 让扫码页完整展示成功态并自然收起，在 `didDismiss()` 中再推出中转页。
+    func scheduleManagedConnectionOnDismiss() {
+        pendingManagedConnectionHost = host
     }
 
     /// 与扫码 Cover 同理，只让发起扫码的宿主页推出开通页。
@@ -184,6 +195,7 @@ final class ConnectionQRCodeScannerPresentation: ObservableObject {
     }
 
     func didDismiss() {
+        isCoverPresented = false
         dismissalHandler?()
         // 关闭动画结束后才推出开通页；Cover 还在退场时推送，导航栈不会接受。
         if let pendingManagedConnectionHost {
@@ -205,6 +217,8 @@ struct InitialConnectionSettingsSections: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.settingsSheetDismiss) private var settingsSheetDismiss
+    @Environment(\.enterWorkbenchFromInitialSetup) private var enterWorkbenchFromInitialSetup
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -313,6 +327,8 @@ struct InitialConnectionSettingsSections: View {
     let onRequestProfileRename: (ConnectionProfile) -> Void
     /// 手动表单只在添加电脑页渲染；设备首页上的扫码/重新配对回落到手动时，由外壳把那一页推出来。
     var onRequestManualConnection: (() -> Void)? = nil
+    /// 配对或添加电脑提交成功后的导航收尾（由添加页自动返回上一层，或由独立设置 sheet 自动关闭）。
+    var onPairingCompleted: ((_ opensManagedConnection: Bool) -> Void)? = nil
     /// 快照容器要的是确定的静态画面：探测结果带时间戳、spinner 取决于网络耗时，都不能进基线。
     /// 同时关掉进入页面时的连接状态核实，快照里的状态就是传入的状态。
     var probesRouteAutomatically = true
@@ -427,7 +443,8 @@ struct InitialConnectionSettingsSections: View {
                     from: $0,
                     route: draft.localErrorRoute ?? sessionStore.lastPairingLinkRoute,
                     activeTermination: nil,
-                    tailcatExperimentEnabled: false
+                    tailcatExperimentEnabled: false,
+                    hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
                 )
             }) {
                 Section {
@@ -1014,6 +1031,64 @@ struct InitialConnectionSettingsSections: View {
             }
             .settingsGroupRowStyle()
         }
+        // 系统相机外链唤起或扫码失败时，用户往往停在页面顶部（尤其步骤 1 展开时）；
+        // 在顶部直接给出进度与错误反馈及重试入口，避免把反馈埋在两屏之外的步骤 3。
+        if isOpeningPairingLink {
+            Section {
+                HStack(spacing: SettingsLayoutMetrics.iconSpacing) {
+                    ProgressView()
+                        .frame(width: SettingsLayoutMetrics.iconSlot)
+                    Text(L10n.text("ui.connecting"))
+                        .font(themeStore.uiFont(.body))
+                        .foregroundStyle(tokens.primaryText)
+                }
+                .settingsRow()
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("settings.firstConnection.connecting")
+            }
+            .settingsGroupRowStyle()
+        } else if let message = addComputerErrorMessage, !isShowingAdvancedManualConnection {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(tokens.warning)
+                        .font(themeStore.uiFont(.footnote))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(action: beginScanningHost) {
+                        ConnectionActionLabel(
+                            title: L10n.text("ui.scan_qr_code_on_computer"),
+                            systemImage: "qrcode.viewfinder",
+                            isBusy: qrScannerPresentation.isRequestingCameraAuthorization,
+                            busyTint: tokens.primaryActionForeground
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(tokens.primaryAction)
+                    .foregroundStyle(tokens.primaryActionForeground)
+                    .controlSize(.regular)
+                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
+                    .accessibilityIdentifier("settings.firstConnection.errorScanQRCode")
+
+                    if let enterWorkbenchFromInitialSetup {
+                        Button(action: enterWorkbenchFromInitialSetup) {
+                            ConnectionActionLabel(
+                                title: L10n.text("ui.connect_later"),
+                                systemImage: "rectangle.grid.2x2"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(tokens.secondaryText)
+                        .foregroundStyle(tokens.primaryText)
+                        .controlSize(.regular)
+                        .accessibilityIdentifier("settings.firstConnection.errorEnterWorkbench")
+                    }
+                }
+                .settingsRow(.descriptive)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("settings.firstConnection.errorBanner")
+            }
+            .settingsGroupRowStyle()
+        }
         Section {
             SettingsExternalLinkRow(
                 title: L10n.text("ui.first_connection_install_codex"),
@@ -1449,7 +1524,8 @@ struct InitialConnectionSettingsSections: View {
             from: raw,
             route: draft.addComputerErrorRoute,
             activeTermination: nil,
-            tailcatExperimentEnabled: false
+            tailcatExperimentEnabled: false,
+            hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
         )
     }
 
@@ -1464,7 +1540,8 @@ struct InitialConnectionSettingsSections: View {
                 from: localError,
                 route: draft.localErrorRoute ?? currentConnectionRoute,
                 activeTermination: draft.localErrorRoute == nil ? appStore.connectionTermination : nil,
-                tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled
+                tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled,
+                hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
             )
         }
         guard let raw = appStore.lastError else {
@@ -1474,7 +1551,8 @@ struct InitialConnectionSettingsSections: View {
             from: raw,
             route: sessionStore.lastPairingLinkRoute ?? currentConnectionRoute,
             activeTermination: appStore.connectionTermination,
-            tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled
+            tailcatExperimentEnabled: appStore.isTailcatExperimentModeEnabled,
+            hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
         )
     }
 
@@ -1504,6 +1582,7 @@ struct InitialConnectionSettingsSections: View {
             ? .initialConnection
             : .addConnectionProfile
         pendingManualConnectionIntent = nil
+        draft.pendingPairingCompletion = nil
         qrScannerPresentation.request(intent, from: scannerHost)
     }
 
@@ -1584,6 +1663,7 @@ struct InitialConnectionSettingsSections: View {
         }
         setConnectionAttemptError(nil, route: nil, forAddComputer: false)
         pendingManualConnectionIntent = nil
+        draft.pendingPairingCompletion = nil
         qrScannerPresentation.request(
             .repairCurrentProfile(expectedProfileID: activeProfileID),
             from: scannerHost
@@ -1593,6 +1673,11 @@ struct InitialConnectionSettingsSections: View {
     private func finishQRCodeScannerPresentation() {
         defer {
             pendingManualConnectionIntent = nil
+        }
+        if let completion = draft.pendingPairingCompletion {
+            draft.pendingPairingCompletion = nil
+            onPairingCompleted?(completion.opensManagedConnectionInStack)
+            return
         }
         guard let intent = pendingManualConnectionIntent else {
             isShowingAdvancedManualConnection = false
@@ -1652,7 +1737,8 @@ struct InitialConnectionSettingsSections: View {
             // prepare/commit 失败时 SessionStore 尚未退役旧连接，这里只展示目标电脑的错误。
             let message = ConnectionFailureGuidance.message(
                 for: error,
-                route: targetRoute
+                route: targetRoute,
+                hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
             )
             setConnectionAttemptError(message, route: targetRoute, forAddComputer: false)
         }
@@ -1716,6 +1802,7 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
+            onPairingCompleted?(false)
             guard await refreshCommittedConnection(
                 maxWait: wasConfigured ? 10 : 45,
                 route: currentConnectionRoute ?? attemptedRoute,
@@ -1729,7 +1816,8 @@ struct InitialConnectionSettingsSections: View {
             let message = ConnectionFailureGuidance.message(
                 for: error,
                 route: attemptedRoute,
-                tailcatExperimentEnabled: !errorBelongsToAddComputer && appStore.isTailcatExperimentModeEnabled
+                tailcatExperimentEnabled: !errorBelongsToAddComputer && appStore.isTailcatExperimentModeEnabled,
+                hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
             )
             if !errorBelongsToAddComputer || appStore.activeConnectionProfile == nil {
                 appStore.connectionStatus = .failed(error.localizedDescription)
@@ -1776,14 +1864,26 @@ struct InitialConnectionSettingsSections: View {
             endpoint = appStore.endpoint
             token = appStore.token
             isAddingConnectionProfile = false
-            if RelayServiceChoice.fromPairingURL(url) == .mimi {
-                if !wasConfigured || qrScannerPresentation.intent == nil {
-                    // 粘贴没有扫码 Cover，不会触发 onDismiss。由工作台接续开通，
-                    // 也覆盖首台电脑建立后首次连接页被替换的情况。
-                    sessionStore.mimiRelaySetupProfileID = appStore.activeConnectionProfileID
-                } else {
-                    qrScannerPresentation.openManagedConnection()
-                }
+            let isPresentedInScanner = qrScannerPresentation.isCoverPresented || qrScannerPresentation.intent != nil
+            let completion = PendingConnectionPairingCompletion.resolve(
+                wasConfigured: wasConfigured,
+                isPresentedInScanner: isPresentedInScanner,
+                wantsMimiRelaySetup: RelayServiceChoice.fromPairingURL(url) == .mimi,
+                mode: mode,
+                isPresentedInSettingsSheet: settingsSheetDismiss != nil,
+                activeProfileID: appStore.activeConnectionProfileID
+            )
+            if completion.opensManagedConnectionInStack {
+                qrScannerPresentation.scheduleManagedConnectionOnDismiss()
+            } else if let deferredMimiProfileID = completion.deferredMimiRelaySetupProfileID {
+                // 立即以状态驱动登记后续 Mimi 中转配置，不依赖可能被替换的宿主视图关闭回调；
+                // RootView 与工作台会等待扫码 Cover 的 isCoverPresented 归零后再消费。
+                sessionStore.mimiRelaySetupProfileID = deferredMimiProfileID
+            }
+            if isPresentedInScanner {
+                draft.pendingPairingCompletion = completion
+            } else {
+                onPairingCompleted?(false)
             }
             // 二维码在这里已经完成真实连接验证并提交。首屏数据继续后台加载，
             // 不让扫码页额外卡住最多 45 秒，也不要求用户重复扫描配对码。
@@ -1845,7 +1945,8 @@ struct InitialConnectionSettingsSections: View {
             for: error,
             route: route,
             repairPlatform: repairPlatform,
-            tailcatExperimentEnabled: !intent.addsConnectionProfile && appStore.isTailcatExperimentModeEnabled
+            tailcatExperimentEnabled: !intent.addsConnectionProfile && appStore.isTailcatExperimentModeEnabled,
+            hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement
         )
     }
 

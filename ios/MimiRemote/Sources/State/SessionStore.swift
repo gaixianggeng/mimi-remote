@@ -397,6 +397,8 @@ final class SessionStore: ObservableObject {
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
+    /// 系统相机外链唤起时可能早于 `resumeFromForeground()` 抵达；按 ID 挂起直到前台恢复完成。
+    var foregroundResumeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     // 评分邀请（#842）只在 App 进程里装配；测试和预览中的 Store 保持 nil，不产生任何请求。
     var appReviewPrompt: AppReviewPromptCoordinator?
     // 旧 agentd 不接受 Codex 无 cwd thread/list 时，本 Host 生命周期只探测一次；

@@ -8266,6 +8266,23 @@
         }
       }
     },
+    "ui.connect_later": {
+      "comment": "Button on the first-connection screen that exits initial setup into the main workbench tabs when relay is active or pairing failed.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect Later"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "稍后连接"
+          }
+        }
+      }
+    },
     "ui.connect_on_this_device": {
       "comment": "Section title for the step completed on the current iPhone or iPad during first-time Mac pairing.",
       "localizations": {
@@ -8876,6 +8893,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前设备暂时找不到这台电脑。请确认电脑上的 Mimi Remote 正在运行，并且两台设备连接在同一局域网（同一 Wi-Fi）。"
+          }
+        }
+      }
+    },
+    "ui.connection_failure_guidance_lan_with_mimi": {
+      "comment": "Connection failure guidance when a LAN pairing fails while Mimi Relay is already active, prompting the user to switch to the Built-in Connection QR code.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cannot reach this computer over the local network. Confirm both devices are on the same Wi-Fi with Local Network access allowed, or switch to the Built-in Connection QR code on your computer to connect automatically with Mimi Relay."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前设备暂时无法通过局域网连接这台电脑。请确认两台设备在同一 Wi-Fi 且已开启本地网络权限，或直接在电脑配对窗口切换为「内置连接」二维码，使用已开通的 Mimi 中转自动完成连接。"
           }
         }
       }

@@ -6,6 +6,8 @@ struct ConnectionSettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @Environment(\.settingsSheetDismiss) private var settingsSheetDismiss
+    @Environment(\.enterWorkbenchFromInitialSetup) private var enterWorkbenchFromInitialSetup
     @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
@@ -49,6 +51,11 @@ struct ConnectionSettingsView: View {
                 onRequestManualConnection: {
                     navigation.connectionDraft.beginAddingComputer()
                     isPresentingAddComputerForManualConnection = true
+                },
+                onPairingCompleted: { opensManagedConnection in
+                    if !opensManagedConnection, let settingsSheetDismiss {
+                        settingsSheetDismiss()
+                    }
                 },
                 probesRouteAutomatically: probesRouteAutomatically
             )
@@ -101,6 +108,14 @@ struct ConnectionSettingsView: View {
         .navigationTitle(L10n.text(navigationTitleKey))
         .accessibilityIdentifier("settings.devices.page")
         .navigationBarTitleDisplayMode(.inline)
+        .modifier(
+            ConnectionSettingsExitToolbarModifier(
+                draft: navigation.connectionDraft,
+                isDevicesTab: isDevicesTab,
+                settingsSheetDismiss: settingsSheetDismiss,
+                enterWorkbenchFromInitialSetup: enterWorkbenchFromInitialSetup
+            )
+        )
         // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
         // 紧凑布局把连接页 push 进导航栈后，根层已不在被呈现的层级里，点击扫码不会有任何反应。
         // 这一层是整页而不是 Form.Section，权限弹窗引起的 Section 重建不会销毁它。
@@ -148,6 +163,17 @@ struct ConnectionSettingsView: View {
         return model.current != nil || !model.others.isEmpty
     }
 
+    /// 首次连接根页在已开通 Mimi 中转或配对失败后提供回到工作台的出口，
+    /// 避免用户困在无 Tab 栏的引导页；真正全新首次启动仍保持无冗余返回键。
+    static func showsInitialSetupWorkbenchExit(
+        isDevicesTab: Bool,
+        hasSheetDismiss: Bool,
+        hasActiveMimiEntitlement: Bool,
+        hasPairingError: Bool
+    ) -> Bool {
+        !isDevicesTab && !hasSheetDismiss && (hasActiveMimiEntitlement || hasPairingError)
+    }
+
     /// 一台电脑都没有时这一页是首次连接引导，Windows 用户也会看到，标题不写「Mac」（#554）。
     private var navigationTitleKey: String {
         if isDevicesTab {
@@ -176,10 +202,51 @@ struct ConnectionSettingsView: View {
     }
 }
 
+/// 单独观察 `ConnectionSettingsDraft`，确保首次配对失败写入 `addComputerError` 时
+/// 导航栏右上角的「稍后连接」按钮能即时出现，且始终绑定 `@StateObject navigation` 的同一份草稿。
+private struct ConnectionSettingsExitToolbarModifier: ViewModifier {
+    @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
+    @ObservedObject var draft: ConnectionSettingsDraft
+    let isDevicesTab: Bool
+    let settingsSheetDismiss: (() -> Void)?
+    let enterWorkbenchFromInitialSetup: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content.toolbar {
+            if !isDevicesTab, let settingsSheetDismiss {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.complete")) {
+                        settingsSheetDismiss()
+                    }
+                    .accessibilityLabel(L10n.text("ui.close_settings"))
+                    .accessibilityIdentifier("settings.connection.close")
+                }
+            } else if !isDevicesTab,
+                      settingsSheetDismiss == nil,
+                      let enterWorkbenchFromInitialSetup,
+                      ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                          isDevicesTab: isDevicesTab,
+                          hasSheetDismiss: false,
+                          hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement,
+                          hasPairingError: draft.addComputerError != nil
+                      ) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L10n.text("ui.connect_later")) {
+                        enterWorkbenchFromInitialSetup()
+                    }
+                    .accessibilityIdentifier("settings.firstConnection.enterWorkbench")
+                }
+            }
+        }
+    }
+}
+
 /// 添加电脑独立成一页：设备首页只留一个入口，安装说明、命令行方式和手动地址
 /// 不再常驻日常管理页。已经连接成功的用户不用每次管理设备都重看一遍安装教程。
 struct AddComputerView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.settingsSheetDismiss) private var settingsSheetDismiss
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ObservedObject var navigation: SettingsNavigationState
@@ -193,7 +260,16 @@ struct AddComputerView: View {
                 draft: navigation.connectionDraft,
                 transientPreferences: navigation.transientPreferences,
                 mode: .addComputer,
-                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) }
+                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
+                onPairingCompleted: { opensManagedConnection in
+                    if let settingsSheetDismiss {
+                        if !opensManagedConnection {
+                            settingsSheetDismiss()
+                        }
+                    } else {
+                        dismiss()
+                    }
+                }
             )
         }
         .themedSettingsForm(tokens: tokens)
@@ -202,6 +278,17 @@ struct AddComputerView: View {
         .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.add_mac"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let settingsSheetDismiss {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.complete")) {
+                        settingsSheetDismiss()
+                    }
+                    .accessibilityLabel(L10n.text("ui.close_settings"))
+                    .accessibilityIdentifier("settings.addComputer.close")
+                }
+            }
+        }
         .accessibilityIdentifier("settings.addComputer.page")
         // 扫码 Cover 必须由当前真正显示的页面持有。这一页 push 在设备页之上，
         // 设备页已经不在被呈现的层级里，仍挂在那里的 presenter 不会呈现。
