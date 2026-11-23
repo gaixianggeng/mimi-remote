@@ -52,7 +52,7 @@ final class SettingsChoiceRowSnapshotTests: XCTestCase {
         let view = NavigationStack {
             StatefulOptionList(
                 title: "默认权限",
-                options: ComposerPermissionMode.allCases,
+                options: ComposerPermissionMode.standardModes,
                 initial: ComposerPermissionMode.fullAccess
             )
         }
