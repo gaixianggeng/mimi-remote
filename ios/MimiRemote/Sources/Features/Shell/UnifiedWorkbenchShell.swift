@@ -1248,7 +1248,6 @@ struct UnifiedWorkbenchShell: View {
                         phoneSessionDetailFloatingCapsuleHeader(
                             session: navigationTitleSession,
                             canPresentSessionDetail: canPresentSessionDetail,
-                            isDetailActiveOnScreen: isDetailActiveOnScreen,
                             layout: layout,
                             tokens: tokens,
                             onBack: {

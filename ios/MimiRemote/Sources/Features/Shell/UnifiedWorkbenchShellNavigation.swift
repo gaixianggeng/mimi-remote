@@ -49,11 +49,6 @@ enum PhoneSessionFloatingCapsuleMetrics {
     static func resolvedMaxWidth(containerWidth: CGFloat) -> CGFloat {
         min(maximumWidth, availableCenterWidth(containerWidth: containerWidth))
     }
-
-    /// 胶囊圆角始终等于高度一半。
-    static func cornerRadius(forHeight height: CGFloat) -> CGFloat {
-        height / 2
-    }
 }
 
 /// 供布局回归测试读取的三件式悬浮顶栏真实渲染几何（顶栏容器局部坐标系）。
@@ -908,7 +903,6 @@ extension UnifiedWorkbenchShell {
     func phoneSessionDetailFloatingCapsuleHeader<MoreMenuContent: View>(
         session: AgentSession?,
         canPresentSessionDetail: Bool,
-        isDetailActiveOnScreen: Bool,
         layout: WorkbenchLayout,
         tokens: ThemeTokens,
         onBack: @escaping () -> Void,

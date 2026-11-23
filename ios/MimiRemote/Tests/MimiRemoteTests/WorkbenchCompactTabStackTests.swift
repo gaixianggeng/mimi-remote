@@ -689,8 +689,6 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 440), 304)
         XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 520), 304)
         XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.resolvedMaxWidth(containerWidth: 320), 184)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 44), 22)
-        XCTAssertEqual(PhoneSessionFloatingCapsuleMetrics.cornerRadius(forHeight: 56), 28)
     }
 
     @MainActor
