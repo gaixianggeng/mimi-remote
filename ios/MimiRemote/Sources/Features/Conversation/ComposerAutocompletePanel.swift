@@ -57,12 +57,11 @@ struct ComposerAutocompletePanel: View {
             }
         }
         .padding(8)
-        .background(WorkbenchMaterial.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(tokens.border.opacity(0.9), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.18), radius: 16, y: 7)
+        .workbenchGlassSurface(
+            shape: RoundedRectangle(cornerRadius: 16, style: .continuous),
+            tokens: tokens,
+            interactive: false
+        )
         .accessibilityIdentifier("composer.autocomplete")
     }
 

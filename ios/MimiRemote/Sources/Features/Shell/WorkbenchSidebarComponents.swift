@@ -449,7 +449,7 @@ struct WorkbenchSidebarFooter: View {
         }
     }
 
-    /// 两个入口共用一枚磨砂胶囊、等分宽度，读法与紧凑布局的底部 Tab 一致：
+    /// 两个入口共用一枚透明玻璃胶囊、等分宽度，读法与紧凑布局的底部玻璃 Tab 一致：
     /// 选中项是胶囊里的一块中性提亮，不再一个有底、一个透明。
     private var floatingDestinationBar: some View {
         HStack(spacing: 0) {
@@ -470,7 +470,7 @@ struct WorkbenchSidebarFooter: View {
                 action: onOpenSettings
             )
         }
-        .background { WorkbenchChromeMaterial(shape: Capsule(), tokens: tokens) }
+        .workbenchGlassSurface(shape: Capsule(), tokens: tokens, interactive: true)
     }
 
     private func floatingDestinationButton(

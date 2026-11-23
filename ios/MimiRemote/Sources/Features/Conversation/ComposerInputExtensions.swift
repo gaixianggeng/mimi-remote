@@ -640,20 +640,11 @@ extension ComposerView {
 #endif
     }
 
-    // 悬浮控件底衬：与 composerContainerBackground 同源，只是换成胶囊轮廓，
-    // 保证语音状态与底部输入面板属于同一层材质语言。
+    // 悬浮控件底衬：与全局悬浮 chrome 同源，采用透明玻璃胶囊材质，
+    // 保证语音状态与底部输入面板、顶栏悬浮控件属于同一套视觉语言。
     @ViewBuilder
     func composerFloatingControlBackground(tokens: ThemeTokens) -> some View {
-        let shape = Capsule(style: .continuous)
-        if reduceTransparency {
-            shape.fill(tokens.elevatedSurface)
-        } else {
-            shape
-                .fill(WorkbenchMaterial.surface)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
-                }
-        }
+        WorkbenchChromeMaterial(shape: Capsule(style: .continuous), tokens: tokens)
     }
 
     // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，
