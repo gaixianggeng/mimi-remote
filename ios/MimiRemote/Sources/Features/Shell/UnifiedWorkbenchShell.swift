@@ -130,6 +130,9 @@ struct UnifiedWorkbenchShell: View {
                 restoreFloatingSidebarVisibilityIfNeeded()
                 synchronizeNavigation(for: layout)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
+                if !appStore.canEnterWorkbench && !didApplyDebugLaunchRoute {
+                    openConnectionSettings(layout: layout)
+                }
                 synchronizeSidebarLifecycle()
             }
             .task(id: sessionStore.mimiRelaySetupProfileID) {

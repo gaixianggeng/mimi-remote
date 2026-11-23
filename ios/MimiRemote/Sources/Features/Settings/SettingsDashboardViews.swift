@@ -6,6 +6,7 @@ struct ConnectionSettingsView: View {
     @EnvironmentObject private var appStore: AppStore
     @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
+    @Environment(\.settingsSheetDismiss) private var settingsSheetDismiss
     @EnvironmentObject private var lockScreenApprovalStore: LockScreenApprovalStore
     @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage(WorkspaceSessionRuntimeChoice.preferenceKey)
@@ -49,6 +50,11 @@ struct ConnectionSettingsView: View {
                 onRequestManualConnection: {
                     navigation.connectionDraft.beginAddingComputer()
                     isPresentingAddComputerForManualConnection = true
+                },
+                onPairingCompleted: { opensManagedConnection in
+                    if !opensManagedConnection, let settingsSheetDismiss {
+                        settingsSheetDismiss()
+                    }
                 },
                 probesRouteAutomatically: probesRouteAutomatically
             )
@@ -101,6 +107,17 @@ struct ConnectionSettingsView: View {
         .navigationTitle(L10n.text(navigationTitleKey))
         .accessibilityIdentifier("settings.devices.page")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !isDevicesTab, let settingsSheetDismiss {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.complete")) {
+                        settingsSheetDismiss()
+                    }
+                    .accessibilityLabel(L10n.text("ui.close_settings"))
+                    .accessibilityIdentifier("settings.connection.close")
+                }
+            }
+        }
         // 扫码 Cover 必须挂在当前真正显示的连接页上。挂在 SettingsView 根层时，
         // 紧凑布局把连接页 push 进导航栈后，根层已不在被呈现的层级里，点击扫码不会有任何反应。
         // 这一层是整页而不是 Form.Section，权限弹窗引起的 Section 重建不会销毁它。
@@ -180,6 +197,8 @@ struct ConnectionSettingsView: View {
 /// 不再常驻日常管理页。已经连接成功的用户不用每次管理设备都重看一遍安装教程。
 struct AddComputerView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.settingsSheetDismiss) private var settingsSheetDismiss
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ObservedObject var navigation: SettingsNavigationState
@@ -193,7 +212,16 @@ struct AddComputerView: View {
                 draft: navigation.connectionDraft,
                 transientPreferences: navigation.transientPreferences,
                 mode: .addComputer,
-                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) }
+                onRequestProfileRename: { navigation.profileRenamePresentation.present($0) },
+                onPairingCompleted: { opensManagedConnection in
+                    if let settingsSheetDismiss {
+                        if !opensManagedConnection {
+                            settingsSheetDismiss()
+                        }
+                    } else {
+                        dismiss()
+                    }
+                }
             )
         }
         .themedSettingsForm(tokens: tokens)
@@ -202,6 +230,17 @@ struct AddComputerView: View {
         .settingsDetailPage(tokens: tokens)
         .navigationTitle(L10n.text("ui.add_mac"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let settingsSheetDismiss {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.complete")) {
+                        settingsSheetDismiss()
+                    }
+                    .accessibilityLabel(L10n.text("ui.close_settings"))
+                    .accessibilityIdentifier("settings.addComputer.close")
+                }
+            }
+        }
         .accessibilityIdentifier("settings.addComputer.page")
         // 扫码 Cover 必须由当前真正显示的页面持有。这一页 push 在设备页之上，
         // 设备页已经不在被呈现的层级里，仍挂在那里的 presenter 不会呈现。

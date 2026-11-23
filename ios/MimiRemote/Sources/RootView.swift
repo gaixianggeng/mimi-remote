@@ -22,6 +22,46 @@ enum ForegroundResumeLifecycleAction: Equatable {
     }
 }
 
+/// 根页面在「首次连接引导」与「完整工作台（含底部 Tab 栏）」之间的切换策略。
+///
+/// 1. 首次启动、从未连接过电脑且本地无已保存档案时，直接显示「连接电脑」引导页作为根页面（无上一层，不硬加返回键）。
+/// 2. 一旦用户进入过工作台，即使之后忘记当前电脑或删空最后一台电脑，仍留在工作台与底部 Tab 栏中，
+///    避免在「设备」Tab 忘记电脑后被踢出 TabView、既没有返回键又切不到其他 Tab。
+/// 3. 本地已有已保存电脑档案（例如当前档案凭据缺失待切换/重连）时，同样进入工作台并在「设备」Tab 承接恢复。
+/// 4. 首次连接页正在通过全屏扫码 Cover 展示完成反馈时，等扫码页正常收起后再切换进工作台，
+///    避免在活跃 `.fullScreenCover` 尚未关闭时直接替换宿主视图。
+struct RootWorkbenchPresentation: Equatable {
+    private(set) var hasEnteredWorkbench = false
+
+    func showsWorkbench(
+        canEnterWorkbench: Bool,
+        hasSavedProfiles: Bool,
+        isInitialSetupScannerPresented: Bool
+    ) -> Bool {
+        if hasEnteredWorkbench {
+            return true
+        }
+        guard canEnterWorkbench || hasSavedProfiles else {
+            return false
+        }
+        return !isInitialSetupScannerPresented
+    }
+
+    mutating func synchronize(
+        canEnterWorkbench: Bool,
+        hasSavedProfiles: Bool,
+        isInitialSetupScannerPresented: Bool
+    ) {
+        if showsWorkbench(
+            canEnterWorkbench: canEnterWorkbench,
+            hasSavedProfiles: hasSavedProfiles,
+            isInitialSetupScannerPresented: isInitialSetupScannerPresented
+        ) {
+            hasEnteredWorkbench = true
+        }
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
@@ -51,16 +91,44 @@ struct RootView: View {
     @State private var foregroundResume = ForegroundResumeTracker()
     /// 恢复失败的提示每条通知只弹一次；用户反复切前后台不该被同一条通知反复打断。
     @State private var lastResumeFailureAlertDeliveryID: String?
+    @State private var workbenchPresentation = RootWorkbenchPresentation()
+    @StateObject private var initialSetupQRScannerPresentation = ConnectionQRCodeScannerPresentation()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let hasSavedProfiles = !appStore.connectionProfiles.isEmpty
+        let isInitialSetupScannerPresented = initialSetupQRScannerPresentation.intent != nil
+        let showsWorkbench = workbenchPresentation.showsWorkbench(
+            canEnterWorkbench: appStore.canEnterWorkbench,
+            hasSavedProfiles: hasSavedProfiles,
+            isInitialSetupScannerPresented: isInitialSetupScannerPresented
+        )
 
         Group {
-            if appStore.canEnterWorkbench {
+            if showsWorkbench {
                 appShell
             } else {
-                SettingsView(isInitialSetup: true)
+                SettingsView(
+                    isInitialSetup: true,
+                    qrScannerPresentation: initialSetupQRScannerPresentation
+                )
                     .environment(\.themeSystemColorScheme, colorScheme)
+            }
+        }
+        .onAppear {
+            workbenchPresentation.synchronize(
+                canEnterWorkbench: appStore.canEnterWorkbench,
+                hasSavedProfiles: hasSavedProfiles,
+                isInitialSetupScannerPresented: isInitialSetupScannerPresented
+            )
+        }
+        .onChange(of: showsWorkbench) { _, isVisible in
+            if isVisible {
+                workbenchPresentation.synchronize(
+                    canEnterWorkbench: appStore.canEnterWorkbench,
+                    hasSavedProfiles: hasSavedProfiles,
+                    isInitialSetupScannerPresented: isInitialSetupScannerPresented
+                )
             }
         }
         .task(id: appStore.activeHostScope) {
