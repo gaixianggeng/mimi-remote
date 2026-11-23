@@ -92,9 +92,6 @@ jobs:
     # 与 conversation-regressions 并行执行，避免 2 项真实图片卡点击 UI 回归串行拉长关键路径。
     runs-on: macos-26
     timeout-minutes: 25
-    env:
-      IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/ios-derived-data
-      TAILCAT_MOBILE_TOOL_DIR: ${{ runner.temp }}/tailcat-mobile-tools
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -130,7 +127,11 @@ jobs:
           ')"
           destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
-          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+          {
+            echo "IOS_TEST_DESTINATION=$destination"
+            echo "IOS_DERIVED_DATA_PATH=$RUNNER_TEMP/ios-derived-data"
+            echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools"
+          } >> "$GITHUB_ENV"
           # 在缓存恢复与编译期间提前冷启动 Simulator，缩短测试启动等待。
           xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
 
@@ -220,9 +221,6 @@ jobs:
     # 因此编译阶段会检查所有 iOS 26+ API 是否具备有效 availability fallback。
     runs-on: macos-26
     timeout-minutes: 35
-    env:
-      IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/ios-derived-data
-      TAILCAT_MOBILE_TOOL_DIR: ${{ runner.temp }}/tailcat-mobile-tools
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -263,7 +261,11 @@ jobs:
           ')"
           destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
-          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+          {
+            echo "IOS_TEST_DESTINATION=$destination"
+            echo "IOS_DERIVED_DATA_PATH=$RUNNER_TEMP/ios-derived-data"
+            echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools"
+          } >> "$GITHUB_ENV"
           # 在缓存恢复、前置静态检查与编译期间提前冷启动 Simulator，缩短测试启动等待。
           xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
 
@@ -432,7 +434,6 @@ jobs:
       IOS_RELEASE_EXPECTED_SDK_BUILD: 23F81a
       # 第一阶段只记录差异；Ruby 预检仍是实际构建号的唯一来源。
       IOS_ASC_BUILD_NUMBER_MODE: shadow
-      TAILCAT_MOBILE_TOOL_DIR: ${{ runner.temp }}/tailcat-mobile-tools
       TESTFLIGHT_WHATS_NEW: ${{ inputs.what_to_test }}
     steps:
       - name: Checkout clean release source
@@ -516,6 +517,7 @@ jobs:
           go_version="$(cd experiments/tailcat && go version && go env GOVERSION GOHOSTOS GOHOSTARCH)"
           tailcat_key="$(printf '%s\n%s\n%s\n' "$go_version" "$iphoneos_sdk" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
           echo "tailcat_key=$tailcat_key" >> "$GITHUB_OUTPUT"
+          echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools" >> "$GITHUB_ENV"
 
       - name: Cache Tailcat XCFramework and tools
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

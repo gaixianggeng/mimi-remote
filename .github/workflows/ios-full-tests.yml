@@ -29,9 +29,6 @@ jobs:
     # 仓库里的快照基线以这个环境为准。
     runs-on: macos-26
     timeout-minutes: 75
-    env:
-      IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/ios-derived-data
-      TAILCAT_MOBILE_TOOL_DIR: ${{ runner.temp }}/tailcat-mobile-tools
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -70,7 +67,11 @@ jobs:
           ')"
           destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
-          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+          {
+            echo "IOS_TEST_DESTINATION=$destination"
+            echo "IOS_DERIVED_DATA_PATH=$RUNNER_TEMP/ios-derived-data"
+            echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools"
+          } >> "$GITHUB_ENV"
           xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
 
       - name: Cache Tailcat XCFramework and tools
