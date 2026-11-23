@@ -109,6 +109,7 @@ protocol SessionStoreAPIClient {
     func claudeSlashCommands(cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand]
     func runtimeSlashCommands(runtimeProvider: String, cwd: String, sandboxMode: CodexAppServerSandboxMode, forceReload: Bool) async throws -> [ClaudeSlashCommand]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
+    func runtimeChannelDiagnostics() async -> [String: RuntimeChannelDiagnostic]
     /// 该 Runtime 的通道是否声明了目标任务（thread/goal/*）；决定是否展示目标入口（#791）。
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
@@ -251,6 +252,10 @@ extension SessionStoreAPIClient {
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         let value = runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return value.isEmpty || value == "codex" || value == "openai"
+    }
+
+    func runtimeChannelDiagnostics() async -> [String: RuntimeChannelDiagnostic] {
+        [:]
     }
 
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {

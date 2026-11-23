@@ -114,7 +114,10 @@ extension ComposerView {
     }
 
     var claudeSlashCommandCatalogKey: ClaudeSlashCommandCatalogKey? {
-        sessionStore.claudeSlashCommandCatalogKey(
+        guard sessionStore.selectedSession?.cwdMissing != true else {
+            return nil
+        }
+        return sessionStore.claudeSlashCommandCatalogKey(
             cwd: permissionProfileCWD,
             runtimeProvider: composerRuntimeProvider,
             sandboxMode: composerState.turnOptions.sandboxMode

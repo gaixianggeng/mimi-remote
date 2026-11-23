@@ -285,18 +285,146 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
 struct CodexAppServerChannelBridgeMetadata: Codable, Hashable {
     let name: String?
     let version: String?
+    let minimumVersion: String?
+    let cliVersion: String?
+    let minimumCLIVersion: String?
     let path: String?
     let status: String?
     let healthy: Bool?
     let lastProbeError: String?
+    let fix: String?
+
+    init(
+        name: String? = nil,
+        version: String? = nil,
+        minimumVersion: String? = nil,
+        cliVersion: String? = nil,
+        minimumCLIVersion: String? = nil,
+        path: String? = nil,
+        status: String? = nil,
+        healthy: Bool? = nil,
+        lastProbeError: String? = nil,
+        fix: String? = nil
+    ) {
+        self.name = name
+        self.version = version
+        self.minimumVersion = minimumVersion
+        self.cliVersion = cliVersion
+        self.minimumCLIVersion = minimumCLIVersion
+        self.path = path
+        self.status = status
+        self.healthy = healthy
+        self.lastProbeError = lastProbeError
+        self.fix = fix
+    }
 
     enum CodingKeys: String, CodingKey {
         case name
         case version
+        case minimumVersion = "minimum_version"
+        case cliVersion = "cli_version"
+        case minimumCLIVersion = "minimum_cli_version"
         case path
         case status
         case healthy
         case lastProbeError = "last_probe_error"
+        case fix
+    }
+}
+
+/// 通道不可用时的结构化诊断（B11/B13/B14），供工作区与错误提示直接向用户说明版本、安装或登录修复路径。
+struct RuntimeChannelDiagnostic: Equatable, Hashable, Sendable {
+    let provider: String
+    let status: String
+    let cliVersion: String?
+    let minimumCLIVersion: String?
+    let lastProbeError: String?
+    let fix: String?
+
+    static func from(channel: CodexAppServerChannelMetadata) -> Self? {
+        guard channel.enabled != false,
+              !channel.gatewayAvailable,
+              let bridge = channel.bridge else {
+            return nil
+        }
+        let status = bridge.status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let error = bridge.lastProbeError?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !status.isEmpty || (error?.isEmpty == false) else {
+            return nil
+        }
+        let provider = CodexAppServerSessionRuntime.normalizedRuntimeProvider(channel.runtimeID ?? channel.provider)
+        let extracted = Self.extractVersions(from: error)
+        return Self(
+            provider: provider.isEmpty ? channel.id : provider,
+            status: status,
+            cliVersion: bridge.cliVersion?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? extracted.current,
+            minimumCLIVersion: bridge.minimumCLIVersion?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? extracted.minimum,
+            lastProbeError: error?.nilIfEmpty,
+            fix: bridge.fix?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        )
+    }
+
+    var localizedTitle: String {
+        switch status {
+        case "agy_unsupported":
+            return L10n.text("ui.runtime_diagnostic_agy_unsupported_title")
+        case "agy_missing":
+            return L10n.text("ui.runtime_diagnostic_agy_missing_title")
+        case "agy_signed_out":
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_title")
+        case "claude_unsupported":
+            return L10n.text("ui.runtime_diagnostic_claude_unsupported_title")
+        default:
+            return L10n.text("ui.runtime_diagnostic_channel_unavailable_title")
+        }
+    }
+
+    var localizedMessage: String {
+        switch status {
+        case "agy_unsupported":
+            if let current = cliVersion, let minimum = minimumCLIVersion {
+                return L10n.format("ui.runtime_diagnostic_agy_unsupported_versions_message", current, minimum)
+            }
+            if let minimum = minimumCLIVersion {
+                return L10n.format("ui.runtime_diagnostic_agy_unsupported_minimum_message", minimum)
+            }
+            return L10n.text("ui.runtime_diagnostic_agy_unsupported_message")
+        case "agy_missing":
+            return L10n.text("ui.runtime_diagnostic_agy_missing_message")
+        case "agy_signed_out":
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_message")
+        case "claude_unsupported":
+            if let current = cliVersion, let minimum = minimumCLIVersion {
+                return L10n.format("ui.runtime_diagnostic_claude_unsupported_versions_message", current, minimum)
+            }
+            return L10n.text("ui.runtime_diagnostic_claude_unsupported_message")
+        default:
+            if let error = lastProbeError, let presentable = UserFacingError.presentableComputerReason(error) {
+                return presentable
+            }
+            return L10n.text("ui.runtime_diagnostic_channel_unavailable_message")
+        }
+    }
+
+    private static func extractVersions(from text: String?) -> (current: String?, minimum: String?) {
+        guard let text, !text.isEmpty,
+              let regex = try? NSRegularExpression(pattern: "\\b(\\d+\\.\\d+\\.\\d+)\\b") else {
+            return (nil, nil)
+        }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match -> String? in
+            guard let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
+        if matches.count >= 2 {
+            return (matches[0], matches[1])
+        }
+        return (matches.first, nil)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

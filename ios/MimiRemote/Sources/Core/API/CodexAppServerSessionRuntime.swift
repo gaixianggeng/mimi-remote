@@ -23,6 +23,7 @@ enum CodexAppServerProtocolDiagnostics {
 enum CodexAppServerSessionRuntimeError: LocalizedError {
     case invalidGatewayURL
     case gatewayUnavailable
+    case channelUnavailable(RuntimeChannelDiagnostic)
     case threadSearchUnavailable
     case threadGoalsUnavailable
     case projectNotFound(String)
@@ -43,6 +44,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.text("ui.app_server_gateway_url_is_invalid")
         case .gatewayUnavailable:
             return L10n.text("ui.agentd_does_not_enable_app_server_gateway_please")
+        case .channelUnavailable(let diagnostic):
+            return diagnostic.localizedMessage
         case .threadSearchUnavailable:
             return L10n.text("ui.currently_agentd_or_codex_app_server_does_not")
         case .threadGoalsUnavailable:
@@ -1353,6 +1356,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: loadMode,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
+            canRefreshThreadMetadata: runtimeSupportsMethod("thread/read", in: config),
             recoveringInterruptedTurnID: recoveringInterruptedTurnID
         )
     }
@@ -1371,6 +1375,7 @@ actor CodexAppServerSessionRuntime {
             loadMode: .full,
             projects: config.projects,
             canHydrateTurnItems: runtimeSupportsMethod("thread/items/list", in: config),
+            canRefreshThreadMetadata: runtimeSupportsMethod("thread/read", in: config),
             recoveringInterruptedTurnID: nil
         )
     }
@@ -1382,15 +1387,20 @@ actor CodexAppServerSessionRuntime {
         loadMode: HistoryMessagesPage.LoadMode,
         projects: [AgentProject],
         canHydrateTurnItems: Bool,
+        canRefreshThreadMetadata: Bool? = nil,
         recoveringInterruptedTurnID: TurnID?
     ) async throws -> HistoryMessagesPage {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let cursor = Self.decodeThreadTurnsCursor(before)
+        let supportsThreadRead = canRefreshThreadMetadata ?? true
+        let needsUncachedMetadata = contextsBySessionID[sessionID] == nil
+        let wantsOpportunisticAgyRefresh = cursor == nil && runtimeProvider == "agy"
         let threadMetadata = try await threadMetadataForHistoryPage(
             sessionID: sessionID,
             builder: builder,
             projects: projects,
-            shouldRefresh: contextsBySessionID[sessionID] == nil
+            shouldRefresh: supportsThreadRead && (needsUncachedMetadata || wantsOpportunisticAgyRefresh),
+            allowDegradedFallback: !needsUncachedMetadata
         )
         var thread = threadMetadata ?? historyThreadShell(sessionID: sessionID, projects: projects)
         let result: CodexAppServerJSONValue?
@@ -1419,12 +1429,13 @@ actor CodexAppServerSessionRuntime {
         guard let object = result?.objectValue else {
             throw AgentAPIError.invalidResponse
         }
-        if runtimeProvider == "claude" {
-            // turns/list 不携带持有态。等待期间 read/resume/接管可能更新它；只使用
-            // 返回后的缓存，不能让请求前的 metadata 把新的只读状态或解除结果写回去。
+        if runtimeProvider == "claude" || runtimeProvider == "agy" {
+            // turns/list 不携带持有态与目录缺失标记。等待期间 read/resume/接管可能更新它；
+            // 只使用返回后的缓存，不能让请求前的 metadata 把新的只读状态或解除结果写回去。
             let cachedThread = historyThreadShell(sessionID: sessionID, projects: projects)
             thread["canAcceptDirectInput"] = cachedThread["canAcceptDirectInput"]
             thread["claudeOwner"] = cachedThread["claudeOwner"]
+            thread["cwdMissing"] = cachedThread["cwdMissing"]
         }
         let validatedPage = try Self.validatedHistoryTurnsPage(object)
         let rawTurns = validatedPage.turns
@@ -1714,16 +1725,38 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         builder: CodexAppServerRequestBuilder,
         projects: [AgentProject],
-        shouldRefresh: Bool
+        shouldRefresh: Bool,
+        allowDegradedFallback: Bool = false
     ) async throws -> [String: CodexAppServerJSONValue]? {
         if !shouldRefresh {
             return nil
         }
-        let result = try await sendRecoveringFromStaleInitialization(
-            builder.threadRead(threadID: sessionID, includeTurns: false),
-            timeout: longRunningRequestTimeout
-        )
+        let result: CodexAppServerJSONValue?
+        do {
+            result = try await sendRecoveringFromStaleInitialization(
+                builder.threadRead(threadID: sessionID, includeTurns: false),
+                timeout: longRunningRequestTimeout
+            )
+        } catch {
+            if error is CancellationError {
+                throw error
+            }
+            if case CodexAppServerConnectionError.appServer(let failure) = error, failure.code == -32601 {
+                // 上游不支持 thread/read 时受控降级为已有上下文壳 + thread/turns/list，不阻断首屏历史加载（C11）。
+                return nil
+            }
+            if allowDegradedFallback {
+                if case CodexAppServerConnectionError.appServer(let failure) = error, failure.code == -32080 {
+                    throw error
+                }
+                return nil
+            }
+            throw error
+        }
         guard let thread = threadObject(from: result) else {
+            if allowDegradedFallback {
+                return nil
+            }
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
         if let session = try? agentSession(from: thread, projects: projects, fallbackProject: nil) {
@@ -1732,6 +1765,8 @@ actor CodexAppServerSessionRuntime {
                 cwd: session.dir,
                 activeTurnID: session.activeTurnID
             )
+            // 打开详情时把最新 thread/read 的运行态、外部持有方与路径缺失状态同步回列表与详情投影（C11/C14）。
+            emit(.session(session))
         }
         return thread
     }
@@ -1801,6 +1836,7 @@ actor CodexAppServerSessionRuntime {
                 // 分页历史不重新读取持有方。缓存壳必须保留只读及其原因，否则额度更新
                 // 再推送整条会话时会把提示清掉，直到下一次权威快照才恢复。
                 "canAcceptDirectInput": cached.canAcceptDirectInput.map { .bool($0) } ?? .null,
+                "cwdMissing": cached.cwdMissing.map { .bool($0) } ?? .null,
                 "claudeOwner": cached.claudeOwner.map { owner in .object([
                     "entrypoint": owner.entrypoint.map { .string($0) } ?? .null,
                     "kind": owner.kind.map { .string($0) } ?? .null,
@@ -3782,6 +3818,10 @@ actor CodexAppServerSessionRuntime {
         purpose: GatewayConnectionPurpose = .resident
     ) throws -> URL {
         guard runtimeGatewayAvailable(in: config) else {
+            if let channel = runtimeGatewayChannel(in: config),
+               let diagnostic = RuntimeChannelDiagnostic.from(channel: channel) {
+                throw CodexAppServerSessionRuntimeError.channelUnavailable(diagnostic)
+            }
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable
         }
         // config 只用于确认 gateway 能力；真实 URL 始终从当前连接代次的 endpoint 派生。

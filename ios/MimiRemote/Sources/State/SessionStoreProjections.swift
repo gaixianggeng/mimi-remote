@@ -243,6 +243,9 @@ extension SessionStore {
     }
 
     var selectedSessionControlNotice: String? {
+        if selectedSession?.cwdMissing == true {
+            return L10n.text("ui.session_cwd_missing_read_only_notice")
+        }
         guard isSelectedSessionObserving else {
             return nil
         }

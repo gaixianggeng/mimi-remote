@@ -1100,6 +1100,7 @@ struct WorkspaceRootView: View {
             ),
             selectedRuntime: $selectedSessionRuntime,
             availableRuntimeProviders: sessionStore.availableRuntimeProviders,
+            runtimeDiagnostic: sessionStore.workspaceRuntimeNotice(for: selectedSessionRuntime),
             onRetryUnavailable: { choice in
                 await sessionStore.retryRuntimeAvailability(choice.runtimeProvider)
             },

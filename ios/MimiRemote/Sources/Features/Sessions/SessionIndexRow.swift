@@ -690,6 +690,17 @@ struct SessionIndexRow: View {
 
             Spacer(minLength: 12)
 
+            if session.cwdMissing == true {
+                Text(L10n.text("ui.session_cwd_missing_badge"))
+                    .font(themeStore.uiFont(.caption2, weight: .medium))
+                    .foregroundStyle(tokens.warning)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(tokens.warning.opacity(0.12), in: Capsule())
+                    .accessibilityIdentifier("session.cwdMissingBadge")
+                    .layoutPriority(2)
+            }
+
             if let originBadgeTitle = session.antigravityOriginBadgeTitle {
                 SessionOriginBadge(title: originBadgeTitle)
                     .layoutPriority(2)

@@ -463,7 +463,11 @@ func (p *appServerGatewayPolicy) finishUpstreamThreadResponse(payload []byte, fr
 				target: "client",
 			}
 		}
+		// 先按本次最新响应更新授权缓存（含目录恢复后解除 cwdMissing/readOnly 状态），
+		// 再按最新缓存决定是否强制只读，避免目录恢复后详情仍被旧缺失缓存卡在只读（C14）。
+		p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
 		payload = p.enforceReadOnlyThreadResponse(payload, pending.threadID)
+		return payload, true, nil
 	}
 	p.completePendingThreadResponse(key, pending, p.threadsFromResult(frame.Result, pending))
 	// 成功响应先把 thread 写入连接级与全局 gateway 授权表，再释放
@@ -744,6 +748,10 @@ func (p *appServerGatewayPolicy) enforceReadOnlyThreadResponse(payload []byte, t
 		annotation = map[string]any{}
 	}
 	annotation["readOnly"] = true
+	if allowed.cwdMissing {
+		thread["cwdMissing"] = true
+		annotation["cwdMissing"] = true
+	}
 	thread["mimiRemote"] = annotation
 	rewritten, err := json.Marshal(response)
 	if err != nil {
@@ -781,12 +789,17 @@ func (p *appServerGatewayPolicy) validateReadOnlyThreadResponse(
 		return fmt.Errorf("thread/read 返回的只读子会话缺少可验证的 cwd")
 	}
 	scope, ok := p.router.gatewayScopeForPath(cwd)
+	if !ok && allowed.cwdMissing {
+		scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
+	}
 	if !ok || scope.id != allowed.scopeID {
 		return fmt.Errorf("thread/read 返回的只读子会话不在授权作用域")
 	}
-	info, err := os.Stat(scope.realPath)
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
+	if !scope.missing {
+		info, err := os.Stat(scope.realPath)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("thread/read 返回的只读子会话 cwd 不可用")
+		}
 	}
 	return nil
 }
@@ -1428,30 +1441,45 @@ func (p *appServerGatewayPolicy) threadsFromResult(raw json.RawMessage, pending 
 		}
 		cwd := firstNonEmpty(item.CWD, item.Path, pending.cwd)
 		scope, ok := p.router.gatewayScopeForPath(cwd)
+		if !ok && (pending.method == "thread/list" || pending.method == "thread/read") {
+			scope, ok = p.router.gatewayReadOnlyScopeForHistoryPath(cwd)
+		}
 		if !ok {
 			continue
 		}
-		readOnly := false
+		isSubagent := strings.TrimSpace(item.ParentThreadID) != ""
+		readOnlyBrowseScope := false
 		if pending.scopeID != "" && scope.id != pending.scopeID {
 			// 按仓库列出的同仓 worktree 会话按自己的作用域授权，其他一律不登记。
 			if pending.method != "thread/list" {
 				continue
 			}
-			if sameRepository == nil {
-				sameRepository = newGatewaySameRepository(pending.cwd)
+			if scope.missing {
+				pendingScope, pendingOK := p.router.gatewayReadOnlyScopeForHistoryPath(pending.cwd)
+				if !pendingOK || !realPathWithin(pendingScope.realPath, scope.realPath) {
+					continue
+				}
+			} else {
+				if sameRepository == nil {
+					sameRepository = newGatewaySameRepository(pending.cwd)
+				}
+				if !sameRepository.matches(scope.realPath) {
+					continue
+				}
 			}
-			if !sameRepository.matches(scope.realPath) {
-				continue
-			}
-			// 与全局发现一致：只在 browse_roots 内可见的 worktree 只读。
-			readOnly = scope.browse
+			// 与全局发现一致：只在 browse_roots 内可见或目录已缺失的会话只读。
+			readOnlyBrowseScope = scope.browse
 		}
+		readOnly := isSubagent || readOnlyBrowseScope || scope.missing
 		out = append(out, appServerGatewayAllowedThread{
 			id:                   strings.TrimSpace(id),
 			runtimeID:            normalizeAppServerRuntimeID(p.runtimeID),
 			canAcceptDirectInput: item.CanAcceptDirectInput != nil && *item.CanAcceptDirectInput && !readOnly,
 			directInputKnown:     item.CanAcceptDirectInput != nil || readOnly,
 			readOnly:             readOnly,
+			readOnlySubagent:     isSubagent,
+			readOnlyBrowseScope:  readOnlyBrowseScope,
+			cwdMissing:           scope.missing,
 			autoTitleEligible:    pending.method == "thread/start" && autoThreadTitleRuntimeSupported(p.runtimeID),
 			// browse 作用域用 canonical 路径绑定，避免同一目录的不同写法绕过精确匹配。
 			cwd:     scope.realPath,
@@ -1596,10 +1624,35 @@ func relatedThreadsForParent(ids []string, runtimeID string, cwd string, scopeID
 			directInputKnown:     true,
 			// MIM-24 Phase 1 只允许从父会话查看子 Thread。即使后续
 			// thread/read 返回 true，也不能把父侧派生出的权限升级成可写。
-			readOnly: true,
+			readOnly:         true,
+			readOnlySubagent: true,
 		})
 	}
 	return out
+}
+
+// mergeGatewayAllowedThread 合并连接级/全局授权记录：
+// 目录从缺失恢复为可用时仅清除 cwdMissing 导致的瞬态只读，
+// 子会话（readOnlySubagent）、browse_roots 只读（readOnlyBrowseScope）与其他永久只读原因一律保留（C14/C15）。
+func mergeGatewayAllowedThread(existing, incoming appServerGatewayAllowedThread) appServerGatewayAllowedThread {
+	pathRestored := existing.cwdMissing && !incoming.cwdMissing
+	existingPermanentReadOnly := existing.readOnlySubagent || existing.readOnlyBrowseScope || (existing.readOnly && !existing.cwdMissing)
+	incomingPermanentReadOnly := incoming.readOnlySubagent || incoming.readOnlyBrowseScope || (incoming.readOnly && !incoming.cwdMissing)
+	incoming.readOnlySubagent = incoming.readOnlySubagent || existing.readOnlySubagent
+	incoming.readOnlyBrowseScope = incoming.readOnlyBrowseScope || existing.readOnlyBrowseScope
+	if existing.cwdMissing && !pathRestored {
+		incoming.cwdMissing = true
+	}
+	permanentReadOnly := existingPermanentReadOnly || incomingPermanentReadOnly
+	incoming.readOnly = permanentReadOnly || incoming.cwdMissing
+	if incoming.readOnly {
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = false
+	} else if !pathRestored && !incoming.directInputKnown && existing.directInputKnown {
+		incoming.directInputKnown = true
+		incoming.canAcceptDirectInput = existing.canAcceptDirectInput
+	}
+	return incoming
 }
 
 func (p *appServerGatewayPolicy) allowThread(thread appServerGatewayAllowedThread) {
@@ -1618,14 +1671,7 @@ func (p *appServerGatewayPolicy) normalizeAllowedThread(thread appServerGatewayA
 		return appServerGatewayAllowedThread{}, false
 	}
 	if existing, ok := p.allowedThread(thread.id); ok {
-		if existing.readOnly {
-			thread.readOnly = true
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = false
-		} else if !thread.directInputKnown && existing.directInputKnown {
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = existing.canAcceptDirectInput
-		}
+		thread = mergeGatewayAllowedThread(existing, thread)
 	}
 	if strings.TrimSpace(thread.runtimeID) == "" {
 		thread.runtimeID = normalizeAppServerRuntimeID(p.runtimeID)
@@ -1698,14 +1744,7 @@ func (r *Router) allowGatewayThread(thread appServerGatewayAllowedThread) {
 	thread.lastSeen = now
 	r.gatewayThreadsMu.Lock()
 	if existing, ok := r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)]; ok {
-		if existing.readOnly {
-			thread.readOnly = true
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = false
-		} else if !thread.directInputKnown && existing.directInputKnown {
-			thread.directInputKnown = true
-			thread.canAcceptDirectInput = existing.canAcceptDirectInput
-		}
+		thread = mergeGatewayAllowedThread(existing, thread)
 	}
 	r.gatewayThreads[gatewayThreadCacheKey(thread.runtimeID, thread.id)] = thread
 	r.pruneGatewayThreadsLocked(now)

@@ -1,18 +1,27 @@
+import { execFile } from "node:child_process";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { ThreadItem } from "@mimi/appserver-kit/protocol/codex/v2/ThreadItem.ts";
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { TurnStatus } from "@mimi/appserver-kit/protocol/codex/v2/TurnStatus.ts";
 import type { UserInput } from "@mimi/appserver-kit/protocol/codex/v2/UserInput.ts";
 import { resolveAgyDataPaths, type AgySessionOrigin } from "./env.ts";
-import { acpToolToThreadItem, type AcpToolState } from "./tools.ts";
+import { acpToolToThreadItem, stableToolItemId, type AcpToolState } from "./tools.ts";
+
+const execFileAsync = promisify(execFile);
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const EXTERNAL_BUSY_WINDOW_MS = 90_000;
+const EXTERNAL_RUNNING_TOOL_WINDOW_MS = 10 * 60_000;
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
-const TAIL_READ_BYTES = 24 * 1024;
+const TAIL_READ_BYTES = 64 * 1024;
+const LARGE_TAIL_READ_BYTES = 256 * 1024;
+const PS_CACHE_TTL_MS = 300;
 
 interface TranscriptToolCall {
+  id?: string;
+  call_id?: string;
   name?: string;
   args?: Record<string, unknown>;
 }
@@ -39,6 +48,93 @@ export interface TranscriptActivityInfo {
   size: number;
   mtimeMs: number;
   externallyBusy: boolean;
+  holderPid?: number | null;
+}
+
+export interface TranscriptTurnSnapshot {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  userInputs: string[];
+  userInputStepIndices?: Array<number | null>;
+  plannerResponseCount: number;
+  stepCount: number;
+}
+
+export interface NativeToolStepLifecycle {
+  callStepOrder: number;
+  callBatchSize: number;
+  hadInFlightAtCall: boolean;
+  endStepOrder: number | null;
+}
+
+export interface NativeTranscriptTurnMeta {
+  userStepIndex?: number;
+  userCreatedAtMs?: number;
+}
+
+const nativeTurnMetaMap = new WeakMap<Turn, NativeTranscriptTurnMeta>();
+const nativeToolLifecycleMap = new WeakMap<ThreadItem, NativeToolStepLifecycle>();
+
+export function getNativeTranscriptTurnMeta(turn: Turn): NativeTranscriptTurnMeta | undefined {
+  return nativeTurnMetaMap.get(turn);
+}
+
+export function copyNativeTranscriptTurnMeta(from: Turn, to: Turn): void {
+  const meta = nativeTurnMetaMap.get(from);
+  if (meta) {
+    nativeTurnMetaMap.set(to, meta);
+  }
+}
+
+export function copyNativeToolStepLifecycle(from: ThreadItem, to: ThreadItem): void {
+  const lifecycle = nativeToolLifecycleMap.get(from);
+  if (lifecycle) {
+    nativeToolLifecycleMap.set(to, lifecycle);
+  }
+}
+
+/**
+ * 基于原生 transcript 步骤证据判断一组工具项是否严格串行（无并发重叠，B15 round5）：
+ * 仅当每个工具都来自单工具 PLANNER_RESPONSE、发起时无在途工具、且前一个工具在后一个发起前
+ * 已收到终态 GENERIC 结果时返回 true。只有此时旧版按完成顺序记录的 toolMappings 才必然与
+ * transcript 顺序一致，不会把逆序完成的旧并发工具错绑到彼此 ID。
+ */
+export function areNativeToolsProvablySerial(items: readonly ThreadItem[]): boolean {
+  if (items.length < 2) return true;
+  let prev: NativeToolStepLifecycle | undefined;
+  for (const item of items) {
+    const lifecycle = nativeToolLifecycleMap.get(item);
+    if (!lifecycle) return false;
+    if (lifecycle.callBatchSize !== 1 || lifecycle.hadInFlightAtCall) {
+      return false;
+    }
+    if (prev) {
+      if (prev.callStepOrder >= lifecycle.callStepOrder) return false;
+      if (prev.endStepOrder === null || prev.endStepOrder >= lifecycle.callStepOrder) return false;
+    }
+    prev = lifecycle;
+  }
+  return true;
+}
+
+export type TranscriptSnapshotResult =
+  | { kind: "present"; snapshot: TranscriptTurnSnapshot }
+  | { kind: "missing" }
+  | { kind: "error"; reason: string; error?: string };
+
+export interface ExternalWriteBaseline {
+  userInputCount: number;
+  expectedPromptText: string;
+  hasTranscript?: boolean;
+  initialReadFailed?: boolean;
+  approvalUserInputCount?: number;
+  approvalPlannerResponseCount?: number;
+}
+
+export interface ExternalWriteDetection {
+  detected: boolean;
+  reason?: string;
 }
 
 function brainDirForOrigin(origin: AgySessionOrigin, env: NodeJS.ProcessEnv): string {
@@ -47,29 +143,60 @@ function brainDirForOrigin(origin: AgySessionOrigin, env: NodeJS.ProcessEnv): st
   return path.join(root, "brain");
 }
 
-export async function resolveTranscriptPath(
+function isNotExistError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+type TranscriptPathLookupResult =
+  | { kind: "present"; path: string }
+  | { kind: "missing" }
+  | { kind: "error"; reason: string; error?: string };
+
+async function resolveTranscriptPathDetailed(
   sessionId: string,
   origin: AgySessionOrigin,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<string | undefined> {
-  if (!SAFE_SESSION_ID.test(sessionId)) return undefined;
+): Promise<TranscriptPathLookupResult> {
+  if (!SAFE_SESSION_ID.test(sessionId)) {
+    return { kind: "error", reason: "invalid_session_id" };
+  }
   const logsDir = path.join(brainDirForOrigin(origin, env), sessionId, ".system_generated", "logs");
   for (const name of ["transcript_full.jsonl", "transcript.jsonl"]) {
     const candidate = path.join(logsDir, name);
     try {
       const info = await stat(candidate);
-      if (info.isFile() && info.size > 0) return candidate;
-    } catch {
-      // 不存在时尝试下一个候选文件。
+      if (!info.isFile()) {
+        return { kind: "error", reason: "transcript_not_a_file" };
+      }
+      if (info.size > 0) return { kind: "present", path: candidate };
+    } catch (error) {
+      if (isNotExistError(error)) {
+        continue;
+      }
+      return {
+        kind: "error",
+        reason: "transcript_stat_failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
-  return undefined;
+  return { kind: "missing" };
 }
 
-async function readTailSteps(filePath: string, fileSize: number): Promise<TranscriptStep[]> {
+export async function resolveTranscriptPath(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  const resolved = await resolveTranscriptPathDetailed(sessionId, origin, env);
+  return resolved.kind === "present" ? resolved.path : undefined;
+}
+
+async function readTailSteps(filePath: string, fileSize: number, maxBytes = TAIL_READ_BYTES): Promise<TranscriptStep[]> {
   const handle = await open(filePath, "r");
   try {
-    const start = Math.max(0, fileSize - TAIL_READ_BYTES);
+    const start = Math.max(0, fileSize - maxBytes);
     const length = fileSize - start;
     const buffer = Buffer.alloc(length);
     await handle.read(buffer, 0, length, start);
@@ -96,7 +223,8 @@ async function readTailSteps(filePath: string, fileSize: number): Promise<Transc
 
 function isStepIndicatingExternalActivity(step: TranscriptStep | undefined): boolean {
   if (!step) return false;
-  if (step.status === "RUNNING") return true;
+  const status = typeof step.status === "string" ? step.status.toUpperCase() : "";
+  if (status === "RUNNING" || status === "IN_PROGRESS" || status === "PENDING") return true;
   if (step.type === "USER_INPUT" || step.type === "SYSTEM_MESSAGE") return true;
   if (step.type === "GENERIC") return true;
   if (step.type === "PLANNER_RESPONSE") {
@@ -107,31 +235,327 @@ function isStepIndicatingExternalActivity(step: TranscriptStep | undefined): boo
   return false;
 }
 
+/**
+ * 分析最新一轮（最后一个 `USER_INPUT` 之后）的原生 transcript 步骤，判断是否存在未结束的外部持有状态（C11）：
+ * 真实 `agy` 在长命令（例如 `sleep 55`）执行期间，会先追加 `GENERIC (RUNNING)`，随后在命令尚未退出时
+ * 写一条中间 `PLANNER_RESPONSE (DONE, "Waiting for sleep 55 to finish.")`，直到命令退出才追加
+ * `SYSTEM_MESSAGE` 与最终 `PLANNER_RESPONSE`。仅看最后一条 `PLANNER_RESPONSE` 会提前误判为空闲，
+ * 必须结合尚未收到完成信号的 `RUNNING` 步骤共同判定。
+ */
+export function analyzeLatestTurnExternalBusy(steps: readonly TranscriptStep[]): {
+  busy: boolean;
+  hasUnresolvedRunningTool: boolean;
+} {
+  let lastUserIdx = -1;
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    if (steps[i]?.type === "USER_INPUT") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const turnSteps = lastUserIdx >= 0 ? steps.slice(lastUserIdx) : steps;
+  let runningToolActive = false;
+  let toolCompletionSignaled = false;
+  const unresolvedRunningStepIndices = new Set<number>();
+
+  for (const step of turnSteps) {
+    const status = typeof step.status === "string" ? step.status.toUpperCase() : "";
+    const isTerminalStatus =
+      status === "DONE"
+      || status === "COMPLETED"
+      || status === "ERROR"
+      || status === "FAILED"
+      || status === "CANCELLED"
+      || status === "CANCELED"
+      || status === "INTERRUPTED";
+
+    if (status === "RUNNING" || status === "IN_PROGRESS" || status === "PENDING") {
+      runningToolActive = true;
+      toolCompletionSignaled = false;
+      if (typeof step.step_index === "number") {
+        unresolvedRunningStepIndices.add(step.step_index);
+      }
+      continue;
+    }
+
+    if (typeof step.step_index === "number" && unresolvedRunningStepIndices.has(step.step_index) && isTerminalStatus) {
+      unresolvedRunningStepIndices.delete(step.step_index);
+      if (unresolvedRunningStepIndices.size === 0) {
+        runningToolActive = false;
+      }
+    }
+
+    if (step.type === "SYSTEM_MESSAGE" && runningToolActive) {
+      toolCompletionSignaled = true;
+      continue;
+    }
+
+    if (
+      step.type === "ERROR_MESSAGE"
+      || status === "CANCELLED"
+      || status === "CANCELED"
+      || status === "INTERRUPTED"
+    ) {
+      runningToolActive = false;
+      toolCompletionSignaled = false;
+      unresolvedRunningStepIndices.clear();
+      continue;
+    }
+
+    if (step.type === "PLANNER_RESPONSE") {
+      const hasToolCalls = Array.isArray(step.tool_calls) && step.tool_calls.length > 0;
+      const hasReplyText = typeof step.content === "string" && step.content.trim().length > 0;
+      const isDone = status === "DONE" || status === "COMPLETED";
+      if (hasToolCalls) {
+        toolCompletionSignaled = false;
+      } else if (isDone && hasReplyText && runningToolActive && toolCompletionSignaled) {
+        runningToolActive = false;
+        toolCompletionSignaled = false;
+        unresolvedRunningStepIndices.clear();
+      }
+    }
+  }
+
+  if (runningToolActive) {
+    return { busy: true, hasUnresolvedRunningTool: true };
+  }
+  const lastMeaningful = [...turnSteps].reverse().find((s) => s.type !== "CHECKPOINT");
+  return {
+    busy: isStepIndicatingExternalActivity(lastMeaningful),
+    hasUnresolvedRunningTool: false,
+  };
+}
+
+let cachedPsSnapshot: { at: number; lines: Array<{ pid: number; args: string }> } | undefined;
+
+async function listSystemProcesses(options?: { bypassCache?: boolean }): Promise<Array<{ pid: number; args: string }>> {
+  if (process.platform === "win32") return [];
+  const now = Date.now();
+  if (!options?.bypassCache && cachedPsSnapshot && now - cachedPsSnapshot.at < PS_CACHE_TTL_MS) {
+    return cachedPsSnapshot.lines;
+  }
+  try {
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,args="], { timeout: 1_000, maxBuffer: 2 * 1024 * 1024 });
+    const lines: Array<{ pid: number; args: string }> = [];
+    for (const raw of stdout.split("\n")) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      const match = /^(\d+)\s+([\s\S]+)$/.exec(trimmed);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (Number.isInteger(pid) && pid > 0) {
+        lines.push({ pid, args: match[2]! });
+      }
+    }
+    cachedPsSnapshot = { at: Date.now(), lines };
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+export async function findExternalAgyHolderPid(
+  sessionId: string,
+  ownPids: ReadonlySet<number> = new Set(),
+  options?: { bypassCache?: boolean },
+): Promise<number | null> {
+  if (!SAFE_SESSION_ID.test(sessionId) || sessionId.length < 4) return null;
+  const procs = await listSystemProcesses(options);
+  for (const proc of procs) {
+    if (proc.pid === process.pid || ownPids.has(proc.pid)) continue;
+    if (!proc.args.includes(sessionId)) continue;
+    if (
+      proc.args.includes(`--conversation ${sessionId}`)
+      || proc.args.includes(`--conversation=${sessionId}`)
+      || /\bagy\b/.test(proc.args)
+    ) {
+      return proc.pid;
+    }
+  }
+  return null;
+}
+
+export interface InspectExternalActivityOptions {
+  nowMs?: number;
+  ownPids?: ReadonlySet<number>;
+  /** 写路径与回合预留前绕过 300ms 进程快照缓存，实时复核当前外部持有者（C11 round5）。 */
+  bypassProcessCache?: boolean;
+  findExternalHolderPid?: (
+    sessionId: string,
+    ownPids: ReadonlySet<number>,
+    options?: { bypassCache?: boolean },
+  ) => Promise<number | null>;
+}
+
 export async function inspectTranscriptActivity(
   sessionId: string,
   origin: AgySessionOrigin,
   env: NodeJS.ProcessEnv = process.env,
-  nowMs = Date.now(),
+  nowMsOrOptions: number | InspectExternalActivityOptions = Date.now(),
 ): Promise<TranscriptActivityInfo | undefined> {
+  const opts: InspectExternalActivityOptions =
+    typeof nowMsOrOptions === "number" ? { nowMs: nowMsOrOptions } : nowMsOrOptions;
+  const nowMs = opts.nowMs ?? Date.now();
+  const ownPids = opts.ownPids ?? new Set<number>();
+  const pidFinder = opts.findExternalHolderPid ?? findExternalAgyHolderPid;
+  const holderPid = await pidFinder(sessionId, ownPids, {
+    ...(opts.bypassProcessCache ? { bypassCache: true } : {}),
+  }).catch(() => null);
+
   const filePath = await resolveTranscriptPath(sessionId, origin, env);
-  if (!filePath) return undefined;
+  if (!filePath) {
+    if (holderPid !== null) {
+      return {
+        path: "",
+        size: 0,
+        mtimeMs: nowMs,
+        externallyBusy: true,
+        holderPid,
+      };
+    }
+    return undefined;
+  }
   try {
     const info = await stat(filePath);
-    let externallyBusy = false;
-    if (nowMs - info.mtimeMs <= EXTERNAL_BUSY_WINDOW_MS) {
-      const tailSteps = await readTailSteps(filePath, info.size);
-      const lastMeaningful = [...tailSteps].reverse().find((s) => s.type !== "CHECKPOINT");
-      externallyBusy = isStepIndicatingExternalActivity(lastMeaningful);
+    let externallyBusy = holderPid !== null;
+    if (!externallyBusy && nowMs - info.mtimeMs <= EXTERNAL_RUNNING_TOOL_WINDOW_MS) {
+      let tailSteps = await readTailSteps(filePath, info.size, TAIL_READ_BYTES);
+      if (info.size > TAIL_READ_BYTES && !tailSteps.some((step) => step.type === "USER_INPUT")) {
+        tailSteps = await readTailSteps(filePath, info.size, LARGE_TAIL_READ_BYTES);
+      }
+      const analysis = analyzeLatestTurnExternalBusy(tailSteps);
+      const ageMs = nowMs - info.mtimeMs;
+      if (analysis.hasUnresolvedRunningTool) {
+        externallyBusy = ageMs <= EXTERNAL_RUNNING_TOOL_WINDOW_MS;
+      } else {
+        externallyBusy = analysis.busy && ageMs <= EXTERNAL_BUSY_WINDOW_MS;
+      }
     }
     return {
       path: filePath,
       size: info.size,
       mtimeMs: info.mtimeMs,
       externallyBusy,
+      ...(holderPid !== null ? { holderPid } : {}),
     };
   } catch {
+    if (holderPid !== null) {
+      return {
+        path: filePath,
+        size: 0,
+        mtimeMs: nowMs,
+        externallyBusy: true,
+        holderPid,
+      };
+    }
     return undefined;
   }
+}
+
+function normalizePromptCompare(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export async function snapshotTranscriptStateDetailed(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TranscriptSnapshotResult> {
+  const resolved = await resolveTranscriptPathDetailed(sessionId, origin, env);
+  if (resolved.kind !== "present") {
+    return resolved;
+  }
+  const filePath = resolved.path;
+  try {
+    const [info, raw] = await Promise.all([stat(filePath), readFile(filePath, "utf8")]);
+    if (!info.isFile()) {
+      return { kind: "error", reason: "transcript_not_a_file" };
+    }
+    const userInputs: string[] = [];
+    const userInputStepIndices: Array<number | null> = [];
+    let plannerResponseCount = 0;
+    let stepCount = 0;
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (error) {
+        return {
+          kind: "error",
+          reason: "malformed_transcript",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { kind: "error", reason: "malformed_transcript" };
+      }
+      const step = parsed as TranscriptStep;
+      stepCount += 1;
+      if (step.type === "USER_INPUT") {
+        userInputs.push(normalizePromptCompare(formatTranscriptUserText(step.content ?? "")));
+        userInputStepIndices.push(typeof step.step_index === "number" ? step.step_index : null);
+      } else if (step.type === "PLANNER_RESPONSE") {
+        plannerResponseCount += 1;
+      }
+    }
+    return {
+      kind: "present",
+      snapshot: {
+        path: filePath,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        userInputs,
+        userInputStepIndices,
+        plannerResponseCount,
+        stepCount,
+      },
+    };
+  } catch (error) {
+    if (isNotExistError(error)) {
+      return { kind: "missing" };
+    }
+    return {
+      kind: "error",
+      reason: "transcript_read_failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export async function snapshotTranscriptState(
+  sessionId: string,
+  origin: AgySessionOrigin,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<TranscriptTurnSnapshot | undefined> {
+  const result = await snapshotTranscriptStateDetailed(sessionId, origin, env);
+  return result.kind === "present" ? result.snapshot : undefined;
+}
+
+export function detectExternalConcurrentWrite(
+  baseline: ExternalWriteBaseline,
+  current: TranscriptTurnSnapshot | undefined,
+): ExternalWriteDetection {
+  if (!current) return { detected: false };
+  const newUserInputs = current.userInputs.slice(baseline.userInputCount);
+  if (newUserInputs.length > 1) {
+    return { detected: true, reason: "multiple_user_inputs_during_active_turn" };
+  }
+  const expected = normalizePromptCompare(baseline.expectedPromptText);
+  if (newUserInputs.length === 1 && expected) {
+    const observed = newUserInputs[0] ?? "";
+    if (observed && observed !== expected && !observed.includes(expected) && !expected.includes(observed)) {
+      return { detected: true, reason: "mismatched_user_input_during_active_turn" };
+    }
+  }
+  if (
+    baseline.approvalUserInputCount !== undefined
+    && current.userInputs.length > baseline.approvalUserInputCount
+  ) {
+    return { detected: true, reason: "external_user_input_during_pending_approval" };
+  }
+  return { detected: false };
 }
 
 interface ParsedMention {
@@ -287,6 +711,7 @@ interface PendingToolSlot {
   turnIndex: number;
   itemIndex: number;
   state: AcpToolState;
+  lifecycle: NativeToolStepLifecycle;
 }
 
 export async function readTranscriptTurns(
@@ -314,14 +739,18 @@ export async function readTranscriptTurns(
     userSeq: number;
     reasoningSeq: number;
     msgSeq: number;
+    toolSeq: number;
     startedAtMs: number | null;
     completedAtMs: number | null;
+    userStepIndex?: number;
     toolStates: Map<string, AcpToolState>;
+    toolLifecyclesByItemIndex: Map<number, NativeToolStepLifecycle>;
+    terminalStatus?: "failed" | "interrupted";
+    errorMessage?: string;
   }
 
   const turns: TurnDraft[] = [];
   let current: TurnDraft | undefined;
-  let seq = 0;
   const pendingTools: PendingToolSlot[] = [];
 
   const nextTurn = (startedAtMs: number | null): TurnDraft => {
@@ -332,20 +761,26 @@ export async function readTranscriptTurns(
       userSeq: 0,
       reasoningSeq: 0,
       msgSeq: 0,
+      toolSeq: 0,
       startedAtMs,
       completedAtMs: startedAtMs,
       toolStates: new Map(),
+      toolLifecyclesByItemIndex: new Map(),
     };
     turns.push(draft);
     current = draft;
     return draft;
   };
 
-  for (const step of steps) {
+  for (let stepOrder = 0; stepOrder < steps.length; stepOrder += 1) {
+    const step = steps[stepOrder]!;
     const stepMs = parseIsoMs(step.created_at);
     if (step.type === "USER_INPUT") {
       pendingTools.length = 0;
       const draft = nextTurn(stepMs);
+      if (typeof step.step_index === "number") {
+        draft.userStepIndex = step.step_index;
+      }
       const text = formatTranscriptUserText(step.content ?? "");
       const mediaInputs = await loadMediaInputs(step.media);
       const content: UserInput[] = [];
@@ -366,6 +801,29 @@ export async function readTranscriptTurns(
     if (step.type === "PLANNER_RESPONSE") {
       const draft = current ?? nextTurn(stepMs);
       if (stepMs !== null) draft.completedAtMs = stepMs;
+      const normalizedStatus = typeof step.status === "string" ? step.status.toUpperCase() : "";
+      const isCancelledPlanner =
+        normalizedStatus === "CANCELLED" || normalizedStatus === "CANCELED" || normalizedStatus === "INTERRUPTED";
+      const isErrorPlanner = normalizedStatus === "ERROR" || normalizedStatus === "FAILED";
+      const hasToolCalls = Array.isArray(step.tool_calls) && step.tool_calls.length > 0;
+      const hasReplyText = typeof step.content === "string" && step.content.trim().length > 0;
+      const isReliableTerminalSuccess =
+        (normalizedStatus === "DONE" || normalizedStatus === "COMPLETED")
+        && !hasToolCalls
+        && hasReplyText;
+      if (isCancelledPlanner && draft.terminalStatus !== "failed") {
+        draft.terminalStatus = "interrupted";
+      } else if (
+        !isCancelledPlanner
+        && !isErrorPlanner
+        && draft.terminalStatus === "failed"
+        && isReliableTerminalSuccess
+      ) {
+        // 仅在收到可靠的原生终态成功标记（DONE/COMPLETED 且含最终回复文本、无未完成工具调用）时，
+        // 才清除先前的可恢复中间 ERROR_MESSAGE；非终态/流式/带工具调用的 planner 文本绝不清除失败态（B10）。
+        draft.terminalStatus = undefined;
+        draft.errorMessage = undefined;
+      }
       if (typeof step.thinking === "string" && step.thinking.trim()) {
         draft.reasoningSeq += 1;
         draft.items.push({
@@ -389,11 +847,14 @@ export async function readTranscriptTurns(
       }
       if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
         const turnIndex = turns.length - 1;
+        const callBatchSize = step.tool_calls.length;
+        const hadInFlightAtCall = pendingTools.length > 0;
         for (const call of step.tool_calls) {
           const name = call.name?.trim() || "tool";
           const args = decodeToolArgs(call.args);
-          seq += 1;
-          const toolCallId = `${sessionId}:tool:${step.step_index ?? seq}:${seq}`;
+          draft.toolSeq += 1;
+          const nativeId = (typeof call.id === "string" && call.id.trim()) || (typeof call.call_id === "string" && call.call_id.trim()) || "";
+          const toolCallId = nativeId ? stableToolItemId(draft.id, nativeId) : `${draft.id}:tool:${draft.toolSeq}`;
           const targetPath = [args.Path, args.TargetFile, args.path, args.file_path].find(
             (v): v is string => typeof v === "string" && v.trim().length > 0,
           );
@@ -407,8 +868,15 @@ export async function readTranscriptTurns(
           };
           draft.toolStates.set(toolCallId, state);
           const itemIndex = draft.items.length;
+          const lifecycle: NativeToolStepLifecycle = {
+            callStepOrder: stepOrder,
+            callBatchSize,
+            hadInFlightAtCall,
+            endStepOrder: null,
+          };
+          draft.toolLifecyclesByItemIndex.set(itemIndex, lifecycle);
           draft.items.push(acpToolToThreadItem(state, cwd, true));
-          pendingTools.push({ turnIndex, itemIndex, state });
+          pendingTools.push({ turnIndex, itemIndex, state, lifecycle });
         }
       }
       continue;
@@ -421,6 +889,9 @@ export async function readTranscriptTurns(
       const draft = turns[slot.turnIndex];
       if (!draft) continue;
       const status = step.status === "ERROR" ? "failed" : step.status === "RUNNING" ? "in_progress" : "completed";
+      if (status === "completed" || status === "failed") {
+        slot.lifecycle.endStepOrder = stepOrder;
+      }
       const updated: AcpToolState = {
         ...slot.state,
         status,
@@ -431,49 +902,73 @@ export async function readTranscriptTurns(
       continue;
     }
 
-    if (step.type === "ERROR_MESSAGE" && typeof step.content === "string" && step.content.trim()) {
+    if (step.type === "ERROR_MESSAGE") {
       const draft = current ?? nextTurn(stepMs);
       if (stepMs !== null) draft.completedAtMs = stepMs;
-      draft.msgSeq += 1;
-      draft.items.push({
-        type: "agentMessage",
-        id: `${draft.id}:msg:${draft.msgSeq}`,
-        text: step.content.trim(),
-        phase: null,
-        memoryCitation: null,
-        delivery: null,
-        questions: null,
-      });
+      draft.terminalStatus = "failed";
+      const errText = typeof step.content === "string" ? step.content.trim() : "";
+      if (errText) {
+        draft.errorMessage = errText;
+      }
+      continue;
+    }
+
+    const normalizedStepStatus = typeof step.status === "string" ? step.status.toUpperCase() : "";
+    if (
+      current
+      && (normalizedStepStatus === "CANCELLED" || normalizedStepStatus === "CANCELED" || normalizedStepStatus === "INTERRUPTED")
+      && current.terminalStatus !== "failed"
+    ) {
+      current.terminalStatus = "interrupted";
     }
   }
 
   const lastTurn = turns[turns.length - 1];
   return turns.map((draft) => {
     const isLastTurn = draft === lastTurn;
-    const isActiveTurn = isLastTurn && running;
-    const toolsPending = isLastTurn && (running || holderActive);
-    const finalizedItems = draft.items.map((item) => {
+    const isActiveTurn = isLastTurn && (running || holderActive);
+    const toolsPending = isActiveTurn;
+    const finalizedItems = draft.items.map((item, itemIndex) => {
       const state = draft.toolStates.get(item.id);
-      if (!state) return item;
-      return acpToolToThreadItem(state, cwd, toolsPending);
+      const finalized = state ? acpToolToThreadItem(state, cwd, toolsPending) : item;
+      const lifecycle = draft.toolLifecyclesByItemIndex.get(itemIndex);
+      if (lifecycle) {
+        nativeToolLifecycleMap.set(finalized, lifecycle);
+      }
+      return finalized;
     });
-    const status: TurnStatus = isActiveTurn ? "inProgress" : "completed";
+    const status: TurnStatus = isActiveTurn ? "inProgress" : (draft.terminalStatus ?? "completed");
+    const error =
+      !isActiveTurn && status === "failed"
+        ? {
+            message: draft.errorMessage ?? "Antigravity turn failed",
+            codexErrorInfo: null,
+            additionalDetails: null,
+            misalignment: null,
+          }
+        : null;
     const startedAt = draft.startedAtMs !== null ? Math.floor(draft.startedAtMs / 1000) : null;
     const completedAt = !isActiveTurn && draft.completedAtMs !== null ? Math.floor(draft.completedAtMs / 1000) : null;
     const durationMs =
       !isActiveTurn && draft.startedAtMs !== null && draft.completedAtMs !== null && draft.completedAtMs >= draft.startedAtMs
         ? draft.completedAtMs - draft.startedAtMs
         : null;
-    return {
+    const turn: Turn = {
       id: draft.id,
       rootTurnId: null,
       items: finalizedItems,
       itemsView: "full",
       status,
-      error: null,
+      error,
       startedAt,
       completedAt,
       durationMs,
     };
+    const meta: NativeTranscriptTurnMeta = {
+      ...(draft.userStepIndex !== undefined ? { userStepIndex: draft.userStepIndex } : {}),
+      ...(draft.startedAtMs !== null ? { userCreatedAtMs: draft.startedAtMs } : {}),
+    };
+    nativeTurnMetaMap.set(turn, meta);
+    return turn;
   });
 }

@@ -10,7 +10,7 @@ import {
   type ProbeAgy,
   type SpawnAgyTransport,
 } from "./agy/binary.ts";
-import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend } from "./agy/catalog.ts";
+import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend, type AgySessionBackend, type OtherListDiagnostic } from "./agy/catalog.ts";
 import { acpCommandDiscovery, CommandCatalog, type DiscoverAgyCommands } from "./agy/commands.ts";
 import { appDataDirForOrigin, defaultAgyExecutable } from "./agy/env.ts";
 import { GitRepoIndex } from "./agy/git.ts";
@@ -67,6 +67,8 @@ export interface AppOptions {
   discoverCommands?: DiscoverAgyCommands;
   env?: () => NodeJS.ProcessEnv;
   idleCloseMs?: number;
+  externalWritePollMs?: number;
+  onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void;
 }
 
 export interface App {
@@ -91,7 +93,13 @@ export function createApp(options: AppOptions): App {
   let historyRef: AgyHistoryStore | undefined;
   const backend =
     options.sessionBackend ??
-    createAcpSessionBackend(cliSharedAcp, otherSharedAcp, env, (sessionId) => managerRef?.get(sessionId)?.hasLiveProcess() ?? false);
+    createAcpSessionBackend(
+      cliSharedAcp,
+      otherSharedAcp,
+      env,
+      (sessionId) => managerRef?.get(sessionId)?.hasLiveProcess() ?? false,
+      options.onOtherListDiagnostic,
+    );
 
   const models = new ModelCatalog({
     discover: options.discoverModels ?? acpModelDiscovery(cliSharedAcp),
@@ -108,14 +116,21 @@ export function createApp(options: AppOptions): App {
   const manager = new ThreadManager({
     acquireClient: (appDataDirName) => (appDataDirName === otherAppDataDir ? otherSharedAcp.acquire() : cliSharedAcp.acquire()),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
+    ...(options.externalWritePollMs !== undefined ? { externalWritePollMs: options.externalWritePollMs } : {}),
     onSessionOpen: (open) => models.observeSessionOpen(open),
     onAvailableCommands: (cwd, cmds) => commands.observeLiveCommands(cwd, cmds),
     onTurnPersisted: (threadId, patch) => {
       catalogRef?.invalidate();
+      historyRef?.invalidate(threadId);
       void overlay.recordSession(threadId, patch);
     },
+    reserveTurnAttempt: (threadId, info) => overlay.reserveTurnAttempt(threadId, info),
     existingTurnCount: (threadId) => historyRef?.persistedTurnCount(threadId) ?? Promise.resolve(0),
+    existingTurnInfo: (threadId) =>
+      historyRef?.persistedTurnInfo(threadId) ?? Promise.resolve({ nativeTurnCount: 0, maxTurnOrdinal: 0 }),
     hasCustomTitle: (threadId) => Boolean(overlay.get(threadId)?.customTitle?.trim()),
+    inspectTranscriptState: (threadId) => catalogRef?.transcriptStateDetailed(threadId) ?? Promise.resolve({ kind: "missing" as const }),
+    externalActivity: (threadId, opts) => catalogRef?.externalActivity(threadId, opts) ?? Promise.resolve(undefined),
   });
   managerRef = manager;
 
@@ -131,6 +146,9 @@ export function createApp(options: AppOptions): App {
     backend,
     (sessionId) => manager.liveTurns(sessionId),
     (turnId) => manager.clientIdForTurn(turnId),
+    (sessionId, turnId) => overlay.getTurnOutcome(sessionId, turnId),
+    (sessionId) => overlay.getTurnAttempts(sessionId),
+    (sessionId, turnId) => overlay.getToolMappings(sessionId, turnId),
   );
   historyRef = history;
 
@@ -179,6 +197,7 @@ export function createApp(options: AppOptions): App {
     models,
     async close() {
       await Promise.allSettled([manager.closeAll(), cliSharedAcp.close(), otherSharedAcp.close()]);
+      await overlay.flush().catch(() => {});
     },
   };
 }

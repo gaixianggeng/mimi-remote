@@ -264,14 +264,16 @@ type appServerChannel struct {
 }
 
 type appServerBridgeMetadata struct {
-	Name           string `json:"name"`
-	Version        string `json:"version,omitempty"`
-	MinimumVersion string `json:"minimum_version,omitempty"`
-	Path           string `json:"path,omitempty"`
-	Status         string `json:"status"`
-	Healthy        bool   `json:"healthy"`
-	LastProbeError string `json:"last_probe_error,omitempty"`
-	Fix            string `json:"fix,omitempty"`
+	Name              string `json:"name"`
+	Version           string `json:"version,omitempty"`
+	MinimumVersion    string `json:"minimum_version,omitempty"`
+	CLIVersion        string `json:"cli_version,omitempty"`
+	MinimumCLIVersion string `json:"minimum_cli_version,omitempty"`
+	Path              string `json:"path,omitempty"`
+	Status            string `json:"status"`
+	Healthy           bool   `json:"healthy"`
+	LastProbeError    string `json:"last_probe_error,omitempty"`
+	Fix               string `json:"fix,omitempty"`
 }
 
 type appServerChannelCapability struct {
@@ -427,6 +429,7 @@ type gatewayScope struct {
 	project  projects.Project
 	browse   bool
 	managed  bool
+	missing  bool
 }
 
 type appServerGatewayAllowedThread struct {
@@ -437,8 +440,13 @@ type appServerGatewayAllowedThread struct {
 	canAcceptDirectInput bool
 	directInputKnown     bool
 	readOnly             bool
-	autoTitleEligible    bool
-	lastSeen             time.Time
+	// 区分永久只读来源（子会话 / browse_roots 跨作用域）与瞬态目录缺失（cwdMissing），
+	// 确保目录恢复时只解除目录缺失限制，绝不丢失独立的子会话或浏览根只读约束（C14/C15）。
+	readOnlySubagent    bool
+	readOnlyBrowseScope bool
+	cwdMissing          bool
+	autoTitleEligible   bool
+	lastSeen            time.Time
 }
 
 type appServerGatewayThreadWire struct {

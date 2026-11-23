@@ -3022,6 +3022,42 @@
         }
       }
     },
+    "ui.always_allow_scope_managed_notice": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This persistent grant is managed by the agent and may apply to future sessions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该持续授权由代理保存，可能对后续会话生效。"
+          }
+        }
+      }
+    },
+    "ui.always_allow_scope_uncertain_notice": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scope is not specified by the agent and may persist across future sessions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上游未说明该持续授权的精确范围，可能对后续会话持续生效。"
+          }
+        }
+      }
+    },
     "ui.always_allow_this_tool": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -13423,6 +13459,24 @@
           "stringUnit": {
             "state": "translated",
             "value": "本轮运行没有完成，可展开详情查看原因。"
+          }
+        }
+      }
+    },
+    "ui.error_runtime_authentication_required": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign-in is required on your computer. Sign in to the CLI in Terminal and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上的运行时尚未登录。请在电脑终端完成登录，然后重试。"
           }
         }
       }
@@ -33301,6 +33355,240 @@
         }
       }
     },
+    "ui.runtime_diagnostic_agy_missing_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI (agy) was not found on your computer. Install agy and sign in, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上未检测到 Antigravity CLI (agy)。请先安装 agy 并完成登录，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_missing_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI Not Found"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未检测到 Antigravity CLI"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_signed_out_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI is not signed in on your computer. Run `agy` in Terminal to sign in, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上的 Antigravity CLI 尚未登录。请在终端运行 agy 完成登录，然后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_signed_out_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity Sign-In Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity 尚未登录"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_unsupported_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI is too old. Update agy on your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI 版本过旧，请在电脑升级 agy 后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_unsupported_minimum_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI is too old. Mimi Remote requires %@ or newer. Update agy on your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI 版本过旧，Mimi Remote 需要 %@ 或更新版本。请在电脑升级 agy 后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_unsupported_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI Update Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要升级 Antigravity CLI"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_agy_unsupported_versions_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI %1$@ is too old. Mimi Remote requires %2$@ or newer. Update agy on your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity CLI %1$@ 过旧，Mimi Remote 需要 %2$@ 或更新版本。请在电脑升级 agy 后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_channel_unavailable_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This runtime channel is currently unavailable on your computer. Check your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑上的运行通道当前不可用，请检查电脑端状态后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_channel_unavailable_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Channel Unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通道暂不可用"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_claude_unsupported_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code is too old. Run `claude update` on your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code 版本过旧，请在电脑运行 claude update 后重试。"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_claude_unsupported_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code Update Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要升级 Claude Code"
+          }
+        }
+      }
+    },
+    "ui.runtime_diagnostic_claude_unsupported_versions_message": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code %1$@ is too old. Mimi Remote requires %2$@ or newer. Run `claude update` on your computer and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code %1$@ 过旧，需要 %2$@ 或更新版本。请在电脑运行 claude update 后重试。"
+          }
+        }
+      }
+    },
     "ui.runtime_optional": {
       "comment": "Brand name shown on sessions created with the Claude Code runtime.",
       "localizations": {
@@ -34990,6 +35278,42 @@
           "stringUnit": {
             "state": "translated",
             "value": "会话已完成"
+          }
+        }
+      }
+    },
+    "ui.session_cwd_missing_badge": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Missing path"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录缺失"
+          }
+        }
+      }
+    },
+    "ui.session_cwd_missing_read_only_notice": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original directory was moved or deleted. History is read-only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原工作目录已移动或删除，当前仅支持只读查看历史。"
           }
         }
       }

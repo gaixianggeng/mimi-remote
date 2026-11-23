@@ -97,6 +97,14 @@ extension UserFacingError {
             self.init(category: .notFound, message: L10n.text(key), technicalDetail: rawDescription)
             return
         }
+        if case CodexAppServerSessionRuntimeError.channelUnavailable(let diagnostic) = error {
+            self.init(category: .described, message: diagnostic.localizedMessage, technicalDetail: diagnostic.lastProbeError)
+            return
+        }
+        if let structured = Self.structuredAppServerReason(in: error) {
+            self.init(category: .described, message: structured, technicalDetail: rawDescription)
+            return
+        }
         if let reason = Self.readableServerReason(in: error) {
             // 电脑端给出的可读原因（例如 Codex 未登录）比分类文案更有用，直接作为正文。
             self.init(category: .described, message: reason, technicalDetail: rawDescription)
@@ -406,6 +414,44 @@ extension UserFacingError {
     }
 
     // MARK: - 电脑端可读原因
+
+    /// 识别 app-server / 适配器结构化认证与通道状态错误（如 B11 未登录），
+    /// 避免落入通用 hostError 并误导用户点击「重新连接」。
+    private static func structuredAppServerReason(in error: Error) -> String? {
+        let appServerError: CodexAppServerError
+        switch error {
+        case CodexAppServerConnectionError.appServer(let err):
+            appServerError = err
+        case let err as CodexAppServerError:
+            appServerError = err
+        default:
+            return nil
+        }
+        let data = appServerError.data?.objectValue
+        let code = data?["code"]?.stringValue?.lowercased()
+        let bridgeStatus = data?["bridgeStatus"]?.stringValue?.lowercased()
+        let loweredMessage = appServerError.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if code == "agy_authentication_required" || bridgeStatus == "agy_signed_out" {
+            return L10n.text("ui.runtime_diagnostic_agy_signed_out_message")
+        }
+        if let bridgeStatus, ["agy_unsupported", "agy_missing", "claude_unsupported"].contains(bridgeStatus) {
+            let cliVersion = data?["cliVersion"]?.stringValue
+            let minimumCLIVersion = data?["minimumCLIVersion"]?.stringValue ?? data?["minimumVersion"]?.stringValue
+            let diagnostic = RuntimeChannelDiagnostic(
+                provider: bridgeStatus.hasPrefix("claude") ? "claude" : "agy",
+                status: bridgeStatus,
+                cliVersion: cliVersion,
+                minimumCLIVersion: minimumCLIVersion,
+                lastProbeError: appServerError.message,
+                fix: data?["fix"]?.stringValue
+            )
+            return diagnostic.localizedMessage
+        }
+        if loweredMessage.contains("authentication required") {
+            return L10n.text("ui.error_runtime_authentication_required")
+        }
+        return nil
+    }
 
     /// 可以直接展示给用户的电脑端原因。只收白名单内的类别（模型账号登录态等需要用户在电脑上
     /// 处理的事），并排除协议细节和 HTTP 通用短语；其余原因仍只进详情。
