@@ -13,6 +13,7 @@ import UIKit
 @Observable
 final class InAppNoticePlacement {
     private(set) var protectedRegionBottoms: [UUID: CGFloat] = [:]
+    private(set) var composerTopAnchors: [UUID: CGFloat] = [:]
     @ObservationIgnored weak var window: UIWindow?
 
     /// 登记或撤销（`bottom == nil`）一块常驻区域的下沿，使用全局坐标。
@@ -23,6 +24,16 @@ final class InAppNoticePlacement {
 
     var protectedRegionBottom: CGFloat? {
         protectedRegionBottoms.values.max()
+    }
+
+    /// 登记或撤销 iPhone 会话详情底部输入区（含审批卡）的上沿，用于将后台任务完成小药丸停靠在输入框上方。
+    func reportComposerTopAnchor(_ id: UUID, topY: CGFloat?) {
+        guard composerTopAnchors[id] != topY else { return }
+        composerTopAnchors[id] = topY
+    }
+
+    var composerTopBoundary: CGFloat? {
+        composerTopAnchors.values.min()
     }
 
     /// 提示顶边在全局坐标下不能高于的界线。没有导航栏、也没有登记区域时返回 nil。
@@ -57,6 +68,13 @@ final class InAppNoticePlacement {
         guard let boundary else { return spacing }
         return max(0, boundary - hostMinY) + spacing
     }
+
+    /// 底部轻量小药丸相对宿主底部的下边距：精准停靠在输入框容器顶边上方 10pt。
+    nonisolated static func toastBottomPadding(composerTopY: CGFloat?, hostMaxY: CGFloat) -> CGFloat? {
+        guard let composerTopY else { return nil }
+        let spacing: CGFloat = 10
+        return max(0, hostMaxY - composerTopY) + spacing
+    }
 }
 
 private struct InAppNoticePlacementKey: EnvironmentKey {
@@ -79,6 +97,11 @@ extension View {
     /// 登记一块一次性提示不能盖住的常驻区域，例如带操作按钮的状态卡片。
     func inAppNoticeProtectedRegion() -> some View {
         modifier(InAppNoticeProtectedRegion())
+    }
+
+    /// 登记 iPhone 会话详情底部输入区上沿，让后台任务完成提示以小药丸停靠在输入框上方。
+    func inAppNoticeComposerAnchor(isActive: Bool) -> some View {
+        modifier(InAppNoticeComposerAnchor(isActive: isActive))
     }
 }
 
@@ -119,6 +142,35 @@ private struct InAppNoticeProtectedRegion: ViewModifier {
             }
             .onDisappear {
                 placement?.reportProtectedRegion(id, bottom: nil)
+            }
+    }
+}
+
+private struct InAppNoticeComposerAnchor: ViewModifier {
+    let isActive: Bool
+
+    @Environment(\.inAppNoticePlacement) private var placement
+    @State private var id = UUID()
+    @State private var lastTopY: CGFloat?
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.frame(in: .global).minY
+            } action: { topY in
+                lastTopY = topY
+                placement?.reportComposerTopAnchor(id, topY: isActive ? topY : nil)
+            }
+            .onChange(of: isActive) { _, active in
+                placement?.reportComposerTopAnchor(id, topY: active ? lastTopY : nil)
+            }
+            .onAppear {
+                if isActive, let lastTopY {
+                    placement?.reportComposerTopAnchor(id, topY: lastTopY)
+                }
+            }
+            .onDisappear {
+                placement?.reportComposerTopAnchor(id, topY: nil)
             }
     }
 }

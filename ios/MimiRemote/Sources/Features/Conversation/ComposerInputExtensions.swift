@@ -353,12 +353,14 @@ struct CompactComposerToolbarShell: View {
 /// 不再用一整块胶囊把两个不同动作粘在一起。
 struct CompactComposerToolControlsShell: View {
     let optionsControl: AnyView
-    let microphoneControl: AnyView
+    let microphoneControl: AnyView?
 
     var body: some View {
         HStack(spacing: 6) {
             optionsControl
-            microphoneControl
+            if let microphoneControl {
+                microphoneControl
+            }
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -368,13 +370,15 @@ struct CompactComposerToolControlsShell: View {
 /// 再传入这里组合，防止真机在收集泛型元数据时触发 __chkstk_darwin。
 struct CompactComposerLeadingControlsShell: View {
     let addControl: AnyView
-    let modelControl: AnyView
+    let modelControl: AnyView?
     let deliveryControl: AnyView?
 
     var body: some View {
         HStack(spacing: 6) {
             addControl
-            modelControl
+            if let modelControl {
+                modelControl
+            }
             if let deliveryControl {
                 deliveryControl
             }
@@ -383,8 +387,135 @@ struct CompactComposerLeadingControlsShell: View {
     }
 }
 
+enum PhoneComposerTrailingAction: Equatable {
+    case voice
+    case send
+    case stop
+}
+
+enum PhoneComposerPresentation {
+    static func showsSingleLine(
+        keyboardVisible: Bool?, isEditing: Bool, isComposing: Bool, draft: ComposerState
+    ) -> Bool {
+        // 等系统移开软键盘，也等 TextKit 完成失焦和输入法提交，再收起空输入框。
+        keyboardVisible == false && !isEditing && !isComposing
+            && draft.draft.isEmpty && draft.attachments.isEmpty && !draft.voiceDraftNeedsReview
+    }
+
+    /// iPhone 右侧主按钮：运行中可停止优先显示停止，有可发送内容时平滑切换为发送箭头，空态为语音。
+    static func trailingAction(
+        canSubmitDraft: Bool,
+        isStopPrimaryAction: Bool
+    ) -> PhoneComposerTrailingAction {
+        if isStopPrimaryAction {
+            return .stop
+        }
+        return canSubmitDraft ? .send : .voice
+    }
+}
+
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    func handlePhoneDetailActiveChange(_ isActive: Bool) {
+        if isActive {
+            sessionStore.activeComposerInstanceID = composerInstanceID
+            return
+        }
+        if sessionStore.activeComposerInstanceID == composerInstanceID {
+            sessionStore.activeComposerInstanceID = nil
+        }
+        isComposerTextEditing = false
+        synchronizeComposerTextBeforeDraftScopeChange()
+        sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+    }
+
+    var singleLinePhoneEditorHeight: CGFloat {
+        max(44, ceil(composerUIFont.lineHeight) + 12)
+    }
+
+    var phoneTrailingAction: PhoneComposerTrailingAction {
+        PhoneComposerPresentation.trailingAction(
+            canSubmitDraft: canSubmitDraft,
+            isStopPrimaryAction: primaryComposerAction == .stopCurrentReply
+        )
+    }
+
+    var phoneTrailingActionControl: some View {
+        let action = phoneTrailingAction
+        return ZStack {
+            switch action {
+            case .voice:
+                microphoneControlBox()
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+            case .send, .stop:
+                submitControlBox()
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : composerMotionAnimation, value: action)
+    }
+
+    func integratedPhoneComposerCard(tokens: ThemeTokens) -> some View {
+        let singleLine = PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: phoneKeyboardVisible,
+            isEditing: isComposerTextEditing,
+            isComposing: isComposerTextComposing,
+            draft: composerState
+        )
+        let shape = RoundedRectangle(
+            cornerRadius: singleLine ? singleLinePhoneEditorHeight / 2 + 4 : 26,
+            style: .continuous
+        )
+
+        return VStack(alignment: .leading, spacing: 4) {
+            if !singleLine {
+                composerStatusTray.transition(.opacity)
+                // 模型选择器以小药丸放在文字输入区上方，不与底栏按钮争抢宽度，点开即为半屏 Sheet。
+                phoneModelPillBox(tokens: tokens)
+                    .padding(.horizontal, 2)
+                    .padding(.top, 2)
+                    .transition(.opacity)
+            }
+            HStack(spacing: 2) {
+                if singleLine {
+                    Color.clear.frame(width: 44, height: 44)
+                }
+                // 编辑器始终留在同一位置，展开时只改变外壳和旁边的控件。
+                integratedPhoneEditorBox(tokens: tokens, singleLine: singleLine)
+                if singleLine {
+                    phoneTrailingActionBox()
+                        .transition(.opacity)
+                }
+            }
+            if !singleLine {
+                compactPrimaryComposerToolbar(
+                    showsModelTitle: compactToolbarShowsModelTitle,
+                    includesAddContent: false,
+                    usesIntegratedPhoneLayout: true
+                )
+                .transition(.opacity)
+            }
+        }
+        // 两种形态共用「+」的弹出面板锚点，面板里的搜索键盘不会把它移除。
+        .overlay(alignment: singleLine ? .leading : .bottomLeading) {
+            addContentControlBox()
+        }
+        .padding(.horizontal, singleLine ? 6 : 8)
+        .padding(.vertical, singleLine ? 4 : 8)
+        .frame(maxWidth: .infinity)
+        .background { composerContainerBackground(shape: shape, tokens: tokens) }
+        .overlay { shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth) }
+        .tint(tokens.accent)
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.height
+        } action: { height in
+            if height > 0, abs(measuredPhoneComposerCardHeight - height) > 0.5 {
+                measuredPhoneComposerCardHeight = height
+            }
+        }
+        .animation(reduceMotion ? nil : composerMotionAnimation, value: singleLine)
+    }
+
     @ViewBuilder
     var addContentButton: some View {
         ZStack {
@@ -646,6 +777,11 @@ extension ComposerView {
         composerTextSubmitBridge.resetTextAfterSubmit(to: composerState.draft)
         measuredComposerTextHeight = 0
         activeSkillQuery = nil
+        if phoneKeyboardVisible != nil {
+            // iPhone 集成底栏发送后立刻收起键盘并收回单行胶囊。
+            composerTextSubmitBridge.resignFirstResponder()
+            isComposerTextEditing = false
+        }
     }
 
     @ViewBuilder
@@ -663,7 +799,8 @@ extension ComposerView {
 
     @ViewBuilder
     func attachmentChip(_ item: CodexAppServerUserInput, index: Int) -> some View {
-        if case .skill(let name, let path) = item {
+        switch item {
+        case .skill(let name, let path):
             let capability = enabledSkillShortcuts.first { $0.path == path || $0.name == name }
             SkillAttachmentToken(
                 metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
@@ -671,7 +808,27 @@ extension ComposerView {
                 onRemove: { removeAttachment(item, at: index) }
             )
             .environmentObject(themeStore)
-        } else {
+        case .image(let url, _):
+            ComposerImageAttachmentThumbnail(
+                id: item.id,
+                source: .dataURL(url),
+                accessibilityLabel: item.previewText,
+                canPreview: canPreviewAttachment(item),
+                onPreview: { previewAttachment(item, at: index) },
+                onRemove: { removeAttachment(item, at: index) }
+            )
+            .environmentObject(themeStore)
+        case .localImage(let path, _):
+            ComposerImageAttachmentThumbnail(
+                id: item.id,
+                source: .localPath(path),
+                accessibilityLabel: item.previewText,
+                canPreview: canPreviewAttachment(item),
+                onPreview: { previewAttachment(item, at: index) },
+                onRemove: { removeAttachment(item, at: index) }
+            )
+            .environmentObject(themeStore)
+        default:
             HStack(spacing: 6) {
                 Button {
                     previewAttachment(item, at: index)
@@ -801,6 +958,15 @@ extension ComposerView {
         if !sessionStore.isSelectedSessionObserving,
            let session = sessionStore.selectedSession,
            let approval = session.pendingApproval {
+            let approvalMaximumHeight = phoneConversationAvailableHeight.map { availableHeight in
+                PhoneApprovalCardLayout.maximumCardHeight(
+                    availableDetailHeight: availableHeight,
+                    measuredComposerHeight: measuredPhoneComposerCardHeight > 0
+                        ? measuredPhoneComposerCardHeight
+                        : singleLinePhoneEditorHeight + 8,
+                    keyboardVisible: phoneKeyboardVisible == true
+                )
+            }
             PendingApprovalActionCard(
                 approval: approval,
                 runtimePresentation: SessionRuntimePresentation(session: session),
@@ -809,6 +975,7 @@ extension ComposerView {
                     sessionStore.decideApproval(approval, decision: decision)
                 }
             )
+            .environment(\.phoneApprovalMaximumHeight, approvalMaximumHeight)
         }
     }
 

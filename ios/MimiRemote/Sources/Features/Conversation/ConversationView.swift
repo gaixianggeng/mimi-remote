@@ -9,11 +9,14 @@ struct ConversationView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     // 紧凑导航的 Shell 根部统一注入该值，push 出来的会话详情同样继承；宽屏侧栏布局为 false。
     @Environment(\.workbenchHasCompactTabBar) private var usesCompactNavigation
+    @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
+    @Environment(\.phoneConversationDetailIsActive) private var isPhoneDetailActive
     // 不同 iPadOS 侧栏形态下，detail 的 size 提案和 leading safe area 组合并不一致：
     // 有的版本给整窗宽度并把侧栏记在 safe area，有的已经缩小 size 却仍报告 inset，
     // 纯提案算术会把横屏详情列的宽度重复扣除侧栏而误入紧凑分支。
     // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
     @State private var measuredContentWidth: CGFloat?
+    @State private var measuredTopStatusHeight: CGFloat = 0
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -54,9 +57,23 @@ struct ConversationView: View {
                 safeAreaInsets: proxy.safeAreaInsets
             )
             let composerWidth = min(layout.composerAvailableWidth, layout.composerMaxWidth)
+            let hasTopStatusStrip = model.errorPresentation != nil
+                || model.historySavingsNotice != nil
+                || model.quotaNotice != nil
+            // 将详情容器扣除顶部状态条后的实测可用高度传给输入区，由输入区再扣除自身实测高度计算审批卡限高。
+            let phoneAvailableDetailHeight: CGFloat? = phoneKeyboardVisible == nil
+                ? nil
+                : max(0, proxy.size.height - (hasTopStatusStrip ? measuredTopStatusHeight : 0))
 
             VStack(spacing: 0) {
                 topStatusStrip(model: model, layout: layout)
+                    .onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.size.height
+                    } action: { height in
+                        if abs(measuredTopStatusHeight - height) > 0.5 {
+                            measuredTopStatusHeight = height
+                        }
+                    }
                     // 状态提示只占用自己的布局高度，不能改变导航栏与时间线的材质模式；
                     // List 扩展进顶部安全区后也始终让提示保持在正文之上。
                     .zIndex(1)
@@ -117,6 +134,7 @@ struct ConversationView: View {
                                 availableWidth: composerWidth,
                                 initialGoalStatusExpanded: initialGoalStatusExpanded
                             )
+                            .environment(\.phoneConversationAvailableHeight, phoneAvailableDetailHeight)
                         }
                     }
                         // 确定宽度阻止固定尺寸的工具按钮反向撑大输入卡和上方目标栏。
@@ -125,13 +143,15 @@ struct ConversationView: View {
                 }
                 .padding(.horizontal, layout.composerHorizontalInset)
                 .padding(.top, layout.composerTopPadding)
-                .padding(.bottom, layout.composerBottomPadding)
+                .padding(.bottom, phoneKeyboardVisible.map { $0 ? 6 : 8 } ?? layout.composerBottomPadding)
                 .background {
                     composerReadabilityBackdrop(tokens: tokens)
                 }
+                .inAppNoticeComposerAnchor(isActive: phoneKeyboardVisible != nil && isPhoneDetailActive)
             }
             .background(tokens.conversationCanvasBackground.ignoresSafeArea())
-            .task(id: sessionStore.selectedSession?.id) {
+            .task(id: isPhoneDetailActive ? sessionStore.selectedSession?.id : nil) {
+                guard isPhoneDetailActive else { return }
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
         }
@@ -350,7 +370,7 @@ struct ConversationView: View {
                 )
             }
         }
-        .ignoresSafeArea(edges: .bottom)
+        .ignoresSafeArea(edges: phoneKeyboardVisible == nil ? .bottom : [])
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

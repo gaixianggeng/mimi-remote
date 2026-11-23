@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 紧凑导航的页面组装独立于侧栏与会话状态处理。
 extension UnifiedWorkbenchShell {
@@ -156,6 +157,18 @@ extension UnifiedWorkbenchShell {
             .tabItem { compactTabItem(.me) }
             .tag(CompactWorkbenchTab.me)
         }
+        .phoneTabBarMinimization(
+            enabled: layout.usesPhoneIntegratedBottomChrome,
+            isBrowsingList: isBrowsingCompactRootList
+        )
+    }
+
+    private var isBrowsingCompactRootList: Bool {
+        switch navigationState.compactSelectedTab {
+        case .sessions: return navigationState.compactSessionPath.isEmpty
+        case .workspaces: return navigationState.compactWorkspacePath.isEmpty
+        case .devices, .me: return false
+        }
     }
 
     /// 四个入口共用一处组装：图标是放大后的 24pt 模板图，标题保留，
@@ -181,7 +194,7 @@ extension UnifiedWorkbenchShell {
                                 destination,
                                 layout: layout,
                                 tokens: tokens,
-                                shouldHideTabBar: true
+                                shouldHideTabBar: !layout.usesPhoneIntegratedBottomChrome
                             )
                         }
                 }
@@ -235,6 +248,98 @@ extension UnifiedWorkbenchShell {
         )
     }
 
+}
+
+private extension View {
+    @ViewBuilder
+    func phoneTabBarMinimization(enabled: Bool, isBrowsingList: Bool) -> some View {
+        if #available(iOS 26.0, *), enabled {
+            tabBarMinimizeBehavior(isBrowsingList ? .onScrollDown : .never)
+        } else {
+            self
+        }
+    }
+}
+
+private struct PhoneConversationKeyboardVisibleKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+private struct PhoneConversationDetailIsActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// nil 保留原有会话布局，只有 iPhone 的会话详情才提供键盘状态。
+    var phoneConversationKeyboardVisible: Bool? {
+        get { self[PhoneConversationKeyboardVisibleKey.self] }
+        set { self[PhoneConversationKeyboardVisibleKey.self] = newValue }
+    }
+
+    /// 标识挂载在 TabView 里的会话详情是否正处于活跃 Tab 前景，用于在后台 Tab 阻断副作用。
+    var phoneConversationDetailIsActive: Bool {
+        get { self[PhoneConversationDetailIsActiveKey.self] }
+        set { self[PhoneConversationDetailIsActiveKey.self] = newValue }
+    }
+}
+
+enum PhoneKeyboardVisibility {
+    /// 以软键盘实际占用屏幕底部的高度为准，过滤外接硬件键盘的细长快捷栏（<= 64pt）。
+    static func isSoftKeyboardOccupyingBottom(
+        screenBounds: CGRect,
+        keyboardEndFrame: CGRect
+    ) -> Bool {
+        let overlap = screenBounds.intersection(keyboardEndFrame)
+        return !overlap.isNull && overlap.height > 64
+    }
+
+    @MainActor
+    static func resolvedScreenBounds(from notification: Notification) -> CGRect? {
+        if let screen = notification.object as? UIScreen {
+            return screen.coordinateSpace.bounds
+        }
+        let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let activeScene = windowScenes.first { $0.activationState == .foregroundActive } ?? windowScenes.first
+        return activeScene?.screen.coordinateSpace.bounds
+    }
+}
+
+struct SessionBottomTabBarModifier: ViewModifier {
+    let usesPhoneIntegratedBottomChrome: Bool
+    let shouldHideTabBar: Bool
+    let isActiveDetail: Bool
+
+    @State private var isKeyboardVisible = false
+
+    func body(content: Content) -> some View {
+        if usesPhoneIntegratedBottomChrome {
+            content
+                .environment(\.phoneConversationKeyboardVisible, isActiveDetail && isKeyboardVisible)
+                .environment(\.phoneConversationDetailIsActive, isActiveDetail)
+                .toolbar(shouldHideTabBar || (isActiveDetail && isKeyboardVisible) ? .hidden : .automatic, for: .tabBar)
+                // 以软键盘实际占用的区域为准。外接键盘给输入框焦点时仍可切 Tab；后台 Tab 不响应键盘通知。
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+                    guard isActiveDetail,
+                          let screenBounds = PhoneKeyboardVisibility.resolvedScreenBounds(from: note),
+                          let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                    isKeyboardVisible = PhoneKeyboardVisibility.isSoftKeyboardOccupyingBottom(
+                        screenBounds: screenBounds,
+                        keyboardEndFrame: frame
+                    )
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                    isKeyboardVisible = false
+                }
+                .onChange(of: isActiveDetail) { _, active in
+                    if !active {
+                        isKeyboardVisible = false
+                    }
+                }
+                .onDisappear { isKeyboardVisible = false }
+        } else {
+            content.toolbar(shouldHideTabBar ? .hidden : .automatic, for: .tabBar)
+        }
+    }
 }
 
 extension UnifiedWorkbenchShell {

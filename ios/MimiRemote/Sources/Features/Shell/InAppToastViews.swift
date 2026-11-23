@@ -111,16 +111,26 @@ extension InAppToast {
     }
 }
 
+enum InAppToastPresentationStyle: Equatable {
+    case topCard
+    case bottomPill
+}
+
 extension View {
-    /// 在当前视图顶部挂载 App 内轻提示。`toast` 变为 nil 或换成另一条时浮层随之更新；
+    /// 在当前视图挂载 App 内轻提示。`toast` 变为 nil 或换成另一条时浮层随之更新；
     /// 自动收起、轻扫或点关闭后调用 `onDismiss`，由数据源清掉对应提示。
-    func inAppToast(_ toast: InAppToast?, onDismiss: @escaping (AnyHashable) -> Void) -> some View {
-        modifier(InAppToastHost(toast: toast, onDismiss: onDismiss))
+    func inAppToast(
+        _ toast: InAppToast?,
+        presentation: InAppToastPresentationStyle = .topCard,
+        onDismiss: @escaping (AnyHashable) -> Void
+    ) -> some View {
+        modifier(InAppToastHost(toast: toast, presentation: presentation, onDismiss: onDismiss))
     }
 }
 
 private struct InAppToastHost: ViewModifier {
     let toast: InAppToast?
+    let presentation: InAppToastPresentationStyle
     let onDismiss: (AnyHashable) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -135,21 +145,52 @@ private struct InAppToastHost: ViewModifier {
         content.overlay(alignment: .top) {
             GeometryReader { proxy in
                 let hostFrame = proxy.frame(in: .global)
-                toastLayer(hostMinY: hostFrame.minY)
-                    .onChange(
-                        of: PlacementInputs(
-                            toastID: toast?.id,
-                            hostFrame: hostFrame,
-                            protectedRegionBottom: placement?.protectedRegionBottom
-                        ),
-                        initial: true
-                    ) { _, inputs in
-                        boundaryMeasurement = inputs.toastID.map {
-                            BoundaryMeasurement(toastID: $0, boundary: placement?.topBoundary())
+                if presentation == .bottomPill,
+                   let bottomPadding = InAppNoticePlacement.toastBottomPadding(
+                       composerTopY: placement?.composerTopBoundary,
+                       hostMaxY: hostFrame.maxY
+                   ) {
+                    bottomPillLayer(bottomPadding: bottomPadding)
+                } else {
+                    toastLayer(hostMinY: hostFrame.minY)
+                        .onChange(
+                            of: PlacementInputs(
+                                toastID: toast?.id,
+                                hostFrame: hostFrame,
+                                protectedRegionBottom: placement?.protectedRegionBottom
+                            ),
+                            initial: true
+                        ) { _, inputs in
+                            boundaryMeasurement = inputs.toastID.map {
+                                BoundaryMeasurement(toastID: $0, boundary: placement?.topBoundary())
+                            }
                         }
+                }
+            }
+        }
+    }
+
+    private func bottomPillLayer(bottomPadding: CGFloat) -> some View {
+        ZStack {
+            if let toast {
+                InAppToastPill(toast: toast, onDismiss: { onDismiss(toast.id) })
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, bottomPadding)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .move(edge: .bottom).combined(with: .opacity)
+                    )
+                    .id(toast.id)
+                    .task(id: toast.id) {
+                        showsDetail = false
+                        AccessibilityNotification.Announcement(toast.accessibilityAnnouncement).post()
+                        await autoDismiss(toast)
                     }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .snappy(duration: 0.28), value: toast?.id)
     }
 
     private struct BoundaryMeasurement {
@@ -214,6 +255,69 @@ private struct InAppToastHost: ViewModifier {
 }
 
 /// 提示卡片本身。宿主负责位置与生命周期；单独暴露给快照测试和需要内嵌展示的页面。
+struct InAppToastPill: View {
+    let toast: InAppToast
+    let onDismiss: () -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let summaryText = Self.summaryText(for: toast)
+
+        HStack(spacing: 8) {
+            FeedbackStatusIcon(style: toast.style, systemImage: toast.systemImage, tokens: tokens)
+            Text(summaryText)
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .foregroundStyle(tokens.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(minHeight: 38)
+        .background {
+            Capsule()
+                .fill(tokens.elevatedSurface)
+                .shadow(color: .black.opacity(colorScheme == .dark ? 0.32 : 0.10), radius: 10, y: 4)
+        }
+        .overlay {
+            Capsule()
+                .stroke(tokens.border.opacity(0.75), lineWidth: 0.75)
+        }
+        .contentShape(Capsule())
+        .onTapGesture {
+            if let tapAction = toast.tapAction {
+                onDismiss()
+                tapAction()
+            } else {
+                onDismiss()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 12)
+                .onEnded { value in
+                    if value.translation.height > 16 {
+                        onDismiss()
+                    }
+                }
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(toast.tapAction == nil ? [] : .isButton)
+        .accessibilityIdentifier("inAppToast.bottomPill")
+    }
+
+    static func summaryText(for toast: InAppToast) -> String {
+        guard let subtitle = toast.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !subtitle.isEmpty,
+              subtitle != toast.title else {
+            return toast.title
+        }
+        return "\(toast.title) — \(subtitle)"
+    }
+}
+
 struct InAppToastCard: View {
     let toast: InAppToast
     @Binding var showsDetail: Bool

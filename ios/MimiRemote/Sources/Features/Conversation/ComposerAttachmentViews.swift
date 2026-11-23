@@ -1198,3 +1198,89 @@ private struct AddContentPanelPresentationSizing: ViewModifier {
         }
     }
 }
+
+/// 输入区图片附件缩略图：点击预览/标注，左上角固定高对比度删除「X」。
+struct ComposerImageAttachmentThumbnail: View {
+    enum Source: Equatable {
+        case dataURL(String)
+        case localPath(String)
+    }
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var thumbnail: UIImage?
+
+    let id: String
+    let source: Source
+    let accessibilityLabel: String
+    let canPreview: Bool
+    let onPreview: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+
+        Button {
+            onPreview()
+        } label: {
+            ZStack {
+                shape.fill(tokens.elevatedSurface)
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(tokens.secondaryText)
+                }
+            }
+            .frame(width: 58, height: 58)
+            .clipShape(shape)
+            .overlay {
+                shape.strokeBorder(tokens.border.opacity(0.75), lineWidth: 0.75)
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canPreview)
+        .accessibilityLabel(accessibilityLabel)
+        .overlay(alignment: .topLeading) {
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Color.black.opacity(0.78), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(Color.white.opacity(0.85), lineWidth: 1)
+                    }
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .offset(x: -10, y: -10)
+            .accessibilityLabel(L10n.text("ui.remove"))
+            .accessibilityIdentifier("composer.attachment.remove")
+        }
+        .padding(.top, 6)
+        .padding(.leading, 6)
+        .task(id: id) {
+            switch source {
+            case .dataURL(let value):
+                thumbnail = await DataURLImageDecoder.image(
+                    from: value,
+                    cacheKey: id,
+                    maxPixelSize: 180
+                )
+            case .localPath(let path):
+                thumbnail = await DataURLImageDecoder.image(
+                    fromFileURL: URL(fileURLWithPath: path),
+                    cacheKey: id,
+                    maxPixelSize: 180
+                )
+            }
+        }
+    }
+}

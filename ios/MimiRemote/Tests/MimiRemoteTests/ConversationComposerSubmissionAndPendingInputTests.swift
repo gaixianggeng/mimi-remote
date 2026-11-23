@@ -208,6 +208,169 @@ extension ConversationDataFlowTests {
         )
     }
 
+    func testPhoneComposerShowsSingleLineOnlyWhenIdleAndKeyboardIsHidden() {
+        let draft = ComposerState()
+        XCTAssertTrue(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: nil, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: true, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: true, isEditing: false, isComposing: false, draft: draft
+        ))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: true, draft: draft
+        ))
+    }
+
+    func testPhoneComposerKeepsDraftAndAttachmentsExpandedAfterEditing() {
+        var draft = ComposerState()
+        draft.draft = "请先检查输入区。"
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+
+        draft.draft = ""
+        draft.addAttachment(.image(url: "data:image/jpeg;base64,AA==", detail: .auto))
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+
+        draft.attachments.removeAll()
+        draft.applyRealtimeVoiceTranscript("语音草稿")
+        XCTAssertTrue(draft.voiceDraftNeedsReview)
+        XCTAssertFalse(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+
+        draft.draft = ""
+        XCTAssertTrue(PhoneComposerPresentation.showsSingleLine(
+            keyboardVisible: false, isEditing: false, isComposing: false, draft: draft
+        ))
+    }
+
+    func testPhoneComposerTrailingActionSwitchesBetweenVoiceSendAndStop() {
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: false, isStopPrimaryAction: false),
+            .voice
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: true, isStopPrimaryAction: false),
+            .send
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: false, isStopPrimaryAction: true),
+            .stop
+        )
+        XCTAssertEqual(
+            PhoneComposerPresentation.trailingAction(canSubmitDraft: true, isStopPrimaryAction: true),
+            .stop
+        )
+    }
+
+    func testPhoneKeyboardVisibilityFiltersHardwareBarAndOffscreenFrames() {
+        let portraitScreen = CGRect(x: 0, y: 0, width: 393, height: 852)
+        // 正常软键盘（高 336pt）占用屏幕底部。
+        XCTAssertTrue(PhoneKeyboardVisibility.isSoftKeyboardOccupyingBottom(
+            screenBounds: portraitScreen,
+            keyboardEndFrame: CGRect(x: 0, y: 516, width: 393, height: 336)
+        ))
+        // 外接硬件键盘细长快捷栏（<= 64pt）不视为软键盘遮挡。
+        XCTAssertFalse(PhoneKeyboardVisibility.isSoftKeyboardOccupyingBottom(
+            screenBounds: portraitScreen,
+            keyboardEndFrame: CGRect(x: 0, y: 797, width: 393, height: 55)
+        ))
+        // 键盘完全收起到屏幕外。
+        XCTAssertFalse(PhoneKeyboardVisibility.isSoftKeyboardOccupyingBottom(
+            screenBounds: portraitScreen,
+            keyboardEndFrame: CGRect(x: 0, y: 852, width: 393, height: 336)
+        ))
+        // 横屏软键盘。
+        let landscapeScreen = CGRect(x: 0, y: 0, width: 852, height: 393)
+        XCTAssertTrue(PhoneKeyboardVisibility.isSoftKeyboardOccupyingBottom(
+            screenBounds: landscapeScreen,
+            keyboardEndFrame: CGRect(x: 0, y: 173, width: 852, height: 220)
+        ))
+    }
+
+    func testPhoneApprovalCardUsesMeasuredHeightsAndCollapsesWhenTight() {
+        // 标准竖屏 + 单行输入框（~52pt）：正常展开并限高在 240pt 以内。
+        let portraitSingleLine = PhoneApprovalCardLayout.maximumCardHeight(
+            availableDetailHeight: 652,
+            measuredComposerHeight: 52,
+            keyboardVisible: false
+        )
+        XCTAssertGreaterThanOrEqual(portraitSingleLine, PhoneApprovalCardLayout.minimumExpandedHeight)
+        XCTAssertLessThanOrEqual(portraitSingleLine, PhoneApprovalCardLayout.maximumExpandedHeight)
+        XCTAssertEqual(
+            PhoneApprovalCardLayout.displayMode(
+                maximumHeight: portraitSingleLine,
+                isManuallyCollapsed: false,
+                keyboardVisible: false,
+                isAccessibilitySize: false
+            ),
+            .expanded(maxHeight: portraitSingleLine)
+        )
+
+        // 小屏 + 多行展开输入框（220pt）：剩余空间不足 156pt，直接折叠成摘要条进审批面板，不硬保留最小高度。
+        let tightSmallPhone = PhoneApprovalCardLayout.maximumCardHeight(
+            availableDetailHeight: 540,
+            measuredComposerHeight: 220,
+            keyboardVisible: false
+        )
+        XCTAssertLessThan(tightSmallPhone, PhoneApprovalCardLayout.minimumExpandedHeight)
+        XCTAssertEqual(
+            PhoneApprovalCardLayout.displayMode(
+                maximumHeight: tightSmallPhone,
+                isManuallyCollapsed: false,
+                keyboardVisible: false,
+                isAccessibilitySize: false
+            ),
+            .collapsedToSheetSummary
+        )
+
+        // 键盘弹起时临时折叠，键盘收起后不覆盖用户手动折叠状态。
+        let keyboardMaxHeight = PhoneApprovalCardLayout.maximumCardHeight(
+            availableDetailHeight: 652,
+            measuredComposerHeight: 110,
+            keyboardVisible: true
+        )
+        XCTAssertEqual(keyboardMaxHeight, 0)
+        XCTAssertEqual(
+            PhoneApprovalCardLayout.displayMode(
+                maximumHeight: keyboardMaxHeight,
+                isManuallyCollapsed: false,
+                keyboardVisible: true,
+                isAccessibilitySize: false
+            ),
+            .collapsedToInlineSummary
+        )
+        XCTAssertEqual(
+            PhoneApprovalCardLayout.displayMode(
+                maximumHeight: portraitSingleLine,
+                isManuallyCollapsed: true,
+                keyboardVisible: false,
+                isAccessibilitySize: false
+            ),
+            .collapsedToInlineSummary
+        )
+
+        // 辅助功能大字号直接走摘要条并由审批面板承载完整交互。
+        XCTAssertEqual(
+            PhoneApprovalCardLayout.displayMode(
+                maximumHeight: portraitSingleLine,
+                isManuallyCollapsed: false,
+                keyboardVisible: false,
+                isAccessibilitySize: true
+            ),
+            .collapsedToSheetSummary
+        )
+    }
+
     func testCompactComposerToolbarRendersWithoutGenericMetadataStackOverflow() throws {
         let defaultsSuite = "CompactComposerToolbarTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))

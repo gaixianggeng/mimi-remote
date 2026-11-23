@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 extension Notification.Name {
     static let agentQuestionInputFocusDidChange = Notification.Name("MimiRemote.agentQuestionInputFocusDidChange")
@@ -490,11 +491,80 @@ private struct OptionalAccessibilityIdentifierModifier: ViewModifier {
     }
 }
 
+private struct PhoneConversationAvailableHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+private struct PhoneApprovalMaximumHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    var phoneConversationAvailableHeight: CGFloat? {
+        get { self[PhoneConversationAvailableHeightKey.self] }
+        set { self[PhoneConversationAvailableHeightKey.self] = newValue }
+    }
+
+    var phoneApprovalMaximumHeight: CGFloat? {
+        get { self[PhoneApprovalMaximumHeightKey.self] }
+        set { self[PhoneApprovalMaximumHeightKey.self] = newValue }
+    }
+}
+
+enum PhoneApprovalCardDisplayMode: Equatable {
+    case expanded(maxHeight: CGFloat)
+    case collapsedToInlineSummary
+    case collapsedToSheetSummary
+}
+
+enum PhoneApprovalCardLayout {
+    static let maximumExpandedHeight: CGFloat = 240
+    static let minimumExpandedHeight: CGFloat = 156
+    static let minimumTimelineHeight: CGFloat = 180
+    static let verticalChromeSpacing: CGFloat = 24
+    static let maximumDetailHeightRatio: CGFloat = 0.36
+
+    /// 基于详情容器和输入框的实测高度计算审批卡上限；空间不够时返回较小值，绝不硬保留最小高度。
+    static func maximumCardHeight(
+        availableDetailHeight: CGFloat,
+        measuredComposerHeight: CGFloat,
+        keyboardVisible: Bool
+    ) -> CGFloat {
+        guard !keyboardVisible else { return 0 }
+        let remaining = availableDetailHeight
+            - measuredComposerHeight
+            - verticalChromeSpacing
+            - minimumTimelineHeight
+        return max(0, min(maximumExpandedHeight, availableDetailHeight * maximumDetailHeightRatio, remaining))
+    }
+
+    static func displayMode(
+        maximumHeight: CGFloat,
+        isManuallyCollapsed: Bool,
+        keyboardVisible: Bool,
+        isAccessibilitySize: Bool
+    ) -> PhoneApprovalCardDisplayMode {
+        if keyboardVisible {
+            return isAccessibilitySize ? .collapsedToSheetSummary : .collapsedToInlineSummary
+        }
+        if isAccessibilitySize || maximumHeight < minimumExpandedHeight {
+            return .collapsedToSheetSummary
+        }
+        if isManuallyCollapsed {
+            return .collapsedToInlineSummary
+        }
+        return .expanded(maxHeight: maximumHeight)
+    }
+}
+
 struct PendingApprovalActionCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.phoneConversationKeyboardVisible) private var phoneKeyboardVisible
+    @Environment(\.phoneApprovalMaximumHeight) private var phoneApprovalMaximumHeight
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let approval: ApprovalSummary
     let runtimePresentation: SessionRuntimePresentation
@@ -503,39 +573,177 @@ struct PendingApprovalActionCard: View {
 
     @State private var persistentGrant: PersistentPermissionGrant?
     @State private var isDetailsExpanded = false
+    @State private var isPhoneCardCollapsed = false
+    @State private var showsPhoneApprovalSheet = false
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        VStack(alignment: .leading, spacing: 12) {
-            approvalHeader(tokens: tokens)
-            approvalSummary(tokens: tokens)
-            if let previewText {
-                approvalDetailsDisclosure(previewText, tokens: tokens)
+        Group {
+            if let maximumHeight = phoneApprovalMaximumHeight {
+                phoneCard(maximumHeight: maximumHeight, tokens: tokens)
+            } else {
+                legacyCard(tokens: tokens)
             }
-            if !approval.hasDecisionContext {
-                missingContextWarning(tokens: tokens)
-            }
-            if isSendingDecision {
-                sendingDecisionStatus(tokens: tokens)
-            }
-            approvalButtons(tokens: tokens)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(
-            AgentRequestCardSurface(
-                tokens: tokens,
-                borderColor: tokens.border
-            )
-        )
-        // 审批卡位于输入框上方，用户无需跳转到 Inspector 才能作出决定。
+        .modifier(AgentRequestCardSurface(tokens: tokens, borderColor: tokens.border))
         .accessibilityElement(children: .contain)
         .sheet(item: $persistentGrant) { grant in
             PersistentPermissionConfirmationSheet(grant: grant) {
                 onDecision("acceptWithPermissionUpdate")
             }
             .environmentObject(themeStore)
+        }
+    }
+
+    private func legacyCard(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            approvalHeader(tokens: tokens)
+            approvalContent(tokens: tokens, scrollsDetails: true)
+            approvalButtons(tokens: tokens)
+            primaryApprovalButtons(tokens: tokens)
+        }
+        .padding(16)
+    }
+
+    private func phoneCard(maximumHeight: CGFloat, tokens: ThemeTokens) -> some View {
+        let mode = PhoneApprovalCardLayout.displayMode(
+            maximumHeight: maximumHeight,
+            isManuallyCollapsed: isPhoneCardCollapsed,
+            keyboardVisible: phoneKeyboardVisible == true,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
+        return Group {
+            switch mode {
+            case .collapsedToInlineSummary, .collapsedToSheetSummary:
+                phoneSummaryButton(
+                    opensSheet: mode == .collapsedToSheetSummary,
+                    tokens: tokens
+                )
+            case .expanded(let resolvedMaxHeight):
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        approvalHeader(tokens: tokens)
+                        Button {
+                            isPhoneCardCollapsed = true
+                        } label: {
+                            Image(systemName: "chevron.up")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(L10n.text("ui.hide_details"))
+                        .accessibilityIdentifier("approval.collapseCard")
+                    }
+                    // 正文和扩展授权共用一个滚动区。一次允许和拒绝固定在卡片底部。
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            approvalContent(tokens: tokens, scrollsDetails: false)
+                            approvalButtons(tokens: tokens)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    primaryApprovalButtons(tokens: tokens)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+                .frame(maxHeight: resolvedMaxHeight)
+            }
+        }
+        .onChange(of: approval.id) { _, _ in
+            // 只对当前审批保留折叠和确认状态。新请求到达时丢弃上一个确认入口。
+            isPhoneCardCollapsed = false
+            isDetailsExpanded = false
+            persistentGrant = nil
+            showsPhoneApprovalSheet = false
+        }
+        .sheet(isPresented: $showsPhoneApprovalSheet) {
+            NavigationStack {
+                ScrollView {
+                    PendingApprovalActionCard(
+                        approval: approval,
+                        runtimePresentation: runtimePresentation,
+                        isSendingDecision: isSendingDecision,
+                        onDecision: onDecision
+                    )
+                    .environment(\.phoneApprovalMaximumHeight, nil)
+                    .padding()
+                }
+                .navigationTitle(L10n.text("ui.waiting_for_approval"))
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(L10n.text("ui.done")) {
+                            showsPhoneApprovalSheet = false
+                        }
+                    }
+                }
+            }
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func phoneSummaryButton(opensSheet: Bool, tokens: ThemeTokens) -> some View {
+        Button {
+            isPhoneCardCollapsed = false
+            if phoneKeyboardVisible == true {
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                if opensSheet {
+                    showsPhoneApprovalSheet = true
+                }
+            } else if opensSheet {
+                showsPhoneApprovalSheet = true
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("\(L10n.text("ui.waiting_for_approval")) · \(kindLabel)", systemImage: "exclamationmark.shield")
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let riskLabel {
+                        Text(riskLabel)
+                            .font(themeStore.uiFont(.caption2, weight: .semibold))
+                            .foregroundStyle(riskTone(tokens: tokens))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(riskTone(tokens: tokens).opacity(0.10), in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(riskTone(tokens: tokens).opacity(0.24), lineWidth: 1)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down")
+                    .foregroundStyle(tokens.secondaryText)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(L10n.text("ui.show_details"))
+        .accessibilityIdentifier("approval.expandCard")
+    }
+
+    @ViewBuilder
+    private func approvalContent(tokens: ThemeTokens, scrollsDetails: Bool) -> some View {
+        approvalSummary(tokens: tokens)
+        if let previewText {
+            approvalDetailsDisclosure(previewText, tokens: tokens, scrollsDetails: scrollsDetails)
+        }
+        if !approval.hasDecisionContext {
+            missingContextWarning(tokens: tokens)
+        }
+        if isSendingDecision {
+            sendingDecisionStatus(tokens: tokens)
         }
     }
 
@@ -598,6 +806,8 @@ struct PendingApprovalActionCard: View {
             Label(L10n.text("ui.waiting_for_approval"), systemImage: "exclamationmark.shield")
                 .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
 
             Text(kindLabel)
                 .font(themeStore.uiFont(.caption2, weight: .semibold))
@@ -641,7 +851,7 @@ struct PendingApprovalActionCard: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func approvalDetailsDisclosure(_ text: String, tokens: ThemeTokens) -> some View {
+    private func approvalDetailsDisclosure(_ text: String, tokens: ThemeTokens, scrollsDetails: Bool) -> some View {
         VStack(spacing: 0) {
             Button {
                 withAnimation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.92)) {
@@ -683,17 +893,14 @@ struct PendingApprovalActionCard: View {
                 Divider()
                     .overlay(tokens.border.opacity(0.7))
 
-                ScrollView {
-                    Text(text)
-                        .font(themeStore.codeFont(.footnote))
-                        .foregroundStyle(tokens.codeText)
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                Group {
+                    if scrollsDetails {
+                        ScrollView { approvalDetailsText(text, tokens: tokens) }
+                            .frame(maxHeight: horizontalSizeClass == .compact ? 170 : 230)
+                    } else {
+                        approvalDetailsText(text, tokens: tokens)
+                    }
                 }
-                // 详情默认折叠；展开后也限制高度，避免长命令把决策按钮推离触手可及的位置。
-                .frame(maxHeight: horizontalSizeClass == .compact ? 170 : 230)
                 .background(tokens.codeBlock)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -704,6 +911,16 @@ struct PendingApprovalActionCard: View {
                 .strokeBorder(tokens.border.opacity(0.75), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func approvalDetailsText(_ text: String, tokens: ThemeTokens) -> some View {
+        Text(text)
+            .font(themeStore.codeFont(.footnote))
+            .foregroundStyle(tokens.codeText)
+            .lineSpacing(3)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
     }
 
     private func missingContextWarning(tokens: ThemeTokens) -> some View {
@@ -840,7 +1057,10 @@ struct PendingApprovalActionCard: View {
             .foregroundStyle(tokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
         }
+    }
 
+    @ViewBuilder
+    private func primaryApprovalButtons(tokens: ThemeTokens) -> some View {
         if approval.canApproveOnce {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
