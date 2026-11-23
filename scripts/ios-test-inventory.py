@@ -36,6 +36,8 @@ PR_RUNNER = Path("scripts/test-conversation-regressions.sh")
 NIGHTLY_MANIFEST = Path("config/ios-tests/nightly-classes.txt")
 QUARANTINE_FILE = Path("config/ios-tests/quarantine.tsv")
 TEST_BUNDLE = "MimiRemoteTests"
+SNAPSHOT_DIR_NAME = "__Snapshots__"
+TEST_METHOD_NAME = re.compile(r"^test[A-Za-z0-9_]*$")
 
 TYPE_KEYWORDS = ("class", "struct", "enum", "actor", "extension", "protocol")
 NON_TYPE_NAMES = {"var", "let", "func", "subscript", "init", "deinit", "case", "static", "class"}
@@ -208,9 +210,9 @@ class Inventory:
         self.swift_files = sorted((root / TEST_DIR).rglob("*.swift"))
         for path in self.swift_files:
             scan_file(path, root, self.types)
-        self.test_classes = self._resolve_test_classes()
+        self.test_classes, self.test_method_files = self._resolve_test_classes()
 
-    def _resolve_test_classes(self) -> dict[str, list[str]]:
+    def _resolve_test_classes(self) -> tuple[dict[str, list[str]], dict[str, dict[str, str]]]:
         cache: dict[str, bool] = {}
 
         def is_test_case(name: str, seen: frozenset[str] = frozenset()) -> bool:
@@ -234,12 +236,15 @@ class Inventory:
             return {**inherited, **info.methods}
 
         classes: dict[str, list[str]] = {}
+        method_files: dict[str, dict[str, str]] = {}
         for name, info in self.types.items():
             if "." in name or not info.declared_as_class:
                 continue
             if is_test_case(name):
-                classes[name] = sorted(all_methods(name))
-        return classes
+                resolved = all_methods(name)
+                classes[name] = sorted(resolved)
+                method_files[name] = resolved
+        return classes, method_files
 
     def runnable_classes(self) -> dict[str, list[str]]:
         """含至少一个用例的测试类；无用例的基类不参与归属与执行数校验。"""
@@ -488,7 +493,7 @@ def command_skip_args(args: argparse.Namespace) -> int:
 def collect_results(
     node: dict,
     results: dict[str, dict[str, str]],
-    flaky: set[str],
+    retried_passed: set[str],
     suite: str | None = None,
 ) -> None:
     node_type = node.get("nodeType")
@@ -508,10 +513,144 @@ def collect_results(
             child.get("nodeType") == "Repetition" and child.get("result") == "Failed"
             for child in node.get("children", []) or []
         ):
-            flaky.add(f"{class_name}/{method}")
+            retried_passed.add(f"{class_name}/{method}")
         return
     for child in node.get("children", []) or []:
-        collect_results(child, results, flaky, suite)
+        collect_results(child, results, retried_passed, suite)
+
+
+def sanitize_display_text(text: str) -> str:
+    return "".join(f"\\x{ord(ch):02x}" if ord(ch) < 32 or ord(ch) == 127 else ch for ch in text)
+
+
+def escape_github_annotation(text: str) -> str:
+    sanitized = sanitize_display_text(text)
+    return sanitized.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+@dataclass(frozen=True)
+class ParsedSnapshotPath:
+    parent_subdirs: tuple[str, ...]
+    folder: str
+    method: str
+
+
+def parse_snapshot_path(raw_path: str) -> tuple[ParsedSnapshotPath | None, str | None]:
+    """路径安全地解析 SnapshotTesting 重录快照路径（<TEST_DIR>/[subdirs/]__Snapshots__/<folder>/<method>.<variant>.png）。"""
+    if not raw_path:
+        return None, "路径为空"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw_path):
+        return None, "路径包含控制字符"
+    if "\\" in raw_path:
+        return None, "路径包含反斜杠，不是规范 POSIX 相对路径"
+    if raw_path.startswith("/") or raw_path.endswith("/"):
+        return None, "路径必须是仓库相对文件路径"
+
+    parts = raw_path.split("/")
+    if any(seg in ("", ".", "..") for seg in parts):
+        return None, "路径包含非法路径段（空段、. 或 ..）"
+
+    test_dir_parts = TEST_DIR.parts
+    if tuple(parts[: len(test_dir_parts)]) != test_dir_parts:
+        return None, f"路径不在 {TEST_DIR.as_posix()} 下"
+
+    rel_parts = parts[len(test_dir_parts) :]
+    if len(rel_parts) < 3 or rel_parts[-3] != SNAPSHOT_DIR_NAME or SNAPSHOT_DIR_NAME in rel_parts[:-3]:
+        return None, "路径不符合 __Snapshots__/<测试目录>/<方法名>.<变体>.png 约定"
+
+    parent_subdirs = tuple(rel_parts[:-3])
+    folder = rel_parts[-2]
+    filename = rel_parts[-1]
+    if folder.startswith(".") or any(seg.startswith(".") for seg in parent_subdirs):
+        return None, "路径包含隐藏目录段"
+    if not filename.endswith(".png"):
+        return None, "不是 .png 快照文件"
+
+    stem = filename[:-4]
+    if "." not in stem:
+        return None, "文件名缺少 <方法名>.<变体>.png 分隔"
+    method_name, variant = stem.split(".", 1)
+    if not TEST_METHOD_NAME.match(method_name):
+        return None, f"文件名方法段不是合法的 test 方法名：{method_name}"
+    if not variant or variant.startswith(".") or variant.endswith(".") or ".." in variant:
+        return None, "文件名快照变体段不合法"
+
+    return ParsedSnapshotPath(parent_subdirs, folder, method_name), None
+
+
+def resolve_rerecorded_snapshots(
+    rerecorded_paths: list[str],
+    inventory: Inventory,
+    runnable: dict[str, list[str]],
+    results: dict[str, dict[str, str]],
+) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+    """把重录快照路径映射为经静态清单与本次测试结果双重验证的 Class/method。"""
+    snapshot_drifted: dict[str, list[str]] = {}
+    unmapped: list[tuple[str, str]] = []
+
+    for raw_path in rerecorded_paths:
+        parsed, error = parse_snapshot_path(raw_path)
+        if error or parsed is None:
+            unmapped.append((raw_path, error or "路径无法解析"))
+            continue
+
+        expected_dir = TEST_DIR.joinpath(*parsed.parent_subdirs)
+        expected_file = (expected_dir / f"{parsed.folder}.swift").as_posix()
+
+        # 1. 优先按 SnapshotTesting 的 #file 约定（源文件 stem）精确匹配定义在该文件的用例，
+        #    覆盖单文件多测试类与 extension 拆分文件。
+        file_matches = sorted(
+            cls
+            for cls, methods in runnable.items()
+            if parsed.method in methods
+            and inventory.test_method_files.get(cls, {}).get(parsed.method) == expected_file
+        )
+        matched_class: str | None = None
+        if len(file_matches) == 1:
+            matched_class = file_matches[0]
+        elif len(file_matches) > 1:
+            candidates = ", ".join(f"{cls}/{parsed.method}" for cls in file_matches)
+            unmapped.append((raw_path, f"同文件存在多个同名测试方法，无法唯一映射：{candidates}"))
+            continue
+        else:
+            # 2. 兼容基类方法在子类文件上下文、或按测试类名命名的快照目录（需确认该类在同级目录存在源码）。
+            if parsed.folder in runnable and parsed.method in runnable[parsed.folder]:
+                class_info = inventory.types.get(parsed.folder)
+                if class_info and any(Path(src).parent == expected_dir for src in class_info.files):
+                    matched_class = parsed.folder
+
+        if matched_class is None:
+            unmapped.append(
+                (raw_path, f"未在静态清单中找到匹配的测试类/方法（目录 {parsed.folder}，方法 {parsed.method}）")
+            )
+            continue
+
+        case = f"{matched_class}/{parsed.method}"
+        if parsed.method not in results.get(matched_class, {}):
+            unmapped.append((raw_path, f"映射到 {case}，但本次测试结果中未执行该用例"))
+            continue
+
+        snapshot_drifted.setdefault(case, []).append(raw_path)
+
+    return snapshot_drifted, unmapped
+
+
+def read_rerecorded_list(path: Path) -> tuple[list[str] | None, str | None]:
+    if not path.is_file():
+        return None, f"重录快照清单不存在：{path}"
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"无法读取重录快照清单（{path}）：{exc}"
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw_line in raw_text.splitlines():
+        if not raw_line.strip():
+            continue
+        if raw_line not in seen:
+            seen.add(raw_line)
+            entries.append(raw_line)
+    return entries, None
 
 
 def command_verify_results(args: argparse.Namespace) -> int:
@@ -520,17 +659,50 @@ def command_verify_results(args: argparse.Namespace) -> int:
         for error in plan.errors:
             print(f"iOS 测试 selector 检查失败：{error}", file=sys.stderr)
         return 1
-    payload = json.loads(Path(args.tests_json).read_text(encoding="utf-8"))
+
+    tests_json_path = Path(args.tests_json)
+    if not tests_json_path.is_file():
+        print(f"测试结果文件不存在：{tests_json_path}", file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(tests_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"无法解析测试结果 JSON（{tests_json_path}）：{exc}", file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict) or not isinstance(payload.get("testNodes"), list):
+        print(f"测试结果 JSON 缺少有效的 testNodes：{tests_json_path}", file=sys.stderr)
+        return 1
+
+    rerecorded_paths: list[str] = []
+    if args.rerecorded_list:
+        loaded_paths, list_error = read_rerecorded_list(Path(args.rerecorded_list))
+        if list_error or loaded_paths is None:
+            print(list_error or "无法读取重录快照清单。", file=sys.stderr)
+            return 1
+        rerecorded_paths = loaded_paths
+
     results: dict[str, dict[str, str]] = {}
-    flaky: set[str] = set()
+    retried_passed: set[str] = set()
     for node in payload.get("testNodes", []):
-        collect_results(node, results, flaky)
+        collect_results(node, results, retried_passed)
 
     quarantined: dict[str, set[str]] = {}
     for entry in plan.quarantine:
         quarantined.setdefault(entry.class_name, set()).add(entry.method)
 
     runnable = plan.inventory.runnable_classes()
+    snapshot_drifted, unmapped_rerecorded = resolve_rerecorded_snapshots(
+        rerecorded_paths, plan.inventory, runnable, results
+    )
+    remaining_retried = retried_passed - set(snapshot_drifted)
+    if unmapped_rerecorded:
+        # 存在无法映射的重录快照时，不能把剩余重试通过用例误标为抖动，统一标为归属未知。
+        flaky: set[str] = set()
+        unknown_retried = remaining_retried
+    else:
+        flaky = remaining_retried
+        unknown_retried = set()
+
     problems: list[str] = []
     lines = [
         "| 类 | 清单 | 隔离 | 应执行 | 实际执行 | 通过 | 其中重试后通过 | 失败 | 跳过 |",
@@ -564,6 +736,32 @@ def command_verify_results(args: argparse.Namespace) -> int:
         problems.append(f"结果里出现静态清单之外的类 {name}，解析器与编译结果不一致。")
     lines.append("| **合计** | " + " | ".join(f"**{value}**" for value in totals) + " |")
 
+    if snapshot_drifted:
+        drifted_image_count = sum(len(paths) for paths in snapshot_drifted.values())
+        lines += [
+            "",
+            f"快照漂移（已重录，判失败，不计为抖动）：{len(snapshot_drifted)} 个用例（{drifted_image_count} 张快照）",
+            "",
+        ]
+        for case in sorted(snapshot_drifted):
+            paths = snapshot_drifted[case]
+            rendered_paths = ", ".join(sanitize_display_text(p) for p in paths)
+            lines.append(f"- {case}（{len(paths)} 张：{rendered_paths}）")
+    if unmapped_rerecorded:
+        lines += [
+            "",
+            f"快照漂移（已重录，无法映射/未知，判失败）：{len(unmapped_rerecorded)} 条",
+            "",
+        ]
+        for raw_path, reason in unmapped_rerecorded:
+            lines.append(f"- {sanitize_display_text(raw_path)}（未知：{reason}）")
+    if unknown_retried:
+        lines += [
+            "",
+            f"重试后通过（归属未知：存在无法映射的重录快照，不计为抖动）：{len(unknown_retried)} 个",
+            "",
+        ]
+        lines += [f"- {case}" for case in sorted(unknown_retried)]
     if flaky:
         lines += [
             "",
@@ -586,13 +784,23 @@ def command_verify_results(args: argparse.Namespace) -> int:
         for case in failed_cases:
             print(f"- {case}")
     if os.environ.get("GITHUB_ACTIONS") == "true":
+        for case in sorted(snapshot_drifted):
+            paths = snapshot_drifted[case]
+            suffix = f"（{len(paths)} 张）" if len(paths) > 1 else ""
+            print(f"::error title=快照漂移（已重录）::{escape_github_annotation(case + suffix)}")
+        for raw_path, reason in unmapped_rerecorded:
+            detail = f"未知归属：{raw_path}（{reason}）"
+            print(f"::error title=快照漂移（已重录，未知）::{escape_github_annotation(detail)}")
+        for case in sorted(unknown_retried):
+            print(f"::warning title=重试后通过（归属未知）::{escape_github_annotation(case)}")
         for case in sorted(flaky):
-            print(f"::warning title=抖动用例（重试后通过）::{case}")
+            print(f"::warning title=抖动用例（重试后通过）::{escape_github_annotation(case)}")
     if problems:
         print(f"\n执行数校验失败（{len(problems)}）：", file=sys.stderr)
         for problem in problems:
             print(f"- {problem}", file=sys.stderr)
-    return 1 if problems or failed_cases else 0
+    has_rerecorded_failure = bool(snapshot_drifted or unmapped_rerecorded)
+    return 1 if problems or failed_cases or has_rerecorded_failure else 0
 
 
 def main() -> int:
@@ -606,6 +814,7 @@ def main() -> int:
     verify_parser = subcommands.add_parser("verify-results", help="按类核对 xcresult 实际执行数")
     verify_parser.add_argument("tests_json", help="xcresulttool get test-results tests 的 JSON 输出")
     verify_parser.add_argument("--markdown", help="把按类统计表写入该文件")
+    verify_parser.add_argument("--rerecorded-list", help="本次运行重录的快照路径清单文件（每行一个仓库相对路径）")
     args = parser.parse_args()
     handlers = {
         "check": command_check,
