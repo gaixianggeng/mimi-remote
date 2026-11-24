@@ -47,6 +47,12 @@ def step(job, name)
   steps(job).fetch(step_index(job, name))
 end
 
+def job_environment_name(job)
+  environment = job["environment"]
+  name = environment.is_a?(Hash) ? environment["name"] : environment
+  name.is_a?(String) ? name.strip : name
+end
+
 def assert_pinned_actions(path, workflow)
   workflow.fetch("jobs").each do |job_id, job|
     candidates = []
@@ -159,6 +165,17 @@ fail_check("Nightly 发布凭据预检必须在 plan 成功且确定需要发布
   release_secrets["if"].to_s.include?("needs.plan.outputs.should_publish")
 fail_check("Nightly 发布凭据预检必须使用轻量 Ubuntu runner 和短超时") unless
   release_secrets["runs-on"] == "ubuntu-latest" && release_secrets["timeout-minutes"] == 2
+fail_check("Nightly 发布凭据预检必须精确绑定 ios-testflight-release Environment") unless
+  release_secrets["environment"] == "ios-testflight-release"
+%w[plan publish final].each do |job_id|
+  fail_check("Nightly #{job_id} 不得绑定 ios-testflight-release 或其他 Environment") if
+    nightly_jobs.fetch(job_id).key?("environment")
+end
+nightly_jobs.each do |job_id, job|
+  next if job_id == "release-secrets-preflight"
+  fail_check("Nightly #{job_id} 不得绑定 ios-testflight-release Environment") if
+    job_environment_name(job) == "ios-testflight-release"
+end
 secrets_step = step(release_secrets, "Require App Store signing secrets")
 required_release_secrets = %w[
   ASC_KEY_ID
@@ -218,13 +235,26 @@ end
 fail_check("ios-ci source_ref 类型错误") unless call.dig("inputs", "source_ref", "type") == "string"
 fail_check("ios-ci publish_internal_testflight 必须是 bool") unless call.dig("inputs", "publish_internal_testflight", "type") == "boolean"
 fail_check("ios-ci what_to_test 类型错误") unless call.dig("inputs", "what_to_test", "type") == "string"
+fail_check("ios-ci workflow_call 不得声明必填发布 secrets") if
+  call["secrets"].is_a?(Hash) && call["secrets"].values.any? { |cfg| cfg.is_a?(Hash) && cfg["required"] == true }
 ios_jobs = ios.fetch("jobs")
 %w[conversation-regressions image-recovery-ui-regressions].each do |regression_job_id|
   regression_job = ios_jobs.fetch(regression_job_id)
   checkout = steps(regression_job).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
   fail_check("#{regression_job_id} 必须 checkout immutable source_ref") unless checkout && checkout.dig("with", "ref").to_s.include?("inputs.source_ref")
 end
+%w[conversation-regressions image-recovery-ui-regressions tailcat-integration].each do |regression_job_id|
+  fail_check("iOS CI #{regression_job_id} 不得绑定 ios-testflight-release 或其他 Environment") if
+    ios_jobs.fetch(regression_job_id).key?("environment")
+end
+ios_jobs.each do |job_id, job|
+  next if job_id == "app-store-release"
+  fail_check("iOS CI #{job_id} 不得绑定 ios-testflight-release Environment") if
+    job_environment_name(job) == "ios-testflight-release"
+end
 app = ios_jobs.fetch("app-store-release")
+fail_check("app-store-release 必须精确绑定 ios-testflight-release Environment") unless
+  app["environment"] == "ios-testflight-release"
 fail_check("signed app-store-release 必须等待 conversation-regressions 与 image-recovery-ui-regressions") unless Array(app["needs"]).sort == %w[conversation-regressions image-recovery-ui-regressions]
 condition = app.fetch("if").to_s
 fail_check("app-store-release 缺少手工 publish_app_store 条件") unless condition.include?("workflow_dispatch") && condition.include?("publish_app_store")
@@ -508,8 +538,16 @@ puts "Nightly plan 行为回归通过：手动上传、新提交、失败/无上
 RUBY
 
   expect_failure() {
-    if MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null 2>&1; then
+    local expected_error="${1:-}"
+    local output=""
+    if output="$(MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check 2>&1)"; then
       fail "self-test 变体本应失败但通过。"
+    fi
+    if [[ "$output" == *"YAML 无法解析"* ]]; then
+      fail "self-test 变体意外产生 YAML 语法错误：$output"
+    fi
+    if [[ -n "$expected_error" && "$output" != *"$expected_error"* ]]; then
+      fail "self-test 变体未命中预期断言（期望包含：${expected_error}；实际：${output}）"
     fi
   }
 
@@ -524,6 +562,7 @@ RUBY
   mutate_nightly() {
     local old_value="$1"
     local new_value="$2"
+    local expected_error="${3:-}"
     cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
     ruby -e '
       path, old_value, new_value = ARGV
@@ -531,7 +570,8 @@ RUBY
       abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
       File.write(path, source.sub(old_value, new_value))
     ' "$test_root/.github/workflows/nightly.yml" "$old_value" "$new_value"
-    expect_failure
+    expect_failure "$expected_error"
+    cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
   }
   mutate_nightly 'artifact["name"] == "nightly-testflight-#{sha}"' 'artifact["name"]'
   mutate_nightly 'if [[ "$should_publish" == "true" ]]; then' 'if true; then'
@@ -555,10 +595,16 @@ RUBY
   mutate_nightly 'value["uploaded"] == true' 'true'
   mutate_nightly 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64 }}' 'IOS_WIDGET_APPSTORE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROVISIONING_PROFILE_BASE64 }}'
   mutate_nightly "needs.release-secrets-preflight.result == 'success'" "true"
+  mutate_nightly $'    environment: ios-testflight-release\n' '' 'Nightly 发布凭据预检必须精确绑定 ios-testflight-release Environment'
+  mutate_nightly '    environment: ios-testflight-release' '    environment: production-release' 'Nightly 发布凭据预检必须精确绑定 ios-testflight-release Environment'
+  mutate_nightly '    name: Plan Nightly Internal TestFlight' $'    name: Plan Nightly Internal TestFlight\n    environment: ios-testflight-release' 'Nightly plan 不得绑定 ios-testflight-release 或其他 Environment'
+  mutate_nightly '    name: Upload Nightly Internal TestFlight' $'    name: Upload Nightly Internal TestFlight\n    environment: ios-testflight-release' 'Nightly publish 不得绑定 ios-testflight-release 或其他 Environment'
+  mutate_nightly '    name: Nightly Internal TestFlight result' $'    name: Nightly Internal TestFlight result\n    environment: ios-testflight-release' 'Nightly final 不得绑定 ios-testflight-release 或其他 Environment'
 
   mutate_ios() {
     local old_value="$1"
     local new_value="$2"
+    local expected_error="${3:-}"
     cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/ios-ci.yml"
     ruby -e '
       path, old_value, new_value = ARGV
@@ -566,17 +612,20 @@ RUBY
       abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
       File.write(path, source.sub(old_value, new_value))
     ' "$test_root/.github/workflows/ios-ci.yml" "$old_value" "$new_value"
-    expect_failure
+    expect_failure "$expected_error"
+    cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/ios-ci.yml"
   }
   mutate_ios 'run: bash ./scripts/ios_testflight_ci.sh' 'run: echo bypass-upload'
   mutate_ios "&& 'release' || 'regression'" "&& 'regression' || 'regression'"
   mutate_ios '${{ !(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store)) }}' '${{ false }}'
   mutate_ios '!(inputs.publish_internal_testflight || (github.event_name == '\''workflow_dispatch'\'' && inputs.publish_app_store))' '!inputs.publish_internal_testflight'
+  mutate_ios $'    environment: ios-testflight-release\n' '' 'app-store-release 必须精确绑定 ios-testflight-release Environment'
+  mutate_ios '    environment: ios-testflight-release' '    environment: production-release' 'app-store-release 必须精确绑定 ios-testflight-release Environment'
+  mutate_ios '    timeout-minutes: 35' $'    timeout-minutes: 35\n    environment: ios-testflight-release' 'iOS CI conversation-regressions 不得绑定 ios-testflight-release 或其他 Environment'
+  mutate_ios '    name: Image recovery UI regressions' $'    name: Image recovery UI regressions\n    environment: ios-testflight-release' 'iOS CI image-recovery-ui-regressions 不得绑定 ios-testflight-release 或其他 Environment'
+  mutate_ios '    name: Tailcat integration (Linux)' $'    name: Tailcat integration (Linux)\n    environment: ios-testflight-release' 'iOS CI tailcat-integration 不得绑定 ios-testflight-release 或其他 Environment'
 
-  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/nightly.yml"
-  ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("      inputs.publish_internal_testflight", "      (github.event_name == '\''workflow_call'\'' && inputs.publish_internal_testflight)"); File.write(p, s)' "$test_root/.github/workflows/ios-ci.yml"
-  expect_failure
-  cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/ios-ci.yml"
+  mutate_ios $'      (github.event_name == \'workflow_dispatch\' && inputs.publish_app_store) ||\n      inputs.publish_internal_testflight' $'      (github.event_name == \'workflow_dispatch\' && inputs.publish_app_store) ||\n      (github.event_name == \'workflow_call\' && inputs.publish_internal_testflight)' 'reusable workflow 会继承 caller event，禁止用 workflow_call 判断发布路径'
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: release-validation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
   expect_failure
   cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
@@ -585,6 +634,7 @@ RUBY
   mutate_release() {
     local old_value="$1"
     local new_value="$2"
+    local expected_error="${3:-}"
     cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
     ruby -e '
       path, old_value, new_value = ARGV
@@ -592,7 +642,8 @@ RUBY
       abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
       File.write(path, source.sub(old_value, new_value))
     ' "$test_root/.github/workflows/release.yml" "$old_value" "$new_value"
-    expect_failure
+    expect_failure "$expected_error"
+    cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
   }
   mutate_release 'repository_dispatch:' 'push:'
   mutate_release 'run: bash ./scripts/check-release-source.sh --check' 'run: echo bypassed'
@@ -650,7 +701,7 @@ RUBY
           STOLEN: ${{ secrets.TAP_DEPLOY_KEY }}
 
   verify:'
-  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、evidence 绑定、Release default-branch source-trust、旁路 job 与 validation/attestation 漂移均能失败。"
+  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、ios-testflight-release Environment 绑定隔离、evidence 绑定、Release default-branch source-trust、旁路 job 与 validation/attestation 漂移均能失败。"
 }
 
 case "${1:---check}" in
