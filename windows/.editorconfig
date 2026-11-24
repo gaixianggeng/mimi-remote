@@ -1,0 +1,22 @@
+# 固定 Windows C# / XAML 栈的最小显式代码样式基线，与现行源码及 dotnet format 默认行为保持一致。
+# 不在此覆盖 Directory.Build.props 启用的分析器与规则严重级别。
+root = true
+
+[*.{cs,xaml}]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_preserve_single_line_blocks = true
+csharp_preserve_single_line_statements = true
+dotnet_sort_system_directives_first = true
+csharp_using_directive_placement = outside_namespace

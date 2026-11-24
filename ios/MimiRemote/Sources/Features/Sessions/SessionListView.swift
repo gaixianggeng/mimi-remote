@@ -165,8 +165,11 @@ struct SessionListView: View {
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
     /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
@@ -240,9 +243,15 @@ struct SessionListView: View {
         let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
-        // 宽屏把搜索放进顶栏；紧凑导航和辅助功能字号使用 navigationBarDrawer
-        // 的完整原生搜索框，避免 toolbar 最小化搜索挤走操作和反复展开转场。
+        // 宽屏把搜索放进顶栏；iPhone 常规字号将顶栏与搜索合并为单行极简三件式（设备 + 搜索胶囊 + 新建），
+        // 移除空导航栏与右上角筛选按钮；AX 超大字号与紧凑 iPad 保留独立搜索行避免挤压输入空间。
         let showsToolbarSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
+        let usesPhoneSingleRowHeader = SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+            usesCompactNavigation: usesCompactNavigation,
+            hasBottomTabBar: hasBottomTabBar,
+            hasHostSwitcher: manageConnections != nil,
+            isAccessibilityTextSize: dynamicTypeSize.isAccessibilitySize
+        )
 
         List {
             if hasActiveFilters {
@@ -379,16 +388,34 @@ struct SessionListView: View {
         .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        // 紧凑布局不再用系统 `.searchable`：iOS 26 给它套一层 Liquid Glass 外壳（高光描边、
-        // 投影，深色下是一整条偏亮灰块），外壳没有公开 API 可换，成了页面顶部最重的元素（#564）。
-        // 改为与宽屏顶栏同一枚扁平搜索框，固定在列表上方。
+        .toolbar(usesPhoneSingleRowHeader ? .hidden : .automatic, for: .navigationBar)
+        // iPhone 常规字号合为单行三件式悬浮栏（设备 + 搜索胶囊 + 新建），与工作区页、详情页同高对齐；
+        // 其余紧凑/大字号场景保留独立搜索行。iOS 26 玻璃态下外层保持透明，让滚过的会话自然折射。
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !showsToolbarSearchField {
+            if usesPhoneSingleRowHeader {
+                let usesLiquidGlassInset = WorkbenchGlassChromeStyle.resolve(
+                    interfaceStyle: interfaceStyle,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: colorSchemeContrast == .increased,
+                    supportsLiquidGlass: WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+                ) == .liquidGlass
+                phoneSingleRowHeader(
+                    tokens: tokens,
+                    presentationState: presentationState
+                )
+                .background(usesLiquidGlassInset ? Color.clear : tokens.workbenchCanvasBackground)
+            } else if !showsToolbarSearchField {
+                let usesLiquidGlassInset = WorkbenchGlassChromeStyle.resolve(
+                    interfaceStyle: interfaceStyle,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: colorSchemeContrast == .increased,
+                    supportsLiquidGlass: WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+                ) == .liquidGlass
                 sessionSearchField(tokens: tokens, fillsWidth: true)
                     .padding(.horizontal, 20)
                     .padding(.top, 4)
                     .padding(.bottom, 8)
-                    .background(tokens.workbenchCanvasBackground)
+                    .background(usesLiquidGlassInset ? Color.clear : tokens.workbenchCanvasBackground)
             }
         }
         // 挂在 safeAreaInset 之后：居中范围包含顶部搜索框，与工作区页（含胶囊行）同一块区域。
@@ -396,48 +423,50 @@ struct SessionListView: View {
             sessionListCenteredLoading(state: presentationState)
         }
         .toolbar {
-            if showsToolbarSearchField {
-                if #available(iOS 26.0, *) {
-                    ToolbarItem(placement: .topBarLeading) {
-                        sessionSearchField(tokens: tokens)
+            if !usesPhoneSingleRowHeader {
+                if showsToolbarSearchField {
+                    if #available(iOS 26.0, *) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            sessionSearchField(tokens: tokens)
+                        }
+                        // 自定义搜索框已经自带表面，隐藏系统共享玻璃，避免深色模式叠出白色底板。
+                        .sharedBackgroundVisibility(.hidden)
+                    } else {
+                        ToolbarItem(placement: .topBarLeading) {
+                            sessionSearchField(tokens: tokens)
+                        }
                     }
-                    // 自定义搜索框已经自带表面，隐藏系统共享玻璃，避免深色模式叠出白色底板。
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .topBarLeading) {
-                        sessionSearchField(tokens: tokens)
+                }
+                if let manageConnections {
+                    workbenchChromeToolbarItem(placement: .topBarLeading) {
+                        HostSwitcherMenu(
+                            presentation: .toolbar,
+                            // 列表正文已经在讲"正在连接/正在加载"，顶栏不再叠第二枚转圈。
+                            suppressesProgressBadge: presentationState.showsInPlaceConnectionProgress,
+                            manageConnections: manageConnections
+                        )
+                        .workbenchToolbarChromeCircle(tokens: tokens)
+                        .simultaneousGesture(
+                            TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                        )
+                    }
+                    // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死。
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarLeading)
                     }
                 }
-            }
-            if let manageConnections {
-                workbenchChromeToolbarItem(placement: .topBarLeading) {
-                    HostSwitcherMenu(
-                        presentation: .toolbar,
-                        // 列表正文已经在讲"正在连接/正在加载"，顶栏不再叠第二枚转圈。
-                        suppressesProgressBadge: presentationState.showsInPlaceConnectionProgress,
-                        manageConnections: manageConnections
-                    )
-                    .workbenchToolbarChromeCircle(tokens: tokens)
-                    .simultaneousGesture(
-                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
-                    )
+                // 筛选、刷新合入同一个菜单。
+                workbenchChromeToolbarItem(placement: .topBarTrailing) {
+                    filterMenu(tokens: tokens)
+                        .simultaneousGesture(
+                            TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                        )
                 }
-                // 顶栏按钮各自独立，用固定间隔把磨砂圆之间的距离钉死。
-                if #available(iOS 26.0, *) {
-                    ToolbarSpacer(.fixed, placement: .topBarLeading)
+                // 底部浮着 Tab 栏时新建留在顶栏——那个角上不该叠第二层浮动材质；
+                // Tab 栏在顶部（iPadOS 26）时右下角是空的，改用浮起按钮。
+                if hasBottomTabBar {
+                    newSessionToolbarItem(tokens: tokens)
                 }
-            }
-            // 筛选、刷新合入同一个菜单。
-            workbenchChromeToolbarItem(placement: .topBarTrailing) {
-                filterMenu(tokens: tokens)
-                    .simultaneousGesture(
-                        TapGesture().onEnded { dismissSessionSearchKeyboard() }
-                    )
-            }
-            // 底部浮着 Tab 栏时新建留在顶栏——那个角上不该叠第二层浮动材质；
-            // Tab 栏在顶部（iPadOS 26）时右下角是空的，改用浮起按钮。
-            if hasBottomTabBar {
-                newSessionToolbarItem(tokens: tokens)
             }
         }
         .task {
@@ -479,9 +508,82 @@ struct SessionListView: View {
         }
     }
 
-    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方（`fillsWidth`）；两处同一种扁平样式。
-    private func sessionSearchField(tokens: ThemeTokens, fillsWidth: Bool = false) -> some View {
-        HStack(spacing: 8) {
+    /// iPhone 极简单行三件式悬浮顶栏：左设备切换 + 中搜索胶囊 + 右新建会话（右上角不再保留筛选/更多按钮）。
+    private func phoneSingleRowHeader(
+        tokens: ThemeTokens,
+        presentationState: SessionListPresentationState
+    ) -> some View {
+        HStack(spacing: SessionListTopChromeLayout.phoneHeaderSpacing) {
+            if let manageConnections {
+                HostSwitcherMenu(
+                    presentation: .toolbar,
+                    suppressesProgressBadge: presentationState.showsInPlaceConnectionProgress,
+                    manageConnections: manageConnections
+                )
+                .workbenchChromeCircle(tokens: tokens)
+                .simultaneousGesture(
+                    TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                )
+            }
+
+            sessionSearchField(
+                tokens: tokens,
+                fillsWidth: true,
+                minimumHeight: SessionListTopChromeLayout.phoneSearchFieldHeight
+            )
+
+            phoneInlineNewSessionButton(tokens: tokens)
+        }
+        .padding(.horizontal, SessionListTopChromeLayout.phoneHeaderHorizontalPadding)
+        .frame(height: SessionListTopChromeLayout.phoneHeaderHeight)
+    }
+
+    @ViewBuilder
+    private func phoneInlineNewSessionButton(tokens: ThemeTokens) -> some View {
+        if let newSessionPresentationNamespace, #available(iOS 26.0, *) {
+            phoneInlineNewSessionButtonContent(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: true)
+            )
+            .matchedTransitionSource(
+                id: NewSessionPresentationSource
+                    .sessionsToolbarNewSession
+                    .transitionSourceID,
+                in: newSessionPresentationNamespace
+            )
+        } else {
+            // iOS 18–25 保留新建入口，但不注册仅新系统支持的 zoom 来源，回退到系统 sheet。
+            phoneInlineNewSessionButtonContent(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: false)
+            )
+        }
+    }
+
+    private func phoneInlineNewSessionButtonContent(
+        tokens: ThemeTokens,
+        source: NewSessionPresentationSource?
+    ) -> some View {
+        Button {
+            presentNewSession(source: source)
+        } label: {
+            WorkbenchChromeIcon(systemName: "plus")
+                .foregroundStyle(tokens.primaryText)
+                .workbenchChromeCircle(tokens: tokens)
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
+        .accessibilityIdentifier("sessions.newSession")
+    }
+
+    /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方或嵌在单行三件式顶栏中间（`fillsWidth`）。
+    private func sessionSearchField(
+        tokens: ThemeTokens,
+        fillsWidth: Bool = false,
+        minimumHeight: CGFloat? = nil
+    ) -> some View {
+        let resolvedMinHeight = minimumHeight ?? (interfaceStyle == .glass ? 38 : 36)
+        return HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(themeStore.uiFont(size: searchFieldGlyphSize, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
@@ -510,18 +612,14 @@ struct SessionListView: View {
                 .accessibilityLabel(L10n.text("ui.clear_search"))
             }
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 36)
+        .padding(.horizontal, interfaceStyle == .glass ? 14 : 12)
+        .frame(minHeight: resolvedMinHeight)
         .frame(
             minWidth: fillsWidth ? nil : 260,
             idealWidth: fillsWidth ? nil : 360,
             maxWidth: fillsWidth ? .infinity : 420
         )
-        .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(tokens.border.opacity(0.52), lineWidth: 1)
-        }
+        .modifier(SessionSearchFieldChromeModifier(interfaceStyle: interfaceStyle, tokens: tokens))
     }
 
     @ToolbarContentBuilder
@@ -1409,6 +1507,46 @@ struct SessionRenameSheet: View {
             self.failure = failure
             sessionStore.dismissOperationFeedback(id: failure.id)
             AccessibilityNotification.Announcement(failure.message).post()
+        }
+    }
+}
+
+enum SessionListTopChromeLayout {
+    static let phoneHeaderHorizontalPadding: CGFloat = 16
+    static let phoneHeaderSpacing: CGFloat = 8
+    static let phoneHeaderHeight: CGFloat = WorkspaceStripLayout.stripHeight
+    static let phoneSearchFieldHeight: CGFloat = WorkbenchChromeIconMetrics.minimumHitTarget
+
+    /// iPhone 常规字号下将顶栏与搜索合为极简单行三件式（设备 + 搜索胶囊 + 新建），
+    /// 去除空导航栏与右上角筛选按钮；iPad / 宽屏与 AX 超大字号保持原布局。
+    static func usesPhoneSingleRowHeader(
+        usesCompactNavigation: Bool,
+        hasBottomTabBar: Bool,
+        hasHostSwitcher: Bool,
+        isAccessibilityTextSize: Bool
+    ) -> Bool {
+        usesCompactNavigation && hasBottomTabBar && hasHostSwitcher && !isAccessibilityTextSize
+    }
+}
+
+private struct SessionSearchFieldChromeModifier: ViewModifier {
+    let interfaceStyle: ThemeInterfaceStyle
+    let tokens: ThemeTokens
+
+    func body(content: Content) -> some View {
+        if interfaceStyle == .glass {
+            content.workbenchGlassSurface(
+                shape: Capsule(style: .continuous),
+                tokens: tokens,
+                interactive: false
+            )
+        } else {
+            content
+                .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(tokens.border.opacity(0.52), lineWidth: 1)
+                }
         }
     }
 }

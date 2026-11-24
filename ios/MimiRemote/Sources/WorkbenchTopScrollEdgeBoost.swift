@@ -207,4 +207,188 @@ extension View {
     func workbenchSidebarTopScrollEdgeFade(color: Color) -> some View {
         modifier(WorkbenchSidebarTopScrollEdgeFade(color: color))
     }
+
+    /// 全 App 悬浮控件、顶栏按钮、工作区胶囊与搜索条共用的表面材质。
+    /// 遵循用户的「界面风格」设置（玻璃 / 经典磨砂）与系统辅助功能（减少透明度 / 增强对比度）。
+    func workbenchGlassSurface<ChromeShape: InsettableShape>(
+        shape: ChromeShape,
+        tokens: ThemeTokens,
+        tintLevel: Double = 0,
+        interactive: Bool = false,
+        showsClassicBorder: Bool = false
+    ) -> some View {
+        modifier(
+            WorkbenchGlassSurfaceModifier(
+                shape: shape,
+                tokens: tokens,
+                tintLevel: tintLevel,
+                interactive: interactive,
+                showsClassicBorder: showsClassicBorder
+            )
+        )
+    }
+}
+
+/// 全局界面材质的四档回退策略，供 UI 修饰符与单元测试共用。
+enum WorkbenchGlassChromeStyle: Equatable {
+    case opaqueFallback
+    case classicFrosted
+    case liquidGlass
+    case ultraThinMaterial
+
+    static var supportsSystemLiquidGlass: Bool {
+        if #available(iOS 26.0, *) {
+            return true
+        }
+        return false
+    }
+
+    static func resolve(
+        interfaceStyle: ThemeInterfaceStyle = .glass,
+        reduceTransparency: Bool,
+        increasedContrast: Bool = false,
+        supportsLiquidGlass: Bool
+    ) -> Self {
+        if reduceTransparency || increasedContrast {
+            return .opaqueFallback
+        }
+        if interfaceStyle == .classic {
+            return .classicFrosted
+        }
+        return supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
+    }
+}
+
+/// 统一全 App chrome 的材质修饰符，按界面风格在透明玻璃与经典扁平磨砂之间即时切换。
+struct WorkbenchGlassSurfaceModifier<ChromeShape: InsettableShape>: ViewModifier {
+    let shape: ChromeShape
+    let tokens: ThemeTokens
+    var tintLevel: Double = 0
+    var interactive: Bool = false
+    var showsClassicBorder: Bool = false
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
+
+    private var increasedContrast: Bool {
+        colorSchemeContrast == .increased
+    }
+
+    func body(content: Content) -> some View {
+        if reduceTransparency || increasedContrast {
+            let borderOpacity: Double = colorScheme == .light
+                ? (increasedContrast ? 0.24 : 0.14)
+                : (increasedContrast ? 0.30 : 0.22)
+            let shadowOpacity: Double = increasedContrast
+                ? 0.05
+                : (colorScheme == .light ? 0.08 : 0.24)
+            content
+                .background {
+                    ZStack {
+                        shape.fill(tokens.elevatedSurface)
+                        if tintLevel > 0 {
+                            shape.fill(
+                                WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                    tokens: tokens,
+                                    reduceTransparency: true,
+                                    level: tintLevel
+                                )
+                            )
+                        }
+                    }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        (colorScheme == .light ? Color.black : Color.white).opacity(borderOpacity),
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(
+                    color: Color.black.opacity(shadowOpacity),
+                    radius: 6,
+                    y: 2
+                )
+        } else if interfaceStyle == .classic {
+            content
+                .background {
+                    ZStack {
+                        shape.fill(WorkbenchMaterial.surface)
+                        if tintLevel > 0 {
+                            shape.fill(
+                                WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                    tokens: tokens,
+                                    reduceTransparency: false,
+                                    level: tintLevel
+                                )
+                            )
+                        }
+                    }
+                }
+                .overlay {
+                    if showsClassicBorder {
+                        shape.strokeBorder(
+                            colorScheme == .light
+                                ? Color.black.opacity(0.10)
+                                : Color.white.opacity(0.14),
+                            lineWidth: 0.75
+                        )
+                    }
+                }
+                .shadow(
+                    color: showsClassicBorder
+                        ? Color.black.opacity(colorScheme == .light ? 0.08 : 0.18)
+                        : .clear,
+                    radius: showsClassicBorder ? 8 : 0,
+                    y: showsClassicBorder ? 3 : 0
+                )
+        } else if #available(iOS 26.0, *) {
+            content
+                .background {
+                    if tintLevel > 0 {
+                        shape.fill(
+                            WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                tokens: tokens,
+                                reduceTransparency: false,
+                                level: tintLevel
+                            )
+                        )
+                    }
+                }
+                .glassEffect(
+                    interactive ? .regular.interactive() : .regular,
+                    in: shape
+                )
+        } else {
+            content
+                .background {
+                    ZStack {
+                        shape.fill(.ultraThinMaterial)
+                        if tintLevel > 0 {
+                            shape.fill(
+                                WorkbenchChromeMaterial<ChromeShape>.selectionTint(
+                                    tokens: tokens,
+                                    reduceTransparency: false,
+                                    level: tintLevel
+                                )
+                            )
+                        }
+                    }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        colorScheme == .light
+                            ? Color.black.opacity(0.08)
+                            : Color.white.opacity(0.16),
+                        lineWidth: 0.75
+                    )
+                }
+                .shadow(
+                    color: Color.black.opacity(colorScheme == .light ? 0.08 : 0.24),
+                    radius: 8,
+                    y: 3
+                )
+        }
+    }
 }

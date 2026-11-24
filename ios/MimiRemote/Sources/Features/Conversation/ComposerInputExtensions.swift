@@ -497,11 +497,8 @@ extension ComposerView {
 
         return VStack(alignment: .leading, spacing: 4) {
             if !singleLine {
-                composerStatusTray.transition(.opacity)
-                // 模型选择器以小药丸放在文字输入区上方，不与底栏按钮争抢宽度，点开即为半屏 Sheet。
-                phoneModelPillBox(tokens: tokens)
-                    .padding(.horizontal, 2)
-                    .padding(.top, 2)
+                // 状态条与模型/模型锁小组件在收起态合并排布为同一排；无状态时仅保留模型药丸。
+                phoneComposerHeaderBox(tokens: tokens)
                     .transition(.opacity)
             }
             HStack(spacing: 2) {
@@ -539,8 +536,19 @@ extension ComposerView {
         .padding(.horizontal, singleLine ? 6 : 8)
         .padding(.vertical, singleLine ? 4 : 8)
         .frame(maxWidth: .infinity)
-        .background { composerContainerBackground(shape: shape, tokens: tokens) }
-        .overlay { shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth) }
+        .modifier(
+            ComposerCardSurfaceModifier(
+                shape: shape,
+                tokens: tokens,
+                colorScheme: colorScheme,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: colorSchemeContrast == .increased,
+                usesFloatingGlass: true,
+                voiceAccentBorderColor: composerActiveVoiceBorderColor(tokens),
+                solidBorderColor: composerCardBorderColor(tokens),
+                borderWidth: composerCardBorderWidth
+            )
+        )
         .tint(tokens.accent)
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.height
@@ -640,20 +648,11 @@ extension ComposerView {
 #endif
     }
 
-    // 悬浮控件底衬：与 composerContainerBackground 同源，只是换成胶囊轮廓，
-    // 保证语音状态与底部输入面板属于同一层材质语言。
+    // 悬浮控件底衬：与全局悬浮 chrome 同源，采用透明玻璃胶囊材质，
+    // 保证语音状态与底部输入面板、顶栏悬浮控件属于同一套视觉语言。
     @ViewBuilder
     func composerFloatingControlBackground(tokens: ThemeTokens) -> some View {
-        let shape = Capsule(style: .continuous)
-        if reduceTransparency {
-            shape.fill(tokens.elevatedSurface)
-        } else {
-            shape
-                .fill(WorkbenchMaterial.surface)
-                .overlay {
-                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
-                }
-        }
+        WorkbenchChromeMaterial(shape: Capsule(style: .continuous), tokens: tokens)
     }
 
     // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，

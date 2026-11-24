@@ -70,14 +70,49 @@ enum ThemeResolvedScheme: String {
     case dark
 }
 
+/// 全局界面材质风格：决定悬浮顶栏、输入框、工作区胶囊、搜索条与浮层的表面材质。
+enum ThemeInterfaceStyle: String, CaseIterable, Identifiable {
+    case classic
+    case glass
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .classic:
+            return L10n.text("ui.interface_style_classic")
+        case .glass:
+            return L10n.text("ui.interface_style_glass")
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .classic:
+            return L10n.text("ui.interface_style_classic_description")
+        case .glass:
+            return L10n.text("ui.interface_style_glass_description")
+        }
+    }
+}
+
 private struct ThemeSystemColorSchemeKey: EnvironmentKey {
     static let defaultValue: ColorScheme? = nil
+}
+
+private struct ThemeInterfaceStyleKey: EnvironmentKey {
+    static let defaultValue: ThemeInterfaceStyle = .glass
 }
 
 extension EnvironmentValues {
     var themeSystemColorScheme: ColorScheme? {
         get { self[ThemeSystemColorSchemeKey.self] }
         set { self[ThemeSystemColorSchemeKey.self] = newValue }
+    }
+
+    var themeInterfaceStyle: ThemeInterfaceStyle {
+        get { self[ThemeInterfaceStyleKey.self] }
+        set { self[ThemeInterfaceStyleKey.self] = newValue }
     }
 }
 
@@ -698,6 +733,10 @@ final class ThemeStore: ObservableObject {
         didSet { persistVisualState() }
     }
 
+    @Published var interfaceStyle: ThemeInterfaceStyle {
+        didSet { persistVisualState() }
+    }
+
     @Published var preset: ThemePreset {
         didSet { persistVisualState() }
     }
@@ -733,6 +772,7 @@ final class ThemeStore: ObservableObject {
 
     private enum Keys {
         static let mode = "appearance.theme.mode"
+        static let interfaceStyle = "appearance.theme.interfaceStyle"
         static let preset = "appearance.theme.preset"
         static let uiFont = "appearance.theme.uiFont"
         static let codeFont = "appearance.theme.codeFont"
@@ -750,12 +790,15 @@ final class ThemeStore: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let savedMode = defaults.string(forKey: Keys.mode).flatMap(ThemeMode.init(rawValue:)) ?? .system
+        let savedInterfaceStyle = defaults.string(forKey: Keys.interfaceStyle)
+            .flatMap(ThemeInterfaceStyle.init(rawValue:)) ?? .glass
         let savedPreset = defaults.string(forKey: Keys.preset).flatMap(ThemePreset.init(rawValue:)) ?? .codex
         let savedUIFont = defaults.string(forKey: Keys.uiFont).flatMap(ThemeUIFontPreset.init(rawValue:)) ?? .system
         let savedCodeFont = defaults.string(forKey: Keys.codeFont).flatMap(ThemeCodeFontPreset.init(rawValue:)) ?? .systemMono
         let savedFontScale = defaults.object(forKey: Keys.fontScale).flatMap { $0 as? Double }
 
         self.mode = savedMode
+        self.interfaceStyle = savedInterfaceStyle
         self.preset = savedPreset
         self.uiFontPreset = savedUIFont
         self.codeFontPreset = savedCodeFont
@@ -799,6 +842,7 @@ final class ThemeStore: ObservableObject {
 
     func reset() {
         mode = .system
+        interfaceStyle = .glass
         preset = .codex
         uiFontPreset = .system
         codeFontPreset = .systemMono
@@ -1260,6 +1304,7 @@ final class ThemeStore: ObservableObject {
 
     private func persistVisualState() {
         defaults.set(mode.rawValue, forKey: Keys.mode)
+        defaults.set(interfaceStyle.rawValue, forKey: Keys.interfaceStyle)
         defaults.set(preset.rawValue, forKey: Keys.preset)
         defaults.set(uiFontPreset.rawValue, forKey: Keys.uiFont)
         defaults.set(codeFontPreset.rawValue, forKey: Keys.codeFont)

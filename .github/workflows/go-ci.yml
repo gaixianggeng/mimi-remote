@@ -10,6 +10,7 @@ on:
       - "go.mod"
       - "go.sum"
       - "contracts/mimi-protocol/**"
+      - "contracts/harness-native/**"
       - ".goreleaser.yml"
       - "packaging/**"
       - "scripts/check-packaging.sh"
@@ -20,6 +21,7 @@ on:
       - "scripts/check-release-source.sh"
       - "scripts/check-source-size.sh"
       - "scripts/check-mimi-protocol-contract.sh"
+      - "scripts/check-harness-native-contract.sh"
       - "scripts/install-linux.sh"
       - "scripts/test-install-linux.sh"
       - "scripts/install-linux-tray.sh"
@@ -66,6 +68,9 @@ jobs:
 
       - name: Check Mimi protocol contract
         run: bash ./scripts/check-mimi-protocol-contract.sh
+
+      - name: Check harness native contract
+        run: bash ./scripts/check-harness-native-contract.sh
 
       - name: Check formatting
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"

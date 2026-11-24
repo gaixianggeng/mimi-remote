@@ -937,6 +937,112 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkbenchGlassChromeStyleAndMaterialKeepExpectedFallbackAndGeometry() {
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .liquidGlass
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: false
+            ),
+            .ultraThinMaterial
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .classicFrosted
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            WorkbenchGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: true,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+
+        let tokens = ThemeStore().tokens(for: .dark)
+        let circle = WorkbenchChromeIcon(systemName: "plus")
+            .workbenchChromeCircle(tokens: tokens)
+            .environment(\.colorScheme, .dark)
+        let circleSize = UIHostingController(rootView: circle)
+            .sizeThatFits(in: CGSize(width: 100, height: 100))
+        XCTAssertEqual(circleSize.width, WorkbenchChromeIconMetrics.minimumHitTarget, accuracy: 0.5)
+        XCTAssertEqual(circleSize.height, WorkbenchChromeIconMetrics.minimumHitTarget, accuracy: 0.5)
+    }
+
+    func testSessionListSingleRowPhoneHeaderRulesAndMetrics() {
+        XCTAssertTrue(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: true,
+                isAccessibilityTextSize: false
+            ),
+            "iPhone 常规字号应启用单行极简三件式顶栏"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: true,
+                isAccessibilityTextSize: true
+            ),
+            "AX 超大字号应回退两行以免挤压搜索输入宽度"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: false,
+                isAccessibilityTextSize: false
+            ),
+            "紧凑 iPad（无内嵌设备入口）保持既有工具栏布局"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: false,
+                hasBottomTabBar: false,
+                hasHostSwitcher: false,
+                isAccessibilityTextSize: false
+            ),
+            "宽屏 iPad 保持既有工具栏搜索布局"
+        )
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderHeight, WorkspaceStripLayout.stripHeight)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneSearchFieldHeight, WorkbenchChromeIconMetrics.minimumHitTarget)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderHorizontalPadding, PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderSpacing, PhoneSessionFloatingCapsuleMetrics.interItemSpacing)
+    }
+
+    @MainActor
     func testNavigationInteractivePopEnablerSurvivesHiddenNavBarFirstEntryAndTabRestore() throws {
         final class HostModel: ObservableObject {
             @Published var selectedTab: Int = 0

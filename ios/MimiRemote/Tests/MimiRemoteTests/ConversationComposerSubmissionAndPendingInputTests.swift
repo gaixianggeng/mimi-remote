@@ -1362,22 +1362,178 @@ final class ComposerStatusTrayBehaviorTests: XCTestCase {
         XCTAssertEqual(style.borderOpacity, 0.58)
     }
 
+    /// 底部玻璃输入框与顶部悬浮玻璃栏共用同一玻璃表面决策，辅助功能下必须退回实色。
+    func testFloatingGlassChromeStyleResolvesAcrossSystemAndAccessibilityModes() {
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .liquidGlass
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: false
+            ),
+            .ultraThinMaterial
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: false,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .classicFrosted
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                interfaceStyle: .classic,
+                reduceTransparency: true,
+                increasedContrast: false,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+        XCTAssertEqual(
+            FloatingGlassChromeStyle.resolve(
+                reduceTransparency: false,
+                increasedContrast: true,
+                supportsLiquidGlass: true
+            ),
+            .opaqueFallback
+        )
+    }
+
+    /// iPhone 收起态「正在电脑上运行」与模型锁小组件合并为单排；展开或缺失目录横幅时回落到下方。
+    func testEmbeddedStatusTrayMergesInlineAccessoryOnlyInCollapsedChipRow() {
+        let owner = ClaudeSessionOwner(entrypoint: "claude-desktop", kind: "interactive", status: "running", pid: 4242)
+        let ownershipNotice = SessionOwnershipNotice(sessionID: "held", owner: owner, canTakeOver: true)
+        let lockPill = AnyView(
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                Image(systemName: "lock.fill")
+            }
+            .padding(.horizontal, 9)
+            .frame(minHeight: 28)
+        )
+
+        let collapsedMerged = makeTray(
+            ownershipNotice: ownershipNotice,
+            inlineAccessory: lockPill,
+            isGoalExpanded: false
+        )
+        XCTAssertTrue(collapsedMerged.mergesInlineAccessoryInCollapsedRow)
+
+        let expanded = makeTray(
+            ownershipNotice: ownershipNotice,
+            inlineAccessory: lockPill,
+            isGoalExpanded: true
+        )
+        XCTAssertFalse(expanded.mergesInlineAccessoryInCollapsedRow)
+
+        let missingDirOnly = makeTray(
+            missingDirectoryNotice: "原工作目录已移动或删除，当前会话仅可查看历史记录。",
+            inlineAccessory: lockPill,
+            isGoalExpanded: false
+        )
+        XCTAssertFalse(missingDirOnly.mergesInlineAccessoryInCollapsedRow)
+
+        let withoutAccessory = makeTray(
+            ownershipNotice: ownershipNotice,
+            inlineAccessory: nil,
+            isGoalExpanded: false
+        )
+        XCTAssertFalse(withoutAccessory.mergesInlineAccessoryInCollapsedRow)
+    }
+
+    /// 实测内嵌状态条合并模型锁药丸后的单排高度，避免退回两排堆叠拉高输入框。
+    func testEmbeddedStatusTrayWithInlineAccessoryStaysSingleRowHeightWhenCollapsed() {
+        let themeStore = ThemeStore()
+        let owner = ClaudeSessionOwner(entrypoint: "claude-desktop", kind: "interactive", status: "running", pid: 4242)
+        let ownershipNotice = SessionOwnershipNotice(sessionID: "held", owner: owner, canTakeOver: true)
+        let lockPill = AnyView(
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 11, weight: .medium))
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .frame(minHeight: 28)
+        )
+
+        let collapsedTray = makeTray(
+            ownershipNotice: ownershipNotice,
+            inlineAccessory: lockPill,
+            isGoalExpanded: false
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+
+        let collapsedSize = UIHostingController(rootView: collapsedTray)
+            .sizeThatFits(in: CGSize(width: 355, height: 200))
+
+        XCTAssertEqual(
+            collapsedSize.height,
+            ComposerStatusTrayPlacement.embedded.visualHeight,
+            accuracy: 4,
+            "「正在电脑上运行」与模型锁同排展示后，收起态应保持单排高度"
+        )
+
+        let expandedTray = makeTray(
+            ownershipNotice: ownershipNotice,
+            inlineAccessory: lockPill,
+            isGoalExpanded: true
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+
+        let expandedSize = UIHostingController(rootView: expandedTray)
+            .sizeThatFits(in: CGSize(width: 355, height: 300))
+
+        XCTAssertGreaterThan(
+            expandedSize.height,
+            collapsedSize.height + 24,
+            "展开态应展示完整持有说明并将模型锁排在下方"
+        )
+    }
+
     private func makeTray(
         sessionControlNotice: String? = nil,
+        missingDirectoryNotice: String? = nil,
         ownershipNotice: SessionOwnershipNotice? = nil,
         quotaNotice: CodexQuotaNotice? = nil,
         usage: CodexUsageDisplaySummary? = nil,
         goal: ThreadGoal? = nil,
+        inlineAccessory: AnyView? = nil,
+        isGoalExpanded: Bool = false,
         allowsTakeOver: Bool = false
     ) -> ComposerStatusTray {
         ComposerStatusTray(
             sessionControlNotice: sessionControlNotice,
+            missingDirectoryNotice: missingDirectoryNotice,
             ownershipNotice: ownershipNotice,
             quotaNotice: quotaNotice,
             usage: usage,
             goal: goal,
             placement: .embedded,
-            isGoalExpanded: false,
+            inlineAccessory: inlineAccessory,
+            isGoalExpanded: isGoalExpanded,
             isGoalUpdating: false,
             goalErrorMessage: nil,
             isRefreshDisabled: false,

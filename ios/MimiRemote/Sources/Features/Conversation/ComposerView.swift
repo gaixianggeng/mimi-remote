@@ -905,14 +905,21 @@ struct ComposerView: View {
                 }
             }
             .padding(10)
-            // 待发送内容悬浮在正文上方，复用输入框的模糊材质，避免高对比文字穿透后叠字。
+            // 待发送内容悬浮在正文上方，与当前输入卡保持同一套表面材质（iPhone 同步透明玻璃）。
             // 圆角略小于主输入框，保留二级浮层层级，不与主要输入操作争夺注意力。
-            .background {
-                composerContainerBackground(shape: shape, tokens: tokens)
-            }
-            .overlay {
-                shape.strokeBorder(tokens.border.opacity(0.58), lineWidth: 0.75)
-            }
+            .modifier(
+                ComposerCardSurfaceModifier(
+                    shape: shape,
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: colorSchemeContrast == .increased,
+                    usesFloatingGlass: phoneKeyboardVisible != nil,
+                    voiceAccentBorderColor: nil,
+                    solidBorderColor: tokens.border.opacity(0.58),
+                    borderWidth: 0.75
+                )
+            )
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .accessibilityElement(children: .contain)
         }
@@ -985,98 +992,8 @@ struct ComposerView: View {
     }
 
 
-    @ViewBuilder
     var composerStatusTray: some View {
-        let visibleGoal = selectedVisibleThreadGoal
-        let usageNotice = selectedComposerUsageNotice
-        let ownershipNotice = sessionStore.selectedOwnershipNotice
-        let missingDirectoryNotice = sessionStore.selectedSession?.cwdMissing == true
-            ? sessionStore.selectedSessionControlNotice
-            : nil
-        // Claude 被 Mac 持有或原工作目录缺失本身就是明确的只读原因，避免叠加通用「仅观察」chip。
-        let sessionControlNotice = (ownershipNotice == nil && missingDirectoryNotice == nil)
-            ? sessionStore.selectedSessionControlNotice
-            : nil
-        if missingDirectoryNotice != nil ||
-            ownershipNotice != nil ||
-            sessionControlNotice != nil ||
-            usageNotice != nil ||
-            visibleGoal != nil {
-            ComposerStatusTray(
-                sessionControlNotice: sessionControlNotice,
-                missingDirectoryNotice: missingDirectoryNotice,
-                ownershipNotice: ownershipNotice,
-                // 阻断额度已经由 Conversation 顶部唯一状态区展示，Composer 不再重复一份。
-                quotaNotice: nil,
-                usage: usageNotice,
-                goal: visibleGoal,
-                placement: usesNarrowComposerLayout ? .embedded : .standalone,
-                isGoalExpanded: isGoalStatusExpanded,
-                isGoalUpdating: sessionStore.isUpdatingThreadGoal,
-                goalErrorMessage: sessionStore.threadGoalErrorMessage,
-                isRefreshDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading,
-                allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
-                onTakeOver: {
-                    sessionStore.takeOverSelectedSession()
-                },
-                onTakeOverHeldSession: {
-                    isClaudeTakeoverConfirmationPresented = true
-                },
-                onRefreshUsage: {
-                    Task {
-                        await sessionStore.refreshCurrentContext(origin: .routine)
-                    }
-                },
-                onEditGoal: {
-                    if let goal = visibleGoal {
-                        goalEditor = ThreadGoalEditorDraft(sessionID: goal.threadID, existing: goal)
-                    }
-                },
-                onTogglePauseGoal: {
-                    if let goal = visibleGoal {
-                        Task { await sessionStore.updateSelectedThreadGoalStatus(nextPrimaryGoalStatus(for: goal.status)) }
-                    }
-                },
-                onCompleteGoal: {
-                    Task { await sessionStore.updateSelectedThreadGoalStatus(.complete) }
-                },
-                onClearGoal: {
-                    Task { await sessionStore.clearSelectedThreadGoal() }
-                },
-                onToggleGoalExpanded: {
-                    withAnimation(composerMotionAnimation) {
-                        isGoalStatusExpanded.toggle()
-                    }
-                }
-            )
-            .environmentObject(themeStore)
-            // 只在出现持有态时探测一次主机是否支持 thread/takeover，老主机不出现接管按钮。
-            .task(id: ownershipNotice?.sessionID) {
-                guard let sessionID = ownershipNotice?.sessionID else {
-                    return
-                }
-                await sessionStore.refreshClaudeTakeoverSupportIfNeeded(sessionID: sessionID)
-            }
-            // 接管会结束 Mac 上的一个进程，必须二次确认；失败后按钮保留可重试。
-            .confirmationDialog(
-                L10n.text("ui.take_over_claude_session_confirm_title"),
-                isPresented: $isClaudeTakeoverConfirmationPresented,
-                titleVisibility: .visible,
-                presenting: ownershipNotice
-            ) { notice in
-                Button(L10n.text("ui.take_over_claude_session_confirm_action"), role: .destructive) {
-                    let sessionID = notice.sessionID
-                    Task { await sessionStore.takeOverHeldClaudeSession(sessionID: sessionID) }
-                }
-            } message: { notice in
-                Text(notice.takeOverConfirmationMessage)
-            }
-            .transition(
-                reduceMotion || usesNarrowComposerLayout
-                    ? .opacity
-                    : .move(edge: .top).combined(with: .opacity)
-            )
-        }
+        composerStatusTray(inlineAccessory: nil)
     }
 
     var selectedComposerUsageNotice: CodexUsageDisplaySummary? {

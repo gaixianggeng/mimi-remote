@@ -353,6 +353,40 @@ struct ComposerStatusTraySurfaceStyle: Equatable {
     }
 }
 
+/// 输入卡顶部内嵌药丸（状态胶囊、模型选择器、模型锁）共用的轻透表面色板。
+/// 叠在玻璃输入卡上时使用低透明中性底衬与细描边，避免打出一块实色灰块；开启减少透明度时回退实色。
+enum ComposerEmbeddedPillPalette {
+    static func fill(
+        tokens: ThemeTokens,
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Color {
+        if reduceTransparency {
+            return tokens.elevatedSurface
+        }
+        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
+        if increasedContrast {
+            return base.opacity(tokens.resolvedScheme == .light ? 0.10 : 0.14)
+        }
+        return base.opacity(tokens.resolvedScheme == .light ? 0.045 : 0.085)
+    }
+
+    static func border(
+        tokens: ThemeTokens,
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Color {
+        if reduceTransparency {
+            return tokens.border.opacity(increasedContrast ? 0.85 : 0.65)
+        }
+        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
+        if increasedContrast {
+            return base.opacity(0.24)
+        }
+        return base.opacity(tokens.resolvedScheme == .light ? 0.09 : 0.14)
+    }
+}
+
 struct ComposerStatusTray: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -370,6 +404,9 @@ struct ComposerStatusTray: View {
     let usage: CodexUsageDisplaySummary?
     let goal: ThreadGoal?
     let placement: ComposerStatusTrayPlacement
+    /// iPhone 内嵌态同排附带的小组件（如模型选择器 / 模型锁药丸）。
+    /// 收起态与状态胶囊并排展示；展开详情或缺失目录长横幅时退到下方独立行。
+    var inlineAccessory: AnyView? = nil
     let isGoalExpanded: Bool
     let isGoalUpdating: Bool
     let goalErrorMessage: String?
@@ -408,6 +445,11 @@ struct ComposerStatusTray: View {
                 }
                 .font(themeStore.uiFont(.caption2, weight: .medium))
                 .foregroundStyle(tokens.warning)
+            }
+
+            if showsExpandedLayout, let inlineAccessory {
+                inlineAccessory
+                    .padding(.top, 2)
             }
         }
         .padding(isGoalExpanded ? placement.expandedContentPadding : 0)
@@ -449,28 +491,29 @@ struct ComposerStatusTray: View {
         // `visualHeight` 的行高里居中；直接给 ScrollView 加 minHeight 会让它自己撑满，
         // 内容随之顶到行首。
         HStack(spacing: 8) {
-            if let missingDirectoryNotice, ownershipNotice == nil, quotaNotice == nil, usage == nil, goal == nil {
-                missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
-                    .layoutPriority(1)
+            if showsMissingDirectoryOnlyBanner, let missingDirectoryNotice {
+                VStack(alignment: .leading, spacing: 6) {
+                    missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
+                    if let inlineAccessory {
+                        inlineAccessory
+                    }
+                }
+                .layoutPriority(1)
+            } else if inlineAccessory != nil {
+                // 同排含交互药丸（模型选择/模型锁）时优先无滚动直排，避免 UIScrollView
+                // delaysContentTouches 拖慢点击；极窄屏或大字号溢出时自动回落横向滚动。
+                ViewThatFits(in: .horizontal) {
+                    collapsedChipRow(tokens: tokens)
+                        .fixedSize(horizontal: true, vertical: false)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        collapsedChipRow(tokens: tokens)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        if let missingDirectoryNotice {
-                            missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
-                        } else if let ownershipNotice {
-                            collapsedChip(title: ownershipNotice.title, systemImage: "desktopcomputer", tint: tokens.secondaryText, tokens: tokens)
-                        } else if sessionControlNotice != nil {
-                            collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
-                        }
-                        if quotaNotice != nil {
-                            collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
-                        } else if usage != nil {
-                            collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
-                        }
-                        if let goal {
-                            collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
-                        }
-                    }
+                    collapsedChipRow(tokens: tokens)
                 }
                 .layoutPriority(1)
             }
@@ -486,6 +529,29 @@ struct ComposerStatusTray: View {
         // 会让一枚 28pt 的 chip 顶着一整行空白，读成"这里少了点什么"。
         // 命中区由托盘级 overlay 的 Button 保证，不参与这条视觉栏的高度。
         .frame(minHeight: placement.visualHeight)
+    }
+
+    private func collapsedChipRow(tokens: ThemeTokens) -> some View {
+        HStack(spacing: inlineAccessory != nil ? 6 : 10) {
+            if let missingDirectoryNotice {
+                missingDirectoryBanner(missingDirectoryNotice, tokens: tokens)
+            } else if let ownershipNotice {
+                collapsedChip(title: ownershipNotice.title, systemImage: "desktopcomputer", tint: tokens.secondaryText, tokens: tokens)
+            } else if sessionControlNotice != nil {
+                collapsedChip(title: L10n.text("ui.observe"), systemImage: "eye", tint: tokens.secondaryText, tokens: tokens)
+            }
+            if quotaNotice != nil {
+                collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
+            } else if usage != nil {
+                collapsedChip(title: L10n.text("ui.quota"), systemImage: "speedometer", tint: tokens.warning, tokens: tokens)
+            }
+            if let goal {
+                collapsedChip(title: collapsedGoalChipTitle(for: goal.status), systemImage: "target", tint: goalStatusTint(goal, tokens: tokens), tokens: tokens)
+            }
+            if let inlineAccessory {
+                inlineAccessory
+            }
+        }
     }
 
     @ViewBuilder
@@ -536,6 +602,15 @@ struct ComposerStatusTray: View {
         isGoalExpanded && hasExpandableDetail
     }
 
+    private var showsMissingDirectoryOnlyBanner: Bool {
+        missingDirectoryNotice != nil && ownershipNotice == nil && quotaNotice == nil && usage == nil && goal == nil
+    }
+
+    /// 收起态且非独占多行缺失目录横幅时，把外部附带的小组件合并到首行与状态胶囊同排展示。
+    var mergesInlineAccessoryInCollapsedRow: Bool {
+        inlineAccessory != nil && !showsExpandedLayout && !showsMissingDirectoryOnlyBanner
+    }
+
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
@@ -546,7 +621,7 @@ struct ComposerStatusTray: View {
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
         }
-        .frame(height: 28)
+        .frame(minHeight: 28)
         .padding(.horizontal, placement.usesEmbeddedStatusChip ? 8 : 2)
         .background {
             if placement.usesEmbeddedStatusChip {
@@ -564,19 +639,19 @@ struct ComposerStatusTray: View {
     }
 
     private func embeddedStatusChipFill(tokens: ThemeTokens) -> Color {
-        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
-        if colorSchemeContrast == .increased {
-            return base.opacity(0.08)
-        }
-        return base.opacity(tokens.resolvedScheme == .light ? 0.025 : 0.06)
+        ComposerEmbeddedPillPalette.fill(
+            tokens: tokens,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased
+        )
     }
 
     private func embeddedStatusChipBorder(tokens: ThemeTokens) -> Color {
-        let base = tokens.resolvedScheme == .light ? Color.black : Color.white
-        if colorSchemeContrast == .increased {
-            return base.opacity(0.20)
-        }
-        return base.opacity(tokens.resolvedScheme == .light ? 0.07 : 0.12)
+        ComposerEmbeddedPillPalette.border(
+            tokens: tokens,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased
+        )
     }
 
     /// 展开和收起共用同一枚按钮：同一个字号、同一个命中框、同一个锚点，方向只靠旋转表达。
@@ -1007,6 +1082,179 @@ struct ComposerStatusTray: View {
             return L10n.text("ui.budget")
         case .complete:
             return L10n.text("ui.complete")
+        }
+    }
+}
+
+/// 输入卡与待发送浮层共用的表面修饰符：iPhone 悬浮态复用顶栏同源 `PhoneFloatingGlassChromeModifier`，
+/// 其余形态保持实色底板与描边，并始终收敛为单层 `ModifiedContent` 以守住真机栈预算。
+struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
+    let shape: CardShape
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+    let increasedContrast: Bool
+    let usesFloatingGlass: Bool
+    let voiceAccentBorderColor: Color?
+    let solidBorderColor: Color
+    let borderWidth: CGFloat
+
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
+
+    private var solidFillColor: Color {
+        colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+    }
+
+    func body(content: Content) -> some View {
+        if usesFloatingGlass && interfaceStyle == .glass {
+            content.modifier(
+                PhoneFloatingGlassChromeModifier(
+                    shape: shape,
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    reduceTransparency: reduceTransparency,
+                    interactive: false,
+                    increasedContrast: increasedContrast,
+                    opaqueFillColor: solidFillColor,
+                    accentBorderColor: voiceAccentBorderColor,
+                    accentBorderWidth: borderWidth,
+                    opaqueBorderColor: solidBorderColor,
+                    opaqueBorderWidth: borderWidth
+                )
+            )
+        } else {
+            let shadowOpacity: Double = increasedContrast
+                ? 0.05
+                : (colorScheme == .light ? 0.06 : 0.22)
+            content
+                .background {
+                    shape
+                        .fill(solidFillColor)
+                        .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
+                }
+                .overlay {
+                    shape.strokeBorder(solidBorderColor, lineWidth: borderWidth)
+                }
+        }
+    }
+}
+
+extension ComposerView {
+    var hasComposerStatusTrayContent: Bool {
+        let missingDirectoryNotice = sessionStore.selectedSession?.cwdMissing == true
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        let ownershipNotice = sessionStore.selectedOwnershipNotice
+        let sessionControlNotice = (ownershipNotice == nil && missingDirectoryNotice == nil)
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        return missingDirectoryNotice != nil ||
+            ownershipNotice != nil ||
+            sessionControlNotice != nil ||
+            selectedComposerUsageNotice != nil ||
+            selectedVisibleThreadGoal != nil
+    }
+
+    /// 透明玻璃输入卡在常态下由系统 Liquid Glass 提供边缘高光，只在语音准备/录音/转写态叠回状态色描边。
+    func composerActiveVoiceBorderColor(_ tokens: ThemeTokens) -> Color? {
+        guard voiceInput.isRecording || voiceInput.isPreparing || isVoicePressActive || isVoiceTranscribing else {
+            return nil
+        }
+        return composerCardBorderColor(tokens)
+    }
+
+    @ViewBuilder
+    func composerStatusTray(inlineAccessory: AnyView?) -> some View {
+        let visibleGoal = selectedVisibleThreadGoal
+        let usageNotice = selectedComposerUsageNotice
+        let ownershipNotice = sessionStore.selectedOwnershipNotice
+        let missingDirectoryNotice = sessionStore.selectedSession?.cwdMissing == true
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        // Claude 被 Mac 持有或原工作目录缺失本身就是明确的只读原因，避免叠加通用「仅观察」chip。
+        let sessionControlNotice = (ownershipNotice == nil && missingDirectoryNotice == nil)
+            ? sessionStore.selectedSessionControlNotice
+            : nil
+        if missingDirectoryNotice != nil ||
+            ownershipNotice != nil ||
+            sessionControlNotice != nil ||
+            usageNotice != nil ||
+            visibleGoal != nil {
+            ComposerStatusTray(
+                sessionControlNotice: sessionControlNotice,
+                missingDirectoryNotice: missingDirectoryNotice,
+                ownershipNotice: ownershipNotice,
+                // 阻断额度已经由 Conversation 顶部唯一状态区展示，Composer 不再重复一份。
+                quotaNotice: nil,
+                usage: usageNotice,
+                goal: visibleGoal,
+                placement: usesNarrowComposerLayout ? .embedded : .standalone,
+                inlineAccessory: inlineAccessory,
+                isGoalExpanded: isGoalStatusExpanded,
+                isGoalUpdating: sessionStore.isUpdatingThreadGoal,
+                goalErrorMessage: sessionStore.threadGoalErrorMessage,
+                isRefreshDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading,
+                allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
+                onTakeOver: {
+                    sessionStore.takeOverSelectedSession()
+                },
+                onTakeOverHeldSession: {
+                    isClaudeTakeoverConfirmationPresented = true
+                },
+                onRefreshUsage: {
+                    Task {
+                        await sessionStore.refreshCurrentContext(origin: .routine)
+                    }
+                },
+                onEditGoal: {
+                    if let goal = visibleGoal {
+                        goalEditor = ThreadGoalEditorDraft(sessionID: goal.threadID, existing: goal)
+                    }
+                },
+                onTogglePauseGoal: {
+                    if let goal = visibleGoal {
+                        Task { await sessionStore.updateSelectedThreadGoalStatus(nextPrimaryGoalStatus(for: goal.status)) }
+                    }
+                },
+                onCompleteGoal: {
+                    Task { await sessionStore.updateSelectedThreadGoalStatus(.complete) }
+                },
+                onClearGoal: {
+                    Task { await sessionStore.clearSelectedThreadGoal() }
+                },
+                onToggleGoalExpanded: {
+                    withAnimation(composerMotionAnimation) {
+                        isGoalStatusExpanded.toggle()
+                    }
+                }
+            )
+            .environmentObject(themeStore)
+            // 只在出现持有态时探测一次主机是否支持 thread/takeover，老主机不出现接管按钮。
+            .task(id: ownershipNotice?.sessionID) {
+                guard let sessionID = ownershipNotice?.sessionID else {
+                    return
+                }
+                await sessionStore.refreshClaudeTakeoverSupportIfNeeded(sessionID: sessionID)
+            }
+            // 接管会结束 Mac 上的一个进程，必须二次确认；失败后按钮保留可重试。
+            .confirmationDialog(
+                L10n.text("ui.take_over_claude_session_confirm_title"),
+                isPresented: $isClaudeTakeoverConfirmationPresented,
+                titleVisibility: .visible,
+                presenting: ownershipNotice
+            ) { notice in
+                Button(L10n.text("ui.take_over_claude_session_confirm_action"), role: .destructive) {
+                    let sessionID = notice.sessionID
+                    Task { await sessionStore.takeOverHeldClaudeSession(sessionID: sessionID) }
+                }
+            } message: { notice in
+                Text(notice.takeOverConfirmationMessage)
+            }
+            .transition(
+                reduceMotion || usesNarrowComposerLayout
+                    ? .opacity
+                    : .move(edge: .top).combined(with: .opacity)
+            )
         }
     }
 }

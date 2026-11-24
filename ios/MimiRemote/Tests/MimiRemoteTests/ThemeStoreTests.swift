@@ -937,6 +937,24 @@ final class ThemeStoreTests: XCTestCase {
             + 0.7152 * linear(color.green)
             + 0.0722 * linear(color.blue)
     }
+
+    func testInterfaceStyleDefaultsToGlassPersistsAndResets() {
+        let initialStore = ThemeStore(defaults: defaults)
+        XCTAssertEqual(initialStore.interfaceStyle, .glass)
+
+        let versionBeforeChange = initialStore.themeVersion
+        initialStore.interfaceStyle = .classic
+        XCTAssertGreaterThan(initialStore.themeVersion, versionBeforeChange)
+
+        let reloadedStore = ThemeStore(defaults: defaults)
+        XCTAssertEqual(reloadedStore.interfaceStyle, .classic)
+
+        reloadedStore.reset()
+        XCTAssertEqual(reloadedStore.interfaceStyle, .glass)
+
+        let resetReloadedStore = ThemeStore(defaults: defaults)
+        XCTAssertEqual(resetReloadedStore.interfaceStyle, .glass)
+    }
 }
 
 @MainActor

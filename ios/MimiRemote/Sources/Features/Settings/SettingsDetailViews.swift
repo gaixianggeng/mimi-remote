@@ -634,6 +634,21 @@ struct AppearanceView: View {
             .settingsGroupRowStyle()
 
             Section {
+                InterfaceStylePickerRow(
+                    selection: $themeStore.interfaceStyle,
+                    tokens: tokens
+                )
+                .padding(.vertical, 6)
+                .settingsRow(.descriptive)
+            } header: {
+                SettingsGroupHeader(title: L10n.text("ui.interface_style"))
+            } footer: {
+                Text(L10n.text("ui.interface_style_footer"))
+                    .settingsSectionFooterStyle()
+            }
+            .settingsGroupRowStyle()
+
+            Section {
                 ScrollViewReader { scrollProxy in
                     ScrollView(.horizontal) {
                         LazyHGrid(
@@ -781,6 +796,7 @@ struct AppearanceView: View {
         .navigationTitle(L10n.text("ui.personalization"))
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.colorScheme, resolvedColorScheme)
+        .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
         .tint(tokens.accent)
     }
 
@@ -963,6 +979,168 @@ private struct WorkspaceIconStylePressButtonStyle: ButtonStyle {
                     : .spring(response: 0.22, dampingFraction: 1),
                 value: configuration.isPressed
             )
+    }
+}
+
+/// 「外观」页双卡可视化界面风格选择器：左侧「经典」（无折射扁平圆），右侧「玻璃」（透明液态玻璃圆）。
+private struct InterfaceStylePickerRow: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @Binding var selection: ThemeInterfaceStyle
+    let tokens: ThemeTokens
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(ThemeInterfaceStyle.allCases) { style in
+                styleCard(style)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.appearance.interfaceStyle")
+    }
+
+    private func styleCard(_ style: ThemeInterfaceStyle) -> some View {
+        let isSelected = selection == style
+        return Button {
+            guard selection != style else { return }
+            if reduceMotion {
+                selection = style
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    selection = style
+                }
+            }
+        } label: {
+            VStack(spacing: 8) {
+                previewTile(for: style)
+                    .padding(4)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? tokens.accent : Color.clear,
+                                lineWidth: 2.5
+                            )
+                    }
+
+                Text(style.title)
+                    .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(style.title)
+        .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
+        .accessibilityHint(style.subtitle)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("settings.appearance.interfaceStyle.\(style.rawValue)")
+    }
+
+    private func previewTile(for style: ThemeInterfaceStyle) -> some View {
+        let tileShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return ZStack {
+            // 分层深蓝几何纹理底图，直观拉开「经典」不透明/扁平磨砂与「玻璃」折射高光的观感差异。
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.23, blue: 0.52),
+                    Color(red: 0.03, green: 0.14, blue: 0.34)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.16, green: 0.54, blue: 0.96).opacity(0.55),
+                            Color(red: 0.08, green: 0.34, blue: 0.72).opacity(0.18)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 120, height: 42)
+                .rotationEffect(.degrees(-28))
+                .offset(x: -24, y: -12)
+
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.28, green: 0.70, blue: 1.0).opacity(0.36),
+                            Color(red: 0.10, green: 0.40, blue: 0.82).opacity(0.10)
+                        ],
+                        startPoint: .bottomLeading,
+                        endPoint: .topTrailing
+                    )
+                )
+                .frame(width: 130, height: 34)
+                .rotationEffect(.degrees(22))
+                .offset(x: 24, y: 18)
+
+            previewOrb(for: style)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 78)
+        .clipShape(tileShape)
+        .overlay {
+            tileShape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75)
+        }
+    }
+
+    @ViewBuilder
+    private func previewOrb(for style: ThemeInterfaceStyle) -> some View {
+        let orbSize: CGFloat = 46
+        switch style {
+        case .classic:
+            Circle()
+                .fill(
+                    colorScheme == .light
+                        ? Color(red: 0.94, green: 0.94, blue: 0.95)
+                        : Color(red: 0.09, green: 0.10, blue: 0.12)
+                )
+                .overlay {
+                    Circle()
+                        .strokeBorder(
+                            colorScheme == .light
+                                ? Color.black.opacity(0.12)
+                                : Color.white.opacity(0.14),
+                            lineWidth: 0.75
+                        )
+                }
+                .frame(width: orbSize, height: orbSize)
+        case .glass:
+            if #available(iOS 26.0, *), !reduceTransparency {
+                Color.clear
+                    .frame(width: orbSize, height: orbSize)
+                    .glassEffect(.regular, in: Circle())
+            } else {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.62),
+                                        Color.white.opacity(0.16),
+                                        Color.white.opacity(0.42)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                    }
+                    .frame(width: orbSize, height: orbSize)
+            }
+        }
     }
 }
 
