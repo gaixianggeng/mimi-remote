@@ -45,6 +45,7 @@ async function serve(target: ListenTarget): Promise<void> {
   const { registry, app } = wire();
   registry.startReaper();
   app.models.warm();
+  app.rateLimits.warm();
   const removeSocket = () => (target.kind === "unix" ? rm(target.path, { force: true }) : Promise.resolve());
   await removeSocket();
   const server = net.createServer((socket) => {

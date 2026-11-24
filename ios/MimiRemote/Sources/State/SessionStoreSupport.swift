@@ -6,14 +6,18 @@ extension SessionStore {
     func refreshSettingsAccountOverview() async {
         // Token 活动在 agentd 已有 12 小时快照，必须先发请求才能立即命中。
         // 模型目录和额度查询可能较慢，不能把低频活动快照排在它们之后。
-        async let tokenActivity: Void = refreshAccountTokenUsage()
+        async let tokenActivity: Void = isCodexRuntimeChannelAvailable
+            ? refreshAccountTokenUsage()
+            : ()
 
         await refreshAppServerModelOptions()
-        await refreshCodexUsage()
-        if hasClaudeRuntimeChannel {
-            await refreshClaudeUsage()
+        if !isCodexRuntimeChannelAvailable && accountTokenActivity == .idle {
+            accountTokenActivity = .unsupported
         }
-        await tokenActivity
+        async let codexQuota: Void = isCodexRuntimeChannelAvailable ? refreshCodexUsage() : ()
+        async let claudeQuota: Void = hasClaudeRuntimeChannel ? refreshClaudeUsage() : ()
+        async let agyQuota: Void = hasAgyRuntimeChannel ? refreshAgyUsage() : ()
+        _ = await (tokenActivity, codexQuota, claudeQuota, agyQuota)
     }
 
     func refreshAccountTokenUsage(forceRefresh: Bool = false) async {

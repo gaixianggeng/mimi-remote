@@ -1379,3 +1379,54 @@ func TestB23Round5SpecialAndPercentLiteralPathsPreserveScopeAndWritability(t *te
 		t.Fatalf("unexpected global list payload: %+v", resp.Result.Data)
 	}
 }
+
+func TestAgyRuntimeQuotaCacheAndApply(t *testing.T) {
+	router := &Router{}
+	now := time.Now().UTC()
+
+	// Unavailable snapshots must never be cached.
+	router.storeAgyRuntimeQuota(&runtimeRateLimits{
+		LimitID:           "agy",
+		LimitName:         "Gemini",
+		Availability:      "unavailable",
+		UnavailableReason: "headless_statusline_unavailable",
+	})
+	if cached := router.cachedAgyRuntimeQuota(now); cached != nil {
+		t.Fatalf("expected unavailable quota not to be cached, got %+v", cached)
+	}
+
+	usedPrimary := 2.0
+	durPrimary := int64(300)
+	usedSecondary := 29.0
+	durSecondary := int64(10080)
+	available := &runtimeRateLimits{
+		LimitID:      "agy",
+		LimitName:    "Gemini",
+		PlanType:     "Google AI Ultra",
+		Availability: "available",
+		Primary:      &runtimeRateLimitWindow{UsedPercent: &usedPrimary, WindowDurationMin: &durPrimary},
+		Secondary:    &runtimeRateLimitWindow{UsedPercent: &usedSecondary, WindowDurationMin: &durSecondary},
+	}
+	router.storeAgyRuntimeQuota(available)
+	afterStore := time.Now().UTC()
+	cached := router.cachedAgyRuntimeQuota(afterStore)
+	if cached == nil || cached.LimitName != "Gemini" || cached.Secondary == nil || *cached.Secondary.UsedPercent != 29 {
+		t.Fatalf("expected cached Gemini quota, got %+v", cached)
+	}
+
+	status := runtimeAccountStatus{
+		ID:      "agy",
+		Title:   "Antigravity",
+		Enabled: true,
+		State:   runtimeStateAvailable,
+	}
+	applyAgyRuntimeQuota(&status, cached)
+	if status.State != runtimeStateConnected || status.PlanType != "Google AI Ultra" || status.RateLimits == nil {
+		t.Fatalf("expected connected status with plan and rate limits, got %+v", status)
+	}
+
+	// Expired cache returns nil.
+	if expired := router.cachedAgyRuntimeQuota(now.Add(runtimeStatusSuccessTTL + time.Second)); expired != nil {
+		t.Fatalf("expected expired cache to return nil, got %+v", expired)
+	}
+}

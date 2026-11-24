@@ -700,9 +700,6 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
 
         let tokenUsage = app.descendant(identifier: "settings.tokenUsage")
         let tokenQuota = app.descendant(identifier: "settings.tokenUsage.quota")
-        let tokenActivity = app.descendant(identifier: "settings.tokenUsage.activity")
-        let activityGrid = app.descendant(identifier: "settings.tokenActivity.grid")
-        let activityUnavailable = app.descendant(identifier: "settings.tokenActivity.unavailable")
         let macDevices = app.descendant(identifier: "settings.connectionManagement")
         let appearance = app.descendant(identifier: "settings.appearance")
         let language = app.descendant(identifier: "settings.language")
@@ -712,26 +709,12 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         let aboutLegal = app.descendant(identifier: "settings.aboutLegal")
 
         XCTAssertTrue(tokenUsage.waitForExistence(timeout: 8), "我的页面应展示统一 Token 模块")
-        XCTAssertTrue(tokenQuota.waitForExistence(timeout: 4), "Token 模块应展示当前剩余列")
-        XCTAssertTrue(tokenActivity.waitForExistence(timeout: 4), "Token 模块应展示活动列")
-        XCTAssertTrue(
-            activityGrid.waitForExistence(timeout: 4)
-                || activityUnavailable.waitForExistence(timeout: 1),
-            "Token 模块应展示真实点格数据或诚实的不可用状态"
-        )
+        XCTAssertTrue(tokenQuota.waitForExistence(timeout: 4), "Token 模块应展示当前剩余配额")
         XCTAssertFalse(macDevices.exists, "设备管理只保留在设备页")
         XCTAssertTrue(appearance.waitForExistence(timeout: 4), "设置页应展示偏好设置")
 
-        XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 150, "Token 模块应完整容纳圆环与点格图")
+        XCTAssertGreaterThanOrEqual(tokenUsage.frame.height, 60, "Token 模块应完整容纳配额环或单窗口进度条")
         XCTAssertGreaterThan(tokenUsage.frame.width, 250, "Token 模块应使用完整分组宽度")
-        // 只有一个额度窗口时配额栏是一条进度条，任何宽度都上下排；放得下两栏才左右排
-        //（SettingsView 的 ViewThatFits，#678）。两种布局都不能让两块互相重叠。
-        if tokenQuota.frame.maxY <= tokenActivity.frame.minY + 1 {
-            XCTAssertLessThan(tokenQuota.frame.midY, tokenActivity.frame.midY, "上下排时当前剩余应在活动列上方")
-        } else {
-            XCTAssertLessThan(tokenQuota.frame.midX, tokenActivity.frame.midX, "当前剩余应稳定位于活动列左侧")
-            XCTAssertLessThan(tokenQuota.frame.minX, tokenActivity.frame.minX, "左右排时两个主模块不得错位")
-        }
         if macDevices.exists {
             XCTAssertGreaterThanOrEqual(macDevices.frame.height, 52, "设备摘要按内容自然增高")
         }

@@ -1713,24 +1713,30 @@ extension View {
 /// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
 /// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
 struct CombinedUsageItem: Identifiable {
-    /// Codex 用低饱和墨蓝，Claude 两个窗口用同一陶土色系的深浅，与梅子紫热力图和暖白底同温。
-    /// 深色外观整体提亮一档，否则墨蓝会沉进 #1F1F1F 的卡片底。
+    /// Codex 用低饱和墨蓝，Claude 两个窗口用陶土色深浅，Gemini 两个窗口用玉青色深浅，与梅子紫热力图和暖白底同温。
+    /// 深色外观整体提亮一档，否则墨蓝和玉青会沉进 #1F1F1F 的卡片底。
     private struct Palette {
         let codex: Color
         let claudeLong: Color
         let claudeShort: Color
+        let geminiLong: Color
+        let geminiShort: Color
     }
 
     private static let lightPalette = Palette(
         codex: Color(red: 62.0 / 255.0, green: 92.0 / 255.0, blue: 128.0 / 255.0),
         claudeLong: Color(red: 200.0 / 255.0, green: 100.0 / 255.0, blue: 63.0 / 255.0),
-        claudeShort: Color(red: 232.0 / 255.0, green: 165.0 / 255.0, blue: 135.0 / 255.0)
+        claudeShort: Color(red: 232.0 / 255.0, green: 165.0 / 255.0, blue: 135.0 / 255.0),
+        geminiLong: Color(red: 58.0 / 255.0, green: 134.0 / 255.0, blue: 112.0 / 255.0),
+        geminiShort: Color(red: 126.0 / 255.0, green: 184.0 / 255.0, blue: 166.0 / 255.0)
     )
 
     private static let darkPalette = Palette(
         codex: Color(red: 143.0 / 255.0, green: 169.0 / 255.0, blue: 200.0 / 255.0),
         claudeLong: Color(red: 224.0 / 255.0, green: 135.0 / 255.0, blue: 106.0 / 255.0),
-        claudeShort: Color(red: 242.0 / 255.0, green: 192.0 / 255.0, blue: 168.0 / 255.0)
+        claudeShort: Color(red: 242.0 / 255.0, green: 192.0 / 255.0, blue: 168.0 / 255.0),
+        geminiLong: Color(red: 112.0 / 255.0, green: 188.0 / 255.0, blue: 165.0 / 255.0),
+        geminiShort: Color(red: 164.0 / 255.0, green: 214.0 / 255.0, blue: 198.0 / 255.0)
     )
 
     let runtimeProvider: String
@@ -1742,51 +1748,90 @@ struct CombinedUsageItem: Identifiable {
         "\(runtimeProvider):\(window.id)"
     }
 
-    // 三环由外到内依次是 Codex 长窗口、Claude 长窗口、Claude 短窗口。
-    // 颜色在此固定，设置页和侧栏的圆环、图例共享同一顺序。
+    // 三环最多承载 3 个窗口：优先保证每个有数据的运行时各占一环长窗口（Codex / Claude / Gemini）；
+    // 若仅有双运行时（如 Codex+Claude 或 Codex+Gemini），剩余一环补入对应运行时的短窗口（5h）。
     static func make(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
+        includesCodex: Bool = true,
         includesClaude: Bool,
+        agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: nil,
+            fallbackDisplayName: "Gemini"
+        ),
+        includesAgy: Bool = false,
         colorScheme: ColorScheme
     ) -> [CombinedUsageItem] {
         let palette = colorScheme == .dark ? Self.darkPalette : Self.lightPalette
+        let codexLong = includesCodex ? preferredLongWindow(in: codexDisplay) : nil
+        let claudeLong = includesClaude ? preferredLongWindow(in: claudeDisplay) : nil
+        let claudeShort = claudeLong.flatMap { preferredShortWindow(in: claudeDisplay, excluding: $0) }
+        let agyLong = includesAgy ? preferredLongWindow(in: agyDisplay) : nil
+        let agyShort = agyLong.flatMap { preferredShortWindow(in: agyDisplay, excluding: $0) }
         var items: [CombinedUsageItem] = []
 
-        if let codexWindow = preferredLongWindow(in: codexDisplay) {
+        if let codexLong {
             items.append(
                 CombinedUsageItem(
                     runtimeProvider: "codex",
                     providerName: providerName(for: codexDisplay, fallback: "Codex"),
-                    window: codexWindow,
+                    window: codexLong,
                     tint: palette.codex
                 )
             )
         }
 
-        if includesClaude, let claudeLongWindow = preferredLongWindow(in: claudeDisplay) {
+        if let claudeLong {
             items.append(
                 CombinedUsageItem(
                     runtimeProvider: "claude",
                     providerName: providerName(for: claudeDisplay, fallback: "Claude"),
-                    window: claudeLongWindow,
+                    window: claudeLong,
                     tint: palette.claudeLong
                 )
             )
-
-            if let claudeShortWindow = preferredShortWindow(
-                in: claudeDisplay,
-                excluding: claudeLongWindow
-            ) {
+            if agyLong == nil, let claudeShort {
                 items.append(
                     CombinedUsageItem(
                         runtimeProvider: "claude",
                         providerName: providerName(for: claudeDisplay, fallback: "Claude"),
-                        window: claudeShortWindow,
+                        window: claudeShort,
                         tint: palette.claudeShort
                     )
                 )
             }
+        }
+
+        if let agyLong {
+            items.append(
+                CombinedUsageItem(
+                    runtimeProvider: "agy",
+                    providerName: providerName(for: agyDisplay, fallback: "Gemini"),
+                    window: agyLong,
+                    tint: palette.geminiLong
+                )
+            )
+            if items.count < 3, let agyShort {
+                items.append(
+                    CombinedUsageItem(
+                        runtimeProvider: "agy",
+                        providerName: providerName(for: agyDisplay, fallback: "Gemini"),
+                        window: agyShort,
+                        tint: palette.geminiShort
+                    )
+                )
+            }
+        }
+
+        if items.count < 3, agyLong != nil, let claudeShort {
+            items.append(
+                CombinedUsageItem(
+                    runtimeProvider: "claude",
+                    providerName: providerName(for: claudeDisplay, fallback: "Claude"),
+                    window: claudeShort,
+                    tint: palette.claudeShort
+                )
+            )
         }
 
         return Array(items.prefix(3))
@@ -1826,6 +1871,8 @@ struct CombinedUsageItem: Identifiable {
             return "Codex"
         case "claude":
             return "Claude"
+        case "agy", "antigravity", "gemini":
+            return "Gemini"
         default:
             return display.displayName.isEmpty ? fallback : display.displayName
         }

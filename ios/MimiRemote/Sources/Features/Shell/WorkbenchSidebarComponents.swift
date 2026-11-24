@@ -9,20 +9,32 @@ struct AIUsageRingsControl: View {
 
     let codexDisplay: CodexUsageWindowsDisplay
     let claudeDisplay: CodexUsageWindowsDisplay
+    let includesCodex: Bool
     let includesClaude: Bool
+    let agyDisplay: CodexUsageWindowsDisplay
+    let includesAgy: Bool
     let usesCondensedVisual: Bool
     let onRefresh: () async -> Void
 
     init(
         codexDisplay: CodexUsageWindowsDisplay,
         claudeDisplay: CodexUsageWindowsDisplay,
+        includesCodex: Bool = true,
         includesClaude: Bool,
+        agyDisplay: CodexUsageWindowsDisplay = CodexUsageWindowsDisplay.make(
+            rateLimit: nil,
+            fallbackDisplayName: "Gemini"
+        ),
+        includesAgy: Bool = false,
         usesCondensedVisual: Bool = false,
         onRefresh: @escaping () async -> Void
     ) {
         self.codexDisplay = codexDisplay
         self.claudeDisplay = claudeDisplay
+        self.includesCodex = includesCodex
         self.includesClaude = includesClaude
+        self.agyDisplay = agyDisplay
+        self.includesAgy = includesAgy
         self.usesCondensedVisual = usesCondensedVisual
         self.onRefresh = onRefresh
     }
@@ -40,8 +52,8 @@ struct AIUsageRingsControl: View {
 
         CombinedUsageRingsGraphic(
             items: items,
-            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
-            expectedRingCount: 3,
+            // 仅有两个窗口时（如纯 Gemini）画 2 环避免空内轨；空态或单窗口保留 3 环识别。
+            expectedRingCount: items.count == 2 ? 2 : 3,
             diameter: metrics.diameter,
             lineWidth: metrics.lineWidth,
             ringSpacing: metrics.ringSpacing
@@ -127,9 +139,14 @@ struct AIUsageRingsControl: View {
             }
 
             VStack(alignment: .leading, spacing: 5) {
-                usageCreditLine(name: "Codex", display: codexDisplay)
+                if includesCodex {
+                    usageCreditLine(name: "Codex", display: codexDisplay)
+                }
                 if includesClaude {
                     usageCreditLine(name: "Claude", display: claudeDisplay)
+                }
+                if includesAgy {
+                    usageCreditLine(name: "Gemini", display: agyDisplay)
                 }
             }
             .foregroundStyle(tokens.secondaryText)
@@ -198,15 +215,27 @@ struct AIUsageRingsControl: View {
         CombinedUsageItem.make(
             codexDisplay: codexDisplay,
             claudeDisplay: claudeDisplay,
+            includesCodex: includesCodex,
             includesClaude: includesClaude,
+            agyDisplay: agyDisplay,
+            includesAgy: includesAgy,
             colorScheme: colorScheme
         )
     }
 
     private var windowSummaryText: String {
-        var summaries = [codexDisplay.windowSummaryText]
+        var summaries: [String] = []
+        if includesCodex {
+            summaries.append(codexDisplay.windowSummaryText)
+        }
         if includesClaude {
             summaries.append(claudeDisplay.windowSummaryText)
+        }
+        if includesAgy {
+            summaries.append(agyDisplay.windowSummaryText)
+        }
+        if summaries.isEmpty {
+            return L10n.text("ui.account_usage_has_not_been_obtained_yet")
         }
         return summaries.joined(separator: " · ")
     }

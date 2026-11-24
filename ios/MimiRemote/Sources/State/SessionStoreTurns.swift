@@ -10,6 +10,10 @@ extension SessionStore {
         await refreshUsage(runtimeProvider: "claude")
     }
 
+    func refreshAgyUsage() async {
+        await refreshUsage(runtimeProvider: "agy")
+    }
+
     func refreshSelectedUsage() async {
         let runtimeProvider = selectedSession.map {
             Self.normalizedRuntimeProvider($0.runtimeProvider ?? $0.source)
@@ -1051,6 +1055,12 @@ extension SessionStore {
         isClaudeRuntimeChannelAvailable
             || appServerModelOptions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider) == "claude" }
             || sessions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider ?? $0.source) == "claude" }
+    }
+
+    var hasAgyRuntimeChannel: Bool {
+        isAgyRuntimeChannelAvailable
+            || appServerModelOptions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider) == "agy" }
+            || sessions.contains { Self.normalizedRuntimeProvider($0.runtimeProvider ?? $0.source) == "agy" }
     }
 
     @discardableResult

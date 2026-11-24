@@ -763,7 +763,12 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	if err != nil {
 		return status
 	}
-	defer func() { _ = conn.Close() }()
+	keepQuotaProbeAlive := false
+	defer func() {
+		if !keepQuotaProbeAlive {
+			_ = conn.Close()
+		}
+	}()
 
 	client := appserver.NewClient(conn, conn, appserver.ClientOptions{
 		ClientInfo: appserver.ClientInfo{
@@ -772,7 +777,11 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 			Version: r.version,
 		},
 	})
-	defer func() { _ = client.Close() }()
+	defer func() {
+		if !keepQuotaProbeAlive {
+			_ = client.Close()
+		}
+	}()
 	initialization, err := client.Initialize(connectCtx)
 	if err != nil {
 		return status
@@ -780,5 +789,104 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	status.Version = runtimeVersionFromUserAgent(initialization.UserAgent)
 	status.State = runtimeStateAvailable
 	status.Reason = ""
+
+	if !probe.supportsMethod("account/rateLimits/read") {
+		return status
+	}
+	if cached := r.cachedAgyRuntimeQuota(time.Now().UTC()); cached != nil {
+		applyAgyRuntimeQuota(&status, cached)
+		return status
+	}
+
+	type quotaProbeResult struct {
+		limits runtimeRateLimitsEnvelope
+		err    error
+	}
+	quotaCtx, cancelQuota := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		agyRuntimeQuotaHardLimit,
+	)
+	quotaResult := make(chan quotaProbeResult, 1)
+	go func() {
+		var limits runtimeRateLimitsEnvelope
+		err := client.Call(
+			quotaCtx,
+			"account/rateLimits/read",
+			map[string]any{},
+			&limits,
+		)
+		quotaResult <- quotaProbeResult{limits: limits, err: err}
+	}()
+	presentationTimer := time.NewTimer(claudeRuntimeQuotaTimeout)
+	defer presentationTimer.Stop()
+
+	select {
+	case result := <-quotaResult:
+		cancelQuota()
+		if result.err != nil {
+			return status
+		}
+		limits := normalizeRuntimeRateLimits(result.limits, "agy")
+		r.storeAgyRuntimeQuota(limits)
+		applyAgyRuntimeQuota(&status, limits)
+	case <-presentationTimer.C:
+		status.Reason = "quota_refresh_in_progress"
+		keepQuotaProbeAlive = true
+		go func() {
+			defer cancelQuota()
+			defer client.Close()
+			defer conn.Close()
+			select {
+			case result := <-quotaResult:
+				if result.err == nil {
+					r.storeAgyRuntimeQuota(
+						normalizeRuntimeRateLimits(result.limits, "agy"),
+					)
+				}
+			case <-quotaCtx.Done():
+			}
+		}()
+	case <-ctx.Done():
+		cancelQuota()
+		return status
+	}
 	return status
+}
+
+const agyRuntimeQuotaHardLimit = 22 * time.Second
+
+func (r *Router) cachedAgyRuntimeQuota(now time.Time) *runtimeRateLimits {
+	r.agyRuntimeQuotaMu.RLock()
+	defer r.agyRuntimeQuotaMu.RUnlock()
+	if r.agyRuntimeQuota == nil ||
+		r.agyRuntimeQuotaCheckedAt.IsZero() ||
+		now.Sub(r.agyRuntimeQuotaCheckedAt) < 0 ||
+		now.Sub(r.agyRuntimeQuotaCheckedAt) >= runtimeStatusSuccessTTL {
+		return nil
+	}
+	return r.agyRuntimeQuota
+}
+
+func (r *Router) storeAgyRuntimeQuota(limits *runtimeRateLimits) {
+	if limits == nil || strings.EqualFold(limits.Availability, "unavailable") {
+		return
+	}
+	r.agyRuntimeQuotaMu.Lock()
+	r.agyRuntimeQuota = limits
+	r.agyRuntimeQuotaCheckedAt = time.Now().UTC()
+	r.agyRuntimeQuotaMu.Unlock()
+}
+
+func applyAgyRuntimeQuota(status *runtimeAccountStatus, limits *runtimeRateLimits) {
+	if limits == nil {
+		return
+	}
+	status.RateLimits = limits
+	if limits.PlanType != "" {
+		status.PlanType = limits.PlanType
+	}
+	if runtimeRateLimitsShowAuthenticated(limits) {
+		status.State = runtimeStateConnected
+		status.Reason = ""
+	}
 }

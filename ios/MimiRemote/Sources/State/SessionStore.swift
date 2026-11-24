@@ -178,7 +178,9 @@ final class SessionStore: ObservableObject {
     /// 不再为每个 provider 各开一个 Bool。
     @Published var availableRuntimeProviders: Set<String> = ["codex"]
     @Published var runtimeChannelDiagnosticsByProvider: [String: RuntimeChannelDiagnostic] = [:]
+    var isCodexRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("codex") }
     var isClaudeRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("claude") }
+    var isAgyRuntimeChannelAvailable: Bool { availableRuntimeProviders.contains("agy") }
 
     /// 解析当前工作区应呈现的不可用通道诊断（B14/B11/B13）：优先返回选中 Runtime 的诊断；
     /// 若主机所有通道均不可用，则展示已配置但异常的通道（如版本过旧或未登录的 Antigravity）。
