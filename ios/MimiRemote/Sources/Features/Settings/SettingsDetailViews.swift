@@ -1027,7 +1027,7 @@ private struct InterfaceStylePickerRow: View {
 
                 Text(style.title)
                     .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
+                    .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
