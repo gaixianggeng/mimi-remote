@@ -10,28 +10,86 @@ fail() {
 }
 
 run_check() {
-  ruby - "$CHECK_ROOT/.github/workflows/nightly.yml" \
-    "$CHECK_ROOT/.github/workflows/ios-ci.yml" \
-    "$CHECK_ROOT/.github/workflows/release.yml" \
-    "$CHECK_ROOT/.github/workflows/pr-gate.yml" \
+  ruby - "$CHECK_ROOT/.github/workflows" \
     "$CHECK_ROOT/scripts/distribute_internal_build.rb" \
     "$CHECK_ROOT/scripts/generate-nightly-what-to-test.rb" <<'RUBY'
+require "pathname"
 require "yaml"
+
+IOS_TESTFLIGHT_ENV_NAME = "ios-testflight-release"
+ALLOWED_IOS_TESTFLIGHT_ENV_BINDINGS = [
+  ["nightly.yml", "release-secrets-preflight"],
+  ["ios-ci.yml", "app-store-release"]
+].freeze
 
 def fail_check(message)
   abort("Nightly/Release 自检失败：#{message}")
 end
 
 def load_yaml(path)
-  YAML.safe_load(File.read(path), aliases: true)
+  parsed = YAML.safe_load(File.read(path), aliases: true)
+  fail_check("#{path} YAML 顶层必须是映射") unless parsed.is_a?(Hash)
+  parsed
 rescue Psych::SyntaxError => error
   fail_check("#{path} YAML 无法解析：#{error.message}")
 end
 
+def raw_triggers(workflow, path)
+  has_str_on = workflow.key?("on")
+  has_bool_on = workflow.key?(true)
+  fail_check("#{path} 同时存在多个 on 声明") if has_str_on && has_bool_on
+  fail_check("#{path} 缺少 on") unless has_str_on || has_bool_on
+  has_str_on ? workflow["on"] : workflow[true]
+end
+
 def triggers(workflow, path)
-  value = workflow["on"] || workflow[true]
+  value = raw_triggers(workflow, path)
   fail_check("#{path} 缺少 on") unless value.is_a?(Hash)
   value
+end
+
+def trigger_names(workflow, path)
+  value = raw_triggers(workflow, path)
+  case value
+  when String
+    name = value.strip.downcase
+    fail_check("#{path} 的 on 不能为空") if name.empty?
+    [name]
+  when Array
+    fail_check("#{path} 的 on 不能为空数组") if value.empty?
+    value.map do |entry|
+      fail_check("#{path} 的 on 数组元素必须是非空字符串") unless entry.is_a?(String) && !entry.strip.empty?
+      entry.strip.downcase
+    end
+  when Hash
+    fail_check("#{path} 的 on 不能为空映射") if value.empty?
+    value.keys.map do |key|
+      name = key.to_s.strip.downcase
+      fail_check("#{path} 的 on 键不能为空") if name.empty?
+      name
+    end
+  else
+    fail_check("#{path} 的 on 格式无效")
+  end
+end
+
+def pr_triggered_workflow?(workflow, path)
+  trigger_names(workflow, path).any? do |name|
+    name == "pull_request" || name == "pull_request_target" || name.start_with?("pull_request_")
+  end
+end
+
+def workflow_jobs(workflow, path)
+  jobs = workflow["jobs"]
+  fail_check("#{path} 缺少 jobs 映射") unless jobs.is_a?(Hash)
+  jobs
+end
+
+def fetch_case_insensitive_key(hash, target_key, context_label)
+  matches = hash.keys.select { |key| key.to_s.downcase == target_key }
+  fail_check("#{context_label} 包含重复的 #{target_key} 字段") if matches.length > 1
+  return [false, nil] if matches.empty?
+  [true, hash[matches.first]]
 end
 
 def steps(job)
@@ -48,12 +106,7 @@ def step(job, name)
   steps(job).fetch(step_index(job, name))
 end
 
-def assert_constant_environment(job, expected_name, error_message)
-  fail_check("#{error_message}（缺少 environment 声明）") unless
-    job.is_a?(Hash) &&
-    job.key?("environment") &&
-    job.keys.count { |key| key.to_s.downcase == "environment" } == 1
-  environment = job["environment"]
+def parse_constant_environment_name(environment, error_message)
   raw_name =
     case environment
     when String
@@ -69,6 +122,15 @@ def assert_constant_environment(job, expected_name, error_message)
   normalized = raw_name.strip
   fail_check("#{error_message}（environment 名称必须是非空常量，禁止表达式）") if
     normalized.empty? || normalized.include?("${{")
+  normalized
+end
+
+def assert_constant_environment(job, expected_name, error_message)
+  fail_check("#{error_message}（缺少 environment 声明）") unless
+    job.is_a?(Hash) &&
+    job.key?("environment") &&
+    job.keys.count { |key| key.to_s.downcase == "environment" } == 1
+  normalized = parse_constant_environment_name(job["environment"], error_message)
   fail_check("#{error_message}（实际为 #{normalized.inspect}）") unless
     normalized.downcase == expected_name.downcase
 end
@@ -82,30 +144,87 @@ def assert_only_allowed_environment_jobs(workflow_label, jobs, allowed_job_ids)
   end
 end
 
+def local_workflow_target(uses_value)
+  return nil unless uses_value.is_a?(String)
+  raw = uses_value.strip
+  return nil unless raw.start_with?("./")
+  clean = Pathname.new(raw).cleanpath.to_s
+  return nil unless clean.downcase.start_with?(".github/workflows/")
+  File.basename(clean)
+end
+
+def calls_ios_ci?(uses_value)
+  return false unless uses_value.is_a?(String)
+  path_part = uses_value.strip.split("@", 2).first.to_s
+  return false if path_part.empty?
+  clean = Pathname.new(path_part).cleanpath.to_s.downcase
+  clean == ".github/workflows/ios-ci.yml" ||
+    clean.end_with?("/.github/workflows/ios-ci.yml") ||
+    File.basename(clean) == "ios-ci.yml"
+end
+
+def assert_no_ios_publish_inputs(context_label, job)
+  has_with, with_inputs = fetch_case_insensitive_key(job, "with", context_label)
+  return if !has_with || with_inputs.nil?
+  fail_check("#{context_label} 的 with 必须是映射") unless with_inputs.is_a?(Hash)
+  with_inputs.each do |raw_key, value|
+    key = raw_key.to_s.strip.downcase
+    next unless %w[publish_internal_testflight publish_app_store].include?(key)
+    fail_check("#{context_label} 调用 ios-ci 不得启用 #{raw_key}") unless value == false
+  end
+end
+
 def assert_pinned_actions(path, workflow)
-  workflow.fetch("jobs").each do |job_id, job|
+  workflow_jobs(workflow, path).each do |job_id, job|
+    fail_check("#{path} #{job_id} 配置必须是映射") unless job.is_a?(Hash)
     candidates = []
-    candidates << job if job["uses"]
-    candidates.concat(steps(job))
-    candidates.each do |candidate|
-      action = candidate["uses"]
-      next if action.nil? || action.start_with?("./")
+    has_uses, job_uses = fetch_case_insensitive_key(job, "uses", "#{path} #{job_id}")
+    candidates << job_uses if has_uses
+    steps(job).each_with_index do |step_item, idx|
+      fail_check("#{path} #{job_id} step ##{idx + 1} 配置必须是映射") unless step_item.is_a?(Hash)
+      has_step_uses, step_uses = fetch_case_insensitive_key(step_item, "uses", "#{path} #{job_id} step ##{idx + 1}")
+      candidates << step_uses if has_step_uses
+    end
+    candidates.each do |action|
+      next if action.nil?
+      fail_check("#{path} #{job_id} uses 必须是字符串") unless action.is_a?(String)
+      next if action.start_with?("./")
       fail_check("#{path} #{job_id} action 未固定完整 commit SHA：#{action}") unless
         action.match?(/@[0-9a-f]{40}\z/)
     end
   end
 end
 
-nightly_path, ios_path, release_path, pr_gate_path, distributor_path, generator_path = ARGV
-nightly = load_yaml(nightly_path)
-ios = load_yaml(ios_path)
-release = load_yaml(release_path)
-pr_gate = load_yaml(pr_gate_path)
+workflows_dir, distributor_path, generator_path = ARGV
+fail_check("workflows 目录不存在：#{workflows_dir}") unless File.directory?(workflows_dir)
+workflow_entries = Dir.children(workflows_dir)
+  .select { |entry| entry.match?(/\.ya?ml\z/i) }
+  .sort
+  .map { |entry| [entry, File.join(workflows_dir, entry)] }
+  .select { |_entry, path| File.file?(path) }
+fail_check("workflows 目录为空：#{workflows_dir}") if workflow_entries.empty?
+
+workflows = {}
+workflow_entries.each do |filename, path|
+  workflow = load_yaml(path)
+  assert_pinned_actions(path, workflow)
+  workflows[filename] = { path: path, workflow: workflow }
+end
+
+%w[nightly.yml ios-ci.yml release.yml pr-gate.yml].each do |required_name|
+  fail_check("缺少核心 workflow：#{required_name}") unless workflows.key?(required_name)
+end
+
+nightly_path = workflows.fetch("nightly.yml").fetch(:path)
+ios_path = workflows.fetch("ios-ci.yml").fetch(:path)
+release_path = workflows.fetch("release.yml").fetch(:path)
+pr_gate_path = workflows.fetch("pr-gate.yml").fetch(:path)
+nightly = workflows.fetch("nightly.yml").fetch(:workflow)
+ios = workflows.fetch("ios-ci.yml").fetch(:workflow)
+release = workflows.fetch("release.yml").fetch(:workflow)
+pr_gate = workflows.fetch("pr-gate.yml").fetch(:workflow)
 fail_check("Nightly What to Test 生成器不存在") unless File.file?(generator_path)
 generator = File.read(generator_path)
-[nightly, ios, release, pr_gate].zip([nightly_path, ios_path, release_path, pr_gate_path]).each do |workflow, path|
-  assert_pinned_actions(path, workflow)
-end
 
 nightly_triggers = triggers(nightly, nightly_path)
 fail_check("Nightly 只能由 schedule 和 workflow_dispatch 触发") unless
@@ -335,19 +454,14 @@ assert_only_allowed_environment_jobs("PR Gate", pr_gate_jobs, [])
 pr_gate_ios = pr_gate_jobs.fetch("ios")
 fail_check("PR Gate ios job 必须调用 ./.github/workflows/ios-ci.yml") unless
   pr_gate_ios.is_a?(Hash) && pr_gate_ios["uses"] == "./.github/workflows/ios-ci.yml"
-pr_gate_ios_jobs = pr_gate_jobs.select do |_job_id, job|
-  job.is_a?(Hash) && job["uses"].to_s.downcase.include?("ios-ci.yml")
+pr_gate_ios_jobs = pr_gate_jobs.select do |job_id, job|
+  next false unless job.is_a?(Hash)
+  has_uses, uses_value = fetch_case_insensitive_key(job, "uses", "PR Gate #{job_id}")
+  has_uses && calls_ios_ci?(uses_value)
 end
 fail_check("PR Gate 缺少调用 ./.github/workflows/ios-ci.yml 的 job") if pr_gate_ios_jobs.empty?
 pr_gate_ios_jobs.each do |job_id, job|
-  with_inputs = job["with"]
-  next if with_inputs.nil?
-  fail_check("PR Gate #{job_id} 的 with 必须是映射") unless with_inputs.is_a?(Hash)
-  with_inputs.each do |raw_key, value|
-    key = raw_key.to_s.strip.downcase
-    next unless %w[publish_internal_testflight publish_app_store].include?(key)
-    fail_check("PR Gate #{job_id} 调用 ios-ci 不得启用 #{raw_key}") unless value == false
-  end
+  assert_no_ios_publish_inputs("PR Gate #{job_id}", job)
 end
 
 release_triggers = triggers(release, release_path)
@@ -464,6 +578,64 @@ fail_check("Release workflow 不得从 dispatch 的 main ref 推导发布版本"
 distributor = File.read(distributor_path)
 fail_check("Internal TestFlight 组校验必须 fail-closed") unless distributor.include?('unless group.dig("attributes", "isInternalGroup") == true')
 
+# 全仓 workflow 扫描：
+# 1. 计算所有带 pull_request / pull_request_target（及 pull_request_*）触发器的 workflow 及其经本地 reusable workflow 可达的调用链。
+# 2. 任何 PR 触发（或 PR 可达）的 workflow 调用 ios-ci.yml 时，均不得启用 publish_internal_testflight 或 publish_app_store。
+# 3. 全仓任意 workflow 的任意 job 声明 environment 时，必须为可静态确定的非空常量（禁止表达式）；
+#    ios-testflight-release（大小写不敏感）全仓仅允许 nightly.yml/release-secrets-preflight 与 ios-ci.yml/app-store-release；
+#    PR 触发或 PR 可达的 workflow 除 ios-ci.yml/app-store-release 外不得绑定任何 Environment；
+#    release.yml 的 production-release 绑定保持合法。
+workflows_by_downcase = Hash.new { |hash, key| hash[key] = [] }
+direct_pr_workflows = []
+workflows.each do |filename, entry|
+  workflows_by_downcase[filename.downcase] << filename
+  workflow = entry.fetch(:workflow)
+  path = entry.fetch(:path)
+  direct_pr_workflows << filename if pr_triggered_workflow?(workflow, path)
+end
+
+pr_reachable = {}
+queue = direct_pr_workflows.dup
+while (current = queue.shift)
+  next if pr_reachable[current]
+  pr_reachable[current] = true
+  entry = workflows.fetch(current)
+  jobs = workflow_jobs(entry.fetch(:workflow), entry.fetch(:path))
+  jobs.each do |job_id, job|
+    fail_check("#{current} #{job_id} 配置必须是映射") unless job.is_a?(Hash)
+    has_uses, uses_value = fetch_case_insensitive_key(job, "uses", "#{current} #{job_id}")
+    next unless has_uses && uses_value.is_a?(String)
+    if calls_ios_ci?(uses_value)
+      assert_no_ios_publish_inputs("PR workflow #{current} #{job_id}", job)
+    end
+    target_basename = local_workflow_target(uses_value)
+    next unless target_basename
+    workflows_by_downcase[target_basename.downcase].each do |resolved|
+      queue << resolved unless pr_reachable[resolved]
+    end
+  end
+end
+
+workflows.each do |filename, entry|
+  workflow = entry.fetch(:workflow)
+  path = entry.fetch(:path)
+  jobs = workflow_jobs(workflow, path)
+  jobs.each do |job_id, job|
+    fail_check("#{filename} #{job_id} 配置必须是映射") unless job.is_a?(Hash)
+    has_env, env_value = fetch_case_insensitive_key(job, "environment", "#{filename} #{job_id}")
+    next unless has_env
+
+    env_name = parse_constant_environment_name(env_value, "#{filename} #{job_id}")
+    if env_name.downcase == IOS_TESTFLIGHT_ENV_NAME
+      unless ALLOWED_IOS_TESTFLIGHT_ENV_BINDINGS.include?([filename, job_id])
+        fail_check("#{filename} #{job_id} 不得绑定 ios-testflight-release Environment（全仓仅允许 nightly.yml/release-secrets-preflight 与 ios-ci.yml/app-store-release）")
+      end
+    elsif pr_reachable[filename] && !ALLOWED_IOS_TESTFLIGHT_ENV_BINDINGS.include?([filename, job_id])
+      fail_check("PR workflow #{filename} #{job_id} 不得绑定 Environment（实际为 #{env_name.inspect}）")
+    end
+  end
+end
+
 puts "Nightly/Release workflow 自检通过。"
 RUBY
 }
@@ -472,11 +644,9 @@ self_test() {
   local test_root
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-nightly-release-self-test.XXXXXX")"
   trap 'rm -rf "$test_root"' RETURN
-  mkdir -p "$test_root/.github/workflows" "$test_root/scripts"
-  cp "$ROOT_DIR/.github/workflows/nightly.yml" "$test_root/.github/workflows/"
-  cp "$ROOT_DIR/.github/workflows/ios-ci.yml" "$test_root/.github/workflows/"
-  cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/"
-  cp "$ROOT_DIR/.github/workflows/pr-gate.yml" "$test_root/.github/workflows/"
+  mkdir -p "$test_root/.github" "$test_root/scripts"
+  cp -R "$ROOT_DIR/.github/workflows" "$test_root/.github/"
+  [[ -f "$test_root/.github/workflows/pr-metadata.yml" ]] || fail "self-test 未完整拷贝 .github/workflows 目录"
   cp "$ROOT_DIR/scripts/distribute_internal_build.rb" "$test_root/scripts/"
   cp "$ROOT_DIR/scripts/generate-nightly-what-to-test.rb" "$test_root/scripts/"
   MIMI_NIGHTLY_RELEASE_ROOT="$test_root" "$0" --check >/dev/null
@@ -722,7 +892,79 @@ RUBY
   mutate_pr_gate $'\n  rust:\n' $'\n  rogue-ios-publish:\n    needs: scope\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: true\n\n  rust:\n' 'PR Gate rogue-ios-publish 调用 ios-ci 不得启用 publish_internal_testflight'
   mutate_pr_gate '    name: Detect change scope' $'    name: Detect change scope\n    environment: ios-testflight-release' 'PR Gate scope 不得绑定 ios-testflight-release 或其他 Environment'
 
-  # 正向等价形式核验：指定发布 job 允许常量 mapping 与大小写等价名称，PR Gate 允许显式 false。
+  mutate_pr_metadata() {
+    local old_value="$1"
+    local new_value="$2"
+    local expected_error="${3:-}"
+    cp "$ROOT_DIR/.github/workflows/pr-metadata.yml" "$test_root/.github/workflows/pr-metadata.yml"
+    ruby -e '
+      path, old_value, new_value = ARGV
+      source = File.read(path)
+      abort "self-test mutation target missing: #{old_value}" unless source.include?(old_value)
+      File.write(path, source.sub(old_value, new_value))
+    ' "$test_root/.github/workflows/pr-metadata.yml" "$old_value" "$new_value"
+    expect_failure "$expected_error"
+    cp "$ROOT_DIR/.github/workflows/pr-metadata.yml" "$test_root/.github/workflows/pr-metadata.yml"
+  }
+  # 独立 PR workflow（pr-metadata.yml）变异：覆盖 Codex R2 三项复现与额外边界。
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-release-env:\n    runs-on: ubuntu-latest\n    environment:\n      name: IOS-TESTFLIGHT-RELEASE\n    steps:\n      - run: true\n\n  metadata:\n' 'pr-metadata.yml rogue-release-env 不得绑定 ios-testflight-release Environment'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-expr-env:\n    runs-on: ubuntu-latest\n    environment:\n      name: "${{ \'ios-testflight-release\' }}"\n    steps:\n      - run: true\n\n  metadata:\n' 'pr-metadata.yml rogue-expr-env（environment 名称必须是非空常量，禁止表达式）'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-ios-publish:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: true\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-ios-publish 调用 ios-ci 不得启用 publish_internal_testflight'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-str-env:\n    runs-on: ubuntu-latest\n    environment: ios-testflight-release\n    steps:\n      - run: true\n\n  metadata:\n' 'pr-metadata.yml rogue-str-env 不得绑定 ios-testflight-release Environment'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-prod-env:\n    runs-on: ubuntu-latest\n    environment: production-release\n    steps:\n      - run: true\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-prod-env 不得绑定 Environment'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-ios-appstore:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_app_store: true\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-ios-appstore 调用 ios-ci 不得启用 publish_app_store'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-ios-str-false:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: "false"\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-ios-str-false 调用 ios-ci 不得启用 publish_internal_testflight'
+  mutate_pr_metadata $'jobs:\n  metadata:\n' $'jobs:\n  rogue-ios-expr-publish:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: "${{ true }}"\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-ios-expr-publish 调用 ios-ci 不得启用 publish_internal_testflight'
+  mutate_pr_metadata $'on:\n  pull_request:\n    types:\n      - opened\n      - edited\n      - synchronize\n      - reopened\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: pr-metadata-${{ github.event.pull_request.number }}\n  cancel-in-progress: true\n\njobs:\n  metadata:\n' $'on:\n  pull_request_target:\n    types:\n      - opened\n\npermissions:\n  contents: read\n\njobs:\n  rogue-pr-target-publish:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: true\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-pr-target-publish 调用 ios-ci 不得启用 publish_internal_testflight'
+  mutate_pr_metadata $'on:\n  pull_request:\n    types:\n      - opened\n      - edited\n      - synchronize\n      - reopened\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: pr-metadata-${{ github.event.pull_request.number }}\n  cancel-in-progress: true\n\njobs:\n  metadata:\n' $'on: [pull_request]\n\npermissions:\n  contents: read\n\njobs:\n  rogue-array-on-publish:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: true\n\n  metadata:\n' 'PR workflow pr-metadata.yml rogue-array-on-publish 调用 ios-ci 不得启用 publish_internal_testflight'
+
+  # 全仓 .yaml 扩展名、非 PR workflow 与经本地 reusable workflow 链式调用的隔离变异。
+  cat >"$test_root/.github/workflows/rogue-extra.yaml" <<'YAML'
+name: Rogue Extra
+on: push
+jobs:
+  rogue-push-env:
+    runs-on: ubuntu-latest
+    environment:
+      name: IOS-TESTFLIGHT-RELEASE
+    steps:
+      - run: true
+YAML
+  expect_failure 'rogue-extra.yaml rogue-push-env 不得绑定 ios-testflight-release Environment'
+  cat >"$test_root/.github/workflows/rogue-extra.yaml" <<'YAML'
+name: Rogue Extra Expr
+on: workflow_dispatch
+jobs:
+  rogue-dispatch-expr:
+    runs-on: ubuntu-latest
+    environment:
+      name: "${{ inputs.env }}"
+    steps:
+      - run: true
+YAML
+  expect_failure 'rogue-extra.yaml rogue-dispatch-expr（environment 名称必须是非空常量，禁止表达式）'
+  rm -f "$test_root/.github/workflows/rogue-extra.yaml"
+
+  cat >"$test_root/.github/workflows/rogue-chain-caller.yml" <<'YAML'
+name: Rogue Chain Caller
+on: pull_request
+jobs:
+  entry:
+    uses: ./.github/workflows/rogue-chain-mid.yaml
+YAML
+  cat >"$test_root/.github/workflows/rogue-chain-mid.yaml" <<'YAML'
+name: Rogue Chain Mid
+on: workflow_call
+jobs:
+  relay:
+    uses: ./.github/workflows/ios-ci.yml
+    with:
+      publish_internal_testflight: true
+YAML
+  expect_failure 'PR workflow rogue-chain-mid.yaml relay 调用 ios-ci 不得启用 publish_internal_testflight'
+  rm -f "$test_root/.github/workflows/rogue-chain-caller.yml" "$test_root/.github/workflows/rogue-chain-mid.yaml"
+
+  # 正向等价形式核验：指定发布 job 允许常量 mapping 与大小写等价名称，PR workflow 允许不启用发布的 ios-ci 调用。
   expect_pass_mutation() {
     local rel_path="$1"
     local old_value="$2"
@@ -744,6 +986,8 @@ RUBY
   expect_pass_mutation '.github/workflows/nightly.yml' '    environment: ios-testflight-release' $'    environment:\n      name: ios-testflight-release'
   expect_pass_mutation '.github/workflows/ios-ci.yml' '    environment: ios-testflight-release' $'    environment:\n      name: IOS-TESTFLIGHT-RELEASE'
   expect_pass_mutation '.github/workflows/pr-gate.yml' $'  ios:\n    name: iOS\n    needs: scope\n    if: needs.scope.outputs.ios == \'true\'\n    uses: ./.github/workflows/ios-ci.yml' $'  ios:\n    name: iOS\n    needs: scope\n    if: needs.scope.outputs.ios == \'true\'\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: false'
+  expect_pass_mutation '.github/workflows/pr-metadata.yml' $'jobs:\n  metadata:\n' $'jobs:\n  ios-regression-only:\n    uses: ./.github/workflows/ios-ci.yml\n\n  metadata:\n'
+  expect_pass_mutation '.github/workflows/pr-metadata.yml' $'jobs:\n  metadata:\n' $'jobs:\n  ios-regression-explicit-false:\n    uses: ./.github/workflows/ios-ci.yml\n    with:\n      publish_internal_testflight: false\n\n  metadata:\n'
   ruby -e 'p = ARGV.fetch(0); s = File.read(p).sub("name: Release", "name: release-validation drift"); File.write(p, s)' "$test_root/.github/workflows/release.yml"
   expect_failure
   cp "$ROOT_DIR/.github/workflows/release.yml" "$test_root/.github/workflows/release.yml"
@@ -819,7 +1063,7 @@ RUBY
           STOLEN: ${{ secrets.TAP_DEPLOY_KEY }}
 
   verify:'
-  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、发布谓词/默认值/PR Gate 隔离、ios-testflight-release Environment 绑定隔离、evidence 绑定、Release default-branch source-trust、旁路 job 与 validation/attestation 漂移均能失败。"
+  echo "Nightly/Release checker self-test 通过：schedule、权限、trust gate、发布凭据预检、发布谓词/默认值/PR Gate 与独立 PR workflow 隔离、全仓 ios-testflight-release Environment 绑定隔离、evidence 绑定、Release default-branch source-trust、旁路 job 与 validation/attestation 漂移均能失败。"
 }
 
 case "${1:---check}" in
