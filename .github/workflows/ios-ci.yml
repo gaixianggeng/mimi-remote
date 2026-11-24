@@ -87,6 +87,109 @@ concurrency:
     ${{ !(inputs.publish_internal_testflight || (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)) }}
 
 jobs:
+  image-recovery-ui-regressions:
+    name: Image recovery UI regressions
+    # 与 conversation-regressions 并行执行，避免 2 项真实图片卡点击 UI 回归串行拉长关键路径。
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          clean: true
+
+      - name: Setup Go for Tailcat
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: experiments/tailcat/go.mod
+          cache-dependency-path: experiments/tailcat/go.sum
+
+      - name: Resolve toolchain and pre-boot fixed CI simulator
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode_version="$(xcodebuild -version)"
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-build-version)"
+          simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-build-version)"
+          go_version="$(cd experiments/tailcat && go version && go env GOVERSION GOHOSTOS GOHOSTARCH)"
+          tailcat_key="$(printf '%s\n%s\n%s\n' "$go_version" "$iphoneos_sdk" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          xcode_key="$(printf '%s\n%s\n' "$xcode_version" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          echo "tailcat_key=$tailcat_key" >> "$GITHUB_OUTPUT"
+          echo "xcode_key=$xcode_key" >> "$GITHUB_OUTPUT"
+
+          simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
+            devices = JSON.parse(STDIN.read).fetch("devices").fetch("com.apple.CoreSimulator.SimRuntime.iOS-26-2", [])
+            device = devices.find { |item| item["isAvailable"] && item["name"] == "iPad Pro 13-inch (M5)" }
+            abort "Missing iPad Pro 13-inch (M5) on iOS 26.2" unless device
+            puts device.fetch("udid")
+          ')"
+          destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
+          echo "Resolved exact test target: $destination"
+          {
+            echo "IOS_TEST_DESTINATION=$destination"
+            echo "IOS_DERIVED_DATA_PATH=$RUNNER_TEMP/ios-derived-data"
+            echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools"
+          } >> "$GITHUB_ENV"
+          # 在缓存恢复与编译期间提前冷启动 Simulator，缩短测试启动等待。
+          xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
+
+      - name: Cache Tailcat XCFramework and tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ios/MimiRemote/Generated
+            ${{ runner.temp }}/tailcat-mobile-tools
+          key: tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-${{ hashFiles('experiments/tailcat/go.mod', 'experiments/tailcat/go.sum', 'experiments/tailcat/**/*.go', 'experiments/tailcat/**/*.c', 'experiments/tailcat/**/*.h', 'experiments/tailcat/**/*.m', 'scripts/build-tailcat-mobile.sh') }}
+          restore-keys: |
+            tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-
+
+      - name: Cache Xcode SPM and DerivedData
+        id: ios-derived-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/ios-derived-data
+          key: ios-spm-derived-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode_key }}-${{ hashFiles('ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Run image recovery UI regressions
+        # 普通 XCTest 宿主没有可操作的 SwiftUI 元素树；这两项必须真实点击图片卡。
+        # 仍通过统一入口持有固定 M5 租约，不连接真实 agentd 或读取用户文件。
+        env:
+          SCHEME: MimiRemotePhysicalUITests
+        run: |
+          bash ./scripts/ios-dev.sh test -quiet \
+            -resultBundlePath "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            -collect-test-diagnostics never -testLanguage zh-Hans -testRegion CN \
+            -only-testing:MimiRemoteUITests/ConversationImageRecoveryUITests
+          xcrun xcresulttool get test-results summary \
+            --path "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
+            > "$RUNNER_TEMP/conversation-image-recovery.json"
+          python3 - "$RUNNER_TEMP/conversation-image-recovery.json" <<'PY'
+          import json, sys
+          result = json.load(open(sys.argv[1]))
+          assert result["totalTestCount"] == result["passedTests"] == 2, result
+          PY
+
+      - name: Preserve image recovery UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conversation-image-recovery
+          path: ${{ runner.temp }}/conversation-image-recovery.*
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Prune DerivedData before cache save
+        if: steps.ios-derived-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf \
+            "$IOS_DERIVED_DATA_PATH/Logs" \
+            "$IOS_DERIVED_DATA_PATH/Index.noindex" \
+            "$IOS_DERIVED_DATA_PATH/MimiBuildEvidence" \
+            "$IOS_DERIVED_DATA_PATH"/*.xcresult
+
   tailcat-integration:
     name: Tailcat integration (Linux)
     # Tailcat 集成测试只依赖 127.0.0.1 上的 DERP/STUN fixture。hosted macOS 偶尔
@@ -123,7 +226,6 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
-          fetch-depth: 0
           clean: true
 
       - name: Setup Go for Tailcat
@@ -132,41 +234,23 @@ jobs:
           go-version-file: experiments/tailcat/go.mod
           cache-dependency-path: experiments/tailcat/go.sum
 
-      - name: Show toolchain
+      - name: Show toolchain and resolve fixed CI simulator
+        id: toolchain
+        shell: bash
         run: |
-          xcodebuild -version
+          set -euo pipefail
+          xcode_version="$(xcodebuild -version)"
+          printf '%s\n' "$xcode_version"
           xcrun simctl list devices available
 
-      - name: Verify iOS 18 deployment target
-        shell: bash
-        run: |
-          set -euo pipefail
-          for target_name in \
-            MimiRemote \
-            MimiCarStatusWidgetExtension \
-            MimiNotificationServiceExtension \
-            MimiRemoteTests \
-            MimiRemoteUITests
-          do
-            deployment_targets="$(
-              xcodebuild \
-                -project ios/MimiRemote/MimiRemote.xcodeproj \
-                -target "$target_name" \
-                -configuration Debug \
-                -showBuildSettings 2>/dev/null \
-                | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
-                | sort -u
-            )"
-            if [[ "$deployment_targets" != "18.0" ]]; then
-              echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
-              exit 1
-            fi
-          done
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-build-version)"
+          simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-build-version)"
+          go_version="$(cd experiments/tailcat && go version && go env GOVERSION GOHOSTOS GOHOSTARCH)"
+          tailcat_key="$(printf '%s\n%s\n%s\n' "$go_version" "$iphoneos_sdk" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          xcode_key="$(printf '%s\n%s\n' "$xcode_version" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          echo "tailcat_key=$tailcat_key" >> "$GITHUB_OUTPUT"
+          echo "xcode_key=$xcode_key" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve fixed CI simulator
-        shell: bash
-        run: |
-          set -euo pipefail
           # iOS 26.5 的 StoreKitTest 配置同步失效（FB22500243），会误走 Apple 登录。
           # 使用 runner 已安装的 26.2；保留稳定 Xcode 编译和全部购买/退款断言。
           simulator_id="$(xcrun simctl list devices available -j | ruby -rjson -e '
@@ -177,84 +261,127 @@ jobs:
           ')"
           destination="$(IOS_TEST_DESTINATION="platform=iOS Simulator,id=$simulator_id" bash ./scripts/ios-dev.sh test-destination)"
           echo "Resolved exact test target: $destination"
-          echo "IOS_TEST_DESTINATION=$destination" >> "$GITHUB_ENV"
+          {
+            echo "IOS_TEST_DESTINATION=$destination"
+            echo "IOS_DERIVED_DATA_PATH=$RUNNER_TEMP/ios-derived-data"
+            echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools"
+          } >> "$GITHUB_ENV"
+          # 在缓存恢复、前置静态检查与编译期间提前冷启动 Simulator，缩短测试启动等待。
+          xcrun simctl boot "$simulator_id" >/dev/null 2>&1 || true
 
-      - name: Check iOS device selection and leases
-        run: bash ./scripts/test-ios-device-management.sh
+      - name: Cache Tailcat XCFramework and tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ios/MimiRemote/Generated
+            ${{ runner.temp }}/tailcat-mobile-tools
+          key: tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-${{ hashFiles('experiments/tailcat/go.mod', 'experiments/tailcat/go.sum', 'experiments/tailcat/**/*.go', 'experiments/tailcat/**/*.c', 'experiments/tailcat/**/*.h', 'experiments/tailcat/**/*.m', 'scripts/build-tailcat-mobile.sh') }}
+          restore-keys: |
+            tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.tailcat_key }}-
 
-      - name: Check iOS build evidence reuse
-        run: bash ./scripts/test-ios-build-evidence.sh
+      - name: Cache Xcode SPM and DerivedData
+        id: ios-derived-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/ios-derived-data
+          key: ios-spm-derived-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode_key }}-${{ hashFiles('ios/MimiRemote/MimiRemote.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
-      - name: Check Tailcat mobile build cache
-        run: bash ./scripts/test-tailcat-mobile-build.sh
+      - name: Run iOS preflight checks in parallel
+        # 全部独立的前置脚本自检、deployment target 校验和静态策略按 3 核并行执行，
+        # 保留每一项检查与完整失败日志，不再串行阻塞核心回归。
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_dir="$RUNNER_TEMP/ios-preflight-logs"
+          mkdir -p "$log_dir"
 
-      - name: Compile Tailcat module tests
-        # Hosted macOS 偶尔无法在本地 DERP fixture 启动后 10 秒内回连；完整运行由
-        # tailcat-integration（Linux）负责。真实 Go→XCFramework→iOS 链接仍由后续 iOS 构建覆盖。
-        run: cd experiments/tailcat && go test ./... -run '^$' -count=1
+          lane_evidence() {
+            echo "==> Check iOS build evidence reuse"
+            bash ./scripts/test-ios-build-evidence.sh
+          }
 
-      - name: Check physical-device GUI handoff
-        run: bash ./scripts/test-ios-device-gui-handoff-macos.sh
+          lane_targets_and_device() {
+            # 不继承主回归共享的 DerivedData/工具缓存路径：xcodebuild 在 -target/-alltargets
+            # 模式下禁止传 -derivedDataPath，且设备管理自测需要按默认路径验证 UDID 隔离。
+            unset IOS_DERIVED_DATA_PATH IOS_DEVICE_DERIVED_DATA_PATH TAILCAT_MOBILE_TOOL_DIR
+            echo "==> Verify iOS 18 deployment target"
+            for target_name in \
+              MimiRemote \
+              MimiCarStatusWidgetExtension \
+              MimiNotificationServiceExtension \
+              MimiRemoteTests \
+              MimiRemoteUITests
+            do
+              deployment_targets="$(
+                xcodebuild \
+                  -project ios/MimiRemote/MimiRemote.xcodeproj \
+                  -target "$target_name" \
+                  -configuration Debug \
+                  -showBuildSettings \
+                  | awk '$1 == "IPHONEOS_DEPLOYMENT_TARGET" && $2 == "=" { print $3 }' \
+                  | sort -u
+              )"
+              if [[ "$deployment_targets" != "18.0" ]]; then
+                echo "$target_name expected iOS deployment target 18.0, got: $deployment_targets" >&2
+                exit 1
+              fi
+            done
+            echo "==> Check iOS device selection and leases"
+            bash ./scripts/test-ios-device-management.sh
+            echo "==> Check Tailcat mobile build cache"
+            bash ./scripts/test-tailcat-mobile-build.sh
+          }
 
-      - name: Check network security policy
-        run: bash ./scripts/check-ios-network-security.sh
+          lane_tailcat_and_static() {
+            echo "==> Compile Tailcat module tests"
+            # Hosted macOS 偶尔无法在本地 DERP fixture 启动后 10 秒内回连；完整运行由
+            # tailcat-integration（Linux）负责。真实 Go→XCFramework→iOS 链接仍由后续 iOS 构建覆盖。
+            (cd experiments/tailcat && go test ./... -run '^$' -count=1)
+            echo "==> Check physical-device GUI handoff"
+            bash ./scripts/test-ios-device-gui-handoff-macos.sh
+            echo "==> Check network security policy"
+            bash ./scripts/check-ios-network-security.sh
+            echo "==> Check privacy manifest"
+            bash ./scripts/check-ios-privacy-manifest.sh
+            echo "==> Test iOS localization check"
+            bash ./scripts/test-check-ios-localization.sh
+            echo "==> Check App Store metadata"
+            bash ./scripts/check-app-store-metadata.sh
+            echo "==> Check pinned asc CLI integration"
+            bash ./scripts/test-ios-asc-cli.sh
+            echo "==> Check source size"
+            bash ./scripts/check-source-size.sh
+            echo "==> Check iOS test selectors"
+            # xcodebuild 对失效的类名或方法 selector 静默执行 0 个；先静态拦住，
+            # 并要求每个测试类归属 PR 集合或每晚集合（#741）。
+            bash ./scripts/test-ios-test-inventory.sh
+            bash ./scripts/check-ios-test-selectors.sh
+          }
 
-      - name: Check privacy manifest
-        run: bash ./scripts/check-ios-privacy-manifest.sh
+          lane_evidence > "$log_dir/evidence.log" 2>&1 &
+          pid_evidence=$!
+          lane_targets_and_device > "$log_dir/targets-device.log" 2>&1 &
+          pid_targets=$!
+          lane_tailcat_and_static > "$log_dir/tailcat-static.log" 2>&1 &
+          pid_static=$!
+
+          status=0
+          wait "$pid_evidence" || { status=1; echo "::error::iOS build evidence lane failed"; }
+          wait "$pid_targets" || { status=1; echo "::error::iOS deployment targets / device / tailcat cache lane failed"; }
+          wait "$pid_static" || { status=1; echo "::error::iOS Tailcat compile / static policy lane failed"; }
+
+          for name in evidence targets-device tailcat-static; do
+            echo "--- preflight lane: ${name} ---"
+            cat "$log_dir/${name}.log"
+          done
+          exit "$status"
 
       - name: Check iOS localization
         run: bash ./scripts/check-ios-localization.sh
 
-      - name: Test iOS localization check
-        run: bash ./scripts/test-check-ios-localization.sh
-
-      - name: Check App Store metadata
-        run: bash ./scripts/check-app-store-metadata.sh
-
-      - name: Check pinned asc CLI integration
-        run: bash ./scripts/test-ios-asc-cli.sh
-
-      - name: Check source size
-        run: bash ./scripts/check-source-size.sh
-
-      - name: Check iOS test selectors
-        # xcodebuild 对失效的类名或方法 selector 静默执行 0 个；先静态拦住，
-        # 并要求每个测试类归属 PR 集合或每晚集合（#741）。
-        run: |
-          bash ./scripts/test-ios-test-inventory.sh
-          bash ./scripts/check-ios-test-selectors.sh
-
       - name: Run core regressions
         # 根模块 Go 与共享契约由独立 Go CI 覆盖；这里已单独验证 Tailcat module。
         run: bash ./scripts/test-conversation-regressions.sh --ios-only
-
-      - name: Run image recovery UI regressions
-        # 普通 XCTest 宿主没有可操作的 SwiftUI 元素树；这两项必须真实点击图片卡。
-        # 仍通过统一入口持有固定 M5 租约，不连接真实 agentd 或读取用户文件。
-        env:
-          SCHEME: MimiRemotePhysicalUITests
-        run: |
-          bash ./scripts/ios-dev.sh test -quiet \
-            -resultBundlePath "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
-            -collect-test-diagnostics never -testLanguage zh-Hans -testRegion CN \
-            -only-testing:MimiRemoteUITests/ConversationImageRecoveryUITests
-          xcrun xcresulttool get test-results summary \
-            --path "$RUNNER_TEMP/conversation-image-recovery.xcresult" \
-            > "$RUNNER_TEMP/conversation-image-recovery.json"
-          python3 - "$RUNNER_TEMP/conversation-image-recovery.json" <<'PY'
-          import json, sys
-          result = json.load(open(sys.argv[1]))
-          assert result["totalTestCount"] == result["passedTests"] == 2, result
-          PY
-
-      - name: Preserve image recovery UI evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: conversation-image-recovery
-          path: ${{ runner.temp }}/conversation-image-recovery.*
-          if-no-files-found: ignore
-          retention-days: 7
 
       # 日常核心回归已经覆盖 LocalizationTests；只有真正发布 TestFlight 时
       # 才额外启动一次英文系统环境，避免每个 PR/main 都承担第二次 Simulator 启动。
@@ -264,8 +391,20 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.publish_app_store)
         run: bash ./scripts/test-ios-localization-smoke.sh
 
+      - name: Prune DerivedData before cache save
+        if: steps.ios-derived-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          rm -rf \
+            "$IOS_DERIVED_DATA_PATH/Logs" \
+            "$IOS_DERIVED_DATA_PATH/Index.noindex" \
+            "$IOS_DERIVED_DATA_PATH/MimiBuildEvidence" \
+            "$IOS_DERIVED_DATA_PATH"/*.xcresult
+
   app-store-release:
-    needs: conversation-regressions
+    needs:
+      - conversation-regressions
+      - image-recovery-ui-regressions
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.publish_app_store) ||
       inputs.publish_internal_testflight
@@ -354,6 +493,7 @@ jobs:
           echo "DEVELOPER_DIR=$selected_developer_dir" >> "$GITHUB_ENV"
 
       - name: Verify stable host and SDK
+        id: release-toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -365,6 +505,22 @@ jobs:
           [[ "$(xcodebuild -version)" == $'Xcode 26.6\nBuild version 17F113' ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-version)" == "26.5" ]]
           [[ "$(xcrun --sdk iphoneos --show-sdk-build-version)" == "23F81a" ]]
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-build-version)"
+          simulator_sdk="$(xcrun --sdk iphonesimulator --show-sdk-build-version)"
+          go_version="$(cd experiments/tailcat && go version && go env GOVERSION GOHOSTOS GOHOSTARCH)"
+          tailcat_key="$(printf '%s\n%s\n%s\n' "$go_version" "$iphoneos_sdk" "$simulator_sdk" | shasum -a 256 | awk '{ print substr($1, 1, 16) }')"
+          echo "tailcat_key=$tailcat_key" >> "$GITHUB_OUTPUT"
+          echo "TAILCAT_MOBILE_TOOL_DIR=$RUNNER_TEMP/tailcat-mobile-tools" >> "$GITHUB_ENV"
+
+      - name: Cache Tailcat XCFramework and tools
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ios/MimiRemote/Generated
+            ${{ runner.temp }}/tailcat-mobile-tools
+          key: tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.release-toolchain.outputs.tailcat_key }}-${{ hashFiles('experiments/tailcat/go.mod', 'experiments/tailcat/go.sum', 'experiments/tailcat/**/*.go', 'experiments/tailcat/**/*.c', 'experiments/tailcat/**/*.h', 'experiments/tailcat/**/*.m', 'scripts/build-tailcat-mobile.sh') }}
+          restore-keys: |
+            tailcat-mobile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.release-toolchain.outputs.tailcat_key }}-
 
       - name: Prepare pinned asc CLI shadow tool
         shell: bash

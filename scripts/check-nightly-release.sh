@@ -219,11 +219,13 @@ fail_check("ios-ci source_ref 类型错误") unless call.dig("inputs", "source_r
 fail_check("ios-ci publish_internal_testflight 必须是 bool") unless call.dig("inputs", "publish_internal_testflight", "type") == "boolean"
 fail_check("ios-ci what_to_test 类型错误") unless call.dig("inputs", "what_to_test", "type") == "string"
 ios_jobs = ios.fetch("jobs")
-conversation = ios_jobs.fetch("conversation-regressions")
-checkout = steps(conversation).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
-fail_check("conversation-regressions 必须 checkout immutable source_ref") unless checkout && checkout.dig("with", "ref").to_s.include?("inputs.source_ref")
+%w[conversation-regressions image-recovery-ui-regressions].each do |regression_job_id|
+  regression_job = ios_jobs.fetch(regression_job_id)
+  checkout = steps(regression_job).find { |item| item["uses"].to_s.start_with?("actions/checkout@") }
+  fail_check("#{regression_job_id} 必须 checkout immutable source_ref") unless checkout && checkout.dig("with", "ref").to_s.include?("inputs.source_ref")
+end
 app = ios_jobs.fetch("app-store-release")
-fail_check("signed app-store-release 必须等待 conversation-regressions") unless Array(app["needs"]) == ["conversation-regressions"]
+fail_check("signed app-store-release 必须等待 conversation-regressions 与 image-recovery-ui-regressions") unless Array(app["needs"]).sort == %w[conversation-regressions image-recovery-ui-regressions]
 condition = app.fetch("if").to_s
 fail_check("app-store-release 缺少手工 publish_app_store 条件") unless condition.include?("workflow_dispatch") && condition.include?("publish_app_store")
 fail_check("app-store-release 缺少 reusable publish_internal_testflight 条件") unless condition.include?("publish_internal_testflight")

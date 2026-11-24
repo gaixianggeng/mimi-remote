@@ -76,12 +76,28 @@ is_excluded() {
   esac
 }
 
-while IFS= read -r -d '' source_file; do
-  relative_path="${source_file#"$ROOT_DIR"/}"
-  if is_excluded "$relative_path"; then
-    continue
+needs_single_file_wc() {
+  case "$1" in
+    *$'\n'*|*$'\r'*|*[[:cntrl:]]*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+check_file_line_count() {
+  local source_file="$1"
+  local line_count="$2"
+  local relative_path limit reason
+
+  if [[ ! "$line_count" =~ ^[0-9]+$ ]]; then
+    printf '源码体积检查失败：无法解析行数（%s -> %q）\n' "$source_file" "$line_count" >&2
+    exit 1
   fi
 
+  relative_path="${source_file#"$ROOT_DIR"/}"
   limit=$PRODUCTION_LIMIT
   case "$relative_path" in
     *_test.go|*/Tests/*|*Tests.swift|*TestSupport.swift|*/tests/*|*Tests.cs)
@@ -89,19 +105,130 @@ while IFS= read -r -d '' source_file; do
       ;;
   esac
 
-  line_count="$(wc -l < "$source_file" | tr -d '[:space:]')"
-  if (( line_count <= limit )); then
-    continue
+  if (( 10#$line_count <= limit )); then
+    return 0
   fi
 
   if reason="$(exception_reason "$relative_path")"; then
     printf '源码体积例外：%s (%s 行，上限 %s)：%s\n' "$relative_path" "$line_count" "$limit" "$reason"
-    continue
+    return 0
   fi
 
   printf '源码体积超限：%s (%s 行，上限 %s)\n' "$relative_path" "$line_count" "$limit" >&2
   failed=1
+}
+
+check_single_file() {
+  local source_file="$1"
+  local raw_count line_count wc_status
+
+  wc_status=0
+  raw_count="$(wc -l < "$source_file")" || wc_status=$?
+  if (( wc_status != 0 )); then
+    printf '源码体积检查失败：无法读取文件行数（退出码 %s）：%s\n' "$wc_status" "$source_file" >&2
+    exit 1
+  fi
+
+  line_count="${raw_count#"${raw_count%%[![:space:]]*}"}"
+  line_count="${line_count%"${line_count##*[![:space:]]}"}"
+  check_file_line_count "$source_file" "$line_count"
+}
+
+check_batch_files() {
+  if (( $# == 0 )); then
+    return 0
+  fi
+
+  local batch=("$@")
+  local batch_len="${#batch[@]}"
+  local wc_status=0 wc_output=""
+  local line_num=0 expected_total=0 expected_lines=$batch_len
+  local wc_line source_file trimmed line_count parsed_path total_count total_label
+
+  wc_output="$(wc -l -- "${batch[@]}" && printf 'x')" || wc_status=$?
+  if (( wc_status != 0 )); then
+    printf '源码体积检查失败：批量 wc 读取失败（退出码 %s）。\n' "$wc_status" >&2
+    exit 1
+  fi
+  if [[ "$wc_output" != *x ]]; then
+    printf '源码体积检查失败：批量 wc 输出异常截断。\n' >&2
+    exit 1
+  fi
+  wc_output="${wc_output%x}"
+  if [[ -z "$wc_output" || "$wc_output" != *$'\n' ]]; then
+    printf '源码体积检查失败：批量 wc 输出为空或缺少行尾换行。\n' >&2
+    exit 1
+  fi
+
+  while IFS= read -r wc_line; do
+    if (( line_num < batch_len )); then
+      source_file="${batch[$line_num]}"
+      trimmed="${wc_line#"${wc_line%%[! ]*}"}"
+      line_count="${trimmed%% *}"
+      if [[ ! "$line_count" =~ ^[0-9]+$ ]] || [[ "$trimmed" != "$line_count "* ]]; then
+        printf '源码体积检查失败：批量 wc 输出格式异常：%s\n' "$wc_line" >&2
+        exit 1
+      fi
+      parsed_path="${trimmed#"$line_count "}"
+      if [[ "$parsed_path" != "$source_file" ]]; then
+        printf '源码体积检查失败：批量 wc 输出路径不匹配（期望 %s，实际 %s）\n' "$source_file" "$parsed_path" >&2
+        exit 1
+      fi
+      expected_total=$((expected_total + 10#$line_count))
+      check_file_line_count "$source_file" "$line_count"
+    elif (( batch_len > 1 && line_num == batch_len )); then
+      trimmed="${wc_line#"${wc_line%%[! ]*}"}"
+      total_count="${trimmed%% *}"
+      total_label="${trimmed#"$total_count "}"
+      if [[ ! "$total_count" =~ ^[0-9]+$ ]] \
+        || [[ "$trimmed" != "$total_count "* ]] \
+        || [[ -z "$total_label" || "$total_label" == */* ]] \
+        || (( 10#$total_count != expected_total )); then
+        printf '源码体积检查失败：批量 wc 汇总行异常：%s\n' "$wc_line" >&2
+        exit 1
+      fi
+    else
+      printf '源码体积检查失败：批量 wc 输出行数超出预期：%s\n' "$wc_line" >&2
+      exit 1
+    fi
+    line_num=$((line_num + 1))
+  done < <(printf '%s' "$wc_output")
+
+  if (( batch_len > 1 )); then
+    expected_lines=$((batch_len + 1))
+  fi
+  if (( line_num != expected_lines )); then
+    printf '源码体积检查失败：批量 wc 输出记录数不匹配（期望 %s，实际 %s）\n' "$expected_lines" "$line_num" >&2
+    exit 1
+  fi
+}
+
+batch_files=()
+fallback_files=()
+while IFS= read -r -d '' source_file; do
+  relative_path="${source_file#"$ROOT_DIR"/}"
+  if is_excluded "$relative_path"; then
+    continue
+  fi
+  if needs_single_file_wc "$source_file"; then
+    fallback_files+=("$source_file")
+  else
+    batch_files+=("$source_file")
+  fi
 done < <(find "$ROOT_DIR" -type f \( -name '*.swift' -o -name '*.go' -o -name '*.cs' -o -name '*.xaml' \) -print0)
+
+total_batch_files="${#batch_files[@]}"
+batch_size=200
+offset=0
+while (( offset < total_batch_files )); do
+  check_batch_files "${batch_files[@]:offset:batch_size}"
+  offset=$((offset + batch_size))
+done
+
+total_fallback_files="${#fallback_files[@]}"
+for (( idx = 0; idx < total_fallback_files; idx++ )); do
+  check_single_file "${fallback_files[$idx]}"
+done
 
 if (( failed != 0 )); then
   printf '请按职责拆分文件；确需例外时，在 scripts/check-source-size.sh 中写明精确路径和原因。\n' >&2

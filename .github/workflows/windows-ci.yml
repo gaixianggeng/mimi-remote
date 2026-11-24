@@ -39,11 +39,20 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           global-json-file: windows/global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.nuget/packages
+          key: nuget-windows-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('windows/**/packages.lock.json') }}
+          restore-keys: |
+            nuget-windows-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # 锁文件固定传递依赖；版本漂移必须显式提 PR 改锁文件，不能靠 CI 悄悄升级。
       - name: Restore

@@ -35,14 +35,32 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Toolchain
+        id: toolchain
+        shell: bash
         run: |
           rustc --version
           cargo --version
+          rustc_key="$(rustc --version | tr ' ()' '---')"
+          echo "rustc_key=$rustc_key" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Cargo registry and build target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-bridge-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.rustc_key }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-bridge-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.rustc_key }}-
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -67,6 +85,14 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: bridges/claude-sdk/.bun-version
+
+      - name: Cache Bun install cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-sdk-adapters-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bridges/claude-sdk/.bun-version', 'bridges/claude-sdk/bun.lock', 'bridges/agy-acp/.bun-version', 'bridges/agy-acp/bun.lock') }}
+          restore-keys: |
+            bun-sdk-adapters-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Typecheck and test SDK adapter
         run: |
@@ -100,6 +126,14 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v${{ steps.bun-version.outputs.version }}/bun-windows-x64-baseline.zip
+
+      - name: Cache Bun install cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-claude-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bridges/claude-sdk/.bun-version', 'bridges/claude-sdk/bun.lock') }}
+          restore-keys: |
+            bun-claude-sdk-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build Windows adapter
         shell: pwsh
