@@ -107,6 +107,60 @@ final class NewSessionPresentationSourceTests: XCTestCase {
         )
     }
 
+    func testPhoneInlineNewSessionButtonGatesZoomSourceOnIOS26Availability() throws {
+        let sessionListURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Features/Sessions/SessionListView.swift")
+        let source = try String(contentsOf: sessionListURL, encoding: .utf8)
+
+        let functionMarker = "private func phoneInlineNewSessionButton(tokens: ThemeTokens) -> some View {"
+        let nextFunctionMarker = "private func phoneInlineNewSessionButtonContent("
+        let startRange = try XCTUnwrap(
+            source.range(of: functionMarker),
+            "SessionListView.swift 应包含 phoneInlineNewSessionButton"
+        )
+        let endRange = try XCTUnwrap(
+            source.range(of: nextFunctionMarker, range: startRange.upperBound..<source.endIndex),
+            "phoneInlineNewSessionButton 应通过辅助视图分离 iOS 26+ 与旧系统分支"
+        )
+        let body = String(source[startRange.upperBound..<endRange.lowerBound])
+
+        let availableBranch = try XCTUnwrap(
+            body.range(of: "if let newSessionPresentationNamespace, #available(iOS 26.0, *) {"),
+            "phoneInlineNewSessionButton 必须按 iOS 26+ 与 namespace 同时门控 zoom source"
+        )
+        let elseBranch = try XCTUnwrap(
+            body.range(of: "} else {", range: availableBranch.upperBound..<body.endIndex),
+            "phoneInlineNewSessionButton 必须保留 iOS 18–25 / 无 namespace 的回退分支"
+        )
+
+        let availableBody = String(body[availableBranch.upperBound..<elseBranch.lowerBound])
+        let fallbackBody = String(body[elseBranch.upperBound...])
+
+        XCTAssertTrue(
+            availableBody.contains("source: .sessionsToolbar(hasNamespace: true)"),
+            "iOS 26+ 且已安装 matchedTransitionSource 时才上报 zoom source"
+        )
+        XCTAssertTrue(
+            availableBody.contains(".matchedTransitionSource("),
+            "iOS 26+ 分支必须安装 matchedTransitionSource"
+        )
+        XCTAssertTrue(
+            fallbackBody.contains("source: .sessionsToolbar(hasNamespace: false)"),
+            "iOS 18–25 回退分支必须传入 hasNamespace: false 以回退系统 sheet"
+        )
+        XCTAssertFalse(
+            fallbackBody.contains("hasNamespace: true"),
+            "回退分支不得上报 zoom source"
+        )
+        XCTAssertFalse(
+            fallbackBody.contains(".matchedTransitionSource("),
+            "回退分支不得安装 matchedTransitionSource"
+        )
+    }
+
     func testSourceCanChangeOnlyAfterDismissInBothDirections() {
         var state = WorkbenchSheetPresentationState()
 

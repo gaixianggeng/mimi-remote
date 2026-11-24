@@ -540,9 +540,32 @@ struct SessionListView: View {
 
     @ViewBuilder
     private func phoneInlineNewSessionButton(tokens: ThemeTokens) -> some View {
-        let hasNamespace = newSessionPresentationNamespace != nil
-        let button = Button {
-            presentNewSession(source: .sessionsToolbar(hasNamespace: hasNamespace))
+        if let newSessionPresentationNamespace, #available(iOS 26.0, *) {
+            phoneInlineNewSessionButtonContent(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: true)
+            )
+            .matchedTransitionSource(
+                id: NewSessionPresentationSource
+                    .sessionsToolbarNewSession
+                    .transitionSourceID,
+                in: newSessionPresentationNamespace
+            )
+        } else {
+            // iOS 18–25 保留新建入口，但不注册仅新系统支持的 zoom 来源，回退到系统 sheet。
+            phoneInlineNewSessionButtonContent(
+                tokens: tokens,
+                source: .sessionsToolbar(hasNamespace: false)
+            )
+        }
+    }
+
+    private func phoneInlineNewSessionButtonContent(
+        tokens: ThemeTokens,
+        source: NewSessionPresentationSource?
+    ) -> some View {
+        Button {
+            presentNewSession(source: source)
         } label: {
             WorkbenchChromeIcon(systemName: "plus")
                 .foregroundStyle(tokens.primaryText)
@@ -551,17 +574,6 @@ struct SessionListView: View {
         .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.new_session_3da224c4"))
         .accessibilityIdentifier("sessions.newSession")
-
-        if let newSessionPresentationNamespace, #available(iOS 26.0, *) {
-            button.matchedTransitionSource(
-                id: NewSessionPresentationSource
-                    .sessionsToolbarNewSession
-                    .transitionSourceID,
-                in: newSessionPresentationNamespace
-            )
-        } else {
-            button
-        }
     }
 
     /// 会话搜索框。宽屏放在顶栏（定宽），紧凑布局铺满列表上方或嵌在单行三件式顶栏中间（`fillsWidth`）。
