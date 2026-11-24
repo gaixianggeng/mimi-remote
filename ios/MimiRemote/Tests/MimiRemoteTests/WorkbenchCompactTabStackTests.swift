@@ -999,6 +999,49 @@ final class WorkbenchCompactTabStackTests: XCTestCase {
         XCTAssertEqual(circleSize.height, WorkbenchChromeIconMetrics.minimumHitTarget, accuracy: 0.5)
     }
 
+    func testSessionListSingleRowPhoneHeaderRulesAndMetrics() {
+        XCTAssertTrue(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: true,
+                isAccessibilityTextSize: false
+            ),
+            "iPhone 常规字号应启用单行极简三件式顶栏"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: true,
+                isAccessibilityTextSize: true
+            ),
+            "AX 超大字号应回退两行以免挤压搜索输入宽度"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: true,
+                hasBottomTabBar: true,
+                hasHostSwitcher: false,
+                isAccessibilityTextSize: false
+            ),
+            "紧凑 iPad（无内嵌设备入口）保持既有工具栏布局"
+        )
+        XCTAssertFalse(
+            SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+                usesCompactNavigation: false,
+                hasBottomTabBar: false,
+                hasHostSwitcher: false,
+                isAccessibilityTextSize: false
+            ),
+            "宽屏 iPad 保持既有工具栏搜索布局"
+        )
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderHeight, WorkspaceStripLayout.stripHeight)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneSearchFieldHeight, WorkbenchChromeIconMetrics.minimumHitTarget)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderHorizontalPadding, PhoneSessionFloatingCapsuleMetrics.horizontalScreenMargin)
+        XCTAssertEqual(SessionListTopChromeLayout.phoneHeaderSpacing, PhoneSessionFloatingCapsuleMetrics.interItemSpacing)
+    }
+
     @MainActor
     func testNavigationInteractivePopEnablerSurvivesHiddenNavBarFirstEntryAndTabRestore() throws {
         final class HostModel: ObservableObject {
