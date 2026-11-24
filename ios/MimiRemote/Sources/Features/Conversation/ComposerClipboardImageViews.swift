@@ -7,8 +7,11 @@ import UniformTypeIdentifiers
 ///
 /// 探测只读 `hasImages` 和 `changeCount`，不读取内容，不会弹出系统的「允许粘贴」提示；
 /// 真正读取用 `PasteButton`，这是系统认可的用户操作，同样不弹授权。
-/// 用过或关闭后记住当时的 `changeCount`，剪贴板换了新内容才会再次出现。
+/// 用过或关闭后把当时的 `changeCount` 持久化到 `UserDefaults`，离开再进会话也不会对同一份剪贴板重复提示，
+/// 剪贴板换了新内容才会再次出现。
 struct ComposerClipboardImageState: Equatable {
+    static let dismissedChangeCountStorageKey = "composer.clipboardImage.dismissedChangeCount"
+
     var availableChangeCount: Int?
     var dismissedChangeCount: Int?
     /// 粘贴图片编码、标注替换还没写回草稿时按草稿计数；不为零就禁止发送，
@@ -16,6 +19,17 @@ struct ComposerClipboardImageState: Equatable {
     var preparingCountByScope: [ComposerDraftScopeKey: Int] = [:]
     /// 打开预览时附件在附件条里的位置；同一张图加了两次时 id 相同，只能靠位置区分。
     var previewingAttachmentIndex: Int?
+    private let defaults: UserDefaults?
+    private let storageKey: String
+
+    init(
+        defaults: UserDefaults? = .standard,
+        storageKey: String = Self.dismissedChangeCountStorageKey
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.dismissedChangeCount = Self.loadDismissedChangeCount(from: defaults, key: storageKey)
+    }
 
     func isPreparing(_ scope: ComposerDraftScopeKey) -> Bool {
         (preparingCountByScope[scope] ?? 0) > 0
@@ -33,6 +47,9 @@ struct ComposerClipboardImageState: Equatable {
     var isVisible: Bool { availableChangeCount != nil }
 
     mutating func refresh(hasImages: Bool, changeCount: Int, acceptsImages: Bool) {
+        if let persisted = Self.loadDismissedChangeCount(from: defaults, key: storageKey) {
+            dismissedChangeCount = persisted
+        }
         guard acceptsImages, hasImages, changeCount != dismissedChangeCount else {
             availableChangeCount = nil
             return
@@ -40,9 +57,19 @@ struct ComposerClipboardImageState: Equatable {
         availableChangeCount = changeCount
     }
 
-    mutating func dismissCurrent() {
-        dismissedChangeCount = availableChangeCount
+    mutating func dismissCurrent(fallbackChangeCount: Int? = nil) {
+        guard let targetChangeCount = availableChangeCount ?? fallbackChangeCount else {
+            availableChangeCount = nil
+            return
+        }
+        dismissedChangeCount = targetChangeCount
         availableChangeCount = nil
+        defaults?.set(targetChangeCount, forKey: storageKey)
+    }
+
+    private static func loadDismissedChangeCount(from defaults: UserDefaults?, key: String) -> Int? {
+        // 用 object(forKey:) 而不是 integer(forKey:)，区分「未记录」与 changeCount == 0。
+        defaults?.object(forKey: key) as? Int
     }
 }
 
@@ -74,8 +101,9 @@ extension ComposerView {
     var composerPasteImagesHandler: (([Data]) -> Void)? {
         guard acceptsPastedImages else { return nil }
         return { images in
-            // 用过的剪贴板内容不再提示，避免同一张图被重复加入。
-            clipboardImageState.dismissCurrent()
+            // 用过的剪贴板内容不再提示，避免同一张图被重复加入；
+            // 只读 changeCount 不会触发系统的「允许粘贴」授权提示。
+            clipboardImageState.dismissCurrent(fallbackChangeCount: UIPasteboard.general.changeCount)
             addPastedImageData(images)
         }
     }
@@ -124,13 +152,14 @@ extension ComposerView {
 
     @MainActor
     func addPastedImageProviders(_ providers: [NSItemProvider]) async {
+        // 先记录并持久化本次粘贴对应的 changeCount，避免异步读图期间离开会话导致重入后再次弹出。
+        clipboardImageState.dismissCurrent(fallbackChangeCount: UIPasteboard.general.changeCount)
         var images: [Data] = []
         for provider in providers {
             if let data = try? await Self.loadImageData(from: provider) {
                 images.append(data)
             }
         }
-        clipboardImageState.dismissCurrent()
         if images.isEmpty {
             attachmentErrorMessage = L10n.text("ui.clipboard_image_unreadable")
         } else {

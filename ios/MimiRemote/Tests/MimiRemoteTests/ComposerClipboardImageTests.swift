@@ -6,7 +6,7 @@ final class ComposerClipboardImageTests: XCTestCase {
     // MARK: - 剪贴板提示
 
     func testNoticeAppearsOnlyForImagesThatWereNotDismissed() {
-        var state = ComposerClipboardImageState()
+        var state = ComposerClipboardImageState(defaults: nil)
         state.refresh(hasImages: true, changeCount: 7, acceptsImages: true)
         XCTAssertTrue(state.isVisible)
 
@@ -20,15 +20,75 @@ final class ComposerClipboardImageTests: XCTestCase {
     }
 
     func testNoticeHiddenForTextOrWhenAttachmentsUnsupported() {
-        var state = ComposerClipboardImageState()
+        var state = ComposerClipboardImageState(defaults: nil)
         state.refresh(hasImages: false, changeCount: 3, acceptsImages: true)
         XCTAssertFalse(state.isVisible, "只有文字时不出现")
         state.refresh(hasImages: true, changeCount: 4, acceptsImages: false)
         XCTAssertFalse(state.isVisible, "不收附件的通道（DeepSeek）不出现")
     }
 
+    func testDismissPersistsAcrossStateRecreationUntilClipboardChanges() throws {
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        var initialState = ComposerClipboardImageState(defaults: defaults)
+        initialState.refresh(hasImages: true, changeCount: 7, acceptsImages: true)
+        XCTAssertTrue(initialState.isVisible)
+
+        initialState.dismissCurrent()
+        XCTAssertFalse(initialState.isVisible)
+
+        // 模拟离开会话再重新进入，重建 ComposerView 及其 @State。
+        var recreatedState = ComposerClipboardImageState(defaults: defaults)
+        recreatedState.refresh(hasImages: true, changeCount: 7, acceptsImages: true)
+        XCTAssertFalse(recreatedState.isVisible, "重新进入会话后，同一 changeCount 的剪贴板图片不再重复提示")
+
+        recreatedState.refresh(hasImages: true, changeCount: 8, acceptsImages: true)
+        XCTAssertTrue(recreatedState.isVisible, "剪贴板内容更新为新 changeCount 后再次显示")
+    }
+
+    func testDismissPersistsZeroChangeCountAndSurvivesRedundantDismiss() throws {
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        var initialState = ComposerClipboardImageState(defaults: defaults)
+        initialState.refresh(hasImages: true, changeCount: 0, acceptsImages: true)
+        XCTAssertTrue(initialState.isVisible)
+
+        initialState.dismissCurrent()
+        // 已经关闭后再调一次无参 dismiss，不应抹掉刚持久化的 changeCount。
+        initialState.dismissCurrent()
+
+        var recreatedState = ComposerClipboardImageState(defaults: defaults)
+        recreatedState.refresh(hasImages: true, changeCount: 0, acceptsImages: true)
+        XCTAssertFalse(recreatedState.isVisible, "changeCount 为 0 时也应正确区分未记录与已关闭")
+
+        recreatedState.refresh(hasImages: true, changeCount: 1, acceptsImages: true)
+        XCTAssertTrue(recreatedState.isVisible)
+    }
+
+    func testDismissWithFallbackChangeCountAndPeerRefreshStaySuppressed() throws {
+        let (defaults, suiteName) = try makeIsolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        var stateA = ComposerClipboardImageState(defaults: defaults)
+        var stateB = ComposerClipboardImageState(defaults: defaults)
+
+        // 模拟未显示横幅时通过 ⌘V 粘贴直接记录当前 changeCount。
+        stateA.dismissCurrent(fallbackChangeCount: 12)
+
+        stateB.refresh(hasImages: true, changeCount: 12, acceptsImages: true)
+        XCTAssertFalse(stateB.isVisible, "同套持久化里的已有实例刷新时也应感知已关闭状态")
+
+        var recreatedState = ComposerClipboardImageState(defaults: defaults)
+        recreatedState.refresh(hasImages: true, changeCount: 12, acceptsImages: true)
+        XCTAssertFalse(recreatedState.isVisible)
+        recreatedState.refresh(hasImages: true, changeCount: 13, acceptsImages: true)
+        XCTAssertTrue(recreatedState.isVisible)
+    }
+
     func testPreparingCountIsScopedAndBalanced() {
-        var state = ComposerClipboardImageState()
+        var state = ComposerClipboardImageState(defaults: nil)
         let scopeA = ComposerDraftScopeKey.none
         state.beginPreparing(scopeA)
         state.beginPreparing(scopeA)
@@ -102,6 +162,13 @@ final class ComposerClipboardImageTests: XCTestCase {
         let cgImage = try XCTUnwrap(rendered.cgImage)
         XCTAssertEqual(cgImage.width, 300)
         XCTAssertEqual(cgImage.height, 200)
+    }
+
+    private func makeIsolatedDefaults() throws -> (UserDefaults, String) {
+        let suiteName = "ComposerClipboardImageTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        return (defaults, suiteName)
     }
 
     private func solidImage(size: CGSize, scale: CGFloat) -> UIImage {
