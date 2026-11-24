@@ -124,10 +124,262 @@ write_lease_metadata() {
   } > "$lease_dir/metadata"
 }
 
-if rg -n '^[[:space:]]+(simulator(Name|Id)|device(Name|Id)|derivedDataPath):' \
-  "$ROOT_DIR/.xcodebuildmcp/config.yaml" >"$TEMP_DIR/pinned-mcp-target.log"; then
-  fail "XcodeBuildMCP 仓库配置不得持久化设备目标或 DerivedData：$(cat "$TEMP_DIR/pinned-mcp-target.log")"
+check_xcodebuildmcp_config() {
+  local config_path="$1"
+  local pattern='^[[:space:]]*(simulator(Name|Id)|device(Name|Id)|derivedDataPath):'
+  local match_log="$TEMP_DIR/pinned-mcp-target.out"
+  local stderr_log="$TEMP_DIR/pinned-mcp-target.err"
+  local status=0
+  local err_detail=""
+
+  if [[ -z "$config_path" || ! -e "$config_path" ]]; then
+    printf 'XcodeBuildMCP 配置文件不存在：%s\n' "$config_path" >&2
+    return 2
+  fi
+  if [[ ! -f "$config_path" || ! -r "$config_path" ]]; then
+    printf 'XcodeBuildMCP 配置文件不可读：%s\n' "$config_path" >&2
+    return 2
+  fi
+  if [[ -z "${TEMP_DIR:-}" ]]; then
+    printf '检查 XcodeBuildMCP 配置失败（缺少临时日志目录）：%s\n' "$config_path" >&2
+    return 2
+  fi
+
+  if [[ -e "$match_log" && ! -f "$match_log" ]] || ! exec 3>|"$match_log"; then
+    printf '检查 XcodeBuildMCP 配置失败（无法写入 stdout 日志：%s）：%s\n' \
+      "$match_log" "$config_path" >&2
+    return 2
+  fi
+  if [[ ! -f "$match_log" || ! -r "$match_log" ]]; then
+    exec 3>&-
+    printf '检查 XcodeBuildMCP 配置失败（stdout 日志不可读：%s）：%s\n' \
+      "$match_log" "$config_path" >&2
+    return 2
+  fi
+
+  if [[ -e "$stderr_log" && ! -f "$stderr_log" ]] || ! exec 4>|"$stderr_log"; then
+    exec 3>&-
+    printf '检查 XcodeBuildMCP 配置失败（无法写入 stderr 日志：%s）：%s\n' \
+      "$stderr_log" "$config_path" >&2
+    return 2
+  fi
+  if [[ ! -f "$stderr_log" || ! -r "$stderr_log" ]]; then
+    exec 3>&- 4>&-
+    printf '检查 XcodeBuildMCP 配置失败（stderr 日志不可读：%s）：%s\n' \
+      "$stderr_log" "$config_path" >&2
+    return 2
+  fi
+
+  if grep -En -- "$pattern" "$config_path" >&3 2>&4 3>&- 4>&-; then
+    status=0
+  else
+    status=$?
+  fi
+  exec 3>&- 4>&-
+
+  case "$status" in
+    0)
+      printf 'XcodeBuildMCP 仓库配置不得持久化设备目标或 DerivedData：%s\n' "$(< "$match_log")" >&2
+      return 1
+      ;;
+    1)
+      if [[ -s "$stderr_log" ]]; then
+        printf '检查 XcodeBuildMCP 配置失败（grep 输出错误：%s）：%s\n' \
+          "$(< "$stderr_log")" "$config_path" >&2
+        return 2
+      fi
+      if [[ -s "$match_log" ]]; then
+        printf '检查 XcodeBuildMCP 配置失败（grep 返回 1 但存在 stdout 输出：%s）：%s\n' \
+          "$(< "$match_log")" "$config_path" >&2
+        return 2
+      fi
+      return 0
+      ;;
+    *)
+      if [[ -s "$stderr_log" ]]; then
+        err_detail="（$(< "$stderr_log")）"
+      fi
+      printf '检查 XcodeBuildMCP 配置失败（grep 退出码 %s）%s：%s\n' \
+        "$status" "$err_detail" "$config_path" >&2
+      return 2
+      ;;
+  esac
+}
+
+assert_mcp_config_check() {
+  local expected_status="$1"
+  local expected_snippet="$2"
+  local label="$3"
+  local test_path="$4"
+  local config_path="$5"
+  local check_temp_dir="${6:-$TEMP_DIR}"
+  local output_log="$TEMP_DIR/mcp-config-fixture.log"
+  local status=0
+
+  if (
+    export PATH="$test_path"
+    TEMP_DIR="$check_temp_dir"
+    hash -r
+    if command -v rg >/dev/null 2>&1; then
+      printf '回归夹具 PATH 不得解析到 rg：%s\n' "$PATH" >&2
+      exit 99
+    fi
+    check_xcodebuildmcp_config "$config_path"
+  ) >"$output_log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+
+  assert_equal "$expected_status" "$status" "$label"
+  if [[ "$expected_status" == "0" ]]; then
+    assert_equal "" "$(< "$output_log")" "${label}（通过时不应输出告警或错误）"
+  elif [[ -n "$expected_snippet" ]]; then
+    assert_contains "$(< "$output_log")" "$expected_snippet" "$label"
+  fi
+}
+
+run_xcodebuildmcp_config_fixture_tests() {
+  local fixture_root="$TEMP_DIR/mcp-config-fixtures"
+  local grep_only_bin="$fixture_root/grep-only-bin"
+  local system_grep=""
+  local system_grep_dir=""
+  local valid_config="$fixture_root/valid.yaml"
+  local missing_config="$fixture_root/missing.yaml"
+  local unreadable_config="$fixture_root/unreadable.yaml"
+  local dir_config="$fixture_root/config-dir.yaml"
+  local empty_bin="$fixture_root/empty-bin"
+  local failing_grep_bin="$fixture_root/failing-grep-bin"
+  local blocked_stdout_temp="$fixture_root/blocked-stdout-temp"
+  local blocked_stderr_temp="$fixture_root/blocked-stderr-temp"
+  local readonly_stdout_temp="$fixture_root/readonly-stdout-temp"
+  local missing_log_temp="$fixture_root/missing-log-temp"
+  local forbidden_field
+  local forbidden_config
+  local forbidden_top_level_config="$fixture_root/forbidden-top-level.yaml"
+
+  mkdir -p "$fixture_root" "$grep_only_bin" "$dir_config" "$empty_bin" "$failing_grep_bin" \
+    "$blocked_stdout_temp/pinned-mcp-target.out" \
+    "$blocked_stderr_temp/pinned-mcp-target.err" \
+    "$readonly_stdout_temp"
+
+  system_grep="$(type -P grep || true)"
+  [[ -n "$system_grep" && -x "$system_grep" ]] || fail "测试环境缺少可执行的 grep 命令"
+  system_grep_dir="$(cd "$(dirname "$system_grep")" && pwd -P)"
+  ln -s "$system_grep_dir/$(basename "$system_grep")" "$grep_only_bin/grep"
+
+  if (
+    export PATH="$grep_only_bin"
+    hash -r
+    command -v rg >/dev/null 2>&1
+  ); then
+    fail "无 rg 回归夹具的 PATH 不应解析到 rg：$grep_only_bin"
+  fi
+  if ! (
+    export PATH="$grep_only_bin"
+    hash -r
+    [[ "$(command -v grep)" == "$grep_only_bin/grep" ]]
+  ); then
+    fail "无 rg 回归夹具的 PATH 必须解析到临时目录中的 grep：$grep_only_bin"
+  fi
+
+  cat <<'EOF' > "$valid_config"
+schemaVersion: 1
+sessionDefaults:
+  projectPath: ./ios/MimiRemote/MimiRemote.xcodeproj
+  scheme: MimiRemote
+  configuration: Debug
+  # 注释中的 simulatorId / deviceId / derivedDataPath 不得误报
+  bundleId: com.gaixianggeng.mimi
+EOF
+
+  assert_mcp_config_check "0" "" \
+    "合法 XcodeBuildMCP 配置在无 rg 的 PATH 下必须通过" \
+    "$grep_only_bin" "$valid_config"
+
+  for forbidden_field in simulatorId simulatorName deviceId deviceName derivedDataPath; do
+    forbidden_config="$fixture_root/forbidden-${forbidden_field}.yaml"
+    cat <<EOF > "$forbidden_config"
+schemaVersion: 1
+sessionDefaults:
+  projectPath: ./ios/MimiRemote/MimiRemote.xcodeproj
+  ${forbidden_field}: fixture-target-value
+EOF
+    assert_mcp_config_check "1" "${forbidden_field}:" \
+      "配置包含禁止字段 ${forbidden_field} 时在无 rg 的 PATH 下必须失败" \
+      "$grep_only_bin" "$forbidden_config"
+  done
+
+  cat <<'EOF' > "$forbidden_top_level_config"
+schemaVersion: 1
+simulatorId: fixture-top-level-id
+EOF
+  assert_mcp_config_check "1" "simulatorId:" \
+    "顶层包含禁止字段 simulatorId 时在无 rg 的 PATH 下必须失败" \
+    "$grep_only_bin" "$forbidden_top_level_config"
+
+  assert_mcp_config_check "2" "配置文件不存在" \
+    "配置文件缺失时必须明确失败而不得当成未匹配" \
+    "$grep_only_bin" "$missing_config"
+
+  cp "$valid_config" "$unreadable_config"
+  chmod 000 "$unreadable_config"
+  if [[ "$(id -u)" -ne 0 ]]; then
+    assert_mcp_config_check "2" "配置文件不可读" \
+      "配置文件不可读时必须明确失败而不得当成未匹配" \
+      "$grep_only_bin" "$unreadable_config"
+  fi
+  chmod 600 "$unreadable_config"
+
+  assert_mcp_config_check "2" "配置文件不可读" \
+    "配置路径为目录时必须明确失败而不得当成未匹配" \
+    "$grep_only_bin" "$dir_config"
+
+  assert_mcp_config_check "2" "无法写入 stdout 日志" \
+    "stdout 日志路径被目录占据时含禁止字段的配置必须失败而不得当成未匹配" \
+    "$grep_only_bin" "$forbidden_top_level_config" "$blocked_stdout_temp"
+
+  assert_mcp_config_check "2" "无法写入 stdout 日志" \
+    "stdout 日志路径被目录占据时合法配置也必须失败而不得静默通过" \
+    "$grep_only_bin" "$valid_config" "$blocked_stdout_temp"
+
+  assert_mcp_config_check "2" "无法写入 stderr 日志" \
+    "stderr 日志路径被目录占据时必须明确失败而不得当成未匹配" \
+    "$grep_only_bin" "$forbidden_top_level_config" "$blocked_stderr_temp"
+
+  : > "$readonly_stdout_temp/pinned-mcp-target.out"
+  chmod 400 "$readonly_stdout_temp/pinned-mcp-target.out"
+  if [[ "$(id -u)" -ne 0 ]]; then
+    assert_mcp_config_check "2" "无法写入 stdout 日志" \
+      "stdout 日志不可写时必须明确失败而不得当成未匹配" \
+      "$grep_only_bin" "$forbidden_top_level_config" "$readonly_stdout_temp"
+  fi
+  chmod 600 "$readonly_stdout_temp/pinned-mcp-target.out"
+
+  assert_mcp_config_check "2" "无法写入 stdout 日志" \
+    "stdout 日志父目录不存在导致重定向失败时必须明确失败" \
+    "$grep_only_bin" "$forbidden_top_level_config" "$missing_log_temp"
+
+  assert_mcp_config_check "2" "grep 退出码 127" \
+    "缺少 grep 命令时必须明确失败而不得当成未匹配" \
+    "$empty_bin" "$valid_config"
+
+  cat <<'EOF' > "$failing_grep_bin/grep"
+#!/bin/sh
+printf '%s\n' 'simulated grep read error' >&2
+exit 2
+EOF
+  chmod +x "$failing_grep_bin/grep"
+  assert_mcp_config_check "2" "grep 退出码 2" \
+    "grep 读取或执行失败返回退出码 2 时必须明确失败而不得当成未匹配" \
+    "$failing_grep_bin" "$valid_config"
+}
+
+mcp_config_check_output="$TEMP_DIR/repo-mcp-config-check.err"
+if ! check_xcodebuildmcp_config "$ROOT_DIR/.xcodebuildmcp/config.yaml" 2>"$mcp_config_check_output"; then
+  fail "$(< "$mcp_config_check_output")"
 fi
+run_xcodebuildmcp_config_fixture_tests
 
 direct_deploy_output="$TEMP_DIR/direct-deploy.log"
 set +e
