@@ -1,34 +1,85 @@
 import Combine
+import Observation
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+
+/// 应用级（进程内）剪贴板图片横幅关闭记录。
+///
+/// 离开再进会话（重建 `ComposerView` / `@State`）或并存多个输入区实例时共用同一份记录，
+/// 关闭或粘贴后不再对同一 `UIPasteboard.changeCount` 重复提示，且所有现存横幅同步收起。
+/// 记录随应用进程结束失效，不向 `UserDefaults` 长期写入裸 `changeCount`，
+/// 避免设备重启将 `UIPasteboard.changeCount` 重置为 0 后与新图片撞号。
+@MainActor
+@Observable
+final class ComposerClipboardImageDismissStore {
+    static let shared = ComposerClipboardImageDismissStore()
+
+    private(set) var dismissedChangeCount: Int?
+
+    init(dismissedChangeCount: Int? = nil) {
+        self.dismissedChangeCount = dismissedChangeCount
+    }
+
+    func isDismissed(_ changeCount: Int) -> Bool {
+        guard let dismissedChangeCount else { return false }
+        return changeCount <= dismissedChangeCount
+    }
+
+    func markDismissed(_ changeCount: Int) {
+        // 单次进程内 UIPasteboard.changeCount 单调递增；过期的关闭事件不得覆盖更新的记录。
+        if let existing = dismissedChangeCount, changeCount < existing {
+            return
+        }
+        dismissedChangeCount = changeCount
+    }
+}
 
 /// 剪贴板里有图片时，输入框上方出现一行提示和系统「粘贴」按钮（#829）。
 ///
 /// 探测只读 `hasImages` 和 `changeCount`，不读取内容，不会弹出系统的「允许粘贴」提示；
 /// 真正读取用 `PasteButton`，这是系统认可的用户操作，同样不弹授权。
-/// 用过或关闭后把当时的 `changeCount` 持久化到 `UserDefaults`，离开再进会话也不会对同一份剪贴板重复提示，
+/// 用过或关闭后把对应的 `changeCount` 记入应用级共享状态，离开再进会话也不会对同一份剪贴板重复提示，
 /// 剪贴板换了新内容才会再次出现。
 struct ComposerClipboardImageState: Equatable {
-    static let dismissedChangeCountStorageKey = "composer.clipboardImage.dismissedChangeCount"
-
     var availableChangeCount: Int?
-    var dismissedChangeCount: Int?
     /// 粘贴图片编码、标注替换还没写回草稿时按草稿计数；不为零就禁止发送，
     /// 避免先发出不带图（或带原图）的消息，再把结果串到下一条（#845 评审）。
     var preparingCountByScope: [ComposerDraftScopeKey: Int] = [:]
     /// 打开预览时附件在附件条里的位置；同一张图加了两次时 id 相同，只能靠位置区分。
     var previewingAttachmentIndex: Int?
-    private let defaults: UserDefaults?
-    private let storageKey: String
+    private let dismissStore: ComposerClipboardImageDismissStore
 
-    init(
-        defaults: UserDefaults? = .standard,
-        storageKey: String = Self.dismissedChangeCountStorageKey
-    ) {
-        self.defaults = defaults
-        self.storageKey = storageKey
-        self.dismissedChangeCount = Self.loadDismissedChangeCount(from: defaults, key: storageKey)
+    @MainActor
+    init(dismissStore: ComposerClipboardImageDismissStore? = nil) {
+        self.dismissStore = dismissStore ?? .shared
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.availableChangeCount == rhs.availableChangeCount
+            && lhs.preparingCountByScope == rhs.preparingCountByScope
+            && lhs.previewingAttachmentIndex == rhs.previewingAttachmentIndex
+            && lhs.dismissStore === rhs.dismissStore
+    }
+
+    @MainActor
+    var dismissedChangeCount: Int? {
+        dismissStore.dismissedChangeCount
+    }
+
+    /// 当前应展示给用户的剪贴板计数；结合共享 `dismissStore` 实时计算，
+    /// 让并存的输入区在任一处关闭后同步收起。
+    @MainActor
+    var visibleChangeCount: Int? {
+        guard let availableChangeCount, !dismissStore.isDismissed(availableChangeCount) else {
+            return nil
+        }
+        return availableChangeCount
+    }
+
+    @MainActor
+    var isVisible: Bool {
+        visibleChangeCount != nil
     }
 
     func isPreparing(_ scope: ComposerDraftScopeKey) -> Bool {
@@ -44,32 +95,52 @@ struct ComposerClipboardImageState: Equatable {
         preparingCountByScope[scope] = next > 0 ? next : nil
     }
 
-    var isVisible: Bool { availableChangeCount != nil }
-
+    @MainActor
     mutating func refresh(hasImages: Bool, changeCount: Int, acceptsImages: Bool) {
-        if let persisted = Self.loadDismissedChangeCount(from: defaults, key: storageKey) {
-            dismissedChangeCount = persisted
-        }
-        guard acceptsImages, hasImages, changeCount != dismissedChangeCount else {
+        guard acceptsImages, hasImages, !dismissStore.isDismissed(changeCount) else {
             availableChangeCount = nil
             return
         }
         availableChangeCount = changeCount
     }
 
-    mutating func dismissCurrent(fallbackChangeCount: Int? = nil) {
-        guard let targetChangeCount = availableChangeCount ?? fallbackChangeCount else {
+    /// 按明确的目标 `changeCount` 记录关闭状态。
+    ///
+    /// 过期的关闭事件既不会覆盖共享存储中更新的记录，也不会隐藏当前已经刷新出的更新横幅。
+    @MainActor
+    mutating func dismiss(changeCount: Int) {
+        dismissStore.markDismissed(changeCount)
+        if let availableChangeCount, dismissStore.isDismissed(availableChangeCount) {
+            self.availableChangeCount = nil
+        }
+    }
+
+    /// 关闭当前可见横幅；不可见时不修改共享记录。
+    @MainActor
+    mutating func dismissCurrent() {
+        guard let targetChangeCount = visibleChangeCount else {
             availableChangeCount = nil
             return
         }
-        dismissedChangeCount = targetChangeCount
-        availableChangeCount = nil
-        defaults?.set(targetChangeCount, forKey: storageKey)
+        dismiss(changeCount: targetChangeCount)
     }
 
-    private static func loadDismissedChangeCount(from defaults: UserDefaults?, key: String) -> Int? {
-        // 用 object(forKey:) 而不是 integer(forKey:)，区分「未记录」与 changeCount == 0。
-        defaults?.object(forKey: key) as? Int
+    /// 在横幅 `PasteButton` 回调内同步确认并记录目标计数。
+    ///
+    /// 只有按钮显示时的计数、当前横幅可见计数与此刻剪贴板计数一致时才关闭；
+    /// 交接期间计数变化（有歧义）时返回 `false`，保留当前内容的提示不误关。
+    @MainActor
+    @discardableResult
+    mutating func dismissForBannerPaste(
+        displayedChangeCount: Int,
+        currentPasteboardChangeCount: Int
+    ) -> Bool {
+        guard visibleChangeCount == displayedChangeCount,
+              currentPasteboardChangeCount == displayedChangeCount else {
+            return false
+        }
+        dismiss(changeCount: displayedChangeCount)
+        return true
     }
 }
 
@@ -98,19 +169,19 @@ extension ComposerView {
     }
 
     /// 输入框 ⌘V / 长按粘贴图片时的回调；当前通道不收附件时返回 nil，粘贴回落为普通文字粘贴。
-    var composerPasteImagesHandler: (([Data]) -> Void)? {
+    var composerPasteImagesHandler: (([Data], Int) -> Void)? {
         guard acceptsPastedImages else { return nil }
-        return { images in
-            // 用过的剪贴板内容不再提示，避免同一张图被重复加入；
-            // 只读 changeCount 不会触发系统的「允许粘贴」授权提示。
-            clipboardImageState.dismissCurrent(fallbackChangeCount: UIPasteboard.general.changeCount)
+        return { images, pastedChangeCount in
+            // 用过的剪贴板内容不再提示；使用读取图片瞬间捕获的 changeCount，
+            // 避免横幅仍缓存旧计数时把旧值写进共享记录。
+            clipboardImageState.dismiss(changeCount: pastedChangeCount)
             addPastedImageData(images)
         }
     }
 
     @ViewBuilder
     var clipboardImageNotice: some View {
-        if clipboardImageState.isVisible, acceptsPastedImages {
+        if let displayedChangeCount = clipboardImageState.visibleChangeCount, acceptsPastedImages {
             let tokens = themeStore.tokens(for: colorScheme)
             HStack(spacing: 8) {
                 Image(systemName: "photo.on.rectangle")
@@ -122,6 +193,15 @@ extension ComposerView {
                     .layoutPriority(1)
                 Spacer(minLength: 0)
                 PasteButton(supportedContentTypes: [.image]) { providers in
+                    // 在 PasteButton 回调内同步确认目标计数，再启动异步读图任务；
+                    // 计数有歧义时不误关当前提示，并刷新到最新剪贴板状态。
+                    let confirmed = clipboardImageState.dismissForBannerPaste(
+                        displayedChangeCount: displayedChangeCount,
+                        currentPasteboardChangeCount: UIPasteboard.general.changeCount
+                    )
+                    if !confirmed {
+                        refreshClipboardImageAvailability()
+                    }
                     Task { @MainActor in
                         await addPastedImageProviders(providers)
                     }
@@ -132,7 +212,7 @@ extension ComposerView {
                 .tint(tokens.accent)
                 .accessibilityIdentifier("composer.clipboardImage.paste")
                 Button {
-                    clipboardImageState.dismissCurrent()
+                    clipboardImageState.dismiss(changeCount: displayedChangeCount)
                 } label: {
                     Image(systemName: "xmark")
                         .font(themeStore.uiFont(size: 12, weight: .semibold))
@@ -152,8 +232,6 @@ extension ComposerView {
 
     @MainActor
     func addPastedImageProviders(_ providers: [NSItemProvider]) async {
-        // 先记录并持久化本次粘贴对应的 changeCount，避免异步读图期间离开会话导致重入后再次弹出。
-        clipboardImageState.dismissCurrent(fallbackChangeCount: UIPasteboard.general.changeCount)
         var images: [Data] = []
         for provider in providers {
             if let data = try? await Self.loadImageData(from: provider) {

@@ -166,8 +166,8 @@ struct ComposerTextView: UIViewRepresentable {
     let onSkillAutocompleteMove: (Int) -> Void
     let onSkillAutocompleteCommit: () -> Void
     let onSkillAutocompleteDismiss: () -> Void
-    /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片交给输入框作为附件（#829）；nil 表示当前通道不收附件。
-    var onPasteImages: (([Data]) -> Void)? = nil
+    /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片及读取瞬间的剪贴板 changeCount 交给输入框作为附件（#829）；nil 表示当前通道不收附件。
+    var onPasteImages: (([Data], Int) -> Void)? = nil
     var onEditingStateChange: ((Bool) -> Void)? = nil
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
@@ -541,7 +541,8 @@ final class CommandSubmitTextView: UITextView {
     var onSkillAutocompleteMove: ((Int) -> Void)?
     var onSkillAutocompleteCommit: (() -> Void)?
     var onSkillAutocompleteDismiss: (() -> Void)?
-    var onPasteImages: (([Data]) -> Void)?
+    var onPasteImages: (([Data], Int) -> Void)?
+    var pasteboardProvider: () -> UIPasteboard = { .general }
     var onRetireFromComposer: (() -> Void)?
     var isSkillAutocompleteActive = false
     private(set) var isRetiredFromComposer = false
@@ -583,7 +584,7 @@ final class CommandSubmitTextView: UITextView {
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
-        case #selector(paste(_:)) where onPasteImages != nil && UIPasteboard.general.hasImages:
+        case #selector(paste(_:)) where onPasteImages != nil && pasteboardProvider().hasImages:
             return true
         case #selector(selectPreviousSkill),
              #selector(selectNextSkill),
@@ -598,17 +599,19 @@ final class CommandSubmitTextView: UITextView {
     /// 只有图片、没有文字时才当作图片附件；同时带文字（例如从网页复制）仍按文字粘贴。
     /// 这是用户主动的粘贴动作，读取剪贴板不会触发系统授权提示。
     override func paste(_ sender: Any?) {
-        let pasteboard = UIPasteboard.general
+        let pasteboard = pasteboardProvider()
         guard let onPasteImages, pasteboard.hasImages, !pasteboard.hasStrings else {
             super.paste(sender)
             return
         }
+        // 在读取图片的瞬间捕获 changeCount，避免回调阶段再查剪贴板或沿用横幅旧缓存导致记错内容。
+        let pastedChangeCount = pasteboard.changeCount
         let images = (pasteboard.images ?? []).compactMap { $0.pngData() }
         guard !images.isEmpty else {
             super.paste(sender)
             return
         }
-        onPasteImages(images)
+        onPasteImages(images, pastedChangeCount)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
