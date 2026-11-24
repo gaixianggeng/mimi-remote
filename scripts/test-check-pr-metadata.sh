@@ -50,16 +50,30 @@ if grep -Fq "[NOTICE]" "$TEMP_DIR/valid_body_refs.out"; then
   fail "valid_body_refs 不应输出自动关闭词提示：$(cat "$TEMP_DIR/valid_body_refs.out")"
 fi
 
-# 1b. 大小写不敏感、多空白与中文相邻（应成功）
-run_case "valid_body_refs_case_and_cjk" "0" \
+# 1b. 大小写不敏感、最小编号、多空白及中文带空白分隔（应成功）
+run_case "valid_body_refs_lowercase_single_digit" "0" \
   "fix: lowercase refs" \
-  $'关联refs   #456说明'
+  "refs #1"
+run_case "valid_body_refs_case_and_cjk_spaced" "0" \
+  "fix: lowercase refs" \
+  $'关联 refs   #456 说明'
 
-# 1c. 非法边界形式不得误通过
+# 1c. Unicode 空白分隔（U+00A0 不换行空格、U+3000 全角空格，应成功）
+run_case "valid_body_refs_unicode_nbsp" "0" \
+  "ci: unicode nbsp" \
+  $'Refs\xc2\xa0#123'
+run_case "valid_body_refs_unicode_ideographic_space" "0" \
+  "ci: unicode ideographic space" \
+  $'Refs\xe3\x80\x80#123'
+
+# 1d. 非法边界形式与中文无分隔紧邻不得误通过（符合 Python 默认 Unicode \b 语义）
 run_case "invalid_refs_prefix" "1" "ci: test" "XRefs #123"
 run_case "invalid_refs_no_space" "1" "ci: test" "Refs#123"
 run_case "invalid_refs_suffix" "1" "ci: test" "Refs #123abc"
 run_case "invalid_refs_no_number" "1" "ci: test" "Refs #"
+run_case "invalid_refs_cjk_adjacent" "1" "ci: test" "关联Refs #123说明"
+run_case "invalid_refs_cjk_prefix" "1" "ci: test" "关联Refs #123"
+run_case "invalid_refs_cjk_suffix" "1" "ci: test" "Refs #123说明"
 
 # 2. 空正文（应失败）
 run_case "empty_body" "1" "ci: empty body" ""
@@ -94,6 +108,18 @@ run_case "empty_body_title_refs" "1" \
   "   "
 grep -Fq "PR 正文为空，缺少 Refs #<编号>；但 PR 标题中检测到 Refs # 引用" "$TEMP_DIR/empty_body_title_refs.err" \
   || fail "empty_body_title_refs 未区分空正文与标题引用：$(cat "$TEMP_DIR/empty_body_title_refs.err")"
+
+# 3c. 仅标题使用 Unicode 空格写 Refs #（正文缺失仍应失败，但应识别标题中的引用）
+run_case "title_only_refs_unicode_nbsp" "1" \
+  $'feat: example change (Refs\xc2\xa0#791)' \
+  "正文缺少引用。"
+grep -Fq "PR 正文缺少 Refs #<编号>；仅在 PR 标题中检测到 Refs # 引用" "$TEMP_DIR/title_only_refs_unicode_nbsp.err" \
+  || fail "title_only_refs_unicode_nbsp 未识别标题中的 U+00A0 Refs 引用：$(cat "$TEMP_DIR/title_only_refs_unicode_nbsp.err")"
+run_case "title_only_refs_unicode_ideographic_space" "1" \
+  $'feat: example change (Refs\xe3\x80\x80#792)' \
+  "正文缺少引用。"
+grep -Fq "PR 正文缺少 Refs #<编号>；仅在 PR 标题中检测到 Refs # 引用" "$TEMP_DIR/title_only_refs_unicode_ideographic_space.err" \
+  || fail "title_only_refs_unicode_ideographic_space 未识别标题中的 U+3000 Refs 引用：$(cat "$TEMP_DIR/title_only_refs_unicode_ideographic_space.err")"
 
 # 4. 正文有 Refs 但含自动关闭词（应成功，且输出独立提示及范围/commit message 说明）
 run_case "valid_refs_with_autoclose" "0" \

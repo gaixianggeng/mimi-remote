@@ -62,9 +62,10 @@ import sys
 pr_body = os.environ.get("PR_BODY", "")
 pr_title = os.environ.get("PR_TITLE", "")
 
-# 使用 re.ASCII 保持 \b 仅按 ASCII 词边界判定，使中文字符紧邻 Refs #123 时仍可准确识别，
-# 同时避免 XRefs #123 或 Refs #123abc 这类误匹配。
-REFS_PATTERN = re.compile(r"\bRefs\s+#[0-9]+\b", re.IGNORECASE | re.ASCII)
+# 遵循 W7 指定的 \bRefs\s+#[0-9]+\b（仅启用 re.IGNORECASE，不启用 re.ASCII），
+# 使用 Python 默认 Unicode 空白与词边界语义，既匹配 U+00A0/U+3000 等 Unicode 空白，
+# 又避免 XRefs #123、Refs #123abc 或中文字符无分隔紧邻等误匹配。
+REFS_PATTERN = re.compile(r"\bRefs\s+#[0-9]+\b", re.IGNORECASE)
 
 # 覆盖 GitHub 识别的自动关闭关键字（含单复数/过去式、可选冒号、同仓 #123、
 # 跨仓 owner/repo#123 及完整 GitHub Issue URL）。
