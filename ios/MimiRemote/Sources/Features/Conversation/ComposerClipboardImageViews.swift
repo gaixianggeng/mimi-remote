@@ -169,12 +169,16 @@ extension ComposerView {
     }
 
     /// 输入框 ⌘V / 长按粘贴图片时的回调；当前通道不收附件时返回 nil，粘贴回落为普通文字粘贴。
-    var composerPasteImagesHandler: (([Data], Int) -> Void)? {
+    var composerPasteImagesHandler: (([Data], Int?) -> Void)? {
         guard acceptsPastedImages else { return nil }
         return { images, pastedChangeCount in
-            // 用过的剪贴板内容不再提示；使用读取图片瞬间捕获的 changeCount，
-            // 避免横幅仍缓存旧计数时把旧值写进共享记录。
-            clipboardImageState.dismiss(changeCount: pastedChangeCount)
+            // 仅当取图前后 changeCount 一致时才关闭对应计数；
+            // 取图期间剪贴板变化时跳过关闭并刷新提示，避免记错旧计数或误关新内容。
+            if let pastedChangeCount {
+                clipboardImageState.dismiss(changeCount: pastedChangeCount)
+            } else {
+                refreshClipboardImageAvailability()
+            }
             addPastedImageData(images)
         }
     }

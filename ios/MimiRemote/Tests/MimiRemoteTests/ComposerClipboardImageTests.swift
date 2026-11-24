@@ -229,7 +229,9 @@ final class ComposerClipboardImageTests: XCTestCase {
         textView.onPasteImages = { images, changeCount in
             capturedImageCount = images.count
             capturedChangeCount = changeCount
-            state.dismiss(changeCount: changeCount)
+            if let changeCount {
+                state.dismiss(changeCount: changeCount)
+            }
         }
 
         textView.paste(nil)
@@ -241,6 +243,62 @@ final class ComposerClipboardImageTests: XCTestCase {
 
         state.refresh(hasImages: true, changeCount: pastedCount, acceptsImages: true)
         XCTAssertFalse(state.isVisible, "键盘粘贴捕获读取瞬间的 changeCount 后，不应再提示同一图片")
+    }
+
+    func testCommandSubmitTextViewPasteSkipsDismissAndRefreshesWhenChangeCountAdvancesDuringRead() {
+        let pasteboard = AdvancingImagePasteboard(
+            initialChangeCount: 7,
+            images: [solidImage(size: CGSize(width: 24, height: 24), scale: 1)],
+            advanceChangeCountOnImageRead: 1
+        )
+        let sharedStore = ComposerClipboardImageDismissStore(dismissedChangeCount: 6)
+        var state = ComposerClipboardImageState(dismissStore: sharedStore)
+        state.refresh(hasImages: true, changeCount: 7, acceptsImages: true)
+        XCTAssertEqual(state.visibleChangeCount, 7)
+
+        let textView = CommandSubmitTextView()
+        textView.pasteboardProvider = { pasteboard }
+
+        var addedImages: [Data] = []
+        var receivedChangeCount: Int??
+        var didRefreshNotice = false
+        var pasteReadSequence: [String] = []
+        textView.onPasteImages = { images, changeCount in
+            pasteReadSequence = pasteboard.accessLog
+            receivedChangeCount = .some(changeCount)
+            if let changeCount {
+                state.dismiss(changeCount: changeCount)
+            } else {
+                didRefreshNotice = true
+                state.refresh(
+                    hasImages: pasteboard.hasImages,
+                    changeCount: pasteboard.changeCount,
+                    acceptsImages: true
+                )
+            }
+            addedImages.append(contentsOf: images)
+        }
+
+        // 探测可否粘贴时只检查元数据，不得读取剪贴板图片内容。
+        XCTAssertTrue(
+            textView.canPerformAction(
+                #selector(UIResponderStandardEditActions.paste(_:)),
+                withSender: nil
+            )
+        )
+        XCTAssertEqual(pasteboard.imagesReadCount, 0)
+
+        textView.paste(nil)
+
+        XCTAssertEqual(pasteReadSequence, ["changeCount:7", "images", "changeCount:8"])
+        XCTAssertEqual(addedImages.count, 1, "取图期间剪贴板更新时仍应添加已读到的图片")
+        XCTAssertFalse(addedImages[0].isEmpty)
+        XCTAssertEqual(receivedChangeCount, .some(nil), "取图前后 changeCount 不一致时应传入 nil 跳过关闭")
+        XCTAssertTrue(didRefreshNotice, "跳过关闭时应刷新剪贴板提示")
+        XCTAssertEqual(sharedStore.dismissedChangeCount, 6, "共享关闭记录应保持原值，不被写成取图前的旧计数 7 或新计数 8")
+        XCTAssertEqual(state.dismissedChangeCount, 6)
+        XCTAssertEqual(state.visibleChangeCount, 8, "刷新后横幅应更新到最新剪贴板计数 8")
+        XCTAssertTrue(state.isVisible)
     }
 
     func testPreparingCountIsScopedAndBalanced() {
@@ -326,6 +384,42 @@ final class ComposerClipboardImageTests: XCTestCase {
         return UIGraphicsImageRenderer(size: size, format: format).image { context in
             UIColor.systemBlue.setFill()
             context.fill(CGRect(origin: .zero, size: size))
+        }
+    }
+
+    private final class AdvancingImagePasteboard: ComposerImagePasteboard {
+        var hasImages: Bool
+        var hasStrings: Bool
+        private var currentChangeCount: Int
+        private let storedImages: [UIImage]
+        private let advanceChangeCountOnImageRead: Int
+        private(set) var imagesReadCount = 0
+        private(set) var accessLog: [String] = []
+
+        init(
+            hasImages: Bool = true,
+            hasStrings: Bool = false,
+            initialChangeCount: Int,
+            images: [UIImage],
+            advanceChangeCountOnImageRead: Int = 0
+        ) {
+            self.hasImages = hasImages
+            self.hasStrings = hasStrings
+            self.currentChangeCount = initialChangeCount
+            self.storedImages = images
+            self.advanceChangeCountOnImageRead = advanceChangeCountOnImageRead
+        }
+
+        var changeCount: Int {
+            accessLog.append("changeCount:\(currentChangeCount)")
+            return currentChangeCount
+        }
+
+        var images: [UIImage]? {
+            imagesReadCount += 1
+            accessLog.append("images")
+            currentChangeCount += advanceChangeCountOnImageRead
+            return storedImages
         }
     }
 }
