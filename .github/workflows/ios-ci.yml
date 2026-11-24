@@ -410,6 +410,7 @@ jobs:
       inputs.publish_internal_testflight
     runs-on: macos-26
     timeout-minutes: 45
+    environment: ios-testflight-release
     env:
       IOS_BUNDLE_ID: com.gaixianggeng.mimi
       IOS_WIDGET_BUNDLE_ID: com.gaixianggeng.mimi.carstatuswidget

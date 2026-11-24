@@ -320,6 +320,7 @@ jobs:
     if: needs.plan.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    environment: ios-testflight-release
     steps:
       # plan 已先确认 official repo、最新 main 与 immutable SHA；这里只检查
       # 发布配置是否齐全，避免缺失 Secret 时仍启动昂贵的 macOS 回归。
