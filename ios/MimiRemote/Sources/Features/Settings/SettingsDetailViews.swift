@@ -1116,30 +1116,40 @@ private struct InterfaceStylePickerRow: View {
                 }
                 .frame(width: orbSize, height: orbSize)
         case .glass:
-            if #available(iOS 26.0, *), !reduceTransparency {
-                Color.clear
-                    .frame(width: orbSize, height: orbSize)
-                    .glassEffect(.regular, in: Circle())
-            } else {
+            glassPreviewOrb(size: orbSize)
+        }
+    }
+
+    /// 玻璃预览圆先画一层始终可见的磨砂高光圆，再在 iOS 26 叠液态玻璃。
+    /// 快照宿主往往栅格化不出 `glassEffect`；若只用 `Color.clear` + `glassEffect`，右卡会只剩底纹。
+    @ViewBuilder
+    private func glassPreviewOrb(size: CGFloat) -> some View {
+        let base = Circle()
+            .fill(.ultraThinMaterial)
+            .overlay {
                 Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        Circle()
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.62),
-                                        Color.white.opacity(0.16),
-                                        Color.white.opacity(0.42)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                lineWidth: 1
-                            )
-                    }
-                    .frame(width: orbSize, height: orbSize)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.62),
+                                Color.white.opacity(0.16),
+                                Color.white.opacity(0.42)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
             }
+            .frame(width: size, height: size)
+
+        if #available(iOS 26.0, *), !reduceTransparency {
+            base.overlay {
+                Color.clear
+                    .glassEffect(.regular, in: Circle())
+            }
+        } else {
+            base
         }
     }
 }
