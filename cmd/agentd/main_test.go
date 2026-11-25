@@ -30,6 +30,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("MIMI_TEST_MANAGED_CODEX") == "1" {
+		os.Exit(runTestManagedCodex(os.Args[1:]))
+	}
 	var cleanup func()
 	if config.SupportsSharedLocalAppServer() {
 		dir, err := os.MkdirTemp("", "agentd-main-codex-")

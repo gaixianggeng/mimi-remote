@@ -1099,7 +1099,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		maybePrintServeConnection(os.Stdout, agentsetup.ResultFromConfig(context.Background(), "", cfg))
 	}
 
-	errCh := make(chan error, len(listeners)+1)
+	errCh := make(chan error, len(listeners))
 	for _, listener := range listeners {
 		listener := listener
 		go func() {
@@ -1107,7 +1107,6 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			errCh <- server.Serve(listener)
 		}()
 	}
-	appServerRuntime.watch(errCh)
 	stopCh := make(chan os.Signal, 1)
 	stopSignals := notifyServeSignals(stopCh)
 	defer stopSignals()

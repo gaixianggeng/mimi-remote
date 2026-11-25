@@ -96,9 +96,8 @@ func TestServeShutdownTimeoutStillClosesHTTPAndCleansRuntime(t *testing.T) {
 	}
 }
 
-func TestWaitForServeExitHandlesSignalHTTPAndManagedFailures(t *testing.T) {
+func TestWaitForServeExitHandlesSignalsAndHTTPFailures(t *testing.T) {
 	sentinelHTTP := errors.New("synthetic HTTP serve failure")
-	sentinelManaged := errors.New("synthetic managed upstream exit")
 	tests := []struct {
 		name      string
 		signal    bool
@@ -107,8 +106,7 @@ func TestWaitForServeExitHandlesSignalHTTPAndManagedFailures(t *testing.T) {
 	}{
 		{name: "signal", signal: true},
 		{name: "HTTP Serve error", event: sentinelHTTP, wantCause: sentinelHTTP},
-		{name: "managed upstream exit", event: sentinelManaged, wantCause: sentinelManaged},
-		{name: "concurrent signal and managed exit", signal: true, event: sentinelManaged},
+		{name: "concurrent signal and HTTP error", signal: true, event: sentinelHTTP},
 	}
 
 	for _, tc := range tests {

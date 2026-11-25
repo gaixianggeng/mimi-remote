@@ -104,7 +104,7 @@ type Router struct {
 	codexGatewayNextID        uint64
 	codexGateways             map[uint64]*codexGatewayConnection
 	codexGatewayWG            sync.WaitGroup
-	appServerSSH              appServerSSHTransport
+	appServerSSH              AppServerTransport
 	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
 	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
 	// 全部消失，上游请求继续 fail closed。
@@ -174,7 +174,7 @@ type Router struct {
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
 	ConfigPath             string
-	AppServerSSH           appServerSSHTransport
+	AppServerSSH           AppServerTransport
 	DiagnosticLogs         DiagnosticLogController
 	DiagnosticControlToken string
 	tailcat                tailcatSidecar
@@ -184,7 +184,8 @@ type RouterOptions struct {
 	tailcatLocalToken string
 }
 
-type appServerSSHTransport interface {
+// AppServerTransport is the Codex upstream used by the gateway and readiness probes.
+type AppServerTransport interface {
 	EnsureReady(context.Context) error
 	WebSocketURL() (string, error)
 	WebSocketHeaders() (http.Header, error)

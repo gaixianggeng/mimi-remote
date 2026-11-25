@@ -24,7 +24,7 @@ func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing
 		t.Fatalf("gated listeners %v", got)
 	}
 	resident, err := prepareAgentAppServerRuntime(cfg)
-	if err != nil || resident.routerOptions.AppServerSSH != nil || resident.managedWS != nil {
+	if err != nil || resident.routerOptions.AppServerSSH != nil || resident.supervisor != nil {
 		t.Fatalf("disabled Codex started: %+v %v", resident, err)
 	}
 }
