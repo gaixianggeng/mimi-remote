@@ -68,36 +68,26 @@ func MakeFilePrivate(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return applyFileDACL(file, sd)
+	acl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return setFileDACL(file, acl, windows.PROTECTED_DACL_SECURITY_INFORMATION)
 }
 
 func copyFileAccess(original, target *os.File, _ os.FileInfo) error {
-	sd, err := windows.GetSecurityInfo(windows.Handle(original.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	sourceACL, source, err := readFileDACL(original)
 	if err != nil {
 		return err
 	}
-	current := func() (string, error) {
-		effective, err := windows.GetSecurityInfo(windows.Handle(target.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			return "", err
-		}
-		return effective.String(), nil
-	}
-	want := sd.String()
-	if want == "" {
-		return errors.New("无法验证原文件 DACL")
-	}
-	got, err := current()
-	if err != nil || got == want {
+	_, stage, err := readFileDACL(target)
+	if err != nil || source.preservedBy(stage) {
 		return err
 	}
-	control, _, err := sd.Control()
-	if err != nil {
-		return err
-	}
-	if control&windows.SE_DACL_PROTECTED == 0 {
-		// Unprotecting merges inheritable ACEs from the destination directory.
-		// Establish and verify the exact policy while the stage is still empty.
+	protection := windows.SECURITY_INFORMATION(windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	if !source.protected {
+		// Unprotecting may add access from the destination directory. Verify
+		// the result while the stage is empty, before anyone can read secrets.
 		info, err := target.Stat()
 		if err != nil {
 			return err
@@ -105,32 +95,76 @@ func copyFileAccess(original, target *os.File, _ os.FileInfo) error {
 		if info.Size() != 0 {
 			return errors.New("凭据暂存文件的继承权限已变更")
 		}
+		protection = windows.UNPROTECTED_DACL_SECURITY_INFORMATION
+		// Only edit the local ACL returned by GetSecurityInfo. Windows will
+		// supply the inherited entries from the stage's own parent.
+		for i := len(source.entries) - 1; i >= 0; i-- {
+			if source.entries[i].inherited {
+				r, _, err := deleteAce.Call(uintptr(unsafe.Pointer(sourceACL)), uintptr(i))
+				if r == 0 {
+					return err
+				}
+			}
+		}
 	}
-	if err = applyFileDACL(target, sd); err != nil {
+	if err := setFileDACL(target, sourceACL, protection); err != nil {
 		return err
 	}
-	got, err = current()
-	if err == nil && got != want {
-		err = errors.New("暂存文件无法保留原访问权限")
-	}
-	return err
-}
-
-func applyFileDACL(file *os.File, sd *windows.SECURITY_DESCRIPTOR) error {
-	acl, _, err := sd.DACL()
+	_, stage, err = readFileDACL(target)
 	if err != nil {
 		return err
 	}
+	if !source.preservedBy(stage) {
+		return errors.New("暂存文件无法保留原访问权限")
+	}
+	return nil
+}
+
+var deleteAce = windows.NewLazySystemDLL("advapi32.dll").NewProc("DeleteAce")
+
+func setFileDACL(file *os.File, acl *windows.ACL, protection windows.SECURITY_INFORMATION) error {
 	if acl == nil {
 		return errors.New("无法验证文件 DACL")
 	}
+	return windows.SetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil)
+}
+
+func readFileDACL(file *os.File) (*windows.ACL, fileDACL, error) {
+	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, fileDACL{}, err
+	}
+	acl, _, err := sd.DACL()
+	if err != nil {
+		return nil, fileDACL{}, err
+	}
+	if acl == nil {
+		return nil, fileDACL{}, errors.New("无法验证文件 DACL")
+	}
 	control, _, err := sd.Control()
 	if err != nil {
-		return err
+		return nil, fileDACL{}, err
 	}
-	info := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
-	if control&windows.SE_DACL_PROTECTED != 0 {
-		info = windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION
+	policy := fileDACL{protected: control&windows.SE_DACL_PROTECTED != 0}
+	for i := uint16(0); i < acl.AceCount; i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
+			return nil, fileDACL{}, err
+		}
+		entry := fileACE{
+			encoded:   string(unsafe.Slice((*byte)(unsafe.Pointer(ace)), ace.Header.AceSize)),
+			inherited: ace.Header.AceFlags&windows.INHERITED_ACE != 0,
+		}
+		const fileFlags = windows.INHERITED_ACE | windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE | windows.NO_PROPAGATE_INHERIT_ACE
+		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceFlags&^fileFlags == 0 {
+			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			// Removing an OWNER RIGHTS ACE can restore implicit owner access.
+			if !sid.IsWellKnown(windows.WinCreatorOwnerRightsSid) {
+				entry.allowSID = sid.String()
+				entry.allowMask = uint32(ace.Mask)
+			}
+		}
+		policy.entries = append(policy.entries, entry)
 	}
-	return windows.SetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, info, nil, nil, acl, nil)
+	return acl, policy, nil
 }

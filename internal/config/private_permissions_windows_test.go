@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"golang.org/x/sys/windows"
 )
 
@@ -84,5 +86,98 @@ func TestCopyAndRepairPrivateWindowsDACL(t *testing.T) {
 	}
 	if changed, err := RepairPrivatePermissions(source); err != nil || changed {
 		t.Fatalf("repeat repair changed=%v err=%v", changed, err)
+	}
+}
+
+func TestWindowsCopyPrivatePermissionsBeforeAndAfterWrite(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	setDACL := func(path, sddl string, protection windows.SECURITY_INFORMATION) {
+		t.Helper()
+		sd, err := windows.SecurityDescriptorFromString(sddl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acl, _, err := sd.DACL()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDACL(dir, "D:P(A;OICI;FA;;;"+user.User.Sid.String()+")", windows.PROTECTED_DACL_SECURITY_INFORMATION)
+
+	for _, tc := range []struct {
+		name                        string
+		protected, explicitMetadata bool
+	}{
+		{"protected at creation", true, false},
+		{"inherited at creation", false, false},
+		{"explicit and inherited", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if tc.protected {
+				configtest.CreatePrivateFile(t, path, nil)
+			} else {
+				if err := os.WriteFile(path, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				// An elevated runner can have a group as its default owner.
+				if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, user.User.Sid, nil, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+				if tc.explicitMetadata {
+					setDACL(path, "D:(A;;0x80;;;BU)", windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
+				}
+			}
+			aces := func(path string) string {
+				t.Helper()
+				sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+				if err != nil {
+					t.Fatal(err)
+				}
+				control, _, err := sd.Control()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if protected := control&windows.SE_DACL_PROTECTED != 0; protected != tc.protected {
+					t.Fatalf("DACL protected = %v, want %v", protected, tc.protected)
+				}
+				_, entries, ok := strings.Cut(sd.String(), "(")
+				if !ok || strings.Contains(entries, "ID;") != !tc.protected {
+					t.Fatal("missing or unexpected inherited ACE")
+				}
+				return entries
+			}
+			want := aces(path)
+			stage, err := CreatePrivateTemp(dir, "stage-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stage.Close()
+			if err := MakeFilePrivate(stage); err != nil {
+				t.Fatal(err)
+			}
+			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
+				t.Fatalf("empty stage: %v", err)
+			}
+			if got := aces(stage.Name()); got != want {
+				t.Fatal("stage did not preserve the source ACEs before writing")
+			}
+			if _, err := stage.WriteString("fixture"); err != nil {
+				t.Fatal(err)
+			}
+			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
+				t.Fatalf("populated stage: %v", err)
+			}
+			if aces(path) != want || aces(stage.Name()) != want {
+				t.Fatal("source or stage ACEs changed at final verification")
+			}
+		})
 	}
 }
