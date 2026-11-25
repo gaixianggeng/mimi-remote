@@ -1,7 +1,6 @@
 package tailscaleinfo
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 const (
@@ -192,12 +193,10 @@ func tunnelAvailable(ctx context.Context, status statusCommand, run func(context
 
 // Status reads the local CLI snapshot used for host and peer diagnostics.
 func Status(ctx context.Context) ([]byte, error) {
-	cmd, err := CommandContext(ctx, "status", "--json")
-	if err != nil {
-		return nil, err
-	}
-	cmd.WaitDelay = 100 * time.Millisecond
-	return cmd.Output()
+	out, _, err := cliinspect.Output(ctx, func() (*exec.Cmd, error) {
+		return CommandContext(ctx, "status", "--json")
+	}, statusOutputLimit)
+	return out, err
 }
 
 // CommandContext 构造本机 Tailscale CLI 命令，并显式设置 TAILSCALE_BE_CLI=true。
@@ -271,17 +270,9 @@ func runIPv4CommandWithTimeout(
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd, err := buildCmd(runCtx, "ip", "-4")
-	if err != nil {
-		return nil, nil, err
-	}
-	// A wrapper may leave a subprocess holding our output pipes after it exits.
-	cmd.WaitDelay = 100 * time.Millisecond
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	return cliinspect.Output(runCtx, func() (*exec.Cmd, error) {
+		return buildCmd(runCtx, "ip", "-4")
+	}, statusOutputLimit)
 }
 
 func firstIPv4(

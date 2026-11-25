@@ -47,6 +47,15 @@ type ManagedWebSocketProcess struct {
 
 const defaultManagedWebSocketEarlyExitGrace = 2 * time.Second
 
+// ParseCodexBanner validates the product name before interpreting its version.
+func ParseCodexBanner(output string) (string, bool) {
+	fields := strings.Fields(output)
+	if len(fields) < 2 || !(strings.EqualFold(fields[0], "codex-cli") || strings.EqualFold(fields[0], "codex")) {
+		return "", false
+	}
+	return ParseCodexVersion(fields[1])
+}
+
 func CheckLocalCodex(ctx context.Context, configuredBin string, env map[string]string) (string, error) {
 	bin := strings.TrimSpace(configuredBin)
 	if bin == "" {
@@ -58,7 +67,7 @@ func CheckLocalCodex(ctx context.Context, configuredBin string, env map[string]s
 	if err != nil {
 		return "", fmt.Errorf("Codex CLI 版本检查失败：%w", err)
 	}
-	version, ok := ParseCodexVersion(output)
+	version, ok := ParseCodexBanner(output)
 	if !ok {
 		return "", errors.New("Codex CLI 版本输出无法解析")
 	}

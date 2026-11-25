@@ -22,6 +22,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -228,9 +229,7 @@ func resolveClaudeBridgePath(command string, legacy bool) (string, bool) {
 func probeClaudeBridgeVersion(path string, args []string, env map[string]string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--version")...)
-	cmd.Env = buildClaudeBridgeEnv(env)
-	output, err := cmd.Output()
+	output, err := cliinspect.Stdout(ctx, path, buildClaudeBridgeEnv(env), append(append([]string{}, args...), "--version")...)
 	if err != nil {
 		return "", false
 	}

@@ -19,25 +19,23 @@ func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex")
 	f.env["PATH"] = dir
-	f.add(t, path, "0.155.0")
-	// Repair is an explicit action. An executable but incompatible old pin
-	// must fall back just like a removed one.
+	f.add(t, path, "codex-cli 0.155.0")
 	old := filepath.Join(t.TempDir(), "codex")
-	for _, exists := range []bool{false, true} {
-		if exists {
-			f.add(t, old, "0.140.0")
-		}
-		resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: old})
-		if err != nil || resolved.Path != path {
-			t.Fatalf("repair = %+v, %v", resolved, err)
-		}
+	resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: old})
+	if err != nil || resolved.Path != path {
+		t.Fatalf("missing pin: %+v, %v", resolved, err)
+	}
+	f.add(t, old, "codex-cli 0.140.0")
+	resolved, err = f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: old})
+	if !errors.Is(err, ErrRuntimeIncompatible) || resolved.Path != old || resolved.Source != "pin" {
+		t.Fatalf("existing incompatible pin: %+v, %v", resolved, err)
 	}
 }
 
 func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex"
 	f := newDiscoveryFixture(t)
-	f.add(t, embedded, "0.155.0")
+	f.add(t, embedded, "codex-cli 0.155.0")
 	resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: "/deleted/codex"})
 	if err != nil || resolved.Path != embedded {
 		t.Fatalf("repair = %+v, %v", resolved, err)
@@ -68,7 +66,7 @@ func TestDarwinCodexCandidatesCoverEmbeddedChatGPTAndCodexApps(t *testing.T) {
 
 	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 	f := newDiscoveryFixture(t)
-	f.add(t, embedded, "0.155.0")
+	f.add(t, embedded, "codex-cli 0.155.0")
 	resolved, err := f.Resolve(context.Background(), RuntimeRequest{Name: "codex"})
 	if err != nil || resolved.Path != embedded {
 		t.Fatalf("PATH-empty selection: %+v, %v", resolved, err)
@@ -213,7 +211,7 @@ func TestResolveCodexBinDarwinPrecedenceWhenMultipleCandidatesExist(t *testing.T
 				if key == "codex" {
 					path = filepath.Join(pathDir, "codex")
 				}
-				f.add(t, path, "0.155.0")
+				f.add(t, path, "codex-cli 0.155.0")
 			}
 			resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: tc.configured})
 			want := tc.want

@@ -5,16 +5,20 @@ import "context"
 // Go file operations may block in the kernel on a disconnected network mount.
 // Limit outstanding system calls across requests and let the caller's deadline
 // release the resolver while the kernel finishes the call.
-var filesystemSlots = make(chan struct{}, 8)
+var inspectionSlots = make(chan struct{}, 8)
 
-// Filesystem bounds an otherwise uncancellable filesystem operation.
-func Filesystem[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+// Bounded lets discovery move on when a filesystem call or inspection stalls.
+func Bounded[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	return withSlots(ctx, inspectionSlots, fn)
+}
+
+func withSlots[T any](ctx context.Context, slots chan struct{}, fn func() (T, error)) (T, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
 	select {
-	case filesystemSlots <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-ctx.Done():
 		return zero, ctx.Err()
 	}
@@ -24,7 +28,7 @@ func Filesystem[T any](ctx context.Context, fn func() (T, error)) (T, error) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		defer func() { <-filesystemSlots }()
+		defer func() { <-slots }()
 		value, err := fn()
 		done <- result{value, err}
 	}()

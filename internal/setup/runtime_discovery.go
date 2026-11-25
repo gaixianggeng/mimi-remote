@@ -135,7 +135,9 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 			seen = append(seen, file.info)
 		}
 		candidate := RuntimeCandidate{Path: file.path, Source: source}
-		candidate.Version, err = d.inspect(candidateCtx, req, file.path)
+		candidate.Version, err = cliinspect.Bounded(candidateCtx, func() (string, error) {
+			return d.inspect(candidateCtx, req, file.path)
+		})
 		if candidateCtx.Err() != nil {
 			err = candidateCtx.Err()
 		}
@@ -150,8 +152,8 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 			best = candidate
 		}
 	}
-	if err := parent.Err(); err != nil {
-		return RuntimeCandidate{Source: source}, err
+	if errors.Is(parent.Err(), context.Canceled) {
+		return RuntimeCandidate{Source: source}, parent.Err()
 	}
 	if best.Path != "" {
 		return best, nil
@@ -172,6 +174,19 @@ func (d RuntimeDiscovery) executable(req RuntimeRequest, path string) (string, e
 		}
 	}
 	resolved, err := d.LookPath(path, req.Environment)
+	if err != nil && req.Name == "codex" && path == strings.TrimSpace(req.Pin) && filepath.Base(path) != path &&
+		(errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist)) {
+		// PATH helpers (including Windows LookPath) can hide permission errors.
+		// Only a stat of the pinned file can establish that it was removed.
+		if _, statErr := d.Stat(path); statErr != nil {
+			if d.GOOS == "windows" && filepath.Ext(path) == "" && errors.Is(statErr, os.ErrNotExist) {
+				// The pin may point to an inaccessible PATHEXT sibling.
+				return "", exec.ErrNotFound
+			}
+			return "", statErr
+		}
+		return "", exec.ErrNotFound
+	}
 	if err != nil {
 		return "", err
 	}
@@ -184,7 +199,7 @@ func (d RuntimeDiscovery) executable(req RuntimeRequest, path string) (string, e
 // Windows may reopen a file to read its ID in SameFile. Resolve the ID under
 // this candidate's deadline before retaining it for comparisons with later paths.
 func (d RuntimeDiscovery) uniqueExecutable(ctx context.Context, req RuntimeRequest, path string, seen []os.FileInfo) (executableFile, error) {
-	return cliinspect.Filesystem(ctx, func() (executableFile, error) {
+	return cliinspect.Bounded(ctx, func() (executableFile, error) {
 		file, err := d.lookupFile(req, path)
 		if err != nil {
 			return executableFile{}, err
@@ -209,7 +224,7 @@ func (d RuntimeDiscovery) inspect(ctx context.Context, req RuntimeRequest, path 
 	}
 	parse, compare := claudebridge.ParseVersion, claudebridge.Compare
 	if req.Name == "codex" {
-		parse, compare = appserver.ParseCodexVersion, appserver.CompareCodexVersions
+		parse, compare = appserver.ParseCodexBanner, appserver.CompareCodexVersions
 	}
 	version, ok := parse(output)
 	if !ok {

@@ -15,9 +15,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// A developer's CLI overrides must never redirect the gateway fixtures.
-	os.Unsetenv("CLAUDE_BRIDGE_CLAUDE_BIN")
-	os.Unsetenv("AGY_ADAPTER_AGY_BIN")
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	os.Exit(m.Run())
 }
 

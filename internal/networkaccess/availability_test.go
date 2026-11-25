@@ -28,6 +28,7 @@ func TestAvailabilityRequiresActiveTunnelEvidence(t *testing.T) {
 		{"named tunnel", "Tailscale", "100.64.0.5", net.FlagUp, false, 1, true, false},
 		{"CLI signed out", "utun4", "100.64.0.5", net.FlagUp, true, 1, false, false},
 		{"private physical LAN", "eth0", "192.168.1.5", net.FlagUp, false, 0, false, true},
+		{"private VPN", "tun-vpn", "192.168.1.5", net.FlagUp, false, 0, false, false},
 		{"private tunnel", "tailscale0", "192.168.1.5", net.FlagUp, false, 0, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

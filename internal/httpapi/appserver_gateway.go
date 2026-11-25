@@ -472,7 +472,6 @@ func (r *Router) appServerConfigHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 	r.refreshClaudeBridgeProbeIfStale()
-	r.refreshAgyAdapterProbeIfStale()
 	projectList := r.projects.List()
 	runtimeMeta := r.appServerRuntimeMetadata()
 	log.Printf("app-server config response remote=%s host=%s projects=%d transport=%s gateway_available=%t", requestRemoteHost(req), req.Host, len(projectList), runtimeMeta.Transport, runtimeMeta.GatewayAvailable)

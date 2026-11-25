@@ -18,6 +18,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
@@ -460,7 +461,8 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	environment := claudeenv.Build(c.cfg.Claude.Env)
+	output, err := cliinspect.Stdout(runCtx, bin, environment, append(append([]string{}, c.cfg.Claude.Args...), "--version")...)
 	if err != nil {
 		return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未返回标准 --version", Fix: claudebridge.UpgradeMessage("")}
 	}
@@ -471,23 +473,23 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if !claudebridge.IsSupported(version) {
 		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude bridge %s 低于最低兼容版本 %s", version, claudebridge.MinimumVersion), Fix: claudebridge.UpgradeMessage(version)}
 	}
-	if !claudebridge.IsAdapterVersionOutput(string(output)) {
-		return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
+	label, minimum := "Claude bridge", ""
+	if claudebridge.IsAdapterVersionOutput(string(output)) {
+		label = "Claude 适配器"
+		capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, environment)
+		if err != nil {
+			return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
+		}
+		minimum = capabilities.ClaudeCode.MinimumVersion
 	}
-	// 与运行时相同的受限环境：claude.env 里的 PATH、代理等都要生效。
-	environment := claudeenv.Build(c.cfg.Claude.Env)
-	capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, environment)
+	candidate, err := c.resolveRuntime(ctx, setup.ClaudeRuntime(c.cfg.Claude, minimum, environment))
+	if errors.Is(err, setup.ErrRuntimeIncompatible) && minimum != "" {
+		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(candidate.Version, minimum), Fix: "在终端运行 claude update"}
+	}
 	if err != nil {
-		return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
+		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("%s %s 可用，但无法确认 Claude Code 版本", label, version), Fix: "检查配置路径，安装或升级 Claude Code"}
 	}
-	candidate, err := c.resolveRuntime(ctx, setup.ClaudeRuntime(c.cfg.Claude, capabilities.ClaudeCode.MinimumVersion, environment))
-	if errors.Is(err, setup.ErrRuntimeIncompatible) {
-		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(candidate.Version, capabilities.ClaudeCode.MinimumVersion), Fix: "在终端运行 claude update"}
-	}
-	if err != nil {
-		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude 适配器 %s 可用，但无法确认 Claude Code 版本", version), Fix: "检查配置路径，安装或升级 Claude Code"}
-	}
-	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude 适配器 %s 可用（Claude Code %s）", version, candidate.Version)}
+	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("%s %s 可用（Claude Code %s）", label, version, candidate.Version)}
 }
 
 func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
@@ -501,7 +503,8 @@ func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	environment := agybridge.BuildEnv(c.cfg.Agy.Env)
+	output, err := cliinspect.Stdout(runCtx, bin, environment, append(append([]string{}, c.cfg.Agy.Args...), "--version")...)
 	if err != nil {
 		return Check{Name: "agy-adapter", OK: false, Message: "mimi-agy-adapter 未返回标准 --version", Fix: agybridge.InstallHint}
 	}
@@ -509,7 +512,6 @@ func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
 	if !ok || !agybridge.IsSupported(version) {
 		return Check{Name: "agy-adapter", OK: false, Message: agybridge.UpgradeMessage(version), Fix: agybridge.InstallHint}
 	}
-	environment := agybridge.BuildEnv(c.cfg.Agy.Env)
 	capabilities, err := agybridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Agy.Args, environment)
 	if err != nil {
 		return Check{Name: "agy-adapter", OK: false, Message: "无法读取 mimi-agy-adapter 的能力声明", Fix: agybridge.InstallHint}

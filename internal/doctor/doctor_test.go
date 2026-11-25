@@ -17,6 +17,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 type fakeDoctorSSHTransport struct {
@@ -31,6 +32,9 @@ func (f fakeDoctorSSHTransport) EnsureReady(context.Context) error { return f.re
 func (fakeDoctorSSHTransport) SSHCheckCommand() string             { return "ssh 127.0.0.1 codex --version" }
 
 func TestMain(m *testing.M) {
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) {
 		return fakeDoctorSSHTransport{}, nil
 	}
@@ -367,6 +371,7 @@ func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 			checker := newTestChecker(t, config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridge}})
+			checker.resolveRuntime = fixtureClaudeRuntime
 			check := checker.claudeBridgeCheck(context.Background())
 			if check.OK != test.wantOK || !strings.Contains(check.Message, test.want) {
 				t.Fatalf("Claude bridge 版本检查异常：%+v", check)
@@ -412,6 +417,7 @@ func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
 			BridgeBin: filepath.Join(t.TempDir(), "stale-bridge-path"),
 		},
 	})
+	checker.resolveRuntime = fixtureClaudeRuntime
 	check := checker.claudeBridgeCheck(context.Background())
 	if !check.OK || !strings.Contains(check.Message, "0.2.8 可用") {
 		t.Fatalf("Doctor 应回退检查 Mac App 随包 bridge：%+v", check)
@@ -615,8 +621,24 @@ func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 		t.Fatal(err)
 	}
 	checker := NewChecker("test-version", cfg, registry)
+	discovery := setup.NewRuntimeDiscovery()
+	discovery.Home = t.TempDir()
+	discovery.LookPath = func(path string, _ []string) (string, error) {
+		if filepath.IsAbs(path) && path == cfg.Codex.Bin {
+			return exec.LookPath(path)
+		}
+		return "", exec.ErrNotFound
+	}
+	checker.resolveRuntime = discovery.Resolve
 	checker.findTailscale = func() (string, error) { return exec.LookPath("tailscale") }
 	return checker
+}
+
+func fixtureClaudeRuntime(_ context.Context, req setup.RuntimeRequest) (setup.RuntimeCandidate, error) {
+	if req.Name != "claude" {
+		return setup.RuntimeCandidate{}, exec.ErrNotFound
+	}
+	return setup.RuntimeCandidate{Version: "2.1.100"}, nil
 }
 
 func listenOnFreePort(t *testing.T) net.Listener {

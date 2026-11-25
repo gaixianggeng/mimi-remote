@@ -114,7 +114,7 @@ func (d RuntimeDiscovery) autoPaths(ctx context.Context, req RuntimeRequest) ite
 				return
 			}
 			globCtx, cancel := d.timeout(ctx, 4*time.Second)
-			matches, _ := cliinspect.Filesystem(globCtx, func() ([]string, error) { return d.glob(filepath.Join(d.Home, prefix, req.Name)) })
+			matches, _ := cliinspect.Bounded(globCtx, func() ([]string, error) { return d.glob(filepath.Join(d.Home, prefix, req.Name)) })
 			cancel()
 			for _, path := range matches {
 				if !yield(path) {
@@ -150,7 +150,7 @@ func (d RuntimeDiscovery) lookupFile(req RuntimeRequest, path string) (executabl
 func (d RuntimeDiscovery) LookupExecutable(ctx context.Context, req RuntimeRequest, path string) (string, error) {
 	ctx, cancel := d.timeout(ctx, 4*time.Second)
 	defer cancel()
-	file, err := cliinspect.Filesystem(ctx, func() (executableFile, error) { return d.lookupFile(req, path) })
+	file, err := cliinspect.Bounded(ctx, func() (executableFile, error) { return d.lookupFile(req, path) })
 	return file.path, err
 }
 

@@ -6,12 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -113,7 +111,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
 	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
 	codexBin := strings.TrimSpace(options.CodexBin)
-	if codexBin == "" {
+	if codexBin == "" || codexBin == "auto" {
 		codexBin = "codex"
 	}
 	appServerConfig := config.DefaultManagedAppServerConfig()
@@ -147,11 +145,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			PinTransport: requestedSSHTarget != "",
 		}
 	} else if useManagedLocalAppServer {
-		req := RuntimeRequest{Name: "codex", Transport: "ws", Override: options.CodexBin}
-		found, err := ResolveRuntime(ctx, req)
-		// Windows setup has always allowed saving an automatic configuration
-		// before installing Codex. Explicit choices must be usable now.
-		if err != nil && (found.Source != "auto" || !errors.Is(err, exec.ErrNotFound)) {
+		if err := NewRuntimeDiscovery().preflightManagedCodex(ctx, options.CodexBin); err != nil {
 			return Result{}, fmt.Errorf("本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	} else if useSharedLocalAppServer {

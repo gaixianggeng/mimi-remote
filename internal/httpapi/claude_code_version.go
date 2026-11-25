@@ -52,7 +52,7 @@ func (c *claudeCodeVersionCache) resolve(req setup.RuntimeRequest) (setup.Runtim
 func cachedClaudeFile(ctx context.Context, path string, previous os.FileInfo) os.FileInfo {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	info, _ := cliinspect.Filesystem(ctx, func() (os.FileInfo, error) {
+	info, _ := cliinspect.Bounded(ctx, func() (os.FileInfo, error) {
 		current, err := os.Stat(path)
 		if err != nil {
 			return nil, err

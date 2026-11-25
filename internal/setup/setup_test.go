@@ -18,9 +18,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Tests own runtime selection, including cases that set an override.
-	os.Unsetenv("AGY_ADAPTER_AGY_BIN")
-	os.Unsetenv(claudeBinaryEnvKey)
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
 	// CI 机器上没有 Codex。迁移与 doctor 修复共用的解析器默认原样返回配置路径，

@@ -113,7 +113,7 @@ func virtualInterface(name string) bool {
 		return true
 	}
 	name = strings.ToLower(name)
-	for _, prefix := range []string{"tap", "bridge", "veth", "docker", "vmnet", "vmenet", "awdl", "llw", "ipsec", "ppp"} {
+	for _, prefix := range []string{"utun", "tun", "tap", "bridge", "veth", "docker", "vmnet", "vmenet", "awdl", "llw", "ipsec", "ppp"} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}

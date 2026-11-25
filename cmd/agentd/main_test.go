@@ -30,6 +30,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	var cleanup func()
 	if config.SupportsSharedLocalAppServer() {
 		dir, err := os.MkdirTemp("", "agentd-main-codex-")

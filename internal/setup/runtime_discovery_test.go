@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -21,7 +24,8 @@ type discoveryFixture struct {
 	files    map[string]string // virtual candidate path to its backing file
 	versions map[string]string
 	env      map[string]string
-	calls    []string
+	mu       sync.Mutex
+	probes   []string
 }
 
 func newDiscoveryFixture(t *testing.T) *discoveryFixture {
@@ -51,15 +55,24 @@ func newDiscoveryFixture(t *testing.T) *discoveryFixture {
 			if !slices.Equal(args, []string{"--version"}) {
 				t.Fatalf("unexpected inspection %q", args)
 			}
-			f.calls = append(f.calls, path)
-			if f.versions[path] == "hang" {
+			f.mu.Lock()
+			f.probes = append(f.probes, path)
+			version := f.versions[path]
+			f.mu.Unlock()
+			if version == "hang" {
 				<-ctx.Done()
 				return "", ctx.Err()
 			}
-			return f.versions[path], nil
+			return version, nil
 		},
 	}
 	return f
+}
+
+func (f *discoveryFixture) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.probes)
 }
 
 func (f *discoveryFixture) add(t *testing.T, path, version string) {
@@ -86,8 +99,8 @@ func TestResolveRuntimeSlowShimThenBundledCodex(t *testing.T) {
 		start := time.Now()
 		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dir))
 		want := RuntimeCandidate{Path: discoveryTestBundle, Version: "0.155.0", Source: "auto"}
-		if err != nil || got != want || !slices.Equal(f.calls, []string{shim, discoveryTestBundle}) || time.Since(start) != 4*time.Second {
-			t.Fatalf("candidate %+v, error %v, calls %q, elapsed %s", got, err, f.calls, time.Since(start))
+		if err != nil || got != want || !slices.Equal(f.calls(), []string{shim, discoveryTestBundle}) || time.Since(start) != 4*time.Second {
+			t.Fatalf("candidate %+v, error %v, calls %q, elapsed %s", got, err, f.calls(), time.Since(start))
 		}
 	})
 }
@@ -98,7 +111,7 @@ func TestResolveRuntimeRanksDistinctPhysicalExecutables(t *testing.T) {
 	for _, version := range []string{"0.149.0", "0.155.0-alpha.1", "0.155.0", "0.155.0+build.2"} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "codex")
-		f.add(t, path, version)
+		f.add(t, path, "codex-cli "+version)
 		dirs = append(dirs, dir)
 		paths = append(paths, path)
 	}
@@ -108,10 +121,10 @@ func TestResolveRuntimeRanksDistinctPhysicalExecutables(t *testing.T) {
 	}
 	f.files[discoveryTestBundle] = link
 	// Visiting this alias would falsely select it as the highest version.
-	f.versions[discoveryTestBundle] = "9.9.9"
+	f.versions[discoveryTestBundle] = "codex-cli 9.9.9"
 	got, err := f.Resolve(context.Background(), codexRequestWithPATH(dirs...))
-	if err != nil || got.Path != paths[2] || got.Version != "0.155.0" || !slices.Equal(f.calls, paths) {
-		t.Fatalf("candidate %+v, error %v, calls %q", got, err, f.calls)
+	if err != nil || got.Path != paths[2] || got.Version != "0.155.0" || !slices.Equal(f.calls(), paths) {
+		t.Fatalf("candidate %+v, error %v, calls %q", got, err, f.calls())
 	}
 }
 
@@ -126,12 +139,15 @@ func TestResolveRuntimeSharesDeadlineBetweenCandidates(t *testing.T) {
 		}
 		start := time.Now()
 		_, err := f.Resolve(context.Background(), codexRequestWithPATH(dirs...))
-		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 20*time.Second || len(f.calls) != 5 {
-			t.Fatalf("error %v, elapsed %s, attempts %d", err, time.Since(start), len(f.calls))
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 20*time.Second || len(f.calls()) != 5 {
+			t.Fatalf("error %v, elapsed %s, attempts %d", err, time.Since(start), len(f.calls()))
 		}
 		early := filepath.Join(dirs[0], "codex")
-		f.versions[early] = "0.155.0"
-		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dirs...))
+		synctest.Wait()
+		f.versions[early] = "codex-cli 0.155.0"
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		got, err := f.Resolve(ctx, codexRequestWithPATH(dirs...))
 		if err != nil || got.Path != early {
 			t.Fatalf("discarded compatible result at deadline: %+v, %v", got, err)
 		}
@@ -144,7 +160,7 @@ func TestResolveRuntimeOverrideEnvPinAndAuto(t *testing.T) {
 	path := func(name string) string { return filepath.Join(dir, name) }
 	auto, pin, env, override, old := path("codex"), path("pin"), path("env"), path("picker"), path("old")
 	for bin, version := range map[string]string{override: "0.150.0", env: "0.151.0", pin: "0.152.0", auto: "0.159.0", old: "0.149.0"} {
-		f.add(t, bin, version)
+		f.add(t, bin, "codex-cli "+version)
 	}
 	tests := []struct {
 		name, override, env, pin, want, source string
@@ -155,21 +171,21 @@ func TestResolveRuntimeOverrideEnvPinAndAuto(t *testing.T) {
 		{"pin", "", "", pin, pin, "pin", nil},
 		{"auto", "", "", "", auto, "auto", nil},
 		{"clear pin", "auto", "", old, auto, "auto", nil},
-		{"missing pin", "", "", path("missing"), "", "pin", exec.ErrNotFound},
+		{"missing pin", "", "", path("missing"), "", "pin", os.ErrNotExist},
 		{"incompatible pin", "", "", old, old, "pin", ErrRuntimeIncompatible},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			f.env["AGENTD_CODEX_BIN"] = tc.env
-			f.calls = nil
+			f.probes = nil
 			req := codexRequestWithPATH(dir)
 			req.Override, req.Pin = tc.override, tc.pin
 			got, err := f.Resolve(context.Background(), req)
 			if !errors.Is(err, tc.err) || got.Path != tc.want || got.Source != tc.source {
 				t.Fatalf("candidate %+v, error %v; want path %q, source %q, error %v", got, err, tc.want, tc.source, tc.err)
 			}
-			if tc.source != "auto" && slices.Contains(f.calls, auto) {
-				t.Fatalf("auto probed during explicit selection: %q", f.calls)
+			if tc.source != "auto" && slices.Contains(f.calls(), auto) {
+				t.Fatalf("auto probed during explicit selection: %q", f.calls())
 			}
 		})
 	}
@@ -179,8 +195,8 @@ func TestResolveRuntimeFiltersWebSocketCapabilitiesBeforeRanking(t *testing.T) {
 	f := newDiscoveryFixture(t)
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "codex")
-	f.add(t, shim, "0.199.0")
-	f.add(t, discoveryTestBundle, "0.155.0")
+	f.add(t, shim, "codex-cli 0.199.0")
+	f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
 	probeVersion := f.run
 	f.run = func(ctx context.Context, path string, env []string, args ...string) (string, error) {
 		if slices.Equal(args, []string{"app-server", "--help"}) {
@@ -213,7 +229,7 @@ func TestResolveRuntimeContinuesAfterBlockedFilesystemLookup(t *testing.T) {
 			}
 			return lookup(path, env)
 		}
-		f.add(t, discoveryTestBundle, "0.155.0")
+		f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
 		start := time.Now()
 		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dir))
 		if err != nil || got.Path != discoveryTestBundle || time.Since(start) != 4*time.Second {
@@ -271,7 +287,7 @@ func TestResolveRuntimeBoundsFileIdentityLookup(t *testing.T) {
 			f.GOOS = "windows"
 			dir := t.TempDir()
 			first := filepath.Join(dir, "codex.exe")
-			f.add(t, first, "0.150.0")
+			f.add(t, first, "codex-cli 0.150.0")
 			dirs := []string{dir}
 			offline := filepath.Join(t.TempDir(), "offline")
 			if err := os.WriteFile(offline, nil, 0700); err != nil {
@@ -284,7 +300,7 @@ func TestResolveRuntimeBoundsFileIdentityLookup(t *testing.T) {
 			}
 			dir = t.TempDir()
 			last := filepath.Join(dir, "codex.exe")
-			f.add(t, last, "0.155.0")
+			f.add(t, last, "codex-cli 0.155.0")
 			dirs = append(dirs, dir)
 			release := make(chan struct{})
 			defer close(release)
@@ -316,7 +332,7 @@ func TestMigrationPreservesCodexPinAfterProbeTimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.add(t, "pinned-codex", "hang")
-		f.add(t, discoveryTestBundle, "0.155.0")
+		f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
 		prev := resolveMigrationCodexBin
 		defer func() { resolveMigrationCodexBin = prev }()
 		resolveMigrationCodexBin = func(pin string) (string, error) {
@@ -327,11 +343,112 @@ func TestMigrationPreservesCodexPinAfterProbeTimeout(t *testing.T) {
 			t.Fatal("migration proceeded after pin timeout")
 			return nil
 		})
-		if !errors.Is(err, context.DeadlineExceeded) || !slices.Equal(f.calls, []string{"pinned-codex"}) {
-			t.Fatalf("after timeout: probes %q, error %v", f.calls, err)
+		if !errors.Is(err, context.DeadlineExceeded) || !slices.Equal(f.calls(), []string{"pinned-codex"}) {
+			t.Fatalf("after timeout: probes %q, error %v", f.calls(), err)
 		}
 		if raw, err := os.ReadFile(cfg); err != nil || string(raw) != original {
 			t.Fatalf("migration changed config after pin timeout, read error %v", err)
 		}
 	})
+}
+
+func TestResolveRuntimeContinuesAfterBlockedRunnerStartup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDiscoveryFixture(t)
+		dir := t.TempDir()
+		shim := filepath.Join(dir, "codex")
+		f.add(t, shim, "codex-cli 0.199.0")
+		f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
+		run := f.run
+		release := make(chan struct{})
+		defer close(release)
+		f.run = func(ctx context.Context, path string, env []string, args ...string) (string, error) {
+			if path == shim {
+				<-release // startup does not observe the context
+				return "", ctx.Err()
+			}
+			return run(ctx, path, env, args...)
+		}
+		start := time.Now()
+		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dir))
+		if err != nil || got.Path != discoveryTestBundle || time.Since(start) != 4*time.Second {
+			t.Fatalf("blocked runner: %+v, %v after %s", got, err, time.Since(start))
+		}
+	})
+}
+
+func TestResolveRuntimeRejectsUnrelatedVersionBanner(t *testing.T) {
+	f := newDiscoveryFixture(t)
+	picker := filepath.Join(t.TempDir(), "codex")
+	f.add(t, picker, "other-tool 42.1.0")
+	got, err := f.Resolve(context.Background(), RuntimeRequest{Name: "codex", Override: picker, Transport: "local"})
+	if !errors.Is(err, ErrRuntimeVersion) || got.Path != picker || got.Source != "override" {
+		t.Fatalf("picked an unrelated CLI: %+v, %v", got, err)
+	}
+}
+
+func TestMigrationPreservesInaccessibleCodexPin(t *testing.T) {
+	f := newDiscoveryFixture(t)
+	pin := filepath.Join(t.TempDir(), "private", "codex")
+	f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
+	// Host lookup can report ErrNotFound for an inaccessible parent directory.
+	stat := f.Stat
+	f.Stat = func(path string) (os.FileInfo, error) {
+		if path == pin {
+			return nil, &os.PathError{Op: "stat", Path: pin, Err: os.ErrPermission}
+		}
+		return stat(path)
+	}
+	cfg := filepath.Join(t.TempDir(), "config.json")
+	original, err := json.Marshal(map[string]any{"codex": map[string]string{"bin": pin}, "app_server": map[string]any{"transport": "ws", "managed": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	prev := resolveMigrationCodexBin
+	t.Cleanup(func() { resolveMigrationCodexBin = prev })
+	resolveMigrationCodexBin = func(pin string) (string, error) {
+		got, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: pin})
+		return got.Path, err
+	}
+	err = MigrateAppServerToSharedLocalWithPreflight(context.Background(), cfg, func(context.Context, string, map[string]string) error {
+		t.Fatal("preflight attempted for inaccessible pin")
+		return nil
+	})
+	raw, readErr := os.ReadFile(cfg)
+	if !errors.Is(err, os.ErrPermission) || readErr != nil || !bytes.Equal(raw, original) || len(f.calls()) != 0 {
+		t.Fatalf("inaccessible pin: migration=%v, read=%v, changed=%t, probes=%v", err, readErr, !bytes.Equal(raw, original), f.calls())
+	}
+}
+
+func TestManagedSetupDefersAutomaticCodexInspection(t *testing.T) {
+	f := newDiscoveryFixture(t)
+	f.GOOS = "windows"
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex.exe")
+	f.add(t, bin, "codex-cli 0.149.0")
+	f.env["PATH"] = dir
+	if err := f.preflightManagedCodex(context.Background(), ""); err != nil || len(f.calls()) != 0 {
+		t.Fatalf("automatic setup inspected old Codex: probes=%q, err=%v", f.calls(), err)
+	}
+	if err := f.preflightManagedCodex(context.Background(), bin); !errors.Is(err, ErrRuntimeIncompatible) || !slices.Equal(f.calls(), []string{bin}) {
+		t.Fatalf("explicit old Codex: probes=%q, err=%v", f.calls(), err)
+	}
+}
+
+func TestRepairKeepsAmbiguousWindowsPin(t *testing.T) {
+	f := newDiscoveryFixture(t)
+	f.GOOS = "windows"
+	dir := t.TempDir()
+	pin := filepath.Join(dir, "pinned")
+	f.env["PATH"] = dir
+	f.add(t, filepath.Join(dir, "codex.exe"), "codex-cli 0.155.0")
+	// A failed PATHEXT search and an absent literal "pinned" do not prove that
+	// its "pinned.exe" sibling was removed.
+	got, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: pin})
+	if err == nil || got.Source != "pin" || len(f.calls()) != 0 {
+		t.Fatalf("ambiguous Windows pin: %+v, %v, probes=%v", got, err, f.calls())
+	}
 }

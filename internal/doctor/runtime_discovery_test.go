@@ -2,9 +2,12 @@ package doctor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -52,5 +55,37 @@ func TestDoctorRecognizesBundledCLIsWithEmptyPATH(t *testing.T) {
 		if !passed {
 			t.Fatalf("bundle check %s failed: %+v", name, results.Checks)
 		}
+	}
+}
+
+func TestDoctorLegacyBridgeRequiresConfiguredClaudeCLI(t *testing.T) {
+	dir := t.TempDir()
+	bridge := filepath.Join(dir, "alleycat-claude-bridge")
+	script := "#!/bin/sh\necho 'alleycat-claude-bridge 0.2.8'\n"
+	if runtime.GOOS == "windows" {
+		bridge += ".cmd"
+		script = "@echo off\r\necho alleycat-claude-bridge 0.2.8\r\n"
+	}
+	if err := os.WriteFile(bridge, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pin := filepath.Join(dir, "deleted-claude.exe")
+	cfg := config.ClaudeConfig{Enabled: true, BridgeBin: bridge, LegacyBridge: true, Env: map[string]string{"CLAUDE_BRIDGE_CLAUDE_BIN": pin}}
+	checker := newTestChecker(t, config.Config{Claude: cfg})
+	d := setup.NewRuntimeDiscovery()
+	d.LookPath = func(path string, _ []string) (string, error) {
+		if path != pin {
+			return "", fmt.Errorf("unexpected lookup %q", path)
+		}
+		return "", os.ErrNotExist
+	}
+	var inspected bool
+	checker.resolveRuntime = func(ctx context.Context, req setup.RuntimeRequest) (setup.RuntimeCandidate, error) {
+		inspected = req.Name == "claude" && req.Pin == pin && req.MinimumVersion == ""
+		return d.Resolve(ctx, req)
+	}
+	check := checker.claudeBridgeCheck(context.Background())
+	if !inspected || check.OK || !strings.Contains(check.Message, "无法确认 Claude Code") {
+		t.Fatalf("status for missing explicit Claude CLI: %+v, inspected=%t", check, inspected)
 	}
 }

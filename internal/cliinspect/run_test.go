@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -103,4 +104,21 @@ func TestInspectionCleansDescendants(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInspectionBoundsCommandStartup(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		release := make(chan struct{})
+		defer close(release)
+		start := time.Now()
+		_, _, err := Output(ctx, func() (*exec.Cmd, error) {
+			<-release
+			return nil, ctx.Err()
+		}, 1024)
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 4*time.Second {
+			t.Fatalf("blocked startup: %v after %s", err, time.Since(start))
+		}
+	})
 }

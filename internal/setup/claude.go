@@ -15,6 +15,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -543,13 +544,8 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		return baseResult
 	}
 	bridgeCtx, cancelBridge := context.WithTimeout(ctx, 2*time.Second)
-	bridgeCommand := exec.CommandContext(
-		bridgeCtx,
-		bridge,
-		append(append([]string{}, cfg.Claude.Args...), "--version")...,
-	)
-	bridgeCommand.Env = commandEnvironment
-	bridgeVersionOutput, bridgeErr := bridgeCommand.Output()
+	bridgeVersionOutput, bridgeErr := cliinspect.Stdout(bridgeCtx, bridge, commandEnvironment,
+		append(append([]string{}, cfg.Claude.Args...), "--version")...)
 	cancelBridge()
 	bridgeVersion, parsed := claudebridge.ParseVersion(string(bridgeVersionOutput))
 	if bridgeErr != nil || !parsed {

@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
@@ -47,6 +47,7 @@ var appServerAgyAllowedMethods = map[string]struct{}{
 
 type agyAdapterProbe struct {
 	cliPath           string
+	cliAbsent         bool
 	Status            string
 	Path              string
 	Version           string
@@ -173,13 +174,9 @@ func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybrid
 }
 
 func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
-	probe := agyAdapterProbe{
-		Status:    "disabled",
-		CheckedAt: time.Now().UTC(),
-	}
+	probe := agyAdapterProbe{Status: "disabled"}
 	if !r.cfg.Agy.Enabled {
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	bin := strings.TrimSpace(r.cfg.Agy.AdapterBin)
 	path, ok := agybridge.ResolveBinary(bin)
@@ -187,35 +184,31 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 		probe.Path = bin
 		probe.Status = "missing_command"
 		probe.Error = "未找到 mimi-agy-adapter，可重新安装 Mimi Remote 或配置 agy.adapter_bin"
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	probe.Path = path
 
 	env := agybridge.BuildEnv(r.cfg.Agy.Env)
 	verCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	out, err := exec.CommandContext(verCtx, path, append(append([]string{}, r.cfg.Agy.Args...), "--version")...).Output()
+	out, err := cliinspect.Stdout(verCtx, path, env, append(append([]string{}, r.cfg.Agy.Args...), "--version")...)
 	cancel()
 	if err != nil {
 		probe.Status = "missing_version"
 		probe.Error = agybridge.UpgradeMessage("")
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	version, ok := agybridge.ParseVersion(string(bytes.TrimSpace(out)))
 	probe.Version = version
 	if !ok || !agybridge.IsSupported(version) {
 		probe.Status = "unsupported_version"
 		probe.Error = agybridge.UpgradeMessage(version)
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	capabilities, err := agybridge.ReadAdapterCapabilities(context.Background(), path, r.cfg.Agy.Args, env)
 	if err != nil {
 		probe.Status = "missing_capabilities"
 		probe.Error = "无法读取 Antigravity 适配器的能力声明：" + err.Error()
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	probe.Capabilities = &capabilities
 	probe.MinimumCLIVersion = strings.TrimSpace(capabilities.Agy.MinimumVersion)
@@ -224,36 +217,34 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 	probe.CLIVersion, probe.cliPath = candidate.Version, candidate.Path
 	if err != nil {
 		probe.Status = "agy_missing"
+		probe.cliAbsent = candidate.Path == ""
 		probe.Error = "未检测到可用的 Antigravity CLI (agy)。请检查安装或配置的路径。"
 		if errors.Is(err, setup.ErrRuntimeIncompatible) {
 			probe.Status = "agy_unsupported"
 			probe.Error = agybridge.AgyUpgradeMessage(candidate.Version, probe.MinimumCLIVersion)
 		}
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 	authState, authMsg := r.checkAgyAuthStatusCached(candidate.Path, env)
 	switch authState {
 	case agybridge.AgyAuthSignedOut:
 		probe.Status = "agy_signed_out"
 		probe.Error = authMsg
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	case agybridge.AgyAuthUnknown:
 		probe.Status = "agy_auth_unknown"
 		probe.Error = authMsg
-		r.setAgyAdapterProbe(probe)
-		return probe
+		return r.setAgyAdapterProbe(probe)
 	}
 
 	probe.Status = "ready"
 	probe.Healthy = true
-	r.setAgyAdapterProbe(probe)
-	return probe
+	return r.setAgyAdapterProbe(probe)
 }
 
-func (r *Router) setAgyAdapterProbe(probe agyAdapterProbe) {
+func (r *Router) setAgyAdapterProbe(probe agyAdapterProbe) agyAdapterProbe {
 	r.agyMu.Lock()
+	probe.CheckedAt = time.Now().UTC()
 	r.agyProbe = probe
 	r.agyMu.Unlock()
 	if debuglog.Enabled() {
@@ -264,6 +255,7 @@ func (r *Router) setAgyAdapterProbe(probe agyAdapterProbe) {
 		debuglog.Printf("agy-adapter", "probe bin=%s version=%s status=%s healthy=%t methods=%d error=%q",
 			filepath.Base(probe.Path), probe.Version, probe.Status, probe.Healthy, methods, probe.Error)
 	}
+	return probe
 }
 
 func (r *Router) agyAdapterProbeSnapshot() agyAdapterProbe {
@@ -273,23 +265,6 @@ func (r *Router) agyAdapterProbeSnapshot() agyAdapterProbe {
 		return agyAdapterProbe{Status: "unknown"}
 	}
 	return r.agyProbe
-}
-
-func (r *Router) refreshAgyAdapterProbeIfStale() {
-	if !r.cfg.Agy.Enabled {
-		return
-	}
-	r.agyMu.Lock()
-	checkedAt := r.agyProbe.CheckedAt
-	status := r.agyProbe.Status
-	r.agyMu.Unlock()
-	ttl := claudeBridgeProbeCacheTTL
-	if status == "agy_auth_unknown" {
-		ttl = agyAuthUnknownCacheTTL
-	}
-	if checkedAt.IsZero() || time.Since(checkedAt) >= ttl {
-		r.refreshAgyAdapterProbe()
-	}
 }
 
 func (p agyAdapterProbe) launchEnv(cfg config.AgyConfig) map[string]string {
@@ -304,6 +279,7 @@ func (r *Router) invalidateAgyMissingProbe() agyAdapterProbe {
 	r.agyMu.Lock()
 	probe := r.agyProbe
 	probe.Status = "agy_missing"
+	probe.cliAbsent = true
 	probe.Healthy = false
 	probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
 	probe.CheckedAt = time.Now().UTC()
@@ -324,8 +300,19 @@ func (r *Router) currentAgyAdapterProbeWithDiscovery(discovery setup.RuntimeDisc
 	if !r.cfg.Agy.Enabled {
 		return r.agyAdapterProbeSnapshot()
 	}
-	r.refreshAgyAdapterProbeIfStale()
 	probe := r.agyAdapterProbeSnapshot()
+	ttl := claudeBridgeProbeCacheTTL
+	if probe.Status == "agy_auth_unknown" {
+		ttl = agyAuthUnknownCacheTTL
+	}
+	if probe.CheckedAt.IsZero() || time.Since(probe.CheckedAt) >= ttl {
+		return r.refreshAgyAdapterProbe()
+	}
+	if probe.Status == "agy_missing" && !probe.cliAbsent {
+		// An installed CLI failed inspection. Its continued presence is not a
+		// reason to retry before the cached result expires.
+		return probe
+	}
 	env := agybridge.BuildEnv(r.cfg.Agy.Env)
 	req := setup.AgyRuntime(r.cfg.Agy, probe.MinimumCLIVersion, env)
 	path := firstNonEmpty(probe.cliPath, os.Getenv(agybridge.AgyBinaryEnvKey), req.Pin, "agy")

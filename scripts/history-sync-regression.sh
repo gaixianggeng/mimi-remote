@@ -66,8 +66,14 @@ esac
 STUB
   cp "$root/bin/tailscale" "$MIMI_TAILSCALE_BUNDLE_BIN"
   chmod +x "$root/bin/tailscale" "$MIMI_TAILSCALE_BUNDLE_BIN"
-  [[ "$(PATH="$root/bin" tailscale_ipv4)" == 100.64.0.1 ]]
-  [[ "$(PATH="$root/empty" tailscale_ipv4)" == 100.64.0.2 ]]
+  [[ "$(PATH="$root/bin" tailscale_ipv4)" == 100.64.0.1 ]] || {
+    echo "PATH Tailscale CLI assertion failed" >&2
+    exit 1
+  }
+  [[ "$(PATH="$root/empty" tailscale_ipv4)" == 100.64.0.2 ]] || {
+    echo "bundle Tailscale CLI assertion failed" >&2
+    exit 1
+  }
   if PATH="$root/empty" STUB_IP=192.0.2.1 tailscale_ipv4; then exit 1; fi
   echo "Tailscale CLI discovery passed"
 )
@@ -101,7 +107,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --self-test)
       self_test
-      exit 0
+      exit $?
       ;;
     -h|--help)
       usage

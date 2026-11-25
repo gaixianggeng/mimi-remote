@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,11 +27,9 @@ func (d RuntimeDiscovery) repairCodex(parent context.Context, req RuntimeRequest
 	ctx, cancel := d.timeout(parent, 20*time.Second)
 	defer cancel()
 	result, err := d.Resolve(ctx, req)
-	// A timeout or launch error is inconclusive. An unattended migration must
-	// not replace the user's pin on the strength of a transient failure.
-	missing := result.Path == "" && (errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist))
-	stale := missing || errors.Is(err, ErrRuntimeIncompatible)
-	if stale && result.Source == "pin" && ctx.Err() == nil {
+	// A failed search or probe cannot establish that a saved file is gone.
+	if result.Source == "pin" && result.Path == "" && filepath.Base(req.Pin) != req.Pin &&
+		errors.Is(err, os.ErrNotExist) && ctx.Err() == nil {
 		req.Pin = ""
 		result, err = d.Resolve(ctx, req)
 	}
