@@ -18,6 +18,8 @@ extension HostStore {
         tailcatStatus?.isManagedMode ?? false
     }
 
+    static let tailcatTagline = "免费可用 · 支持跨网"
+
     var tailcatStatusDetail: String {
         if owner == .homebrew {
             return "先完成 App 服务接管，再由 Mimi Remote Mac 管理 Tailcat 模块。"
@@ -26,7 +28,7 @@ extension HostStore {
         if let tailcatNotice { return tailcatNotice }
         if let error = tailcatStatus?.error, !error.isEmpty { return error }
         guard let tailcatStatus, tailcatStatus.enabled else {
-            return "内置连接免费可用。开启后即可扫码；Mimi 中转可在手机上开通。"
+            return "内置连接\(Self.tailcatTagline)。开启后即可扫码；Mimi 中转可在手机上开通。"
         }
         return "已配对 \(tailcatStatus.pairedDeviceCount) 台设备。"
     }
@@ -53,10 +55,28 @@ extension HostStore {
     }
     var canPair: Bool {
         guard !isOnboardingInProgress else { return false }
-        return status?.serviceOK == true && (codexEnabled || claudeEnabled || agyEnabled || deepSeekEnabled)
-            && (!availablePairingNetworks.isEmpty
-                || (tailcatStatus != nil && canChangeTailcat)
-                || (status?.moduleStatus?.lanAvailable == true && canChangeModule(.lan)))
+        if agentRegistrationState == .requiresApproval && owner != .homebrew {
+            return false
+        }
+        guard status?.serviceOK == true else { return false }
+        guard hasEnabledAssistantForPairing else { return false }
+        return !availablePairingNetworks.isEmpty
+    }
+
+    private var hasEnabledAssistantForPairing: Bool {
+        let enabledAgents: [HostModuleID] = [.codex, .claude, .agy, .deepseek].filter { moduleEnabled($0) }
+        guard !enabledAgents.isEmpty else { return false }
+        guard let runtimes = status?.runtimeStatus?.runtimes, !runtimes.isEmpty else {
+            return true
+        }
+        return enabledAgents.contains { module in
+            guard let runtime = runtime(for: module) else {
+                // 旧版或局部状态快照未包含该运行时条目时，保留兼容判定；
+                // 实时配对窗口由 `preflight --stage pair` 的 `assistant_any == ok` 严格门控。
+                return true
+            }
+            return runtime.state == .available || runtime.state == .connected
+        }
     }
     var availablePairingNetworks: [PairingNetwork] {
         guard status?.serviceOK == true else { return [] }
@@ -114,13 +134,28 @@ extension HostStore {
         }
         return "没有可用的连接方式。请开启并连接 Tailscale、局域网或 Tailcat 后再配对。"
     }
-    /// 配对窗口里用户显式切换连接方式或点击重试：选内置连接或同一局域网即授权开启对应连接方式，
-    /// 不再要求退回菜单栏手动打开开关；自动模式（`.automatic`）不静默扩大监听范围。
+    /// 配对窗口切换连接方式或点击刷新仅刷新当前选定通道，严禁在选中时自动开启任何网络通道。
     func refreshPairingFromPicker(_ targetNetwork: PairingNetwork) async {
-        if targetNetwork == .tailcat, !tailcatEnabled, canChangeTailcat {
-            await setTailcatEnabled(true)
-        } else if targetNetwork == .localNetwork, !lanEnabled, canChangeModule(.lan) {
-            await setLANEnabled(true)
+        await refreshPairing(network: targetNetwork)
+    }
+
+    /// 用户在配对窗口显式点击「启用…」后开启指定连接方式，按需单次重载并确认状态后再出码。
+    func enableNetworkAndRefreshPairing(_ targetNetwork: PairingNetwork) async {
+        switch targetNetwork {
+        case .tailscale:
+            if !tailscaleEnabled, canChangeModule(.tailscale) {
+                await setTailscaleEnabled(true)
+            }
+        case .tailcat:
+            if !tailcatEnabled, canChangeTailcat {
+                await setTailcatEnabled(true)
+            }
+        case .localNetwork:
+            if !lanEnabled, canChangeModule(.lan) {
+                await setLANEnabled(true)
+            }
+        case .automatic:
+            break
         }
         await refreshPairing(network: targetNetwork)
     }

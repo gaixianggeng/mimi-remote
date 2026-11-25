@@ -142,16 +142,16 @@ struct AgentCommandClient: Sendable {
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var setTailcatEnabled: @Sendable (_ enabled: Bool) async throws -> TailcatStatus = { _ in
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var configureTailcatDERPMap: @Sendable (_ derpMapURL: String) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 中继配置。")
     }
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前电脑端不支持 Mimi 中转，请更新后重试。")

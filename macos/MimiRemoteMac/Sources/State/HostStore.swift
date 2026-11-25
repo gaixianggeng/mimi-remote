@@ -2,6 +2,17 @@ import AppKit
 import Foundation
 import Observation
 
+enum MacSettingsSection: String, Equatable, Hashable, Sendable {
+    case assistants
+    case connections
+    case fileAccess
+}
+
+enum DiagnosticsFocus: Equatable, Hashable, Sendable {
+    case overview
+    case hostRecovery
+}
+
 @MainActor
 @Observable
 final class HostStore {
@@ -59,6 +70,13 @@ final class HostStore {
     var lastError: String?
     /// 向导未完成期间保持为 true，防止 setup/启动失败提前切出向导把用户困在概览页。
     private(set) var isOnboardingInProgress = false
+    /// 跨窗口受控路由落点：`open_settings(assistants)`、`open_settings(managed_connection)`、
+    /// `open_settings(host_recovery)` 及菜单栏通道快捷入口。
+    var requestedSettingsSection: MacSettingsSection?
+    var requestedDiagnosticsFocus: DiagnosticsFocus?
+    var preferredPairingTransport: OnboardingTransport?
+    /// 仅在正明确验证宿主支持 BE-3+ 保身份 `doctor --fix` 时才为 `"identity_preserving_doctor_fix"`。
+    var verifiedOnboardingCapability: String?
     @ObservationIgnored var pairingRefreshGeneration = 0
     @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
@@ -777,6 +795,34 @@ final class HostStore {
         photosAccess = systemPrivacySettings.photosAccessState()
     }
 
+    /// 从系统设置返回时只做被动原生权限刷新，绝不触发服务启动。
+    func refreshPermissionsOnReturn() {
+        photosAccess = systemPrivacySettings.photosAccessState()
+        launchesAtLogin = services.mainAppStatus() == .enabled
+        if launchesAtLogin {
+            loginItemWarning = nil
+        }
+    }
+
+    /// 供已验证 BE-3+ 宿主的 `config_permissions_unsafe` 路径调用的保身份修复。
+    func runSafeDoctorFixAndReload() async throws -> [String] {
+        let result = try await agent.doctor(true)
+        doctor = result.results
+        appliedFixes = result.fixes
+        if result.restartRequired == true {
+            try await restartServiceForOnboarding()
+        }
+        return result.fixes
+    }
+
+    /// 供设置页显式确认扩大代码浏览范围后调用；保留宿主身份与既有配对。
+    func updateWorkspaceScope(scanRoot: URL, browseRoot: URL) async throws {
+        try await agent.updateWorkspace(scanRoot, browseRoot)
+        if owner == .macApp || owner == .homebrew {
+            try await restartServiceForOnboarding()
+        }
+    }
+
     /// 首次请求弹出系统授权框；用户之前拒绝过时系统不会再弹，只能引导到隐私设置里手动开启。
     /// Homebrew 运行的 agentd 不继承 App 的照片授权，只能打开完全磁盘访问设置。
     func requestPhotosAccess() async {
@@ -1428,7 +1474,8 @@ final class HostStore {
             runtimeStatus: current.runtimeStatus,
             networkStatus: current.networkStatus,
             moduleStatus: previousModules,
-            moduleStatusState: .unavailable
+            moduleStatusState: .unavailable,
+            workspaceConfirmed: current.workspaceConfirmed
         )
     }
 
@@ -1471,7 +1518,8 @@ final class HostStore {
             runtimeStatus: staleSnapshot,
             networkStatus: current.networkStatus,
             moduleStatus: current.moduleStatus,
-            moduleStatusState: current.moduleStatusState
+            moduleStatusState: current.moduleStatusState,
+            workspaceConfirmed: current.workspaceConfirmed
         )
     }
 

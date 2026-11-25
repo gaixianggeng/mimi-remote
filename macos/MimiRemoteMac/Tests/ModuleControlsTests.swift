@@ -171,22 +171,61 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
 
-    func testSelectingLANInPairingPickerEnablesLANAndGeneratesQRCode() async {
+    func testSelectingDisabledLANInPairingPickerDoesNotAutoEnableAndExplicitEnableWorks() async {
         let fixture = ModuleFixture(codex: true, claude: false, ts: true, lan: false)
         fixture.succeedOnPair = true
         let store = fixture.store()
         await store.bootstrap()
         XCTAssertFalse(store.lanEnabled)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale])
+        let registrationsBeforePick = fixture.registrationCalls
 
+        // 选中未启用的局域网通道严格不自动开启、不重启服务。
         await store.refreshPairingFromPicker(.localNetwork)
 
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        // 显式点击开启后执行单次重载并签发二维码。
+        await store.enableNetworkAndRefreshPairing(.localNetwork)
+
         XCTAssertTrue(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick + 1)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale, .localNetwork])
         XCTAssertEqual(store.pairing?.network, .localNetwork)
         XCTAssertEqual(store.pairingNetwork, .localNetwork)
         XCTAssertNil(store.lastError)
         XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testExplicitTailscaleEnableReloadsOnceAndIssuesQR() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertFalse(store.tailscaleEnabled)
+        let registrationsBefore = fixture.registrationCalls
+
+        await store.refreshPairingFromPicker(.tailscale)
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        await store.enableNetworkAndRefreshPairing(.tailscale)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore + 1)
+        XCTAssertEqual(store.pairing?.network, .tailscale)
+        XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testCanPairIsFalseWhenNoNetworkIsEnabledEvenIfSwitchable() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertTrue(store.availablePairingNetworks.isEmpty)
+        XCTAssertFalse(store.canPair)
     }
 
     func testUnavailableLANReportsSpecificReasonInsteadOfGenericNoConnectionError() async {

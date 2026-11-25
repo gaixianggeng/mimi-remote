@@ -6,11 +6,9 @@ struct PairingView: View {
     let store: HostStore
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var didCopyPairingLink = false
-    @State private var isRefreshing = false
-    @State private var selectedNetwork: PairingNetwork = .tailscale
-    @State private var suppressNextNetworkChange = false
-    @State private var copyFeedbackTask: Task<Void, Never>?
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
+    @State private var pairingStore: PairingWindowStore?
     @State private var contentOverflows = false
     @State private var isApplyingRelay = false
 
@@ -19,93 +17,62 @@ struct PairingView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            PairingNetworkPicker(
-                selection: $selectedNetwork,
-                isRefreshing: isRefreshing || store.isBusy,
-                networks: [.tailcat, .tailscale, .localNetwork]
-            )
-            .padding(.top, 14)
-            Group {
-                if (!store.canPair || store.isBusy) && !isRefreshing {
-                    PairingUnavailableState(
-                        title: "配对暂不可用",
-                        description: store.isBusy ? "正在更新服务设置，请完成后刷新。" : store.pairingUnavailableReason(for: selectedNetwork),
-                        isRetrying: isRefreshing || store.isBusy,
-                        retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: selectedNetwork) } }
-                    )
-                } else if let pairing = store.pairing, let pairURL = pairing.pairURL, !pairURL.isEmpty, store.availablePairingNetworks.contains(pairing.network) {
-                    pairingContent(pairing, pairURL: pairURL)
-                } else if !isRefreshing, let error = store.lastError {
-                    PairingUnavailableState(
-                        title: "暂时无法生成二维码",
-                        description: error,
-                        isRetrying: isRefreshing,
-                        retry: { refreshPairing() }
-                    )
-                } else {
-                    PairingLoadingState()
-                }
+            if let pairingStore {
+                PairingNetworkPicker(
+                    selection: Binding(
+                        get: { pairingStore.selectedTransport },
+                        set: { pairingStore.selectTransport($0) }
+                    ),
+                    recommended: pairingStore.recommendedTransport,
+                    isDisabled: pairingStore.isEnablingTransport || pairingStore.isApplyingFix || isApplyingRelay,
+                    transports: pairingStore.orderedTransports
+                )
+                .padding(.top, 14)
+
+                mainContent(pairingStore)
+            } else {
+                PairingLoadingState()
             }
         }
-        .frame(minWidth: 420, minHeight: 560)
+        .frame(minWidth: 440, minHeight: 580)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            pairingFooter
+            if let pairingStore {
+                pairingFooter(pairingStore)
+            }
         }
         // macOS 26 的玻璃材质留给窗口 chrome 和操作控件，二维码内容层保持安静、稳定。
         .containerBackground(for: .window) {
             PairingWindowBackdrop()
         }
         .task {
-            await store.refreshIfNeeded()
-            await store.refreshTailcatStatus()
-            if let network = store.pairing?.network, store.availablePairingNetworks.contains(network), selectedNetwork != network {
-                suppressNextNetworkChange = true
-                selectedNetwork = network
-            } else if let first = store.availablePairingNetworks.first, !store.availablePairingNetworks.contains(selectedNetwork) {
-                suppressNextNetworkChange = true
-                selectedNetwork = first
+            let controller = ensurePairingStore()
+            let preferred = store.preferredPairingTransport
+            store.preferredPairingTransport = nil
+            await controller.handleAppear(preferredTransport: preferred)
+        }
+        .onChange(of: store.preferredPairingTransport) { _, preferred in
+            guard let preferred, let pairingStore else { return }
+            store.preferredPairingTransport = nil
+            pairingStore.selectTransport(preferred)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            pairingStore?.handleApplicationDidBecomeActive()
+        }
+        .task(id: pairingStore?.issuedPairing?.expiresAt) {
+            guard let pairingStore, pairingStore.issuedPairing != nil else { return }
+            while !Task.isCancelled && pairingStore.issuedPairing != nil {
+                pairingStore.clearIssuedPairingIfExpired()
+                if pairingStore.issuedPairing == nil { break }
+                try? await Task.sleep(for: .seconds(1))
             }
-            restorePairingIfNeeded()
-        }
-        .onChange(of: selectedNetwork) { _, network in
-            if suppressNextNetworkChange {
-                suppressNextNetworkChange = false
-                return
-            }
-            refreshPairing(network: network)
-        }
-        .onChange(of: store.availablePairingNetworks) { _, networks in
-            if !isRefreshing, !isApplyingRelay, let first = networks.first, !networks.contains(selectedNetwork) {
-                selectedNetwork = first
-            }
-            restorePairingIfNeeded()
-        }
-        .onChange(of: store.isBusy) { _, busy in
-            if !busy { restorePairingIfNeeded() }
-        }
-        .onChange(of: store.canPair) { _, available in
-            if available { restorePairingIfNeeded() }
-        }
-        .onChange(of: isRefreshing) { _, refreshing in
-            if !refreshing { restorePairingIfNeeded() }
         }
         .onChange(of: isApplyingRelay) { _, applying in
-            if !applying {
-                if selectedNetwork == .tailcat, store.tailcatError != nil {
-                    refreshPairing(network: .tailcat)
-                } else {
-                    restorePairingIfNeeded()
-                }
-            }
-        }
-        .onChange(of: store.pairing?.network) { _, network in
-            if let network, network != selectedNetwork {
-                suppressNextNetworkChange = true
-                selectedNetwork = network
+            if applying {
+                pairingStore?.invalidateIssuedPairing()
             }
         }
         .onDisappear {
-            copyFeedbackTask?.cancel()
+            pairingStore?.handleDisappear()
         }
     }
 
@@ -122,19 +89,301 @@ struct PairingView: View {
         return filtered + [lastError].compactMap { $0 }
     }
 
-    private func pairingContent(_ pairing: PairingInfo, pairURL: String) -> some View {
-        let visibleWarnings = Self.visibleWarnings(for: pairing, lastError: store.lastError)
+    private func ensurePairingStore() -> PairingWindowStore {
+        if let pairingStore { return pairingStore }
+        let created = PairingWindowStore(
+            dependencies: .live(hostStore: store) { target in
+                handleOpenSettings(target)
+            },
+            verifiedCapability: store.verifiedOnboardingCapability
+        )
+        pairingStore = created
+        return created
+    }
+
+    private func handleOpenSettings(_ target: OnboardingSettingsTarget) {
+        switch target {
+        case .loginItems:
+            store.openLoginItemsSettings()
+        case .filesAndFolders:
+            store.openFilesAndFoldersSettings()
+        case .localNetwork:
+            store.openLocalNetworkSettings()
+        case .photos:
+            store.openPhotosPrivacySettings()
+        case .fullDiskAccess:
+            store.openFullDiskAccessSettings()
+        case .dateTime:
+            store.openDateTimeSettings()
+        case .assistants:
+            store.requestedSettingsSection = .assistants
+            openSettings()
+            activateApplication()
+        case .managedConnection:
+            store.requestedSettingsSection = .connections
+            openSettings()
+            activateApplication()
+        case .hostRecovery:
+            store.requestedDiagnosticsFocus = .hostRecovery
+            openWindow(id: AppWindow.diagnostics.rawValue)
+            activateApplication()
+        case .connections, .windowsFirewall, .windowsNetworkProfile:
+            break
+        }
+    }
+
+    private func activateApplication() {
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    @ViewBuilder
+    private func mainContent(_ pairingStore: PairingWindowStore) -> some View {
+        if pairingStore.isServiceRequiresApproval {
+            serviceApprovalGateView(pairingStore)
+        } else if pairingStore.isCheckingPreflight && pairingStore.report == nil {
+            PairingLoadingState(
+                title: "正在检查配对条件",
+                message: "正在核对后台服务、可用助手与连接方式，不会自动开启任何通道。"
+            )
+        } else if let preflightError = pairingStore.preflightError {
+            PairingPreflightBlockedView(
+                title: "暂时无法确认配对条件",
+                diagnostic: preflightError,
+                isWorking: pairingStore.isCheckingPreflight,
+                onPrimaryAction: { Task { await pairingStore.performDiagnosticAction(preflightError) } },
+                onRetry: { Task { await pairingStore.runPreflight() } }
+            )
+        } else if !pairingStore.canIssuePairingQR
+            && !(pairingStore.corePrerequisitesReady
+                && pairingStore.canExplicitlyEnable(pairingStore.selectedTransport))
+        {
+            prerequisitesBlockedView(pairingStore)
+        } else if !pairingStore.isTransportReady(pairingStore.selectedTransport) {
+            selectedTransportCardView(pairingStore)
+        } else if let activePairing = pairingStore.activePairing,
+                  let pairURL = activePairing.pairURL
+        {
+            pairingContent(pairingStore, pairing: activePairing, pairURL: pairURL)
+        } else if pairingStore.isIssuingPairing {
+            PairingLoadingState()
+        } else if let pairingError = pairingStore.pairingError {
+            PairingPreflightBlockedView(
+                title: "暂时无法生成二维码",
+                diagnostic: pairingError,
+                isWorking: pairingStore.isIssuingPairing || pairingStore.isCheckingPreflight,
+                onPrimaryAction: { Task { await pairingStore.performDiagnosticAction(pairingError) } },
+                onRetry: { Task { await pairingStore.issuePairingQR(for: pairingStore.selectedTransport) } }
+            )
+        } else if pairingStore.didExpireCurrentPairing {
+            PairingUnavailableState(
+                title: "二维码已过期",
+                description: OnboardingCopyCatalog.localizedMessage(
+                    code: "pair_ticket_expired",
+                    step: .networkAny
+                ),
+                buttonTitle: "刷新二维码",
+                isRetrying: pairingStore.isIssuingPairing,
+                retry: { Task { await pairingStore.issuePairingQR(for: pairingStore.selectedTransport) } }
+            )
+        } else {
+            PairingUnavailableState(
+                title: "准备就绪",
+                description: "点击下方按钮生成新的短期配对二维码。",
+                buttonTitle: "生成二维码",
+                isRetrying: pairingStore.isIssuingPairing,
+                retry: { Task { await pairingStore.issuePairingQR(for: pairingStore.selectedTransport) } }
+            )
+        }
+    }
+
+    private func serviceApprovalGateView(_ pairingStore: PairingWindowStore) -> some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                InfoCard("需要先允许后台服务运行") {
+                    Text(OnboardingCopyCatalog.localizedMessage(
+                        code: "service_requires_approval",
+                        step: .serviceDaemon
+                    ))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        Button("打开登录项设置…") {
+                            store.openLoginItemsSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("重新检查") {
+                            Task { await pairingStore.runPreflight() }
+                        }
+                        .disabled(pairingStore.isCheckingPreflight)
+                    }
+                }
+            }
+            .frame(width: Self.columnWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+        }
+    }
+
+    private func prerequisitesBlockedView(_ pairingStore: PairingWindowStore) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                InfoCard("配对前需要完成以下检查") {
+                    ForEach(pairingStore.blockingChecks) { check in
+                        PairingCheckItemRow(
+                            check: check,
+                            resolved: pairingStore.diagnostic(for: check),
+                            isConfigured: pairingStore.report?.configured ?? false,
+                            isWorking: pairingStore.isCheckingPreflight || pairingStore.isApplyingFix || pairingStore.isEnablingTransport,
+                            onPrimary: { Task { await pairingStore.performCheckPrimaryAction(for: check) } },
+                            onSecondary: { Task { await pairingStore.performCheckSecondaryAction(for: check) } }
+                        )
+                        if check.id == .assistantAny {
+                            ForEach(pairingStore.assistantChecks.filter { $0.state != .ok }) { assistant in
+                                PairingCheckItemRow(
+                                    check: assistant,
+                                    resolved: pairingStore.diagnostic(for: assistant),
+                                    isConfigured: pairingStore.report?.configured ?? false,
+                                    isWorking: pairingStore.isCheckingPreflight || pairingStore.isApplyingFix,
+                                    onPrimary: { Task { await pairingStore.performCheckPrimaryAction(for: assistant) } },
+                                    onSecondary: { Task { await pairingStore.performCheckSecondaryAction(for: assistant) } }
+                                )
+                                .padding(.leading, 12)
+                            }
+                        }
+                        if check.id == .networkAny {
+                            ForEach(pairingStore.networkChecks.filter { $0.state != .ok }) { network in
+                                PairingCheckItemRow(
+                                    check: network,
+                                    resolved: pairingStore.diagnostic(for: network),
+                                    isConfigured: pairingStore.report?.configured ?? false,
+                                    isWorking: pairingStore.isCheckingPreflight || pairingStore.isEnablingTransport,
+                                    onPrimary: { Task { await pairingStore.performCheckPrimaryAction(for: network) } },
+                                    onSecondary: { Task { await pairingStore.performCheckSecondaryAction(for: network) } }
+                                )
+                                .padding(.leading, 12)
+                            }
+                        }
+                        if check.id != pairingStore.blockingChecks.last?.id {
+                            Divider().opacity(0.35)
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("重新检查") {
+                            Task { await pairingStore.runPreflight() }
+                        }
+                        .disabled(pairingStore.isCheckingPreflight || pairingStore.isEnablingTransport)
+
+                        if pairingStore.canExplicitlyEnable(pairingStore.selectedTransport) {
+                            Button("启用\(pairingStore.selectedTransport.localizedTitle)") {
+                                Task { await pairingStore.enableSelectedTransport(pairingStore.selectedTransport) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(pairingStore.isEnablingTransport)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            .frame(width: Self.columnWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func selectedTransportCardView(_ pairingStore: PairingWindowStore) -> some View {
+        let transport = pairingStore.selectedTransport
+        let transportCheck = pairingStore.check(for: transport.checkID)
+        let resolved = transportCheck.flatMap { pairingStore.diagnostic(for: $0) }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                InfoCard("\(transport.localizedTitle) 尚未就绪") {
+                    if let transportCheck {
+                        PairingCheckItemRow(
+                            check: transportCheck,
+                            resolved: resolved,
+                            isConfigured: pairingStore.report?.configured ?? false,
+                            isWorking: pairingStore.isCheckingPreflight || pairingStore.isEnablingTransport,
+                            hidesPrimaryAction: pairingStore.canExplicitlyEnable(transport),
+                            onPrimary: { Task { await pairingStore.performCheckPrimaryAction(for: transportCheck) } },
+                            onSecondary: { Task { await pairingStore.performCheckSecondaryAction(for: transportCheck) } }
+                        )
+                    } else {
+                        Text("该连接方式当前未启用或不可用。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let pairingError = pairingStore.pairingError {
+                        Text(pairingError.message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack(spacing: 10) {
+                        if pairingStore.canExplicitlyEnable(transport) {
+                            Button(pairingStore.isEnablingTransport ? "正在启用并复核…" : "启用\(transport.localizedTitle)") {
+                                Task { await pairingStore.enableSelectedTransport(transport) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(pairingStore.isEnablingTransport)
+                        }
+
+                        Button("重新检查") {
+                            Task { await pairingStore.runPreflight() }
+                        }
+                        .disabled(pairingStore.isCheckingPreflight || pairingStore.isEnablingTransport)
+                    }
+                }
+            }
+            .frame(width: Self.columnWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+        }
+    }
+
+    private func pairingContent(
+        _ pairingStore: PairingWindowStore,
+        pairing: PairingInfo,
+        pairURL: String
+    ) -> some View {
+        let visibleWarnings = Self.visibleWarnings(for: pairing, lastError: pairingStore.pairingError?.message)
         let showsEndpoint = Self.showsEndpoint(for: pairing)
         return ScrollView {
             VStack(spacing: 0) {
+                if let warning = pairingStore.mainAppLoginItemWarning {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(warning)
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("打开登录项设置…") {
+                                store.openLoginItemsSettings()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.bottom, 12)
+                }
+
                 PairingIntroduction()
                     .padding(.bottom, 14)
 
-                PairingCodeCard(value: pairURL, isRefreshing: isRefreshing)
+                PairingCodeCard(value: pairURL, isRefreshing: pairingStore.isIssuingPairing)
                     .padding(.bottom, 12)
 
                 if showsEndpoint {
-                    // 地址只用于排查，不是这一页要用户读的内容。
                     Text(pairing.endpoint)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -171,26 +420,22 @@ struct PairingView: View {
         }
     }
 
-    private var pairingFooter: some View {
+    private func pairingFooter(_ pairingStore: PairingWindowStore) -> some View {
         VStack(spacing: 12) {
-            if selectedNetwork == .tailcat {
-                // 配置不依赖二维码存在，更换失败后仍可查看错误、修改中转。
+            if pairingStore.selectedTransport == .tailcat, pairingStore.report?.configured == true {
                 TailcatRelayPicker(store: store, showsCaption: false, isApplying: $isApplyingRelay) {
-                    isRefreshing = true
-                    await store.refreshPairing(network: .tailcat)
-                    isRefreshing = false
+                    await pairingStore.runPreflight()
                 }
-                .disabled(isRefreshing)
+                .disabled(pairingStore.isIssuingPairing || pairingStore.isEnablingTransport)
                 .accessibilityElement(children: .contain)
             }
-            if let pairing = store.pairing, let pairURL = pairing.pairURL, !pairURL.isEmpty,
-               store.availablePairingNetworks.contains(pairing.network),
-               (store.canPair && !store.isBusy) || isRefreshing {
+            if pairingStore.activePairing != nil {
                 PairingActionBar(
-                    didCopy: didCopyPairingLink,
-                    isRefreshing: isRefreshing,
-                    copy: { copyPairingLink(pairURL) },
-                    refresh: { refreshPairing() }
+                    didCopy: pairingStore.didCopyPairingLink,
+                    canCopy: pairingStore.canCopyPairingLink,
+                    isRefreshing: pairingStore.isIssuingPairing,
+                    copy: { _ = pairingStore.copyPairingLink() },
+                    refresh: { Task { await pairingStore.issuePairingQR(for: pairingStore.selectedTransport) } }
                 )
             }
         }
@@ -198,58 +443,98 @@ struct PairingView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 10)
         .padding(.bottom, 16)
-        // 内容真的会滚到操作栏底下时才加边缘虚化，页面放得下时不留一条多余的横带。
         .background(alignment: .top) {
             if contentOverflows {
                 PairingScrollEdge()
             }
         }
     }
+}
 
-    private func copyPairingLink(_ value: String) {
-        guard store.canPair, !store.isBusy,
-              let pairing = store.pairing, pairing.pairURL == value,
-              store.availablePairingNetworks.contains(pairing.network) else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+private struct PairingCheckItemRow: View {
+    let check: OnboardingCheck
+    let resolved: OnboardingResolvedDiagnostic?
+    let isConfigured: Bool
+    let isWorking: Bool
+    var hidesPrimaryAction = false
+    let onPrimary: () -> Void
+    let onSecondary: () -> Void
 
-        copyFeedbackTask?.cancel()
-        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1)) {
-            didCopyPairingLink = true
-        }
-        copyFeedbackTask = Task {
-            try? await Task.sleep(for: .seconds(1.6))
-            guard !Task.isCancelled else { return }
-            withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 1)) {
-                didCopyPairingLink = false
+    var body: some View {
+        let visiblePrimary = hidesPrimaryAction ? nil : resolved?.primaryAction
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                OnboardingStateIcon(state: check.state)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(check.id.localizedTitle)
+                        .font(.callout.weight(.semibold))
+                    Text(resolved?.message ?? OnboardingCopyCatalog.safeFallbackCopy)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if resolved?.isTrusted == true,
+                       visiblePrimary != nil || resolved?.secondaryAction != nil
+                    {
+                        HStack(spacing: 8) {
+                            if let primary = visiblePrimary {
+                                Button(OnboardingActionLabels.primaryTitle(
+                                    for: primary,
+                                    code: resolved?.code,
+                                    isConfigured: isConfigured
+                                ), action: onPrimary)
+                                .controlSize(.small)
+                                .disabled(isWorking)
+                            }
+                            if let secondary = resolved?.secondaryAction {
+                                Button(resolved?.secondaryLabel ?? OnboardingActionLabels.primaryTitle(
+                                    for: secondary,
+                                    code: resolved?.code,
+                                    isConfigured: isConfigured
+                                ), action: onSecondary)
+                                .controlSize(.small)
+                                .disabled(isWorking)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                }
             }
         }
+        .padding(.vertical, 2)
     }
+}
 
-    /// A module change invalidates its QR while the service is busy. Refresh only
-    /// once it is usable again; a real generation error stays visible for retry.
-    private func restorePairingIfNeeded() {
-        // 换中转是多步操作，中途不能抢着生成二维码，否则下一步会因服务忙而失败。
-        guard !isRefreshing, !isApplyingRelay, !store.isBusy, store.canPair,
-              store.pairing == nil, store.lastError == nil else { return }
-        let network: PairingNetwork = store.availablePairingNetworks.contains(selectedNetwork)
-            ? selectedNetwork : .automatic
-        refreshPairing(network: network)
-    }
+private struct PairingPreflightBlockedView: View {
+    let title: String
+    let diagnostic: OnboardingResolvedDiagnostic
+    let isWorking: Bool
+    let onPrimaryAction: () -> Void
+    let onRetry: () -> Void
 
-    private func refreshPairing(network: PairingNetwork? = nil) {
-        guard !isRefreshing, !store.isBusy, store.canPair else { return }
-        let targetNetwork = network ?? selectedNetwork
-        isRefreshing = true
-        Task {
-            await store.refreshPairingFromPicker(targetNetwork)
-            // A superseded request may finish with no QR. Its remembered route
-            // must not replace the user's current, available selection.
-            if let network = store.pairing?.network, network != selectedNetwork {
-                suppressNextNetworkChange = true
-                selectedNetwork = network
+    var body: some View {
+        PairingPlaceholder(
+            symbol: "exclamationmark.triangle",
+            symbolColor: .orange,
+            title: title,
+            message: diagnostic.message,
+            isMessageSelectable: true
+        ) {
+            HStack(spacing: 10) {
+                if diagnostic.isTrusted, let fix = diagnostic.primaryAction, fix != .retry {
+                    Button(OnboardingActionLabels.primaryTitle(
+                        for: fix,
+                        code: diagnostic.code,
+                        isConfigured: true
+                    ), action: onPrimaryAction)
+                    .modifier(PairingActionButtonStyleModifier(isProminent: true))
+                    .disabled(isWorking)
+                }
+                Button("重新检查", action: onRetry)
+                    .modifier(PairingActionButtonStyleModifier(isProminent: diagnostic.primaryAction == nil || diagnostic.primaryAction == .retry))
+                    .disabled(isWorking)
             }
-            isRefreshing = false
+            .controlSize(.large)
         }
     }
 }
@@ -268,11 +553,8 @@ private struct PairingIntroduction: View {
             VStack(spacing: 5) {
                 Text("扫描二维码")
                     .font(.system(size: 24, weight: .bold))
-                    // 大字号里字距要收紧，否则标题看起来是散的。
                     .tracking(-0.5)
 
-                // iOS 主屏上的名字是 mimi，App Store 里叫 Mimi Remote；两个名字都写出来，
-                // 用户在手机上才找得到（#554）。扫不了码时，复制下方链接到手机上粘贴即可。
                 Text("在 iPhone 或 iPad 上打开 mimi（App Store 里叫 Mimi Remote），扫描下方二维码。扫不了码就点「复制配对链接」，在手机上粘贴。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -287,23 +569,24 @@ private struct PairingIntroduction: View {
 }
 
 private struct PairingNetworkPicker: View {
-    @Binding var selection: PairingNetwork
-    let isRefreshing: Bool
-    let networks: [PairingNetwork]
+    @Binding var selection: OnboardingTransport
+    let recommended: OnboardingTransport?
+    let isDisabled: Bool
+    let transports: [OnboardingTransport]
 
     var body: some View {
         VStack(spacing: 6) {
             Picker("连接方式", selection: $selection) {
-                ForEach(networks) { network in
-                    Text(network == .localNetwork ? "同一局域网" : network == .tailcat ? "内置连接" : "Tailscale")
-                        .tag(network)
+                ForEach(transports, id: \.self) { transport in
+                    Text(label(for: transport))
+                        .tag(transport)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .controlSize(.large)
-            .frame(maxWidth: 320)
-            .disabled(isRefreshing)
+            .frame(maxWidth: 340)
+            .disabled(isDisabled)
             .accessibilityHint("选择用于生成配对二维码的连接网络")
 
             Label(hint, systemImage: hintSymbol)
@@ -316,24 +599,28 @@ private struct PairingNetworkPicker: View {
         .accessibilityElement(children: .contain)
     }
 
+    private func label(for transport: OnboardingTransport) -> String {
+        if recommended == transport {
+            return "\(transport.localizedTitle)（推荐）"
+        }
+        return transport.localizedTitle
+    }
+
     private var hint: String {
         switch selection {
-        case .automatic:
-            "自动选择可用网络"
         case .tailscale:
-            "默认推荐 · 支持跨网络连接"
-        case .localNetwork:
-            "手机和电脑需要处于同一局域网"
+            "已连接时优先推荐 · 支持跨网络直连"
         case .tailcat:
-            "免费可用，无需安装其他工具"
+            "\(HostStore.tailcatTagline)，无需安装其他工具"
+        case .lan:
+            "手机和电脑需要处于同一受信任局域网"
         }
     }
 
     private var hintSymbol: String {
         switch selection {
-        case .automatic: "arrow.triangle.branch"
         case .tailscale: "network"
-        case .localNetwork: "wifi"
+        case .lan: "wifi"
         case .tailcat: "point.3.connected.trianglepath.dotted"
         }
     }
@@ -346,7 +633,6 @@ private struct PairingCodeCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // 二维码底板固定为白色：扫码对比度不跟随外观模式，深色模式下也要能扫。
         QRCodeView(value: value, size: 216)
             .padding(14)
             .background(.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -399,13 +685,7 @@ struct PairingExpiryStatus: View {
     }
 
     static func expiryDate(from rawValue: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: rawValue) {
-            return date
-        }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: rawValue)
+        OnboardingDateParser.parseRFC3339(rawValue)
     }
 
     static func fallbackText(for rawValue: String) -> String {
@@ -474,7 +754,6 @@ private struct PairingWarningList: View {
     }
 }
 
-/// 内容滚到操作栏下面时，用一层渐隐材质把文字收进 chrome，而不是压出一条硬分割线。
 private struct PairingScrollEdge: View {
     var body: some View {
         Rectangle()
@@ -497,6 +776,7 @@ private struct PairingScrollEdge: View {
 
 private struct PairingActionBar: View {
     let didCopy: Bool
+    let canCopy: Bool
     let isRefreshing: Bool
     let copy: () -> Void
     let refresh: () -> Void
@@ -525,9 +805,10 @@ private struct PairingActionBar: View {
                 .contentShape(Rectangle())
             }
             .modifier(PairingActionButtonStyleModifier(isProminent: false))
-            .help("复制这条十分钟有效的配对链接")
+            .disabled(!canCopy)
+            .help("复制当前有效的短期配对链接")
             .accessibilityLabel(didCopy ? "配对链接已复制" : "复制配对链接")
-            .accessibilityHint("将当前十分钟有效的配对链接复制到剪贴板")
+            .accessibilityHint("将当前有效的配对链接复制到剪贴板")
 
             Button(action: refresh) {
                 HStack(spacing: 6) {
@@ -545,21 +826,24 @@ private struct PairingActionBar: View {
             .modifier(PairingActionButtonStyleModifier(isProminent: true))
             .disabled(isRefreshing)
             .keyboardShortcut("r", modifiers: .command)
-            .help("生成一张新的十分钟配对二维码（⌘R）")
+            .help("生成一张新的短期配对二维码（⌘R）")
             .accessibilityLabel(isRefreshing ? "正在刷新二维码" : "刷新二维码")
-            .accessibilityHint("生成一张新的十分钟配对二维码")
+            .accessibilityHint("生成一张新的短期配对二维码")
             .accessibilityValue(isRefreshing ? "进行中" : "就绪")
         }
     }
 }
 
 private struct PairingLoadingState: View {
+    var title = "正在生成二维码"
+    var message = "配对码仅在短时间内有效。"
+
     var body: some View {
         PairingPlaceholder(
             symbol: "qrcode.viewfinder",
             symbolColor: .accentColor,
-            title: "正在生成二维码",
-            message: "配对码仅在短时间内有效。"
+            title: title,
+            message: message
         ) {
             ProgressView()
                 .controlSize(.small)
@@ -570,6 +854,7 @@ private struct PairingLoadingState: View {
 private struct PairingUnavailableState: View {
     let title: String
     let description: String
+    var buttonTitle = "重新生成"
     let isRetrying: Bool
     let retry: () -> Void
 
@@ -589,7 +874,7 @@ private struct PairingUnavailableState: View {
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
-                    Text(isRetrying ? "正在重新生成" : "重新生成")
+                    Text(isRetrying ? "正在重新生成" : buttonTitle)
                 }
                 .frame(minWidth: 132, minHeight: 22)
                 .contentShape(Rectangle())
@@ -598,14 +883,13 @@ private struct PairingUnavailableState: View {
             .controlSize(.large)
             .disabled(isRetrying)
             .keyboardShortcut("r", modifiers: .command)
-            .accessibilityLabel(isRetrying ? "正在重新生成二维码" : "重新生成二维码")
-            .accessibilityHint("重试生成一张新的十分钟配对二维码")
+            .accessibilityLabel(isRetrying ? "正在重新生成二维码" : buttonTitle)
+            .accessibilityHint("重试生成一张新的短期配对二维码")
             .accessibilityValue(isRetrying ? "进行中" : "可重试")
         }
     }
 }
 
-/// 加载态和失败态共用同一套排版，二维码没出现时页面重心也不会跳。
 private struct PairingPlaceholder<Action: View>: View {
     let symbol: String
     let symbolColor: Color
@@ -614,7 +898,6 @@ private struct PairingPlaceholder<Action: View>: View {
     var isMessageSelectable = false
     @ViewBuilder let action: () -> Action
 
-    // 失败态的报错要能被选中复制，加载态的固定文案不需要。
     @ViewBuilder private var messageText: some View {
         let base = Text(message)
             .font(.callout)
@@ -656,7 +939,6 @@ private struct PairingActionButtonStyleModifier: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        // 仅让支持 Liquid Glass 的系统使用玻璃按钮，旧系统保留相同的原生交互语义。
         if #available(macOS 26.0, *) {
             if isProminent {
                 content.buttonStyle(.glassProminent)
@@ -677,7 +959,6 @@ private struct PairingWindowBackdrop: View {
             Rectangle()
                 .fill(.ultraThinMaterial)
 
-            // 只留一处品牌光晕落在标题后面，避免多个彩色渐变互相染成脏色。
             RadialGradient(
                 colors: [Color.accentColor.opacity(0.16), .clear],
                 center: UnitPoint(x: 0.5, y: 0),

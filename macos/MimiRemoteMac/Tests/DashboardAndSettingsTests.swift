@@ -1,0 +1,250 @@
+import Foundation
+import XCTest
+@testable import MimiRemoteMac
+
+@MainActor
+final class DashboardAndSettingsTests: XCTestCase {
+    // MARK: - Dashboard deduplication & typed remediation
+
+    func testDashboardEliminatesDuplicateRedErrorWhenLifecycleDetailMatchesLastError() {
+        let message = "后台服务启动失败：端口已被占用"
+        let remediation = DashboardPresentation.remediation(
+            lifecycle: .failed(message),
+            owner: .none,
+            agentRegistrationState: .enabled,
+            hasConfiguration: true
+        )
+        XCTAssertNotNil(remediation)
+        XCTAssertEqual(remediation?.primaryAction, .repairAndStartService)
+        XCTAssertEqual(remediation?.primaryButtonTitle, "重试启动服务")
+        XCTAssertNil(
+            DashboardPresentation.additionalErrorBanner(
+                lifecycle: .failed(message),
+                lastError: message,
+                remediation: remediation
+            ),
+            "不能在标题副文/修复卡之外重复渲染同一份红字错误"
+        )
+    }
+
+    func testDashboardProvidesTypedRemediationForDegradedStoppedAndFailedStates() {
+        // 1. Degraded due to background agent requiresApproval
+        let approval = DashboardPresentation.remediation(
+            lifecycle: .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"),
+            owner: .none,
+            agentRegistrationState: .requiresApproval,
+            hasConfiguration: true
+        )
+        XCTAssertEqual(approval?.primaryAction, .openLoginItems)
+        XCTAssertEqual(approval?.primaryButtonTitle, "打开登录项设置…")
+
+        // 2. Stopped state
+        let stopped = DashboardPresentation.remediation(
+            lifecycle: .stopped,
+            owner: .macApp,
+            agentRegistrationState: .notRegistered,
+            hasConfiguration: true
+        )
+        XCTAssertEqual(stopped?.primaryAction, .repairAndStartService)
+        XCTAssertEqual(stopped?.primaryButtonTitle, "启动服务")
+        XCTAssertTrue(stopped?.secondaryActions.contains(.openDiagnostics) == true)
+
+        // 3. Failed without config offers returning to onboarding wizard
+        let unconfiguredFailed = DashboardPresentation.remediation(
+            lifecycle: .failed("未找到配置"),
+            owner: .none,
+            agentRegistrationState: .notRegistered,
+            hasConfiguration: false
+        )
+        XCTAssertTrue(unconfiguredFailed?.secondaryActions.contains(.returnToOnboarding) == true)
+
+        // 4. Ready state needs no remediation card
+        XCTAssertNil(DashboardPresentation.remediation(
+            lifecycle: .ready,
+            owner: .macApp,
+            agentRegistrationState: .enabled,
+            hasConfiguration: true
+        ))
+    }
+
+    func testDashboardSurfacesReadOnlyHostRecoveryWhenConfigInvalid() {
+        let configCheck = OnboardingCheck(
+            id: .configStore,
+            state: .error,
+            detail: "配置无法安全读取。",
+            blocking: true,
+            code: "config_invalid",
+            fix: .openSettings(.hostRecovery),
+            configPath: "/fixture/config/config.json"
+        )
+        let report = OnboardingPreflightReport(
+            ok: false,
+            stage: .pair,
+            configured: true,
+            workspaceConfirmed: false,
+            configPath: "/fixture/config/config.json",
+            scanRoot: "/fixture/workspace",
+            browseRoot: "/fixture/workspace",
+            scanRootExists: true,
+            recommendedNext: .configStore,
+            recommendedTransport: nil,
+            checks: [configCheck]
+        )
+        let remediation = DashboardPresentation.remediation(
+            lifecycle: .degraded("配置异常"),
+            owner: .none,
+            agentRegistrationState: .enabled,
+            hasConfiguration: true,
+            preflightReport: report
+        )
+        XCTAssertEqual(remediation?.primaryAction, .openHostRecovery)
+        XCTAssertEqual(remediation?.primaryButtonTitle, "查看恢复信息…")
+    }
+
+    // MARK: - Settings Local Network explanation & Widen Browse Scope preview/cancel/confirm
+
+    func testFileAccessSettingsIncludesLocalNetworkExplanationForBothOwners() {
+        let macApp = FileAccessSettingsPresentation.make(owner: .macApp, photosAccess: .notDetermined)
+        let homebrew = FileAccessSettingsPresentation.make(owner: .homebrew, photosAccess: .authorized)
+
+        XCTAssertEqual(FileAccessSettingsPresentation.localNetworkActionTitle, "打开本地网络权限设置…")
+        XCTAssertTrue(macApp.localNetworkCaption.contains("同一局域网"))
+        XCTAssertTrue(macApp.localNetworkCaption.contains("自动刷新"))
+        XCTAssertTrue(homebrew.localNetworkCaption.contains("同一局域网"))
+        XCTAssertTrue(homebrew.localNetworkCaption.contains("自动刷新"))
+    }
+
+    func testWorkspaceScopeWidenPreviewCancelDoesZeroMutationsAndConfirmPassesBothRoots() async throws {
+        let home = URL(filePath: "/fixture/home", directoryHint: .isDirectory)
+        let scanRoot = URL(filePath: "/fixture/home/code", directoryHint: .isDirectory)
+        let updateCalls = LockedWorkspaceCalls()
+        var currentBrowse = scanRoot
+
+        let deps = WorkspaceScopeDependencies(
+            preflight: {
+                OnboardingPreflightReport(
+                    ok: true,
+                    stage: .pair,
+                    configured: true,
+                    workspaceConfirmed: true,
+                    configPath: "/fixture/config/config.json",
+                    scanRoot: scanRoot.path,
+                    browseRoot: currentBrowse.path,
+                    scanRootExists: true,
+                    recommendedNext: .networkAny,
+                    recommendedTransport: .tailscale,
+                    checks: []
+                )
+            },
+            updateWorkspaceScope: { scan, browse in
+                updateCalls.append((scan.path, browse.path))
+                currentBrowse = browse
+            },
+            directoryExists: { _ in true },
+            homeDirectory: { home }
+        )
+
+        let store = WorkspaceScopeStore(dependencies: deps)
+        await store.refresh()
+        XCTAssertTrue(store.canWidenBrowseScope)
+        XCTAssertEqual(store.scanRoot?.path, scanRoot.path)
+        XCTAssertEqual(store.browseRoot?.path, scanRoot.path)
+
+        // 不包含当前代码目录的无关路径被拒绝
+        store.prepareWidenPreview(proposedBrowseRoot: URL(filePath: "/fixture/other", directoryHint: .isDirectory))
+        XCTAssertNil(store.pendingPreview)
+        XCTAssertNotNil(store.errorMessage)
+
+        // 选择主目录时展示完整授权预览，此时尚未写入
+        store.prepareWidenPreview(proposedBrowseRoot: home)
+        let preview = try XCTUnwrap(store.pendingPreview)
+        XCTAssertTrue(preview.widensBeyondScanRoot)
+        XCTAssertTrue(preview.coversHomeDirectory)
+        XCTAssertTrue(preview.summaryLines.contains(where: { $0.contains(scanRoot.path) }))
+        XCTAssertTrue(preview.summaryLines.contains(where: { $0.contains(home.path) }))
+        XCTAssertTrue(preview.summaryLines.contains(where: { $0.contains("个人主目录") }))
+        XCTAssertTrue(updateCalls.values.isEmpty)
+
+        // 取消扩权：零写入、原范围不变
+        store.cancelWidenPreview()
+        XCTAssertNil(store.pendingPreview)
+        XCTAssertEqual(store.browseRoot?.path, scanRoot.path)
+        XCTAssertTrue(updateCalls.values.isEmpty)
+
+        // 再次预览并显式确认：调用 workspace --scan-root ... --browse-root ...
+        store.prepareWidenPreview(proposedBrowseRoot: home)
+        await store.confirmWidenBrowseScope()
+        XCTAssertNil(store.pendingPreview)
+        XCTAssertEqual(updateCalls.values.count, 1)
+        XCTAssertEqual(updateCalls.values.first?.0, scanRoot.path)
+        XCTAssertEqual(updateCalls.values.first?.1, home.path)
+        XCTAssertEqual(store.browseRoot?.path, home.path)
+    }
+
+    func testRefreshPermissionsOnReturnUpdatesNativeStateWithoutStartingService() {
+        let registerCalls = CallCounter()
+        var mainAppState: ServiceRegistrationState = .notRegistered
+        var photosState: PhotosAccessState = .notDetermined
+
+        let store = HostStore(
+            agent: AgentCommandClient(
+                configExists: { true },
+                setup: { _ in throw AgentClientError.commandFailed("unused") },
+                status: { throw AgentClientError.commandFailed("unused") },
+                readiness: { throw AgentClientError.commandFailed("unused") },
+                statusAt: { _ in throw AgentClientError.commandFailed("unused") },
+                doctor: { _ in throw AgentClientError.commandFailed("unused") },
+                configureClaude: { _, _ in throw AgentClientError.commandFailed("unused") },
+                setLANAccess: { _ in throw AgentClientError.commandFailed("unused") },
+                pair: { _ in throw AgentClientError.commandFailed("unused") },
+                version: { "test" }
+            ),
+            services: ServiceManagementClient(
+                agentStatus: { .notRegistered },
+                agentConfigurationError: { nil },
+                isAgentRegistrationCurrent: { true },
+                markAgentRegistrationCurrent: {},
+                registerAgent: { _ = registerCalls.increment() },
+                unregisterAgent: {},
+                agentLaunchFailure: { nil },
+                mainAppStatus: { mainAppState },
+                registerMainApp: {},
+                unregisterMainApp: {},
+                openLoginItemsSettings: {}
+            ),
+            homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
+            health: HealthClient(check: { _ in false }, checkDirect: { _ in false }),
+            logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }),
+            systemPrivacySettings: SystemPrivacySettingsClient(
+                openFullDiskAccessSettings: {},
+                photosAccessState: { photosState },
+                requestPhotosAccess: { photosState },
+                openPhotosPrivacySettings: {}
+            )
+        )
+
+        store.loginItemWarning = "尚未允许"
+        mainAppState = .enabled
+        photosState = .authorized
+
+        store.refreshPermissionsOnReturn()
+
+        XCTAssertTrue(store.launchesAtLogin)
+        XCTAssertEqual(store.photosAccess, .authorized)
+        XCTAssertNil(store.loginItemWarning)
+        XCTAssertEqual(registerCalls.current, 0)
+    }
+}
+
+private final class LockedWorkspaceCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [(String, String)] = []
+
+    var values: [(String, String)] {
+        lock.withLock { storage }
+    }
+
+    func append(_ pair: (String, String)) {
+        lock.withLock { storage.append(pair) }
+    }
+}

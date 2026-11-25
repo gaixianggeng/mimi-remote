@@ -111,6 +111,322 @@ final class AgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(events.values, ["start", "export", "clear"])
     }
 
+    func testDiagnosticLogSanitizerRedactsCredentialsURLsPathsAndNonLoopbackIPs() {
+        let dirty = [
+            #"Authorization: Bearer tok_super_secret_123"#,
+            #"{"token":"secret-host","pair_url":"mimiremote://pair?pair_sig=abc&token=xyz","grant":"g-1","signature":"s-2"}"#,
+            #"connect_url=https://100.64.0.9:8787/ws?dsh_token=harness999&ws_token=ws888"#,
+            #"failed reading /Users/alice/Library/Application Support/mimi-remote/config.json from 192.168.1.42"#,
+            #"{"level":"info","version":"0.150.0","listen":"127.0.0.1:8787"}"#,
+            #"failed with Bearer solo_secret_456"#,
+        ]
+
+        let sanitized = DiagnosticLogSanitizer.sanitizeLines(dirty)
+
+        XCTAssertFalse(sanitized[0].contains("tok_super_secret_123"))
+        XCTAssertEqual(sanitized[0], "Authorization: [REDACTED]")
+
+        XCTAssertFalse(sanitized[1].contains("secret-host"))
+        XCTAssertFalse(sanitized[1].contains("pair_sig=abc"))
+        XCTAssertFalse(sanitized[1].contains("g-1"))
+        XCTAssertFalse(sanitized[1].contains("s-2"))
+
+        XCTAssertFalse(sanitized[2].contains("harness999"))
+        XCTAssertFalse(sanitized[2].contains("ws888"))
+        XCTAssertFalse(sanitized[2].contains("100.64.0.9"))
+
+        XCTAssertFalse(sanitized[3].contains("alice"))
+        XCTAssertFalse(sanitized[3].contains("192.168.1.42"))
+        XCTAssertTrue(sanitized[3].contains("~/Library/Application Support/mimi-remote/config.json"))
+        XCTAssertTrue(sanitized[3].contains("[REDACTED_IP]"))
+
+        // 安全版本号与回环地址保留
+        XCTAssertEqual(sanitized[4], #"{"level":"info","version":"0.150.0","listen":"127.0.0.1:8787"}"#)
+        XCTAssertEqual(sanitized[5], "failed with Bearer [REDACTED]")
+    }
+
+    func testDoctorDisplayChecksAreReadOnlyWithChineseTitlesAndSanitizedText() {
+        let rawChecks = [
+            AgentCheck(name: "config", ok: false, level: "error", message: "bad /Users/bob/config.json", fix: "Bearer tok123"),
+            AgentCheck(name: "tailscale", ok: true, level: "", message: "connected 100.64.1.2", fix: nil),
+        ]
+        let display = rawChecks.map(DoctorCheckPresentation.make(from:))
+        XCTAssertEqual(display[0].localizedTitle, "配置文件")
+        XCTAssertFalse(display[0].sanitizedMessage.contains("bob"))
+        XCTAssertEqual(display[0].sanitizedDetail, "Bearer [REDACTED]")
+        XCTAssertEqual(display[1].localizedTitle, "Tailscale 网络")
+        XCTAssertFalse(display[1].sanitizedMessage.contains("100.64.1.2"))
+    }
+
+    @MainActor
+    func testDiagnosticsClickableFixesComeOnlyFromPreflightAndHostRecoveryIsReadOnly() async throws {
+        for code in ["config_invalid", "config_recovery_required", "token_rotation_requires_approval", "legacy_codex_residue"] {
+            let doctorFixCalls = CallCounter()
+            let report = Self.makeMacPairReport(
+                configCheck: OnboardingCheck(
+                    id: .configStore,
+                    state: .error,
+                    detail: "配置需要恢复。",
+                    blocking: true,
+                    code: code,
+                    fix: .openSettings(.hostRecovery),
+                    configPath: "/Users/private-user/Library/Application Support/mimi-remote/config.json",
+                    recoveryPath: "/Users/private-user/Library/Application Support/mimi-remote/config.previous.json"
+                )
+            )
+            var deps = Self.makeDiagnosticsDependencies(report: report)
+            deps.runSafeDoctorFix = {
+                _ = doctorFixCalls.increment()
+                return []
+            }
+            deps.runReadOnlyDoctor = {
+                AgentDoctorResults(ok: false, version: "1.0.0", listen: "127.0.0.1:8787", checks: [
+                    AgentCheck(name: "config", ok: false, level: "error", message: "corrupted", fix: "agentd setup --force"),
+                ])
+            }
+
+            let store = DiagnosticsStore(
+                dependencies: deps,
+                verifiedCapability: OnboardingSchema.doctorFixCapability
+            )
+            await store.refreshAll()
+
+            // doctor 检查仅作展示，不提供任何可点击修复。
+            XCTAssertEqual(store.doctorChecks.count, 1)
+            XCTAssertEqual(store.doctorChecks[0].localizedTitle, "配置文件")
+
+            let configRow = try XCTUnwrap(store.check(for: .configStore))
+            XCTAssertFalse(store.canClickDoctorFix(for: configRow), code)
+            XCTAssertEqual(store.clickablePrimaryFix(for: configRow), .openSettings(.hostRecovery), code)
+            let recovery = try XCTUnwrap(store.recoveryDiagnostic, code)
+            XCTAssertEqual(recovery.code, code)
+            XCTAssertEqual(recovery.configPath, "…/config.json")
+            XCTAssertEqual(recovery.recoveryPath, "…/config.previous.json")
+            XCTAssertFalse(recovery.configPath?.contains("private-user") ?? false)
+
+            await store.performCheckPrimaryAction(for: configRow)
+            XCTAssertEqual(doctorFixCalls.current, 0, "host_recovery must be strictly read-only for \(code)")
+        }
+    }
+
+    @MainActor
+    func testDoctorFixOnlyRunsOnVerifiedBE3HostWithConfigPermissionsUnsafeAndRerunsPreflight() async throws {
+        let unsafeCheck = OnboardingCheck(
+            id: .configStore,
+            state: .error,
+            detail: "配置文件的访问权限过宽。请在电脑上修复权限。",
+            blocking: true,
+            code: "config_permissions_unsafe",
+            fix: .runFix(.doctorFix)
+        )
+        let unsafeReport = Self.makeMacPairReport(configCheck: unsafeCheck)
+        let greenReport = Self.makeMacPairReport(configCheck: nil)
+
+        // 1. Pre-BE-3 host (verifiedCapability == nil): doctor_fix MUST NOT be clickable or executed.
+        let preBE3DoctorFixCalls = CallCounter()
+        var preBE3Deps = Self.makeDiagnosticsDependencies(report: unsafeReport)
+        preBE3Deps.runSafeDoctorFix = {
+            _ = preBE3DoctorFixCalls.increment()
+            return ["should-not-run"]
+        }
+        let preBE3Store = DiagnosticsStore(dependencies: preBE3Deps, verifiedCapability: nil)
+        await preBE3Store.runPreflight()
+        XCTAssertFalse(preBE3Store.isBE3DoctorFixSupported)
+        XCTAssertFalse(preBE3Store.canClickDoctorFix(for: unsafeCheck))
+        await preBE3Store.performCheckPrimaryAction(for: unsafeCheck)
+        XCTAssertEqual(preBE3DoctorFixCalls.current, 0)
+
+        // 2. Verified BE-3+ host: doctor_fix IS clickable for config_permissions_unsafe and re-runs preflight.
+        let preflightCalls = CallCounter()
+        let doctorFixCalls = CallCounter()
+        var be3Deps = Self.makeDiagnosticsDependencies(report: unsafeReport)
+        be3Deps.preflight = { _, _ in
+            let count = preflightCalls.increment()
+            return count == 1 ? unsafeReport : greenReport
+        }
+        be3Deps.runSafeDoctorFix = {
+            _ = doctorFixCalls.increment()
+            return ["已收紧 /Users/alice/config.json 权限"]
+        }
+        let be3Store = DiagnosticsStore(
+            dependencies: be3Deps,
+            verifiedCapability: OnboardingSchema.doctorFixCapability
+        )
+        await be3Store.runPreflight()
+        let row = try XCTUnwrap(be3Store.check(for: .configStore))
+        XCTAssertTrue(be3Store.canClickDoctorFix(for: row))
+        XCTAssertEqual(be3Store.clickablePrimaryFix(for: row), .runFix(.doctorFix))
+
+        await be3Store.performCheckPrimaryAction(for: row)
+        XCTAssertEqual(doctorFixCalls.current, 1)
+        XCTAssertEqual(preflightCalls.current, 2, "doctor_fix 完成后必须立即重跑预检")
+        XCTAssertEqual(be3Store.check(for: .configStore)?.state, .ok)
+        XCTAssertEqual(be3Store.appliedFixes, ["已收紧 ~/config.json 权限"])
+    }
+
+    @MainActor
+    func testTamperedRotatesTokenPayloadExecutesZeroActionsInDiagnostics() async {
+        let doctorFixCalls = CallCounter()
+        let tamperedStdout = Data(
+            #"{"ok":false,"error":{"code":"config_permissions_unsafe","step":"config_store","message":"fix","fix":{"kind":"run_fix","action":"doctor_fix","rotates_token":true}}}"#
+                .utf8
+        )
+        let resolved = OnboardingCopyCatalog.resolveCLIError(
+            stdout: tamperedStdout,
+            stderr: Data(),
+            context: OnboardingValidationContext(
+                surface: .cli,
+                platform: .macos,
+                stage: .pair,
+                configured: true,
+                verifiedCapability: OnboardingSchema.doctorFixCapability
+            )
+        )
+        XCTAssertNotNil(resolved)
+        XCTAssertEqual(resolved?.isTrusted, false)
+        XCTAssertNil(resolved?.primaryAction)
+
+        var deps = Self.makeDiagnosticsDependencies(report: Self.makeMacPairReport(configCheck: nil))
+        deps.preflight = { _, _ in
+            throw AgentClientError.onboarding(resolved!)
+        }
+        deps.runSafeDoctorFix = {
+            _ = doctorFixCalls.increment()
+            return []
+        }
+
+        let store = DiagnosticsStore(
+            dependencies: deps,
+            verifiedCapability: OnboardingSchema.doctorFixCapability
+        )
+        await store.runPreflight()
+        if let err = store.preflightError {
+            await store.performDiagnosticAction(err)
+        }
+        XCTAssertEqual(doctorFixCalls.current, 0)
+        XCTAssertNil(store.preflightError?.primaryAction)
+    }
+
+    @MainActor
+    func testDiagnosticsRoutesOpenSettingsAssistantsTarget() async throws {
+        let openedTargets = DiagnosticsEventRecorder()
+        let report = Self.makeMacPairReport(
+            configCheck: nil,
+            codexCheck: OnboardingCheck(
+                id: .assistantCodex,
+                state: .error,
+                detail: "Codex 连接设置无效。",
+                blocking: false,
+                code: "codex_transport_invalid",
+                fix: .openSettings(.assistants),
+                enabled: true,
+                available: false,
+                candidates: []
+            )
+        )
+        var deps = Self.makeDiagnosticsDependencies(report: report)
+        deps.openSettings = { target in
+            openedTargets.append(target.rawValue)
+        }
+        let store = DiagnosticsStore(dependencies: deps)
+        await store.runPreflight()
+
+        let codexRow = try XCTUnwrap(store.check(for: .assistantCodex))
+        await store.performCheckPrimaryAction(for: codexRow)
+        XCTAssertEqual(openedTargets.values, ["assistants"])
+    }
+
+    private static func makeDiagnosticsDependencies(report: OnboardingPreflightReport) -> DiagnosticsDependencies {
+        DiagnosticsDependencies(
+            configExists: { true },
+            preflight: { _, _ in report },
+            runReadOnlyDoctor: { AgentDoctorResults(ok: true, version: "1.0.0", listen: "127.0.0.1:8787", checks: []) },
+            runSafeDoctorFix: { [] },
+            enableAssistant: { _ in },
+            enableTransport: { _ in },
+            restartService: {},
+            registerOrStartService: { .ready },
+            setRuntimePath: { _, _ in },
+            updateWorkspace: { _, _ in },
+            agentRegistrationState: { .enabled },
+            mainAppRegistrationState: { .enabled },
+            photosAccessState: { .notDetermined },
+            localNetworkAccessDenied: { false },
+            openURL: { _ in },
+            openSettings: { _ in }
+        )
+    }
+
+    private static func makeMacPairReport(
+        configCheck: OnboardingCheck?,
+        codexCheck: OnboardingCheck? = nil
+    ) -> OnboardingPreflightReport {
+        let resolvedConfig = configCheck ?? OnboardingCheck(
+            id: .configStore,
+            state: .ok,
+            detail: "配置文件可安全读写。",
+            blocking: false
+        )
+        let resolvedCodex = codexCheck ?? OnboardingCheck(
+            id: .assistantCodex,
+            state: .ok,
+            detail: "Codex 已就绪。",
+            blocking: false,
+            enabled: true,
+            available: true,
+            candidates: [OnboardingCandidate(path: "/fixture/bin/codex", outcome: .selected, version: "0.150.0")],
+            source: .auto,
+            detectedVersion: "0.150.0"
+        )
+        let checks: [OnboardingCheck] = [
+            resolvedConfig,
+            OnboardingCheck(id: .workspaceRoot, state: .ok, detail: "目录可读取。", blocking: false),
+            OnboardingCheck(id: .serviceOwnerConflict, state: .ok, detail: "归属已确认。", blocking: false),
+            OnboardingCheck(id: .serviceDaemon, state: .ok, detail: "后台服务已就绪。", blocking: false),
+            resolvedCodex,
+            OnboardingCheck(
+                id: .assistantClaude, state: .ok, detail: "Claude 已就绪。", blocking: false,
+                enabled: true, available: true,
+                candidates: [OnboardingCandidate(path: "/fixture/bin/claude", outcome: .selected, version: "2.1.300")],
+                source: .auto, detectedVersion: "2.1.300"
+            ),
+            OnboardingCheck(
+                id: .assistantAgy, state: .optional, detail: "未检测到 Antigravity。", blocking: false,
+                code: "agy_not_found", fix: .openURL(.agy),
+                enabled: false, available: false, candidates: []
+            ),
+            OnboardingCheck(
+                id: .assistantDeepSeek, state: .optional, detail: "未检测到 DeepSeek。", blocking: false,
+                code: "deepseek_not_running", fix: .openURL(.harness),
+                enabled: false, available: false
+            ),
+            OnboardingCheck(id: .assistantAny, state: .ok, detail: "至少有一个可用助手。", blocking: false),
+            OnboardingCheck(id: .networkTailscale, state: .ok, detail: "Tailscale 已连接。", blocking: false, enabled: true, available: true),
+            OnboardingCheck(id: .networkTailcat, state: .ok, detail: "内置连接可用。", blocking: false, enabled: true, available: true),
+            OnboardingCheck(id: .networkLAN, state: .ok, detail: "局域网可用。", blocking: false, enabled: true, available: true),
+            OnboardingCheck(id: .networkAny, state: .ok, detail: "已有可用连接方式。", blocking: false),
+            OnboardingCheck(id: .permissionLoginItem, state: .ok, detail: "已允许登录时启动。", blocking: false),
+            OnboardingCheck(id: .permissionFolderAccess, state: .ok, detail: "已允许访问所选目录。", blocking: false),
+            OnboardingCheck(id: .permissionLocalNetwork, state: .ok, detail: "已允许访问本地网络。", blocking: false),
+            OnboardingCheck(id: .permissionPhotos, state: .optional, detail: "尚未获得状态。", blocking: false, code: "permission_unobserved", fix: .skip),
+            OnboardingCheck(id: .permissionFullDisk, state: .optional, detail: "尚未获得状态。", blocking: false, code: "permission_unobserved", fix: .skip),
+        ]
+        let firstBlocker = checks.first(where: \.blocking)?.id
+        return OnboardingPreflightReport(
+            ok: firstBlocker == nil,
+            stage: .pair,
+            configured: true,
+            workspaceConfirmed: true,
+            configPath: "/fixture/config/config.json",
+            scanRoot: "/fixture/workspace",
+            browseRoot: "/fixture/workspace",
+            scanRootExists: true,
+            recommendedNext: firstBlocker ?? .networkAny,
+            recommendedTransport: .tailscale,
+            checks: checks
+        )
+    }
+
     private static func status(enabled: Bool, totalBytes: Int64 = 3) -> AgentDiagnosticsStatus {
         AgentDiagnosticsStatus(
             enabled: enabled,
