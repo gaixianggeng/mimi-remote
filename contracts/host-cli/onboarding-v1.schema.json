@@ -261,6 +261,10 @@
       },
       "allOf": [
         {
+          "if": {"properties": {"state": {"const": "optional"}}},
+          "then": {"properties": {"blocking": {"const": false}}}
+        },
+        {
           "if": {
             "required": ["state"],
             "properties": {
@@ -498,6 +502,23 @@
           "items": {"$ref": "#/definitions/check"},
           "minItems": 12,
           "maxItems": 18,
+          "not": {"contains": {"properties": {"state": {"const": "checking"}}}},
+          "allOf": [
+            {
+              "if": {"contains": {"properties": {"id": {"const": "assistant_any"}, "state": {"const": "ok"}}}},
+              "then": {"contains": {"properties": {
+                "id": {"enum": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"]},
+                "state": {"const": "ok"}, "enabled": {"const": true}, "available": {"const": true}
+              }}}
+            },
+            {
+              "if": {"contains": {"properties": {"id": {"const": "network_any"}, "state": {"const": "ok"}}}},
+              "then": {"contains": {"properties": {
+                "id": {"enum": ["network_tailscale", "network_tailcat", "network_lan"]},
+                "state": {"const": "ok"}, "enabled": {"const": true}, "available": {"const": true}
+              }}}
+            }
+          ],
           "oneOf": [
             {
               "description": "linux",
@@ -740,6 +761,27 @@
       },
       "allOf": [
         {
+          "if": {"properties": {"scan_root_exists": {"const": false}}},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "workspace_root"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
+          "if": {"properties": {"stage": {"const": "pair"}, "configured": {"const": false}}},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "config_store"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
+          "if": {"properties": {
+            "stage": {"const": "pair"}, "workspace_confirmed": {"const": false},
+            "checks": {"contains": {"properties": {"id": {"const": "config_store"}, "state": {"const": "ok"}}}}
+          }},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "workspace_root"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
           "if": {
             "required": ["configured"],
             "properties": {
@@ -917,16 +959,15 @@
     "http_error": {
       "allOf": [
         {"$ref": "#/definitions/cli_error"},
-        {"$ref": "#/definitions/public_fields"},
-        {
-          "properties": {
-            "error": {"$ref": "#/definitions/public_fields"}
-          }
-        }
+        {"$ref": "#/definitions/public_fields"}
       ]
     },
     "public_fields": {
+      "description": "Local-only fields remain private inside additive objects and arrays.",
+      "patternProperties": {"^": {"$ref": "#/definitions/public_fields"}},
+      "items": {"$ref": "#/definitions/public_fields"},
       "not": {
+        "type": "object",
         "anyOf": [
           {
             "required": ["config_path"]

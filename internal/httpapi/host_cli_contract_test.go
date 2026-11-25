@@ -100,6 +100,7 @@ type contractSchema struct {
 	Enum                          []any
 	Required                      []string
 	Properties                    map[string]*contractSchema
+	PatternProperties             map[string]*contractSchema
 	AdditionalProperties          *bool
 	Items                         *schemaItems
 	Contains                      *contractSchema
@@ -176,11 +177,25 @@ func (root *contractSchema) validate(s *contractSchema, value any) error {
 			}
 		}
 		for key, field := range obj {
-			if property, known := s.Properties[key]; known {
+			property, known := s.Properties[key]
+			if known {
 				if err := root.validate(property, field); err != nil {
 					return fmt.Errorf("%s: %w", key, err)
 				}
-			} else if s.AdditionalProperties != nil && !*s.AdditionalProperties {
+			}
+			for pattern, rule := range s.PatternProperties {
+				matches, err := regexp.MatchString(pattern, key)
+				if err != nil {
+					return err
+				}
+				if matches {
+					known = true
+					if err := root.validate(rule, field); err != nil {
+						return fmt.Errorf("%s: %w", key, err)
+					}
+				}
+			}
+			if !known && s.AdditionalProperties != nil && !*s.AdditionalProperties {
 				return fmt.Errorf("unexpected property %s", key)
 			}
 		}
@@ -291,6 +306,9 @@ type onboardingCatalog struct {
 	Actions  map[string]struct {
 		RequiresConfig *bool  `json:"requires_config"`
 		Capability     string `json:"requires_capability"`
+		BeforeSave     string `json:"before_save"`
+		AfterSave      string `json:"after_save"`
+		Assistant      string `json:"assistant"`
 	} `json:"run_fix"`
 	Wire  []catalogCode `json:"wire_codes"`
 	Local []catalogCode `json:"ui_local_codes"`
@@ -343,7 +361,7 @@ func sortedWords(words string) []string {
 	return slices.Sorted(slices.Values(strings.Fields(words)))
 }
 
-func TestOnboardingContractCatalog(t *testing.T) {
+func TestHostCLIContractCatalog(t *testing.T) {
 	c := loadOnboarding(t)
 	cat := c.catalog
 	if c.schema.Dialect != "http://json-schema.org/draft-07/schema#" || cat.Schema != "mimi.onboarding.codes/v1" {
@@ -396,6 +414,11 @@ func TestOnboardingContractCatalog(t *testing.T) {
 		draft := slices.Contains(strings.Fields("save_setup enable_codex enable_claude enable_agy"), id)
 		if action.RequiresConfig == nil || *action.RequiresConfig == draft {
 			t.Errorf("%s requires_config", id)
+		}
+		if draft && id != "save_setup" {
+			if action.BeforeSave != "assistant_draft" || action.AfterSave != "runtime" || action.Assistant != strings.TrimPrefix(id, "enable_") {
+				t.Errorf("%s must change only the selected draft before save and its runtime after save", id)
+			}
 		}
 	}
 	if cat.Actions["doctor_fix"].Capability != "identity_preserving_doctor_fix" {
@@ -532,6 +555,13 @@ func (c onboardingContract) check(row, context wireObject) error {
 	id, state := row["id"].(string), row["state"].(string)
 	code, _ := row["code"].(string)
 	check := c.checks[id]
+	if context["surface"] == "native" {
+		permission := check.Group == "permission"
+		approval := id == "service_daemon" && code == "service_requires_approval"
+		if context["platform"] != "macos" || !(permission || approval) {
+			return fmt.Errorf("invalid native overlay on %s", id)
+		}
+	}
 	if !slices.Contains(check.Platforms, context["platform"].(string)) || check.Group != row["group"] {
 		return fmt.Errorf("%s group or platform mismatch", id)
 	}
@@ -583,11 +613,12 @@ func (c onboardingContract) check(row, context wireObject) error {
 	return nil
 }
 
-func (c onboardingContract) report(report wireObject, platform string, nativeOverlay bool) error {
+func (c onboardingContract) report(report wireObject, observation wireObject) error {
 	if err := c.shape("report", report); err != nil {
 		return err
 	}
 	rows := report["checks"].([]any)
+	platform := observation["platform"].(string)
 	var applicable []string
 	for _, check := range c.catalog.Checks {
 		if slices.Contains(check.Platforms, platform) {
@@ -598,7 +629,7 @@ func (c onboardingContract) report(report wireObject, platform string, nativeOve
 		return fmt.Errorf("expected %d %s rows, got %d", len(applicable), platform, len(rows))
 	}
 	stage := report["stage"]
-	context := wireObject{"surface": "check", "platform": platform, "stage": stage, "configured": report["configured"], "recommended_transport": report["recommended_transport"]}
+	context := wireObject{"platform": platform, "stage": stage, "configured": report["configured"], "recommended_transport": report["recommended_transport"], "verified_capability": observation["verified_capability"]}
 	firstBlocker := ""
 	eligible := map[string]bool{}
 	var recommended any
@@ -612,7 +643,7 @@ func (c onboardingContract) report(report wireObject, platform string, nativeOve
 			return fmt.Errorf("unfinished %s", id)
 		}
 		context["surface"] = "check"
-		if nativeOverlay && (strings.HasPrefix(id, "permission_") || id == "service_daemon" && row["code"] == "service_requires_approval") {
+		if observation["native_overlay"] == true && (strings.HasPrefix(id, "permission_") || id == "service_daemon" && row["code"] == "service_requires_approval") {
 			context["surface"] = "native"
 		}
 		if err := c.check(row, context); err != nil {
@@ -627,7 +658,9 @@ func (c onboardingContract) report(report wireObject, platform string, nativeOve
 				firstBlocker = id
 			}
 		}
-		if _, individual := row["enabled"]; individual {
+		switch id {
+		case "assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek",
+			"network_tailscale", "network_tailcat", "network_lan":
 			ready := row["enabled"] == true && row["available"] == true
 			if (row["state"] == "ok") != ready {
 				return fmt.Errorf("%s intent/availability mismatch", id)
@@ -707,7 +740,7 @@ var onboardingFixtures = []fixtureSpec{
 	{"onboarding-error-cases.json", "cases", "", ""},
 }
 
-func TestOnboardingContractFixtures(t *testing.T) {
+func TestHostCLIContractFixtures(t *testing.T) {
 	c := loadOnboarding(t)
 	names := []string{"status-ready.json", "relay-cases.json", "onboarding-codes-v1.json", "onboarding-v1.schema.json"}
 	for _, f := range onboardingFixtures {
@@ -746,7 +779,8 @@ func TestOnboardingContractFixtures(t *testing.T) {
 			}
 			switch f.kind {
 			case "report":
-				if err := c.report(obj, f.platform, f.file == "preflight-permission-needed.json"); err != nil {
+				observation := wireObject{"platform": f.platform, "native_overlay": f.file == "preflight-permission-needed.json"}
+				if err := c.report(obj, observation); err != nil {
 					t.Fatal(err)
 				}
 				checkScenario(t, f.file, obj)
@@ -903,39 +937,52 @@ func patchedReport(t *testing.T, file string, patch []reportPatch) wireObject {
 		if !ok {
 			t.Fatal("invalid patch path")
 		}
-		if strings.HasPrefix(key, "checks/") {
+		if indexPath, found := strings.CutPrefix(key, "checks/"); found {
 			items := report["checks"].([]any)
-			index := strings.TrimPrefix(key, "checks/")
-			switch {
-			case p.Op == "add" && index == "-":
+			if indexPath == "-" && p.Op == "add" {
 				report["checks"] = append(items, p.Value)
-			case p.Op == "remove":
-				n, err := strconv.Atoi(index)
-				if err != nil || n < 0 || n >= len(items) {
-					t.Fatal("invalid checks index")
-				}
-				report["checks"] = slices.Delete(items, n, n+1)
-			default:
-				t.Fatalf("unsupported checks patch %v", p)
+				continue
 			}
-			continue
-		}
-		if key == "" || strings.Contains(key, "/") {
-			t.Fatalf("unsupported path %s", p.Path)
-		}
-		if _, exists := report[key]; p.Op != "add" && !exists {
-			t.Fatalf("patch path does not exist: %s", p.Path)
-		}
-		switch p.Op {
-		case "add", "replace":
-			report[key] = p.Value
-		case "remove":
-			delete(report, key)
-		default:
-			t.Fatalf("unsupported patch op %s", p.Op)
+			index, field, nested := strings.Cut(indexPath, "/")
+			n, err := strconv.Atoi(index)
+			if err != nil || n < 0 || n >= len(items) {
+				t.Fatal("invalid checks index")
+			}
+			if !nested {
+				switch p.Op {
+				case "replace":
+					items[n] = p.Value
+				case "remove":
+					report["checks"] = slices.Delete(items, n, n+1)
+				default:
+					t.Fatalf("unsupported checks patch %v", p)
+				}
+				continue
+			}
+			applyFieldPatch(t, items[n].(wireObject), field, p)
+		} else {
+			applyFieldPatch(t, report, key, p)
 		}
 	}
 	return report
+}
+
+func applyFieldPatch(t *testing.T, obj wireObject, key string, p reportPatch) {
+	t.Helper()
+	if key == "" || strings.Contains(key, "/") {
+		t.Fatalf("unsupported path %s", p.Path)
+	}
+	if _, exists := obj[key]; p.Op != "add" && !exists {
+		t.Fatalf("patch path does not exist: %s", p.Path)
+	}
+	switch p.Op {
+	case "add", "replace":
+		obj[key] = p.Value
+	case "remove":
+		delete(obj, key)
+	default:
+		t.Fatalf("unsupported patch op %s", p.Op)
+	}
 }
 
 func (c onboardingContract) testCases(t *testing.T, raw []byte) {
@@ -966,7 +1013,7 @@ func (c onboardingContract) testCases(t *testing.T, raw []byte) {
 			switch surface {
 			case "report":
 				obj = patchedReport(t, e.Fixture, e.Patch)
-				err = c.report(obj, context["platform"].(string), false)
+				err = c.report(obj, context)
 			case "check", "native":
 				err = c.check(obj, context)
 			case "cli", "http", "ui_local":
@@ -1000,13 +1047,21 @@ func (c onboardingContract) testCases(t *testing.T, raw []byte) {
 			}
 		}
 	}
-	for _, id := range strings.Fields("unknown-major unknown-code mismatched-step unknown-state unknown-action signed-out-native-surface unknown-url extra-fix-field legacy-rotation-parameter missing-fix missing-required-row missing-required-field duplicate-row ui-code-on-wire host-recovery-on-http config-required-before-save transport-enabled-during-setup mismatched-recommendation") {
+	for _, id := range strings.Fields(`unknown-major unknown-code mismatched-step unknown-state unknown-action signed-out-native-surface
+		unknown-url extra-fix-field legacy-rotation-parameter missing-fix missing-required-row missing-required-field duplicate-row
+		ui-code-on-wire host-recovery-on-http config-required-before-save transport-enabled-during-setup mismatched-recommendation
+		aggregate-is-not-an-assistant aggregate-is-not-a-transport blocked-pair-unconfirmed-workspace blocked-pair-missing-workspace
+		blocked-pair-missing-config setup-missing-root-marked-ready unfinished-final-report optional-login-item-blocks-pair
+		native-daemon-claims-readiness native-assistant-override windows-native-permission-override http-nested-local-detail`) {
 		if valid, found := seen[id]; !found || valid {
 			t.Errorf("missing rejection case %s", id)
 		}
 	}
-	if !seen["additive-data"] || !seen["report-additive-field"] {
-		t.Error("missing accepted additive fields")
+	for _, id := range strings.Fields(`additive-data report-additive-field http-additive-nested-data verified-identity-preserving-repair
+		enable-codex-in-draft enable-claude-in-draft enable-agy-in-draft`) {
+		if !seen[id] {
+			t.Errorf("missing acceptance case %s", id)
+		}
 	}
 }
 
@@ -1108,7 +1163,7 @@ func fixtureTicket(obj wireObject, tailcat bool) error {
 	return nil
 }
 
-func TestOnboardingContractBoundaries(t *testing.T) {
+func TestHostCLIContractBoundaries(t *testing.T) {
 	c := loadOnboarding(t)
 	for _, kind := range []string{"retry", "skip", "choose_path", "open_settings", "run_fix", "open_url"} {
 		fix := wireObject{"kind": kind}

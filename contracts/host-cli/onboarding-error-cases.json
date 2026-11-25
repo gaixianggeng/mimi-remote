@@ -3169,6 +3169,7 @@
       "platform": "macos",
       "stage": "pair",
       "configured": true,
+      "verified_capability": "identity_preserving_doctor_fix",
       "recommended_transport": "tailscale"
     },
     "payload": {
@@ -3364,8 +3365,8 @@
     "fixture": "preflight-deepseek-only.json",
     "patch": [
       {
-        "op": "add",
-        "path": "/checks/-",
+        "op": "replace",
+        "path": "/checks/1",
         "value": {
           "id": "config_store",
           "group": "workspace",
@@ -3491,6 +3492,438 @@
       ],
       "code": "claude_signed_out",
       "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "aggregate-is-not-an-assistant",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/6",
+        "value": {
+          "id": "assistant_deepseek",
+          "group": "assistant",
+          "state": "optional",
+          "title": "DeepSeek 助手",
+          "detail": "已检测到可用助手。需要使用时可启用。",
+          "blocking": false,
+          "enabled": false,
+          "available": true,
+          "code": "assistant_disabled",
+          "fix": {
+            "kind": "run_fix",
+            "action": "connect_deepseek"
+          }
+        }
+      },
+      {
+        "op": "add",
+        "path": "/checks/7/enabled",
+        "value": true
+      },
+      {
+        "op": "add",
+        "path": "/checks/7/available",
+        "value": true
+      }
+    ]
+  },
+  {
+    "id": "aggregate-is-not-a-transport",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-claude-only-no-network.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/11",
+        "value": {
+          "id": "network_any",
+          "group": "network",
+          "state": "ok",
+          "title": "手机连接方式",
+          "detail": "至少有一种已启用的连接方式可用。",
+          "blocking": false,
+          "enabled": true,
+          "available": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-unconfirmed-workspace",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/workspace_confirmed",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-missing-workspace",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/scan_root_exists",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-missing-config",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/configured",
+        "value": false
+      },
+      {
+        "op": "replace",
+        "path": "/workspace_confirmed",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "setup-missing-root-marked-ready",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-claude-only-no-network.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/scan_root_exists",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "unfinished-final-report",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/0/state",
+        "value": "checking"
+      }
+    ]
+  },
+  {
+    "id": "optional-login-item-blocks-pair",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_login_item",
+      "group": "permission",
+      "state": "optional",
+      "title": "登录项",
+      "detail": "主应用尚未启用登录时启动。可按需在登录项中设置。",
+      "blocking": true,
+      "code": "permission_login_item_disabled",
+      "fix": {
+        "kind": "open_settings",
+        "target": "login_items"
+      }
+    }
+  },
+  {
+    "id": "native-daemon-claims-readiness",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务",
+      "detail": "后台服务已通过就绪检查。",
+      "blocking": false
+    }
+  },
+  {
+    "id": "native-assistant-override",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "ok",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek 已连接且存在可用模型。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    }
+  },
+  {
+    "id": "windows-native-permission-override",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "windows",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "ok",
+      "blocking": false,
+      "title": "本地网络",
+      "detail": "允许使用本地网络。"
+    }
+  },
+  {
+    "id": "http-additive-nested-data",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {
+          "kind": "retry"
+        },
+        "context": [
+          {
+            "future_hint": "请重新检查。"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "http-nested-local-detail",
+    "valid": false,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {
+          "kind": "retry"
+        },
+        "context": [
+          {
+            "future_hint": "请重新检查。",
+            "config_path": "/fixture/config/config.json"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "verified-identity-preserving-repair",
+    "valid": true,
+    "context": {
+      "surface": "report",
+      "platform": "linux",
+      "verified_capability": "identity_preserving_doctor_fix"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/0",
+        "value": {
+          "id": "config_store",
+          "group": "workspace",
+          "state": "error",
+          "title": "配置文件",
+          "detail": "配置文件的访问权限过宽。请在电脑上修复权限。",
+          "blocking": true,
+          "code": "config_permissions_unsafe",
+          "fix": {
+            "kind": "run_fix",
+            "action": "doctor_fix"
+          }
+        }
+      },
+      {
+        "op": "replace",
+        "path": "/ok",
+        "value": false
+      },
+      {
+        "op": "replace",
+        "path": "/recommended_next",
+        "value": "config_store"
+      }
+    ]
+  },
+  {
+    "id": "enable-codex-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {
+          "path": "/fixture/bin/codex",
+          "outcome": "selected",
+          "version": "0.150.0"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_codex"
+      }
+    }
+  },
+  {
+    "id": "enable-claude-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {
+          "path": "/fixture/bin/claude",
+          "outcome": "selected",
+          "version": "2.1.300"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_claude"
+      }
+    }
+  },
+  {
+    "id": "enable-agy-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {
+          "path": "/fixture/bin/agy",
+          "outcome": "selected",
+          "version": "1.5.0"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_agy"
+      }
     }
   }
 ]
