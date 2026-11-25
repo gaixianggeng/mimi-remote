@@ -419,9 +419,9 @@ Windows 安装器可选配置以下 Authenticode Secrets：
 
 Windows verify job 会构建 release 二进制、编译 Inno Setup，并验证 SHA-256、内嵌文件和签名模式；元数据版本和内置 Tailcat 辅助程序的版本都必须与 tag 一致。验证通过后，独立的 `publish-windows` job 把安装器、摘要和元数据上传到同一个 GitHub Release。PFX 临时文件不会进入 artifact。两个 Secret 都存在时强制验证 Authenticode；两个都缺失时构建明确标记的 `unsigned-release`。
 
-Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 按“构建 Darwin 二进制 → Developer ID 签名 → Apple notarization → 归档 → checksum/Formula”顺序发布后端，最后把已经通过 Gatekeeper 校验的 DMG 和 SHA-256 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
+Release 的 verify job 会在构建前解码到临时 `0700` 目录，确认 PKCS#12 确实包含 `Developer ID Application` 证书、密码可解密、`.p8` 是有效 PKCS#8 私钥，并校验 Key ID/Issuer 格式；不会打印证书正文或私钥。正式 job 会先生成并公证 universal Mac DMG，再由 GoReleaser 构建 Darwin 二进制、完成 Developer ID 签名及 Apple 公证、生成归档、摘要和 Formula。Linux 实包检查通过后，发布任务把归档与已经通过 Gatekeeper 校验的 DMG 上传到同一 GitHub Release。普通 snapshot 不读取 Apple 私钥。
 
-发布后的产物门禁会从两个 Darwin 归档重新解包 `agentd`，执行 `codesign --verify --strict`，并要求存在 `Developer ID Application` Authority、TeamIdentifier、identifier + certificate anchor 形式的稳定 designated requirement，同时拒绝 cdhash-only 身份。Mac DMG 会另外验证 `arm64/x86_64` 双架构、内嵌 `agentd`、LaunchAgent、Applications 拖放入口、Developer ID、notarization ticket 和 Gatekeeper 结果。任一步失败都会让 tag workflow 失败，不能把未签名或未公证产物视为成功 Release。
+公开附件前，产物门禁会从两个 Darwin 归档重新解包 `agentd`，执行 `codesign --verify --strict`，并要求存在 `Developer ID Application` Authority、TeamIdentifier、identifier + certificate anchor 形式的稳定 designated requirement，同时拒绝 cdhash-only 身份。Mac DMG 会另外验证 `arm64/x86_64` 双架构、内嵌 `agentd`、LaunchAgent、Applications 拖放入口、Developer ID、notarization ticket 和 Gatekeeper 结果。任一步失败都会让 tag workflow 失败，不能把未签名或未公证产物视为成功 Release。
 
 Release workflow 会在 GoReleaser 前读取 GitHub API JSON，检查两个仓库的 `visibility=public` / `private=false`，再使用 Deploy Key 对 Tap `main` 执行 dry-run push 验证写权限，不在日志中回显私钥或 API JSON 原文。如果只需在本地验证 JSON 分支而不连接 GitHub，执行：
 
@@ -453,12 +453,14 @@ gh api --method POST \
 
 ### GitHub Release 成功、tap 更新失败
 
-GoReleaser 发布 GitHub 附件和推送 Homebrew tap 不是跨仓库事务。若 workflow 已创建 Release，但在 tap 阶段因 Deploy Key、仓库权限或临时网络错误失败：
+GoReleaser 先生成带正式版本的签名归档和 Formula。AMD64、ARM64 的 Linux runner 分别核对归档摘要，从中解压 Tailcat，执行启动与配对测试。发布任务随后按同一 Actions artifact ID 下载被测归档，核对 GitHub 附件摘要，再更新 Homebrew tap。
+
+若 workflow 已创建 Release，但在 tap 阶段因 Deploy Key、仓库权限或临时网络错误失败：
 
 1. 不要移动或重建同名 tag，也不要先手工删除已经公开的 Release；
 2. 修复 `TAP_DEPLOY_KEY`、Tap 的 Deploy Key 写权限或仓库状态；
 3. 在原 workflow 上执行 **Re-run failed jobs**；
-4. `.goreleaser.yml` 的 `mode: keep-existing` 会保留原发布说明，`replace_existing_artifacts: true` 允许同一 tag 重建并替换同名附件，然后继续推送 Formula；
+4. 发布任务保留原发布说明，使用本次通过检查的归档替换同名附件并继续推送 Formula。这沿用 `.goreleaser.yml` 的 `mode: keep-existing` 和 `replace_existing_artifacts: true` 语义；
 5. 重跑成功后确认 Release 包含四个平台归档和 `checksums.txt`，tap 的 Formula URL、版本和 SHA-256 与该 Release 一致。
 
 该恢复能力只服务于“同一个 tag、同一个提交”的部分失败。若 tag 指向发生变化，必须停止重跑并先调查；不能用附件替换掩盖 retag。
