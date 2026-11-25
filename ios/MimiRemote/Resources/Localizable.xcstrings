@@ -51705,6 +51705,142 @@
         }
       }
     },
+    "ui.writer_conflict_shared_guide_link": {
+      "comment": "Compact link button inside WriterConflictCard header that opens the guide on sharing live Codex chats between Mac and phone.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to share"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何共享"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_mac_body": {
+      "comment": "Explains the one-time Mac setup so Codex Desktop and Mimi Remote share live chats.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On your Mac, open Mimi Remote → Sessions → Connect Codex Desktop for a one-time setup. Once connected, open your project through the local shared connection in Codex Desktop so both Mac and phone share the same live chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Mac 上打开 Mimi Remote，进入「会话」窗口并点「连接 Codex 桌面版」，按引导完成一次配置。之后在 Codex 桌面版通过本机共享连接打开项目，电脑和手机就能实时共用同一条会话，不再互锁。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_mac_title": {
+      "comment": "Section heading for Mac live chat sharing setup inside the writer conflict guide sheet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share live chats with your Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何与电脑实时共享（Mac）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_body": {
+      "comment": "Explains immediate options when the user wants to continue right away or is not on macOS.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap “Branch to new chat” to continue immediately from a copy, or quit Codex Desktop completely and tap “Retry” to continue the original chat. On non-Mac computers, desktop live sharing isn’t supported yet—use either option above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点「分支到新聊天」可从当前进度复制出新会话马上继续；如果要继续原会话，请先完全退出电脑上的 Codex 桌面版，再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_title": {
+      "comment": "Section heading for immediate continuation options inside the writer conflict guide sheet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Need to continue right now?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在想立刻继续怎么办？"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_title": {
+      "comment": "Navigation title of the sheet explaining how to share Codex sessions between desktop and mobile.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share chats with your computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与电脑共享同一会话"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_why_body": {
+      "comment": "Plain-language explanation of why Codex Desktop locks chats in its default local mode.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Desktop runs in its own local mode by default and holds exclusive write access to chats it opens. While it holds that lock, mobile can read the chat but cannot write to it directly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑端 Codex 桌面版默认使用独立本地模式，打开过的会话会由桌面版独占写入权；此时手机端只能查看，无法直接继续写入同一条会话。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_why_title": {
+      "comment": "Section heading explaining why a Codex chat is locked.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why is this chat locked?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为什么会被锁定？"
+          }
+        }
+      }
+    },
     "ui.yes": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

@@ -154,11 +154,46 @@ final class LocalizationTests: XCTestCase {
                 "ui.retry_writer_access",
                 "Reload messages and retry writer access",
                 "重新加载消息并重试写入权限"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_link",
+                "How to share",
+                "如何共享"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_title",
+                "Share chats with your computer",
+                "与电脑共享同一会话"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_why_title",
+                "Why is this chat locked?",
+                "为什么会被锁定？"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_mac_title",
+                "Share live chats with your Mac",
+                "如何与电脑实时共享（Mac）"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_now_title",
+                "Need to continue right now?",
+                "现在想立刻继续怎么办？"
             )
         ]
         for (key, english, simplifiedChinese) in writerConflictForkValues {
             XCTAssertEqual(L10n.text(key, language: .english), english)
             XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+        for bodyKey in [
+            "ui.writer_conflict_shared_guide_why_body",
+            "ui.writer_conflict_shared_guide_mac_body",
+            "ui.writer_conflict_shared_guide_now_body"
+        ] {
+            XCTAssertNotEqual(L10n.text(bodyKey, language: .english), bodyKey)
+            XCTAssertNotEqual(L10n.text(bodyKey, language: .simplifiedChinese), bodyKey)
+            XCTAssertFalse(L10n.text(bodyKey, language: .english).isEmpty)
+            XCTAssertFalse(L10n.text(bodyKey, language: .simplifiedChinese).isEmpty)
         }
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")

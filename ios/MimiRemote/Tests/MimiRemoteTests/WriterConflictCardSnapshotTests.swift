@@ -18,12 +18,12 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 820,
-                height: 128,
+                height: 112,
                 colorScheme: .light,
                 sourceIsRunning: false,
                 availability: .available(lastTurnID: nil)
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 128))
+            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 112))
         )
     }
 
@@ -31,12 +31,12 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 390,
-                height: 196,
+                height: 164,
                 colorScheme: .dark,
                 sourceIsRunning: true,
                 availability: .available(lastTurnID: "turn-terminal")
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 196))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 164))
         )
     }
 
@@ -44,12 +44,12 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 390,
-                height: 196,
+                height: 164,
                 colorScheme: .light,
                 sourceIsRunning: false,
                 availability: .available(lastTurnID: nil)
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 196))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 164))
         )
     }
 
@@ -57,12 +57,12 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 320,
-                height: 240,
+                height: 196,
                 colorScheme: .dark,
                 sourceIsRunning: true,
                 availability: .available(lastTurnID: "turn-terminal")
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 240))
+            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 196))
         )
     }
 
@@ -92,13 +92,31 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 390,
-                height: 292,
+                height: 256,
                 colorScheme: .dark,
                 sourceIsRunning: true,
                 availability: .failed,
                 errorMessage: "Could not verify the last completed turn because the shared App Server did not respond."
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 292))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 256))
+        )
+    }
+
+    func testSharedGuideSheetCompactLight() {
+        let suiteName = "WriterConflictCardSnapshotTests.Guide.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .light
+
+        let view = WriterConflictSharedGuideSheet()
+            .environmentObject(themeStore)
+            .environment(\.colorScheme, .light)
+            .frame(width: 390, height: 520)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 520))
         )
     }
 
