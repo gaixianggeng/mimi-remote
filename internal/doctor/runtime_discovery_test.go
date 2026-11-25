@@ -60,6 +60,10 @@ func TestDoctorRecognizesBundledCLIsWithEmptyPATH(t *testing.T) {
 
 func TestDoctorLegacyBridgeRequiresConfiguredClaudeCLI(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	t.Setenv("CLAUDE_BRIDGE_CLAUDE_BIN", "")
+	t.Setenv("AGENTD_CLAUDE_BRIDGE_BIN", "")
+	t.Setenv("AGENTD_CODEX_BIN", "")
 	bridge := filepath.Join(dir, "alleycat-claude-bridge")
 	script := "#!/bin/sh\necho 'alleycat-claude-bridge 0.2.8'\n"
 	if runtime.GOOS == "windows" {
@@ -88,4 +92,15 @@ func TestDoctorLegacyBridgeRequiresConfiguredClaudeCLI(t *testing.T) {
 	if !inspected || check.OK || !strings.Contains(check.Message, "无法确认 Claude Code") {
 		t.Fatalf("status for missing explicit Claude CLI: %+v, inspected=%t", check, inspected)
 	}
+	// A slow unrelated platform lookup must not consume the assistant discovery window.
+	inspected = false
+	checker.cfg.Codex.Enabled = new(bool)
+	checker.findTailscale = func() (string, error) {
+		if !inspected {
+			t.Error("Tailscale lookup preceded assistant inspection")
+		}
+		return "", exec.ErrNotFound
+	}
+	checker.Run(t.Context(), false)
+
 }

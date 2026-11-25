@@ -579,3 +579,20 @@ func TestSelectInterfaceIPv4PrefersTailscaleAndIgnoresPhysicalCGNAT(t *testing.T
 		}
 	})
 }
+
+func TestFindCLIUsesInstalledWindowsLocationWithoutPATH(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ProgramW6432", "")
+	t.Setenv("ProgramFiles", dir)
+	t.Setenv("ProgramFiles(x86)", "")
+	installed := filepath.Join(dir, "Tailscale", "tailscale.exe")
+	got, err := FindCLIForHost(func(name string) (string, error) {
+		if name == installed {
+			return installed, nil
+		}
+		return "", os.ErrNotExist
+	}, nil, "windows", "")
+	if err != nil || got != installed {
+		t.Fatalf("installed CLI omitted: %q %v", got, err)
+	}
+}

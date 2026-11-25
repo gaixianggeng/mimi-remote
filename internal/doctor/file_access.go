@@ -67,6 +67,15 @@ func (c *Checker) StartFileAccessPreflight() {
 
 	go func() {
 		check, failures := runFileAccessPreflight(c.cfg, c.registry, userHomeDir(), true)
+		for _, failure := range failures {
+			domain, _ := standardFileAccessPermissionDomain(failure.path, userHomeDir())
+			if domain.name != "photos_library" && errors.Is(failure.err, os.ErrPermission) {
+				c.fileAccessMu.Lock()
+				c.folderAccessDenied = true
+				c.fileAccessMu.Unlock()
+				break
+			}
+		}
 		c.mergeStartupFileAccessPreflight(check)
 
 		if len(failures) == 0 {
@@ -136,6 +145,9 @@ func (c *Checker) requestFileAccess(path string, home string, probe func(string)
 		defer c.fileAccessMu.Unlock()
 		if err == nil {
 			return
+		}
+		if domain.name != "photos_library" && errors.Is(err, os.ErrPermission) {
+			c.folderAccessDenied = true
 		}
 		c.fileAccessRequestedDomains[domain.name] = true
 		c.fileAccessPreflightStarted = true
@@ -315,4 +327,15 @@ func fileAccessPreflightFix() string {
 		return "请允许 macOS 为 Mimi Remote Mac 弹出的文件夹提示；“照片”图库在 Mimi Remote Mac 的 设置 → 文件访问 中允许；需要无人值守访问其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加 Mimi Remote Mac"
 	}
 	return "请允许 macOS 文件夹提示；需要无人值守访问整个 Home、照片图库或其他 App 数据时，在系统设置 → 隐私与安全性 → 完全磁盘访问中添加稳定签名的 agentd"
+}
+
+// CachedFolderDenied returns only a previously observed daemon denial. Reading
+// it does not open a directory or request a permission.
+func (c *Checker) CachedFolderDenied() bool {
+	if c == nil {
+		return false
+	}
+	c.fileAccessMu.RLock()
+	defer c.fileAccessMu.RUnlock()
+	return c.folderAccessDenied
 }

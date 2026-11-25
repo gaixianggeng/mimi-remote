@@ -33,6 +33,7 @@ type Checker struct {
 	cfg                        config.Config
 	registry                   *projects.Registry
 	configPath                 string
+	folderAccessDenied         bool
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
@@ -113,6 +114,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 			codexMessage = "未找到 Codex CLI 或安装版本不兼容"
 		}
 	}
+	claude, agy := c.claudeBridgeCheck(inspectCtx), c.agyAdapterCheck(inspectCtx)
 	_, tailscaleErr := c.findTailscale()
 	checks := []Check{
 		{Name: "token", OK: tokenOK, Message: tokenMessage, Fix: "执行 agentd setup 生成随机 token，或设置 AGENTD_TOKEN"},
@@ -148,8 +150,7 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if c.needsCodexAppServerCheck() {
 		checks = append(checks, c.codexAppServerCheck(ctx, localCodex, codexErr))
 	}
-	checks = append(checks, c.claudeBridgeCheck(inspectCtx))
-	checks = append(checks, c.agyAdapterCheck(inspectCtx))
+	checks = append(checks, claude, agy)
 	checks = append(checks, c.deepSeekCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)

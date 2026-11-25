@@ -447,6 +447,10 @@ func loadWithoutProjectDiscovery(path string) (Config, error) {
 }
 
 func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
+	return parseConfigDocument(raw, true)
+}
+
+func parseConfigDocument(raw []byte, environment bool) (Config, error) {
 	cfg := defaults()
 	if raw != nil {
 		if err := RejectLegacyAppServerConfiguration(raw); err != nil {
@@ -490,7 +494,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
-	applyEnv(&cfg)
+	if environment {
+		applyEnv(&cfg)
+	}
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
 	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
 		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
@@ -914,6 +920,10 @@ func sanitizeID(raw string) string {
 }
 
 func (c Config) Validate() error {
+	return c.validate(true)
+}
+
+func (c Config) validate(requireProjects bool) error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
@@ -1018,7 +1028,7 @@ func (c Config) Validate() error {
 			ErrAppServerTransportUnsupported,
 		)
 	}
-	if len(c.Projects) == 0 {
+	if requireProjects && len(c.Projects) == 0 {
 		return fmt.Errorf("projects 不能为空；可在 config.json 配置，或设置 AGENTD_PROJECTS=/path/a,/path/b 或 AGENTD_SCAN_ROOTS=/workspace")
 	}
 	if err := validateActions(c.Actions); err != nil {

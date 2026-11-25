@@ -76,6 +76,12 @@ func ResolveRuntime(ctx context.Context, request RuntimeRequest) (RuntimeCandida
 }
 
 func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (RuntimeCandidate, error) {
+	return d.resolve(parent, req, nil)
+}
+
+// observe runs on the resolver goroutine, in attempt order, after the bounded
+// probe returns. Other discovery callers do not collect diagnostic paths.
+func (d RuntimeDiscovery) resolve(parent context.Context, req RuntimeRequest, observe func(path, version, outcome string)) (RuntimeCandidate, error) {
 	if err := parent.Err(); err != nil {
 		return RuntimeCandidate{}, err
 	}
@@ -123,6 +129,16 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 		candidateCtx, stop := d.timeout(ctx, 4*time.Second)
 		file, err := d.uniqueExecutable(candidateCtx, req, path, seen)
 		if err != nil || file.path == "" {
+			if observe != nil && err != nil {
+				outcome := "unusable"
+				switch {
+				case candidateCtx.Err() != nil:
+					outcome = "timeout"
+				case errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist):
+					outcome = "missing"
+				}
+				observe(path, "", outcome)
+			}
 			if timedOut := candidateCtx.Err(); timedOut != nil && failed.Path == "" {
 				failure = timedOut
 			} else if source != "auto" && err != nil {
@@ -140,6 +156,18 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 			err = candidateCtx.Err()
 		}
 		stop()
+		if observe != nil {
+			outcome := "compatible"
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				outcome = "timeout"
+			case errors.Is(err, ErrRuntimeIncompatible):
+				outcome = "unsupported"
+			case err != nil:
+				outcome = "unusable"
+			}
+			observe(file.path, candidate.Version, outcome)
+		}
 		if err != nil {
 			if failed.Path == "" || (candidate.Version != "" && appserver.CompareCodexVersions(candidate.Version, failed.Version) > 0) {
 				failed, failure = candidate, err

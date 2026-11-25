@@ -233,6 +233,15 @@ func FindCLIForHost(
 	if bin, err := lookPath("tailscale"); err == nil {
 		return bin, nil
 	}
+	if goos == "windows" {
+		for _, key := range []string{"ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"} {
+			if dir := os.Getenv(key); filepath.IsAbs(dir) {
+				if bin, err := lookPath(filepath.Join(dir, "Tailscale", "tailscale.exe")); err == nil {
+					return bin, nil
+				}
+			}
+		}
+	}
 	// macOS GUI / App Store 安装不一定把 CLI 放进后台服务的 PATH；固定应用路径是官方入口。
 	if goos == "darwin" {
 		candidates := []string{"/Applications/Tailscale.app/Contents/MacOS/Tailscale"}

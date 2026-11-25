@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,18 +35,20 @@ type Router struct {
 	// codexWriterLocks 只在本机共享 App Server 上存在：SSH 与 Windows 受管模式没有可读的锁目录。
 	codexWriterLocks gatewayWriterLockInspector
 
-	cfg            config.Config
-	configPath     string
-	projects       *projects.Registry
-	doctor         *doctor.Checker
-	auth           auth.Authenticator
-	version        string
-	installationID string
-	upgrader       websocket.Upgrader
-	monitor        *relayMonitor
-	historyMedia   *appServerHistoryMediaStore
-	historyOutput  *appServerHistoryMediaStore
-	fileUploads    *fileUploadStore
+	// Last successful authenticated /readyz for this daemon instance.
+	preflightReadyAt atomic.Int64
+	cfg              config.Config
+	configPath       string
+	projects         *projects.Registry
+	doctor           *doctor.Checker
+	auth             auth.Authenticator
+	version          string
+	installationID   string
+	upgrader         websocket.Upgrader
+	monitor          *relayMonitor
+	historyMedia     *appServerHistoryMediaStore
+	historyOutput    *appServerHistoryMediaStore
+	fileUploads      *fileUploadStore
 	// sessionFileGrants 记录已授权会话里 AI 提到的临时目录文件，供 /api/files/read 精确放行。
 	sessionFileGrants *sessionFileGrantStore
 	capabilities      capabilityRegistry
@@ -314,6 +317,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
 	// 远程启用和免费授权都必须持有电脑的 Bearer，开发免鉴权和 query token 均不适用。
 	tailcatPairingAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	mux.Handle("/api/local/preflight", tailcatPairingAuth.Middleware(http.HandlerFunc(r.preflightHost)))
 	mux.Handle("/api/tailcat/managed-pairing-link", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatManagedPairingLinkHandler)),
 	))
@@ -453,7 +457,7 @@ func logging(next http.Handler, monitor *relayMonitor) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		localDiagnostics := strings.HasPrefix(r.URL.Path, "/api/local/diagnostics/")
+		localDiagnostics := strings.HasPrefix(r.URL.Path, "/api/local/diagnostics/") || r.URL.Path == "/api/local/preflight"
 		if strings.HasPrefix(r.URL.Path, "/api/") && monitor != nil && !localDiagnostics {
 			monitor.beginHTTP()
 		}
@@ -577,6 +581,11 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 		// liveness 与 readiness 分离：进程仍可通过 /healthz 被守护进程观察，
 		// 但配置、Codex 或敏感文件检查失败时不能对客户端宣称已经可用。
 		status = http.StatusServiceUnavailable
+	}
+	if results.OK {
+		r.preflightReadyAt.Store(time.Now().UnixNano())
+	} else {
+		r.preflightReadyAt.Store(0)
 	}
 	writeJSON(w, status, results)
 }
