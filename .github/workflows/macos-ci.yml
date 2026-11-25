@@ -8,6 +8,9 @@ on:
     paths:
       - "macos/MimiRemoteMac/**"
       - "scripts/test-macos-app.sh"
+      - "scripts/build-macos-installer.sh"
+      - "scripts/check-macos-installer.sh"
+      - "scripts/test-macos-installer-signing.sh"
       - ".github/workflows/macos-ci.yml"
   workflow_dispatch:
 

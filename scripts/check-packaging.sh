@@ -38,6 +38,7 @@ for required_file in \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/check-macos-notices.sh \
+  scripts/test-macos-installer-signing.sh \
   scripts/build-windows-installer.ps1 \
   scripts/check-windows-installer.ps1 \
   scripts/test-windows-install.ps1 \
@@ -70,6 +71,7 @@ bash -n \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/check-macos-notices.sh \
+  scripts/test-macos-installer-signing.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
   scripts/check-release-artifacts.sh \
@@ -88,6 +90,7 @@ bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
 bash ./scripts/check-macos-notices.sh --self-test >/dev/null
 bash ./scripts/restart-agentd-dev-macos.sh --self-test >/dev/null
 bash ./scripts/verify-release.sh --self-test >/dev/null
+bash ./scripts/test-macos-installer-signing.sh --static-only >/dev/null
 bash ./scripts/install-linux.sh --self-test >/dev/null
 bash ./scripts/test-install-linux.sh >/dev/null
 bash ./scripts/test-install-linux-tray.sh >/dev/null
@@ -201,13 +204,21 @@ grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer
   || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
 grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
-grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
+grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$AGY_ADAPTER_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
-# Claude 适配器（#660 起默认）：稳定 identifier，并且签名时带 JIT 权限，否则在 hardened runtime 下一启动就被终止。
+grep -Fq 'find "$APP_PATH" -type f -print0' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有在封包/公证前枚举 App 内全部 Mach-O。"
+grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有对枚举到的全部 Mach-O 执行严格签名校验。"
+# Claude 与 Antigravity 适配器：稳定 identifier，并且签名时带 JIT 权限，否则在 hardened runtime 下一启动就被终止。
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-adapter' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude 适配器设置稳定签名 identifier。"
+grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为内嵌 Antigravity 适配器设置稳定签名 identifier。"
+grep -Fq 'AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建缺少内嵌 Antigravity 适配器路径检查。"
 grep -Fq -- '--entitlements "$ADAPTER_ENTITLEMENTS"' scripts/build-macos-installer.sh \
-  || fail "Mac 安装包构建没有给 Claude 适配器加上 JIT 权限。"
+  || fail "Mac 安装包构建没有给 Bun 适配器加上 JIT 权限。"
 grep -Fq 'com.apple.security.cs.allow-jit' macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements \
   || fail "Claude 适配器的 entitlements 缺少 JIT 权限。"
 grep -Fq 'ClaudeAdapter.entitlements' macos/MimiRemoteMac/Scripts/embed-agentd.sh \
@@ -252,12 +263,22 @@ grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scr
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
 grep -Fq 'ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Claude 适配器。"
+grep -Fq 'AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Antigravity 适配器。"
+grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Antigravity 适配器的稳定 identifier。"
 grep -Fq 'com.apple.security.cs.allow-jit' scripts/check-macos-installer.sh \
-  || fail "Mac 安装包门禁没有校验 Claude 适配器的 JIT 权限。"
+  || fail "Mac 安装包门禁没有校验 Bun 适配器的 JIT 权限。"
 grep -Fq 'TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Tailcat。"
 grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有逐个校验 App 内 Mach-O 签名。"
+grep -Fq 'candidate_team_identifier' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有对枚举到的全部 Mach-O 校验 Team ID。"
+grep -Fq 'bash ./scripts/build-macos-installer.sh' scripts/verify-release.sh \
+  || fail "本地发布预检脚本没有在 macOS 上构建 Mac installer snapshot。"
+grep -Fq 'bash ./scripts/check-macos-installer.sh' scripts/verify-release.sh \
+  || fail "本地发布预检脚本没有在 macOS 上校验 Mac installer snapshot。"
 grep -Fq 'internal/claudebridge/version.go' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有读取 agentd 的 Claude bridge 最低版本。"
 grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/check-macos-installer.sh \

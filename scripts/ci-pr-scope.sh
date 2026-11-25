@@ -148,7 +148,7 @@ else
       *.go|go.mod|go.sum|.goreleaser.yml|SKILL.md|packaging/*|packaging/**/*|contracts/mimi-protocol/*|contracts/mimi-protocol/**/*|contracts/harness-native/*|contracts/harness-native/**/*|contracts/file-references/*|contracts/file-references/**/*)
         go_scope=true
         ;;
-      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/test-conversation-results.py|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-harness-native-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/package-skill.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
+      scripts/test-conversation-regressions.sh|scripts/check-critical-regressions.sh|scripts/test-conversation-results.py|scripts/check-nightly-release.sh|scripts/generate-nightly-what-to-test.rb|scripts/check-packaging.sh|scripts/check-source-size.sh|scripts/check-mimi-protocol-contract.sh|scripts/check-harness-native-contract.sh|scripts/check-macos-*|scripts/check-release-*|scripts/build-macos-installer.sh|scripts/test-macos-installer-signing.sh|scripts/build-windows-installer.ps1|scripts/check-windows-installer.ps1|scripts/test-windows-install.ps1|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/package-skill.sh|scripts/sign-agentd-dev-macos.sh|scripts/restart-agentd-dev-macos.sh|scripts/restart-agentd-dev-handoff-macos.sh|scripts/verify-release.sh)
         go_scope=true
         ;;
     esac
@@ -169,7 +169,7 @@ else
     esac
 
     case "$changed_path" in
-      macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|scripts/test-macos-app.sh)
+      macos/MimiRemoteMac/*|macos/MimiRemoteMac/**/*|scripts/test-macos-app.sh|scripts/build-macos-installer.sh|scripts/check-macos-installer.sh|scripts/test-macos-installer-signing.sh)
         macos_scope=true
         ;;
     esac

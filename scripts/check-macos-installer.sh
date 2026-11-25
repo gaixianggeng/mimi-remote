@@ -3,7 +3,13 @@ set -euo pipefail
 
 REQUIRE_NOTARIZATION=0
 REQUIRE_TEAM_SIGNING=0
+VERIFY_APP_MACHO_SIGNATURES=0
+CHECK_APP_ONLY=0
+TARGET_PATH=""
 DMG_PATH=""
+APP_PATH=""
+ADAPTER_PATH=""
+AGY_ADAPTER_PATH=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 version_at_least() {
@@ -29,7 +35,99 @@ usage() {
   cat <<'EOF'
 用法：
   bash ./scripts/check-macos-installer.sh [--require-team-signing] [--require-notarization] <Mimi-Remote-Mac.dmg>
+  bash ./scripts/check-macos-installer.sh --app [--require-team-signing] <Mimi-Remote-Mac.app>
+  bash ./scripts/check-macos-installer.sh --verify-app-macho-signatures [--require-team-signing] [--require-notarization] <Mimi-Remote-Mac.app>
 EOF
+}
+
+verify_app_machos() {
+  local check_arch_and_vtool="${1:-1}"
+  local app_details app_team
+  local candidate_path candidate_kind candidate_signing_details candidate_team_identifier
+  local binary_archs reference_sdk reference_sdk_arch binary_arch build_metadata binary_sdk
+
+  app_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
+  app_team="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_details")"
+  if [[ "$REQUIRE_TEAM_SIGNING" == "1" && ! "$app_team" =~ ^[A-Z0-9]+$ ]]; then
+    echo "Mac 安装包校验失败：主 App 缺少有效的非空 Team ID（实际：${app_team:-<空>}）。" >&2
+    exit 1
+  fi
+  if [[ "$REQUIRE_NOTARIZATION" == "1" ]] \
+    && ! grep -Fq 'Authority=Developer ID Application:' <<<"$app_details"; then
+    echo "Mac 安装包校验失败：主 App 不是有效的 Developer ID Application 签名。" >&2
+    exit 1
+  fi
+
+  # 不只检查已知入口；后续新增的 framework、helper 或工具也必须带有效签名、arm64，
+  # 并声明可识别的 macOS 构建元数据，防止漏签或 x86-only 组件静默进入发布包。
+  macho_count=0
+  while IFS= read -r -d '' candidate_path; do
+    candidate_kind="$(file -b "$candidate_path")"
+    if [[ "$candidate_kind" != Mach-O* ]]; then
+      continue
+    fi
+
+    macho_count=$((macho_count + 1))
+    # codesign --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O。逐个校验，避免未签名
+    # sidecar 或残留损坏签名一直拖到 Apple 公证阶段才暴露。
+    codesign --verify --strict --verbose=2 "$candidate_path"
+
+    if [[ "$REQUIRE_TEAM_SIGNING" == "1" || "$REQUIRE_NOTARIZATION" == "1" ]]; then
+      candidate_signing_details="$(codesign -d --verbose=4 "$candidate_path" 2>&1)"
+      if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
+        candidate_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$candidate_signing_details")"
+        if [[ "$candidate_team_identifier" != "$app_team" ]]; then
+          echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 Team ID（${candidate_team_identifier:-<空>}）与主 App（${app_team}）不一致。" >&2
+          exit 1
+        fi
+      fi
+      if [[ "$REQUIRE_NOTARIZATION" == "1" ]] \
+        && ! grep -Fq 'Authority=Developer ID Application:' <<<"$candidate_signing_details"; then
+        echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 不是有效的 Developer ID Application 签名。" >&2
+        exit 1
+      fi
+    fi
+
+    if [[ "$check_arch_and_vtool" != "1" ]]; then
+      continue
+    fi
+
+    binary_archs="$(lipo -archs "$candidate_path")"
+    if [[ " $binary_archs " != *" arm64 "* ]]; then
+      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 是 x86-only Mach-O，缺少 arm64。" >&2
+      exit 1
+    fi
+
+    reference_sdk=""
+    reference_sdk_arch=""
+    for binary_arch in $binary_archs; do
+      build_metadata="$(xcrun vtool -arch "$binary_arch" -show-build "$candidate_path")"
+      if ! grep -Eq 'platform[[:space:]]+MACOS|cmd[[:space:]]+LC_VERSION_MIN_MACOSX' <<<"$build_metadata" \
+        || ! grep -Eq '(minos|version)[[:space:]]+[0-9]+' <<<"$build_metadata" \
+        || ! grep -Eq 'sdk[[:space:]]+[1-9][0-9]*(\.[0-9]+)*' <<<"$build_metadata"; then
+        echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${binary_arch} 切片缺少可识别的 macOS 构建元数据。" >&2
+        exit 1
+      fi
+
+      binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<<"$build_metadata")"
+      # Claude / Antigravity 适配器的两个切片是 Bun 上游预编译的运行时，各自的 SDK 由上游决定，不要求一致。
+      if [[ "$candidate_path" == "$ADAPTER_PATH" || "$candidate_path" == "$AGY_ADAPTER_PATH" ]]; then
+        continue
+      fi
+      if [[ -z "$reference_sdk" ]]; then
+        reference_sdk="$binary_sdk"
+        reference_sdk_arch="$binary_arch"
+      elif [[ "$binary_sdk" != "$reference_sdk" ]]; then
+        echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${reference_sdk_arch}/${binary_arch} SDK 不一致（${reference_sdk}/${binary_sdk}）。" >&2
+        exit 1
+      fi
+    done
+  done < <(find "$APP_PATH" -type f -print0)
+
+  if [[ "$macho_count" -eq 0 ]]; then
+    echo "Mac 安装包校验失败：App 内没有找到 Mach-O 产物。" >&2
+    exit 1
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -43,41 +141,54 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_TEAM_SIGNING=1
       shift
       ;;
+    --app)
+      CHECK_APP_ONLY=1
+      shift
+      ;;
+    --verify-app-macho-signatures)
+      VERIFY_APP_MACHO_SIGNATURES=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      if [[ -n "$DMG_PATH" ]]; then
+      if [[ -n "$TARGET_PATH" ]]; then
         usage >&2
         exit 2
       fi
-      DMG_PATH="$1"
+      TARGET_PATH="$1"
       shift
       ;;
   esac
 done
 
-if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
-  usage >&2
+if [[ "$CHECK_APP_ONLY" == "1" && "$VERIFY_APP_MACHO_SIGNATURES" == "1" ]]; then
+  echo "Mac 安装包校验失败：--app 与 --verify-app-macho-signatures 不能同时使用。" >&2
   exit 2
 fi
-DMG_PATH="$(cd "$(dirname "$DMG_PATH")" && pwd)/$(basename "$DMG_PATH")"
+if [[ "$CHECK_APP_ONLY" == "1" && "$REQUIRE_NOTARIZATION" == "1" ]]; then
+  echo "Mac 安装包校验失败：--require-notarization 必须校验完整 DMG，不能与 --app 同时使用。" >&2
+  exit 2
+fi
 
-for command_name in arch codesign file find hdiutil lipo osascript plutil shasum sips spctl strings sysctl xcrun; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
-    exit 127
+if [[ "$VERIFY_APP_MACHO_SIGNATURES" == "1" ]]; then
+  if [[ -z "$TARGET_PATH" || ! -d "$TARGET_PATH" ]]; then
+    usage >&2
+    exit 2
   fi
-done
-
-hdiutil verify "$DMG_PATH" >/dev/null
-SHA_PATH="$DMG_PATH.sha256"
-if [[ -f "$SHA_PATH" ]]; then
-  (
-    cd "$(dirname "$DMG_PATH")"
-    shasum -a 256 -c "$(basename "$SHA_PATH")" >/dev/null
-  )
+  for command_name in awk codesign file find grep; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
+      exit 127
+    fi
+  done
+  APP_PATH="$(cd "$TARGET_PATH" && pwd)"
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+  verify_app_machos 0
+  echo "Mac App Mach-O 签名校验通过：已枚举 ${macho_count} 个 Mach-O。"
+  exit 0
 fi
 
 MOUNT_DIR=""
@@ -93,57 +204,96 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ATTACH_OUTPUT="$(hdiutil attach -nobrowse -readonly "$DMG_PATH")"
-MOUNT_TARGET="$(awk -F '\t' '$1 ~ /^\/dev\/disk/ { device=$1; sub(/[[:space:]]+$/, "", device); print device; exit }' <<<"$ATTACH_OUTPUT")"
-MOUNTED=1
-MOUNT_DIR="$(awk -F '\t' '$NF ~ /^\/Volumes\// { mount_path=$NF } END { print mount_path }' <<<"$ATTACH_OUTPUT")"
-if [[ -z "$MOUNT_TARGET" || -z "$MOUNT_DIR" || ! -d "$MOUNT_DIR" ]]; then
-  echo "Mac 安装包校验失败：无法解析 DMG 挂载点。" >&2
-  printf '%s\n' "$ATTACH_OUTPUT" >&2
-  exit 1
+if [[ "$CHECK_APP_ONLY" == "1" ]]; then
+  if [[ -z "$TARGET_PATH" || ! -d "$TARGET_PATH" ]]; then
+    usage >&2
+    exit 2
+  fi
+  for command_name in arch awk codesign file find grep lipo plutil sed sysctl xcrun; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
+      exit 127
+    fi
+  done
+  APP_PATH="$(cd "$TARGET_PATH" && pwd)"
+else
+  DMG_PATH="$TARGET_PATH"
+  if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
+    usage >&2
+    exit 2
+  fi
+  DMG_PATH="$(cd "$(dirname "$DMG_PATH")" && pwd)/$(basename "$DMG_PATH")"
+
+  for command_name in arch awk codesign file find grep hdiutil lipo osascript plutil sed shasum sips spctl strings sysctl xcrun; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "Mac 安装包校验失败：缺少命令 ${command_name}。" >&2
+      exit 127
+    fi
+  done
+
+  hdiutil verify "$DMG_PATH" >/dev/null
+  SHA_PATH="$DMG_PATH.sha256"
+  if [[ -f "$SHA_PATH" ]]; then
+    (
+      cd "$(dirname "$DMG_PATH")"
+      shasum -a 256 -c "$(basename "$SHA_PATH")" >/dev/null
+    )
+  fi
+
+  ATTACH_OUTPUT="$(hdiutil attach -nobrowse -readonly "$DMG_PATH")"
+  MOUNT_TARGET="$(awk -F '\t' '$1 ~ /^\/dev\/disk/ { device=$1; sub(/[[:space:]]+$/, "", device); print device; exit }' <<<"$ATTACH_OUTPUT")"
+  MOUNTED=1
+  MOUNT_DIR="$(awk -F '\t' '$NF ~ /^\/Volumes\// { mount_path=$NF } END { print mount_path }' <<<"$ATTACH_OUTPUT")"
+  if [[ -z "$MOUNT_TARGET" || -z "$MOUNT_DIR" || ! -d "$MOUNT_DIR" ]]; then
+    echo "Mac 安装包校验失败：无法解析 DMG 挂载点。" >&2
+    printf '%s\n' "$ATTACH_OUTPUT" >&2
+    exit 1
+  fi
+  APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
 fi
-APP_PATH="$MOUNT_DIR/Mimi Remote Mac.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
 ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"
+AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"
 TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
-if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 App、agentd、Claude 适配器、旧 Claude bridge、Tailcat 或 LaunchAgent。" >&2
+if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$AGY_ADAPTER_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
+  echo "Mac 安装包校验失败：缺少 App、agentd、Claude 适配器、Antigravity 适配器、旧 Claude bridge、Tailcat 或 LaunchAgent。" >&2
   exit 1
 fi
 bash "$ROOT_DIR/scripts/check-macos-notices.sh" "$APP_PATH"
-if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
-  exit 1
-fi
-BACKGROUND_PATH="$MOUNT_DIR/.background/dmg-background.png"
-if [[ ! -f "$BACKGROUND_PATH" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 Finder 背景 PNG。" >&2
-  exit 1
-fi
-BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$BACKGROUND_PATH")"
-BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
-BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
-if [[ "$BACKGROUND_WIDTH" != "660" || "$BACKGROUND_HEIGHT" != "400" ]]; then
-  echo "Mac 安装包校验失败：Finder 背景必须是 660x400，实际为 ${BACKGROUND_WIDTH}x${BACKGROUND_HEIGHT}。" >&2
-  exit 1
-fi
-if [[ ! -f "$MOUNT_DIR/.DS_Store" ]]; then
-  echo "Mac 安装包校验失败：DMG 缺少 Finder 布局元数据 .DS_Store。" >&2
-  exit 1
-fi
-FINDER_METADATA="$(strings -a "$MOUNT_DIR/.DS_Store")"
-if [[ "$FINDER_METADATA" != *"backgroundImageAlias"* || "$FINDER_METADATA" != *"dmg-background.png"* ]]; then
-  echo "Mac 安装包校验失败：Finder 布局未保存可恢复的背景图 alias。" >&2
-  exit 1
-fi
+if [[ "$CHECK_APP_ONLY" != "1" ]]; then
+  if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
+    echo "Mac 安装包校验失败：DMG 缺少 Applications 拖放入口。" >&2
+    exit 1
+  fi
+  BACKGROUND_PATH="$MOUNT_DIR/.background/dmg-background.png"
+  if [[ ! -f "$BACKGROUND_PATH" ]]; then
+    echo "Mac 安装包校验失败：DMG 缺少 Finder 背景 PNG。" >&2
+    exit 1
+  fi
+  BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$BACKGROUND_PATH")"
+  BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+  BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$BACKGROUND_DIMENSIONS")"
+  if [[ "$BACKGROUND_WIDTH" != "660" || "$BACKGROUND_HEIGHT" != "400" ]]; then
+    echo "Mac 安装包校验失败：Finder 背景必须是 660x400，实际为 ${BACKGROUND_WIDTH}x${BACKGROUND_HEIGHT}。" >&2
+    exit 1
+  fi
+  if [[ ! -f "$MOUNT_DIR/.DS_Store" ]]; then
+    echo "Mac 安装包校验失败：DMG 缺少 Finder 布局元数据 .DS_Store。" >&2
+    exit 1
+  fi
+  FINDER_METADATA="$(strings -a "$MOUNT_DIR/.DS_Store")"
+  if [[ "$FINDER_METADATA" != *"backgroundImageAlias"* || "$FINDER_METADATA" != *"dmg-background.png"* ]]; then
+    echo "Mac 安装包校验失败：Finder 布局未保存可恢复的背景图 alias。" >&2
+    exit 1
+  fi
 
-# 真实打开只读卷，验证 Finder 确实恢复了图标视图、窗口和位置。
-if ! osascript - "$MOUNT_DIR" <<'APPLESCRIPT'
+  # 真实打开只读卷，验证 Finder 确实恢复了图标视图、窗口和位置。
+  if ! osascript - "$MOUNT_DIR" <<'APPLESCRIPT'
 on run argv
   set mountPath to item 1 of argv
   tell application "Finder"
@@ -175,22 +325,28 @@ on run argv
   end tell
 end run
 APPLESCRIPT
-then
-  echo "Mac 安装包校验失败：Finder 无法完整还原品牌拖放布局。" >&2
-  exit 1
+  then
+    echo "Mac 安装包校验失败：Finder 无法完整还原品牌拖放布局。" >&2
+    exit 1
+  fi
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --verify --strict --verbose=2 "$BRIDGE_PATH"
 codesign --verify --strict --verbose=2 "$ADAPTER_PATH"
+codesign --verify --strict --verbose=2 "$AGY_ADAPTER_PATH"
 codesign --verify --strict --verbose=2 "$TAILCAT_PATH"
 # Bun 编译的适配器在 hardened runtime 下必须带 JIT 等权限，否则一启动就被系统终止。
-adapter_entitlements="$(codesign -d --entitlements - --xml "$ADAPTER_PATH" 2>/dev/null || true)"
-for adapter_entitlement in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
-  if ! grep -Fq "$adapter_entitlement" <<<"$adapter_entitlements"; then
-    echo "Mac 安装包校验失败：Claude 适配器签名缺少 ${adapter_entitlement}。" >&2
-    exit 1
-  fi
+for bun_adapter_spec in "Claude 适配器:$ADAPTER_PATH" "Antigravity 适配器:$AGY_ADAPTER_PATH"; do
+  bun_adapter_label="${bun_adapter_spec%%:*}"
+  bun_adapter_path="${bun_adapter_spec#*:}"
+  adapter_entitlements="$(codesign -d --entitlements - --xml "$bun_adapter_path" 2>/dev/null || true)"
+  for adapter_entitlement in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
+    if ! grep -Fq "$adapter_entitlement" <<<"$adapter_entitlements"; then
+      echo "Mac 安装包校验失败：${bun_adapter_label}签名缺少 ${adapter_entitlement}。" >&2
+      exit 1
+    fi
+  done
 done
 plutil -lint "$LAUNCH_AGENT_PATH" >/dev/null
 
@@ -263,6 +419,33 @@ if ! grep -Fq '"turn/start"' <<<"$adapter_capabilities" || ! grep -Fq '"minimumV
   exit 1
 fi
 
+agy_adapter_version_output="$(run_native_version_probe "$AGY_ADAPTER_PATH" --version)"
+if [[ "$agy_adapter_version_output" =~ ^mimi-agy-adapter[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  agy_adapter_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+else
+  echo "Mac 安装包校验失败：Antigravity 适配器未返回标准版本：${agy_adapter_version_output}" >&2
+  exit 1
+fi
+agy_adapter_capabilities="$(run_native_version_probe "$AGY_ADAPTER_PATH" --capabilities)"
+if ! grep -Fq '"turn/start"' <<<"$agy_adapter_capabilities" || ! grep -Fq '"minimumVersion"' <<<"$agy_adapter_capabilities"; then
+  echo "Mac 安装包校验失败：Antigravity 适配器的能力声明不完整：${agy_adapter_capabilities:0:200}" >&2
+  exit 1
+fi
+
+minimum_agy_version_source="$ROOT_DIR/internal/agybridge/binary.go"
+minimum_agy_adapter_version="$(
+  sed -nE 's/^[[:space:]]*MinimumVersion[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' \
+    "$minimum_agy_version_source"
+)"
+if [[ ! "$minimum_agy_adapter_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Mac 安装包校验失败：无法从 agentd 源码读取 Antigravity 适配器最低版本。" >&2
+  exit 1
+fi
+if ! version_at_least "$agy_adapter_version" "$minimum_agy_adapter_version"; then
+  echo "Mac 安装包校验失败：Antigravity 适配器 ${agy_adapter_version} 低于 agentd 要求的 ${minimum_agy_adapter_version}。" >&2
+  exit 1
+fi
+
 minimum_version_source="$ROOT_DIR/internal/claudebridge/version.go"
 minimum_bridge_version="$(
   sed -nE 's/^[[:space:]]*MinimumVersion[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' \
@@ -277,57 +460,9 @@ if ! version_at_least "$bridge_version" "$minimum_bridge_version"; then
   exit 1
 fi
 
-# 不只检查三个已知入口；后续新增的 framework、helper 或工具也必须带 arm64，
-# 并声明可识别的 macOS 构建元数据，防止 x86-only 组件静默进入发布包。
-macho_count=0
-while IFS= read -r -d '' candidate_path; do
-  candidate_kind="$(file -b "$candidate_path")"
-  if [[ "$candidate_kind" != Mach-O* ]]; then
-    continue
-  fi
+verify_app_machos 1
 
-  macho_count=$((macho_count + 1))
-  # codesign --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O。逐个校验，避免未签名
-  # sidecar 一直拖到 Apple 公证阶段才暴露。
-  codesign --verify --strict --verbose=2 "$candidate_path"
-  binary_archs="$(lipo -archs "$candidate_path")"
-  if [[ " $binary_archs " != *" arm64 "* ]]; then
-    echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 是 x86-only Mach-O，缺少 arm64。" >&2
-    exit 1
-  fi
-
-  reference_sdk=""
-  reference_sdk_arch=""
-  for binary_arch in $binary_archs; do
-    build_metadata="$(xcrun vtool -arch "$binary_arch" -show-build "$candidate_path")"
-    if ! grep -Eq 'platform[[:space:]]+MACOS|cmd[[:space:]]+LC_VERSION_MIN_MACOSX' <<<"$build_metadata" \
-      || ! grep -Eq '(minos|version)[[:space:]]+[0-9]+' <<<"$build_metadata" \
-      || ! grep -Eq 'sdk[[:space:]]+[1-9][0-9]*(\.[0-9]+)*' <<<"$build_metadata"; then
-      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${binary_arch} 切片缺少可识别的 macOS 构建元数据。" >&2
-      exit 1
-    fi
-
-    binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<<"$build_metadata")"
-    # Claude 适配器的两个切片是 Bun 上游预编译的运行时，各自的 SDK 由上游决定，不要求一致。
-    if [[ "$candidate_path" == "$ADAPTER_PATH" ]]; then
-      continue
-    fi
-    if [[ -z "$reference_sdk" ]]; then
-      reference_sdk="$binary_sdk"
-      reference_sdk_arch="$binary_arch"
-    elif [[ "$binary_sdk" != "$reference_sdk" ]]; then
-      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${reference_sdk_arch}/${binary_arch} SDK 不一致（${reference_sdk}/${binary_sdk}）。" >&2
-      exit 1
-    fi
-  done
-done < <(find "$APP_PATH" -type f -print0)
-
-if [[ "$macho_count" -eq 0 ]]; then
-  echo "Mac 安装包校验失败：App 内没有找到 Mach-O 产物。" >&2
-  exit 1
-fi
-
-for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"; do
+for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$AGY_ADAPTER_PATH" "$TAILCAT_PATH"; do
   binary_archs="$(lipo -archs "$binary_path")"
   for required_arch in arm64 x86_64; do
     if [[ " $binary_archs " != *" $required_arch "* ]]; then
@@ -341,19 +476,22 @@ app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
 agent_signing_details="$(codesign -d --verbose=4 "$AGENT_PATH" 2>&1)"
 bridge_signing_details="$(codesign -d --verbose=4 "$BRIDGE_PATH" 2>&1)"
 adapter_signing_details="$(codesign -d --verbose=4 "$ADAPTER_PATH" 2>&1)"
+agy_adapter_signing_details="$(codesign -d --verbose=4 "$AGY_ADAPTER_PATH" 2>&1)"
 tailcat_signing_details="$(codesign -d --verbose=4 "$TAILCAT_PATH" 2>&1)"
 # 先完整读取 codesign 输出，避免 pipefail 将 awk 提前退出造成的 SIGPIPE 误判为签名失败。
 app_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$app_signing_details")"
 agent_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$bridge_signing_details")"
 adapter_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$adapter_signing_details")"
+agy_adapter_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$agy_adapter_signing_details")"
 tailcat_identifier="$(awk -F= '$1 == "Identifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$app_identifier" != "com.gaixianggeng.mimi.mac" \
   || "$agent_identifier" != "com.gaixianggeng.mimi.mac.agentd" \
   || "$bridge_identifier" != "com.gaixianggeng.mimi.mac.claude-bridge" \
   || "$adapter_identifier" != "com.gaixianggeng.mimi.mac.claude-adapter" \
+  || "$agy_adapter_identifier" != "com.gaixianggeng.mimi.mac.agy-adapter" \
   || "$tailcat_identifier" != "com.gaixianggeng.mimi.mac.tailcat" ]]; then
-  echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 或 Tailcat 签名 identifier 不稳定。" >&2
+  echo "Mac 安装包校验失败：App、agentd、Claude 适配器、Antigravity 适配器、旧 bridge 或 Tailcat 签名 identifier 不稳定。" >&2
   exit 1
 fi
 
@@ -361,14 +499,16 @@ app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$
 agent_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$agent_signing_details")"
 bridge_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$bridge_signing_details")"
 adapter_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$adapter_signing_details")"
+agy_adapter_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$agy_adapter_signing_details")"
 tailcat_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$tailcat_signing_details")"
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   if [[ ! "$app_team_identifier" =~ ^[A-Z0-9]+$ \
     || "$agent_team_identifier" != "$app_team_identifier" \
     || "$bridge_team_identifier" != "$app_team_identifier" \
     || "$adapter_team_identifier" != "$app_team_identifier" \
+    || "$agy_adapter_team_identifier" != "$app_team_identifier" \
     || "$tailcat_team_identifier" != "$app_team_identifier" ]]; then
-    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 与 Tailcat 必须使用同一非空 Team ID 签名。" >&2
+    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、Antigravity 适配器、旧 bridge 与 Tailcat 必须使用同一非空 Team ID 签名。" >&2
     exit 1
   fi
 fi
@@ -379,8 +519,9 @@ if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$agent_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$bridge_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$adapter_signing_details" \
+    || ! grep -Fq 'Authority=Developer ID Application:' <<<"$agy_adapter_signing_details" \
     || ! grep -Fq 'Authority=Developer ID Application:' <<<"$tailcat_signing_details"; then
-    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、旧 bridge 或 Tailcat 不是有效的 Developer ID Application 签名。" >&2
+    echo "Mac 安装包校验失败：App、agentd、Claude 适配器、Antigravity 适配器、旧 bridge 或 Tailcat 不是有效的 Developer ID Application 签名。" >&2
     exit 1
   fi
   xcrun stapler validate "$DMG_PATH"
@@ -392,4 +533,8 @@ team_summary=""
 if [[ "$REQUIRE_TEAM_SIGNING" == "1" ]]; then
   team_summary="、Team ID ${app_team_identifier} 一致"
 fi
-echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude 适配器 ${adapter_version}、旧 Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+if [[ "$CHECK_APP_ONLY" == "1" ]]; then
+  echo "Mac App 快照校验通过（--app 模式，跳过 DMG/Finder 布局）：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude 适配器 ${adapter_version}、Antigravity 适配器 ${agy_adapter_version}（要求 >= ${minimum_agy_adapter_version}）、旧 Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent 和签名结构完整${team_summary}。"
+else
+  echo "Mac 安装包校验通过：已枚举 ${macho_count} 个 Mach-O，全部已签名、包含 arm64 且 macOS 构建元数据可读取；universal App、agentd、Claude 适配器 ${adapter_version}、Antigravity 适配器 ${agy_adapter_version}（要求 >= ${minimum_agy_adapter_version}）、旧 Claude bridge ${bridge_version}（要求 >= ${minimum_bridge_version}）、Tailcat、LaunchAgent、拖放入口和签名结构完整${team_summary}。"
+fi

@@ -16,12 +16,13 @@ VERSION=""
 BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"
 SNAPSHOT=0
 DEVELOPMENT_SIGNING=0
+APP_ONLY=0
 
 usage() {
   cat <<'EOF'
 用法：
   bash ./scripts/build-macos-installer.sh --version 0.2.0 [--build-number 1] [--output-dir dist-macos]
-  bash ./scripts/build-macos-installer.sh --snapshot --version 0.2.0 [--output-dir dist-macos]
+  bash ./scripts/build-macos-installer.sh --snapshot [--app-only] --version 0.2.0 [--output-dir dist-macos]
   bash ./scripts/build-macos-installer.sh --development-signing --version 0.2.0 [--output-dir dist-macos]
 
 正式构建需要以下环境变量：
@@ -32,6 +33,7 @@ usage() {
   MACOS_NOTARY_ISSUER_ID     App Store Connect Issuer ID
 
 --snapshot 使用临时 ad-hoc 签名，只验证 universal App/DMG 结构，不能安装运行后台服务。
+--app-only 只能与 --snapshot 同时使用：跳过需要 Finder GUI 授权的 DMG 布局封装，仅输出已签名并校验过的 .app。
 --development-signing 自动使用 Keychain 中的 Apple Development 身份，生成仅供本机
 初始化与 ServiceManagement 验收的同团队签名包；不做公证，不可公开分发。
 EOF
@@ -55,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       SNAPSHOT=1
       shift
       ;;
+    --app-only)
+      APP_ONLY=1
+      shift
+      ;;
     --development-signing)
       DEVELOPMENT_SIGNING=1
       shift
@@ -74,6 +80,10 @@ if [[ "$SNAPSHOT" == "1" && "$DEVELOPMENT_SIGNING" == "1" ]]; then
   echo "Mac 安装包构建失败：--snapshot 与 --development-signing 不能同时使用。" >&2
   exit 2
 fi
+if [[ "$APP_ONLY" == "1" && "$SNAPSHOT" != "1" ]]; then
+  echo "Mac 安装包构建失败：--app-only 只能与 --snapshot 同时使用。" >&2
+  exit 2
+fi
 
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -85,7 +95,7 @@ if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [[ "$BUILD_NUMBER" == "0" ]]; then
   exit 2
 fi
 
-for command_name in base64 codesign ditto hdiutil lipo openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
+for command_name in base64 codesign ditto file find hdiutil lipo openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -311,10 +321,11 @@ APP_PATH="$DERIVED_DATA/Build/Products/Release/Mimi Remote Mac.app"
 AGENT_PATH="$APP_PATH/Contents/Resources/agentd"
 BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"
 ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"
+AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"
 TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
 ADAPTER_ENTITLEMENTS="$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements"
-if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$TAILCAT_PATH" ]]; then
-  echo "Mac 安装包构建失败：Release App、内嵌 agentd、Claude 适配器、旧 Claude bridge 或 Tailcat 不存在。" >&2
+if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$AGY_ADAPTER_PATH" || ! -x "$TAILCAT_PATH" ]]; then
+  echo "Mac 安装包构建失败：Release App、内嵌 agentd、Claude 适配器、Antigravity 适配器、旧 Claude bridge 或 Tailcat 不存在。" >&2
   exit 1
 fi
 
@@ -322,14 +333,16 @@ APP_ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/Mimi Remote Mac")"
 AGENT_ARCHS="$(lipo -archs "$AGENT_PATH")"
 BRIDGE_ARCHS="$(lipo -archs "$BRIDGE_PATH")"
 ADAPTER_ARCHS="$(lipo -archs "$ADAPTER_PATH")"
+AGY_ADAPTER_ARCHS="$(lipo -archs "$AGY_ADAPTER_PATH")"
 TAILCAT_ARCHS="$(lipo -archs "$TAILCAT_PATH")"
 for required_arch in arm64 x86_64; do
   if [[ " $APP_ARCHS " != *" $required_arch "* \
     || " $AGENT_ARCHS " != *" $required_arch "* \
     || " $BRIDGE_ARCHS " != *" $required_arch "* \
     || " $ADAPTER_ARCHS " != *" $required_arch "* \
+    || " $AGY_ADAPTER_ARCHS " != *" $required_arch "* \
     || " $TAILCAT_ARCHS " != *" $required_arch "* ]]; then
-    echo "Mac 安装包构建失败：App/agentd/Claude 适配器/旧 bridge/Tailcat 缺少 ${required_arch}，App=${APP_ARCHS} agentd=${AGENT_ARCHS} adapter=${ADAPTER_ARCHS} bridge=${BRIDGE_ARCHS} tailcat=${TAILCAT_ARCHS}。" >&2
+    echo "Mac 安装包构建失败：App/agentd/Claude 适配器/Antigravity 适配器/旧 bridge/Tailcat 缺少 ${required_arch}，App=${APP_ARCHS} agentd=${AGENT_ARCHS} adapter=${ADAPTER_ARCHS} agy-adapter=${AGY_ADAPTER_ARCHS} bridge=${BRIDGE_ARCHS} tailcat=${TAILCAT_ARCHS}。" >&2
     exit 1
   fi
 done
@@ -397,7 +410,7 @@ elif [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
   fi
 fi
 
-echo "==> 从内到外签名 Tailcat、Claude 适配器与旧 bridge、agentd 与 App"
+echo "==> 从内到外签名 Tailcat、Claude/Antigravity 适配器与旧 bridge、agentd 与 App"
 if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
@@ -418,6 +431,13 @@ if [[ "$SNAPSHOT" == "1" || "$DEVELOPMENT_SIGNING" == "1" ]]; then
     "${CODESIGN_TIMESTAMP[@]}" \
     --entitlements "$ADAPTER_ENTITLEMENTS" \
     "$ADAPTER_PATH"
+  codesign --force \
+    --sign "$CODESIGN_IDENTITY" \
+    --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+    --options runtime \
+    "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ADAPTER_ENTITLEMENTS" \
+    "$AGY_ADAPTER_PATH"
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
@@ -457,6 +477,14 @@ else
   codesign --force \
     --sign "$CODESIGN_IDENTITY" \
     --keychain "$KEYCHAIN_PATH" \
+    --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+    --options runtime \
+    "${CODESIGN_TIMESTAMP[@]}" \
+    --entitlements "$ADAPTER_ENTITLEMENTS" \
+    "$AGY_ADAPTER_PATH"
+  codesign --force \
+    --sign "$CODESIGN_IDENTITY" \
+    --keychain "$KEYCHAIN_PATH" \
     --identifier com.gaixianggeng.mimi.mac.agentd \
     --options runtime \
     "${CODESIGN_TIMESTAMP[@]}" \
@@ -471,10 +499,53 @@ else
     "$APP_PATH"
 fi
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$TAILCAT_PATH"; do
+for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$AGY_ADAPTER_PATH" "$TAILCAT_PATH"; do
   # --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O，发布前必须直接验证。
   codesign --verify --strict --verbose=2 "$binary_path"
 done
+
+# 封包/公证前枚举 App 内全部 Mach-O，防止以后新增任何内嵌二进制遗漏在签名列表外。
+app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
+app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_signing_details")"
+if [[ "$SNAPSHOT" != "1" && ! "$app_team_identifier" =~ ^[A-Z0-9]+$ ]]; then
+  echo "Mac 安装包构建失败：主 App 缺少有效的非空 Team ID（实际：${app_team_identifier:-<空>}）。" >&2
+  exit 1
+fi
+verified_macho_count=0
+while IFS= read -r -d '' candidate_path; do
+  candidate_kind="$(file -b "$candidate_path")"
+  if [[ "$candidate_kind" != Mach-O* ]]; then
+    continue
+  fi
+  verified_macho_count=$((verified_macho_count + 1))
+  codesign --verify --strict --verbose=2 "$candidate_path"
+  if [[ "$SNAPSHOT" != "1" ]]; then
+    candidate_signing_details="$(codesign -d --verbose=4 "$candidate_path" 2>&1)"
+    candidate_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$candidate_signing_details")"
+    if [[ "$candidate_team_identifier" != "$app_team_identifier" ]]; then
+      echo "Mac 安装包构建失败：${candidate_path#"$APP_PATH"/} 的 Team ID（${candidate_team_identifier:-<空>}）与主 App（${app_team_identifier}）不一致。" >&2
+      exit 1
+    fi
+    if [[ "$DEVELOPMENT_SIGNING" != "1" ]] \
+      && ! grep -Fq 'Authority=Developer ID Application:' <<<"$candidate_signing_details"; then
+      echo "Mac 安装包构建失败：${candidate_path#"$APP_PATH"/} 不是有效的 Developer ID Application 签名。" >&2
+      exit 1
+    fi
+  fi
+done < <(find "$APP_PATH" -type f -print0)
+if [[ "$verified_macho_count" -eq 0 ]]; then
+  echo "Mac 安装包构建失败：App 内没有找到任何 Mach-O 产物。" >&2
+  exit 1
+fi
+
+if [[ "$APP_ONLY" == "1" ]]; then
+  FINAL_APP="$OUTPUT_DIR/Mimi Remote Mac.app"
+  rm -rf -- "$FINAL_APP"
+  ditto "$APP_PATH" "$FINAL_APP"
+  echo "Mac App 快照已生成（--app-only，已验证 ${verified_macho_count} 个 Mach-O 签名）：$FINAL_APP"
+  echo "注意：这是 ad-hoc 结构快照（跳过 Finder DMG 布局），不能用于真实安装或启动 macOS 后台服务。"
+  exit 0
+fi
 
 DMG_ROOT="$WORK_DIR/dmg-root"
 DMG_WRITABLE_PATH="$WORK_DIR/Mimi-Remote-Mac-writable.dmg"

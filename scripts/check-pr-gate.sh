@@ -29,6 +29,7 @@ for script_path in \
   scripts/verify-change.sh \
   scripts/test-verify-change.sh \
   scripts/test-macos-app.sh \
+  scripts/test-macos-installer-signing.sh \
   macos/MimiRemoteMac/Scripts/embed-agentd.sh; do
   bash -n -- "$script_path"
 done
@@ -76,6 +77,9 @@ assert_scope rust_only false false true false false bridges/claude/crates/claude
 assert_scope claude_sdk_adapter false false true false false bridges/claude-sdk/src/main.ts
 assert_scope macos_only false false false true false macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift
 assert_scope macos_runner false false false true false scripts/test-macos-app.sh
+assert_scope macos_installer_builder true false false true false scripts/build-macos-installer.sh
+assert_scope macos_installer_checker true false false true false scripts/check-macos-installer.sh
+assert_scope macos_installer_signing_test true false false true false scripts/test-macos-installer-signing.sh
 assert_scope release true false false false false scripts/check-release-artifacts.sh
 assert_scope release_source true false false false false scripts/check-release-source.sh
 assert_scope windows_release true false false false false scripts/build-windows-installer.ps1
