@@ -10,7 +10,7 @@ import (
 )
 
 type setupFileTransactionOps struct {
-	stage     func(dir string, pattern string, raw []byte) (string, error)
+	stage     func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error)
 	rename    func(oldPath string, newPath string) error
 	renameNew func(oldPath, newPath string) error
 	link      func(oldPath string, newPath string) error
@@ -43,12 +43,12 @@ func writeSetupFilesAtomically(
 		return fmt.Errorf("app-server token file 必须与配置文件位于同一目录")
 	}
 
-	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw)
+	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw, "")
 	if err != nil {
 		return fmt.Errorf("暂存 app-server token file 失败：%w", err)
 	}
 	defer ops.remove(stagedToken)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
+	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw, "")
 	if err != nil {
 		return fmt.Errorf("暂存配置文件失败：%w", err)
 	}

@@ -5,6 +5,17 @@ import (
 	"os"
 )
 
+// FileIdentity reads metadata from an open handle. Windows path-based Stat
+// can defer the file ID lookup until SameFile, after a rename or replacement.
+func FileIdentity(path string) (os.FileInfo, error) {
+	file, err := openSnapshotFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return file.Stat()
+}
+
 func openPermissionTarget(path string, modify bool) (*os.File, os.FileInfo, error) {
 	expected, err := os.Lstat(path)
 	if err != nil {

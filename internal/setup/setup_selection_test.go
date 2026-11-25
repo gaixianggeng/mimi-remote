@@ -104,7 +104,7 @@ func TestSetupRevalidatesSelectionAndPreservesDistinctPriorGrants(t *testing.T) 
 	if err != nil || receipt.Created || receipt.ScanRoot != first.ScanRoot || receipt.BrowseRoot != first.BrowseRoot {
 		t.Fatalf("no-op lost committed selection: %v", err)
 	}
-	for _, test := range []string{"cancel widening", "mount disappeared"} {
+	for _, test := range []string{"cancel widening", "mount disappeared", "mount replaced at same path"} {
 		t.Run(test, func(t *testing.T) {
 			change := replay
 			next := t.TempDir()
@@ -114,14 +114,24 @@ func TestSetupRevalidatesSelectionAndPreservesDistinctPriorGrants(t *testing.T) 
 			ops := defaultSetupFileTransactionOps()
 			stage := ops.stage
 			reachedStage := false
-			ops.stage = func(dir, pattern string, raw []byte) (string, error) {
-				p, err := stage(dir, pattern, raw)
+			ops.stage = func(dir, pattern string, raw []byte, permissionsFrom string) (string, error) {
+				p, err := stage(dir, pattern, raw, permissionsFrom)
 				if err == nil && !reachedStage {
 					reachedStage = true
-					if test == "cancel widening" {
+					switch test {
+					case "cancel widening":
 						cancel()
-					} else if err := os.Remove(next); err != nil {
-						t.Fatal(err)
+					case "mount disappeared":
+						if err := os.Remove(next); err != nil {
+							t.Fatal(err)
+						}
+					default:
+						if err := os.Rename(next, next+".detached"); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(next, 0700); err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 				return p, err

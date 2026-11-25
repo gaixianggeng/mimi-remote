@@ -85,6 +85,35 @@ func TestFreshSetupFailureRemovesNewEmptyConfigDirectory(t *testing.T) {
 	assertMissingPath(t, dir)
 }
 
+func TestFreshSetupSyncsNewDirectoryAncestors(t *testing.T) {
+	clearSetupEnv(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "new")
+	path := filepath.Join(child, "config", "config.json")
+	opts := atomicSetupOptions(t, path, false)
+	ops := defaultSetupFileTransactionOps()
+	syncDir := ops.syncDir
+	var synced []string
+	injected := errors.New("parent sync failed")
+	ops.syncDir = func(dir string) error {
+		synced = append(synced, dir)
+		if dir == child {
+			return injected
+		}
+		return syncDir(dir)
+	}
+	if _, err := runWithFileOps(t.Context(), opts, ops); !errors.Is(err, injected) {
+		t.Fatalf("parent sync failure was lost: %v", err)
+	}
+	if !reflect.DeepEqual(synced, []string{parent, child}) {
+		t.Fatal("did not sync the new directory entries in order")
+	}
+	assertMissingPath(t, path)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type savedFile struct {
 	Body string
 	Mode os.FileMode
@@ -222,7 +251,7 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 func failingSetupFileOps(configPath string, failure string, sentinel error) setupFileTransactionOps {
 	ops := defaultSetupFileTransactionOps()
 	if failure == "config-write" || failure == "config-fsync" {
-		ops.stage = func(dir string, pattern string, raw []byte) (string, error) {
+		ops.stage = func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
 			stageOps := privateFileStageOps{
 				write: func(file *os.File, raw []byte) (int, error) {
 					if strings.HasSuffix(failure, "-write") {
@@ -239,7 +268,7 @@ func failingSetupFileOps(configPath string, failure string, sentinel error) setu
 					return file.Sync()
 				},
 			}
-			return stagePrivateFileWithOps(dir, pattern, raw, stageOps)
+			return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, stageOps)
 		}
 	}
 	defaultRename := ops.rename

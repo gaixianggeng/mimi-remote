@@ -76,7 +76,44 @@ func copyFileAccess(original, target *os.File, _ os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	return applyFileDACL(target, sd)
+	current := func() (string, error) {
+		effective, err := windows.GetSecurityInfo(windows.Handle(target.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			return "", err
+		}
+		return effective.String(), nil
+	}
+	want := sd.String()
+	if want == "" {
+		return errors.New("无法验证原文件 DACL")
+	}
+	got, err := current()
+	if err != nil || got == want {
+		return err
+	}
+	control, _, err := sd.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		// Unprotecting merges inheritable ACEs from the destination directory.
+		// Establish and verify the exact policy while the stage is still empty.
+		info, err := target.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Size() != 0 {
+			return errors.New("凭据暂存文件的继承权限已变更")
+		}
+	}
+	if err = applyFileDACL(target, sd); err != nil {
+		return err
+	}
+	got, err = current()
+	if err == nil && got != want {
+		err = errors.New("暂存文件无法保留原访问权限")
+	}
+	return err
 }
 
 func applyFileDACL(file *os.File, sd *windows.SECURITY_DESCRIPTOR) error {

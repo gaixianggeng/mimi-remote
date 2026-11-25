@@ -206,3 +206,30 @@ func TestRuntimePathCommandSetsAndClearsPins(t *testing.T) {
 		}
 	}
 }
+
+func TestWizardRejectsChoicesThatWouldSelectAnotherPath(t *testing.T) {
+	path := isolatedSaveCommand(t)
+	root := t.TempDir()
+	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", root)
+	before, _ := savedFixtureConfig(t, path)
+	choice := root + " "
+	for _, args := range [][]string{
+		{"preflight", "--stage", "setup", "--scan-root", choice},
+		{"setup", "--no-pair", "--scan-root", choice, "--create-root"},
+		{"setup", "--no-pair", "--scan-root", root, "--browse-root", choice},
+		{"workspace", "--root", choice},
+		{"workspace", "--scan-root", choice},
+		{"runtime", "--runtime-path", "codex=" + choice},
+	} {
+		var out, stderr bytes.Buffer
+		argv := append(append([]string{"agentd"}, args...), "--config", path, "--json")
+		if commandExit(argv, &out, &stderr) != 1 {
+			t.Fatalf("accepted ambiguous path for %s", args[0])
+		}
+		assertOnboardingError(t, out.Bytes(), stderr.String(), "invalid_request", "config_store")
+	}
+	after, _ := savedFixtureConfig(t, path)
+	if !bytes.Equal(before, after) {
+		t.Fatal("a different grant or executable was persisted")
+	}
+}

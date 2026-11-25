@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -16,6 +19,9 @@ type selectedDirectory struct {
 }
 
 func inspectSelection(path string) (selectedDirectory, error) {
+	if strings.TrimSpace(path) != path {
+		return selectedDirectory{}, saveFailure("invalid_request", errors.New("目录路径不能包含首尾空白"))
+	}
 	path = config.ExpandPath(path)
 	if !filepath.IsAbs(path) {
 		return selectedDirectory{}, saveFailure("invalid_request", errors.New("请选择绝对路径"))
@@ -27,13 +33,22 @@ func inspectSelection(path string) (selectedDirectory, error) {
 	if err != nil {
 		return selectedDirectory{}, &SaveError{Code: "workspace_unreadable", Step: "workspace_root", Cause: err}
 	}
-	info, err := os.Stat(resolved)
+	if strings.TrimSpace(resolved) != resolved {
+		return selectedDirectory{}, saveFailure("invalid_request", errors.New("目录的实际路径不能包含首尾空白"))
+	}
+	info, err := config.FileIdentity(resolved)
 	if err != nil {
 		return selectedDirectory{}, &SaveError{Code: "workspace_unreadable", Step: "workspace_root", Cause: err}
+	}
+	if !info.IsDir() {
+		return selectedDirectory{}, &SaveError{Code: "workspace_not_directory", Step: "workspace_root", Cause: errors.New("所选目录已替换")}
 	}
 	return selectedDirectory{path, resolved, info}, nil
 }
 func (p *proposal) selectRoots(o Options) error {
+	if strings.TrimSpace(o.ScanRoot) != o.ScanRoot || strings.TrimSpace(o.BrowseRoot) != o.BrowseRoot {
+		return saveFailure("invalid_request", errors.New("目录路径不能包含首尾空白"))
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -59,13 +74,16 @@ func (p *proposal) selectRoots(o Options) error {
 			roots = []string{c.root}
 		}
 		for _, root := range roots {
+			if strings.TrimSpace(root) != root {
+				return saveFailure("invalid_request", errors.New("请重新选择目录"))
+			}
 			root = config.ExpandPath(root)
 			if !filepath.IsAbs(root) {
 				return saveFailure("invalid_request", errors.New("请选择绝对路径"))
 			}
 			if o.CreateRoot && c.explicit != "" && root == config.ExpandPath(c.explicit) {
 				if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
-					if err = os.MkdirAll(root, 0700); err != nil {
+					if _, err = ensureSetupDirectory(root, syncDirectory); err != nil {
 						return &SaveError{Code: "workspace_unreadable", Step: "workspace_root", Cause: err}
 					}
 				}
@@ -110,6 +128,26 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		}
 		if err = p.fresh(o, identity); err != nil {
 			return Result{}, saveFailure("config_commit_failed", err)
+		}
+	}
+	if !o.SaveOnly && !o.RequireExisting && !config.SupportsManagedAppServer() {
+		target := strings.TrimSpace(o.AppServerSSHTarget)
+		if target == "" {
+			target = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
+		}
+		// Legacy setup/up accepts an explicit target for a fresh installation
+		// or a macOS local-to-SSH switch. Verify it before the single config CAS.
+		if target != "" && (!p.source.exists || (runtime.GOOS == "darwin" && p.cfg.AppServer.Transport == "local")) {
+			transport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: target})
+			if err != nil {
+				return Result{}, saveFailure("invalid_request", err)
+			}
+			if err := sshPreflight(ctx, transport); err != nil {
+				return Result{}, &SaveError{Code: "codex_upstream_unavailable", Step: "assistant_codex", Cause: err}
+			}
+			p.set("ssh", "app_server", "transport")
+			p.set(target, "app_server", "ssh_target")
+			p.set(true, "app_server", "pin_transport")
 		}
 	}
 	if !p.source.exists || o.SaveOnly {

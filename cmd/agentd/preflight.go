@@ -34,7 +34,7 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 		return invalidOnboardingRequest(errors.New("请指定有效的预检参数"))
 	}
 	for _, root := range []string{o.ScanRoot, o.BrowseRoot} {
-		if root != "" && !filepath.IsAbs(config.ExpandPath(root)) {
+		if strings.TrimSpace(root) != root || (root != "" && !filepath.IsAbs(config.ExpandPath(root))) {
 			return invalidOnboardingRequest(errors.New("请选择代码目录的绝对路径"))
 		}
 	}
@@ -65,7 +65,7 @@ func preflightChoice(choices map[string]string, raw string, path bool) error {
 		return errors.New("助手标识重复")
 	}
 	if path {
-		if value != "auto" && !filepath.IsAbs(value) {
+		if value != "auto" && (!filepath.IsAbs(value) || strings.TrimSpace(value) != value) {
 			return errors.New("请选择程序的绝对路径")
 		}
 	} else if value != "auto" && value != "enabled" && value != "disabled" {

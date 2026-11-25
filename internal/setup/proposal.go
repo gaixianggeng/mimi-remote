@@ -181,6 +181,10 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 	if !p.dest.exists && legacy != "" {
 		p.legacy, err = readImage(legacy)
 		if err != nil {
+			var failure *SaveError
+			if errors.As(err, &failure) && failure.Code == "config_permissions_unsafe" {
+				return nil, saveFailure("config_recovery_required", failure.Cause)
+			}
 			return nil, err
 		}
 		if p.legacy.exists {
@@ -240,7 +244,7 @@ func (p *proposal) captureToken(path string) error {
 	raw, err := config.ReadPrivatePreflightFile(path, 4096)
 	if err != nil || strings.TrimSpace(string(raw)) == "" {
 		code := "config_recovery_required"
-		if err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+		if p.dest.exists && filepath.Dir(path) == filepath.Dir(p.dest.path) && err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
 			code = "config_permissions_unsafe"
 		}
 		return saveFailure(code, errors.New("无法验证配置引用的凭据"))
@@ -383,7 +387,7 @@ func (p *proposal) applyAssistants(ctx context.Context, o Options) error {
 	return nil
 }
 func (p *proposal) applyPin(id, value string) error {
-	if value != "auto" && !filepath.IsAbs(value) {
+	if value != "auto" && (!filepath.IsAbs(value) || strings.TrimSpace(value) != value) {
 		return saveFailure("invalid_request", errors.New("请选择程序的绝对路径"))
 	}
 	switch id {

@@ -38,6 +38,7 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 		return s
 	}
 	dir := filepath.Dir(path)
+	dirCode := ""
 	// Find the nearest existing parent without creating even the managed config directory.
 	for {
 		parent, e := os.Lstat(dir)
@@ -45,12 +46,17 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 			dir = filepath.Dir(dir)
 			continue
 		}
-		if e != nil || !parent.IsDir() || !directoryAccessible(dir, parent, true) {
+		if e != nil || !parent.IsDir() {
 			s.Code = "config_dir_unwritable"
+			return s
+		}
+		if !directoryAccessible(dir, parent, true) {
+			dirCode = "config_dir_unwritable"
 		}
 		break
 	}
-	if s.Code != "" || !s.Configured {
+	if !s.Configured {
+		s.Code = dirCode
 		return s
 	}
 	raw, err := readPreflightFile(path, info, 4<<20)
@@ -61,7 +67,11 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 		}
 		return s
 	}
-	return InspectCommittedDocument(raw)
+	s = InspectCommittedDocument(raw)
+	if s.Code == "" {
+		s.Code = dirCode
+	}
+	return s
 }
 
 // ParseSetupDocument checks persisted intent without environment overrides,

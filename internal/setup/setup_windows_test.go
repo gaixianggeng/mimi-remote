@@ -3,12 +3,12 @@ package setup
 import (
 	"context"
 	"errors"
-	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"golang.org/x/sys/windows"
 )
 
 func TestWindowsSetupSavesConfigWithOldAutomaticCodex(t *testing.T) {
@@ -100,5 +100,70 @@ func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) 
 	}
 	if cfgACL != dacl(path) || tokenACL != dacl(tokenPath) {
 		t.Fatal("custom DACL changed after save or rollback")
+	}
+}
+
+func TestWindowsStageChecksInheritedDACLBeforeWritingSecrets(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "(A;OICI;FA;;;" + user.User.Sid.String() + ")"
+	setDACL := func(path, sddl string, protection windows.SECURITY_INFORMATION) {
+		t.Helper()
+		sd, err := windows.SecurityDescriptorFromString(sddl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acl, _, err := sd.DACL()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourceDir, destDir := t.TempDir(), t.TempDir()
+	setDACL(sourceDir, "D:P"+owner, windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	setDACL(destDir, "D:P"+owner+"(A;OICI;FR;;;WD)", windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	source, err := config.CreatePrivateTemp(sourceDir, "source-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	setDACL(source.Name(), "D:(A;;FA;;;"+user.User.Sid.String()+")", windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
+	if _, err = config.ReadPrivatePreflightFile(source.Name(), 64); err != nil {
+		t.Fatal(err)
+	}
+	stageOps := privateFileStageOps{
+		write: func(f *os.File, raw []byte) (int, error) {
+			// If this filesystem can preserve the private policy exactly, it
+			// must already be in effect at the first write.
+			if _, err := config.ReadPrivatePreflightFile(f.Name(), 64); err != nil {
+				t.Fatal("secret write attempted with an unsafe inherited DACL")
+			}
+			return f.Write(raw)
+		},
+		sync: func(f *os.File) error { return f.Sync() },
+	}
+	name, err := stagePrivateFileWithOps(destDir, "stage-", []byte("fixture"), source.Name(), stageOps)
+	if err == nil {
+		if _, err := config.ReadPrivatePreflightFile(name, 64); err != nil {
+			t.Fatal(err)
+		}
+		policy := func(p string) string {
+			sd, err := windows.GetNamedSecurityInfo(p, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return sd.String()
+		}
+		if policy(name) != policy(source.Name()) {
+			t.Fatal("staging changed the access policy")
+		}
+	} else {
+		assertSetupDirectoryEntries(t, destDir)
 	}
 }

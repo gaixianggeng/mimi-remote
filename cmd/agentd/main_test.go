@@ -2364,9 +2364,16 @@ func TestSetupKeepsUnsafeLegacySourceReadOnly(t *testing.T) {
 	if err := os.Chmod(fixture.source, 0644); err != nil {
 		t.Fatal(err)
 	}
-	err := runSetupWithWriters([]string{"setup", "--no-pair", "--json"}, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatal("setup imported an unsafe legacy identity")
+	for _, command := range [][]string{{"setup", "--no-pair"}, {"doctor", "--fix"}, {"runtime", "--runtime-path", "codex=auto"}, {"workspace", "--scan-root", t.TempDir()}} {
+		var out, stderr bytes.Buffer
+		args := append(append([]string{"agentd"}, command...), "--json")
+		if commandExit(args, &out, &stderr) != 1 {
+			t.Fatal("command imported an unsafe legacy identity")
+		}
+		assertOnboardingError(t, out.Bytes(), stderr.String(), "config_recovery_required", "config_store")
+		if !bytes.Contains(out.Bytes(), []byte(`"target":"host_recovery"`)) {
+			t.Fatal("unsafe legacy file needs read-only recovery")
+		}
 	}
 	raw, readErr := os.ReadFile(fixture.source)
 	if readErr != nil || !bytes.Equal(raw, fixture.raw) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -41,7 +42,13 @@ func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) err
 
 func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename renameFile) error {
 	dir := filepath.Dir(path)
-	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw)
+	source := ""
+	if _, err := os.Lstat(path); err == nil {
+		source = path
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, source)
 	if err != nil {
 		return err
 	}
@@ -65,8 +72,8 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 	return nil
 }
 
-func stagePrivateFile(dir string, pattern string, raw []byte) (string, error) {
-	return stagePrivateFileWithOps(dir, pattern, raw, privateFileStageOps{
+func stagePrivateFile(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
+	return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, privateFileStageOps{
 		write: func(file *os.File, raw []byte) (int, error) {
 			return file.Write(raw)
 		},
@@ -76,7 +83,7 @@ func stagePrivateFile(dir string, pattern string, raw []byte) (string, error) {
 	})
 }
 
-func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops privateFileStageOps) (string, error) {
+func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissionsFrom string, ops privateFileStageOps) (string, error) {
 	file, err := config.CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return "", err
@@ -92,6 +99,11 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops private
 
 	if err := config.MakeFilePrivate(file); err != nil {
 		return "", err
+	}
+	if runtime.GOOS == "windows" && permissionsFrom != "" {
+		if err := config.CopyPrivatePermissions(permissionsFrom, path); err != nil {
+			return "", err
+		}
 	}
 	written, err := ops.write(file, raw)
 	if err != nil {

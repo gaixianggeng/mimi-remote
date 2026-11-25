@@ -127,7 +127,7 @@ func TestMigrateLegacyDefaultConfigReadAndWriteFailuresLeaveNothing(t *testing.T
 					return nil, sentinel
 				}
 			case "write":
-				ops.stage = func(dir string, _ string, _ []byte) (stagedLegacyConfig, error) {
+				ops.stage = func(dir string, _ string, _ []byte, _ string) (stagedLegacyConfig, error) {
 					path := filepath.Join(dir, ".config.json.migrate-partial")
 					if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
 						t.Fatal(err)

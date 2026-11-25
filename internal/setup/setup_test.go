@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +18,42 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
+
+func TestLegacyExplicitSSHOnExistingLocalHost(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("legacy macOS local-to-SSH setup")
+	}
+	clearSetupEnv(t)
+	opts := atomicSetupOptions(t, filepath.Join(t.TempDir(), "config.json"), false)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	old := readPublicationBytes(t, opts.ConfigPath)
+	identity := config.ParseSetupDocument(old).Config.Auth
+	opts.SaveOnly, opts.LocalServiceOnly = false, true
+	opts.AppServerSSHTarget = "mimi-local"
+	original := sshPreflight
+	t.Cleanup(func() { sshPreflight = original })
+	injected := errors.New("SSH unavailable")
+	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return injected }
+	if _, err := Run(t.Context(), opts); !errors.Is(err, injected) {
+		t.Fatalf("SSH preflight failure: %v", err)
+	}
+	assertFileBytesAndMode(t, opts.ConfigPath, old, 0600)
+	sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+		if transport.Target() != opts.AppServerSSHTarget {
+			t.Fatal("wrong SSH target")
+		}
+		return nil
+	}
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ParseSetupDocument(readPublicationBytes(t, opts.ConfigPath)).Config
+	if cfg.Auth != identity || cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != opts.AppServerSSHTarget || !cfg.AppServer.PinTransport {
+		t.Fatal("legacy command lost the SSH selection or host identity")
+	}
+}
 
 func TestMain(m *testing.M) {
 	for _, e := range os.Environ() {

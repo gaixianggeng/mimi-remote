@@ -188,6 +188,21 @@ func TestSetupPublicationCrashReplay(t *testing.T) {
 					}
 				}
 				tryStale()
+				// Interrupt cleanup after both stages are gone but before the
+				// journal is removed. The next replay must adopt the same secrets.
+				ops := defaultSetupFileTransactionOps()
+				ops.remove = func(name string) error {
+					if name == config.SetupJournalPath(path) {
+						return errors.New("interrupted before journal removal")
+					}
+					return os.Remove(name)
+				}
+				var interrupted interruptedIdentity
+				if err := inspectPublication(path, ops, &interrupted); err == nil {
+					t.Fatal("did not interrupt journal cleanup")
+				}
+				assertMissingPath(t, filepath.Join(dir, record.ConfigStage))
+				assertMissingPath(t, filepath.Join(dir, record.TokenStage))
 				invalid := opts
 				invalid.ScanRoot = filepath.Join(dir, "missing")
 				if _, e := Run(t.Context(), invalid); e == nil {
@@ -239,6 +254,7 @@ func TestSetupPublicationDetectsConcurrentSourceAndDestinationChanges(t *testing
 		destination, legacy  bool
 	}{
 		{"destination appeared", "destination", "create", false, false},
+		{"editor referenced staging file", "destination", "reference stage", false, false},
 		{"destination appeared during migration", "destination", "create", false, true},
 		{"destination edited", "destination", "edit", true, false},
 		{"destination deleted", "destination", "delete", true, false},
@@ -266,13 +282,14 @@ func TestSetupPublicationDetectsConcurrentSourceAndDestinationChanges(t *testing
 				target = legacy
 			}
 			ops := defaultSetupFileTransactionOps()
-			link := ops.link
+			renameNew := ops.renameNew
 			var expected []byte
+			var referencedStage string
 			reachedJournal := false
 			// An editor appears after the first CAS and after journal creation.
 			// Only the final CAS immediately preceding config rename can catch it.
-			ops.link = func(src, dst string) error {
-				if err := link(src, dst); err != nil {
+			ops.renameNew = func(src, dst string) error {
+				if err := renameNew(src, dst); err != nil {
 					return err
 				}
 				if dst != config.SetupJournalPath(path) {
@@ -284,6 +301,11 @@ func TestSetupPublicationDetectsConcurrentSourceAndDestinationChanges(t *testing
 					return os.Remove(target)
 				case "create":
 					expected = []byte(`{"new_owner":"external-editor"}`)
+					configtest.CreatePrivateFile(t, target, expected)
+					return nil
+				case "reference stage":
+					referencedStage = filepath.Join(filepath.Dir(path), readPublicationRecord(t, path).ConfigStage)
+					expected, _ = json.Marshal(map[string]string{"editor_snapshot": referencedStage})
 					configtest.CreatePrivateFile(t, target, expected)
 					return nil
 				case "edit":
@@ -306,6 +328,9 @@ func TestSetupPublicationDetectsConcurrentSourceAndDestinationChanges(t *testing
 				assertMissingPath(t, path)
 			}
 			assertMissingPath(t, config.SetupJournalPath(path))
+			if referencedStage != "" && !filePresent(referencedStage) {
+				t.Fatal("cleanup removed the editor's referenced file")
+			}
 		})
 	}
 }
@@ -414,8 +439,8 @@ func TestSetupPublicationTwoStagedWriters(t *testing.T) {
 		opts.ScanRoot = t.TempDir()
 		ops := defaultSetupFileTransactionOps()
 		stage := ops.stage
-		ops.stage = func(dir, prefix string, raw []byte) (string, error) {
-			name, err := stage(dir, prefix, raw)
+		ops.stage = func(dir, prefix string, raw []byte, permissionsFrom string) (string, error) {
+			name, err := stage(dir, prefix, raw, permissionsFrom)
 			if err == nil && strings.HasPrefix(prefix, ".config.json.tmp-") {
 				bothStaged <- struct{}{}
 				select {
@@ -472,7 +497,9 @@ func TestFreshPublicationDoesNotReplaceLastMomentCreation(t *testing.T) {
 	publish := ops.renameNew
 	foreign := []byte("{\"future_user_config\":true}\n")
 	ops.renameNew = func(stage, destination string) error {
-		configtest.CreatePrivateFile(t, destination, foreign)
+		if destination == path {
+			configtest.CreatePrivateFile(t, destination, foreign)
+		}
 		return publish(stage, destination)
 	}
 	_, err := runWithFileOps(t.Context(), opts, ops)
@@ -497,4 +524,61 @@ func TestSetupRefusesAmbiguousIdentityBeforeEditing(t *testing.T) {
 	_, err := Run(t.Context(), opts)
 	requirePublicationError(t, err, "config_invalid")
 	assertFileBytesAndMode(t, opts.ConfigPath, raw, 0600)
+}
+
+func TestSetupRollbackKeepsIdenticalExternalReplacement(t *testing.T) {
+	clearSetupEnv(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	opts := atomicSetupOptions(t, path, false)
+	ops := defaultSetupFileTransactionOps()
+	syncDir := ops.syncDir
+	replaced := false
+	ops.syncDir = func(dir string) error {
+		if !replaced && filePresent(path) {
+			copyPath := filepath.Join(dir, "external-copy")
+			configtest.CreatePrivateFile(t, copyPath, readPublicationBytes(t, path))
+			if err := renameSetupFile(copyPath, path); err != nil {
+				t.Fatal(err)
+			}
+			replaced = true
+			return errors.New("sync failed after external replacement")
+		}
+		return syncDir(dir)
+	}
+	_, err := runWithFileOps(t.Context(), opts, ops)
+	requirePublicationError(t, err, "config_recovery_required")
+	if !replaced || !filePresent(path) {
+		t.Fatal("rollback removed a different writer's file")
+	}
+}
+
+func TestSetupPreservesReplacedStageAfterJournalPublication(t *testing.T) {
+	clearSetupEnv(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	opts := atomicSetupOptions(t, path, false)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	original := readPublicationBytes(t, path)
+	opts.ScanRoot = t.TempDir()
+	ops := defaultSetupFileTransactionOps()
+	publish := ops.renameNew
+	var stage string
+	replacement := []byte("independently owned fixture")
+	ops.renameNew = func(src, dst string) error {
+		if err := publish(src, dst); err != nil {
+			return err
+		}
+		if dst == config.SetupJournalPath(path) {
+			stage = filepath.Join(filepath.Dir(path), readPublicationRecord(t, path).ConfigStage)
+			other := filepath.Join(filepath.Dir(path), "replacement")
+			configtest.CreatePrivateFile(t, other, replacement)
+			return renameSetupFile(other, stage)
+		}
+		return nil
+	}
+	_, err := runWithFileOps(t.Context(), opts, ops)
+	requirePublicationError(t, err, "config_recovery_required")
+	assertFileBytesAndMode(t, stage, replacement, 0600)
+	assertFileBytesAndMode(t, path, original, 0600)
 }

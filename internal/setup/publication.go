@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
@@ -19,7 +21,7 @@ import (
 // In particular, a filename prefix alone is never evidence of ownership.
 type publication struct {
 	ConfigStage, TokenStage, Companion, Backup string
-	Before, After, TokenDigest                 string
+	Before, After, TokenDigest, IdentityDigest string
 	Fresh                                      bool
 }
 
@@ -41,6 +43,10 @@ func recoverPublication(ctx context.Context, path string, ops setupFileTransacti
 			return err
 		}
 		if err = inspectPublication(path, ops, &stored); err != nil {
+			// A failed replay must remain visible to passive preflight as well.
+			if e := publishSetupCompanion(j, j+".recovery", ops); e == nil {
+				_ = ops.syncDir(filepath.Dir(path))
+			}
 			return err
 		}
 		if identity != nil {
@@ -112,7 +118,9 @@ func inspectPublication(path string, ops setupFileTransactionOps, identity *inte
 		}
 		return ops.remove(file)
 	}
-	if record.Fresh && current == "" && identity != nil {
+	// Replay can itself be interrupted after unlinking a stage. The durable
+	// identity witness is sufficient only when both secrets match this record.
+	if record.Fresh && current == "" && identity != nil && (identity.Bearer == "" || identity.digest() != record.IdentityDigest) {
 		staged, e := config.ReadPrivatePreflightFile(filepath.Join(dir, record.ConfigStage), 4<<20)
 		if e != nil || digest(staged) != record.After {
 			return recoveryError(journal, errors.New("无法验证中断的初始配置"))
@@ -176,53 +184,72 @@ func inspectPublication(path string, ops setupFileTransactionOps, identity *inte
 func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransactionOps) (result config.Config, returned error) {
 	path := p.dest.path
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
+	created, err := ensureSetupDirectory(dir, ops.syncDir)
+	if err != nil {
 		return result, saveFailure("config_dir_unwritable", err)
 	}
-	if err := os.Mkdir(dir, 0700); err == nil {
-		created, _ := os.Stat(dir)
+	if created != nil {
 		defer func() {
-			if returned != nil && created != nil {
-				if now, e := os.Lstat(dir); e == nil && os.SameFile(created, now) {
-					_ = os.Remove(dir)
-				}
+			if returned != nil {
+				removeCreatedDirectory(dir, created)
 			}
 		}()
-	} else if !errors.Is(err, os.ErrExist) {
-		return result, saveFailure("config_dir_unwritable", err)
 	}
 	changes := !p.dest.exists || !bytes.Equal(raw, p.dest.raw)
 	stage, tokenStage := "", ""
+	var stageInfo, tokenInfo os.FileInfo
 	journal := config.SetupJournalPath(path)
 	keep := false
-	defer func() {
+	lockedCleanup := false
+	cleanupStages := func() error {
 		if !keep {
-			if stage != "" {
-				_ = ops.remove(stage)
-			}
-			if tokenStage != "" {
-				_ = ops.remove(tokenStage)
-			}
+			p.removeSetupFileIfOwned(stage, stageInfo, raw, ops)
+			p.removeSetupFileIfOwned(tokenStage, tokenInfo, p.token, ops)
+		}
+		return nil
+	}
+	defer func() {
+		if !lockedCleanup && (stageInfo != nil || tokenInfo != nil) {
+			// Staging failed or the original lock attempt timed out. Prefer
+			// leaving private debris to deleting anything during another commit.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = config.WithConfigCommitLock(cleanupCtx, path, cleanupStages)
 		}
 	}()
-	var err error
 	if changes {
-		stage, err = ops.stage(dir, ".config.json.tmp-", raw)
-
+		permissionsFrom := ""
+		if p.source.exists {
+			permissionsFrom = p.source.path
+		}
+		stage, err = ops.stage(dir, ".config.json.tmp-", raw, permissionsFrom)
+		if err == nil {
+			stageInfo, err = config.FileIdentity(stage)
+		}
 		if err == nil && p.companion != "" {
-			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token)
+			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token, "")
+			if err == nil {
+				tokenInfo, err = config.FileIdentity(tokenStage)
+			}
 		}
 		if err != nil {
+			if p.source.exists {
+				if conflict := p.source.check(); conflict != nil {
+					return result, conflict
+				}
+			}
 			return result, saveFailure("config_commit_failed", err)
 		}
 	}
 	err = config.WithConfigCommitLock(ctx, path, func() (commitErr error) {
+		lockedCleanup = true
+		defer cleanupStages()
 		defer func() {
 			var failed *SaveError
 			if keep && errors.As(commitErr, &failed) && failed.Code == "config_recovery_required" {
 				// A crash can be replayed. A known indeterminate rollback needs
 				// read-only recovery; never discard its old or new generation.
-				if e := ops.link(journal, journal+".recovery"); e == nil {
+				if e := publishSetupCompanion(journal, journal+".recovery", ops); e == nil {
 					_ = ops.syncDir(dir)
 				}
 			}
@@ -255,6 +282,9 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			return err
 		}
 		if changes {
+			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupFile(tokenStage, tokenInfo, p.token)) {
+				return saveFailure("config_concurrent_change", errors.New("暂存文件已被替换"))
+			}
 			if p.source.exists {
 				if err := copyAndSyncPermissions(p.source.path, stage); err != nil {
 					if conflict := p.source.check(); conflict != nil {
@@ -264,6 +294,9 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				}
 			}
 			r := publication{ConfigStage: filepath.Base(stage), After: digest(raw), Fresh: !p.source.exists}
+			if r.Fresh {
+				r.IdentityDigest = (interruptedIdentity{Bearer: p.cfg.Auth.Token, Upstream: strings.TrimSpace(string(p.token))}).digest()
+			}
 			if p.dest.exists {
 				r.Before = digest(p.dest.raw)
 			}
@@ -276,26 +309,43 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if err != nil {
 				return err
 			}
+			var backupInfo os.FileInfo
 			if backup != "" {
 				r.Backup = filepath.Base(backup)
+				backupInfo, err = config.FileIdentity(backup)
+				if err != nil {
+					return err
+				}
 			}
 			defer func() {
 				if !keep && backup != "" {
-					_ = ops.remove(backup)
+					// The old config may have been edited in place. Unlinking
+					// its own backup link leaves that editor's config intact.
+					if now, e := os.Lstat(backup); e == nil && os.SameFile(backupInfo, now) {
+						if used, e := p.referencesPath(backup); e == nil && !used {
+							_ = ops.remove(backup)
+						}
+					}
 				}
 			}()
 			manifest, _ := json.Marshal(r)
-			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest)
+			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest, "")
 			if err != nil {
 				return err
 			}
-			if err = ops.link(stagedJournal, journal); err != nil {
+			// Publish the flushed journal with the same no-clobber, write-through
+			// rename as a fresh config, including on Windows without directory fsync.
+			if err = ops.renameNew(stagedJournal, journal); err != nil {
+				if errors.Is(err, os.ErrExist) {
+					_ = ops.remove(stagedJournal)
+					return saveFailure("config_concurrent_change", err)
+				}
+				if filePresent(journal) {
+					keep = true
+					return recoveryError(journal, err)
+				}
 				_ = ops.remove(stagedJournal)
 				return err
-			}
-			if err = ops.remove(stagedJournal); err != nil {
-				keep = true
-				return recoveryError(journal, err)
 			}
 			keep = true
 			// Journal and rollback inode must be durable before exposing either file.
@@ -330,6 +380,9 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				keep = false
 				return cause
 			}
+			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupFile(p.companion, tokenInfo, p.token)) {
+				return recoveryError(journal, errors.New("暂存文件已更改"))
+			}
 			if err = p.check(ctx); err != nil {
 				return abandon(err)
 			}
@@ -350,6 +403,10 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				// Roll back only our generation, retaining the backup link through sync.
 				current, e := config.ReadPrivatePreflightFile(path, 4<<20)
 				if e != nil || !bytes.Equal(current, raw) {
+					return recoveryError(journal, errors.Join(err, e))
+				}
+				publishedInfo, e := os.Lstat(path)
+				if e != nil || !os.SameFile(stageInfo, publishedInfo) {
 					return recoveryError(journal, errors.Join(err, e))
 				}
 				if backup != "" {
@@ -392,7 +449,33 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 	}
 	return result, nil
 }
+
+func sameSetupFile(path string, expected os.FileInfo, raw []byte) bool {
+	if expected == nil || !expected.Mode().IsRegular() {
+		return false
+	}
+	now, err := os.Lstat(path)
+	if err != nil || !os.SameFile(expected, now) {
+		return false
+	}
+	current, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	return err == nil && bytes.Equal(current, raw)
+}
+
+func (p *proposal) removeSetupFileIfOwned(path string, expected os.FileInfo, raw []byte, ops setupFileTransactionOps) {
+	if sameSetupFile(path, expected, raw) {
+		if used, err := p.referencesPath(path); err == nil && !used {
+			_ = ops.remove(path)
+		}
+	}
+}
+
 func copyAndSyncPermissions(source, stage string) error {
+	if runtime.GOOS == "windows" {
+		// The stage was flushed with the original DACL. Its owner may only
+		// have read access under that policy, so do not reopen it for writing.
+		return config.CopyPrivatePermissions(source, stage)
+	}
 	file, err := os.OpenFile(stage, os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -407,26 +490,34 @@ func copyAndSyncPermissions(source, stage string) error {
 // A non-cooperating editor can adopt the newly published companion before
 // config CAS. Never unlink it from underneath the editor's committed document.
 func dropUnreferencedCompanion(p *proposal, stage string, ops setupFileTransactionOps) error {
+	used, err := p.referencesPath(p.companion)
+	if err != nil || used {
+		return err
+	}
+	return removeLinkedCompanion(stage, p.companion, ops)
+}
+
+func (p *proposal) referencesPath(path string) (bool, error) {
 	for _, src := range []configImage{p.dest, p.legacy} {
 		if src.path == "" {
 			continue
 		}
 		image, err := readImage(src.path)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !image.exists {
 			continue
 		}
 		var values any
 		if err = json.Unmarshal(image.raw, &values); err != nil {
-			return err
+			return false, err
 		}
-		if referencesFile(values, p.companion) {
-			return nil
+		if referencesFile(values, path) {
+			return true, nil
 		}
 	}
-	return removeLinkedCompanion(stage, p.companion, ops)
+	return false, nil
 }
 func referencesFile(value any, path string) bool {
 	switch v := value.(type) {

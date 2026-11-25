@@ -24,7 +24,7 @@ type stagedLegacyConfig struct {
 type legacyMigrationFileOps struct {
 	lstat       func(string) (os.FileInfo, error)
 	readRegular func(string, os.FileInfo) ([]byte, error)
-	stage       func(string, string, []byte) (stagedLegacyConfig, error)
+	stage       func(string, string, []byte, string) (stagedLegacyConfig, error)
 	link        func(string, string) error
 	remove      func(string) error
 	syncDir     func(string) error
@@ -126,7 +126,7 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 		}
 	}()
 
-	staged, err := ops.stage(destinationDir, ".config.json.migrate-", raw)
+	staged, err := ops.stage(destinationDir, ".config.json.migrate-", raw, source)
 	if staged.path != "" {
 		defer ops.remove(staged.path)
 	}
@@ -171,7 +171,7 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	return true, nil
 }
 
-func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLegacyConfig, resultErr error) {
+func stageLegacyConfig(dir string, pattern string, raw []byte, source string) (result stagedLegacyConfig, resultErr error) {
 	file, err := CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return result, err
@@ -185,6 +185,11 @@ func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLeg
 	}()
 	if runtime.GOOS != "windows" {
 		if err := file.Chmod(0o600); err != nil {
+			return result, err
+		}
+	}
+	if runtime.GOOS == "windows" {
+		if err := CopyPrivatePermissions(source, result.path); err != nil {
 			return result, err
 		}
 	}

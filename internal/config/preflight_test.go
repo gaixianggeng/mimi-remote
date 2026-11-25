@@ -40,6 +40,17 @@ func TestPreflightConfigReadsPersistedIdentityWithoutScanning(t *testing.T) {
 		})
 	}
 	if runtime.GOOS != "windows" {
+		dir := filepath.Dir(path)
+		if err := os.Chmod(dir, 0500); err != nil {
+			t.Fatal(err)
+		}
+		got := ReadPreflightSnapshot(path)
+		if err := os.Chmod(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Confirmed || got.Code != "config_dir_unwritable" {
+			t.Fatal("a read-only directory lost the committed confirmation")
+		}
 		alias := path + ".link"
 		if err := os.Symlink(path, alias); err != nil {
 			t.Fatal(err)

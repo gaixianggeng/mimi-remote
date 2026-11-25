@@ -17,6 +17,11 @@ type interruptedIdentity struct {
 	Upstream string `json:"upstream,omitempty"`
 }
 
+func (id interruptedIdentity) digest() string {
+	raw, _ := json.Marshal(id)
+	return digest(raw)
+}
+
 func readInterruptedIdentity(path string) (interruptedIdentity, error) {
 	var id interruptedIdentity
 	b, err := config.ReadPrivatePreflightFile(path, 8192)
@@ -49,7 +54,7 @@ func keepInterruptedIdentity(journal string, id interruptedIdentity, ops setupFi
 		return err
 	}
 	dir := filepath.Dir(path)
-	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw)
+	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw, "")
 	if err != nil {
 		return err
 	}
