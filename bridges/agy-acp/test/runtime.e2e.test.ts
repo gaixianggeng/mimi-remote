@@ -300,6 +300,83 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
     }
   });
 
+  test("Other list hard timeout preserves an active desktop approval and drops its late list reply", async () => {
+    const cliId = "cli-healthy";
+    const desktopId = "desktop-active";
+    const previousId = "desktop-previous";
+    const freshId = "desktop-fresh";
+    const otherDir = path.join(fakeHome, ".gemini", "antigravity", "conversations");
+    await mkdir(otherDir, { recursive: true });
+    await Promise.all([desktopId, previousId, freshId].map((id) => writeFile(path.join(otherDir, `${id}.db`), "fixture")));
+    await writeFile(path.join(fakeHome, ".gemini", "antigravity-cli", "conversations", `${cliId}.db`), "fixture");
+    const stored = (sessionId: string, appDataDirName: string) => ({
+      sessionId, appDataDirName, cwd: workspaceDir, title: sessionId, updatedAt: "2026-01-01T00:00:00Z",
+      model: "gemini-4-carbon", modeId: "default", thoughtLevel: "medium", replayUpdates: [],
+    });
+    let holdNextList = false;
+    let releaseList!: () => void;
+    const lateReply = new Promise<void>((resolve) => { releaseList = resolve; });
+    let prompts = 0;
+    let approval: unknown;
+    const diagnostics: OtherListDiagnostic[] = [];
+    const world = new FakeAgyWorld({
+      sessions: [stored(cliId, "antigravity-cli"), stored(desktopId, "antigravity"), stored(previousId, "antigravity")],
+      beforeListReply: async (dir) => {
+        if (dir !== "antigravity" || !holdNextList) return;
+        holdNextList = false;
+        await lateReply;
+      },
+      onPrompt: async ({ requestPermission, emitUpdate }) => {
+        prompts++;
+        approval = await requestPermission(
+          { toolCallId: "fixture-tool", kind: "execute", rawInput: { CommandLine: "bun test" } },
+          [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+        );
+        emitUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "continued" } });
+        return { stopReason: "end_turn" };
+      },
+    });
+    const harness = await createTestHarness(world, {
+      env: () => ({ HOME: fakeHome, AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS: "100" }),
+      onOtherListDiagnostic: (d) => diagnostics.push(d),
+    });
+    const listIds = async () => (await harness.rpc<{ data: Array<{ id: string }> }>("thread/list"))
+      .data.map((thread) => thread.id);
+    try {
+      await harness.rpc("turn/start", {
+        threadId: desktopId, cwd: workspaceDir, approvalPolicy: "on-request",
+        sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspaceDir], networkAccess: false },
+        input: [{ type: "text", text: "Run tests", text_elements: [] }],
+      });
+      for (let i = 0; i < 50 && !harness.serverRequests.length; i++) await Bun.sleep(10);
+      expect(harness.serverRequests).toHaveLength(1);
+      expect(harness.serverRequests[0]?.method).toBe("item/commandExecution/requestApproval");
+      // Let the successful desktop list used by turn/start age out of the 1.5s warm snapshot.
+      await Bun.sleep(1_550);
+      holdNextList = true;
+      expect(await listIds()).toEqual(expect.arrayContaining([cliId, desktopId, previousId]));
+      expect(diagnostics.at(-1)?.status).toBe("timeout");
+
+      world.sessions.delete(previousId);
+      world.sessions.set(freshId, stored(freshId, "antigravity"));
+      expect(await listIds()).toContain(freshId);
+      releaseList();
+      harness.respondServerRequest(harness.serverRequests[0]?.id, { decision: "accept" });
+      const completed = () => harness.notifications.find((n) => n.method === "turn/completed");
+      for (let i = 0; i < 50 && !completed(); i++) await Bun.sleep(10);
+      expect(completed()).toMatchObject({ params: { turn: { status: "completed" } } });
+      expect(approval).toEqual({ outcome: { outcome: "selected", optionId: "allow" } });
+      expect(prompts).toBe(1);
+      expect(world.spawns.filter((spawn) => spawn.appDataDirName === "antigravity")).toHaveLength(1);
+      const latest = await listIds();
+      expect(latest).toContain(freshId);
+      expect(latest).not.toContain(previousId);
+    } finally {
+      releaseList();
+      await harness.close();
+    }
+  });
+
   test("forwards ACP session/request_permission to client approval card and returns selected option", async () => {
     let observedOutcome: unknown;
     const world = new FakeAgyWorld({

@@ -29,6 +29,7 @@ export interface FakeStoredSession {
 export interface FakeAgyBehavior {
   sessions?: FakeStoredSession[];
   commands?: AcpAvailableCommand[];
+  beforeListReply?: (appDataDirName: string) => Promise<void>;
   sessionNewError?: { code: number; message: string };
   onPrompt?: (ctx: {
     session: FakeStoredSession;
@@ -196,6 +197,7 @@ export class FakeAgyWorld {
               title: s.title,
               updatedAt: s.updatedAt,
             }));
+          await this.behavior.beforeListReply?.(currentAppDataDir);
           sendFrame({ jsonrpc: "2.0", id, result: { sessions: summaries } });
           return;
         }

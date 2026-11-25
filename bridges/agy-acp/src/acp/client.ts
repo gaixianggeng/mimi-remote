@@ -46,6 +46,7 @@ interface ReplayCapture {
   onClose?: () => void;
 }
 
+export const DEFAULT_ACP_INITIALIZE_TIMEOUT_MS = 15_000;
 const DEFAULT_REPLAY_SETTLE_MS = 200;
 const MAX_REPLAY_SETTLE_MS = 5_000;
 
@@ -77,6 +78,10 @@ export class AcpClient {
     return this.closed;
   }
 
+  get hasPendingWork(): boolean {
+    return this.pending.size > 0 || this.inboundControllers.size > 0 || this.replayCaptures.size > 0;
+  }
+
   onSession(sessionId: string, listener: (update: AcpSessionUpdate) => void): () => void {
     let set = this.sessionListeners.get(sessionId);
     if (!set) {
@@ -104,7 +109,7 @@ export class AcpClient {
     };
   }
 
-  async initialize(timeoutMs = 15_000, signal?: AbortSignal): Promise<AcpInitializeResult> {
+  async initialize(timeoutMs = DEFAULT_ACP_INITIALIZE_TIMEOUT_MS, signal?: AbortSignal): Promise<AcpInitializeResult> {
     return (await this.call(
       "initialize",
       {

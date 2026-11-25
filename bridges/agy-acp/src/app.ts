@@ -99,8 +99,12 @@ export function createApp(options: AppOptions): App {
   const overlay = new AgyOverlay(path.join(stateDir, "overlay.json"));
   const git = new GitRepoIndex();
   const cliSharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env, appDataDirForOrigin("cli", env()));
-  const otherSharedAcp = new SharedReadonlyAcp(agyExecutable, spawnTransport, env, appDataDirForOrigin("other", env()));
   let managerRef: ThreadManager | undefined;
+  const otherAppDataDir = appDataDirForOrigin("other", env());
+  const otherSharedAcp = new SharedReadonlyAcp(
+    agyExecutable, spawnTransport, env, otherAppDataDir,
+    () => managerRef?.hasBusyTurnInDirectory(otherAppDataDir) ?? false,
+  );
   let catalogRef: AgyCatalog | undefined;
   let historyRef: AgyHistoryStore | undefined;
   const backend =
@@ -130,7 +134,6 @@ export function createApp(options: AppOptions): App {
     onUpdated: (snapshot) => managerRef?.broadcast("account/rateLimits/updated", { rateLimits: snapshot }),
   });
 
-  const otherAppDataDir = appDataDirForOrigin("other", env());
   const manager = new ThreadManager({
     acquireClient: (appDataDirName) => (appDataDirName === otherAppDataDir ? otherSharedAcp.acquire() : cliSharedAcp.acquire()),
     ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
