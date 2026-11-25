@@ -42,6 +42,8 @@ type appServerRuntimeSpec struct {
 	Experimental bool
 	// UsesAdapterSandbox 表示该 runtime 经本地常驻适配器承载，sandboxPolicy 按适配器契约归一化。
 	UsesAdapterSandbox bool
+	// ThreadListSearch 表示适配器通过 thread/list 的 searchTerm 过滤会话。
+	ThreadListSearch bool
 }
 
 // appServerRuntimeSpecs 按规范化 ID 登记所有可用 runtime。
@@ -92,6 +94,7 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		},
 		Experimental:       true,
 		UsesAdapterSandbox: true,
+		ThreadListSearch:   true,
 	},
 	appServerRuntimeAgyID: {
 		ID:      appServerRuntimeAgyID,
@@ -113,6 +116,7 @@ var appServerRuntimeSpecs = map[string]appServerRuntimeSpec{
 		},
 		Experimental:       true,
 		UsesAdapterSandbox: true,
+		ThreadListSearch:   true,
 	},
 }
 

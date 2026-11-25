@@ -279,6 +279,17 @@ describe("mimi-agy-adapter end-to-end runtime", () => {
         { id: cliSessionId, source: "cli" },
       ]);
 
+      const search = (searchTerm: string) =>
+        harness.rpc<{ data: Array<{ id: string }> }>("thread/list", {
+          searchTerm,
+          sortKey: "updated_at",
+          sortDirection: "desc",
+          archived: false,
+          limit: 50,
+        });
+      expect((await search("Desktop Other")).data.map((thread) => thread.id)).toEqual([otherSessionId]);
+      expect((await search("no matching session")).data).toEqual([]);
+
       const readCli = await harness.rpc<{ thread: { source: unknown; turns: Array<{ items: Array<{ type: string }> }> } }>("thread/read", {
         threadId: cliSessionId,
         includeTurns: true,
