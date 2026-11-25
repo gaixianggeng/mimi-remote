@@ -6,6 +6,7 @@ on:
     branches:
       - main
     paths:
+      - "contracts/host-cli/**"
       - "windows/**"
       - "scripts/check-windows-*.ps1"
       - "scripts/test-windows-*.ps1"

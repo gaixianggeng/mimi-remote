@@ -1,0 +1,198 @@
+{
+  "schema": "mimi.onboarding.preflight/v1",
+  "ok": true,
+  "stage": "pair",
+  "configured": true,
+  "workspace_confirmed": true,
+  "config_path": "/fixture/config/config.json",
+  "scan_root": "/fixture/workspace",
+  "browse_root": "/fixture/workspace",
+  "scan_root_exists": true,
+  "recommended_next": "network_any",
+  "recommended_transport": "tailscale",
+  "checks": [
+    {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "ok",
+      "title": "配置文件",
+      "detail": "配置文件可安全读写。",
+      "blocking": false
+    },
+    {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "ok",
+      "title": "代码目录",
+      "detail": "所选目录可读取。",
+      "blocking": false
+    },
+    {
+      "id": "service_owner_conflict",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务归属",
+      "detail": "后台服务归属已确认。",
+      "blocking": false
+    },
+    {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务",
+      "detail": "后台服务已通过就绪检查。",
+      "blocking": false
+    },
+    {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "ok",
+      "title": "Codex 助手",
+      "detail": "Codex 已就绪。",
+      "blocking": false,
+      "enabled": true,
+      "available": true,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "unsupported", "version": "0.140.0"},
+        {
+          "path": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+          "outcome": "selected",
+          "version": "0.150.0"
+        }
+      ],
+      "min_version": "0.149.1"
+    },
+    {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    },
+    {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "selected", "version": "1.5.0"}
+      ],
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_agy"}
+    },
+    {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "ok",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek 已连接且存在可用模型。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "assistant_any",
+      "group": "assistant",
+      "state": "ok",
+      "title": "可用助手",
+      "detail": "至少有一个已启用的助手可用。",
+      "blocking": false
+    },
+    {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "ok",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 已连接。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "ok",
+      "title": "内置连接",
+      "detail": "内置连接可用。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_lan",
+      "group": "network",
+      "state": "ok",
+      "title": "同一局域网",
+      "detail": "已连接可信的专用局域网。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_any",
+      "group": "network",
+      "state": "ok",
+      "title": "手机连接方式",
+      "detail": "至少有一种已启用的连接方式可用。",
+      "blocking": false
+    },
+    {
+      "id": "permission_login_item",
+      "group": "permission",
+      "state": "ok",
+      "title": "登录项",
+      "detail": "已允许登录时启动。",
+      "blocking": false
+    },
+    {
+      "id": "permission_folder_access",
+      "group": "permission",
+      "state": "ok",
+      "title": "文件与文件夹",
+      "detail": "已允许访问所选目录。",
+      "blocking": false
+    },
+    {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "ok",
+      "title": "本地网络",
+      "detail": "已允许访问本地网络。",
+      "blocking": false
+    },
+    {
+      "id": "permission_photos",
+      "group": "permission",
+      "state": "ok",
+      "title": "照片",
+      "detail": "已允许访问照片。",
+      "blocking": false
+    },
+    {
+      "id": "permission_full_disk",
+      "group": "permission",
+      "state": "ok",
+      "title": "完全磁盘访问",
+      "detail": "已允许所需的文件访问。",
+      "blocking": false
+    }
+  ]
+}

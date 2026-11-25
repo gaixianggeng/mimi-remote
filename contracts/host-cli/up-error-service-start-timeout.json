@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "error": {
+    "code": "service_start_timeout",
+    "step": "service_daemon",
+    "message": "等待后台服务就绪超时。请重新检查服务状态。",
+    "fix": {"kind": "retry"}
+  }
+}
