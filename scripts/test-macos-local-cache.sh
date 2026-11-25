@@ -11,6 +11,7 @@ mkdir -p \
   "$fixture/macos/MimiRemoteMac/Scripts" \
   "$fixture/macos/MimiRemoteMac/Resources/LaunchAgents" \
   "$fixture/bridges/claude-sdk" \
+  "$fixture/bridges/agy-acp" \
   "$TEMP_DIR/bin" \
   "$TEMP_DIR/go-root/bin"
 cp "$ROOT_DIR/scripts/development-cache-"*.sh "$fixture/scripts/"
@@ -206,6 +207,8 @@ tailcat_intermediate="$TEMP_DIR/embed/Debug/tailcat-go/arm64/mimi-tailcat-experi
 [[ -x "$TEMP_DIR/embed/Debug/rust/debug/aarch64-apple-darwin/aarch64-apple-darwin/debug/alleycat-claude-bridge" ]]
 [[ -x "$TEMP_DIR/embed/Debug/claude-adapter/arm64/mimi-claude-adapter" ]]
 [[ -x "$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/mimi-claude-adapter" ]]
+[[ -x "$TEMP_DIR/embed/Debug/agy-adapter/arm64/mimi-agy-adapter" ]]
+[[ -x "$TEMP_DIR/embed-build/Mimi Remote Mac.app/Contents/Resources/mimi-agy-adapter" ]]
 
 caller_go_cache="$TEMP_DIR/caller-gocache"
 : > "$FIXTURE_GO_BUILD_LOG"

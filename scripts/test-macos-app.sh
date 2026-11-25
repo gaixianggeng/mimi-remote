@@ -33,6 +33,10 @@ for command_name in xcodebuild go cargo rustc bun; do
     || { echo "Mac App 测试失败：缺少 ${command_name}。" >&2; exit 1; }
 done
 
+# 先跑秒级静态一致性 + 真实 codesign 防回归测试，防止内嵌二进制漏出签名列表拖到发布阶段才暴露。
+log "开始 Mac 安装包签名防回归测试"
+bash "$ROOT_DIR/scripts/test-macos-installer-signing.sh"
+
 # 必须通过真实 Scheme 运行测试，不只做 Swift 语法检查。这会同时
 # 编译 Mac App、内嵌 agentd / Claude 适配器与旧 bridge 和现有单测，但不读取发布签名凭据。
 log "开始真实 Scheme 测试：scheme=${scheme} configuration=${configuration} arch=${architecture}"
