@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 const codexFrontBackendHomeKey = "MIMI_CODEX_FRONT_BACKEND_HOME"
@@ -26,11 +28,14 @@ func codexFrontOptions(cfg config.Config) appserver.SharedLocalOptions {
 	}
 }
 
-func configuredCodexFrontDoor(cfg config.Config) (*appserver.FrontDoor, error) {
+func configuredCodexFrontDoor(cfg config.Config, logf func(string, ...any)) (*appserver.FrontDoor, error) {
 	if err := cfg.ValidateSharedCodexHome(); err != nil {
 		return nil, err
 	}
-	return appserver.NewFrontDoor(codexFrontOptions(cfg), nil)
+	return appserver.NewFrontDoorWithResolver(codexFrontOptions(cfg), logf, func(ctx context.Context) (string, error) {
+		candidate, err := setup.ResolveRuntime(ctx, setup.CodexRuntime(cfg.Codex, "local"))
+		return candidate.Path, err
+	})
 }
 
 // 固定安装时的目录，防止 config.json 已改变而仍有旧前门连接时静默开启第二份历史。

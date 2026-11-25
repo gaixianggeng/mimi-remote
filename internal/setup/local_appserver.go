@@ -21,11 +21,16 @@ var localAppServerPreflight = preflightSharedLocalAppServer
 func preflightSharedLocalAppServer(ctx context.Context, codexBin string, env map[string]string) error {
 	ctx, cancel := context.WithTimeout(ctx, sharedLocalPreflightTimeout)
 	defer cancel()
-	if _, err := appserver.CheckLocalCodex(ctx, codexBin); err != nil {
+	req := CodexRuntime(config.CodexConfig{Env: env}, "local")
+	if codexBin != "codex" {
+		req.Override = codexBin
+	}
+	candidate, err := ResolveRuntime(ctx, req)
+	if err != nil {
 		return err
 	}
 	transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-		CodexBin: codexBin,
+		CodexBin: candidate.Path,
 		Env:      env,
 	})
 	if err != nil {

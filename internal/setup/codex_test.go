@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -14,48 +15,32 @@ import (
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
-	lookups := []string{}
-	lookup := func(candidate string) (string, error) {
-		lookups = append(lookups, candidate)
-		switch candidate {
-		case "/opt/homebrew/bin/codex":
-			return "", errors.New("missing")
-		case "codex":
-			return "/Applications/ChatGPT.app/Contents/Resources/codex", nil
-		default:
-			return "", errors.New("unexpected")
+	f := newDiscoveryFixture(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codex")
+	f.env["PATH"] = dir
+	f.add(t, path, "0.155.0")
+	// Repair is an explicit action. An executable but incompatible old pin
+	// must fall back just like a removed one.
+	old := filepath.Join(t.TempDir(), "codex")
+	for _, exists := range []bool{false, true} {
+		if exists {
+			f.add(t, old, "0.140.0")
 		}
-	}
-
-	resolved, err := resolveCodexBin("/opt/homebrew/bin/codex", lookup, []string{"/known/app/codex"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := filepath.Abs("/Applications/ChatGPT.app/Contents/Resources/codex")
-	if resolved != filepath.Clean(want) {
-		t.Fatalf("应从 PATH 恢复 Codex：%s", resolved)
-	}
-	if !reflect.DeepEqual(lookups, []string{"/opt/homebrew/bin/codex", "codex"}) {
-		t.Fatalf("查找顺序异常：%v", lookups)
+		resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: old})
+		if err != nil || resolved.Path != path {
+			t.Fatalf("repair = %+v, %v", resolved, err)
+		}
 	}
 }
 
 func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex"
-	lookup := func(candidate string) (string, error) {
-		if candidate == embedded {
-			return embedded, nil
-		}
-		return "", errors.New("missing")
-	}
-
-	resolved, err := resolveCodexBin("/deleted/codex", lookup, []string{embedded})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := filepath.Abs(embedded)
-	if resolved != filepath.Clean(want) {
-		t.Fatalf("应恢复桌面 App 内置 Codex：%s", resolved)
+	f := newDiscoveryFixture(t)
+	f.add(t, embedded, "0.155.0")
+	resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: "/deleted/codex"})
+	if err != nil || resolved.Path != embedded {
+		t.Fatalf("repair = %+v, %v", resolved, err)
 	}
 }
 
@@ -82,18 +67,11 @@ func TestDarwinCodexCandidatesCoverEmbeddedChatGPTAndCodexApps(t *testing.T) {
 	}
 
 	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
-	resolved, err := resolveCodexBin("codex", func(candidate string) (string, error) {
-		if candidate == embedded {
-			return embedded, nil
-		}
-		return "", errors.New("missing")
-	}, candidates)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _ := filepath.Abs(embedded)
-	if resolved != filepath.Clean(want) {
-		t.Fatalf("PATH 未命中时应发现 ChatGPT.app 新版内嵌 Codex：%s", resolved)
+	f := newDiscoveryFixture(t)
+	f.add(t, embedded, "0.155.0")
+	resolved, err := f.Resolve(context.Background(), RuntimeRequest{Name: "codex"})
+	if err != nil || resolved.Path != embedded {
+		t.Fatalf("PATH-empty selection: %+v, %v", resolved, err)
 	}
 }
 
@@ -227,21 +205,23 @@ func TestResolveCodexBinDarwinPrecedenceWhenMultipleCandidatesExist(t *testing.T
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resolved, err := resolveCodexBin(tc.configured, func(candidate string) (string, error) {
-				if hit, ok := tc.available[candidate]; ok {
-					return hit, nil
+			f := newDiscoveryFixture(t)
+			f.Home = home
+			pathDir := t.TempDir()
+			f.env["PATH"] = pathDir
+			for key, path := range tc.available {
+				if key == "codex" {
+					path = filepath.Join(pathDir, "codex")
 				}
-				return "", errors.New("missing")
-			}, candidates)
-			if err != nil {
-				t.Fatalf("resolveCodexBin 失败：%v", err)
+				f.add(t, path, "0.155.0")
 			}
-			want, err := filepath.Abs(tc.want)
-			if err != nil {
-				t.Fatal(err)
+			resolved, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: tc.configured})
+			want := tc.want
+			if want == pathCodex {
+				want = filepath.Join(pathDir, "codex")
 			}
-			if resolved != filepath.Clean(want) {
-				t.Fatalf("获选候选异常：got=%q want=%q", resolved, filepath.Clean(want))
+			if err != nil || resolved.Path != want {
+				t.Fatalf("got %+v, %v; want %q", resolved, err, want)
 			}
 		})
 	}
@@ -251,7 +231,7 @@ func TestDarwinPlatformCodexCandidatesIncludeEmbeddedChatGPTCLI(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS candidate list only applies to Darwin hosts")
 	}
-	candidates := platformCodexCandidates()
+	candidates := NewRuntimeDiscovery().candidates(RuntimeRequest{Name: "codex"})
 	const expected = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 	if !slices.Contains(candidates, expected) {
 		t.Fatalf("Darwin platformCodexCandidates 缺少 %q：%v", expected, candidates)
@@ -266,7 +246,7 @@ func TestLinuxCodexCandidatesCoverCommonUserInstallers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates := platformCodexCandidates()
+	candidates := NewRuntimeDiscovery().candidates(RuntimeRequest{Name: "codex"})
 	for _, expected := range []string{
 		filepath.Join(home, ".local", "bin", "codex"),
 		filepath.Join(home, ".npm-global", "bin", "codex"),

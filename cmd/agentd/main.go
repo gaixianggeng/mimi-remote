@@ -877,10 +877,7 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 				return config.Config{}, nil, nil, err
 			}
 		}
-		// serve 也必须自检并修复路径：用户登录后由 Homebrew 自动拉起时，不会先经过 up/start。
-		if err := ensureCodexCLIAvailable(*configPath); err != nil {
-			return config.Config{}, nil, nil, err
-		}
+
 	}
 	var (
 		cfg config.Config
@@ -893,6 +890,11 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 	}
 	if err != nil {
 		return config.Config{}, nil, nil, err
+	}
+	if !forDoctor {
+		if err := resolveLaunchCodex(&cfg); err != nil {
+			return config.Config{}, nil, nil, err
+		}
 	}
 	registry, err := projects.NewRegistry(cfg.Projects)
 	if err != nil {
@@ -1572,33 +1574,21 @@ func ensureCodexCLIAvailable(configPath string) error {
 	if err != nil {
 		return err
 	}
-	if !current.Codex.IsEnabled() {
-		return nil
-	}
-	// Homebrew service 的 PATH 通常比交互终端更窄。先把有效路径原子写回配置，
-	// 后台进程才不会在本次检查通过后又因找不到同一个 Codex 而失败。
-	if _, _, err := agentsetup.RepairCodexBin(configPath); err != nil {
-		return codexCLIRepairError(err)
-	}
-	cfg, err := config.LoadForDoctor(configPath)
-	if err != nil {
-		return fmt.Errorf("读取 Codex 配置失败：%w", err)
-	}
-	bin := strings.TrimSpace(cfg.Codex.Bin)
-	if bin == "" {
-		bin = "codex"
-	}
-	if _, err := exec.LookPath(bin); err != nil {
-		return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
-	}
-	return nil
+	return resolveLaunchCodex(&current)
 }
 
-func codexCLIRepairError(err error) error {
-	if errors.Is(err, config.ErrLegacyAppServerConfiguration) {
-		return err
+// Resolve only the in-memory launch configuration. Future starts rediscover an
+// automatic installation; SSH-only hosts never require a local Codex binary.
+func resolveLaunchCodex(cfg *config.Config) error {
+	if !cfg.Codex.IsEnabled() || strings.EqualFold(cfg.AppServer.Transport, "ssh") {
+		return nil
 	}
-	return fmt.Errorf("未找到 Codex CLI，Mimi Remote 助手还不能启动。\n\n已检查配置路径、当前 PATH，以及 ChatGPT/Codex App 内置路径。\n请先在这台电脑安装并登录 Codex，然后重新运行：\n  agentd up")
+	candidate, err := agentsetup.ResolveRuntime(context.Background(), agentsetup.CodexRuntime(cfg.Codex, cfg.AppServer.Transport))
+	if err != nil {
+		return fmt.Errorf("Codex CLI 不可用，请检查配置的路径或升级 Codex：%w", err)
+	}
+	cfg.Codex.Bin = candidate.Path
+	return nil
 }
 
 var inspectLegacyCodexExperimentResidue = appserver.LegacyCodexExperimentResidue

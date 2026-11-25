@@ -3,49 +3,45 @@ package httpapi
 import (
 	"context"
 	"os"
-	"strings"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
-// claudeCodeVersionCache 记住上次探测到的 Claude Code 版本。网关探测按 TTL 刷新，CLI 文件没换就
-// 不再起进程：npm 安装的 claude 每次 --version 都要拉起 node。
+// The SDK probe runs frequently. Reuse an unchanged CLI briefly, then check
+// all candidates again so installing a newer CLI also refreshes auto selection.
 type claudeCodeVersionCache struct {
-	mu      sync.Mutex
-	path    string
-	modTime time.Time
-	size    int64
-	known   string
+	discover  func(context.Context, setup.RuntimeRequest) (setup.RuntimeCandidate, error)
+	mu        sync.Mutex
+	request   setup.RuntimeRequest
+	override  string
+	checkedAt time.Time
+	info      os.FileInfo
+	candidate setup.RuntimeCandidate
 }
 
-// version 返回适配器将要使用的 Claude Code 的版本：claude.env 里的 CLAUDE_BRIDGE_CLAUDE_BIN，
-// 否则按适配器环境里的 PATH 找 claude。找不到或无法确认时返回 false，交给适配器起进程前的检查给出提示。
-func (c *claudeCodeVersionCache) version(env map[string]string) (string, bool) {
-	bin := strings.TrimSpace(env["CLAUDE_BRIDGE_CLAUDE_BIN"])
-	if bin == "" {
-		bin = "claude"
-	}
-	// 与适配器起进程时同一份环境：claude.env 里的 PATH 可能指向另一处安装。
-	environment := buildClaudeBridgeEnv(env)
-	path, err := claudebridge.LookPathIn(bin, environment)
-	if err != nil {
-		return "", false
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", false
-	}
+func (c *claudeCodeVersionCache) resolve(req setup.RuntimeRequest) (setup.RuntimeCandidate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.known != "" && c.path == path && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
-		return c.known, true
+	override := os.Getenv("CLAUDE_BRIDGE_CLAUDE_BIN")
+	if c.info != nil && time.Since(c.checkedAt) < time.Minute && c.override == override &&
+		c.request.Pin == req.Pin && c.request.MinimumVersion == req.MinimumVersion && slices.Equal(c.request.Environment, req.Environment) {
+		if info, err := os.Stat(c.candidate.Path); err == nil && os.SameFile(c.info, info) &&
+			info.ModTime().Equal(c.info.ModTime()) && info.Size() == c.info.Size() {
+			return c.candidate, nil
+		}
 	}
-	version, err := claudebridge.ClaudeCodeVersion(context.Background(), path, environment)
-	if err != nil {
-		return "", false
+	c.info = nil
+	discover := c.discover
+	if discover == nil {
+		discover = setup.ResolveRuntime
 	}
-	c.path, c.modTime, c.size, c.known = path, info.ModTime(), info.Size(), version
-	return version, true
+	candidate, err := discover(context.Background(), req)
+	if err == nil {
+		c.info, _ = os.Stat(candidate.Path)
+		c.candidate, c.request, c.override, c.checkedAt = candidate, req, override, time.Now()
+	}
+	return candidate, err
 }

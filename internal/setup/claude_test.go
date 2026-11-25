@@ -298,7 +298,7 @@ func TestRestoreClaudeRejectsConflictingAppliedState(t *testing.T) {
 	}
 }
 
-func TestConfigureClaudeReplacesStaleConfiguredClaudeBin(t *testing.T) {
+func TestConfigureClaudeKeepsExplicitClaudeBinWhenNewerAutoCandidateExists(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("本测试使用 Unix 可执行脚本模拟 Claude CLI")
 	}
@@ -319,14 +319,14 @@ func TestConfigureClaudeReplacesStaleConfiguredClaudeBin(t *testing.T) {
 	if !result.Enabled || !result.Available || !result.RestartRequired {
 		t.Fatalf("发现更新的 CLI 时应启用并要求重启：%+v", result)
 	}
-	if result.ClaudeBin != newer || result.ClaudeVersion != "2.1.270" {
-		t.Fatalf("应改用版本最高的候选：bin=%q version=%q", result.ClaudeBin, result.ClaudeVersion)
+	if result.ClaudeBin != filepath.Join(os.Getenv("HOME"), "claude") || result.ClaudeVersion != "2.1.220" {
+		t.Fatalf("应保留显式配置的候选：bin=%q version=%q", result.ClaudeBin, result.ClaudeVersion)
 	}
 	document := readClaudeConfigurationFixture(t, configPath)
 	claude := document["claude"].(map[string]any)
 	env := claude["env"].(map[string]any)
-	if env[claudeBinaryEnvKey] != newer || env["FUTURE_ENV"] != "keep" {
-		t.Fatalf("陈旧路径应被替换且其他 env 字段保留：%v", env)
+	if env[claudeBinaryEnvKey] != result.ClaudeBin || env["FUTURE_ENV"] != "keep" {
+		t.Fatalf("显式路径和其他 env 字段应保留：%v", env)
 	}
 	if claude["future_option"] != "keep" || document["future_top_level"] == nil {
 		t.Fatalf("未知配置字段不应丢失：%v", document)
@@ -348,7 +348,7 @@ func TestConfigureClaudeReplacesStaleConfiguredClaudeBin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Changed || again.RestartRequired || again.ClaudeBin != newer {
+	if again.Changed || again.RestartRequired || again.ClaudeBin != result.ClaudeBin {
 		t.Fatalf("已是最新候选时下次启动不应再改配置：%+v", again)
 	}
 }
@@ -369,34 +369,34 @@ func TestResolveClaudeBinPrefersHighestVersionAcrossCandidates(t *testing.T) {
 	writeClaudeCLIFixture(t, npm, "2.1.224 (Claude Code)", true)
 	environment := claudeCommandEnvironment(nil)
 
-	// 已配置路径已不可用：回退到候选，并在候选里择优而不是取 PATH 上的第一个。
-	resolved, err := resolveClaudeBin(context.Background(), filepath.Join(home, "gone", "claude"), environment)
+	// Auto mode ranks all compatible installs.
+	resolved, err := inspectFixtureClaude(t, "", environment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.path != native || resolved.version != "2.1.270" {
+	if resolved.Path != native || resolved.Version != "2.1.270" {
 		t.Fatalf("应选择版本最高的候选：%+v", resolved)
 	}
 
-	// 已配置路径落后于其他候选时同样被替换。
-	resolved, err = resolveClaudeBin(context.Background(), brew, environment)
+	// An explicit pin takes precedence over a newer installation.
+	resolved, err = inspectFixtureClaude(t, brew, environment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.path != native {
-		t.Fatalf("已配置的旧版本不应继续优先：%+v", resolved)
+	if resolved.Path != brew {
+		t.Fatalf("显式配置路径应优先：%+v", resolved)
 	}
 
-	// 同版本按候选顺序：已配置值仍排在 PATH 与默认安装位置之前。
+	// Equal versions use discovery order (PATH before the npm fallback).
 	if err := os.Remove(native); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err = resolveClaudeBin(context.Background(), npm, environment)
+	resolved, err = inspectFixtureClaude(t, "", environment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.path != npm || resolved.version != "2.1.224" {
-		t.Fatalf("同版本时应保留已配置路径：%+v", resolved)
+	if resolved.Path != brew || resolved.Version != "2.1.224" {
+		t.Fatalf("同版本时应保留首个自动候选：%+v", resolved)
 	}
 }
 
@@ -412,23 +412,23 @@ func TestResolveClaudeBinDoesNotPreferUnparseableVersion(t *testing.T) {
 	onPath := filepath.Join(pathDir, "claude")
 	writeClaudeCLIFixture(t, configured, "claude dev build", true)
 	writeClaudeCLIFixture(t, onPath, "2.1.100 (Claude Code)", true)
-	environment := claudeCommandEnvironment(nil)
+	environment := []string{"PATH=" + filepath.Dir(configured) + string(os.PathListSeparator) + pathDir}
 
-	resolved, err := resolveClaudeBin(context.Background(), configured, environment)
+	resolved, err := inspectFixtureClaude(t, "", environment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.path != onPath || resolved.version != "2.1.100" {
+	if resolved.Path != onPath || resolved.Version != "2.1.100" {
 		t.Fatalf("版本无法解析的候选不得胜过可解析的候选：%+v", resolved)
 	}
 
 	// 全部候选都无法解析时退回第一个可启动候选，版本留空交给上层报告 claude_version_unknown。
 	writeClaudeCLIFixture(t, onPath, "nightly", true)
-	resolved, err = resolveClaudeBin(context.Background(), configured, environment)
-	if err != nil {
+	resolved, err = inspectFixtureClaude(t, "", environment)
+	if !errors.Is(err, ErrRuntimeVersion) {
 		t.Fatal(err)
 	}
-	if resolved.path != configured || resolved.version != "" {
+	if resolved.Path != configured || resolved.Version != "" {
 		t.Fatalf("全部无法解析时应退回首个候选且不伪造版本：%+v", resolved)
 	}
 }
@@ -450,20 +450,28 @@ func TestResolveClaudeBinSkipsCandidatesThatFailToLaunch(t *testing.T) {
 		}
 		writeExecutableFixture(t, path, "exit 127\n")
 	}
-	environment := claudeCommandEnvironment(nil)
+	environment := []string{"PATH=" + filepath.Dir(broken) + string(os.PathListSeparator) + pathDir}
 
-	if resolved, err := resolveClaudeBin(context.Background(), broken, environment); err == nil {
+	if resolved, err := inspectFixtureClaude(t, "", environment); err == nil {
 		t.Fatalf("没有任何候选能启动时不得持久化路径：%+v", resolved)
 	}
 
 	writeClaudeCLIFixture(t, working, "2.1.100 (Claude Code)", true)
-	resolved, err := resolveClaudeBin(context.Background(), broken, environment)
+	resolved, err := inspectFixtureClaude(t, "", environment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.path != working || resolved.version != "2.1.100" {
+	if resolved.Path != working || resolved.Version != "2.1.100" {
 		t.Fatalf("启动失败的已配置候选应被跳过：%+v", resolved)
 	}
+}
+
+func inspectFixtureClaude(t *testing.T, pin string, env []string) (RuntimeCandidate, error) {
+	t.Helper()
+	discovery := NewRuntimeDiscovery()
+	discovery.GOOS = "linux"
+	discovery.getenv = func(string) string { return "" }
+	return discovery.Resolve(context.Background(), RuntimeRequest{Name: "claude", Pin: pin, Environment: env})
 }
 
 func TestParseClaudeActivationPreferenceRejectsUnknownValue(t *testing.T) {

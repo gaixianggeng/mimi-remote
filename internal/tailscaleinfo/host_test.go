@@ -185,7 +185,7 @@ func TestFindCLIFallsBackToDarwinAppBundles(t *testing.T) {
 	userBundle := filepath.Join(home, "Applications", "Tailscale.app", "Contents", "MacOS", "Tailscale")
 	missing := errors.New("not found")
 
-	got, err := findCLI(
+	got, err := FindCLIForHost(
 		func(string) (string, error) { return "", missing },
 		func(path string) (os.FileInfo, error) {
 			if path == userBundle {

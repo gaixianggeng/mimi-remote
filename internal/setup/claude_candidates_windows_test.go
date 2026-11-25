@@ -16,7 +16,7 @@ func TestResolveClaudeBinDoesNotApplyCodexVersionParser(t *testing.T) {
 	if err != nil {
 		t.Skip("当前 Windows 环境没有可用的非 Codex 版本探测程序")
 	}
-	resolved, err := resolveClaudeBin(context.Background(), probe, claudeCommandEnvironment(nil))
+	resolved, err := ResolveRuntime(context.Background(), RuntimeRequest{Name: "claude", Override: probe, Environment: claudeCommandEnvironment(nil)})
 	if err != nil {
 		t.Fatalf("Claude 路径探测不应要求 codex-cli 版本输出：%v", err)
 	}
@@ -24,8 +24,8 @@ func TestResolveClaudeBinDoesNotApplyCodexVersionParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameCleanPath(resolved.path, want) {
-		t.Fatalf("Claude 路径解析异常：got=%q want=%q", resolved.path, want)
+	if !sameCleanPath(resolved.Path, want) {
+		t.Fatalf("Claude 路径解析异常：got=%q want=%q", resolved.Path, want)
 	}
 }
 
@@ -33,7 +33,7 @@ func TestClaudeExecutableCandidatesIncludesOfficialNativeInstall(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
 	want := filepath.Join(home, ".local", "bin", "claude.exe")
-	for _, candidate := range claudeExecutableCandidates("") {
+	for _, candidate := range NewRuntimeDiscovery().candidates(RuntimeRequest{Name: "claude"}) {
 		if sameCleanPath(candidate, want) {
 			return
 		}
@@ -83,14 +83,25 @@ func TestNativeClaudeExecutableCandidateMigratesNPMShim(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resolved, ok := nativeClaudeExecutableCandidate(shim)
-	if !ok || !filepath.IsAbs(resolved) || !sameCleanPath(resolved, native) {
-		t.Fatalf("npm shim 应迁移到包内原生 claude.exe：resolved=%q ok=%t", resolved, ok)
+	resolved, err := NewRuntimeDiscovery().nativeClaude(shim)
+	if err != nil || !filepath.IsAbs(resolved) || !sameCleanPath(resolved, native) {
+		t.Fatalf("npm shim 应迁移到包内原生 claude.exe：resolved=%q err=%v", resolved, err)
 	}
-	candidates := claudeExecutableCandidates(shim)
-	if len(candidates) == 0 || !sameCleanPath(candidates[0], native) {
-		t.Fatalf("已配置 npm shim 时原生二进制应为首选：%v", candidates)
+	d := NewRuntimeDiscovery()
+	d.run = func(context.Context, string, []string, ...string) (string, error) {
+		return "2.1.100 (Claude Code)", nil
 	}
+	selected, err := d.Resolve(context.Background(), RuntimeRequest{Name: "claude", Override: shim})
+	if err != nil || !sameCleanPath(selected.Path, native) {
+		t.Fatalf("npm shim selection: %+v, %v", selected, err)
+	}
+	if err := os.Remove(shim); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Resolve(context.Background(), RuntimeRequest{Name: "claude", Override: shim}); err == nil {
+		t.Fatal("missing shim was accepted as a pin")
+	}
+
 }
 
 func TestNativeClaudeExecutableCandidateRejectsUnmappableScript(t *testing.T) {
@@ -98,7 +109,7 @@ func TestNativeClaudeExecutableCandidateRejectsUnmappableScript(t *testing.T) {
 	if err := os.WriteFile(shim, []byte("@echo off\r\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if resolved, ok := nativeClaudeExecutableCandidate(shim); ok {
+	if resolved, err := NewRuntimeDiscovery().nativeClaude(shim); err == nil {
 		t.Fatalf("没有包内原生二进制时不应持久化脚本 shim：%q", resolved)
 	}
 }

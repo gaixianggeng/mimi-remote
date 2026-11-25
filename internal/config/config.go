@@ -468,6 +468,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 			}
 		}
 	}
+	if strings.TrimSpace(cfg.Codex.Bin) == "" {
+		cfg.Codex.Bin = "codex"
+	}
 	if cfg.Claude.MaxConcurrentBridges == 0 {
 		// Older setup versions serialized the disabled Claude section from a
 		// zero-value Config, then the tray could enable Claude while preserving

@@ -1,18 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
+	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
@@ -57,9 +58,8 @@ var handoffThreadIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{7,63}$
 
 // 测试替换点。
 var (
-	handoffResolveCodexBin  = agentsetup.ResolveCodexBin
+	handoffResolveRuntime   = agentsetup.ResolveRuntime
 	handoffSharedSocketPath = appserver.SharedLocalSocketPath
-	handoffLookPath         = exec.LookPath
 	handoffLoadConfig       = config.LoadForDoctor
 )
 
@@ -109,7 +109,7 @@ func buildHandoffCommand(cfg config.Config, runtimeID, threadID, cwd string) (ha
 		if strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "ssh") {
 			return handoffCommand{}, errors.New("Codex 服务在另一台主机上，不能在这台电脑的终端里继续")
 		}
-		bin, err := handoffResolveCodexBin(cfg.Codex.Bin)
+		cli, err := handoffResolveRuntime(context.Background(), agentsetup.CodexRuntime(cfg.Codex, "local"))
 		if err != nil {
 			return handoffCommand{}, fmt.Errorf("找不到 Codex CLI：%w", err)
 		}
@@ -119,35 +119,17 @@ func buildHandoffCommand(cfg config.Config, runtimeID, threadID, cwd string) (ha
 		}
 		return handoffCommand{
 			CWD:  cwd,
-			Argv: []string{bin, "resume", threadID, "--remote", "unix://" + socket},
+			Argv: []string{cli.Path, "resume", threadID, "--remote", "unix://" + socket},
 			Env:  handoffEnv("codex", cfg.Codex.Env),
 		}, nil
 	case "claude":
 		// Mimi 的适配器发现终端里的 claude 接手后会自动让出（#658）。
-		bin, err := handoffClaudeBin(cfg)
+		cli, err := handoffResolveRuntime(context.Background(), agentsetup.ClaudeRuntime(cfg.Claude, "", claudeenv.Build(cfg.Claude.Env)))
 		if err != nil {
 			return handoffCommand{}, err
 		}
-		return handoffCommand{CWD: cwd, Argv: []string{bin, "--resume", threadID}, Env: handoffEnv("claude", cfg.Claude.Env)}, nil
+		return handoffCommand{CWD: cwd, Argv: []string{cli.Path, "--resume", threadID}, Env: handoffEnv("claude", cfg.Claude.Env)}, nil
 	default:
 		return handoffCommand{}, errors.New("handoff-command --runtime 只能是 codex 或 claude")
 	}
-}
-
-// handoffClaudeBin 优先用适配器实际使用的 CLI，保证终端与 Mimi 是同一个版本。
-func handoffClaudeBin(cfg config.Config) (string, error) {
-	if configured := strings.TrimSpace(cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"]); configured != "" {
-		if resolved, err := handoffLookPath(configured); err == nil {
-			return resolved, nil
-		}
-	}
-	if resolved, err := handoffLookPath("claude"); err == nil {
-		return resolved, nil
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if resolved, err := handoffLookPath(filepath.Join(home, ".local", "bin", "claude")); err == nil {
-			return resolved, nil
-		}
-	}
-	return "", errors.New("找不到 Claude Code CLI")
 }

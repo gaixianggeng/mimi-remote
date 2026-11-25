@@ -22,6 +22,7 @@ Options:
   --limit N             thread/list 页大小，默认 20
   --timeout DURATION    单次 RPC 超时，默认 15s
   --config PATH         agentd config.json 路径
+  --self-test           用临时 CLI 检查 Tailscale 地址发现
   -h, --help            显示帮助
 
 示例：
@@ -35,6 +36,41 @@ Options:
 Token 优先读取 AGENTD_TOKEN；为空时读取 --config 的 .auth.token。脚本不会打印 Token。
 USAGE
 }
+
+tailscale_ipv4() {
+  local bin ip
+  local octet='(0|[1-9][0-9]{0,2})'
+  local ipv4="^100\.${octet}\.${octet}\.${octet}$"
+  bin="$(type -P tailscale)" || bin="${MIMI_TAILSCALE_BUNDLE_BIN:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}"
+  [[ -f "$bin" && -x "$bin" ]] || return 1
+  ip="$(TAILSCALE_BE_CLI=true "$bin" ip -4 2>/dev/null)" || return 1
+  [[ "$ip" =~ $ipv4 ]] || return 1
+  (( BASH_REMATCH[1] >= 64 && BASH_REMATCH[1] <= 127 &&
+     BASH_REMATCH[2] <= 255 && BASH_REMATCH[3] <= 255 )) || return 1
+  printf '%s\n' "$ip"
+}
+
+self_test() (
+  local root
+  root="$(mktemp -d)"
+  trap 'rm -rf "$root"' EXIT
+  mkdir "$root/bin" "$root/empty" "$root/App Bundle"
+  export MIMI_TAILSCALE_BUNDLE_BIN="$root/App Bundle/Tailscale" TAILSCALE_BE_CLI=false
+  cat >"$root/bin/tailscale" <<'STUB'
+#!/bin/sh
+[ "$TAILSCALE_BE_CLI" = true ] && [ "$#" = 2 ] && [ "$1" = ip ] && [ "$2" = -4 ] || exit 1
+case "${0##*/}" in
+  tailscale) echo 100.64.0.1 ;;
+  *) printf '%s\n' "${STUB_IP:-100.64.0.2}" ;;
+esac
+STUB
+  cp "$root/bin/tailscale" "$MIMI_TAILSCALE_BUNDLE_BIN"
+  chmod +x "$root/bin/tailscale" "$MIMI_TAILSCALE_BUNDLE_BIN"
+  [[ "$(PATH="$root/bin" tailscale_ipv4)" == 100.64.0.1 ]]
+  [[ "$(PATH="$root/empty" tailscale_ipv4)" == 100.64.0.2 ]]
+  if PATH="$root/empty" STUB_IP=192.0.2.1 tailscale_ipv4; then exit 1; fi
+  echo "Tailscale CLI discovery passed"
+)
 
 custom_endpoints=0
 while [[ $# -gt 0 ]]; do
@@ -62,6 +98,10 @@ while [[ $# -gt 0 ]]; do
     --config)
       CONFIG_PATH="${2:?--config 需要路径}"
       shift 2
+      ;;
+    --self-test)
+      self_test
+      exit 0
       ;;
     -h|--help)
       usage
@@ -130,9 +170,7 @@ require_positive_integer "--rounds" "$ROUNDS"
 require_positive_integer "--limit" "$LIST_LIMIT"
 
 if [[ "$custom_endpoints" == "0" ]]; then
-  require_command tailscale
-  tailscale_ip="$(tailscale ip -4 2>/dev/null || true)"
-  if [[ -z "${tailscale_ip//[[:space:]]/}" || "$tailscale_ip" == *$'\n'* ]]; then
+  if ! tailscale_ip="$(tailscale_ipv4)"; then
     echo "无法确定唯一的 Mac Tailscale IPv4 地址；请确认 Tailscale 已连接，或用 --endpoint 显式指定" >&2
     exit 2
   fi

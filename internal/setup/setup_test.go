@@ -84,6 +84,9 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.Codex.Bin != "codex" {
+		t.Fatal("automatic setup persisted a pin")
+	}
 	assertDefaultSetupConfigAppServer(t, cfg)
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)

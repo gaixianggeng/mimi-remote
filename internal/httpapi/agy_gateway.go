@@ -24,6 +24,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 var appServerAgyAllowedMethods = map[string]struct{}{
@@ -45,6 +46,7 @@ var appServerAgyAllowedMethods = map[string]struct{}{
 }
 
 type agyAdapterProbe struct {
+	cliPath           string
 	Status            string
 	Path              string
 	Version           string
@@ -218,27 +220,19 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 	probe.Capabilities = &capabilities
 	probe.MinimumCLIVersion = strings.TrimSpace(capabilities.Agy.MinimumVersion)
 
-	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
-	if agyBin == "" {
-		agyBin = "agy"
-	}
-	agyPath, lookErr := claudebridge.LookPathIn(agyBin, env)
-	if lookErr != nil {
+	candidate, err := setup.ResolveRuntime(context.Background(), setup.AgyRuntime(r.cfg.Agy, probe.MinimumCLIVersion, env))
+	probe.CLIVersion, probe.cliPath = candidate.Version, candidate.Path
+	if err != nil {
 		probe.Status = "agy_missing"
-		probe.Error = "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。"
+		probe.Error = "未检测到可用的 Antigravity CLI (agy)。请检查安装或配置的路径。"
+		if errors.Is(err, setup.ErrRuntimeIncompatible) {
+			probe.Status = "agy_unsupported"
+			probe.Error = agybridge.AgyUpgradeMessage(candidate.Version, probe.MinimumCLIVersion)
+		}
 		r.setAgyAdapterProbe(probe)
 		return probe
 	}
-	if agyVer, verErr := agybridge.AgyVersion(context.Background(), agyPath, env); verErr == nil {
-		probe.CLIVersion = agyVer
-		if !capabilities.AgySupported(agyVer) {
-			probe.Status = "agy_unsupported"
-			probe.Error = agybridge.AgyUpgradeMessage(agyVer, capabilities.Agy.MinimumVersion)
-			r.setAgyAdapterProbe(probe)
-			return probe
-		}
-	}
-	authState, authMsg := r.checkAgyAuthStatusCached(agyPath, env)
+	authState, authMsg := r.checkAgyAuthStatusCached(candidate.Path, env)
 	switch authState {
 	case agybridge.AgyAuthSignedOut:
 		probe.Status = "agy_signed_out"
@@ -298,7 +292,18 @@ func (r *Router) refreshAgyAdapterProbeIfStale() {
 	}
 }
 
-func (r *Router) configuredAgyBinary(env []string) (string, error) {
+func (p agyAdapterProbe) launchEnv(cfg config.AgyConfig) map[string]string {
+	env := agybridge.BuildEnvMap(cfg.Env)
+	if p.cliPath != "" {
+		env[agybridge.AgyBinaryEnvKey] = p.cliPath
+	}
+	return env
+}
+
+func (r *Router) configuredAgyBinary(probe agyAdapterProbe, env []string) (string, error) {
+	if probe.cliPath != "" {
+		return claudebridge.LookPathIn(probe.cliPath, env)
+	}
 	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
 	if agyBin == "" {
 		agyBin = "agy"
@@ -329,7 +334,7 @@ func (r *Router) currentAgyAdapterProbe() agyAdapterProbe {
 	r.refreshAgyAdapterProbeIfStale()
 	probe := r.agyAdapterProbeSnapshot()
 	env := agybridge.BuildEnv(r.cfg.Agy.Env)
-	if _, err := r.configuredAgyBinary(env); err != nil {
+	if _, err := r.configuredAgyBinary(probe, env); err != nil {
 		if probe.Healthy || probe.Status != "agy_missing" {
 			return r.invalidateAgyMissingProbe()
 		}
@@ -593,7 +598,7 @@ func (r *Router) appServerAgyGatewayWS(w http.ResponseWriter, req *http.Request)
 	defer cancel()
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Agy.AdapterBin))
 	start := time.Now()
-	if _, err := r.agyAdapter.ensure(bin, r.cfg.Agy.Args, agybridge.BuildEnvMap(r.cfg.Agy.Env)); err != nil {
+	if _, err := r.agyAdapter.ensure(bin, r.cfg.Agy.Args, probe.launchEnv(r.cfg.Agy)); err != nil {
 		log.Printf("agy adapter ensure failed err=%v", err)
 		writeGatewayRuntimeError(client, "AGY_ADAPTER_START_FAILED", "启动 Antigravity 适配器失败")
 		return
@@ -744,7 +749,7 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 	bin := firstNonEmpty(probe.Path, strings.TrimSpace(r.cfg.Agy.AdapterBin))
 	ensureDone := make(chan error, 1)
 	go func() {
-		_, err := r.agyAdapter.ensure(bin, r.cfg.Agy.Args, agybridge.BuildEnvMap(r.cfg.Agy.Env))
+		_, err := r.agyAdapter.ensure(bin, r.cfg.Agy.Args, probe.launchEnv(r.cfg.Agy))
 		ensureDone <- err
 	}()
 	select {

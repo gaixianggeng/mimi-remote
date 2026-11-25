@@ -16,7 +16,7 @@ func (r *Router) moduleStatusHandler(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	tailscale, lan := networkaccess.Availability()
+	tailscale, lan := networkaccess.AvailabilityContext(req.Context())
 	writeJSON(w, http.StatusOK, config.ModuleStatus{
 		CodexEnabled: r.cfg.Codex.IsEnabled(), ClaudeEnabled: r.cfg.Claude.Enabled, AgyEnabled: r.cfg.Agy.Enabled,
 		TailscaleEnabled: r.cfg.TailscaleAccessEnabled(), LANEnabled: r.cfg.LANAccessEnabled(),

@@ -58,7 +58,7 @@ func (r *Router) tailscaleNetworkPathHandler(w http.ResponseWriter, req *http.Re
 }
 
 func defaultTailscaleNetworkPathLookup(ctx context.Context, remoteHost string) tailscaleNetworkPathResponse {
-	return inspectTailscaleNetworkPath(ctx, remoteHost, runTailscaleStatus)
+	return inspectTailscaleNetworkPath(ctx, remoteHost, tailscaleinfo.Status)
 }
 
 func inspectTailscaleNetworkPath(ctx context.Context, remoteHost string, statusCommand tailscaleStatusCommand) tailscaleNetworkPathResponse {
@@ -124,12 +124,4 @@ func tailscalePeerContainsIP(peer tailscalePeerStatus, target netip.Addr) bool {
 
 func isTailscaleAddress(ip netip.Addr) bool {
 	return tailscaleinfo.IsTailscaleAddress(ip)
-}
-
-func runTailscaleStatus(ctx context.Context) ([]byte, error) {
-	cmd, err := tailscaleinfo.CommandContext(ctx, "status", "--json")
-	if err != nil {
-		return nil, err
-	}
-	return cmd.Output()
 }

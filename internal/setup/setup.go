@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -112,7 +114,7 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
 	codexBin := strings.TrimSpace(options.CodexBin)
 	if codexBin == "" {
-		codexBin = defaultCodexBin()
+		codexBin = "codex"
 	}
 	appServerConfig := config.DefaultManagedAppServerConfig()
 	if useSharedLocalAppServer {
@@ -143,6 +145,14 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			AutoTitle: true,
 			// 显式给出的 target（即使是 127.0.0.1）是用户选择，后台启动的自动迁移不得改回 local。
 			PinTransport: requestedSSHTarget != "",
+		}
+	} else if useManagedLocalAppServer {
+		req := RuntimeRequest{Name: "codex", Transport: "ws", Override: options.CodexBin}
+		found, err := ResolveRuntime(ctx, req)
+		// Windows setup has always allowed saving an automatic configuration
+		// before installing Codex. Explicit choices must be usable now.
+		if err != nil && (found.Source != "auto" || !errors.Is(err, exec.ErrNotFound)) {
+			return Result{}, fmt.Errorf("本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	} else if useSharedLocalAppServer {
 		codexEnv := map[string]string{"TERM": "xterm-256color"}
@@ -542,13 +552,6 @@ func defaultAgentDNetworkWithLANFallback(
 		"未检测到 Tailscale 或可用的局域网 IPv4；请先连接 Wi-Fi/以太网，或为本机开发显式传入 --listen 127.0.0.1:%s",
 		defaultAgentDPort,
 	)
-}
-
-func defaultCodexBin() string {
-	if path, err := ResolveCodexBin("codex"); err == nil {
-		return path
-	}
-	return "codex"
 }
 
 func endpointForListen(ctx context.Context, listen string) (string, []string) {

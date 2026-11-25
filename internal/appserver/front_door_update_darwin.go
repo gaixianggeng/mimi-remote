@@ -20,7 +20,10 @@ type CodexRuntimeVersions struct {
 func (v CodexRuntimeVersions) needsRecovery() bool { return v.UpdateAvailable || v.FeatureMismatch }
 
 func (f *FrontDoor) RuntimeVersions(ctx context.Context) (CodexRuntimeVersions, error) {
-	bin := FrontDoorCodexBin(f.options.CodexBin, f.options.Env)
+	bin, err := f.resolveCodex(ctx)
+	if err != nil {
+		return CodexRuntimeVersions{}, err
+	}
 	installed, err := CheckLocalCodex(ctx, bin)
 	if err != nil {
 		return CodexRuntimeVersions{}, errors.New("无法检查已安装的 Codex，请运行诊断后重试。")

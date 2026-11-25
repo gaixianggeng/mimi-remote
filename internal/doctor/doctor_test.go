@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -177,9 +178,10 @@ func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	checker := newTestChecker(t, config.Config{
-		Listen: "127.0.0.1:8787",
-		Auth:   config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Codex:  config.CodexConfig{Bin: "definitely-missing-codex"},
+		Listen:    "127.0.0.1:8787",
+		AppServer: config.AppServerConfig{Transport: "local"},
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Codex:     config.CodexConfig{Bin: "definitely-missing-codex"},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
 			Name: "Demo",
@@ -612,7 +614,9 @@ func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewChecker("test-version", cfg, registry)
+	checker := NewChecker("test-version", cfg, registry)
+	checker.findTailscale = func() (string, error) { return exec.LookPath("tailscale") }
+	return checker
 }
 
 func listenOnFreePort(t *testing.T) net.Listener {
