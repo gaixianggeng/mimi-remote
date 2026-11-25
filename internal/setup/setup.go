@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -604,23 +603,7 @@ func isLoopbackHost(host string) bool {
 }
 
 func firstTailscaleIP(ctx context.Context) string {
-	bin, err := tailscaleinfo.FindCLI()
-	if err != nil {
-		return ""
-	}
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(runCtx, bin, "ip", "-4").Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		ip := net.ParseIP(strings.TrimSpace(line))
-		if isTailscaleIPv4(ip) {
-			return ip.String()
-		}
-	}
-	return ""
+	return tailscaleinfo.FirstIPv4(ctx)
 }
 
 func randomHex(bytes int) (string, error) {

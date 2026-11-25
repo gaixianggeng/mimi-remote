@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/netip"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -128,9 +127,9 @@ func isTailscaleAddress(ip netip.Addr) bool {
 }
 
 func runTailscaleStatus(ctx context.Context) ([]byte, error) {
-	bin, err := tailscaleinfo.FindCLI()
+	cmd, err := tailscaleinfo.CommandContext(ctx, "status", "--json")
 	if err != nil {
 		return nil, err
 	}
-	return exec.CommandContext(ctx, bin, "status", "--json").Output()
+	return cmd.Output()
 }
