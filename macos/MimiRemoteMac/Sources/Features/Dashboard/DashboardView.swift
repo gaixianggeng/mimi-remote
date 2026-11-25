@@ -9,18 +9,26 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HostStatusHeader(lifecycle: store.lifecycle)
+                if !showsOnboardingWizard {
+                    HostStatusHeader(lifecycle: store.lifecycle)
+                }
 
-                switch store.lifecycle {
-                case .notConfigured:
+                if showsOnboardingWizard {
                     OnboardingView(store: store)
-                case .migrationRequired:
+                } else if store.lifecycle == .migrationRequired {
                     MigrationView(store: store)
-                default:
+                } else {
                     ServiceOverviewView(store: store)
                 }
 
-                if let lastError = store.lastError {
+                if !showsOnboardingWizard, let loginWarning = store.loginItemWarning {
+                    Label(loginWarning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
+
+                if !showsOnboardingWizard, let lastError = store.lastError {
                     Text(lastError)
                         .font(.callout)
                         .foregroundStyle(.red)
@@ -36,6 +44,10 @@ struct DashboardView: View {
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
         }
+    }
+
+    private var showsOnboardingWizard: Bool {
+        store.lifecycle == .notConfigured || store.isOnboardingInProgress
     }
 }
 

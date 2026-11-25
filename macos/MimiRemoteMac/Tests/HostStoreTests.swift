@@ -2051,6 +2051,51 @@ final class HostStoreTests: XCTestCase {
         XCTAssertFalse(store.canChangeModule(.lan))
     }
 
+    func testCompleteSetupFailureKeepsNotConfiguredAndSplitsLoginItemWarning() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appending(path: "mimi-host-setup-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let failingStore = makeStore(
+            configExists: false,
+            agentConfigurationError: { "签名未就绪" }
+        )
+        await failingStore.bootstrap()
+        await failingStore.completeSetup(workspaceRoot: tempDir)
+        XCTAssertEqual(failingStore.lifecycle, .notConfigured)
+        XCTAssertEqual(failingStore.lastError, "签名未就绪")
+
+        let warningStore = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            mainAppStatus: { .notRegistered },
+            registerMainApp: { throw TestError.expected }
+        )
+        await warningStore.bootstrap()
+        XCTAssertEqual(warningStore.lifecycle, .ready)
+        XCTAssertNil(warningStore.lastError)
+        XCTAssertNotNil(warningStore.loginItemWarning)
+    }
+
+    func testOnboardingLifecycleKeepsNotConfiguredUntilFinishedAndReusesHomebrew() async throws {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: false,
+            homebrewLoaded: true,
+            registerAgent: { events.append("register-mac") },
+            homebrewStop: { events.append("stop-homebrew") }
+        )
+        await store.bootstrap()
+        store.beginOnboarding()
+        let outcome = try await store.registerOrStartServiceForOnboarding()
+        XCTAssertEqual(outcome, .homebrewHealthy)
+        XCTAssertEqual(store.lifecycle, .notConfigured)
+        XCTAssertEqual(events.values, [])
+
+        await store.finishOnboarding(owner: .homebrew)
+        XCTAssertFalse(store.isOnboardingInProgress)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+    }
 
     func makeStore(
         configExists: Bool,
@@ -2068,6 +2113,8 @@ final class HostStoreTests: XCTestCase {
         },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
+        mainAppStatus: @escaping @MainActor () -> ServiceRegistrationState = { .enabled },
+        registerMainApp: @escaping @MainActor () throws -> Void = {},
         restartAgent: @escaping @MainActor () async throws -> Void = {
             throw AgentClientError.commandFailed("快速重启未配置")
         },
@@ -2174,8 +2221,8 @@ final class HostStoreTests: XCTestCase {
             unregisterAgent: unregisterAgent,
             restartAgent: restartAgent,
             agentLaunchFailure: agentLaunchFailure,
-            mainAppStatus: { .enabled },
-            registerMainApp: {},
+            mainAppStatus: mainAppStatus,
+            registerMainApp: registerMainApp,
             unregisterMainApp: {},
             openLoginItemsSettings: {}
         )

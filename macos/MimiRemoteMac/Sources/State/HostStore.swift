@@ -54,7 +54,11 @@ final class HostStore {
     /// 启动阶段的补充说明，例如覆盖安装后正在重新登记后台服务。只在
     /// `.starting` 期间有值，进入其它生命周期状态时清空。
     private(set) var startingDetail: String?
+    /// 非阻断的主应用登录项提示；与阻断性错误 `lastError` 拆分，避免挡住配对出码。
+    var loginItemWarning: String?
     var lastError: String?
+    /// 向导未完成期间保持为 true，防止 setup/启动失败提前切出向导把用户困在概览页。
+    private(set) var isOnboardingInProgress = false
     @ObservationIgnored var pairingRefreshGeneration = 0
     @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
@@ -144,6 +148,205 @@ final class HostStore {
     /// 同步判断是否已完成首次设置；App 启动时据此决定是否直接弹出设置窗口（#554）。
     func hasConfiguration() -> Bool { agent.configExists() }
 
+    var agentRegistrationState: ServiceRegistrationState { services.agentStatus() }
+    var mainAppRegistrationState: ServiceRegistrationState { services.mainAppStatus() }
+    var currentPhotosAccessState: PhotosAccessState { systemPrivacySettings.photosAccessState() }
+
+    func isHomebrewLoaded() async -> Bool { await homebrew.isLoaded() }
+
+    func openFilesAndFoldersSettings() {
+        systemPrivacySettings.openFilesAndFoldersSettings()
+    }
+
+    func openLocalNetworkSettings() {
+        systemPrivacySettings.openLocalNetworkSettings()
+    }
+
+    func openPhotosPrivacySettings() {
+        systemPrivacySettings.openPhotosPrivacySettings()
+    }
+
+    func openDateTimeSettings() {
+        systemPrivacySettings.openDateTimeSettings()
+    }
+
+    func beginOnboarding() {
+        isOnboardingInProgress = true
+        if !agent.configExists() || lifecycle == .loading {
+            lifecycle = .notConfigured
+        }
+    }
+
+    func finishOnboarding(owner resolvedOwner: ServiceOwner) async {
+        isOnboardingInProgress = false
+        lastError = nil
+        switch resolvedOwner {
+        case .homebrew:
+            homebrewLoaded = true
+            owner = .homebrew
+            lifecycle = .migrationRequired
+            await refreshHomebrewStatus()
+        case .macApp:
+            owner = .macApp
+            if status?.serviceOK == true {
+                lifecycle = .ready
+            } else if services.agentStatus() == .requiresApproval {
+                lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
+            } else {
+                await refreshMacAgentStatus()
+            }
+        case .none:
+            owner = .none
+            if agent.configExists() {
+                await refresh()
+            } else {
+                lifecycle = .notConfigured
+            }
+        }
+    }
+
+    enum OnboardingServiceStartOutcome: Equatable, Sendable {
+        case ready
+        case requiresApproval
+        case homebrewHealthy
+    }
+
+    func registerOrStartServiceForOnboarding() async throws -> OnboardingServiceStartOutcome {
+        if await homebrew.isLoaded() {
+            homebrewLoaded = true
+            if let binary = homebrew.installedAgentBinary(),
+               let current = try? await agent.statusAt(binary),
+               current.serviceOK {
+                status = current
+                doctor = current.doctor
+                owner = .homebrew
+                return .homebrewHealthy
+            }
+        }
+        try validateMacAgentConfiguration()
+        await enableLoginLaunchBestEffort()
+        switch services.agentStatus() {
+        case .requiresApproval:
+            owner = .none
+            return .requiresApproval
+        case .enabled:
+            owner = .macApp
+            if services.isAgentRegistrationCurrent(),
+               let current = try? await fetchAndApplyLatestStatus(),
+               current.serviceOK,
+               !current.hasAgentVersionMismatch {
+                return .ready
+            }
+            do {
+                try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+                try await registerMacAgentAndWaitForReady()
+                return .ready
+            } catch {
+                if services.agentStatus() == .requiresApproval {
+                    owner = .none
+                    return .requiresApproval
+                }
+                throw error
+            }
+        case .notRegistered, .notFound:
+            owner = .macApp
+            do {
+                try await registerMacAgentAndWaitForReady()
+                return .ready
+            } catch {
+                if services.agentStatus() == .requiresApproval {
+                    owner = .none
+                    return .requiresApproval
+                }
+                owner = .none
+                throw error
+            }
+        }
+    }
+
+    func restartServiceForOnboarding() async throws {
+        try validateMacAgentConfiguration()
+        if services.agentStatus() == .requiresApproval {
+            owner = .none
+            throw ServiceLifecycleError.requiresApproval
+        }
+        owner = .macApp
+        if services.agentStatus() == .enabled {
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+        }
+        try await registerMacAgentAndWaitForReady()
+    }
+
+    func takeOverHomebrewForOnboarding() async throws {
+        guard let oldAgent = homebrew.installedAgentBinary() else {
+            throw HomebrewServiceError.commandFailed("找不到 Homebrew 安装的 agentd，无法安全接管。")
+        }
+        try validateMacAgentConfiguration()
+        do {
+            try await homebrew.stop()
+            homebrewLoaded = false
+            owner = .macApp
+            try await registerMacAgentAndWaitForReady()
+        } catch {
+            try? await services.unregisterAgent()
+            if (try? await homebrew.start()) != nil {
+                try? await waitForHomebrewReady(binary: oldAgent)
+                homebrewLoaded = true
+                owner = .homebrew
+            } else {
+                owner = .none
+            }
+            throw error
+        }
+    }
+
+    func enableAssistantForOnboarding(_ runtimeID: String) async throws {
+        let needsReload: Bool
+        switch runtimeID.lowercased() {
+        case "codex":
+            let result = try await agent.configureCodex("enabled")
+            needsReload = result.restartRequired
+        case "claude":
+            let result = try await agent.configureClaude(.enabled, nil)
+            claudeConfiguration = result
+            needsReload = result.restartRequired
+        case "agy":
+            let result = try await agent.configureAgy(.enabled, nil)
+            agyConfiguration = result
+            needsReload = result.restartRequired
+        default:
+            return
+        }
+        if needsReload, owner == .macApp {
+            try await reloadMacAgentForConfigurationChange()
+        }
+    }
+
+    func enableTransportForOnboarding(_ transport: OnboardingTransport) async throws {
+        switch transport {
+        case .tailscale:
+            let result = try await agent.configureNetwork(.tailscale, true)
+            if result.restartRequired, owner == .macApp {
+                try await reloadMacAgentForConfigurationChange()
+            }
+        case .lan:
+            let result = try await agent.configureNetwork(.localNetwork, true)
+            if result.restartRequired, owner == .macApp {
+                try await reloadMacAgentForConfigurationChange()
+            }
+        case .tailcat:
+            tailcatStatus = try await agent.setTailcatEnabled(true)
+        }
+    }
+
+    func connectDeepSeekForOnboarding(startupURL: String?) async throws {
+        let result = try await agent.configureDeepSeek(.connect, startupURL)
+        deepSeekConfiguration = result
+        if result.restartRequired, owner == .macApp {
+            try await reloadMacAgentForConfigurationChange(fastRestart: true)
+        }
+    }
+
     func bootstrap() async {
         guard !didBootstrap else { return }
         didBootstrap = true
@@ -190,11 +393,11 @@ final class HostStore {
               (try? workspaceRoot.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         else {
             lastError = "请选择一个存在的代码目录。"
+            lifecycle = .notConfigured
             return
         }
 
         isBusy = true
-        lifecycle = .starting
         lastError = nil
         defer { isBusy = false }
         do {
@@ -209,9 +412,14 @@ final class HostStore {
             _ = await reconcileClaudeConfigurationAtLaunch()
             await enableLoginLaunchBestEffort()
             owner = .macApp
+            lifecycle = .starting
             try await registerMacAgentAndWaitForReady()
         } catch {
-            fail(error)
+            // 向导未完成前保持 .notConfigured，绝不切入 .failed 把用户困在概览页。
+            owner = .none
+            lifecycle = .notConfigured
+            startingDetail = nil
+            lastError = error.localizedDescription
         }
     }
 
@@ -292,7 +500,7 @@ final class HostStore {
     }
 
     func refresh() async {
-        guard !isBusy, !isRefreshingStatus else { return }
+        guard !isBusy, !isRefreshingStatus, !isOnboardingInProgress else { return }
         isRefreshingStatus = true
         defer { isRefreshingStatus = false }
         switch owner {
@@ -569,8 +777,9 @@ final class HostStore {
                 try await services.unregisterMainApp()
             }
             launchesAtLogin = services.mainAppStatus() == .enabled
+            loginItemWarning = launchesAtLogin ? nil : (enabled ? "服务可继续使用，但主应用登录时启动需要在“登录项”中允许。" : nil)
         } catch {
-            lastError = error.localizedDescription
+            loginItemWarning = "服务可继续使用，但登录启动设置未生效：\(error.localizedDescription)"
             launchesAtLogin = services.mainAppStatus() == .enabled
         }
     }
@@ -857,7 +1066,9 @@ final class HostStore {
 
     func reloadMacAgentForConfigurationChange(fastRestart: Bool = false) async throws {
         try validateMacAgentConfiguration()
-        lifecycle = .starting
+        if !isOnboardingInProgress {
+            lifecycle = .starting
+        }
         let endpoint: String?
         if let currentEndpoint = status?.endpoint {
             endpoint = currentEndpoint
@@ -946,7 +1157,9 @@ final class HostStore {
             let initialError = error
             // 换代期间仍属于启动阶段：保持 starting 并给出说明，
             // 避免菜单栏在自动修复时显示"服务已停止"。
-            lifecycle = .starting
+            if !isOnboardingInProgress {
+                lifecycle = .starting
+            }
             startingDetail = "覆盖安装后正在重新登记后台服务…"
             defer { startingDetail = nil }
             do {
@@ -1121,6 +1334,7 @@ final class HostStore {
         lastStatusRefreshAt = Date()
         lastReadinessCommandSuccessAt = Date()
         readinessFailureStartedAt = nil
+        guard !isOnboardingInProgress else { return }
         if resolved.serviceOK {
             lifecycle = .ready
         } else if isAwaitingServiceStart {
@@ -1234,14 +1448,21 @@ final class HostStore {
     private func enableLoginLaunchBestEffort() async {
         guard services.mainAppStatus() != .enabled else {
             launchesAtLogin = true
+            loginItemWarning = nil
             return
         }
         do {
             try services.registerMainApp()
-            launchesAtLogin = services.mainAppStatus() == .enabled
+            let current = services.mainAppStatus()
+            launchesAtLogin = current == .enabled
+            if current == .enabled {
+                loginItemWarning = nil
+            } else if current == .requiresApproval {
+                loginItemWarning = "服务可继续使用，但主应用登录时启动需要在“登录项”中允许。"
+            }
         } catch {
             launchesAtLogin = false
-            lastError = "服务可继续使用，但登录启动未启用：\(error.localizedDescription)"
+            loginItemWarning = "服务可继续使用，但登录启动未启用：\(error.localizedDescription)"
         }
     }
 
@@ -1261,8 +1482,8 @@ final class HostStore {
     /// 常驻监控始终以 healthz 作为进程探针；readiness 和完整 runtime 状态按不同频率读取。
     /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
     func performMonitoringTick(_ tick: Int, now: Date) async {
-        // 启动闭环自己在轮询 status；监控此时不得把未就绪写成 degraded。
-        guard !isAwaitingServiceStart else { return }
+        // 启动闭环或向导未完成期间不让常驻监控改写生命周期或自动拉起服务。
+        guard !isAwaitingServiceStart, !isOnboardingInProgress else { return }
         guard owner != .none, let endpoint = status?.endpoint else { return }
         guard await health.check(endpoint) else {
             await refresh()
