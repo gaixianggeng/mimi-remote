@@ -183,81 +183,86 @@ func (r *Router) registerCodexGatewayBroker(
 	if key == "" || upstream == nil {
 		return nil
 	}
-	r.codexBrokerMu.Lock()
-	if r.codexBrokers == nil {
-		r.codexBrokers = map[string]*codexGatewayBroker{}
-	}
-	if existing := r.codexBrokers[key]; existing != nil {
-		// 同名会话已经有 broker：让新连接接管它而不是并存两条上游。
-		r.codexBrokerMu.Unlock()
-		if existing.attach(sink) {
-			// 两个首连请求可能同时 miss 后各自拨号。既有 broker 获胜时，新拨的
-			// upstream 与 policy 从未被泵送，必须在这里明确释放。
-			_ = upstream.Close()
-			policy.close()
-			return existing
-		}
-		r.forgetCodexGatewayBroker(key, existing)
+	for {
 		r.codexBrokerMu.Lock()
-	}
-	if len(r.codexBrokers) >= codexGatewayBrokerMax {
-		evicted := oldestDetachedCodexBroker(r.codexBrokers)
-		if evicted == nil {
+		if r.codexBrokersClosing {
 			r.codexBrokerMu.Unlock()
 			return nil
 		}
-		delete(r.codexBrokers, evicted.key)
-		r.codexBrokerMu.Unlock()
-		evicted.close("broker_evicted")
-		r.codexBrokerMu.Lock()
-	}
-	if r.codexBrokersClosing {
-		r.codexBrokerMu.Unlock()
-		return nil
-	}
-	brokerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	broker := &codexGatewayBroker{
-		router:           r,
-		key:              key,
-		upstream:         upstream,
-		policy:           policy,
-		cancel:           cancel,
-		createdAt:        time.Now(),
-		sink:             sink,
-		activeTurns:      map[string]struct{}{},
-		startingTurns:    map[string]string{},
-		pending:          map[string][]byte{},
-		pendingDelivered: map[string]*codexGatewaySink{},
-	}
-	r.codexBrokers[key] = broker
-	r.codexBrokerMu.Unlock()
+		if existing := r.codexBrokers[key]; existing != nil {
+			r.codexBrokerMu.Unlock()
+			if existing.attach(sink) {
+				// 同名会话复用已登记的上游，竞争拨号没有启动读写循环。
+				_ = upstream.Close()
+				policy.close()
+				return existing
+			}
+			r.forgetCodexGatewayBroker(key, existing)
+			continue
+		}
 
-	go broker.pumpUpstream(brokerCtx)
-	go broker.pingUpstream(brokerCtx)
-	go broker.sweep(brokerCtx)
-	return broker
+		var evicted *codexGatewayBroker
+		if len(r.codexBrokers) >= codexGatewayBrokerMax {
+			evicted = oldestDetachedCodexBroker(r.codexBrokers)
+			if evicted == nil {
+				r.codexBrokerMu.Unlock()
+				return nil
+			}
+			evicted.mu.Lock()
+			if !evicted.evictableLocked() {
+				// 选中后可能发生接管或关闭，重新核对同名会话和容量。
+				evicted.mu.Unlock()
+				r.codexBrokerMu.Unlock()
+				continue
+			}
+			evicted.beginCloseLocked("broker_evicted")
+			evicted.mu.Unlock()
+			delete(r.codexBrokers, evicted.key)
+		}
+
+		brokerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		broker := &codexGatewayBroker{
+			router:           r,
+			key:              key,
+			upstream:         upstream,
+			policy:           policy,
+			cancel:           cancel,
+			createdAt:        time.Now(),
+			sink:             sink,
+			activeTurns:      map[string]struct{}{},
+			startingTurns:    map[string]string{},
+			pending:          map[string][]byte{},
+			pendingDelivered: map[string]*codexGatewaySink{},
+		}
+		if r.codexBrokers == nil {
+			r.codexBrokers = map[string]*codexGatewayBroker{}
+		}
+		r.codexBrokers[key] = broker
+		r.codexBrokerMu.Unlock()
+
+		go broker.pumpUpstream(brokerCtx)
+		go broker.pingUpstream(brokerCtx)
+		go broker.sweep(brokerCtx)
+		if evicted != nil {
+			evicted.finishClose(nil, "broker_evicted")
+		}
+		return broker
+	}
+}
+
+func (b *codexGatewayBroker) evictableLocked() bool {
+	return !b.closed && b.sink == nil && b.attachSeq == b.sinkSeq
 }
 
 func oldestDetachedCodexBroker(brokers map[string]*codexGatewayBroker) *codexGatewayBroker {
 	var oldest *codexGatewayBroker
+	var oldestAt time.Time
 	for _, broker := range brokers {
 		broker.mu.Lock()
-		detached := broker.sink == nil && !broker.closed
-		detachedAt := broker.detachedAt
+		if broker.evictableLocked() && (oldest == nil || broker.detachedAt.Before(oldestAt)) {
+			oldest, oldestAt = broker, broker.detachedAt
+		}
 		broker.mu.Unlock()
-		if !detached {
-			continue
-		}
-		if oldest == nil {
-			oldest = broker
-			continue
-		}
-		oldest.mu.Lock()
-		oldestAt := oldest.detachedAt
-		oldest.mu.Unlock()
-		if detachedAt.Before(oldestAt) {
-			oldest = broker
-		}
 	}
 	return oldest
 }
@@ -553,6 +558,13 @@ func (b *codexGatewayBroker) close(reason string) {
 		b.mu.Unlock()
 		return
 	}
+	sink := b.beginCloseLocked(reason)
+	b.mu.Unlock()
+	b.finishClose(sink, reason)
+}
+
+// beginCloseLocked 在注册表发布替代项前禁止旧 broker 再接管连接。
+func (b *codexGatewayBroker) beginCloseLocked(reason string) *codexGatewaySink {
 	b.closed = true
 	for _, release := range b.subscriptionReleases {
 		close(release.done)
@@ -565,8 +577,10 @@ func (b *codexGatewayBroker) close(reason string) {
 	b.pendingOrder = nil
 	b.pendingBytes = 0
 	b.pendingDelivered = map[string]*codexGatewaySink{}
-	b.mu.Unlock()
+	return sink
+}
 
+func (b *codexGatewayBroker) finishClose(sink *codexGatewaySink, reason string) {
 	if b.cancel != nil {
 		b.cancel()
 	}
