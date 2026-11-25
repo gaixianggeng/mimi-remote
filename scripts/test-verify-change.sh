@@ -586,4 +586,17 @@ assert_contains "$host_cli_output" "go test ./cmd/agentd ./internal/httpapi -cou
 assert_contains "$host_cli_output" "scripts/test-windows-app.ps1"
 assert_contains "$host_cli_output" "scripts/test-macos-app.sh"
 
+# Mac 安装包签名相关脚本变化在 Darwin quick 中必须直接安排真实签名防回归测试；
+# 当同时改到 Mac App 源码时由 test-macos-app.sh 前置执行，避免重复安排。
+macos_signing_script_output="$(assert_plan macos_signing_script scripts/build-macos-installer.sh)"
+assert_contains "$macos_signing_script_output" "bash ./scripts/check-packaging.sh"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  assert_contains "$macos_signing_script_output" "bash ./scripts/test-macos-installer-signing.sh"
+else
+  assert_not_contains "$macos_signing_script_output" "bash ./scripts/test-macos-installer-signing.sh"
+fi
+macos_signing_with_app_output="$(assert_plan macos_signing_with_app scripts/build-macos-installer.sh macos/MimiRemoteMac/Sources/App/MimiRemoteMacApp.swift)"
+assert_contains "$macos_signing_with_app_output" "bash ./scripts/test-macos-app.sh"
+assert_not_contains "$macos_signing_with_app_output" "bash ./scripts/test-macos-installer-signing.sh"
+
 echo "分层验证自测通过：范围与来源、full 覆盖边界、构建证据复用标注、失败汇总、有限日志、阻塞、取消和进程清理均符合预期。"

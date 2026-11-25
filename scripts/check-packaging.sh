@@ -63,7 +63,7 @@ for required_file in \
   [[ -f "$required_file" ]] || fail "缺少 ${required_file}。"
 done
 
-bash -n \
+for script_path in \
   scripts/build-macos-installer.sh \
   scripts/ci-pr-scope.sh \
   scripts/check-docs-static.sh \
@@ -84,7 +84,9 @@ bash -n \
   scripts/test-install-linux-tray.sh \
   scripts/test-install-linux.sh \
   scripts/test-linux-tailcat-package.sh \
-  scripts/verify-release.sh
+  scripts/verify-release.sh; do
+  bash -n -- "$script_path"
+done
 bash ./scripts/check-release-prerequisites.sh --self-test >/dev/null
 bash ./scripts/check-macos-release-signing.sh --self-test >/dev/null
 bash ./scripts/check-macos-notices.sh --self-test >/dev/null
@@ -206,10 +208,12 @@ grep -Fq 'com.gaixianggeng.mimi.mac.tailcat' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Tailcat 设置稳定签名 identifier。"
 grep -Fq 'for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$AGY_ADAPTER_PATH" "$TAILCAT_PATH"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有在公证前直接校验内嵌二进制签名。"
-grep -Fq 'find "$APP_PATH" -type f -print0' scripts/build-macos-installer.sh \
-  || fail "Mac 安装包构建没有在封包/公证前枚举 App 内全部 Mach-O。"
+grep -Fq 'find -H "$physical_app_path" -type f -print0 > "$manifest_file"' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有在封包/公证前枚举 App 内全部 Mach-O 并校验 find 状态。"
 grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有对枚举到的全部 Mach-O 执行严格签名校验。"
+grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有逐架构切片检查签名策略。"
 # Claude 与 Antigravity 适配器：稳定 identifier，并且签名时带 JIT 权限，否则在 hardened runtime 下一启动就被终止。
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-adapter' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有为内嵌 Claude 适配器设置稳定签名 identifier。"
@@ -285,8 +289,12 @@ grep -Fq 'version_at_least "$bridge_version" "$minimum_bridge_version"' scripts/
   || fail "Mac 安装包门禁没有校验内嵌 Claude bridge 与 agentd 的版本兼容性。"
 grep -Fq '/usr/bin/arch -arm64' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有在 Apple silicon 上固定使用 arm64 执行版本探针。"
-grep -Fq 'find "$APP_PATH" -type f -print0' scripts/check-macos-installer.sh \
-  || fail "Mac 安装包门禁没有枚举 App 内全部 Mach-O。"
+grep -Fq 'find -H "$APP_PATH" -type f -print0 > "$manifest_file"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有枚举 App 内全部 Mach-O 并校验 find 状态。"
+grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有逐架构切片检查签名策略。"
+grep -Fq 'plistlib.loads' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有使用 plist 解析器校验布尔 true entitlements。"
 grep -Fq 'xcrun vtool -arch' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有逐架构检查 macOS 构建元数据。"
 grep -Fq 'gh release upload "$RELEASE_TAG"' .github/workflows/release.yml \

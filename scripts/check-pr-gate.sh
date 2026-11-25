@@ -622,7 +622,10 @@ macos_workflow = load_workflow(macos_path)
 macos_triggers = triggers(macos_workflow, macos_path)
 macos_push_paths = Array(macos_triggers.dig("push", "paths"))
 unless macos_push_paths.include?("macos/MimiRemoteMac/**") &&
-       macos_push_paths.include?("scripts/test-macos-app.sh")
+       macos_push_paths.include?("scripts/test-macos-app.sh") &&
+       macos_push_paths.include?("scripts/build-macos-installer.sh") &&
+       macos_push_paths.include?("scripts/check-macos-installer.sh") &&
+       macos_push_paths.include?("scripts/test-macos-installer-signing.sh")
   abort("PR Gate 自检失败：Mac App CI 的 main push paths 与 PR scope 不一致。")
 end
 macos_job = macos_workflow.fetch("jobs").fetch("build-and-test")

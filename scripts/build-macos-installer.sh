@@ -17,6 +17,11 @@ BUILD_NUMBER="${GITHUB_RUN_NUMBER:-1}"
 SNAPSHOT=0
 DEVELOPMENT_SIGNING=0
 APP_ONLY=0
+VERIFY_ONLY=0
+VERIFY_ONLY_APP=""
+RESOLVED_SLICE_TEAM_ID=""
+VERIFIED_APP_TEAM_ID=""
+verified_macho_count=0
 
 usage() {
   cat <<'EOF'
@@ -24,6 +29,7 @@ usage() {
   bash ./scripts/build-macos-installer.sh --version 0.2.0 [--build-number 1] [--output-dir dist-macos]
   bash ./scripts/build-macos-installer.sh --snapshot [--app-only] --version 0.2.0 [--output-dir dist-macos]
   bash ./scripts/build-macos-installer.sh --development-signing --version 0.2.0 [--output-dir dist-macos]
+  bash ./scripts/build-macos-installer.sh --verify-only [--snapshot|--development-signing] <Mimi-Remote-Mac.app>
 
 正式构建需要以下环境变量：
   MACOS_SIGN_P12             Developer ID Application 证书和私钥的 base64 PKCS#12
@@ -36,7 +42,176 @@ usage() {
 --app-only 只能与 --snapshot 同时使用：跳过需要 Finder GUI 授权的 DMG 布局封装，仅输出已签名并校验过的 .app。
 --development-signing 自动使用 Keychain 中的 Apple Development 身份，生成仅供本机
 初始化与 ServiceManagement 验收的同团队签名包；不做公证，不可公开分发。
+--verify-only 仅执行封包前的全量 Mach-O 签名与切片策略校验（默认按正式 Developer ID + Timestamp 策略，
+可配合 --snapshot 或 --development-signing 使用）。
 EOF
+}
+
+resolve_physical_dir() {
+  local dir_path="$1"
+  (
+    CDPATH= cd -P -- "$dir_path" >/dev/null && pwd -P
+  )
+}
+
+resolve_app_executable_path() {
+  local app_dir="$1"
+  local info_plist="$app_dir/Contents/Info.plist"
+  local executable_name=""
+  if [[ -f "$info_plist" ]]; then
+    executable_name="$(plutil -extract CFBundleExecutable raw -o - "$info_plist" 2>/dev/null || true)"
+  fi
+  if [[ -z "$executable_name" ]]; then
+    echo "Mac 安装包构建失败：无法从 ${app_dir}/Contents/Info.plist 读取 CFBundleExecutable。" >&2
+    exit 1
+  fi
+  local executable_path="$app_dir/Contents/MacOS/$executable_name"
+  if [[ ! -x "$executable_path" ]]; then
+    echo "Mac 安装包构建失败：主 App 可执行文件不存在或不可执行：${executable_path}。" >&2
+    exit 1
+  fi
+  printf '%s\n' "$executable_path"
+}
+
+extract_codesign_field() {
+  local details="$1"
+  local field_name="$2"
+  awk -v key="$field_name" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' <<<"$details"
+}
+
+has_hardened_runtime_flag() {
+  local details="$1"
+  grep -Eq '^CodeDirectory[[:space:]].*flags=0x[0-9a-fA-F]+\(([^)]*,)?runtime(,[^)]*)?\)' <<<"$details"
+}
+
+verify_macho_slice_policy() {
+  local target_path="$1"
+  local display_label="$2"
+  local expected_identifier="$3"
+  local require_team_signing="$4"
+  local expected_team_id="$5"
+  local require_developer_id="$6"
+  local require_timestamp="$7"
+
+  local lipo_target="$target_path"
+  if [[ -d "$target_path" ]]; then
+    lipo_target="$(resolve_app_executable_path "$target_path")"
+  fi
+
+  local slice_archs=""
+  if ! slice_archs="$(lipo -archs "$lipo_target" 2>&1)"; then
+    echo "Mac 安装包构建失败：无法枚举 ${display_label} 的架构切片：${slice_archs}" >&2
+    exit 1
+  fi
+  if [[ -z "$slice_archs" ]]; then
+    echo "Mac 安装包构建失败：${display_label} 未包含任何架构切片。" >&2
+    exit 1
+  fi
+
+  local slice_arch slice_details slice_identifier slice_team_id slice_timestamp
+  local resolved_team="$expected_team_id"
+  for slice_arch in $slice_archs; do
+    if ! slice_details="$(codesign -d --arch "$slice_arch" --verbose=4 "$target_path" 2>&1)"; then
+      echo "Mac 安装包构建失败：无法读取 ${display_label}（${slice_arch}）的签名详情：${slice_details}" >&2
+      exit 1
+    fi
+
+    if ! has_hardened_runtime_flag "$slice_details"; then
+      echo "Mac 安装包构建失败：${display_label}（${slice_arch}）缺少 Hardened Runtime 标志（flags 需包含 runtime）。" >&2
+      exit 1
+    fi
+
+    if [[ -n "$expected_identifier" ]]; then
+      slice_identifier="$(extract_codesign_field "$slice_details" "Identifier")"
+      if [[ "$slice_identifier" != "$expected_identifier" ]]; then
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）的签名 identifier 不匹配（期望 ${expected_identifier}，实际 ${slice_identifier:-<空>}）。" >&2
+        exit 1
+      fi
+    fi
+
+    if [[ "$require_team_signing" == "1" ]]; then
+      slice_team_id="$(extract_codesign_field "$slice_details" "TeamIdentifier")"
+      if [[ ! "$slice_team_id" =~ ^[A-Z0-9]+$ ]]; then
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）缺少有效的非空 Team ID（实际：${slice_team_id:-<空>}）。" >&2
+        exit 1
+      fi
+      if [[ -z "$resolved_team" ]]; then
+        resolved_team="$slice_team_id"
+      elif [[ "$slice_team_id" != "$resolved_team" ]]; then
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）的 Team ID（${slice_team_id}）与主 App（${resolved_team}）不一致。" >&2
+        exit 1
+      fi
+    fi
+
+    if [[ "$require_developer_id" == "1" ]] \
+      && ! grep -Fq 'Authority=Developer ID Application:' <<<"$slice_details"; then
+      echo "Mac 安装包构建失败：${display_label}（${slice_arch}）不是有效的 Developer ID Application 签名。" >&2
+      exit 1
+    fi
+
+    if [[ "$require_timestamp" == "1" ]]; then
+      slice_timestamp="$(extract_codesign_field "$slice_details" "Timestamp")"
+      if [[ -z "$slice_timestamp" || "$slice_timestamp" == "none" ]]; then
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）缺少有效的安全时间戳（Timestamp=${slice_timestamp:-<空>}）。" >&2
+        exit 1
+      fi
+    fi
+  done
+
+  RESOLVED_SLICE_TEAM_ID="$resolved_team"
+}
+
+verify_prepackage_macho_signatures() {
+  local target_app_path="$1"
+  local require_team_signing="$2"
+  local require_developer_id="$3"
+  local require_timestamp="$4"
+
+  local physical_app_path
+  physical_app_path="$(resolve_physical_dir "$target_app_path")"
+
+  codesign --verify --deep --strict --verbose=2 "$physical_app_path"
+  verify_macho_slice_policy \
+    "$physical_app_path" \
+    "主 App" \
+    "" \
+    "$require_team_signing" \
+    "" \
+    "$require_developer_id" \
+    "$require_timestamp"
+  local app_team_identifier="$RESOLVED_SLICE_TEAM_ID"
+  VERIFIED_APP_TEAM_ID="$app_team_identifier"
+
+  # 先把 find 输出完整写入 NUL 分隔临时清单并显式校验退出码，避免 process substitution 吞错。
+  local manifest_file="$WORK_DIR/prepackage-macho-manifest.nul"
+  if ! find -H "$physical_app_path" -type f -print0 > "$manifest_file"; then
+    echo "Mac 安装包构建失败：枚举 App 内文件时 find 失败。" >&2
+    exit 1
+  fi
+
+  local candidate_path candidate_kind
+  verified_macho_count=0
+  while IFS= read -r -d '' candidate_path; do
+    candidate_kind="$(file -b "$candidate_path")"
+    if [[ "$candidate_kind" != Mach-O* ]]; then
+      continue
+    fi
+    verified_macho_count=$((verified_macho_count + 1))
+    codesign --verify --strict --verbose=2 "$candidate_path"
+    verify_macho_slice_policy \
+      "$candidate_path" \
+      "${candidate_path#"$physical_app_path"/}" \
+      "" \
+      "$require_team_signing" \
+      "$app_team_identifier" \
+      "$require_developer_id" \
+      "$require_timestamp"
+  done < "$manifest_file"
+
+  if [[ "$verified_macho_count" -eq 0 ]]; then
+    echo "Mac 安装包构建失败：App 内没有找到任何 Mach-O 产物。" >&2
+    exit 1
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -65,13 +240,22 @@ while [[ $# -gt 0 ]]; do
       DEVELOPMENT_SIGNING=1
       shift
       ;;
+    --verify-only)
+      VERIFY_ONLY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      usage >&2
-      exit 2
+      if [[ "$VERIFY_ONLY" == "1" && -z "$VERIFY_ONLY_APP" && "$1" != -* ]]; then
+        VERIFY_ONLY_APP="$1"
+        shift
+      else
+        usage >&2
+        exit 2
+      fi
       ;;
   esac
 done
@@ -84,45 +268,16 @@ if [[ "$APP_ONLY" == "1" && "$SNAPSHOT" != "1" ]]; then
   echo "Mac 安装包构建失败：--app-only 只能与 --snapshot 同时使用。" >&2
   exit 2
 fi
-
-VERSION="${VERSION#v}"
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Mac 安装包构建失败：--version 必须是 X.Y.Z，例如 0.2.0。" >&2
+if [[ "$VERIFY_ONLY" == "1" && "$APP_ONLY" == "1" ]]; then
+  echo "Mac 安装包构建失败：--verify-only 不能与 --app-only 同时使用。" >&2
   exit 2
 fi
-if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [[ "$BUILD_NUMBER" == "0" ]]; then
-  echo "Mac 安装包构建失败：--build-number 必须是正整数。" >&2
+if [[ "$VERIFY_ONLY" == "1" && -z "$VERIFY_ONLY_APP" ]]; then
+  echo "Mac 安装包构建失败：--verify-only 需要指定 .app 路径。" >&2
   exit 2
 fi
 
-for command_name in base64 codesign ditto file find hdiutil lipo openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
-    exit 127
-  fi
-done
-if [[ ! -f "$PROJECT_PATH/project.pbxproj" ]]; then
-  echo "Mac 安装包构建失败：缺少 $PROJECT_PATH。" >&2
-  exit 1
-fi
-if [[ ! -f "$DMG_BACKGROUND_PATH" ]]; then
-  echo "Mac 安装包构建失败：缺少 DMG 背景资产 $DMG_BACKGROUND_PATH。" >&2
-  exit 1
-fi
-DMG_BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$DMG_BACKGROUND_PATH")"
-DMG_BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
-DMG_BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
-if [[ "$DMG_BACKGROUND_WIDTH" != "$DMG_WINDOW_WIDTH" || "$DMG_BACKGROUND_HEIGHT" != "$DMG_WINDOW_HEIGHT" ]]; then
-  echo "Mac 安装包构建失败：DMG 背景必须是 ${DMG_WINDOW_WIDTH}x${DMG_WINDOW_HEIGHT}，实际为 ${DMG_BACKGROUND_WIDTH}x${DMG_BACKGROUND_HEIGHT}。" >&2
-  exit 1
-fi
-if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
-  bash "$ROOT_DIR/scripts/check-macos-release-signing.sh"
-fi
-
-mkdir -p "$OUTPUT_DIR"
-OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
-WORK_DIR="$(mktemp -d -t mimi-macos-installer)"
+WORK_DIR=""
 KEYCHAIN_PATH=""
 KEYCHAIN_LIST_FILE=""
 DMG_MOUNT_DIR=""
@@ -161,9 +316,81 @@ cleanup() {
   if [[ -n "$KEYCHAIN_PATH" && -e "$KEYCHAIN_PATH" ]]; then
     security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$WORK_DIR"
+  if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
+    rm -rf -- "$WORK_DIR"
+  fi
 }
 trap cleanup EXIT
+
+if [[ "$VERIFY_ONLY" == "1" ]]; then
+  if [[ ! -d "$VERIFY_ONLY_APP" ]]; then
+    echo "Mac 安装包构建失败：--verify-only 目标目录不存在：${VERIFY_ONLY_APP}。" >&2
+    exit 2
+  fi
+  for command_name in awk codesign file find grep lipo mktemp plutil; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
+      exit 127
+    fi
+  done
+  WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-macos-installer-verify.XXXXXX")"
+  verify_require_team=0
+  verify_require_dev_id=0
+  verify_require_timestamp=0
+  if [[ "$SNAPSHOT" != "1" ]]; then
+    verify_require_team=1
+    if [[ "$DEVELOPMENT_SIGNING" != "1" ]]; then
+      verify_require_dev_id=1
+      verify_require_timestamp=1
+    fi
+  fi
+  verify_prepackage_macho_signatures \
+    "$VERIFY_ONLY_APP" \
+    "$verify_require_team" \
+    "$verify_require_dev_id" \
+    "$verify_require_timestamp"
+  echo "Mac 安装包封包前签名校验通过：已枚举 ${verified_macho_count} 个 Mach-O。"
+  exit 0
+fi
+
+VERSION="${VERSION#v}"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Mac 安装包构建失败：--version 必须是 X.Y.Z，例如 0.2.0。" >&2
+  exit 2
+fi
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [[ "$BUILD_NUMBER" == "0" ]]; then
+  echo "Mac 安装包构建失败：--build-number 必须是正整数。" >&2
+  exit 2
+fi
+
+for command_name in awk base64 codesign ditto file find grep hdiutil lipo mktemp openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
+    exit 127
+  fi
+done
+if [[ ! -f "$PROJECT_PATH/project.pbxproj" ]]; then
+  echo "Mac 安装包构建失败：缺少 $PROJECT_PATH。" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_BACKGROUND_PATH" ]]; then
+  echo "Mac 安装包构建失败：缺少 DMG 背景资产 $DMG_BACKGROUND_PATH。" >&2
+  exit 1
+fi
+DMG_BACKGROUND_DIMENSIONS="$(sips -g pixelWidth -g pixelHeight "$DMG_BACKGROUND_PATH")"
+DMG_BACKGROUND_WIDTH="$(awk '$1 == "pixelWidth:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
+DMG_BACKGROUND_HEIGHT="$(awk '$1 == "pixelHeight:" { print $2; exit }' <<<"$DMG_BACKGROUND_DIMENSIONS")"
+if [[ "$DMG_BACKGROUND_WIDTH" != "$DMG_WINDOW_WIDTH" || "$DMG_BACKGROUND_HEIGHT" != "$DMG_WINDOW_HEIGHT" ]]; then
+  echo "Mac 安装包构建失败：DMG 背景必须是 ${DMG_WINDOW_WIDTH}x${DMG_WINDOW_HEIGHT}，实际为 ${DMG_BACKGROUND_WIDTH}x${DMG_BACKGROUND_HEIGHT}。" >&2
+  exit 1
+fi
+if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
+  bash "$ROOT_DIR/scripts/check-macos-release-signing.sh"
+fi
+
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(resolve_physical_dir "$OUTPUT_DIR")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-macos-installer.XXXXXX")"
 
 decode_base64() {
   local value="$1"
@@ -498,45 +725,36 @@ else
     --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
     "$APP_PATH"
 fi
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
 for binary_path in "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER_PATH" "$AGY_ADAPTER_PATH" "$TAILCAT_PATH"; do
   # --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O，发布前必须直接验证。
   codesign --verify --strict --verbose=2 "$binary_path"
 done
 
-# 封包/公证前枚举 App 内全部 Mach-O，防止以后新增任何内嵌二进制遗漏在签名列表外。
-app_signing_details="$(codesign -d --verbose=4 "$APP_PATH" 2>&1)"
-app_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$app_signing_details")"
-if [[ "$SNAPSHOT" != "1" && ! "$app_team_identifier" =~ ^[A-Z0-9]+$ ]]; then
-  echo "Mac 安装包构建失败：主 App 缺少有效的非空 Team ID（实际：${app_team_identifier:-<空>}）。" >&2
-  exit 1
-fi
-verified_macho_count=0
-while IFS= read -r -d '' candidate_path; do
-  candidate_kind="$(file -b "$candidate_path")"
-  if [[ "$candidate_kind" != Mach-O* ]]; then
-    continue
+# 封包/公证前枚举 App 内全部 Mach-O 并按切片校验策略，防止以后新增内嵌二进制或坏切片漏检。
+prepackage_require_team=0
+prepackage_require_dev_id=0
+prepackage_require_timestamp=0
+if [[ "$SNAPSHOT" != "1" ]]; then
+  prepackage_require_team=1
+  if [[ "$DEVELOPMENT_SIGNING" != "1" ]]; then
+    prepackage_require_dev_id=1
+    prepackage_require_timestamp=1
   fi
-  verified_macho_count=$((verified_macho_count + 1))
-  codesign --verify --strict --verbose=2 "$candidate_path"
-  if [[ "$SNAPSHOT" != "1" ]]; then
-    candidate_signing_details="$(codesign -d --verbose=4 "$candidate_path" 2>&1)"
-    candidate_team_identifier="$(awk -F= '$1 == "TeamIdentifier" { print $2; exit }' <<<"$candidate_signing_details")"
-    if [[ "$candidate_team_identifier" != "$app_team_identifier" ]]; then
-      echo "Mac 安装包构建失败：${candidate_path#"$APP_PATH"/} 的 Team ID（${candidate_team_identifier:-<空>}）与主 App（${app_team_identifier}）不一致。" >&2
-      exit 1
-    fi
-    if [[ "$DEVELOPMENT_SIGNING" != "1" ]] \
-      && ! grep -Fq 'Authority=Developer ID Application:' <<<"$candidate_signing_details"; then
-      echo "Mac 安装包构建失败：${candidate_path#"$APP_PATH"/} 不是有效的 Developer ID Application 签名。" >&2
-      exit 1
-    fi
-  fi
-done < <(find "$APP_PATH" -type f -print0)
-if [[ "$verified_macho_count" -eq 0 ]]; then
-  echo "Mac 安装包构建失败：App 内没有找到任何 Mach-O 产物。" >&2
-  exit 1
 fi
+verify_prepackage_macho_signatures \
+  "$APP_PATH" \
+  "$prepackage_require_team" \
+  "$prepackage_require_dev_id" \
+  "$prepackage_require_timestamp"
+
+known_app_team="$VERIFIED_APP_TEAM_ID"
+verify_macho_slice_policy "$APP_PATH" "主 App" "com.gaixianggeng.mimi.mac" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
+verify_macho_slice_policy "$AGENT_PATH" "agentd" "com.gaixianggeng.mimi.mac.agentd" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
+verify_macho_slice_policy "$BRIDGE_PATH" "alleycat-claude-bridge" "com.gaixianggeng.mimi.mac.claude-bridge" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
+verify_macho_slice_policy "$ADAPTER_PATH" "mimi-claude-adapter" "com.gaixianggeng.mimi.mac.claude-adapter" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
+verify_macho_slice_policy "$AGY_ADAPTER_PATH" "mimi-agy-adapter" "com.gaixianggeng.mimi.mac.agy-adapter" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
+verify_macho_slice_policy "$TAILCAT_PATH" "mimi-tailcat-experiment" "com.gaixianggeng.mimi.mac.tailcat" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
 
 if [[ "$APP_ONLY" == "1" ]]; then
   FINAL_APP="$OUTPUT_DIR/Mimi Remote Mac.app"

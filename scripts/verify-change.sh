@@ -242,6 +242,7 @@ has_gate_control=false
 has_codex_control=false
 has_verify_control=false
 has_packaging_control=false
+has_macos_installer_signing_control=false
 has_source_size_control=false
 has_repository_security_control=false
 has_notices_control=false
@@ -439,6 +440,11 @@ for path in "${changed_paths[@]:-}"; do
   case "$path" in
     packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*|scripts/test-macos-installer-signing.sh)
       has_packaging_control=true
+      ;;
+  esac
+  case "$path" in
+    scripts/build-macos-installer.sh|scripts/check-macos-installer.sh|scripts/test-macos-installer-signing.sh|macos/MimiRemoteMac/Scripts/embed-agentd.sh|macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements|macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements)
+      has_macos_installer_signing_control=true
       ;;
   esac
   case "$path" in
@@ -749,6 +755,8 @@ fi
 
 if [[ "$direct_macos" == true ]]; then
   add_check "Mac App 变更执行统一无签名编译测试" "bash ./scripts/test-macos-app.sh" "macos"
+elif [[ "$has_macos_installer_signing_control" == true && "$(uname -s)" == "Darwin" ]]; then
+  add_check "Mac 安装包签名相关脚本变化在 Darwin 上执行真实签名防回归测试" "bash ./scripts/test-macos-installer-signing.sh" "macos"
 fi
 
 print_plan() {
