@@ -193,13 +193,15 @@ def publish_app(source, output):
     app = output / APP_NAME
     if not exists_as_app(source_app):
         raise ValueError(f"暂存目录缺少 App：{source_app}。")
-    stage = Path(tempfile.mkdtemp(prefix=".Mimi-Remote-Mac.app.staging.", dir=output))
+    stage_parent = Path(tempfile.mkdtemp(prefix=".Mimi-Remote-Mac.app.staging.", dir=output))
+    # 让复制操作创建 App 根目录以继承源权限，暂存父目录仍保持 0700。
+    stage = stage_parent / APP_NAME
     committed = False
     try:
         if sys.platform == "darwin":
             subprocess.run(["ditto", source_app, stage], check=True)
         else:
-            shutil.copytree(source_app, stage, symlinks=True, dirs_exist_ok=True)
+            shutil.copytree(source_app, stage, symlinks=True)
 
         had_app = exists_as_app(app)
         # 在记录交换结果前不交付信号，避免将已提交的 App 误判为暂存内容。
@@ -212,16 +214,15 @@ def publish_app(source, output):
             committed = True
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
-        if had_app:
-            shutil.rmtree(stage)
+        shutil.rmtree(stage_parent)
     except BaseException as exc:
         if not committed:
-            shutil.rmtree(stage, ignore_errors=True)
+            shutil.rmtree(stage_parent, ignore_errors=True)
             raise
         if not isinstance(exc, (OSError, KeyboardInterrupt)):
             raise
-        residue = f"，遗留路径 {stage}" if stage.exists() else ""
-        reason = "旧 App 清理被中断" if isinstance(exc, KeyboardInterrupt) else f"旧 App 清理失败：{exc}"
+        residue = f"，遗留路径 {stage_parent}" if stage_parent.exists() else ""
+        reason = "App 暂存清理被中断" if isinstance(exc, KeyboardInterrupt) else f"App 暂存清理失败：{exc}"
         print(f"警告：新 App 已提交到 {app}，{reason}{residue}。", file=sys.stderr)
 
 

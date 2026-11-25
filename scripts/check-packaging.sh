@@ -215,7 +215,7 @@ grep -Fq 'find -H "$physical_app_path" -type f -print0 > "$manifest_file"' scrip
   || fail "Mac 安装包构建没有在封包/公证前枚举 App 内全部 Mach-O 并校验 find 状态。"
 grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有对枚举到的全部 Mach-O 执行严格签名校验。"
-grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' scripts/build-macos-installer.sh \
+grep -Fq 'verify_macho_slice_policy \' scripts/build-macos-installer.sh \
   || fail "Mac 安装包构建没有逐架构切片检查签名策略。"
 # Claude 与 Antigravity 适配器：稳定 identifier，并且签名时带 JIT 权限，否则在 hardened runtime 下一启动就被终止。
 grep -Fq 'com.gaixianggeng.mimi.mac.claude-adapter' scripts/build-macos-installer.sh \
@@ -294,8 +294,10 @@ grep -Fq '/usr/bin/arch -arm64' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有在 Apple silicon 上固定使用 arm64 执行版本探针。"
 grep -Fq 'find -H "$APP_PATH" -type f -print0 > "$manifest_file"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有枚举 App 内全部 Mach-O 并校验 find 状态。"
-grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' scripts/check-macos-installer.sh \
+grep -Fq 'verify_macho_slice_policy \' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有逐架构切片检查签名策略。"
+grep -Fq 'read_codesign_details "$target" "$label" --arch "$slice_arch"' scripts/macos-installer-signing.sh \
+  || fail "Mac 安装包共用签名策略没有逐架构读取签名元数据。"
 grep -Fq 'plistlib.loads' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有使用 plist 解析器校验布尔 true entitlements。"
 grep -Fq 'xcrun vtool -arch' scripts/check-macos-installer.sh \

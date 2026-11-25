@@ -613,6 +613,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import stat
 import subprocess
 import sys
 
@@ -739,15 +740,25 @@ assert dmg.read_text() == "new-dmg-v2\n"
 assert sha.read_text() == "deadbeef  Mimi-Remote-Mac.dmg\n"
 assert not journal.exists()
 
+source_app = stage_app / app.name
+source_app.chmod(0o755)
+app.chmod(0o700)
+fresh_out = root / "fresh-app-output"
+run("none", "app-only", fresh_out, stage_app, 0)
+assert stat.S_IMODE((fresh_out / app.name).stat().st_mode) == 0o755
+assert list(fresh_out.iterdir()) == [fresh_out / app.name]
+
 run("before_app_swap", "app-only", output, stage_app, 1)
 assert (app / "Contents/marker.txt").read_text() == "old-app\n"
 assert not list(output.glob(".Mimi-Remote-Mac.app.staging.*"))
 
 result = run("after_app_swap", "app-only", output, stage_app, 0)
 assert (app / "Contents/marker.txt").read_text() == "new-app-v2\n"
-[legacy_app] = output.glob(".Mimi-Remote-Mac.app.staging.*")
-assert (legacy_app / "Contents/marker.txt").read_text() == "old-app\n"
-assert "新 App 已提交" in result.stderr and str(legacy_app) in result.stderr
+assert stat.S_IMODE(app.stat().st_mode) == 0o755
+[stage_parent] = output.glob(".Mimi-Remote-Mac.app.staging.*")
+assert stat.S_IMODE(stage_parent.stat().st_mode) == 0o700
+assert (stage_parent / app.name / "Contents/marker.txt").read_text() == "old-app\n"
+assert "新 App 已提交" in result.stderr and str(stage_parent) in result.stderr
 
 result = run("signal_after_app_swap", "app-only", output, stage_app, 0)
 assert (app / "Contents/marker.txt").read_text() == "new-app-v2\n"

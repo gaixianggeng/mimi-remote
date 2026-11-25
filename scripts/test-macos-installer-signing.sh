@@ -161,15 +161,21 @@ check_embedded_binary_coverage() {
     || fail "${build_script} 未将全量文件遍历结果写入清单并校验 find 退出状态。"
   grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' "$build_script" \
     || fail "${build_script} 未对枚举到的全部 Mach-O 执行严格签名验证。"
-  grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' "$build_script" \
+  grep -Fq 'verify_macho_slice_policy \' "$build_script" \
     || fail "${build_script} 未逐架构切片核对签名策略元数据。"
 
   grep -Fq 'find -H "$APP_PATH" -type f -print0 > "$manifest_file"' "$check_script" \
     || fail "${check_script} 未将全量文件遍历结果写入清单并校验 find 退出状态。"
   grep -Fq 'codesign --verify --strict --verbose=2 "$candidate_path"' "$check_script" \
     || fail "${check_script} 未对枚举到的全部 Mach-O 执行严格签名验证。"
-  grep -Fq 'codesign -d --arch "$slice_arch" --verbose=4' "$check_script" \
+  grep -Fq 'verify_macho_slice_policy \' "$check_script" \
     || fail "${check_script} 未逐架构切片核对签名策略元数据。"
+  grep -Fq 'read_codesign_details "$target" "$label" --arch "$slice_arch"' "$signing_policy" \
+    || fail "共用签名策略未逐架构切片读取签名元数据。"
+  grep -Fq 'verify_codesign_identifier "$target" "$label" "$details" "$expected_identifier" --arch "$slice_arch"' "$signing_policy" \
+    || fail "共用签名策略未逐架构切片精确校验 identifier。"
+  grep -Fq 'verify_codesign_team_id "$target" "$label" "$details" "$resolved_team" --arch "$slice_arch"' "$signing_policy" \
+    || fail "共用签名策略未逐架构切片校验证书 Team ID。"
   grep -Fq 'plistlib.loads' "$check_script" \
     || fail "${check_script} 未通过真实 plist 解析器校验布尔 true entitlements。"
   grep -Fq 'candidate_team_identifier' "$check_script" \
@@ -544,6 +550,43 @@ run_fixed_entry_path_tests() {
   assert_fast_entries_reject "$linked_app" '固定入口的父目录'
 }
 
+run_multiline_signing_tests() {
+  local valid_app="$1" sample="$2"
+  local app="$TEMP_DIR/MultilineIdentifier.app"
+  local expected='com.gaixianggeng.mimi.mac.agentd'
+  local agent="$app/Contents/Resources/agentd"
+  local log_file="$TEMP_DIR/multiline-signing.log"
+
+  run_logged "复制多行 identifier 测试 App" ditto "$valid_app" "$app"
+  run_logged "准备固定入口 agentd" cp "$sample" "$agent"
+  run_logged "签入固定值后带换行的 identifier" \
+    codesign --force --sign - --identifier "$expected"$'\nextra' --options runtime --timestamp=none "$agent"
+  run_logged "重封包含多行 identifier 的 App" codesign --force --sign - --options runtime --timestamp=none "$app"
+  run_logged "确认多行 identifier 样例签名本身完整" codesign --verify --deep --strict "$app"
+  assert_fast_entries_reject "$app" "期望 $expected"
+
+  # 移到未知入口，验证跨切片一致性检查不会接受文本截断的值。
+  run_logged "将已签名 Mach-O 移到未知入口" mv "$agent" "$app/Contents/Resources/unlisted-helper"
+  run_logged "重封包含未知入口的 App" codesign --force --sign - --options runtime --timestamp=none "$app"
+  assert_fast_entries_reject "$app" 'unlisted-helper（'
+
+  # 同一个有效 ad-hoc App，只变更父目录名。两个入口都使用系统 codesign。
+  local parent="$TEMP_DIR/TeamPath"$'\nTeamIdentifier=XXXXXXXXXX\nsuffix'
+  local relocated_app="$parent/Test.app"
+  mkdir "$parent"
+  run_logged "将正常 ad-hoc App 复制到含换行的父目录" ditto "$valid_app" "$relocated_app"
+  run_logged "确认含换行路径的 App 签名本身完整" codesign --verify --deep --strict "$relocated_app"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-team-signing "$relocated_app" >"$log_file" 2>&1; then
+    fail "含换行的父目录伪造 Team ID 后通过了 checker 开发签名校验。"
+  fi
+  grep -Fq 'Executable 路径含换行' "$log_file" || fail "checker 未指出含换行的 Executable：$(<"$log_file")"
+  if bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --development-signing "$relocated_app" >"$log_file" 2>&1; then
+    fail "含换行的父目录伪造 Team ID 后通过了 builder 开发签名校验。"
+  fi
+  grep -Fq 'Executable 路径含换行' "$log_file" || fail "builder 未指出含换行的 Executable：$(<"$log_file")"
+  echo "真实 codesign 多行签名反例通过（固定及未知入口 identifier、Executable 路径中的 Team ID）。"
+}
+
 run_direct_builder_output_tests() {
   local fixture_bin="$1" probe="$2" valid_app="$3"
   local external="$TEMP_DIR/output-external" log_file="$TEMP_DIR/direct-builder.log"
@@ -616,7 +659,8 @@ run_direct_builder_output_tests() {
   cat > "$fixture_bin/ditto" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${2:-}" == */.Mimi-Remote-Mac.app.staging.* ]]; then
+if [[ "${2:-}" == */.Mimi-Remote-Mac.app.staging.*/"Mimi Remote Mac.app" ]]; then
+  mkdir "$2"
   printf 'partial copy\n' > "$2/partial"
   echo 'injected App copy failure' >&2
   exit 1
@@ -667,6 +711,7 @@ run_macos_codesign_tests() {
   baseline_summary="$(cat "$test_log")"
   bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --snapshot "$app_dir" >"$test_log" 2>&1 \
     || fail "合法签名的测试 App 未通过 builder 封包前校验：$(<"$test_log")"
+  run_multiline_signing_tests "$app_dir" "$sample_universal"
 
   # 2. P2-4：目录符号链接指向 .app 与真实路径等价（并抗 CDPATH 污染）。
   local symlink_app="$TEMP_DIR/Symlinked.app"
@@ -1102,55 +1147,36 @@ if [[ "${1:-}" == "--verify" && "${4:-}" == --test-requirement==* ]]; then
   fi
   exit 0
 fi
-if [[ "${1:-}" == "-d" && "${2:-}" == "--arch" && "${4:-}" == "--verbose=4" ]]; then
-  arch="${3:-}"
-  target="${5:-}"
+if [[ "${1:-}" == "--verify" && "${3:-}" == '--test-requirement==certificate leaf[subject.OU] = '* ]]; then
+  [[ "${4:-}" == "--arch" && -n "${5:-}" && -n "${6:-}" ]] || exit 75
+  if [[ "$6" == *"mimi-rogue-adhoc" && "${TEST_PASSTHROUGH_ROGUE_ADHOC:-0}" == "1" ]]; then
+    exec /usr/bin/codesign "$@"
+  fi
+  [[ "$3" == '--test-requirement==certificate leaf[subject.OU] = "TEAM123456"' ]] || exit 75
+  if [[ "$6" == *"mimi-leaky-adapter" && "$5" == "${TEST_REJECT_TEAM_OU_ARCH:-}" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "-d" && "${2:-}" == "--arch" && "${4:-}" == "--verbose=1" ]]; then
+  arch="$3"
+  target="$5"
   if [[ "$target" == *"mimi-rogue-adhoc" && "${TEST_PASSTHROUGH_ROGUE_ADHOC:-0}" == "1" ]]; then
     exec /usr/bin/codesign "$@"
   fi
-  if [[ -n "${TEST_LEAKY_TARGET_ARCH:-}" && "$target" == *"mimi-leaky-adapter" && "$arch" == "$TEST_LEAKY_TARGET_ARCH" ]]; then
-    printf 'Executable=%s\n' "$target"
-    printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test.leaky\n'
-    printf 'Format=Mach-O thin (%s)\n' "$arch"
-    printf 'CodeDirectory v=20500 size=401 flags=0x10000(runtime) hashes=2+7 location=embedded\n'
-    if [[ -n "${TEST_LEAKY_AUTHORITY:-}" ]]; then
-      printf 'Authority=%s\n' "$TEST_LEAKY_AUTHORITY"
-    fi
-    if [[ -n "${TEST_LEAKY_TIMESTAMP:-}" ]]; then
-      printf 'Timestamp=%s\n' "$TEST_LEAKY_TIMESTAMP"
-    fi
-    printf 'TeamIdentifier=%s\n' "${TEST_LEAKY_TEAM:-not set}"
-    exit 0
+  team="TEAM123456"
+  timestamp="Nov 17, 2026 at 19:12:30"
+  if [[ "$target" == *"mimi-leaky-adapter" && "$arch" == "${TEST_LEAKY_TARGET_ARCH:-}" ]]; then
+    team="${TEST_LEAKY_TEAM:-not set}"
+    timestamp="${TEST_LEAKY_TIMESTAMP:-}"
   fi
-  printf 'Executable=%s\n' "$target"
-  case "$target" in
-    *"/Contents/Resources/mimi-agy-adapter")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.agy-adapter\n'
-      ;;
-    *"/Contents/Resources/mimi-claude-adapter")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.claude-adapter\n'
-      ;;
-    *"/Contents/Resources/agentd")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.agentd\n'
-      ;;
-    *"/Contents/Resources/alleycat-claude-bridge")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.claude-bridge\n'
-      ;;
-    *"/Contents/Resources/mimi-tailcat-experiment")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.tailcat\n'
-      ;;
-    *"/Contents/Resources/mimi-leaky-adapter")
-      printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test.leaky\n'
-      ;;
-    *)
-      printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test\n'
-      ;;
-  esac
-  printf 'Format=Mach-O thin (%s)\n' "$arch"
-  printf 'CodeDirectory v=20500 size=401 flags=0x10000(runtime) hashes=2+7 location=embedded\n'
-  printf 'Authority=Developer ID Application: Mimi Test (TEAM123456)\n'
-  printf 'Timestamp=Nov 17, 2026 at 19:12:30\n'
-  printf 'TeamIdentifier=TEAM123456\n'
+  details="$(/usr/bin/codesign "$@" 2>&1)" || exit $?
+  # 保留系统给出的 Executable、Identifier 和 flags，只模拟需要证书的字段。
+  printf '%s\n' "$details" | sed '/^TeamIdentifier=/d; /^Timestamp=/d; /^Signed Time=/d'
+  if [[ -n "$timestamp" ]]; then
+    printf 'Timestamp=%s\n' "$timestamp"
+  fi
+  printf 'TeamIdentifier=%s\n' "$team"
   exit 0
 fi
 exec /usr/bin/codesign "$@"
@@ -1214,7 +1240,7 @@ STUB
 
   # 9b. 仅 x86_64 切片残留第三方 Team ID（arm64 切片为己方 TEAM123456）-> 逐片校验必须拒绝。
   if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="7FRXF46ZSN" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Upstream (7FRXF46ZSN)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-team-signing "$app_dir" >"$test_log" 2>&1; then
     fail "仅 x86_64 切片带第三方 Team ID 时 checker 未拦截。"
   fi
@@ -1222,26 +1248,34 @@ STUB
     || fail "第三方 Team ID 切片报错不准确：$(<"$test_log")"
 
   if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="7FRXF46ZSN" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Upstream (7FRXF46ZSN)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --development-signing "$app_dir" >"$test_log" 2>&1; then
     fail "仅 x86_64 切片带第三方 Team ID 时 builder 未拦截。"
   fi
   grep -Fq 'mimi-leaky-adapter（x86_64）的 Team ID' "$test_log" \
     || fail "builder 第三方 Team ID 切片报错不准确：$(<"$test_log")"
 
+  # 显示值一致也必须向系统核对证书 OU。
+  if PATH="$fake_bin_dir:$PATH" TEST_REJECT_TEAM_OU_ARCH="x86_64" \
+    bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-team-signing "$app_dir" >"$test_log" 2>&1; then
+    fail "证书 OU 不一致的 x86_64 切片被 checker 放行。"
+  fi
+  grep -Fq 'mimi-leaky-adapter（x86_64）的 Team ID（TEAM123456）与签名证书不一致' "$test_log" \
+    || fail "证书 OU 校验报错不准确：$(<"$test_log")"
+
   # 9c. 同 Team ID 但 x86_64 切片为 Apple Development -> --require-team-signing 必过，--require-developer-id 与 builder 正式策略必拒。
   PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="" \
+    TEST_LEAKY_TIMESTAMP="" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-team-signing "$app_dir" >"$test_log" 2>&1 \
     || fail "同 Team ID 的开发签名应通过 checker --require-team-signing：$(<"$test_log")"
 
   PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="" \
+    TEST_LEAKY_TIMESTAMP="" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --development-signing "$app_dir" >"$test_log" 2>&1 \
     || fail "同 Team ID 的开发签名应通过 builder --verify-only --development-signing：$(<"$test_log")"
 
   if PATH="$fake_bin_dir:$PATH" TEST_REJECT_DEVELOPER_ID_ARCH="x86_64" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-developer-id "$app_dir" >"$test_log" 2>&1; then
     fail "非 Developer ID Application 签名在 checker --require-developer-id 下被放行。"
   fi
@@ -1249,14 +1283,14 @@ STUB
     || fail "Developer ID 校验报错不准确：$(<"$test_log")"
 
   if PATH="$fake_bin_dir:$PATH" TEST_REJECT_DEVELOPER_ID_ARCH="x86_64" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1; then
     fail "非 Developer ID Application 签名在 builder 正式策略下被放行。"
   fi
 
   # 9d. 同 Team ID 且为 Developer ID Application，但 x86_64 切片 Timestamp=none -> 必拒。
   if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="none" \
+    TEST_LEAKY_TIMESTAMP="none" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-developer-id "$app_dir" >"$test_log" 2>&1; then
     fail "Timestamp=none 在 checker --require-developer-id 下被放行。"
   fi
@@ -1264,19 +1298,19 @@ STUB
     || fail "Timestamp=none 校验报错不准确：$(<"$test_log")"
 
   if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="none" \
+    TEST_LEAKY_TIMESTAMP="none" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1; then
     fail "Timestamp=none 在 builder 正式策略下被放行。"
   fi
 
   # 9e. 全部 Mach-O 全部切片同 Team ID + Developer ID Application + 有效 Timestamp -> checker 与 builder 均必过。
   PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-developer-id "$app_dir" >"$test_log" 2>&1 \
     || fail "全部 Mach-O 具备同 Team ID Developer ID 与安全时间戳时应通过 checker --require-developer-id：$(<"$test_log")"
 
   PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
-    TEST_LEAKY_AUTHORITY="Developer ID Application: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
+    TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1 \
     || fail "全部 Mach-O 具备同 Team ID Developer ID 与安全时间戳时应通过 builder 正式策略：$(<"$test_log")"
 
