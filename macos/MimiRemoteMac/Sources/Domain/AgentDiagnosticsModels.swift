@@ -75,67 +75,14 @@ struct AgentDiagnosticsExport: Decodable, Equatable, Sendable {
 /// 诊断展示与折叠日志脱敏器：确保界面和导出中不出现 bearer、WS/Harness 凭据、
 /// grant、签名、配对/连接 URL、用户主目录路径或非回环 IP。
 enum DiagnosticLogSanitizer {
-    private struct Rule {
-        let regex: NSRegularExpression
-        let template: String
-
-        init(_ pattern: String, options: NSRegularExpression.Options = [], template: String) {
-            self.regex = try! NSRegularExpression(pattern: pattern, options: options)
-            self.template = template
+    static func serviceMessage(_ raw: String) -> String {
+        if raw == "服务当前未运行，已有配置和手机配对均已保留。"
+            || OnboardingCopyCatalog.allEntries.contains(where: { $0.messageZH == raw }) {
+            return raw
         }
+        return OnboardingCopyCatalog.safeFallbackCopy
     }
 
-    private static let rules: [Rule] = [
-        // 配对与连接深链（含短期票据与签名）
-        Rule(#"mimiremote://[^\s"'<>]+"#, options: [.caseInsensitive], template: "[REDACTED_PAIR_URL]"),
-        // 含敏感查询参数的 HTTP/HTTPS/WS 链接（如 Harness 启动链接或中转授权链接）
-        Rule(
-            #"(?:https?|wss?)://[^\s"'<>]*[?&](?:token|pair_sig|grant|sig|signature|secret|auth|key|ws_token|harness_token|dsh_token)=[^\s"'<>]+"#,
-            options: [.caseInsensitive],
-            template: "[REDACTED_URL]"
-        ),
-        // Authorization / Bearer 头（先整体脱敏 Authorization，再脱敏独立 Bearer）
-        Rule(
-            #"\bAuthorization\s*:\s*(?:(?:Bearer|Basic|Token)\s+)?[^\s,;\"'}\]<>]+"#,
-            options: [.caseInsensitive],
-            template: "Authorization: [REDACTED]"
-        ),
-        Rule(#"\bBearer\s+[A-Za-z0-9._~+/=-]+"#, options: [.caseInsensitive], template: "Bearer [REDACTED]"),
-        // JSON 敏感字段
-        Rule(
-            #"\"((?:access_|refresh_|host_|ws_|harness_|dsh_|session_)?token|bearer|authorization|pair_url|connect_url|startup_url|grant|signature|pair_sig|secret|api_key|password)\"\s*:\s*\"[^\"]*\""#,
-            options: [.caseInsensitive],
-            template: "\"$1\":\"[REDACTED]\""
-        ),
-        // 键值对/查询串敏感参数
-        Rule(
-            #"\b((?:access_|refresh_|host_|ws_|harness_|dsh_|session_)?token|pair_url|connect_url|startup_url|grant|signature|pair_sig|secret|api_key|password)=([^\s&\"',;}\]]+)"#,
-            options: [.caseInsensitive],
-            template: "$1=[REDACTED]"
-        ),
-        // 本地用户路径脱敏（不暴露本机用户名）
-        Rule(#"/Users/[^/\s\"':,;)\]]+"#, template: "~"),
-        Rule(#"/home/[^/\s\"':,;)\]]+"#, template: "~"),
-        Rule(#"[A-Za-z]:\\Users\\[^\\\s\"':,;)\]]+"#, template: "~"),
-        // 非回环 IPv4（排除 127.0.0.1 与版本号）
-        Rule(
-            #"(?<![0-9.])(?!127\.0\.0\.1(?![0-9.]))(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?![0-9.])"#,
-            template: "[REDACTED_IP]"
-        ),
-    ]
-
-    static func sanitizeLine(_ raw: String) -> String {
-        var result = raw
-        for rule in rules {
-            let range = NSRange(result.startIndex..<result.endIndex, in: result)
-            result = rule.regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: rule.template)
-        }
-        return result
-    }
-
-    static func sanitizeLines(_ lines: [String]) -> [String] {
-        lines.map(sanitizeLine)
-    }
     // Match the fixed vocabulary of internal/diagnosticlog.Event. Legacy text and unknown
     // fields may contain command output. Re-encode the safe fields for display and export.
     private struct Event: Codable {

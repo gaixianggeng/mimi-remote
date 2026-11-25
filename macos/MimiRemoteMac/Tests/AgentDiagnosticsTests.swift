@@ -121,28 +121,13 @@ final class AgentDiagnosticsTests: XCTestCase {
             #"failed with Bearer solo_secret_456"#,
         ]
 
-        let sanitized = DiagnosticLogSanitizer.sanitizeLines(dirty)
-
-        XCTAssertFalse(sanitized[0].contains("tok_super_secret_123"))
-        XCTAssertEqual(sanitized[0], "Authorization: [REDACTED]")
-
-        XCTAssertFalse(sanitized[1].contains("secret-host"))
-        XCTAssertFalse(sanitized[1].contains("pair_sig=abc"))
-        XCTAssertFalse(sanitized[1].contains("g-1"))
-        XCTAssertFalse(sanitized[1].contains("s-2"))
-
-        XCTAssertFalse(sanitized[2].contains("harness999"))
-        XCTAssertFalse(sanitized[2].contains("ws888"))
-        XCTAssertFalse(sanitized[2].contains("100.64.0.9"))
-
-        XCTAssertFalse(sanitized[3].contains("alice"))
-        XCTAssertFalse(sanitized[3].contains("192.168.1.42"))
-        XCTAssertTrue(sanitized[3].contains("~/Library/Application Support/mimi-remote/config.json"))
-        XCTAssertTrue(sanitized[3].contains("[REDACTED_IP]"))
-
-        // 安全版本号与回环地址保留
-        XCTAssertEqual(sanitized[4], #"{"level":"info","version":"0.150.0","listen":"127.0.0.1:8787"}"#)
-        XCTAssertEqual(sanitized[5], "failed with Bearer [REDACTED]")
+        // Unstructured lines have no exportable fields, including legacy "safe-looking" JSON.
+        XCTAssertTrue(DiagnosticLogSanitizer.eventLines(dirty).isEmpty)
+        for line in dirty + ["ssh private-account@private-host", "raw stderr: private-project"] {
+            XCTAssertEqual(DiagnosticLogSanitizer.serviceMessage(line), OnboardingCopyCatalog.safeFallbackCopy)
+        }
+        let trusted = OnboardingCopyCatalog.localizedMessage(code: "service_not_running", step: .serviceDaemon)
+        XCTAssertEqual(DiagnosticLogSanitizer.serviceMessage(trusted), trusted)
     }
 
     func testLogExportAndLegacyDoctorCannotIncludeOpaquePrivateFields() throws {

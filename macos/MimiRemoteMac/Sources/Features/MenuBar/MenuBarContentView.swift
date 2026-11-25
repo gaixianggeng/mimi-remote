@@ -52,7 +52,7 @@ enum MenuBarPresentation {
         {
             return nil
         }
-        return DiagnosticLogSanitizer.sanitizeLine(trimmed)
+        return DiagnosticLogSanitizer.serviceMessage(trimmed)
     }
 }
 
@@ -399,7 +399,7 @@ private struct MenuStatusHeader: View {
         case .migrationRequired: "可安全迁移，现有配置和配对都会保留。"
         case .starting: startingDetail ?? "移动设备连接会在服务就绪后自动恢复。"
         case .ready: "管理 AI 编程助手与移动连接。"
-        case .degraded(let message), .failed(let message): message
+        case .degraded(let message), .failed(let message): DiagnosticLogSanitizer.serviceMessage(message)
         case .stopped: "打开 App 或重新登录后可以再次启动。"
         }
     }

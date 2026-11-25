@@ -109,12 +109,8 @@ enum DashboardPresentation {
         {
             return nil
         }
-        if let remediation,
-           remediation.message.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
-        {
-            return nil
-        }
-        return DiagnosticLogSanitizer.sanitizeLine(trimmed)
+        let message = DiagnosticLogSanitizer.serviceMessage(trimmed)
+        return remediation?.message == message ? nil : message
     }
 
     private static func typedRemediation(
@@ -183,7 +179,7 @@ enum DashboardPresentation {
         {
             resolvedMessage = diag.message
         } else {
-            resolvedMessage = DiagnosticLogSanitizer.sanitizeLine(fallbackMessage)
+            resolvedMessage = DiagnosticLogSanitizer.serviceMessage(fallbackMessage)
         }
 
         var secondary: [DashboardRemediationAction] = [.recheck, .openDiagnostics]

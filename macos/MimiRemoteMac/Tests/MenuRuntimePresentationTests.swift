@@ -200,7 +200,7 @@ final class MenuRuntimePresentationTests: XCTestCase {
                 lifecycle: .ready,
                 lastError: "Authorization: Bearer secret-token"
             ),
-            "Authorization: [REDACTED]"
+            OnboardingCopyCatalog.safeFallbackCopy
         )
     }
 
