@@ -11,6 +11,8 @@ import (
 type StagePermissions struct {
 	Source string
 	Token  bool
+	// Snapshot receives the original permissions used to prepare a replacement.
+	Snapshot *ReplacementPermissions
 }
 
 // FileIdentity reads metadata from an open handle. Windows path-based Stat

@@ -253,16 +253,95 @@ func TestWindowsPublishRejectsAnACLOnlyChange(t *testing.T) {
 		}
 	}
 	set("(A;;FR;;;SY)")
-	stage, err := stagePrivateFile(dir, "stage-", []byte("new"), config.StagePermissions{Source: path})
+	var permissions config.ReplacementPermissions
+	stage, err := stagePrivateFile(dir, "stage-", []byte("new"), config.StagePermissions{Source: path, Snapshot: &permissions})
 	if err != nil {
 		t.Fatal(err)
 	}
 	set("")
-	if err := renameSetupFile(stage, path); err == nil {
-		t.Fatal("published access that the destination owner had removed")
+	err = permissions.Replace(stage, path, "", renameSetupFile)
+	var conflict *config.PermissionConflict
+	if !errors.As(err, &conflict) || conflict.Published || conflict.Recovery {
+		t.Fatalf("expected pre-rename permission conflict, got %v", err)
+	}
+	if configtest.FileAccess(t, stage) != configtest.FileAccess(t, path) {
+		t.Fatal("retained stage still grants revoked access")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil || string(raw) != "old" {
 		t.Fatal("failed publication changed the original")
+	}
+}
+
+func TestWindowsReplaceRepairsPublishedACLAndHonorsRevocation(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := "D:P(A;;FA;;;" + user.User.Sid.String() + ")"
+	for _, tc := range []struct {
+		name, original, change string
+		onOld                  bool
+	}{
+		{"published file gained a grant", "", "(A;;FR;;;SY)", false},
+		{"published file lost a grant", "(A;;FR;;;SY)", "", false},
+		{"displaced file lost a grant during move", "(A;;FR;;;SY)", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			dest, backup := filepath.Join(dir, "token"), filepath.Join(dir, "backup")
+			configtest.CreatePrivateFile(t, dest, []byte("original"))
+			setDACL := func(path, extra string) {
+				t.Helper()
+				sd, err := windows.SecurityDescriptorFromString(owner + extra)
+				if err != nil {
+					t.Fatal(err)
+				}
+				acl, _, err := sd.DACL()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+					windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			setDACL(dest, "")
+			want := configtest.FileAccess(t, dest)
+			setDACL(dest, tc.original)
+			var permissions config.ReplacementPermissions
+			stage, err := stagePrivateFile(dir, "stage-", []byte("replacement"), config.StagePermissions{
+				Source: dest, Token: true, Snapshot: &permissions,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(dest, backup); err != nil {
+				t.Fatal(err)
+			}
+			err = permissions.Replace(stage, dest, backup, func(from, to string) error {
+				if tc.onOld {
+					setDACL(to, tc.change)
+				}
+				if err := renameSetupFile(from, to); err != nil {
+					return err
+				}
+				if !tc.onOld {
+					setDACL(to, tc.change)
+				}
+				return nil
+			})
+			var changed *config.PermissionConflict
+			if !errors.As(err, &changed) || !changed.Published || changed.Recovery {
+				t.Fatalf("expected published permission conflict, got %v", err)
+			}
+			if got := configtest.FileAccess(t, dest); got != want {
+				t.Fatalf("published DACL %+v, want %+v", got, want)
+			}
+			raw, err := config.ReadPrivateTokenFile(dest, 64)
+			if err != nil || string(raw) != "replacement" {
+				t.Fatalf("published token contents: %q, %v", raw, err)
+			}
+		})
 	}
 }

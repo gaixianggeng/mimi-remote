@@ -78,6 +78,7 @@ func filePolicy(sd *windows.SECURITY_DESCRIPTOR) (fileDACL, error) {
 		return policy, err
 	}
 	policy.protected = control&windows.SE_DACL_PROTECTED != 0
+	policy.inheritanceControl = uint16(control & (windows.SE_DACL_DEFAULTED | windows.SE_DACL_AUTO_INHERITED | windows.SE_DACL_AUTO_INHERIT_REQ))
 	if control&windows.SE_SACL_PRESENT != 0 {
 		acl, _, err := sd.SACL()
 		if err != nil {
@@ -100,12 +101,14 @@ func filePolicy(sd *windows.SECURITY_DESCRIPTOR) (fileDACL, error) {
 	if acl == nil {
 		return policy, windows.ERROR_INVALID_ACL
 	}
+	policy.revision = *(*byte)(unsafe.Pointer(acl)) // AclRevision is the first byte of the native ACL header.
 	for i := uint16(0); i < acl.AceCount; i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
 			return policy, err
 		}
 		entry := fileACE{encoded: encodedACE(ace), inherited: ace.Header.AceFlags&windows.INHERITED_ACE != 0}
+		entry.deny = ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE
 		const fileFlags = windows.INHERITED_ACE | windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE | windows.NO_PROPAGATE_INHERIT_ACE
 		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceFlags&^fileFlags == 0 {
 			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))

@@ -49,11 +49,14 @@ func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, 
 		return nil, err
 	}
 	if policy.Source != "" {
-		original, _, err := openPermissionTarget(policy.Source, false)
+		original, info, err := openPermissionTarget(policy.Source, false)
 		if err != nil {
 			return nil, err
 		}
 		defer original.Close()
+		if policy.Snapshot != nil {
+			policy.Snapshot.info = info
+		}
 		sd, err = readStageDescriptor(original, policy.Token)
 		if err != nil {
 			return nil, err
@@ -62,6 +65,10 @@ func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, 
 	want, err := filePolicy(sd)
 	if err != nil {
 		return nil, err
+	}
+	if policy.Source != "" && policy.Snapshot != nil {
+		policy.Snapshot.original = &want
+		policy.Snapshot.token = policy.Token
 	}
 	// Keep only explicit DACL entries in the creation request. Windows
 	// computes the actual inherited entries from this stage's parent.
@@ -139,11 +146,15 @@ func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, 
 }
 
 func openPermissionWriter(path string) (*os.File, error) {
+	return openPermissionHandle(path, windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES)
+}
+
+func openPermissionHandle(path string, access uint32) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
 	}
-	h, err := windows.CreateFile(name, windows.READ_CONTROL|windows.WRITE_DAC|windows.FILE_READ_ATTRIBUTES, permissionFileShare, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	h, err := windows.CreateFile(name, access, permissionFileShare, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, err
 	}

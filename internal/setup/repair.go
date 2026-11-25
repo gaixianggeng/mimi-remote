@@ -3,10 +3,12 @@ package setup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -47,17 +49,27 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: source})
+	var permissions config.ReplacementPermissions
+	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: source, Snapshot: &permissions})
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tempPath)
 	if source == "" {
-		rename = renameNewSetupFile
-	} else if err := copyAndSyncPermissions(source, tempPath); err != nil {
-		return err
+		err = renameNewSetupFile(tempPath, path)
+	} else {
+		if runtime.GOOS != "windows" {
+			err = copyAndSyncPermissions(source, tempPath)
+		}
+		if err == nil {
+			err = permissions.Replace(tempPath, path, "", rename)
+		}
 	}
-	if err := rename(tempPath, path); err != nil {
+	var conflict *config.PermissionConflict
+	if errors.As(err, &conflict) {
+		return replaceConflict(err, tempPath, path)
+	}
+	if err != nil {
+		_ = os.Remove(tempPath)
 		return err
 	}
 
@@ -109,4 +121,21 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissions
 	}
 	complete = true
 	return path, nil
+}
+
+// Non-journaled writers retain the private stage on a pre-rename conflict
+// and identify the published file when the caller must reread or recover.
+func replaceConflict(err error, stage, path string) error {
+	var conflict *config.PermissionConflict
+	if !errors.As(err, &conflict) {
+		return err
+	}
+	if conflict.Published {
+		stage = path
+	}
+	if conflict.Recovery {
+		return recoveryError(stage, err)
+	}
+	return &SaveError{Code: "config_concurrent_change", Step: "config_store", Cause: err,
+		RecoveryPath: "<配置目录>/" + filepath.Base(stage)}
 }
