@@ -19,11 +19,13 @@ struct PairingWindowDependencies {
     var openURL: @MainActor (URL) -> Void
     var openSettings: @MainActor (OnboardingSettingsTarget) -> Void
     var copyToClipboard: @MainActor (String) -> Bool
+    var openWindow: @MainActor (AppWindow) -> Void = { _ in }
     var now: @Sendable () -> Date
 
     @MainActor
     static func live(
         hostStore: HostStore,
+        openWindow: @escaping @MainActor (AppWindow) -> Void = { _ in },
         openSettingsTarget: @escaping @MainActor (OnboardingSettingsTarget) -> Void
     ) -> PairingWindowDependencies {
         let agent = hostStore.agent
@@ -38,7 +40,7 @@ struct PairingWindowDependencies {
                 try await hostStore.enableAssistantForOnboarding(runtimeID)
             },
             pair: { network in
-                try await agent.pair(network)
+                try await hostStore.issueVerifiedPairing(for: network)
             },
             restartService: {
                 try await hostStore.restartServiceForOnboarding()
@@ -66,6 +68,7 @@ struct PairingWindowDependencies {
                 NSPasteboard.general.clearContents()
                 return NSPasteboard.general.setString(value, forType: .string)
             },
+            openWindow: openWindow,
             now: { Date() }
         )
     }
@@ -210,7 +213,14 @@ final class PairingWindowStore {
     }
 
     func canExplicitlyEnable(_ transport: OnboardingTransport) -> Bool {
-        guard !isEnablingTransport,
+        let action: OnboardingRunFixAction = switch transport {
+        case .tailscale: .enableTailscale
+        case .tailcat: .enableTailcat
+        case .lan: .enableLAN
+        }
+        guard !isCheckingPreflight, preflightError == nil,
+              resolvedDiagnostics[transport.checkID]?.primaryAction == .runFix(action),
+              !isEnablingTransport,
               !isApplyingFix,
               !isServiceRequiresApproval,
               let report,
@@ -298,9 +308,7 @@ final class PairingWindowStore {
         selectedTransport = transport
         didExpireCurrentPairing = false
         invalidateIssuedPairing()
-        if isVisible, canIssuePairingQR, isTransportReady(transport) {
-            startIssuingPairingQR(for: transport)
-        }
+        if isVisible { startPreflight() }
     }
 
     // MARK: - Explicit Transport Enable (Single Reload + Re-verify Before QR)
@@ -351,6 +359,9 @@ final class PairingWindowStore {
         let generation = preflightGeneration
         activePreflightGeneration = generation
         isCheckingPreflight = true
+        report = nil
+        checks = []
+        resolvedDiagnostics = [:]
         preflightError = nil
         invalidateIssuedPairing()
         preflightTask = Task { [weak self] in
@@ -460,20 +471,20 @@ final class PairingWindowStore {
 
     // MARK: - QR Issuance & Expiry
 
-    func startIssuingPairingQR(for transport: OnboardingTransport? = nil) {
+    private func startIssuingPairingQR(for transport: OnboardingTransport) {
         pairingTask?.cancel()
         pairingGeneration &+= 1
         let generation = pairingGeneration
-        let target = transport ?? selectedTransport
         didExpireCurrentPairing = false
         pairingTask = Task { [weak self] in
             guard let self else { return }
-            await self.executeIssuePairingQR(for: target, generation: generation)
+            await self.executeIssuePairingQR(for: transport, generation: generation)
         }
     }
 
     func issuePairingQR(for transport: OnboardingTransport? = nil) async {
-        startIssuingPairingQR(for: transport)
+        guard isVisible, transport == nil || transport == selectedTransport else { return }
+        await runPreflight()
         if let task = pairingTask {
             await task.value
         }
@@ -586,7 +597,7 @@ final class PairingWindowStore {
     // MARK: - Trusted Preflight Fix Dispatch
 
     func performCheckPrimaryAction(for check: OnboardingCheck) async {
-        guard report != nil,
+        guard isVisible, !isCheckingPreflight, preflightError == nil, report != nil,
               self.check(for: check.id) == check,
               let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
@@ -598,7 +609,7 @@ final class PairingWindowStore {
     }
 
     func performCheckSecondaryAction(for check: OnboardingCheck) async {
-        guard report != nil,
+        guard isVisible, !isCheckingPreflight, preflightError == nil, report != nil,
               self.check(for: check.id) == check,
               let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
@@ -610,7 +621,9 @@ final class PairingWindowStore {
     }
 
     func performDiagnosticAction(_ diagnostic: OnboardingResolvedDiagnostic) async {
-        guard diagnostic.isTrusted, let fix = diagnostic.primaryAction else { return }
+        guard isVisible, !isCheckingPreflight,
+              diagnostic == preflightError || diagnostic == pairingError,
+              diagnostic.isTrusted, let fix = diagnostic.primaryAction else { return }
         await dispatchTrustedFix(fix, checkID: diagnostic.step ?? .networkAny)
     }
 
@@ -624,7 +637,9 @@ final class PairingWindowStore {
             await runPreflight()
         case .runFix(let action):
             await dispatchRunFixAction(action, checkID: checkID)
-        case .choosePath, .skip:
+        case .choosePath:
+            deps.openWindow(.diagnostics)
+        case .skip:
             break
         }
     }
@@ -680,9 +695,10 @@ final class PairingWindowStore {
             }
         case .connectDeepSeek:
             deps.openSettings(.assistants)
-        case .saveSetup, .doctorFix, .takeoverHomebrew:
-            // 配对窗口不执行配置保存、doctor_fix 或 Homebrew 接管；交由向导/诊断页面处理。
-            break
+        case .doctorFix:
+            deps.openWindow(.diagnostics)
+        case .saveSetup, .takeoverHomebrew:
+            deps.openWindow(.dashboard)
         }
     }
 

@@ -78,6 +78,7 @@ struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
 }
 
 struct AgentCommandClient: Sendable {
+    var verifiedOnboardingCapability: @Sendable () -> String? = { nil }
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
     var preflight: @Sendable (
@@ -416,7 +417,14 @@ extension AgentCommandClient {
             return receipt.pairingInfo(for: network)
         }
 
+        let capabilityURL = bundle.url(forResource: "agentd-onboarding-capability", withExtension: nil)
         return AgentCommandClient(
+            verifiedOnboardingCapability: {
+                guard binaryOverride == nil, embeddedBinary != nil, let capabilityURL,
+                      let capability = try? String(contentsOf: capabilityURL, encoding: .utf8),
+                      capability == OnboardingSchema.doctorFixCapability else { return nil }
+                return capability
+            },
             configExists: {
                 FileManager.default.fileExists(atPath: configURL.path)
             },

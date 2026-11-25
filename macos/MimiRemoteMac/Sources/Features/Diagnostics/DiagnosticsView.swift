@@ -7,13 +7,12 @@ struct DiagnosticsView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @State private var diagnosticsStore: DiagnosticsStore?
-    @State private var confirmsCodexSessionRepair = false
     @State private var expandsDoctorDetails = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                HostStatusHeader(lifecycle: store.lifecycle, compact: true)
+                HostStatusHeader(lifecycle: store.lifecycle, compact: true, showsDetail: false)
                 Button("重新检查") {
                     Task {
                         await diagnosticsStore?.refreshAll()
@@ -21,9 +20,6 @@ struct DiagnosticsView: View {
                     }
                 }
                 .disabled(diagnosticsStore?.isChecking == true || diagnosticsStore?.isApplyingFix == true)
-                Button("修复共享运行环境…") { confirmsCodexSessionRepair = true }
-                    .disabled(store.isBusy || store.owner != .macApp)
-                Button("登录项设置…") { store.openLoginItemsSettings() }
             }
             .padding(18)
 
@@ -45,14 +41,6 @@ struct DiagnosticsView: View {
                     .padding(10)
             }
 
-            if let notice = store.codexSessionRepairNotice {
-                Divider()
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(Color.mimiPrimary)
-                    .padding(10)
-            }
-
             if let errorMessage = visibleBottomError {
                 Divider()
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -60,18 +48,6 @@ struct DiagnosticsView: View {
                     .foregroundStyle(.red)
                     .padding(10)
             }
-        }
-        .confirmationDialog(
-            "修复共享运行环境？",
-            isPresented: $confirmsCodexSessionRepair,
-            titleVisibility: .visible
-        ) {
-            Button("停止服务并修复", role: .destructive) {
-                Task { await store.repairSharedCodexRuntime() }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("请先结束所有共享的 Codex 任务和其他 Mimi 活动任务，并关闭 Codex Desktop 的 SSH 共享页面。此操作不会修改钥匙串授权或删除任务历史。检测到活动任务或其他连接时会拒绝修复。")
         }
         .fileImporter(
             isPresented: Binding(
@@ -88,7 +64,7 @@ struct DiagnosticsView: View {
         .task {
             let controller = ensureDiagnosticsStore()
             store.requestedDiagnosticsFocus = nil
-            await controller.refreshAll()
+            await controller.runPreflight()
             await store.refreshDiagnostics()
         }
         .onChange(of: store.requestedDiagnosticsFocus) { _, focus in
@@ -97,7 +73,8 @@ struct DiagnosticsView: View {
             Task { await diagnosticsStore?.runPreflight() }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await diagnosticsStore?.runPreflight() }
+            guard let diagnosticsStore, !diagnosticsStore.isPathPickerPresented, !diagnosticsStore.isApplyingFix else { return }
+            Task { await diagnosticsStore.runPreflight() }
         }
         .onDisappear {
             diagnosticsStore?.cancel()
@@ -118,7 +95,7 @@ struct DiagnosticsView: View {
             return actionError.message
         }
         if let lastError = store.lastError, !lastError.isEmpty {
-            return DiagnosticLogSanitizer.sanitizeLine(lastError)
+            return "服务操作未完成，请重新检查当前状态。"
         }
         return nil
     }
@@ -173,10 +150,13 @@ struct DiagnosticsView: View {
                         }
                     }
 
-                    if !diagnosticsStore.doctorChecks.isEmpty {
+                    if diagnosticsStore.canReadDoctor {
                         // doctor --json 仅作只读中文标题与脱敏折叠详情展示，绝不渲染可点击修复按钮。
                         DisclosureGroup("底层诊断详情（仅展示）", isExpanded: $expandsDoctorDetails) {
                             VStack(alignment: .leading, spacing: 8) {
+                                if diagnosticsStore.doctorChecks.isEmpty {
+                                    Button("读取底层诊断详情") { Task { await diagnosticsStore.runReadOnlyDoctor() } }
+                                }
                                 ForEach(diagnosticsStore.doctorChecks) { check in
                                     DoctorDisplayCheckRow(check: check)
                                     if check.id != diagnosticsStore.doctorChecks.last?.id {
@@ -201,7 +181,10 @@ struct DiagnosticsView: View {
     private func ensureDiagnosticsStore() -> DiagnosticsStore {
         if let diagnosticsStore { return diagnosticsStore }
         let created = DiagnosticsStore(
-            dependencies: .live(hostStore: store) { target in
+            dependencies: .live(hostStore: store, openDashboard: {
+                openWindow(id: AppWindow.dashboard.rawValue)
+                activateApplication()
+            }) { target in
                 handleOpenSettings(target)
             },
             verifiedCapability: store.verifiedOnboardingCapability
@@ -291,7 +274,8 @@ private struct PreflightDiagnosticRow: View {
                     HStack(spacing: 6) {
                         Text(check.id.localizedTitle)
                             .font(.callout.weight(.semibold))
-                        if let version = check.selectedOrDetectedVersion, !version.isEmpty {
+                        if let version = check.selectedOrDetectedVersion,
+                           version.range(of: #"^v?[0-9]{1,6}(?:\.[0-9]{1,6}){1,2}(?:-(?:alpha|beta|rc)\.?[0-9]{0,4})?\z"#, options: .regularExpression) != nil {
                             Text("v\(version)")
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
@@ -342,9 +326,9 @@ private struct PreflightDiagnosticRow: View {
             if let candidates = check.candidates, !candidates.isEmpty {
                 DisclosureGroup("已检查的位置（\(candidates.count)）", isExpanded: $expandsCandidates) {
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(candidates.enumerated()), id: \.offset) { _, candidate in
+                        ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
                             HStack(spacing: 8) {
-                                Text(DiagnosticLogSanitizer.sanitizeLine(candidate.path))
+                                Text("候选位置 \(index + 1)")
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -430,7 +414,7 @@ private struct DiagnosticLogsPane: View {
     }
 
     var body: some View {
-        let sanitizedLogs = DiagnosticLogSanitizer.sanitizeLines(store.recentLogs)
+        let sanitizedLogs = DiagnosticLogSanitizer.eventLines(store.recentLogs)
 
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -518,8 +502,8 @@ private struct DiagnosticLogsPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let error = visibleError {
-                Label(DiagnosticLogSanitizer.sanitizeLine(error), systemImage: "exclamationmark.triangle.fill")
+            if visibleError != nil {
+                Label("诊断日志操作未完成，请刷新后重试。", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -586,7 +570,7 @@ private struct DiagnosticLogsPane: View {
     private func prepareExport() async {
         exportError = nil
         guard let lines = await store.diagnosticExportLines() else { return }
-        exportDocument = DiagnosticLogDocument(lines: DiagnosticLogSanitizer.sanitizeLines(lines))
+        exportDocument = DiagnosticLogDocument(lines: DiagnosticLogSanitizer.eventLines(lines))
         presentsExporter = true
     }
 

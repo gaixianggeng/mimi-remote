@@ -330,6 +330,27 @@ final class PairingWindowStoreTests: XCTestCase {
         XCTAssertFalse(leaveStore.canCopyPairingLink)
     }
 
+    func testManualRefreshRechecksServiceBeforeIssuingAnotherTicket() async {
+        let ready = MutablePairingState(true)
+        let calls = CallCounter()
+        var deps = Self.makeDependencies(report: Self.makePairReport())
+        deps.preflight = { _, _ in Self.makePairReport(serviceReady: ready.value) }
+        deps.pair = { network in
+            _ = calls.increment()
+            return Self.makePairing(network: network, expiresAt: Self.formatUTC(Date().addingTimeInterval(60)))
+        }
+        let store = PairingWindowStore(dependencies: deps)
+        await store.handleAppear()
+        await store.issuePairingQR()
+        XCTAssertNotNil(store.activePairing)
+        let issued = calls.current
+        ready.value = false
+        await store.issuePairingQR()
+        XCTAssertEqual(calls.current, issued)
+        XCTAssertFalse(store.canCopyPairingLink)
+        XCTAssertNil(store.issuedPairing)
+    }
+
     // MARK: - Helpers
 
     private nonisolated static func makePairing(
@@ -370,7 +391,7 @@ final class PairingWindowStoreTests: XCTestCase {
         )
     }
 
-    private nonisolated static func makePairReport(
+    nonisolated static func makePairReport(
         serviceReady: Bool = true,
         assistantReady: Bool = true,
         tailscaleEnabled: Bool = true,

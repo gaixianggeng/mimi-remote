@@ -118,9 +118,10 @@ final class DashboardAndSettingsTests: XCTestCase {
         let home = URL(filePath: "/fixture/home", directoryHint: .isDirectory)
         let scanRoot = URL(filePath: "/fixture/home/code", directoryHint: .isDirectory)
         let updateCalls = LockedWorkspaceCalls()
-        var currentBrowse = scanRoot
+        let currentBrowse = LockedWorkspaceCalls()
+        currentBrowse.append((scanRoot.path, scanRoot.path))
 
-        let deps = WorkspaceScopeDependencies(
+        var deps = WorkspaceScopeDependencies(
             preflight: {
                 OnboardingPreflightReport(
                     ok: true,
@@ -129,21 +130,23 @@ final class DashboardAndSettingsTests: XCTestCase {
                     workspaceConfirmed: true,
                     configPath: "/fixture/config/config.json",
                     scanRoot: scanRoot.path,
-                    browseRoot: currentBrowse.path,
+                    browseRoot: currentBrowse.values.last!.1,
                     scanRootExists: true,
                     recommendedNext: .networkAny,
                     recommendedTransport: .tailscale,
-                    checks: []
+                    checks: [OnboardingCheck(id: .configStore, state: .ok, detail: "", blocking: false)]
                 )
             },
             updateWorkspaceScope: { scan, browse in
                 updateCalls.append((scan.path, browse.path))
-                currentBrowse = browse
+                currentBrowse.append((scan.path, browse.path))
             },
             directoryExists: { _ in true },
-            homeDirectory: { home }
+            homeDirectory: { home },
+            verifiesSingleGrant: { _ in true }
         )
 
+        deps.reloadIfRunning = { throw AgentClientError.commandFailed("fixture") }
         let store = WorkspaceScopeStore(dependencies: deps)
         await store.refresh()
         XCTAssertTrue(store.canWidenBrowseScope)
@@ -179,6 +182,29 @@ final class DashboardAndSettingsTests: XCTestCase {
         XCTAssertEqual(updateCalls.values.first?.0, scanRoot.path)
         XCTAssertEqual(updateCalls.values.first?.1, home.path)
         XCTAssertEqual(store.browseRoot?.path, home.path)
+        XCTAssertTrue(store.errorMessage?.contains("已保存") == true)
+        store.prepareWidenPreview(proposedBrowseRoot: scanRoot)
+        XCTAssertNil(store.pendingPreview, "Widening must preserve the existing broader grant")
+    }
+
+    func testWideningRequiresEveryExistingGrantToMatchThePreview() throws {
+        let config = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: config) }
+        let report = OnboardingPreflightReport(
+            ok: true, stage: .pair, configured: true, workspaceConfirmed: true, configPath: config.path,
+            scanRoot: "/code", browseRoot: "/code", scanRootExists: true,
+            recommendedNext: .networkAny, recommendedTransport: nil, checks: []
+        )
+        func write(_ arrays: [String: [String]]) throws {
+            try JSONEncoder().encode(arrays).write(to: config)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+        }
+        try write(["scan_roots": ["/code"], "browse_roots": ["/code"]])
+        XCTAssertTrue(WorkspaceScopeDependencies.hasSingleGrant(at: config, report: report))
+        try write(["scan_roots": ["/code", "/other"], "browse_roots": ["/code"]])
+        XCTAssertFalse(WorkspaceScopeDependencies.hasSingleGrant(at: config, report: report))
+        try write(["scan_roots": ["/code"], "browse_roots": ["/code", "/other"]])
+        XCTAssertFalse(WorkspaceScopeDependencies.hasSingleGrant(at: config, report: report))
     }
 
     func testRefreshPermissionsOnReturnUpdatesNativeStateWithoutStartingService() {

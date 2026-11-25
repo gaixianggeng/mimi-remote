@@ -181,7 +181,8 @@ final class ModuleControlsTests: XCTestCase {
         let registrationsBeforePick = fixture.registrationCalls
 
         // 选中未启用的局域网通道严格不自动开启、不重启服务。
-        await store.refreshPairingFromPicker(.localNetwork)
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .lan)
 
         XCTAssertFalse(store.lanEnabled)
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick)
@@ -189,14 +190,14 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.pairCalls, 0)
 
         // 显式点击开启后执行单次重载并签发二维码。
-        await store.enableNetworkAndRefreshPairing(.localNetwork)
+        await pairingWindow.enableSelectedTransport(.lan)
 
         XCTAssertTrue(store.lanEnabled)
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick + 1)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale, .localNetwork])
-        XCTAssertEqual(store.pairing?.network, .localNetwork)
-        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .localNetwork)
         XCTAssertNil(store.lastError)
+        XCTAssertNil(pairingWindow.pairingError)
         XCTAssertEqual(fixture.pairCalls, 1)
     }
 
@@ -208,16 +209,30 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertFalse(store.tailscaleEnabled)
         let registrationsBefore = fixture.registrationCalls
 
-        await store.refreshPairingFromPicker(.tailscale)
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .tailscale)
         XCTAssertFalse(store.tailscaleEnabled)
         XCTAssertEqual(fixture.registrationCalls, registrationsBefore)
         XCTAssertEqual(fixture.pairCalls, 0)
 
-        await store.enableNetworkAndRefreshPairing(.tailscale)
+        await pairingWindow.enableSelectedTransport(.tailscale)
         XCTAssertTrue(store.tailscaleEnabled)
         XCTAssertEqual(fixture.registrationCalls, registrationsBefore + 1)
-        XCTAssertEqual(store.pairing?.network, .tailscale)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .tailscale)
         XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testPairingWindowRejectsUnreachableLANEndpoint() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let host = fixture.store(lanReachable: false)
+        let window = PairingWindowStore(dependencies: .live(hostStore: host) { _ in })
+        await window.handleAppear(preferredTransport: .lan)
+        await window.issuePairingQR(for: .lan)
+        XCTAssertGreaterThan(fixture.pairCalls, 0)
+        XCTAssertNil(window.issuedPairing)
+        XCTAssertFalse(window.canCopyPairingLink)
+        XCTAssertNotNil(window.pairingError)
     }
 
     func testCanPairIsFalseWhenNoNetworkIsEnabledEvenIfSwitchable() async {
@@ -446,9 +461,14 @@ private final class ModuleFixture: @unchecked Sendable {
             }
         }
     }
-    @MainActor func store() -> HostStore {
+    @MainActor func store(lanReachable: Bool = true) -> HostStore {
         let agent = AgentCommandClient(
             configExists: { true }, setup: { _ in throw ModuleTestError.unexpected },
+            preflight: { _, _ in
+                self.lock.withLock {
+                    PairingWindowStoreTests.makePairReport(tailscaleEnabled: self.ts, lanEnabled: self.lan)
+                }
+            },
             status: {
                 if self.failStatusReads { throw ModuleTestError.unexpected }
                 return self.status()
@@ -484,7 +504,7 @@ private final class ModuleFixture: @unchecked Sendable {
                     endpoint: network == .localNetwork ? "http://192.168.31.10:8787" : "http://100.64.0.1:8787",
                     network: network,
                     pairURL: "mimiremote://pair?network=\(network.rawValue)",
-                    expiresAt: "2026-11-17T14:00:00Z",
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(120)),
                     warnings: []
                 )
             },
@@ -542,7 +562,7 @@ private final class ModuleFixture: @unchecked Sendable {
         )
         return HostStore(agent: agent, services: services,
                          homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
-                         health: HealthClient(check: { _ in false }, checkDirect: { _ in true }),
+                         health: HealthClient(check: { _ in false }, checkDirect: { _ in lanReachable }),
                          logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }))
     }
 }

@@ -76,7 +76,7 @@ final class HostStore {
     var requestedDiagnosticsFocus: DiagnosticsFocus?
     var preferredPairingTransport: OnboardingTransport?
     /// 仅在正明确验证宿主支持 BE-3+ 保身份 `doctor --fix` 时才为 `"identity_preserving_doctor_fix"`。
-    var verifiedOnboardingCapability: String?
+    var verifiedOnboardingCapability: String? { agent.verifiedOnboardingCapability() }
     @ObservationIgnored var pairingRefreshGeneration = 0
     @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
@@ -642,8 +642,12 @@ final class HostStore {
         guard lanEnabled else {
             throw AgentClientError.commandFailed("局域网已关闭，请先在连接方式中明确启用。")
         }
-        let nextPairing = try await agent.pair(.localNetwork)
-        guard await health.checkDirect(nextPairing.endpoint) else {
+        return try await issueVerifiedPairing(for: .localNetwork)
+    }
+
+    func issueVerifiedPairing(for network: PairingNetwork) async throws -> PairingInfo {
+        let nextPairing = try await agent.pair(network)
+        if network == .localNetwork, !(await health.checkDirect(nextPairing.endpoint)) {
             throw AgentClientError.commandFailed("局域网地址不可访问，请检查本地网络权限、防火墙或重新启动 Mimi 服务。")
         }
         return nextPairing
@@ -806,6 +810,9 @@ final class HostStore {
 
     /// 供已验证 BE-3+ 宿主的 `config_permissions_unsafe` 路径调用的保身份修复。
     func runSafeDoctorFixAndReload() async throws -> [String] {
+        guard verifiedOnboardingCapability == OnboardingSchema.doctorFixCapability else {
+            throw AgentClientError.commandFailed("请更新桌面端后重新检查配置权限。")
+        }
         let result = try await agent.doctor(true)
         doctor = result.results
         appliedFixes = result.fixes
@@ -813,14 +820,6 @@ final class HostStore {
             try await restartServiceForOnboarding()
         }
         return result.fixes
-    }
-
-    /// 供设置页显式确认扩大代码浏览范围后调用；保留宿主身份与既有配对。
-    func updateWorkspaceScope(scanRoot: URL, browseRoot: URL) async throws {
-        try await agent.updateWorkspace(scanRoot, browseRoot)
-        if owner == .macApp || owner == .homebrew {
-            try await restartServiceForOnboarding()
-        }
     }
 
     /// 首次请求弹出系统授权框；用户之前拒绝过时系统不会再弹，只能引导到隐私设置里手动开启。

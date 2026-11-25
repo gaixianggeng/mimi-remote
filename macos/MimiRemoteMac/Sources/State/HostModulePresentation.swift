@@ -18,7 +18,7 @@ extension HostStore {
         tailcatStatus?.isManagedMode ?? false
     }
 
-    static let tailcatTagline = "免费可用 · 支持跨网"
+    nonisolated static let tailcatTagline = "免费可用 · 支持跨网"
 
     var tailcatStatusDetail: String {
         if owner == .homebrew {
@@ -139,26 +139,6 @@ extension HostStore {
         await refreshPairing(network: targetNetwork)
     }
 
-    /// 用户在配对窗口显式点击「启用…」后开启指定连接方式，按需单次重载并确认状态后再出码。
-    func enableNetworkAndRefreshPairing(_ targetNetwork: PairingNetwork) async {
-        switch targetNetwork {
-        case .tailscale:
-            if !tailscaleEnabled, canChangeModule(.tailscale) {
-                await setTailscaleEnabled(true)
-            }
-        case .tailcat:
-            if !tailcatEnabled, canChangeTailcat {
-                await setTailcatEnabled(true)
-            }
-        case .localNetwork:
-            if !lanEnabled, canChangeModule(.lan) {
-                await setLANEnabled(true)
-            }
-        case .automatic:
-            break
-        }
-        await refreshPairing(network: targetNetwork)
-    }
     func runtime(for module: HostModuleID) -> AgentRuntimeStatus? {
         guard module.isAgent else { return nil }
         return status?.runtimeStatus?.runtimes.first { $0.id.lowercased() == module.rawValue }

@@ -29,7 +29,11 @@ struct PairingView: View {
                 )
                 .padding(.top, 14)
 
-                mainContent(pairingStore)
+                if isApplyingRelay {
+                    PairingLoadingState(title: "正在切换中转服务", message: "完成后将重新检查配对条件。")
+                } else {
+                    mainContent(pairingStore)
+                }
             } else {
                 PairingLoadingState()
             }
@@ -56,7 +60,7 @@ struct PairingView: View {
             pairingStore.selectTransport(preferred)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            pairingStore?.handleApplicationDidBecomeActive()
+            if !isApplyingRelay { pairingStore?.handleApplicationDidBecomeActive() }
         }
         .task(id: pairingStore?.issuedPairing?.expiresAt) {
             guard let pairingStore, pairingStore.issuedPairing != nil else { return }
@@ -68,7 +72,13 @@ struct PairingView: View {
         }
         .onChange(of: isApplyingRelay) { _, applying in
             if applying {
+                pairingStore?.cancelPreflight()
                 pairingStore?.invalidateIssuedPairing()
+            }
+        }
+        .onChange(of: store.canPair) { _, ready in
+            if !ready, !isApplyingRelay, pairingStore?.issuedPairing != nil {
+                pairingStore?.startPreflight()
             }
         }
         .onDisappear {
@@ -92,7 +102,10 @@ struct PairingView: View {
     private func ensurePairingStore() -> PairingWindowStore {
         if let pairingStore { return pairingStore }
         let created = PairingWindowStore(
-            dependencies: .live(hostStore: store) { target in
+            dependencies: .live(hostStore: store, openWindow: { window in
+                openWindow(id: window.rawValue)
+                activateApplication()
+            }) { target in
                 handleOpenSettings(target)
             },
             verifiedCapability: store.verifiedOnboardingCapability
@@ -429,7 +442,7 @@ struct PairingView: View {
                 .disabled(pairingStore.isIssuingPairing || pairingStore.isEnablingTransport)
                 .accessibilityElement(children: .contain)
             }
-            if pairingStore.activePairing != nil {
+            if !isApplyingRelay, pairingStore.activePairing != nil {
                 PairingActionBar(
                     didCopy: pairingStore.didCopyPairingLink,
                     canCopy: pairingStore.canCopyPairingLink,
@@ -461,7 +474,7 @@ private struct PairingCheckItemRow: View {
     let onSecondary: () -> Void
 
     var body: some View {
-        let visiblePrimary = hidesPrimaryAction ? nil : resolved?.primaryAction
+        let visiblePrimary = hidesPrimaryAction || resolved?.primaryAction == .skip ? nil : resolved?.primaryAction
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 8) {
                 OnboardingStateIcon(state: check.state)
@@ -478,11 +491,7 @@ private struct PairingCheckItemRow: View {
                     {
                         HStack(spacing: 8) {
                             if let primary = visiblePrimary {
-                                Button(OnboardingActionLabels.primaryTitle(
-                                    for: primary,
-                                    code: resolved?.code,
-                                    isConfigured: isConfigured
-                                ), action: onPrimary)
+                                Button(primaryTitle(primary), action: onPrimary)
                                 .controlSize(.small)
                                 .disabled(isWorking)
                             }
@@ -503,6 +512,15 @@ private struct PairingCheckItemRow: View {
         }
         .padding(.vertical, 2)
     }
+    private func primaryTitle(_ action: OnboardingFix) -> String {
+        switch action {
+        case .choosePath, .runFix(.doctorFix): "打开诊断…"
+        case .runFix(.takeoverHomebrew): "查看服务归属…"
+        case .runFix(.saveSetup): "继续首次设置…"
+        default: OnboardingActionLabels.primaryTitle(for: action, code: resolved?.code, isConfigured: isConfigured)
+        }
+    }
+
 }
 
 private struct PairingPreflightBlockedView: View {

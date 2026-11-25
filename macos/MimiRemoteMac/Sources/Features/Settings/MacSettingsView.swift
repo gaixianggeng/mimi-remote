@@ -6,6 +6,7 @@ struct MacSettingsView: View {
     let store: HostStore
     let updates: AppUpdateStore
     @Environment(\.openWindow) private var openWindow
+    @State private var confirmsCodexSessionRepair = false
     @State private var confirmsRestore = false
     @State private var workspaceScopeStore: WorkspaceScopeStore?
     @State private var isChoosingBrowseScope = false
@@ -56,6 +57,10 @@ struct MacSettingsView: View {
                         LabeledContent("Endpoint", value: status.endpoint)
                         LabeledContent("agentd 版本", value: status.version)
                     }
+                    Button("修复共享运行环境…") { confirmsCodexSessionRepair = true }
+                        .disabled(store.isBusy || store.owner != .macApp)
+                    if let notice = store.codexSessionRepairNotice { Text(notice) }
+                    if store.lastError != nil { Text("服务操作未完成，请在诊断中重新检查。") }
                     if store.canRestoreHomebrew {
                         Button("停止 App 服务并恢复 Homebrew…", role: .destructive) {
                             confirmsRestore = true
@@ -108,7 +113,7 @@ struct MacSettingsView: View {
                         owner: store.owner,
                         photosAccess: store.photosAccess
                     )
-                    LabeledContent("本地网络", value: "局域网配对按需授权")
+                    LabeledContent("本地网络", value: workspaceScopeStore?.localNetworkStatus ?? "尚未确认")
                     Button(FileAccessSettingsPresentation.localNetworkActionTitle) {
                         store.openLocalNetworkSettings()
                     }
@@ -186,6 +191,18 @@ struct MacSettingsView: View {
                     onCancel: { workspaceScopeStore?.cancelWidenPreview() },
                     onConfirm: { Task { await workspaceScopeStore?.confirmWidenBrowseScope() } }
                 )
+            }
+            .confirmationDialog(
+                "修复共享运行环境？",
+                isPresented: $confirmsCodexSessionRepair,
+                titleVisibility: .visible
+            ) {
+                Button("停止服务并修复", role: .destructive) {
+                    Task { await store.repairSharedCodexRuntime() }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("请先结束所有共享的 Codex 任务和其他 Mimi 活动任务，并关闭 Codex Desktop 的 SSH 共享页面。此操作不会修改钥匙串授权或删除任务历史。检测到活动任务或其他连接时会拒绝修复。")
             }
             .alert("恢复 Homebrew 服务？", isPresented: $confirmsRestore) {
                 Button("取消", role: .cancel) {}

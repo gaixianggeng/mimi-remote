@@ -145,6 +145,23 @@ final class AgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(sanitized[5], "failed with Bearer [REDACTED]")
     }
 
+    func testLogExportAndLegacyDoctorCannotIncludeOpaquePrivateFields() throws {
+        let event = #"{"at":"2026-01-01T12:00:00Z","stage":"http","outcome":"failed","stderr":"private stderr","operation":"opaque-grant","reference":"credential"}"#
+        let lines = DiagnosticLogSanitizer.eventLines([event, "ssh local-user@private-host"])
+        let line = try XCTUnwrap(lines.first)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertTrue(line.contains("failed"))
+        for privateValue in ["stderr", "private", "opaque-grant", "credential"] {
+            XCTAssertFalse(line.contains(privateValue))
+        }
+        let check = AgentCheck(name: "codex-app-server", ok: false, level: "error",
+                               message: "private stderr", fix: "ssh local-user@private-host")
+        let display = DoctorCheckPresentation.make(from: check)
+        XCTAssertEqual(display.localizedTitle, "Codex 运行环境")
+        XCTAssertFalse(display.sanitizedMessage.contains("private"))
+        XCTAssertFalse(display.sanitizedDetail?.contains("private") ?? false)
+    }
+
     func testDoctorDisplayChecksAreReadOnlyWithChineseTitlesAndSanitizedText() {
         let rawChecks = [
             AgentCheck(name: "config", ok: false, level: "error", message: "bad /Users/bob/config.json", fix: "Bearer tok123"),
@@ -153,7 +170,7 @@ final class AgentDiagnosticsTests: XCTestCase {
         let display = rawChecks.map(DoctorCheckPresentation.make(from:))
         XCTAssertEqual(display[0].localizedTitle, "配置文件")
         XCTAssertFalse(display[0].sanitizedMessage.contains("bob"))
-        XCTAssertEqual(display[0].sanitizedDetail, "Bearer [REDACTED]")
+        XCTAssertEqual(display[0].sanitizedDetail, "请参照上方对应的预检项目处理。")
         XCTAssertEqual(display[1].localizedTitle, "Tailscale 网络")
         XCTAssertFalse(display[1].sanitizedMessage.contains("100.64.1.2"))
     }
@@ -191,9 +208,7 @@ final class AgentDiagnosticsTests: XCTestCase {
             )
             await store.refreshAll()
 
-            // doctor 检查仅作展示，不提供任何可点击修复。
-            XCTAssertEqual(store.doctorChecks.count, 1)
-            XCTAssertEqual(store.doctorChecks[0].localizedTitle, "配置文件")
+            XCTAssertTrue(store.doctorChecks.isEmpty, "Recovery must not probe tools from the unsafe config")
 
             let configRow = try XCTUnwrap(store.check(for: .configStore))
             XCTAssertFalse(store.canClickDoctorFix(for: configRow), code)
@@ -207,6 +222,44 @@ final class AgentDiagnosticsTests: XCTestCase {
             await store.performCheckPrimaryAction(for: configRow)
             XCTAssertEqual(doctorFixCalls.current, 0, "host_recovery must be strictly read-only for \(code)")
         }
+    }
+
+    @MainActor
+    func testPassiveDiagnosticsDoesNotRunLegacyDoctor() async {
+        let calls = CallCounter()
+        var deps = Self.makeDiagnosticsDependencies(report: Self.makeMacPairReport(configCheck: nil))
+        deps.runReadOnlyDoctor = {
+            _ = calls.increment()
+            return AgentDoctorResults(ok: true, version: "test", listen: "", checks: [])
+        }
+        let store = DiagnosticsStore(dependencies: deps)
+        await store.runPreflight()
+        XCTAssertTrue(store.canReadDoctor)
+        XCTAssertEqual(calls.current, 0)
+        await store.runReadOnlyDoctor()
+        XCTAssertEqual(calls.current, 1)
+    }
+
+    func testDoctorCapabilityBelongsToThePackagedBinary() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString).appendingPathExtension("bundle")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let resources = directory.appending(path: "Contents/Resources")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let plist = ["CFBundleIdentifier": "test.mimi.capability", "CFBundlePackageType": "BNDL"]
+        try PropertyListEncoder().encode(plist).write(to: directory.appending(path: "Contents/Info.plist"))
+        let binary = resources.appending(path: "agentd")
+        let marker = resources.appending(path: "agentd-onboarding-capability")
+        try Data().write(to: binary)
+        try Data().write(to: marker)
+        let bundle = try XCTUnwrap(Bundle(url: directory))
+        let client = AgentCommandClient.live(bundle: bundle)
+        XCTAssertNil(client.verifiedOnboardingCapability())
+        try Data(OnboardingSchema.doctorFixCapability.utf8).write(to: marker)
+        XCTAssertEqual(client.verifiedOnboardingCapability(), OnboardingSchema.doctorFixCapability)
+        XCTAssertNil(AgentCommandClient.live(bundle: bundle, binaryOverride: binary).verifiedOnboardingCapability())
+        try Data("unknown".utf8).write(to: marker)
+        XCTAssertNil(client.verifiedOnboardingCapability())
     }
 
     @MainActor
@@ -261,7 +314,7 @@ final class AgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(doctorFixCalls.current, 1)
         XCTAssertEqual(preflightCalls.current, 2, "doctor_fix 完成后必须立即重跑预检")
         XCTAssertEqual(be3Store.check(for: .configStore)?.state, .ok)
-        XCTAssertEqual(be3Store.appliedFixes, ["已收紧 ~/config.json 权限"])
+        XCTAssertEqual(be3Store.appliedFixes, ["已完成文件权限修复"])
     }
 
     @MainActor
@@ -286,8 +339,13 @@ final class AgentDiagnosticsTests: XCTestCase {
         XCTAssertEqual(resolved?.isTrusted, false)
         XCTAssertNil(resolved?.primaryAction)
 
-        var deps = Self.makeDiagnosticsDependencies(report: Self.makeMacPairReport(configCheck: nil))
+        let unsafe = OnboardingCheck(id: .configStore, state: .error, detail: "权限过宽",
+                                     blocking: true, code: "config_permissions_unsafe", fix: .runFix(.doctorFix))
+        let previous = Self.makeMacPairReport(configCheck: unsafe)
+        let calls = CallCounter()
+        var deps = Self.makeDiagnosticsDependencies(report: previous)
         deps.preflight = { _, _ in
+            if calls.increment() == 1 { return previous }
             throw AgentClientError.onboarding(resolved!)
         }
         deps.runSafeDoctorFix = {
@@ -300,6 +358,10 @@ final class AgentDiagnosticsTests: XCTestCase {
             verifiedCapability: OnboardingSchema.doctorFixCapability
         )
         await store.runPreflight()
+        XCTAssertEqual(store.clickablePrimaryFix(for: unsafe), .runFix(.doctorFix))
+        await store.runPreflight()
+        await store.performCheckPrimaryAction(for: unsafe)
+        XCTAssertNil(store.clickablePrimaryFix(for: unsafe))
         if let err = store.preflightError {
             await store.performDiagnosticAction(err)
         }

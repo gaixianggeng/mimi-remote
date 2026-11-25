@@ -3,6 +3,7 @@ import Foundation
 import Observation
 
 struct DiagnosticsDependencies {
+    var openOnboarding: @MainActor (OnboardingWizardStep) async -> Void = { _ in }
     var configExists: @MainActor () -> Bool
     var preflight: @Sendable (
         _ options: OnboardingPreflightOptions,
@@ -26,10 +27,16 @@ struct DiagnosticsDependencies {
     @MainActor
     static func live(
         hostStore: HostStore,
+        openDashboard: @escaping @MainActor () -> Void,
         openSettingsTarget: @escaping @MainActor (OnboardingSettingsTarget) -> Void
     ) -> DiagnosticsDependencies {
         let agent = hostStore.agent
         return DiagnosticsDependencies(
+            openOnboarding: { step in
+                hostStore.beginOnboarding()
+                openDashboard()
+                await hostStore.onboardingWizard().goToStep(step)
+            },
             configExists: { hostStore.hasConfiguration() },
             preflight: { options, onProgress in
                 try await agent.preflight(options, onProgress)
@@ -89,7 +96,7 @@ struct DiagnosticsDependencies {
 @MainActor
 @Observable
 final class DiagnosticsStore {
-    static let hostRecoveryCodes: Set<String> = [
+    nonisolated static let hostRecoveryCodes: Set<String> = [
         "config_invalid",
         "config_recovery_required",
         "token_rotation_requires_approval",
@@ -154,7 +161,8 @@ final class DiagnosticsStore {
     }
 
     func clickablePrimaryFix(for check: OnboardingCheck) -> OnboardingFix? {
-        guard let resolved = resolvedDiagnostics[check.id],
+        guard !isChecking, self.check(for: check.id) == check,
+              let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
               let fix = resolved.primaryAction
         else {
@@ -170,7 +178,8 @@ final class DiagnosticsStore {
     }
 
     func clickableSecondaryFix(for check: OnboardingCheck) -> (fix: OnboardingFix, label: String)? {
-        guard let resolved = resolvedDiagnostics[check.id],
+        guard !isChecking, self.check(for: check.id) == check,
+              let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
               let secondary = resolved.secondaryAction
         else {
@@ -193,6 +202,7 @@ final class DiagnosticsStore {
         preflightTask?.cancel()
         preflightGeneration &+= 1
         let generation = preflightGeneration
+        clearReport()
         isChecking = true
         preflightError = nil
         actionError = nil
@@ -264,13 +274,31 @@ final class DiagnosticsStore {
         await task.value
     }
 
+    private func clearReport() {
+        report = nil
+        checks = []
+        resolvedDiagnostics = [:]
+        recoveryDiagnostic = nil
+        doctorChecks = []
+        pendingPathPicker = nil
+        isPathPickerPresented = false
+    }
+
+    var canReadDoctor: Bool {
+        report?.configured == true && check(for: .configStore)?.state == .ok
+    }
+
     func runReadOnlyDoctor() async {
+        guard canReadDoctor else { return }
+        let generation = preflightGeneration
         do {
             let results = try await deps.runReadOnlyDoctor()
+            guard generation == preflightGeneration, !Task.isCancelled else { return }
             doctorChecks = results.checks.map(DoctorCheckPresentation.make(from:))
         } catch is CancellationError {
             return
         } catch {
+            guard generation == preflightGeneration else { return }
             doctorChecks = []
         }
     }
@@ -279,6 +307,8 @@ final class DiagnosticsStore {
         preflightTask?.cancel()
         preflightTask = nil
         preflightGeneration &+= 1
+        clearReport()
+        preflightError = nil
         isChecking = false
     }
 
@@ -301,7 +331,7 @@ final class DiagnosticsStore {
     }
 
     func performDiagnosticAction(_ diagnostic: OnboardingResolvedDiagnostic) async {
-        guard diagnostic.isTrusted, let fix = diagnostic.primaryAction else { return }
+        guard !isChecking, diagnostic == preflightError, diagnostic.isTrusted, let fix = diagnostic.primaryAction else { return }
         if case .runFix(.doctorFix) = fix {
             guard isBE3DoctorFixSupported,
                   report?.configured == true,
@@ -374,6 +404,10 @@ final class DiagnosticsStore {
                 deps.openSettings(target)
             }
         case .choosePath(let target):
+            guard report?.configured == true else {
+                await deps.openOnboarding(target == .workspaceRoot ? .workspaceSelection : .environmentCheck)
+                return
+            }
             switch target {
             case .workspaceRoot:
                 pendingPathPicker = .workspaceRoot
@@ -415,7 +449,7 @@ final class DiagnosticsStore {
             actionError = nil
             do {
                 let fixes = try await deps.runSafeDoctorFix()
-                appliedFixes = fixes.map(DiagnosticLogSanitizer.sanitizeLine)
+                appliedFixes = fixes.isEmpty ? [] : ["已完成文件权限修复"]
                 isApplyingFix = false
                 // 修复权限后立即重跑预检核验结果。
                 await runPreflight()
@@ -430,8 +464,12 @@ final class DiagnosticsStore {
 
         switch action {
         case .saveSetup:
-            deps.openSettings(.connections)
+            await deps.openOnboarding(.workspaceSelection)
         case .enableCodex, .enableClaude, .enableAgy:
+            guard report?.configured == true else {
+                await deps.openOnboarding(.environmentCheck)
+                return
+            }
             let runtimeID = switch action {
             case .enableCodex: "codex"
             case .enableClaude: "claude"

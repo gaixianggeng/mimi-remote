@@ -227,7 +227,7 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if !showsOnboardingWizard {
-                    HostStatusHeader(lifecycle: store.lifecycle)
+                    HostStatusHeader(lifecycle: store.lifecycle, showsDetail: remediation == nil)
                 }
 
                 if showsOnboardingWizard {
@@ -295,7 +295,9 @@ struct DashboardView: View {
             verifiedConfigured: store.hasConfiguration(),
             verifiedCapability: store.verifiedOnboardingCapability
         )
-        guard let raw = try? await store.agent.preflight(options, nil) else { return }
+        preflightReport = nil
+        preflightDiagnostics = [:]
+        guard let raw = try? await store.agent.preflight(options, nil), !Task.isCancelled else { return }
         let evidence = MacNativePreflightEvidence(
             agentRegistrationState: store.agentRegistrationState,
             mainAppRegistrationState: store.mainAppRegistrationState,
@@ -406,7 +408,6 @@ private struct ServiceOverviewView: View {
             }
         case .recheck:
             Task {
-                await store.refresh()
                 await recheckPreflight()
             }
         case .openDiagnostics:
