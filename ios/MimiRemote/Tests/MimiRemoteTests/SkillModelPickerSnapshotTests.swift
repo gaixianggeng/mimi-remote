@@ -715,5 +715,171 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .background(themeStore.tokens(for: colorScheme).background)
     }
 
+    /// 模型切换面板与底部输入框共用 `FloatingGlassChromeStyle` 回退决策和 26pt 圆角。
+    func testModelPickerPresentationChromeMatchesComposerFloatingGlassPolicy() {
+        XCTAssertEqual(ModelReasoningGridMetrics.panelCornerRadius, 26)
+
+        for interfaceStyle in ThemeInterfaceStyle.allCases {
+            for reduceTransparency in [false, true] {
+                for increasedContrast in [false, true] {
+                    for supportsLiquidGlass in [false, true] {
+                        XCTAssertEqual(
+                            ModelReasoningGridPresentationChrome.resolvedStyle(
+                                interfaceStyle: interfaceStyle,
+                                reduceTransparency: reduceTransparency,
+                                increasedContrast: increasedContrast,
+                                supportsLiquidGlass: supportsLiquidGlass
+                            ),
+                            FloatingGlassChromeStyle.resolve(
+                                interfaceStyle: interfaceStyle,
+                                reduceTransparency: reduceTransparency,
+                                increasedContrast: increasedContrast,
+                                supportsLiquidGlass: supportsLiquidGlass
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        XCTAssertTrue(
+            ModelReasoningGridPresentationChrome.usesTranslucentInnerSurface(
+                surfaceMode: .presentationChrome,
+                interfaceStyle: .glass,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        )
+        XCTAssertFalse(
+            ModelReasoningGridPresentationChrome.usesTranslucentInnerSurface(
+                surfaceMode: .standaloneOpaque,
+                interfaceStyle: .glass,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        )
+        XCTAssertFalse(
+            ModelReasoningGridPresentationChrome.usesTranslucentInnerSurface(
+                surfaceMode: .presentationChrome,
+                interfaceStyle: .classic,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+        )
+        XCTAssertFalse(
+            ModelReasoningGridPresentationChrome.usesTranslucentInnerSurface(
+                surfaceMode: .presentationChrome,
+                interfaceStyle: .glass,
+                reduceTransparency: true,
+                increasedContrast: false
+            )
+        )
+        XCTAssertFalse(
+            ModelReasoningGridPresentationChrome.usesTranslucentInnerSurface(
+                surfaceMode: .presentationChrome,
+                interfaceStyle: .glass,
+                reduceTransparency: false,
+                increasedContrast: true
+            )
+        )
+        XCTAssertEqual(ModelReasoningGridPresentationChrome.borderWidth(increasedContrast: false), 0.75)
+        XCTAssertEqual(ModelReasoningGridPresentationChrome.borderWidth(increasedContrast: true), 1.25)
+    }
+
+    /// 防止模型切换弹窗回退到不透明 `tokens.surface`，确保继续复用输入框共享玻璃修饰符。
+    func testModelPickerPresentationSourceReusesSharedComposerGlassSurface() throws {
+        let sourcesRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Features/Conversation")
+
+        let selectionSource = try String(
+            contentsOf: sourcesRoot.appendingPathComponent("ComposerModelSelection.swift"),
+            encoding: .utf8
+        )
+        let startMarker = "private var modelGridPickerPopoverContent: some View {"
+        let endMarker = "func refreshModelOptionsForComposerRuntime"
+        let startRange = try XCTUnwrap(selectionSource.range(of: startMarker))
+        let endRange = try XCTUnwrap(
+            selectionSource.range(of: endMarker, range: startRange.upperBound..<selectionSource.endIndex)
+        )
+        let popoverBody = String(selectionSource[startRange.upperBound..<endRange.lowerBound])
+
+        XCTAssertTrue(popoverBody.contains("surfaceMode: .presentationChrome"))
+        XCTAssertTrue(popoverBody.contains(".presentationCornerRadius(ModelReasoningGridMetrics.panelCornerRadius)"))
+        XCTAssertTrue(popoverBody.contains("ModelReasoningGridPresentationBackground("))
+        XCTAssertTrue(popoverBody.contains(".environment(\\.themeInterfaceStyle, themeStore.interfaceStyle)"))
+        XCTAssertFalse(popoverBody.contains(".presentationBackground(themeStore.tokens(for: colorScheme).surface)"))
+
+        let pickerSource = try String(
+            contentsOf: sourcesRoot.appendingPathComponent("ModelReasoningGridPicker.swift"),
+            encoding: .utf8
+        )
+        let bgStart = try XCTUnwrap(
+            pickerSource.range(of: "struct ModelReasoningGridPresentationBackground: View {")
+        )
+        let bgEnd = try XCTUnwrap(
+            pickerSource.range(of: "struct ModelReasoningGridLayout:", range: bgStart.upperBound..<pickerSource.endIndex)
+        )
+        let bgBody = String(pickerSource[bgStart.upperBound..<bgEnd.lowerBound])
+        XCTAssertTrue(bgBody.contains("ComposerCardSurfaceModifier("))
+        XCTAssertTrue(bgBody.contains("usesFloatingGlass: true"))
+    }
+
+    /// 核对亮/暗与玻璃/经典模式下，透光展示态模型面板与共享展示背景均可稳定布局渲染。
+    func testModelPickerPresentationChromeRendersInLightAndDarkModes() {
+        let layout = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: codex56SnapshotModels
+        )
+        for colorScheme in [ColorScheme.light, .dark] {
+            for interfaceStyle in ThemeInterfaceStyle.allCases {
+                let defaults = UserDefaults(suiteName: "SkillModelPickerGlassTests.\(UUID().uuidString)")!
+                let themeStore = ThemeStore(defaults: defaults)
+                themeStore.mode = colorScheme == .dark ? .dark : .light
+                themeStore.interfaceStyle = interfaceStyle
+                let tokens = themeStore.tokens(for: colorScheme)
+                let shape = RoundedRectangle(
+                    cornerRadius: ModelReasoningGridMetrics.panelCornerRadius,
+                    style: .continuous
+                )
+                let view = ModelReasoningGridPicker(
+                    options: codex56SnapshotModels,
+                    layout: layout,
+                    selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
+                    selectedModelID: "gpt-5.6-sol",
+                    isRefreshing: false,
+                    selectedServiceTier: "priority",
+                    surfaceMode: .presentationChrome,
+                    onSelectModel: { _, _ in },
+                    onSelectDefaultModel: { _, _ in },
+                    onServiceTierChange: { _ in },
+                    onRefresh: {}
+                )
+                .background {
+                    ModelReasoningGridPresentationBackground(
+                        shape: shape,
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: false,
+                        increasedContrast: false
+                    )
+                }
+                .environmentObject(themeStore)
+                .environment(\.colorScheme, colorScheme)
+                .environment(\.themeInterfaceStyle, interfaceStyle)
+                .environment(\.horizontalSizeClass, .compact)
+
+                let host = UIHostingController(rootView: view)
+                host.view.frame = CGRect(x: 0, y: 0, width: 390, height: layout.standardContentHeight)
+                host.view.setNeedsLayout()
+                host.view.layoutIfNeeded()
+                let fitted = host.sizeThatFits(in: CGSize(width: 390, height: 400))
+                XCTAssertEqual(fitted.height, layout.standardContentHeight, accuracy: 1)
+            }
+        }
+    }
+
 }
 #endif

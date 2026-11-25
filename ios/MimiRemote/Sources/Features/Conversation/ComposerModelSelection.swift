@@ -245,13 +245,20 @@ extension ComposerView {
     }
 
     private var modelGridPickerPopoverContent: some View {
-        ModelReasoningGridPicker(
+        let tokens = themeStore.tokens(for: colorScheme)
+        let increasedContrast = colorSchemeContrast == .increased
+        let panelShape = RoundedRectangle(
+            cornerRadius: ModelReasoningGridMetrics.panelCornerRadius,
+            style: .continuous
+        )
+        return ModelReasoningGridPicker(
             options: modelOptionsForMenu,
             layout: modelReasoningGridLayout,
             selection: selectedModelGridSelection,
             selectedModelID: composerState.turnOptions.model,
             isRefreshing: sessionStore.isRefreshingAppServerModels,
             selectedServiceTier: composerState.turnOptions.serviceTier,
+            surfaceMode: .presentationChrome,
             onSelectModel: { option, effort in
                 selectModel(option, effort: effort)
             },
@@ -270,13 +277,24 @@ extension ComposerView {
         // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
         .task { await ensureModelOptionsForComposerRuntime() }
         .environmentObject(themeStore)
+        .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
         .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
         // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
         // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
         // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
         .presentationDetents(modelPickerPresentationDetents)
         .presentationDragIndicator(.visible)
-        .presentationBackground(themeStore.tokens(for: colorScheme).surface)
+        .presentationCornerRadius(ModelReasoningGridMetrics.panelCornerRadius)
+        .presentationBackground {
+            ModelReasoningGridPresentationBackground(
+                shape: panelShape,
+                tokens: tokens,
+                colorScheme: colorScheme,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: increasedContrast
+            )
+            .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
+        }
     }
 
     /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录（#778），或启动时
