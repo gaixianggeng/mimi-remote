@@ -59,6 +59,55 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	}
 }
 
+func TestDarwinCodexCandidatesCoverEmbeddedChatGPTAndCodexApps(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "example")
+	candidates := darwinCodexCandidates(home)
+	for _, expected := range []string{
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		filepath.Join(home, ".local", "bin", "codex"),
+		filepath.Join(home, ".npm-global", "bin", "codex"),
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+	} {
+		if !slices.Contains(candidates, expected) {
+			t.Fatalf("macOS Codex fallback 缺少 %q：%v", expected, candidates)
+		}
+	}
+
+	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+	resolved, err := resolveCodexBin("codex", func(candidate string) (string, error) {
+		if candidate == embedded {
+			return embedded, nil
+		}
+		return "", errors.New("missing")
+	}, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(embedded)
+	if resolved != filepath.Clean(want) {
+		t.Fatalf("PATH 未命中时应发现 ChatGPT.app 新版内嵌 Codex：%s", resolved)
+	}
+}
+
+func TestDarwinPlatformCodexCandidatesIncludeEmbeddedChatGPTCLI(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS candidate list only applies to Darwin hosts")
+	}
+	candidates := platformCodexCandidates()
+	const expected = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+	if !slices.Contains(candidates, expected) {
+		t.Fatalf("Darwin platformCodexCandidates 缺少 %q：%v", expected, candidates)
+	}
+}
+
 func TestLinuxCodexCandidatesCoverCommonUserInstallers(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux candidate list only applies to Linux hosts")
