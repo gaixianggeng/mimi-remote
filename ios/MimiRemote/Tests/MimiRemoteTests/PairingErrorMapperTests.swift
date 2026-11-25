@@ -170,8 +170,8 @@ final class PairingErrorMapperTests: XCTestCase {
         let tokenMismatch = PairingErrorMapper.mapHTTPErrorEnvelope(data: tokenMismatchData, configured: true)
         XCTAssertTrue(tokenMismatch.isTrusted)
         XCTAssertTrue(tokenMismatch.preservesSavedProfiles)
-        if case .desktopGuidanceAndRescan = tokenMismatch.action {
-            // expected
+        if case .desktopGuidanceAndRescan(let instructions) = tokenMismatch.action {
+            XCTAssertEqual(tokenMismatch.userFacingMessage, instructions)
         } else {
             XCTFail("Expected desktopGuidanceAndRescan, got \(tokenMismatch.action)")
         }
@@ -262,6 +262,7 @@ final class PairingErrorMapperTests: XCTestCase {
                 data: v1ExpiredBody,
                 statusCode: 401,
                 contentType: mediaType,
+                varyHeader: "Accept",
                 configured: true
             )
             XCTAssertFalse(mapped.isTrusted, "v2 media type \(mediaType) must not be trusted")
@@ -275,7 +276,8 @@ final class PairingErrorMapperTests: XCTestCase {
         let v1WithCharset = PairingErrorMapper.mapHTTPResponse(
             data: v1ExpiredBody,
             statusCode: 401,
-            contentType: "application/vnd.mimi.onboarding.v1+json; charset=utf-8"
+            contentType: "application/vnd.mimi.onboarding.v1+json; charset=utf-8",
+            varyHeader: "Accept"
         )
         XCTAssertTrue(v1WithCharset.isTrusted)
         XCTAssertEqual(v1WithCharset.code, "pair_ticket_expired")
@@ -325,7 +327,7 @@ final class PairingErrorMapperTests: XCTestCase {
     func testVaryAcceptNegotiatedPathsAndScannerFailureActions() {
         XCTAssertTrue(PairingErrorMapper.hasVaryAccept("Accept"))
         XCTAssertTrue(PairingErrorMapper.hasVaryAccept("Origin, accept"))
-        XCTAssertTrue(PairingErrorMapper.hasVaryAccept("*"))
+        XCTAssertFalse(PairingErrorMapper.hasVaryAccept("*"))
         XCTAssertFalse(PairingErrorMapper.hasVaryAccept("Origin"))
         XCTAssertFalse(PairingErrorMapper.hasVaryAccept(nil))
 

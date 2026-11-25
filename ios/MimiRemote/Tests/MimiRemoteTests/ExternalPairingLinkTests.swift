@@ -283,7 +283,33 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertTrue(appStore.connectionStatus.isConnected)
         XCTAssertNil(appStore.connectionTermination)
         XCTAssertEqual(store.lastPairingOnboardingError?.isLegacyFallback, true)
-        XCTAssertEqual(appStore.lastError, L10n.text("ui.pairing_onboarding_pair_ticket_invalid"))
+        XCTAssertEqual(appStore.lastError, L10n.text("ui.pairing_onboarding_pair_ticket_expired"))
+    }
+
+    func testLocalAutoPairingSurfacesLegacyLoopbackDenial() async throws {
+        let suite = "ExternalPairingLinkTests.LocalClaim." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExternalPairingClaimStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 403, contentType: "application/json", vary: nil,
+            body: #"{"error":"本机自动配对仅允许 Mimi Mac 客户端通过 loopback 发起"}"#
+        )
+        let store = AppStore(
+            defaults: defaults, tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: true, localAgentProbe: { _, _ in },
+            localAgentPairingClaim: { endpoint, timeout in
+                try await AgentAPIClient(endpoint: endpoint, token: "", session: session)
+                    .claimLocalPairing(timeout: timeout).token
+            }
+        )
+        let connected = await store.preflightConnection()
+        XCTAssertFalse(connected)
+        XCTAssertEqual(store.connectionStatus, .failed(L10n.text("ui.pairing_onboarding_pair_local_forbidden")))
+        XCTAssertTrue(store.connectionProfiles.isEmpty)
     }
 
     func testFirstConnectionDeepLinkPropagates409And503TypedOnboardingErrors() async throws {

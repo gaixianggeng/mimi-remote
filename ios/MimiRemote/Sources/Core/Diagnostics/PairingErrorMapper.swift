@@ -198,13 +198,8 @@ struct MappedPairingError: Equatable, Sendable {
     /// Surfaces pure text guidance for `date_time` (never `App-Prefs:`) and desktop rescan instructions.
     var userFacingMessage: String {
         switch action {
-        case .showDateTimeGuidanceAndRetry(let instructions):
+        case .showDateTimeGuidanceAndRetry(let instructions), .desktopGuidanceAndRescan(let instructions):
             return instructions
-        case .desktopGuidanceAndRescan(let instructions):
-            if code == "workspace_confirmation_required" {
-                return instructions
-            }
-            return message
         case .none, .retry, .openURL, .openManagedConnection:
             return message
         }
@@ -262,7 +257,7 @@ enum PairingErrorMapper {
         let tokens = varyHeader
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        return tokens.contains(expectedVaryHeaderValue.lowercased()) || tokens.contains("*")
+        return tokens.contains(expectedVaryHeaderValue.lowercased())
     }
 
     static func isOnboardingMediaType(_ contentType: String?) -> Bool {
@@ -608,20 +603,32 @@ enum PairingErrorMapper {
         data: Data,
         statusCode: Int,
         contentType: String? = nil,
+        varyHeader: String? = nil,
         configured: Bool? = nil
     ) -> MappedPairingError {
         switch classifyMediaType(contentType) {
         case .unsupportedOnboardingMajor:
             return untrustedFallback()
         case .v1:
-            return mapHTTPErrorEnvelope(data: data, configured: configured)
+            guard hasVaryAccept(varyHeader) else { return untrustedFallback() }
+            let mapped = mapHTTPErrorEnvelope(data: data, configured: configured)
+            let expectedStatus: Int? = switch mapped.code {
+            case "pair_ticket_invalid", "pair_ticket_expired", "pair_clock_skew": 401
+            case "pair_local_forbidden": 403
+            case "workspace_confirmation_required", "pair_managed_grant_conflict": 409
+            case "no_enabled_assistant": 503
+            default: nil
+            }
+            if let expectedStatus, expectedStatus != statusCode { return untrustedFallback() }
+            if statusCode == 401, expectedStatus != 401 { return untrustedFallback() }
+            return mapped
         case .other:
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   !hasUnsupportedOnboardingSchema(object) else {
                 return untrustedFallback()
             }
             if object["ok"] != nil || object["error"] is [String: Any] {
-                return mapHTTPErrorEnvelope(data: data, configured: configured)
+                return untrustedFallback()
             }
             if let legacy = mapLegacyHTTPError(object, statusCode: statusCode, configured: configured) {
                 return legacy
@@ -633,12 +640,24 @@ enum PairingErrorMapper {
     private static func mapLegacyHTTPError(
         _ obj: [String: Any], statusCode: Int, configured: Bool?
     ) -> MappedPairingError? {
-        guard obj["error"] is String,
+        let error = obj["error"] as? String
+        guard (error != nil || (obj["error"] == nil && obj["code"] is String)),
               Set(obj.keys).isSubset(of: ["error", "code"])
         else {
             return nil
         }
-        let rawCode = obj["code"] as? String
+        var rawCode = obj["code"] as? String
+        if obj["code"] == nil {
+            // Exact strings from hosts predating the onboarding media type.
+            switch (statusCode, error) {
+            case (401, "配对二维码已过期"): rawCode = "pair_ticket_expired"
+            case (401, "配对票据 issued_at 超出允许范围"): rawCode = "pair_clock_skew"
+            case (403, "本机自动配对仅允许 Mimi Mac 客户端通过 loopback 发起"): rawCode = "pair_local_forbidden"
+            case (503, "全部 AI 编程助手已关闭，请先启用助手"): rawCode = "no_enabled_assistant"
+            case (401, _) where configured != true: rawCode = "pair_ticket_invalid"
+            default: break
+            }
+        }
         let mappedCode: String? = switch rawCode {
         case "tailcat_managed_mode_required", "tailcat_managed_grant_required":
             "pair_managed_grant_conflict"
@@ -652,6 +671,8 @@ enum PairingErrorMapper {
             nil
         }
         if let mappedCode, let entry = entriesByCode[mappedCode] {
+            let ticketCodes = ["pair_ticket_expired", "pair_ticket_invalid", "pair_clock_skew"]
+            guard (statusCode == 401) == ticketCodes.contains(mappedCode) else { return nil }
             let step = entry.steps.first ?? .serviceDaemon
             let fix: PairingOnboardingWireFix
             if mappedCode == "pair_token_mismatch" {
@@ -666,18 +687,6 @@ enum PairingErrorMapper {
                 message: localizedMessage(code: mappedCode, step: step),
                 action: iosAction(for: fix, code: mappedCode),
                 wireFix: fix,
-                isTrusted: true,
-                preservesSavedProfiles: true,
-                isLegacyFallback: true
-            )
-        }
-        if statusCode == 401, obj["code"] == nil {
-            return MappedPairingError(
-                code: "pair_ticket_invalid",
-                step: .networkAny,
-                message: localizedMessage(code: "pair_ticket_invalid", step: .networkAny),
-                action: .retry,
-                wireFix: .retry,
                 isTrusted: true,
                 preservesSavedProfiles: true,
                 isLegacyFallback: true

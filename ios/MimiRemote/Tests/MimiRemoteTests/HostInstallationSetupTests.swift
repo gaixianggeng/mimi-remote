@@ -163,6 +163,13 @@ final class HostInstallationSetupTests: XCTestCase {
                     XCTAssertTrue(signedOutMessage.localizedCaseInsensitiveContains("not signed in"))
                 }
 
+                XCTAssertEqual(NewSessionSheet.unavailableRuntimeMessage(
+                    diagnosticsByProvider: ["claude": signedOut], enabledRuntimes: [.codex]
+                ), generic)
+                XCTAssertEqual(NewSessionSheet.unavailableRuntimeMessage(
+                    diagnosticsByProvider: ["codex": signedOut], enabledRuntimes: [.codex]
+                ), generic)
+
                 // Version-unsupported diagnostic stays distinct from signed-out.
                 let unsupported = RuntimeChannelDiagnostic(
                     provider: "agy",
@@ -183,21 +190,25 @@ final class HostInstallationSetupTests: XCTestCase {
         }
     }
 
-    func testPairingTicketReadsExpiryDirectlyFromLinkWithoutFixedTenMinuteWindow() {
-        let base = Date(timeIntervalSince1970: 1_800_000_000)
+    @MainActor
+    func testPairingTicketReadsExpiryDirectlyFromLinkWithoutFixedTenMinuteWindow() throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-        // Short 90-second ticket (e.g. Tailcat node expiring earlier than 10 minutes).
-        let shortExpiry = base.addingTimeInterval(90)
-        let ticket = PairingTicket(
-            endpoint: "http://100.64.0.10:8787",
-            issuedAt: formatter.string(from: base),
-            expiresAt: formatter.string(from: shortExpiry),
-            pairSignature: "sig"
-        )
-        XCTAssertEqual(ticket.expiresAtDate?.timeIntervalSince1970 ?? 0, shortExpiry.timeIntervalSince1970, accuracy: 0.001)
-        XCTAssertFalse(ticket.isExpired(at: base.addingTimeInterval(60)))
-        XCTAssertTrue(ticket.isExpired(at: base.addingTimeInterval(91)))
+        let now = Date()
+        let issued = formatter.string(from: now.addingTimeInterval(-120))
+        func link(expiringIn seconds: TimeInterval) throws -> URL {
+            var link = URLComponents(string: "mimiremote://pair")!
+            link.queryItems = [
+                URLQueryItem(name: "endpoint", value: "http://127.0.0.1:8787"),
+                URLQueryItem(name: "issued_at", value: issued),
+                URLQueryItem(name: "expires_at", value: formatter.string(from: now.addingTimeInterval(seconds))),
+                URLQueryItem(name: "pair_sig", value: "test-signature")
+            ]
+            return try XCTUnwrap(link.url)
+        }
+        XCTAssertNotNil(try AppStore.pairingTicket(from: link(expiringIn: 60)))
+        XCTAssertThrowsError(try AppStore.pairingTicket(from: link(expiringIn: -30))) {
+            XCTAssertEqual($0 as? PairingLinkError, .expired)
+        }
     }
 }

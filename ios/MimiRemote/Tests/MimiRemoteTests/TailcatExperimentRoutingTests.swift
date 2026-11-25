@@ -309,8 +309,12 @@ final class TailcatExperimentRoutingTests: XCTestCase {
         XCTAssertFalse(failure.errorDescription?.contains("节点未就绪") ?? true)
         XCTAssertTrue(failure.errorDescription?.contains("tailcat_pair_failed") ?? false)
         XCTAssertEqual(
-            ManagedPairingLinkAPIError.failed(code: "tailcat_agents_disabled", message: "全部助手已关闭").errorDescription,
-            "全部助手已关闭"
+            ManagedPairingLinkAPIError.failed(code: "tailcat_agents_disabled", message: "private detail").errorDescription,
+            PairingErrorMapper.localizedMessage(code: "no_enabled_assistant")
+        )
+        XCTAssertEqual(
+            ManagedPairingLinkAPIError.failed(code: "private value", message: "private detail").errorDescription,
+            PairingErrorMapper.safeFallbackCopy
         )
         // 鉴权失败与没有 code 的旧响应交回通用处理，凭据失效逻辑不变。
         XCTAssertNil(decode(401, #"{"code":"unauthorized","error":"x"}"#))

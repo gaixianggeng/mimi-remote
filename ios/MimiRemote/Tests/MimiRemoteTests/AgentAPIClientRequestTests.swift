@@ -446,7 +446,13 @@ final class AgentAPIClientRequestTests: XCTestCase {
             do {
                 try await contract.perform(client)
                 XCTFail("\(contract.name) 应收到测试桩的 500 响应")
+            } catch let error as PairingOnboardingAPIError {
+                XCTAssertTrue(PairingErrorMapper.isNegotiatedPath(contract.path))
+                XCTAssertEqual(error.status, 500)
+                XCTAssertFalse(error.isTrusted)
+                XCTAssertEqual(error.userFacingMessage, PairingErrorMapper.safeFallbackCopy)
             } catch let error as AgentAPIError {
+                XCTAssertFalse(PairingErrorMapper.isNegotiatedPath(contract.path))
                 guard case .server(let status, _) = error else {
                     XCTFail("\(contract.name) 应保留 HTTP 服务端错误，实际为 \(error)")
                     continue
@@ -820,9 +826,54 @@ extension AgentAPIClientRequestTests {
             XCTFail("Expected legacy 401 PairingOnboardingAPIError")
         } catch let error as PairingOnboardingAPIError {
             XCTAssertTrue(error.isLegacyFallback)
-            XCTAssertEqual(error.code, "pair_ticket_invalid")
+            XCTAssertEqual(error.code, "pair_ticket_expired")
             XCTAssertFalse(isCredentialInvalidatingError(error))
             XCTAssertTrue(error.preservesSavedProfiles)
+        }
+
+        let entitlement = #"{"ok":false,"error":{"code":"pair_managed_entitlement_required","step":"network_tailcat","message":"private detail","fix":{"kind":"open_settings","target":"managed_connection"}}}"#
+        for (media, vary, status) in [
+            (PairingErrorMapper.acceptMediaType, nil as String?, 403),
+            (PairingErrorMapper.acceptMediaType, "Origin", 403),
+            ("application/json", "Accept", 403),
+            (PairingErrorMapper.acceptMediaType, "Accept", 401)
+        ] {
+            NegotiatedPairingStubURLProtocol.configure(statusCode: status, contentType: media, vary: vary, body: entitlement)
+            do {
+                _ = try await client.claimPairing(sampleClaim)
+                XCTFail("Incomplete negotiation or invalid status must fail closed")
+            } catch let error as PairingOnboardingAPIError {
+                XCTAssertFalse(error.isTrusted)
+                XCTAssertEqual(error.action, .none)
+                XCTAssertEqual(error.userFacingMessage, PairingErrorMapper.safeFallbackCopy)
+            }
+        }
+        for (status, body, code) in [
+            (503, #"{"error":"全部 AI 编程助手已关闭，请先启用助手","code":"tailcat_agents_disabled"}"#, "no_enabled_assistant"),
+            (401, #"{"code":"pair_ticket_expired"}"#, "pair_ticket_expired"),
+            (401, #"{"error":"配对票据 issued_at 超出允许范围"}"#, "pair_clock_skew")
+        ] {
+            NegotiatedPairingStubURLProtocol.configure(statusCode: status, contentType: "application/json", vary: nil, body: body)
+            do {
+                _ = try await client.managedPairingLink(confirmResetSelfHosted: false)
+                XCTFail("Expected a legacy pairing error")
+            } catch let error as PairingOnboardingAPIError {
+                XCTAssertEqual(error.code, code)
+                XCTAssertTrue(error.isLegacyFallback)
+                XCTAssertFalse(isCredentialInvalidatingError(error))
+            }
+        }
+
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 401, contentType: "application/json", vary: nil,
+            body: #"{"code":"pair_ticket_invalid","error":"invalid token","grant":"private detail"}"#
+        )
+        do {
+            _ = try await client.freeTailcatRoute(clientKey: "nodekey:test")
+            XCTFail("Expected a sanitized ticket failure")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertEqual(error.userFacingMessage, PairingErrorMapper.safeFallbackCopy)
+            XCTAssertFalse(isCredentialInvalidatingError(error))
         }
 
         // Authenticated managed endpoint returning regular 401 bearer rejection keeps credentialsInvalid

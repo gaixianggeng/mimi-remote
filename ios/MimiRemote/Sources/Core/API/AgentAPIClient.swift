@@ -95,6 +95,10 @@ enum AgentAPIError: LocalizedError, CredentialInvalidatingError {
         guard status == 403 else {
             return false
         }
+        return hasCredentialRejectionEvidence(message: message, authenticationChallenge: authenticationChallenge)
+    }
+
+    static func hasCredentialRejectionEvidence(message: String, authenticationChallenge: String?) -> Bool {
         if authenticationChallenge?.lowercased().contains("bearer") == true {
             return true
         }
@@ -165,7 +169,7 @@ struct PairingOnboardingAPIError: LocalizedError, Equatable, CredentialInvalidat
         PairingErrorMapper.hasVaryAccept(varyHeader)
     }
 
-    var code: String? { mapped.code }
+    var code: String? { mapped.isTrusted ? mapped.code : nil }
     var step: PairingOnboardingStep? { mapped.step }
     var action: PairingErrorAction { mapped.action }
     var isTrusted: Bool { mapped.isTrusted }
@@ -195,11 +199,19 @@ enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
             return L10n.text("ui.managed_devices_upgrade_busy")
         case .hostTooOld:
             return L10n.text("ui.managed_devices_host_too_old")
-        case .failed(let code, let message):
-            // 全部助手都关着时用户能自己处理；其余是电脑端内部原因，只给下一步和错误代码。
-            return code == "tailcat_agents_disabled"
-                ? message
-                : L10n.format("ui.managed_devices_upgrade_failed", code)
+        case .failed(let code, _):
+            // 旧版异步操作的成功 HTTP 回执也可能带失败原因，只呈现已知业务码。
+            switch code {
+            case "tailcat_agents_disabled":
+                return PairingErrorMapper.localizedMessage(code: "no_enabled_assistant")
+            case "tailcat_activation_rollback_failed", "tailcat_activation_rolled_back",
+                 "tailcat_enable_failed", "tailcat_enable_rollback_failed", "tailcat_managed_mode_failed",
+                 "tailcat_managed_pairing_unavailable", "tailcat_operation_expired", "tailcat_pair_failed",
+                 "tailcat_pair_link_failed", "tailcat_status_unavailable", "tailcat_activation_failed":
+                return L10n.format("ui.managed_devices_upgrade_failed", code)
+            default:
+                return PairingErrorMapper.safeFallbackCopy
+            }
         }
     }
 
@@ -1016,12 +1028,13 @@ struct AgentAPIClient {
         }
         guard (200..<300).contains(http.statusCode) else {
             if PairingErrorMapper.isNegotiatedPath(path),
-               let onboardingError = Self.decodeNegotiatedOnboardingError(
+               let onboardingError = decodeNegotiatedOnboardingError(
                    path: path,
                    requiresAuth: requiresAuth,
                    status: http.statusCode,
                    contentType: http.value(forHTTPHeaderField: "Content-Type"),
                    varyHeader: http.value(forHTTPHeaderField: "Vary"),
+                   authenticationChallenge: http.value(forHTTPHeaderField: "WWW-Authenticate"),
                    data: data
                ) {
                 throw onboardingError
@@ -1064,75 +1077,47 @@ struct AgentAPIClient {
         }
     }
 
-    private static func decodeNegotiatedOnboardingError(
+    private func decodeNegotiatedOnboardingError(
         path: String,
         requiresAuth: Bool,
         status: Int,
         contentType: String?,
         varyHeader: String?,
+        authenticationChallenge: String?,
         data: Data
-    ) -> PairingOnboardingAPIError? {
-        let isOnboardingMedia = PairingErrorMapper.isOnboardingMediaType(contentType)
-        let isOnboardingBody = PairingErrorMapper.isOnboardingErrorEnvelope(data)
-        let configuredContext: Bool? = requiresAuth ? true : nil
-
-        if isOnboardingMedia || isOnboardingBody {
-            let mapped = PairingErrorMapper.mapHTTPResponse(
-                data: data,
-                statusCode: status,
-                contentType: contentType,
-                configured: configuredContext
-            )
-            return PairingOnboardingAPIError(
-                status: status,
-                mapped: mapped,
-                contentType: contentType,
-                varyHeader: varyHeader
-            )
-        }
-
-        // 已认证的托管配对端点在对接旧宿主时保留既有特定状态码（如 selfHostedClientsPresent、hostTooOld、Bearer 401）。
-        let isManagedPairingEndpoint = path == "/api/tailcat/managed-pairing-link"
-            || path.hasPrefix("/api/tailcat/managed-pairing-operations")
-        if isManagedPairingEndpoint {
-            return nil
-        }
-
-        // 已认证的 /api/tailcat/free-route 对接旧宿主时保留 Bearer 401 凭据失效语义，
-        // 仅映射已识别的旧配对业务码。
-        if requiresAuth {
-            guard status != 401 else { return nil }
-            let mapped = PairingErrorMapper.mapHTTPResponse(
-                data: data,
-                statusCode: status,
-                contentType: contentType,
-                configured: true
-            )
-            guard mapped.isTrusted else { return nil }
-            return PairingOnboardingAPIError(
-                status: status,
-                mapped: mapped,
-                contentType: contentType,
-                varyHeader: varyHeader
-            )
-        }
-
-        // 未认证的 /api/pair/claim 与 /api/pair/local：401 始终是短票失败，绝不触发已保存主机凭据失效。
+    ) -> Error? {
         let mapped = PairingErrorMapper.mapHTTPResponse(
             data: data,
             statusCode: status,
             contentType: contentType,
-            configured: nil
+            varyHeader: varyHeader,
+            configured: requiresAuth ? true : nil
         )
-        if mapped.isTrusted || status == 401 {
-            return PairingOnboardingAPIError(
-                status: status,
-                mapped: mapped,
-                contentType: contentType,
-                varyHeader: varyHeader
-            )
+        // Legacy managed responses include bearer challenges, missing endpoints and device-count conflicts.
+        // Preserve those handlers after trying the onboarding contract and its recognized legacy codes.
+        if requiresAuth, !mapped.isTrusted,
+           !PairingErrorMapper.isOnboardingMediaType(contentType),
+           !PairingErrorMapper.isOnboardingErrorEnvelope(data) {
+            if status == 401 || status == 403 {
+                let legacy = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let code = legacy?["code"] as? String
+                if code == nil || code == "unauthorized" || code == "forbidden",
+                   AgentAPIError.hasCredentialRejectionEvidence(
+                       message: legacy?["error"] as? String ?? "",
+                       authenticationChallenge: authenticationChallenge
+                   ) { return nil }
+            }
+            if path.hasPrefix("/api/tailcat/managed-pairing-"),
+               let legacyError = ManagedPairingLinkAPIError.decode(status: status, data: data) {
+                return legacyError
+            }
         }
-        return nil
+        return PairingOnboardingAPIError(
+            status: status,
+            mapped: mapped,
+            contentType: contentType,
+            varyHeader: varyHeader
+        )
     }
 
     private func decodeError(_ data: Data) -> String {

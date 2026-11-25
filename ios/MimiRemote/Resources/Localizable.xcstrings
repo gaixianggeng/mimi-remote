@@ -23983,23 +23983,6 @@
         }
       }
     },
-    "ui.new_session_runtime_signed_out_generic_hint": {
-      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The coding agent on this computer is not signed in. Sign in on your computer, then try again."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这台电脑上的 AI 助手尚未登录。请在电脑上完成登录后再回来重试。"
-          }
-        }
-      }
-    },
     "ui.new_session_runtime_signed_out_hint": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {

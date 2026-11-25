@@ -279,13 +279,6 @@ struct NewSessionSheet: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private static let positiveSignedOutStatuses: Set<String> = [
-        "signed_out",
-        "codex_signed_out",
-        "claude_signed_out",
-        "agy_signed_out",
-    ]
-
     private static let versionUnsupportedStatuses: Set<String> = [
         "agy_unsupported",
         "claude_unsupported",
@@ -297,17 +290,14 @@ struct NewSessionSheet: View {
         diagnosticsByProvider: [String: RuntimeChannelDiagnostic],
         enabledRuntimes: Set<WorkspaceSessionRuntimeChoice>
     ) -> String {
-        let candidateChoices = WorkspaceSessionRuntimeChoice.allCases.filter { enabledRuntimes.contains($0) }
-        let orderedChoices = candidateChoices.isEmpty ? WorkspaceSessionRuntimeChoice.allCases : candidateChoices
+        let orderedChoices = WorkspaceSessionRuntimeChoice.allCases.filter { enabledRuntimes.contains($0) }
 
         for choice in orderedChoices {
             guard let diagnostic = diagnosticsByProvider[choice.runtimeProvider] else { continue }
-            if positiveSignedOutStatuses.contains(diagnostic.status) {
+            guard diagnostic.provider == choice.runtimeProvider else { continue }
+            if diagnostic.status == "signed_out" || diagnostic.status == "\(choice.runtimeProvider)_signed_out" {
                 return L10n.format("ui.new_session_runtime_signed_out_hint", runtimeTitle(for: choice))
             }
-        }
-        if diagnosticsByProvider.values.contains(where: { positiveSignedOutStatuses.contains($0.status) }) {
-            return L10n.text("ui.new_session_runtime_signed_out_generic_hint")
         }
         for choice in orderedChoices {
             guard let diagnostic = diagnosticsByProvider[choice.runtimeProvider] else { continue }

@@ -1357,8 +1357,9 @@ struct InitialConnectionSettingsSections: View {
         switch appStore.connectionStatus {
         case .testing:
             return L10n.text("ui.automatically_claiming_local_credentials_and_verifying_codex_connection")
-        case .failed:
-            return L10n.text("ui.the_automatic_connection_is_not_completed_please_upgrade")
+        case .failed(let message):
+            return PairingErrorMapper.isUserFacingMessage(message)
+                ? message : L10n.text("ui.the_automatic_connection_is_not_completed_please_upgrade")
         case .idle, .connected:
             return L10n.text("ui.the_local_assistant_will_be_automatically_connected_older")
         }
