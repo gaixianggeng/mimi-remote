@@ -4,12 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestPreflightConfigReadsPersistedIdentityWithoutScanning(t *testing.T) {
 	t.Setenv("AGENTD_TOKEN", "synthetic-environment-token")
 	path := filepath.Join(t.TempDir(), "config.json")
+	configtest.CreatePrivateFile(t, path, nil)
 	cases := []struct {
 		name, body, code string
 		confirmed        bool
@@ -49,5 +53,24 @@ func TestPreflightConfigReadsPersistedIdentityWithoutScanning(t *testing.T) {
 		if got := ReadPreflightSnapshot(path); got.Code != "config_recovery_required" {
 			t.Fatal("unsafe config accepted")
 		}
+	}
+}
+
+func TestPreflightSnapshotPreservesWindowsRoots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	// These are persisted strings. Reading a snapshot must work independently
+	// of the host's path rules or whether the drive and share are mounted.
+	configtest.CreatePrivateFile(t, path, []byte(`{
+		"auth": {"token": "synthetic-test-value"},
+		"scan_roots": ["D:\\work space\\src"],
+		"browse_roots": ["\\\\fixture.invalid\\share\\code"]
+	}`))
+	got := ReadPreflightSnapshot(path)
+	if got.Code != "" || !got.Configured || !got.Confirmed {
+		t.Fatalf("configured %v, confirmed %v, diagnostic %q", got.Configured, got.Confirmed, got.Code)
+	}
+	if !slices.Equal(got.Config.ScanRoots, []string{`D:\work space\src`}) ||
+		!slices.Equal(got.Config.BrowseRoots, []string{`\\fixture.invalid\share\code`}) {
+		t.Fatalf("decoded scan roots %q, browse roots %q", got.Config.ScanRoots, got.Config.BrowseRoots)
 	}
 }

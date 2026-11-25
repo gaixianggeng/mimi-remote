@@ -30,6 +30,9 @@ func passiveFileAccount(cfg config.Config, name string) string {
 		if !local || effective != dir || accountHomeOverridden(cfg.Codex.Env, home) {
 			return ""
 		}
+		if runtime.GOOS == "windows" && windowsCodexHomeRedirected(cfg.Codex.Env, dir) {
+			return ""
+		}
 		file = "auth.json"
 	case "claude":
 		dir = filepath.Join(home, ".claude")
@@ -56,6 +59,17 @@ func passiveFileAccount(cfg config.Config, name string) string {
 		return "connected"
 	}
 	return ""
+}
+
+// Windows passes environment names to the child case-insensitively. If any
+// spelling redirects the CLI, its default auth.json cannot establish login.
+func windowsCodexHomeRedirected(env map[string]string, dir string) bool {
+	for key, value := range env {
+		if strings.EqualFold(key, "CODEX_HOME") && value != "" && value != dir {
+			return true
+		}
+	}
+	return false
 }
 
 func accountHomeOverridden(env map[string]string, home string) bool {

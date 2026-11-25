@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func preflightSandbox(t *testing.T) string {
@@ -48,9 +49,7 @@ func TestPreflightOverlappingPollsPreservePrivateFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, data := range map[string][]byte{cfg: contents, legacy: []byte("preserved legacy bytes"), token: []byte("synthetic companion"), filepath.Join(protected, "marker"): []byte("unchanged")} {
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.CreatePrivateFile(t, path, data)
 	}
 	digest := func() map[string][32]byte {
 		files := map[string][32]byte{}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestPreflightFileCredentialMetadata(t *testing.T) {
@@ -67,13 +68,13 @@ func TestPreflightFileCredentialMetadata(t *testing.T) {
 }
 
 func TestPreflightFileAccountReadsOnlyStandardPrivateFile(t *testing.T) {
-	home := t.TempDir()
-	for _, key := range []string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"} {
-		t.Setenv(key, home)
-	}
+	home := preflightSandbox(t)
 	t.Setenv("CODEX_HOME", "")
 	cfg := config.Config{}
 	cfg.AppServer.Transport = "local"
+	if config.SupportsManagedAppServer() {
+		cfg.AppServer = config.DefaultManagedAppServerConfig()
+	}
 	cfg.Claude.Env = map[string]string{}
 	cliDir := filepath.Join(home, ".claude")
 	if err := os.Mkdir(cliDir, 0700); err != nil {
@@ -81,9 +82,7 @@ func TestPreflightFileAccountReadsOnlyStandardPrivateFile(t *testing.T) {
 	}
 	file := filepath.Join(cliDir, ".credentials.json")
 	body := []byte(`{"claudeAiOauth":{"accessToken":"fixture","expiresAt":4102444800000,"scopes":["user:inference"]}}`)
-	if err := os.WriteFile(file, body, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, file, body)
 	if got := passiveFileAccount(cfg, "claude"); got != "connected" {
 		t.Errorf("fresh standard Claude file returned %q", got)
 	}
@@ -110,12 +109,19 @@ func TestPreflightFileAccountReadsOnlyStandardPrivateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(codexDir, "auth.json"), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, filepath.Join(codexDir, "auth.json"), raw)
 	if got := passiveFileAccount(cfg, "codex"); got != "connected" {
 		t.Errorf("valid standard Codex evidence returned %q", got)
 	}
+	cfg.Codex.Env = map[string]string{"codex_home": cliDir}
+	want := "connected"
+	if runtime.GOOS == "windows" {
+		want = ""
+	}
+	if got := passiveFileAccount(cfg, "codex"); got != want {
+		t.Errorf("lowercase Codex home returned %q, want %q", got, want)
+	}
+	cfg.Codex.Env = nil
 	t.Setenv("CODEX_HOME", cliDir)
 	if got := passiveFileAccount(cfg, "codex"); got != "" {
 		t.Errorf("custom Codex home borrowed default evidence: %q", got)
@@ -145,5 +151,24 @@ func TestPreflightFileAccountReadsOnlyStandardPrivateFile(t *testing.T) {
 		if got := passiveFileAccount(cfg, "claude"); got != "" {
 			t.Errorf("symlinked directory returned %q", got)
 		}
+	}
+}
+
+func TestWindowsCodexHomeRedirected(t *testing.T) {
+	const standard = `C:\fixture\.codex`
+	for _, tc := range []struct {
+		name       string
+		env        map[string]string
+		redirected bool
+	}{
+		{"standard", map[string]string{"Codex_Home": standard}, false},
+		{"another drive", map[string]string{"codex_home": `D:\fixture\.codex`}, true},
+		{"conflicting spellings", map[string]string{"CODEX_HOME": standard, "Codex_Home": `\\fixture.invalid\other`}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := windowsCodexHomeRedirected(tc.env, standard); got != tc.redirected {
+				t.Errorf("redirected = %v, want %v", got, tc.redirected)
+			}
+		})
 	}
 }

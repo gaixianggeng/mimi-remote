@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -69,9 +70,7 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					if err := os.WriteFile(path, data, 0600); err != nil {
-						t.Fatal(err)
-					}
+					configtest.CreatePrivateFile(t, path, data)
 				}
 				probes := setup.PreflightProbes{Platform: platform, Host: func(_ context.Context, cfg config.Config) (setup.PreflightHost, error) {
 					if cfg.Auth.Token != fixtureToken {
@@ -108,6 +107,9 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 				}
 				if report.OK != scenario.wantOK || report.Configured != scenario.committed || report.WorkspaceConfirmed != scenario.valid {
 					t.Fatalf("unexpected live report status: ok=%v configured=%v confirmed=%v next=%s", report.OK, report.Configured, report.WorkspaceConfirmed, report.RecommendedNext)
+				}
+				if scenario.valid && !scenario.wantOK && report.RecommendedNext != "workspace_root" {
+					t.Fatalf("invalid committed root should block pairing at workspace_root, got %s", report.RecommendedNext)
 				}
 				ctx := wireObject{"surface": "check", "platform": platform, "configured": doc["configured"], "stage": doc["stage"], "recommended_transport": doc["recommended_transport"]}
 				if len(progress) != 2*len(report.Checks) {
