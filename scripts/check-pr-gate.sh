@@ -602,6 +602,11 @@ Dir.mktmpdir("mimi-pr-gate-eval.") do |summary_dir|
     abort("PR Gate 自检失败：未命中的 scoped 检查跳过且 safety 成功时 PR Gate 必须通过：#{stderr}")
   end
 
+  stdout, _stderr, status = run_gate_step.call("GO_REQUIRED" => "true", "GO_RESULT" => "failure")
+  if status.success? || !stdout.include?("Go and release")
+    abort("PR Gate 自检失败：必需的 Go CI 失败时必须阻断并指出 Go and release。")
+  end
+
   %w[failure cancelled skipped].push("").each do |bad_safety_result|
     stdout, _stderr, status = run_gate_step.call("SAFETY_RESULT" => bad_safety_result)
     if status.success?
@@ -672,6 +677,22 @@ if docs_script.match?(/\b(?:go test|cargo test|xcodebuild|ios-dev\.sh)\b/)
 end
 
 go_workflow = load_workflow(".github/workflows/go-ci.yml")
+windows_go_steps = go_workflow.fetch("jobs").fetch("verify-windows").fetch("steps")
+# pwsh 步骤以最后一个原生命令的退出码结束，每条独立检查必须单独返回结果。
+required_windows_commands = [
+  "go mod tidy",
+  "git diff --exit-code -- go.mod go.sum",
+  "go vet ./...",
+  "go test ./... -count=1",
+  /\Ago build [^\n;&|]+ \.\/cmd\/agentd\z/,
+  /\Ago build [^\n;&|]+ \.\/cmd\/mimi-remote-tray\z/,
+]
+required_windows_commands.each do |command|
+  step = windows_go_steps.find { |entry| command === entry["run"].to_s.strip }
+  check_fail("Windows Go CI 缺少独立步骤 #{command}。") unless step
+  assert_no_if_or_continue_on_error(step, "Windows Go CI #{step.fetch("name")}")
+end
+
 ios_workflow = load_workflow(".github/workflows/ios-ci.yml")
 [go_workflow, ios_workflow].each do |workflow|
   push_paths = Array(triggers(workflow, "language workflow").dig("push", "paths"))

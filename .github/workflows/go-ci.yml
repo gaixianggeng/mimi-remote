@@ -129,30 +129,41 @@ jobs:
       - name: Check formatting
         shell: pwsh
         run: |
-          $unformatted = gofmt -l (git ls-files '*.go')
+          $files = git ls-files '*.go'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $unformatted = gofmt -l $files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($unformatted) { throw "Unformatted Go files:`n$($unformatted -join "`n")" }
 
       # 跨平台 JSON 契约一致性已由 Linux verify 的 check-mimi-protocol-contract.sh 覆盖，
       # 其 internal/httpapi 契约单测同样会由下方 Windows 全量 go test ./... -count=1 执行，不再重复跑一遍。
+      - name: Tidy Go module
+        shell: pwsh
+        run: go mod tidy
+
       - name: Check module files
         shell: pwsh
-        run: |
-          go mod tidy
-          git diff --exit-code -- go.mod go.sum
+        run: git diff --exit-code -- go.mod go.sum
 
-      - name: Vet and test
+      - name: Vet
         shell: pwsh
-        run: |
-          go vet ./...
-          go test ./... -count=1
+        run: go vet ./...
 
-      - name: Build Windows binaries
+      - name: Test
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Build Windows agentd
         shell: pwsh
         env:
           CGO_ENABLED: "0"
-        run: |
-          go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$env:RUNNER_TEMP\agentd.exe" ./cmd/agentd
-          go build -trimpath -ldflags "-s -w -H=windowsgui" -o "$env:RUNNER_TEMP\mimi-remote-tray.exe" ./cmd/mimi-remote-tray
+        run: go build -trimpath -ldflags "-s -w -X main.version=ci" -o "$env:RUNNER_TEMP\agentd.exe" ./cmd/agentd
+
+      - name: Build Windows tray
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o "$env:RUNNER_TEMP\mimi-remote-tray.exe" ./cmd/mimi-remote-tray
 
       - name: Check Windows packaging policy
         shell: pwsh
