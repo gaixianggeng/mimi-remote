@@ -7,7 +7,7 @@ struct ProjectSidebarView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage(WorkspaceSessionRuntimeChoice.enabledRuntimesPreferenceKey)
     private var enabledRuntimesRawValue = WorkspaceSessionRuntimeChoice.defaultEnabledRuntimesRawValue
-    @State private var openWorkspacePresentation: OpenWorkspaceSheetPresentation?
+    @StateObject private var openWorkspacePresenter = OpenWorkspaceSheetPresenter()
     @State private var isPresentingWorktreeManager = false
     @State private var worktreeManagerRootProjectID = ""
     @State private var worktreeCreateProject: AgentProject?
@@ -65,7 +65,7 @@ struct ProjectSidebarView: View {
             placement: searchPlacement,
             prompt: Text(showsSessions ? L10n.text("ui.search_session") : L10n.text("ui.search_workspace"))
         )
-        .sheet(item: $openWorkspacePresentation) { presentation in
+        .sheet(item: $openWorkspacePresenter.presentation) { presentation in
             OpenWorkspaceSheet(model: presentation.model)
         }
         .sheet(isPresented: $isPresentingWorktreeManager) {
@@ -509,8 +509,7 @@ struct ProjectSidebarView: View {
     }
 
     private func presentOpenWorkspaceSheet() {
-        guard openWorkspacePresentation == nil else { return }
-        openWorkspacePresentation = OpenWorkspaceSheetPresentation()
+        openWorkspacePresenter.present()
     }
 }
 

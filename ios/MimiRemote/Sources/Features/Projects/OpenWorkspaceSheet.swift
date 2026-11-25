@@ -1,3 +1,4 @@
+import os
 import QuickLook
 import SwiftUI
 import UIKit
@@ -11,6 +12,21 @@ struct OpenWorkspaceSheetPresentation: Identifiable {
     @MainActor
     init(model: OpenWorkspaceSheetModel? = nil) {
         self.model = model ?? OpenWorkspaceSheetModel()
+    }
+}
+
+/// 持有「打开文件夹」Sheet 当前呈现项的引用类型控制器。
+///
+/// 不把包含 `OpenWorkspaceSheetModel` 的 `OpenWorkspaceSheetPresentation` 直接存进呈现方的 `@State`：
+/// SwiftUI 会在重绘时把 `@State` 当前值拷贝进 `View` 结构体，导致捕获 `self` 的闭包（如 `.sheet`、
+/// `.task`、按钮动作或懒加载子页）在 Sheet 关闭后继续强持有已关闭的模型。
+@MainActor
+final class OpenWorkspaceSheetPresenter: ObservableObject {
+    @Published var presentation: OpenWorkspaceSheetPresentation?
+
+    func present(model: OpenWorkspaceSheetModel? = nil) {
+        guard presentation == nil else { return }
+        presentation = OpenWorkspaceSheetPresentation(model: model)
     }
 }
 
@@ -50,7 +66,22 @@ final class OpenWorkspaceSheetModel: ObservableObject {
     private var browseRequestID = 0
     private var hasStartedInitialBrowse = false
     private weak var sessionStore: SessionStore?
-    private var onOpened: (String) -> Void = { _ in }
+
+    #if DEBUG
+    nonisolated private static let liveInstanceCountLock = OSAllocatedUnfairLock(initialState: 0)
+
+    nonisolated static var liveInstanceCountForTesting: Int {
+        liveInstanceCountLock.withLock { $0 }
+    }
+
+    init() {
+        Self.liveInstanceCountLock.withLock { $0 += 1 }
+    }
+
+    deinit {
+        Self.liveInstanceCountLock.withLock { $0 -= 1 }
+    }
+    #endif
 
     var trimmedPath: String {
         path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -60,13 +91,10 @@ final class OpenWorkspaceSheetModel: ObservableObject {
         !isOpening && !trimmedPath.isEmpty
     }
 
-    /// 绑定当前会话存储与打开成功回调；不保存视图的 dismiss 闭包，避免与 `OpenWorkspaceSheet` 形成循环引用。
-    func attach(
-        sessionStore: SessionStore,
-        onOpened: @escaping (String) -> Void
-    ) {
+    /// 绑定当前会话存储（弱引用）；不保存视图的 dismiss 或呈现方的 onOpened 闭包，
+    /// 避免与 `OpenWorkspaceSheet` 或呈现方 `@State` 值形成循环引用。
+    func attach(sessionStore: SessionStore) {
         self.sessionStore = sessionStore
-        self.onOpened = onOpened
     }
 
     func updateManualPath(_ next: String) {
@@ -90,14 +118,14 @@ final class OpenWorkspaceSheetModel: ObservableObject {
     }
 
     @discardableResult
-    func openCurrentBrowsePath() async -> Bool {
-        guard let browsePath, !isOpening else { return false }
+    func openCurrentBrowsePath() async -> String? {
+        guard let browsePath, !isOpening else { return nil }
         return await open(path: browsePath)
     }
 
     @discardableResult
-    func openTypedPath() async -> Bool {
-        guard canOpenTypedPath else { return false }
+    func openTypedPath() async -> String? {
+        guard canOpenTypedPath else { return nil }
         return await open(path: path)
     }
 
@@ -160,26 +188,25 @@ final class OpenWorkspaceSheetModel: ObservableObject {
     }
 
     @discardableResult
-    func open(path: String) async -> Bool {
-        guard let sessionStore, !isOpening else { return false }
+    func open(path: String) async -> String? {
+        guard let sessionStore, !isOpening else { return nil }
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty else {
             localError = L10n.text("ui.please_enter_the_directory_path_in_the_development")
-            return false
+            return nil
         }
         isOpening = true
         localError = nil
         defer { isOpening = false }
         switch await sessionStore.openWorkspaceOutcome(path: targetPath) {
         case .opened(let workspaceID):
-            onOpened(workspaceID)
-            return true
+            return workspaceID
         case .cancelled:
             // 关闭 Sheet、切主机或后台凭据挂起都属于生命周期取消；保留输入供用户恢复后重试。
-            return false
+            return nil
         case .failed(let message):
             localError = userFacingOpenWorkspaceError(message, path: targetPath)
-            return false
+            return nil
         }
     }
 
@@ -233,14 +260,14 @@ struct OpenWorkspaceSheet: View {
 
     var body: some View {
         let model = resolvedModel
-        model.attach(
-            sessionStore: sessionStore,
-            onOpened: onOpened
-        )
+        model.attach(sessionStore: sessionStore)
         // SessionStore 轮询更新时只刷新最外层弱引用，内层以模型身份判等跳过重绘，
         // 不把全局列表刷新传导到正在粘贴/编辑的手动路径输入框（#1107）。
-        return OpenWorkspaceSheetContent(model: model)
-            .equatable()
+        return OpenWorkspaceSheetContent(
+            model: model,
+            onOpened: onOpened
+        )
+        .equatable()
     }
 }
 
@@ -250,6 +277,7 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var themeStore: ThemeStore
     @ObservedObject var model: OpenWorkspaceSheetModel
+    let onOpened: (String) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model
@@ -302,9 +330,11 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
 
     private func openCurrentBrowsePath() {
         let model = model
+        let onOpened = onOpened
         let dismissAction = dismiss
         Task {
-            if await model.openCurrentBrowsePath() {
+            if let workspaceID = await model.openCurrentBrowsePath() {
+                onOpened(workspaceID)
                 dismissAction()
             }
         }
@@ -312,9 +342,11 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
 
     private func openTypedPath() {
         let model = model
+        let onOpened = onOpened
         let dismissAction = dismiss
         Task {
-            if await model.openTypedPath() {
+            if let workspaceID = await model.openTypedPath() {
+                onOpened(workspaceID)
                 dismissAction()
             }
         }

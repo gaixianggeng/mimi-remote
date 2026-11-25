@@ -304,7 +304,7 @@ struct WorkspaceRootView: View {
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
-    @State private var openWorkspacePresentation: OpenWorkspaceSheetPresentation?
+    @StateObject private var openWorkspacePresenter = OpenWorkspaceSheetPresenter()
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
     @State private var workspaceStripViewportWidth: CGFloat = 0
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
@@ -444,7 +444,7 @@ struct WorkspaceRootView: View {
             pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
-        .sheet(item: $openWorkspacePresentation) { presentation in
+        .sheet(item: $openWorkspacePresenter.presentation) { presentation in
             OpenWorkspaceSheet(model: presentation.model) { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
@@ -1163,8 +1163,7 @@ struct WorkspaceRootView: View {
     }
 
     private func presentOpenWorkspaceSheet() {
-        guard openWorkspacePresentation == nil else { return }
-        openWorkspacePresentation = OpenWorkspaceSheetPresentation()
+        openWorkspacePresenter.present()
     }
 
     private var suggestionsBottomContentMargin: CGFloat {

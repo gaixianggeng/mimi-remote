@@ -187,7 +187,7 @@ struct SessionListView: View {
     @State private var keyboardSelectionID: SessionID?
     @State private var isNativeDirectoryListVisible = false
     /// 空态「打开其他文件夹…」直接在会话页弹出目录浏览，不先跳去工作区页（#554）。
-    @State private var openWorkspacePresentation: OpenWorkspaceSheetPresentation?
+    @StateObject private var openWorkspacePresenter = OpenWorkspaceSheetPresenter()
     /// 列表实际可用宽度。nil 表示还没测到，此时暂用 Shell 注入的页面身份作为种子。
     @State private var measuredContentWidth: CGFloat?
     @FocusState private var hasListKeyboardFocus: Bool
@@ -332,7 +332,7 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
-        .sheet(item: $openWorkspacePresentation) { presentation in
+        .sheet(item: $openWorkspacePresenter.presentation) { presentation in
             OpenWorkspaceSheet(model: presentation.model)
         }
         // 与工作区共用同一条宽度判据；量到之后 rowDensity 就不再依赖页面身份。
@@ -889,8 +889,7 @@ struct SessionListView: View {
                     await sessionStore.openWorkspaceOutcome(path: project.path)
                 },
                 onBrowseOther: {
-                    guard openWorkspacePresentation == nil else { return }
-                    openWorkspacePresentation = OpenWorkspaceSheetPresentation()
+                    openWorkspacePresenter.present()
                 }
             )
             .padding(.vertical, 16)

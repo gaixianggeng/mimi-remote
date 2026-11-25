@@ -573,7 +573,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         _ = appStore
 
         let model = OpenWorkspaceSheetModel()
-        model.attach(sessionStore: sessionStore, onOpened: { _ in })
+        model.attach(sessionStore: sessionStore)
 
         await model.startInitialBrowseIfNeeded()
         await model.startInitialBrowseIfNeeded()
@@ -642,29 +642,67 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         )
         let themeStore = ThemeStore(defaults: UserDefaults(suiteName: "OpenWorkspaceSheetReleaseTest.\(UUID().uuidString)")!)
 
-        final class SheetPresenterState: ObservableObject {
-            @Published var presentation: OpenWorkspaceSheetPresentation?
+        final class ClosureCaptureProbe {}
+
+        final class ReleaseRecorder {
+            var createdModels: [WeakOpenWorkspaceSheetModel] = []
+            var callbackProbes: [WeakClosureCaptureProbe] = []
             var openedWorkspaceIDs: [String] = []
         }
 
-        struct ReleaseHost: View {
+        struct WeakOpenWorkspaceSheetModel {
+            weak var value: OpenWorkspaceSheetModel?
+        }
+
+        struct WeakClosureCaptureProbe {
+            weak var value: ClosureCaptureProbe?
+        }
+
+        // 使用与 WorkspaceRootView 相同的 OpenWorkspaceSheetPresenter + 实例方法回调接线，
+        // 同时用 ClosureCaptureProbe 显式验证 OpenWorkspaceSheetModel 不会保存逃逸的 onOpened 闭包。
+        struct PresenterReleaseHost: View {
             @EnvironmentObject var sessionStore: SessionStore
-            @ObservedObject var presenter: SheetPresenterState
+            @StateObject private var openWorkspacePresenter = OpenWorkspaceSheetPresenter()
+            @State private var selectedWorkspaceID: String?
+            let recorder: ReleaseRecorder
 
             var body: some View {
                 VStack {
                     Text("sessions:\(sessionStore.sessions.count)")
+                    Text("selected:\(selectedWorkspaceID ?? "none")")
+                    Button("Present Open Workspace") {
+                        presentOpenWorkspaceSheet()
+                    }
+                    .accessibilityIdentifier("test.openWorkspace.present")
                 }
-                .sheet(item: $presenter.presentation) { presentation in
-                    OpenWorkspaceSheet(model: presentation.model) { workspaceID in
-                        presenter.openedWorkspaceIDs.append(workspaceID)
+                .sheet(item: $openWorkspacePresenter.presentation) { presentation in
+                    let probe = ClosureCaptureProbe()
+                    recorder.callbackProbes.append(WeakClosureCaptureProbe(value: probe))
+                    return OpenWorkspaceSheet(model: presentation.model) { workspaceID in
+                        _ = probe
+                        selectWorkspace(id: workspaceID)
                     }
                 }
             }
+
+            private func presentOpenWorkspaceSheet() {
+                let model = OpenWorkspaceSheetModel()
+                recorder.createdModels.append(WeakOpenWorkspaceSheetModel(value: model))
+                openWorkspacePresenter.present(model: model)
+            }
+
+            private func selectWorkspace(id: String) {
+                selectedWorkspaceID = id
+                recorder.openedWorkspaceIDs.append(id)
+            }
         }
 
-        let presenter = SheetPresenterState()
-        let rootView = ReleaseHost(presenter: presenter)
+        _ = await waitUntil(timeout: .seconds(3)) {
+            OpenWorkspaceSheetModel.liveInstanceCountForTesting == 0
+        }
+        let baselineLiveModelCount = OpenWorkspaceSheetModel.liveInstanceCountForTesting
+        let recorder = ReleaseRecorder()
+        let rootView = PresenterReleaseHost(recorder: recorder)
             .environmentObject(appStore)
             .environmentObject(sessionStore)
             .environmentObject(themeStore)
@@ -673,52 +711,79 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let window = makePhoneTestWindow(rootView: rootView)
         defer { tearDownTestWindow(window) }
 
-        // 1. 打开 Sheet、触发重绘并展开手动路径，再由 presenter 关闭并释放 item，验证 model 无循环引用并被释放。
-        weak var weakFirstModel: OpenWorkspaceSheetModel?
-        do {
-            let presentation = OpenWorkspaceSheetPresentation()
-            weakFirstModel = presentation.model
-            presenter.presentation = presentation
+        let presentButtonReady = await waitUntil(timeout: .seconds(3)) {
+            self.findAccessibilityElement(
+                identifier: "test.openWorkspace.present",
+                in: window
+            ) != nil
         }
+        XCTAssertTrue(presentButtonReady, "测试宿主呈现按钮应当可用")
+
+        // 1. 打开 Sheet、触发 SessionStore 刷新并展开手动路径；在外部暂时强持有 model 的情况下点击取消，
+        //    先证明关闭后 onOpened 闭包已释放（model 未持有 onOpened），再释放外部强引用验证 model 回收。
+        XCTAssertTrue(
+            activateAccessibilityElement(identifier: "test.openWorkspace.present", in: window),
+            "首次应当能触发测试宿主弹出 Sheet"
+        )
 
         let firstPresented = await waitUntil(timeout: .seconds(3)) {
-            window.rootViewController?.presentedViewController?.view != nil
-                && weakFirstModel?.browsePath == "/Users/me"
+            recorder.createdModels.count == 1
+                && !recorder.callbackProbes.isEmpty
+                && window.rootViewController?.presentedViewController?.view != nil
+                && recorder.createdModels[0].value?.browsePath == "/Users/me"
         }
         XCTAssertTrue(firstPresented, "首次 OpenWorkspaceSheet 应当完成呈现并加载根目录")
 
-        weakFirstModel?.isManualPathExpanded = true
-        weakFirstModel?.updateManualPath("/Users/me/finance")
+        var temporarilyRetainedFirstModel: OpenWorkspaceSheetModel? = recorder.createdModels[0].value
+        XCTAssertNotNil(temporarilyRetainedFirstModel)
+        temporarilyRetainedFirstModel?.isManualPathExpanded = true
+        temporarilyRetainedFirstModel?.updateManualPath("/Users/me/finance")
         sessionStore.objectWillChange.send()
         try? await Task.sleep(for: .milliseconds(200))
-        XCTAssertNotNil(weakFirstModel)
 
-        presenter.presentation = nil
-        let firstReleased = await waitUntil(timeout: .seconds(4)) {
-            presenter.presentation == nil
-                && window.rootViewController?.presentedViewController == nil
-                && weakFirstModel == nil
-        }
-        XCTAssertTrue(firstReleased, "关闭 Sheet 且 presenter 释放 presentation item 后，OpenWorkspaceSheetModel 必须被释放")
-        XCTAssertNil(weakFirstModel)
+        XCTAssertTrue(
+            activateAccessibilityElement(
+                identifier: "workspace.open.cancel",
+                in: window.rootViewController?.presentedViewController?.view
+            ),
+            "取消按钮应当可触发关闭"
+        )
 
-        // 2. 再次打开新 Sheet，通过界面提交成功打开路径：视图应自动关闭 Sheet 并释放第二个 model。
-        weak var weakSecondModel: OpenWorkspaceSheetModel?
-        do {
-            let presentation = OpenWorkspaceSheetPresentation()
-            weakSecondModel = presentation.model
-            presenter.presentation = presentation
+        let firstCallbackReleased = await waitUntil(timeout: .seconds(4)) {
+            window.rootViewController?.presentedViewController == nil
+                && recorder.callbackProbes.allSatisfy { $0.value == nil }
         }
+        XCTAssertTrue(
+            firstCallbackReleased,
+            "关闭 Sheet 后即使模型本身仍存活，onOpened 闭包捕获对象也必须释放（证明模型未持有 onOpened）"
+        )
+        XCTAssertNotNil(temporarilyRetainedFirstModel)
+
+        temporarilyRetainedFirstModel = nil
+        let firstModelReleased = await waitUntil(timeout: .seconds(4)) {
+            recorder.createdModels[0].value == nil
+                && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
+        }
+        XCTAssertTrue(firstModelReleased, "点击取消关闭 Sheet 后，OpenWorkspaceSheetModel 必须被释放")
+        XCTAssertNil(recorder.createdModels[0].value)
+        XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
+
+        // 2. 再次打开新 Sheet，通过界面提交成功打开路径：视图应回调 presenter、自动关闭并释放第二个 model。
+        XCTAssertTrue(
+            activateAccessibilityElement(identifier: "test.openWorkspace.present", in: window),
+            "二次应当能触发测试宿主弹出 Sheet"
+        )
 
         let secondPresented = await waitUntil(timeout: .seconds(3)) {
-            window.rootViewController?.presentedViewController?.view != nil
-                && weakSecondModel?.browsePath == "/Users/me"
+            recorder.createdModels.count == 2
+                && window.rootViewController?.presentedViewController?.view != nil
+                && recorder.createdModels[1].value?.browsePath == "/Users/me"
         }
         XCTAssertTrue(secondPresented, "再次打开的 OpenWorkspaceSheet 应当完成呈现")
-        XCTAssertEqual(weakSecondModel?.path, "", "重新打开的 Sheet 应当拥有干净的空路径草稿")
+        XCTAssertEqual(recorder.createdModels[1].value?.path, "", "重新打开的 Sheet 应当拥有干净的空路径草稿")
 
-        weakSecondModel?.isManualPathExpanded = true
-        weakSecondModel?.updateManualPath("/Users/me/finance")
+        recorder.createdModels[1].value?.isManualPathExpanded = true
+        recorder.createdModels[1].value?.updateManualPath("/Users/me/finance")
         let submitReady = await waitUntil(timeout: .seconds(3)) {
             self.scrollPresentedSheetToBottom(in: window)
             guard let submit = self.findAccessibilityElement(
@@ -731,27 +796,235 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         }
         XCTAssertTrue(submitReady, "输入有效路径后提交按钮应当可用")
 
-        do {
-            let submitButton = try XCTUnwrap(
-                findAccessibilityElement(
-                    identifier: "workspace.open.manualPath.submit",
-                    in: window.rootViewController?.presentedViewController?.view
-                )
-            )
-            XCTAssertTrue(submitButton.accessibilityActivate(), "激活提交按钮应触发打开路径流程")
-        }
+        XCTAssertTrue(
+            activateAccessibilityElement(
+                identifier: "workspace.open.manualPath.submit",
+                in: window.rootViewController?.presentedViewController?.view
+            ),
+            "激活提交按钮应触发打开路径流程"
+        )
 
         let secondReleased = await waitUntil(timeout: .seconds(4)) {
-            presenter.openedWorkspaceIDs == ["proj-finance"]
-                && presenter.presentation == nil
+            recorder.openedWorkspaceIDs == ["proj-finance"]
                 && window.rootViewController?.presentedViewController == nil
-                && weakSecondModel == nil
+                && recorder.createdModels[1].value == nil
+                && recorder.callbackProbes.allSatisfy { $0.value == nil }
+                && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
         }
-        XCTAssertEqual(presenter.openedWorkspaceIDs, ["proj-finance"])
-        XCTAssertNil(presenter.presentation)
+        XCTAssertEqual(recorder.openedWorkspaceIDs, ["proj-finance"])
         XCTAssertNil(window.rootViewController?.presentedViewController)
         XCTAssertTrue(secondReleased, "成功打开工作区后视图应自动关闭 Sheet 并释放 OpenWorkspaceSheetModel")
-        XCTAssertNil(weakSecondModel)
+        XCTAssertNil(recorder.createdModels[1].value)
+        XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
+    }
+
+    @MainActor
+    func testWorkspaceRootViewReleasesOpenWorkspaceSheetModelsAcrossSubmitAndCancellations() async throws {
+        let previousClipboardItems = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousClipboardItems }
+
+        let rootResponse = DirectoryListResponse(
+            path: "/Users/me",
+            parentPath: "/Users",
+            entries: [
+                DirectoryEntry(name: "finance", path: "/Users/me/finance", isDir: true, canOpen: true, canBrowse: true),
+            ],
+            truncated: false
+        )
+        let openedWorkspace = AgentWorkspace(
+            project: AgentProject(id: "proj-finance", name: "finance", path: "/Users/me/finance"),
+            lastOpenedAt: Date()
+        )
+        let (appStore, sessionStore, _) = makeOpenWorkspaceTestStores(
+            projectCount: 2,
+            sessionCount: 2,
+            openedWorkspaces: true,
+            directoryListResults: [
+                "": .success(rootResponse),
+                "/Users/me": .success(rootResponse),
+            ],
+            resolveResults: [
+                "/Users/me/finance": .success(openedWorkspace),
+            ]
+        )
+        try await sessionStore.refreshWorkspaceCatalog()
+        await sessionStore.refreshAppServerModelOptions()
+
+        let suite = "WorkspaceRootOpenSheetReleaseTest.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let themeStore = ThemeStore(defaults: defaults)
+        let appearanceStore = WorkspaceAppearanceStore(defaults: defaults)
+
+        var selectedWorkspaceChanges: [String?] = []
+        _ = await waitUntil(timeout: .seconds(3)) {
+            OpenWorkspaceSheetModel.liveInstanceCountForTesting == 0
+        }
+        let baselineLiveModelCount = OpenWorkspaceSheetModel.liveInstanceCountForTesting
+
+        let workspaceRoot = WorkspaceRootView(
+            selectedSessionRuntime: .constant(.codex),
+            onStartSession: { _, _ in },
+            onOpenSession: { _ in },
+            manageConnections: nil,
+            embedsNavigationStack: true,
+            appearanceStore: appearanceStore,
+            initialWorkspaceID: "proj-0",
+            bottomContentMargin: 118,
+            onWorkspaceSelectionChange: { selectedWorkspaceID in
+                selectedWorkspaceChanges.append(selectedWorkspaceID)
+            }
+        )
+        let hostedRoot = workspaceRoot
+            .environmentObject(appStore)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+            .environmentObject(appearanceStore)
+            .environment(\.workbenchBottomChromeClearance, 118)
+            .environment(\.workbenchHasCompactTabBar, true)
+            .environment(\.workbenchHasBottomTabBar, true)
+            .environment(\.horizontalSizeClass, .compact)
+
+        let window = makePhoneTestWindow(rootView: hostedRoot)
+        defer { tearDownTestWindow(window) }
+
+        let openDirectoryReady = await waitUntil(timeout: .seconds(4)) {
+            self.findAccessibilityElement(
+                identifier: "workspace.toolbar.openDirectory",
+                in: window
+            ) != nil
+        }
+        XCTAssertTrue(openDirectoryReady, "生产 WorkspaceRootView 应当渲染打开目录入口")
+        XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
+
+        // 1. 走生产 WorkspaceRootView 打开 Sheet、提交有效路径并确认工作区切换与模型释放。
+        XCTAssertTrue(
+            activateAccessibilityElement(identifier: "workspace.toolbar.openDirectory", in: window),
+            "应能通过生产工作区入口弹出 OpenWorkspaceSheet"
+        )
+
+        let firstSheetReady = await waitUntil(timeout: .seconds(4)) {
+            guard let presentedView = window.rootViewController?.presentedViewController?.view else {
+                return false
+            }
+            let toggle = self.findAccessibilityElement(
+                identifier: "workspace.open.manualPath.toggle",
+                in: presentedView
+            )
+            let currentOpen = self.findAccessibilityElement(
+                identifier: "workspace.open.current",
+                in: presentedView
+            )
+            let browseReady = currentOpen.map { !$0.accessibilityTraits.contains(.notEnabled) } ?? false
+            return toggle != nil
+                && browseReady
+                && OpenWorkspaceSheetModel.liveInstanceCountForTesting > baselineLiveModelCount
+        }
+        XCTAssertTrue(firstSheetReady, "生产 WorkspaceRootView 弹出的 Sheet 应当完成初始目录加载")
+
+        // 模拟 Sheet 打开期间 SessionStore 轮询触发父层重绘。
+        sessionStore.objectWillChange.send()
+        try? await Task.sleep(for: .milliseconds(120))
+
+        XCTAssertTrue(
+            activateAccessibilityElement(
+                identifier: "workspace.open.manualPath.toggle",
+                in: window.rootViewController?.presentedViewController?.view
+            ),
+            "应能展开手动输入路径区"
+        )
+
+        let textFieldReady = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            return self.findLiveManualPathTextField(in: window) != nil
+        }
+        XCTAssertTrue(textFieldReady, "展开后应当挂载手动路径输入框")
+
+        let pasted = await pasteIntoLiveManualPathTextField("/Users/me/finance", in: window)
+        XCTAssertTrue(pasted, "应当能向手动路径输入框粘贴路径")
+
+        let submitReady = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            guard let submit = self.findAccessibilityElement(
+                identifier: "workspace.open.manualPath.submit",
+                in: window.rootViewController?.presentedViewController?.view
+            ) else {
+                return false
+            }
+            return !submit.accessibilityTraits.contains(.notEnabled)
+        }
+        XCTAssertTrue(submitReady, "粘贴有效路径后提交按钮应当可用")
+
+        XCTAssertTrue(
+            activateAccessibilityElement(
+                identifier: "workspace.open.manualPath.submit",
+                in: window.rootViewController?.presentedViewController?.view
+            ),
+            "激活提交按钮应触发打开目录"
+        )
+
+        let submittedAndReleased = await waitUntil(timeout: .seconds(4)) {
+            selectedWorkspaceChanges.contains("proj-finance")
+                && window.rootViewController?.presentedViewController == nil
+                && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
+        }
+        XCTAssertTrue(selectedWorkspaceChanges.contains("proj-finance"), "提交成功后生产 WorkspaceRootView 应切换到新工作区")
+        XCTAssertNil(window.rootViewController?.presentedViewController)
+        XCTAssertTrue(
+            submittedAndReleased,
+            "成功提交关闭 Sheet 后，生产 WorkspaceRootView 不应滞留任何 OpenWorkspaceSheetModel（当前 \(OpenWorkspaceSheetModel.liveInstanceCountForTesting)，基线 \(baselineLiveModelCount)）"
+        )
+        XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
+
+        // 2. 连续三次打开并取消 Sheet，确认活对象数每次都回到基线而非 1->2->3->4 递增。
+        for attempt in 1...3 {
+            XCTAssertTrue(
+                activateAccessibilityElement(identifier: "workspace.toolbar.openDirectory", in: window),
+                "第 \(attempt) 次应能打开 Sheet"
+            )
+
+            let presented = await waitUntil(timeout: .seconds(4)) {
+                guard let presentedView = window.rootViewController?.presentedViewController?.view else {
+                    return false
+                }
+                let cancel = self.findAccessibilityElement(
+                    identifier: "workspace.open.cancel",
+                    in: presentedView
+                )
+                let currentOpen = self.findAccessibilityElement(
+                    identifier: "workspace.open.current",
+                    in: presentedView
+                )
+                let browseReady = currentOpen.map { !$0.accessibilityTraits.contains(.notEnabled) } ?? false
+                return cancel != nil
+                    && browseReady
+                    && OpenWorkspaceSheetModel.liveInstanceCountForTesting > baselineLiveModelCount
+            }
+            XCTAssertTrue(presented, "第 \(attempt) 次打开的 Sheet 应当完成呈现")
+
+            // 在 Sheet 打开期间触发父层刷新，取消后不再触发任何额外刷新，验证不会滞留最后一次 model。
+            sessionStore.objectWillChange.send()
+            try? await Task.sleep(for: .milliseconds(100))
+
+            XCTAssertTrue(
+                activateAccessibilityElement(
+                    identifier: "workspace.open.cancel",
+                    in: window.rootViewController?.presentedViewController?.view
+                ),
+                "第 \(attempt) 次应能通过取消关闭 Sheet"
+            )
+
+            let cancelledAndReleased = await waitUntil(timeout: .seconds(4)) {
+                window.rootViewController?.presentedViewController == nil
+                    && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
+            }
+            XCTAssertNil(window.rootViewController?.presentedViewController, "第 \(attempt) 次取消后 Sheet 应当关闭")
+            XCTAssertTrue(
+                cancelledAndReleased,
+                "第 \(attempt) 次取消关闭 Sheet 后，OpenWorkspaceSheetModel 活对象数必须回到基线（当前 \(OpenWorkspaceSheetModel.liveInstanceCountForTesting)，基线 \(baselineLiveModelCount)）"
+            )
+            XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
+        }
     }
 
     @MainActor
@@ -1494,6 +1767,37 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             return nil
         }
         return rawValue
+    }
+
+    @MainActor
+    private func activateAccessibilityElement(identifier: String, in root: UIView?) -> Bool {
+        autoreleasepool {
+            guard let element = findAccessibilityElement(identifier: identifier, in: root) else {
+                return false
+            }
+            return element.accessibilityActivate()
+        }
+    }
+
+    @MainActor
+    private func pasteIntoLiveManualPathTextField(_ path: String, in window: UIWindow) async -> Bool {
+        let focused: Bool = autoreleasepool {
+            guard let textField = findLiveManualPathTextField(in: window) else {
+                return false
+            }
+            textField.becomeFirstResponder()
+            return true
+        }
+        guard focused else { return false }
+        try? await Task.sleep(for: .milliseconds(100))
+        return autoreleasepool {
+            guard let textField = findLiveManualPathTextField(in: window) else {
+                return false
+            }
+            UIPasteboard.general.string = path
+            textField.paste(nil)
+            return true
+        }
     }
 
     @MainActor
