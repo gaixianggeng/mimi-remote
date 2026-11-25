@@ -111,6 +111,8 @@ final class AgentAPIClientRequestTests: XCTestCase {
                 path: criticalJourney.rest.pairClaim.path,
                 method: criticalJourney.rest.pairClaim.method,
                 requiresAuth: criticalJourney.rest.pairClaim.requiresAuth,
+                timeout: PairingErrorMapper.explicitClaimTimeoutSeconds,
+                headers: ["Accept": PairingErrorMapper.acceptMediaType],
                 json: [
                     "endpoint": "http://100.64.0.8:8787",
                     "issued_at": "2026-07-23T10:00:00Z",
@@ -130,10 +132,23 @@ final class AgentAPIClientRequestTests: XCTestCase {
                 path: "/api/pair/local",
                 method: "POST",
                 requiresAuth: false,
-                timeout: 2,
-                headers: ["X-Mimi-Local-Pairing": "1"]
+                timeout: PairingErrorMapper.localDiscoveryTimeoutSeconds,
+                headers: [
+                    "X-Mimi-Local-Pairing": "1",
+                    "Accept": PairingErrorMapper.acceptMediaType
+                ]
             ) { client in
                 _ = try await client.claimLocalPairing()
+            },
+            .init(
+                "free tailcat route",
+                path: "/api/tailcat/free-route",
+                method: "POST",
+                timeout: PairingErrorMapper.explicitClaimTimeoutSeconds,
+                headers: ["Accept": PairingErrorMapper.acceptMediaType],
+                json: ["client_key": "nodekey:mobile-client"]
+            ) { client in
+                _ = try await client.freeTailcatRoute(clientKey: "nodekey:mobile-client")
             },
             .init("version", path: "/api/version", method: "GET") { client in
                 _ = try await client.version()
@@ -643,6 +658,236 @@ private final class StructuredFileErrorURLProtocol: URLProtocol {
             self,
             didLoad: Data(#"{"error":"operation not permitted","code":"file_access_denied","permission_domain":"documents","action":"allow_on_mac"}"#.utf8)
         )
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+extension AgentAPIClientRequestTests {
+    func testAllFivePairingEndpointsNegotiateAcceptDecodeV1AndFallbackForLegacyHosts() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NegotiatedPairingStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let client = AgentAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "saved-host-token",
+            session: session
+        )
+        let sampleClaim = PairingClaimRequest(
+            endpoint: "http://100.64.0.8:8787",
+            issuedAt: "2026-07-23T10:00:00Z",
+            expiresAt: "2026-07-23T10:10:00Z",
+            pairSignature: "signed-ticket"
+        )
+
+        // 1. /api/pair/claim: 401 pair_ticket_expired with v1 media type & Vary: Accept (NEVER credentialsInvalid)
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v1+json; charset=utf-8",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#
+        )
+        do {
+            _ = try await client.claimPairing(sampleClaim)
+            XCTFail("Expected PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertEqual(error.status, 401)
+            XCTAssertEqual(error.code, "pair_ticket_expired")
+            XCTAssertEqual(error.step, .networkAny)
+            XCTAssertEqual(error.action, .retry)
+            XCTAssertTrue(error.isTrusted)
+            XCTAssertTrue(error.hasExpectedVaryAccept)
+            XCTAssertFalse(isCredentialInvalidatingError(error))
+            XCTAssertTrue(error.preservesSavedProfiles)
+        }
+        let claimRequest = try XCTUnwrap(NegotiatedPairingStubURLProtocol.lastRequest())
+        XCTAssertEqual(claimRequest.value(forHTTPHeaderField: "Accept"), PairingErrorMapper.acceptMediaType)
+        XCTAssertEqual(claimRequest.timeoutInterval, 45, accuracy: 0.01)
+
+        // 2. /api/pair/local: 403 pair_local_forbidden preserves local header and 2s timeout
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 403,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_local_forbidden","step":"service_daemon","message":"forbidden","fix":{"kind":"retry"}}}"#
+        )
+        do {
+            _ = try await client.claimLocalPairing()
+            XCTFail("Expected PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertEqual(error.status, 403)
+            XCTAssertEqual(error.code, "pair_local_forbidden")
+            XCTAssertEqual(error.step, .serviceDaemon)
+            XCTAssertFalse(isCredentialInvalidatingError(error))
+        }
+        let localRequest = try XCTUnwrap(NegotiatedPairingStubURLProtocol.lastRequest())
+        XCTAssertEqual(localRequest.value(forHTTPHeaderField: "X-Mimi-Local-Pairing"), "1")
+        XCTAssertEqual(localRequest.value(forHTTPHeaderField: "Accept"), PairingErrorMapper.acceptMediaType)
+        XCTAssertEqual(localRequest.timeoutInterval, 2, accuracy: 0.01)
+
+        // 3. /api/tailcat/managed-pairing-link: 409 workspace_confirmation_required
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 409,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Origin, Accept",
+            body: #"{"ok":false,"error":{"code":"workspace_confirmation_required","step":"workspace_root","message":"confirm","fix":{"kind":"choose_path","target":"workspace_root"}}}"#
+        )
+        do {
+            _ = try await client.managedPairingLink(confirmResetSelfHosted: false)
+            XCTFail("Expected PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertEqual(error.status, 409)
+            XCTAssertEqual(error.code, "workspace_confirmation_required")
+            XCTAssertEqual(error.step, .workspaceRoot)
+            XCTAssertTrue(error.hasExpectedVaryAccept)
+            XCTAssertFalse(isCredentialInvalidatingError(error))
+        }
+        XCTAssertEqual(
+            NegotiatedPairingStubURLProtocol.lastRequest()?.value(forHTTPHeaderField: "Accept"),
+            PairingErrorMapper.acceptMediaType
+        )
+
+        // 4. /api/tailcat/managed-pairing-operations: 503 no_enabled_assistant
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 503,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"no_enabled_assistant","step":"assistant_any","message":"none","fix":{"kind":"open_url","url":"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}}}"#
+        )
+        do {
+            _ = try await client.activateManagedRelay(requestID: UUID())
+            XCTFail("Expected PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertEqual(error.status, 503)
+            XCTAssertEqual(error.code, "no_enabled_assistant")
+            XCTAssertEqual(error.action, .openURL(.guide))
+        }
+        XCTAssertEqual(
+            NegotiatedPairingStubURLProtocol.lastRequest()?.value(forHTTPHeaderField: "Accept"),
+            PairingErrorMapper.acceptMediaType
+        )
+
+        // 5. /api/tailcat/free-route: legacy code fallback + v2 rejection with zero execution
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 503,
+            contentType: "application/json",
+            vary: nil,
+            body: #"{"error":"no agents","code":"tailcat_agents_disabled"}"#
+        )
+        do {
+            _ = try await client.freeTailcatRoute(clientKey: "nodekey:test")
+            XCTFail("Expected legacy PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertTrue(error.isLegacyFallback)
+            XCTAssertEqual(error.code, "no_enabled_assistant")
+            XCTAssertEqual(error.action, .openURL(.guide))
+            XCTAssertFalse(error.hasExpectedVaryAccept)
+        }
+        XCTAssertEqual(
+            NegotiatedPairingStubURLProtocol.lastRequest()?.value(forHTTPHeaderField: "Accept"),
+            PairingErrorMapper.acceptMediaType
+        )
+
+        // Unsupported v2 media type -> untrusted safe fallback with zero action
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v2+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#
+        )
+        do {
+            _ = try await client.claimPairing(sampleClaim)
+            XCTFail("Expected untrusted PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertFalse(error.isTrusted)
+            XCTAssertEqual(error.action, .none)
+            XCTAssertEqual(error.userFacingMessage, PairingErrorMapper.safeFallbackCopy)
+            XCTAssertFalse(isCredentialInvalidatingError(error))
+        }
+
+        // Old host 401 on /api/pair/claim with string error -> ticket error, NEVER credentialsInvalid
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/json",
+            vary: nil,
+            body: #"{"error":"配对二维码已过期"}"#
+        )
+        do {
+            _ = try await client.claimPairing(sampleClaim)
+            XCTFail("Expected legacy 401 PairingOnboardingAPIError")
+        } catch let error as PairingOnboardingAPIError {
+            XCTAssertTrue(error.isLegacyFallback)
+            XCTAssertEqual(error.code, "pair_ticket_invalid")
+            XCTAssertFalse(isCredentialInvalidatingError(error))
+            XCTAssertTrue(error.preservesSavedProfiles)
+        }
+
+        // Authenticated managed endpoint returning regular 401 bearer rejection keeps credentialsInvalid
+        NegotiatedPairingStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/json",
+            vary: nil,
+            body: #"{"error":"unauthorized"}"#
+        )
+        do {
+            _ = try await client.freeTailcatRoute(clientKey: "nodekey:test")
+            XCTFail("Expected bearer credentialsInvalid")
+        } catch let error as AgentAPIError {
+            XCTAssertTrue(isCredentialInvalidatingError(error))
+        }
+    }
+}
+
+private final class NegotiatedPairingStubURLProtocol: URLProtocol {
+    private struct StubResponse {
+        let statusCode: Int
+        let contentType: String
+        let vary: String?
+        let body: String
+    }
+
+    private static let lock = NSLock()
+    private static var response = StubResponse(statusCode: 500, contentType: "application/json", vary: nil, body: "{}")
+    private static var recordedRequest: URLRequest?
+
+    static func configure(statusCode: Int, contentType: String, vary: String?, body: String) {
+        lock.withLock {
+            response = StubResponse(statusCode: statusCode, contentType: contentType, vary: vary, body: body)
+            recordedRequest = nil
+        }
+    }
+
+    static func lastRequest() -> URLRequest? {
+        lock.withLock { recordedRequest }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let stub = Self.lock.withLock { () -> StubResponse in
+            Self.recordedRequest = request
+            return Self.response
+        }
+        var headers = ["Content-Type": stub.contentType]
+        if let vary = stub.vary {
+            headers["Vary"] = vary
+        }
+        guard let url = request.url,
+              let httpResponse = HTTPURLResponse(
+                url: url,
+                statusCode: stub.statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(stub.body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

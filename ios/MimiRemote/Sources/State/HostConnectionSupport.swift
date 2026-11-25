@@ -56,6 +56,32 @@ struct PairingTicket: Equatable {
     let expiresAt: String
     let pairSignature: String
 
+    /// 解析链接携带的真实到期时间，避免客户端硬编码固定有效期。
+    var expiresAtDate: Date? {
+        Self.parseTimestamp(expiresAt)
+    }
+
+    func isExpired(at now: Date = Date()) -> Bool {
+        guard let expiry = expiresAtDate else { return true }
+        return expiry <= now
+    }
+
+    static func parseTimestamp(_ raw: String) -> Date? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let seconds = TimeInterval(trimmed) {
+            return Date(timeIntervalSince1970: seconds)
+        }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: trimmed) {
+            return date
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: trimmed)
+    }
+
     var claimRequest: PairingClaimRequest {
         PairingClaimRequest(
             endpoint: endpoint,
@@ -850,6 +876,12 @@ enum ConnectionFailureGuidance {
         tailcatExperimentEnabled: Bool = false,
         hasActiveMimiEntitlement: Bool = false
     ) -> String {
+        if let pairingError = error as? PairingOnboardingAPIError {
+            if pairingError.code == "pair_ticket_expired", let repairPlatform {
+                return repairPlatform.pairingQRCodeExpiredGuidance
+            }
+            return pairingError.userFacingMessage
+        }
         if (error as? PairingLinkError) == .expired {
             return (repairPlatform ?? .unknown).pairingQRCodeExpiredGuidance
         }
@@ -928,7 +960,8 @@ enum ConnectionFailureGuidance {
     }
 
     private static func isPreservedUserFacingMessage(_ raw: String) -> Bool {
-        if HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
+        if PairingErrorMapper.isUserFacingMessage(raw) ||
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
             TailcatPairingError.isUserFacingMessage(raw) ||
             ConnectionProfileError.isUserFacingMessage(raw) {
             return true

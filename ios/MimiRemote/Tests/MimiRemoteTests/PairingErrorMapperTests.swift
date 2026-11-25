@@ -21,6 +21,7 @@ final class PairingErrorMapperTests: XCTestCase {
             }
             struct HTTPConfig: Decodable {
                 let mediaType: String
+                let vary: String
                 let paths: [String]
             }
             let schema: String
@@ -37,6 +38,7 @@ final class PairingErrorMapperTests: XCTestCase {
 
         XCTAssertEqual(manifest.schema, "mimi.onboarding.codes/v1")
         XCTAssertEqual(PairingErrorMapper.acceptMediaType, manifest.http.mediaType)
+        XCTAssertEqual(PairingErrorMapper.expectedVaryHeaderValue, manifest.http.vary)
         XCTAssertEqual(PairingErrorMapper.negotiatedPaths, manifest.http.paths)
         XCTAssertGreaterThan(manifest.wireCodes.count, 0)
         XCTAssertGreaterThan(manifest.uiLocalCodes.count, 0)
@@ -318,5 +320,58 @@ final class PairingErrorMapperTests: XCTestCase {
         }
         let unknown = Data(#"{"ok":false,"error":{"code":"private sample","step":"network_any","message":"x","fix":{"kind":"retry"}}}"#.utf8)
         XCTAssertNil(PairingErrorMapper.mapHTTPErrorEnvelope(data: unknown).code)
+    }
+
+    func testVaryAcceptNegotiatedPathsAndScannerFailureActions() {
+        XCTAssertTrue(PairingErrorMapper.hasVaryAccept("Accept"))
+        XCTAssertTrue(PairingErrorMapper.hasVaryAccept("Origin, accept"))
+        XCTAssertTrue(PairingErrorMapper.hasVaryAccept("*"))
+        XCTAssertFalse(PairingErrorMapper.hasVaryAccept("Origin"))
+        XCTAssertFalse(PairingErrorMapper.hasVaryAccept(nil))
+
+        for path in PairingErrorMapper.negotiatedPaths {
+            XCTAssertTrue(PairingErrorMapper.isNegotiatedPath(path), path)
+        }
+        XCTAssertTrue(PairingErrorMapper.isNegotiatedPath("/api/tailcat/managed-pairing-operations/abc-123"))
+        XCTAssertFalse(PairingErrorMapper.isNegotiatedPath("/api/tailcat/managed-pairing-operations/abc-123/rollback"))
+        XCTAssertFalse(PairingErrorMapper.isNegotiatedPath("/api/version"))
+
+        // Clock skew renders text guidance with zero App-Prefs: and manual rescan actions.
+        let clockSkew = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_clock_skew","step":"network_any","message":"时钟偏差","fix":{"kind":"open_settings","target":"date_time"}}}"#.utf8)
+        )
+        let clockFailure = QRCodeScannerFailure.onboardingError(clockSkew)
+        XCTAssertEqual(clockFailure.message, PairingErrorMapper.dateTimeInstructions)
+        XCTAssertFalse(clockFailure.message.contains("App-Prefs:"))
+        XCTAssertEqual(clockFailure.recoveryActions, [.retryScanning, .pasteLink, .manualConnection])
+        XCTAssertTrue(PairingErrorMapper.isUserFacingMessage(clockFailure.message))
+
+        // no_enabled_assistant offers the allowlisted GUIDE URL alongside rescan/paste.
+        let noAssistant = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"no_enabled_assistant","step":"assistant_any","message":"无助手","fix":{"kind":"open_url","url":"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}}}"#.utf8)
+        )
+        let noAssistantFailure = QRCodeScannerFailure.onboardingError(noAssistant)
+        XCTAssertEqual(noAssistantFailure.recoveryActions, [.openHelpURL(.guide), .retryScanning, .pasteLink])
+        XCTAssertTrue(PairingErrorMapper.isUserFacingMessage(noAssistantFailure.message))
+
+        // Confirmed entitlement failure opens managed connection; untrusted payloads offer zero automatic actions.
+        let entitlement = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_managed_entitlement_required","step":"network_tailcat","message":"需要订阅","fix":{"kind":"open_settings","target":"managed_connection"}}}"#.utf8)
+        )
+        XCTAssertEqual(
+            QRCodeScannerFailure.onboardingError(entitlement).recoveryActions,
+            [.openManagedConnection, .retryScanning]
+        )
+
+        let untrusted = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_token_mismatch","step":"service_daemon","message":"x","fix":{"kind":"run_fix","action":"restart_service","rotates_token":true}}}"#.utf8)
+        )
+        XCTAssertFalse(untrusted.isTrusted)
+        XCTAssertEqual(untrusted.action, .none)
+        XCTAssertTrue(PairingErrorMapper.isUserFacingMessage(untrusted.userFacingMessage))
+        XCTAssertEqual(
+            QRCodeScannerFailure.onboardingError(untrusted).recoveryActions,
+            [.retryScanning, .pasteLink, .manualConnection]
+        )
     }
 }

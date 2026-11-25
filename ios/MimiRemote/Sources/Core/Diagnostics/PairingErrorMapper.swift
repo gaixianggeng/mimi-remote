@@ -193,6 +193,22 @@ struct MappedPairingError: Equatable, Sendable {
     let isTrusted: Bool
     let preservesSavedProfiles: Bool
     let isLegacyFallback: Bool
+
+    /// User-facing copy for iOS alerts/banners/scanner failure cards.
+    /// Surfaces pure text guidance for `date_time` (never `App-Prefs:`) and desktop rescan instructions.
+    var userFacingMessage: String {
+        switch action {
+        case .showDateTimeGuidanceAndRetry(let instructions):
+            return instructions
+        case .desktopGuidanceAndRescan(let instructions):
+            if code == "workspace_confirmation_required" {
+                return instructions
+            }
+            return message
+        case .none, .retry, .openURL, .openManagedConnection:
+            return message
+        }
+    }
 }
 
 struct PairingErrorCatalogEntry: Equatable, Sendable {
@@ -214,6 +230,7 @@ struct PairingErrorCatalogEntry: Equatable, Sendable {
 
 enum PairingErrorMapper {
     static let acceptMediaType = "application/vnd.mimi.onboarding.v1+json"
+    static let expectedVaryHeaderValue = "Accept"
     static let explicitClaimTimeoutSeconds: TimeInterval = 45
     static let localDiscoveryTimeoutSeconds: TimeInterval = 2
     static var safeFallbackCopy: String {
@@ -230,6 +247,60 @@ enum PairingErrorMapper {
         "/api/tailcat/managed-pairing-operations",
         "/api/tailcat/free-route",
     ]
+
+    static func isNegotiatedPath(_ path: String) -> Bool {
+        let barePath = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        if negotiatedPaths.contains(barePath) {
+            return true
+        }
+        return barePath.hasPrefix("/api/tailcat/managed-pairing-operations/")
+            && !barePath.hasSuffix("/rollback")
+    }
+
+    static func hasVaryAccept(_ varyHeader: String?) -> Bool {
+        guard let varyHeader else { return false }
+        let tokens = varyHeader
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        return tokens.contains(expectedVaryHeaderValue.lowercased()) || tokens.contains("*")
+    }
+
+    static func isOnboardingMediaType(_ contentType: String?) -> Bool {
+        classifyMediaType(contentType) != .other
+    }
+
+    static func isOnboardingErrorEnvelope(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        if hasUnsupportedOnboardingSchema(object) {
+            return true
+        }
+        return object["ok"] != nil || object["error"] is [String: Any]
+    }
+
+    /// Recognizes every localized user-facing string emitted by `PairingErrorMapper` so
+    /// downstream generic classifiers never overwrite typed pairing guidance or misclassify 401 tickets.
+    static func isUserFacingMessage(_ message: String) -> Bool {
+        if message == safeFallbackCopy
+            || message == dateTimeInstructions
+            || message == L10n.text("ui.pairing_onboarding_desktop_workspace_guidance")
+            || message == L10n.text("ui.pairing_onboarding_desktop_service_guidance") {
+            return true
+        }
+        for entry in catalogEntries {
+            if entry.allowsAnyStep || entry.code == "invalid_request" {
+                for step in PairingOnboardingStep.allCases {
+                    if localizedMessage(code: entry.code, step: step) == message {
+                        return true
+                    }
+                }
+            } else if localizedMessage(code: entry.code, step: entry.steps.first) == message {
+                return true
+            }
+        }
+        return false
+    }
 
     static let httpForbiddenFields: Set<String> = [
         "config_path", "recovery_path", "candidates", "detected_version", "min_version",

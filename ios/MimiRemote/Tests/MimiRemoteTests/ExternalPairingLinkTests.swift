@@ -203,7 +203,127 @@ final class ExternalPairingLinkTests: XCTestCase {
         }
     }
 
-    private func makeStores(routeProbe: @escaping ConnectionRouteProbe) -> (SessionStore, AppStore) {
+    func testClaimPairing401TicketErrorsPreserveSavedConnectedProfileAndSurfaceTypedGuidance() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExternalPairingClaimStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in }, agentAPISession: session)
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.30:8787",
+            token: "existing-token"
+        ))
+        appStore.markLiveConnectionEstablished()
+        let savedProfileID = try XCTUnwrap(appStore.activeConnectionProfileID)
+        XCTAssertTrue(appStore.connectionStatus.isConnected)
+
+        let liveTicketURL = try XCTUnwrap(URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.99%3A8787"
+                + "&issued_at=2026-07-23T10%3A00%3A00Z&expires_at=4102444800&pair_sig=test-sig"
+        ))
+
+        // v1 HTTP 401 pair_ticket_expired must NOT delete profile, invalidate credentials, or drop connected status.
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#
+        )
+        await store.openPairingLink(liveTicketURL)
+
+        XCTAssertEqual(appStore.connectionProfiles.map(\.id), [savedProfileID])
+        XCTAssertEqual(appStore.activeConnectionProfileID, savedProfileID)
+        XCTAssertEqual(appStore.token, "existing-token")
+        XCTAssertTrue(appStore.isConfigured)
+        XCTAssertTrue(appStore.connectionStatus.isConnected)
+        XCTAssertNil(appStore.connectionTermination)
+        XCTAssertFalse(appStore.requiresRePairing)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "pair_ticket_expired")
+        let expiredError = try XCTUnwrap(appStore.lastError)
+        XCTAssertEqual(expiredError, L10n.text("ui.pairing_onboarding_pair_ticket_expired"))
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: expiredError, route: store.lastPairingLinkRoute),
+            expiredError
+        )
+        XCTAssertFalse(expiredError.contains("{"))
+        XCTAssertFalse(expiredError.contains("10 分钟"))
+
+        // v1 HTTP 401 pair_clock_skew preserves saved profile and gives text Date & Time guidance (no App-Prefs:).
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_clock_skew","step":"network_any","message":"skew","fix":{"kind":"open_settings","target":"date_time"}}}"#
+        )
+        await store.openPairingLink(liveTicketURL)
+
+        XCTAssertEqual(appStore.connectionProfiles.map(\.id), [savedProfileID])
+        XCTAssertTrue(appStore.connectionStatus.isConnected)
+        XCTAssertNil(appStore.connectionTermination)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "pair_clock_skew")
+        let clockError = try XCTUnwrap(appStore.lastError)
+        XCTAssertEqual(clockError, PairingErrorMapper.dateTimeInstructions)
+        XCTAssertFalse(clockError.contains("App-Prefs:"))
+        XCTAssertEqual(
+            ConnectionFailureGuidance.friendlyMessage(from: clockError, route: store.lastPairingLinkRoute),
+            clockError
+        )
+
+        // Legacy host 401 on /api/pair/claim still preserves saved profile and avoids credentialsInvalid.
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/json",
+            vary: nil,
+            body: #"{"error":"配对二维码已过期"}"#
+        )
+        await store.openPairingLink(liveTicketURL)
+
+        XCTAssertEqual(appStore.connectionProfiles.map(\.id), [savedProfileID])
+        XCTAssertTrue(appStore.connectionStatus.isConnected)
+        XCTAssertNil(appStore.connectionTermination)
+        XCTAssertEqual(store.lastPairingOnboardingError?.isLegacyFallback, true)
+        XCTAssertEqual(appStore.lastError, L10n.text("ui.pairing_onboarding_pair_ticket_invalid"))
+    }
+
+    func testFirstConnectionDeepLinkPropagates409And503TypedOnboardingErrors() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExternalPairingClaimStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let (store, _) = makeStores(routeProbe: { _, _, _ in }, agentAPISession: session)
+        let liveTicketURL = try XCTUnwrap(URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.99%3A8787"
+                + "&issued_at=2026-07-23T10%3A00%3A00Z&expires_at=4102444800&pair_sig=test-sig"
+        ))
+
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 409,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"workspace_confirmation_required","step":"workspace_root","message":"confirm","fix":{"kind":"choose_path","target":"workspace_root"}}}"#
+        )
+        await store.openPairingLink(liveTicketURL)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "workspace_confirmation_required")
+        XCTAssertEqual(store.pairingLinkAttempt, .failed(L10n.text("ui.pairing_onboarding_desktop_workspace_guidance")))
+
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 503,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"no_enabled_assistant","step":"assistant_any","message":"none","fix":{"kind":"open_url","url":"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}}}"#
+        )
+        await store.openPairingLink(liveTicketURL)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "no_enabled_assistant")
+        XCTAssertEqual(store.lastPairingOnboardingError?.action, .openURL(.guide))
+        XCTAssertEqual(store.pairingLinkAttempt, .failed(L10n.text("ui.pairing_onboarding_no_enabled_assistant")))
+    }
+
+    private func makeStores(
+        routeProbe: @escaping ConnectionRouteProbe,
+        agentAPISession: URLSession = .shared
+    ) -> (SessionStore, AppStore) {
         let suiteName = "ExternalPairingLinkTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             fatalError("无法创建隔离测试 UserDefaults suite: \(suiteName)")
@@ -216,7 +336,8 @@ final class ExternalPairingLinkTests: XCTestCase {
             defaults: defaults,
             tokenStore: TokenStore(keychain: TestKeychainOperations()),
             prefersLocalConnection: false,
-            routeProbe: routeProbe
+            routeProbe: routeProbe,
+            agentAPISession: agentAPISession
         )
         let client = MockSessionStoreClient(projects: [], sessions: [], messagesResult: [])
         let store = SessionStore(
@@ -266,4 +387,48 @@ private final class RouteProbeGate {
         continuation?.resume(throwing: error)
         continuation = nil
     }
+}
+
+private final class ExternalPairingClaimStubURLProtocol: URLProtocol {
+    private struct StubResponse {
+        let statusCode: Int
+        let contentType: String
+        let vary: String?
+        let body: String
+    }
+
+    private static let lock = NSLock()
+    private static var response = StubResponse(statusCode: 500, contentType: "application/json", vary: nil, body: "{}")
+
+    static func configure(statusCode: Int, contentType: String, vary: String?, body: String) {
+        lock.withLock {
+            response = StubResponse(statusCode: statusCode, contentType: contentType, vary: vary, body: body)
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let stub = Self.lock.withLock { Self.response }
+        var headers = ["Content-Type": stub.contentType]
+        if let vary = stub.vary {
+            headers["Vary"] = vary
+        }
+        guard let url = request.url,
+              let httpResponse = HTTPURLResponse(
+                url: url,
+                statusCode: stub.statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(stub.body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

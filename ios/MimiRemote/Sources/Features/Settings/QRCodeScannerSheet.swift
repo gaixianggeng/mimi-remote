@@ -11,6 +11,8 @@ enum QRCodeScannerRecoveryAction: Equatable {
     case manualConnection
     /// 电脑已改用托管连接、这台设备还没开通时，直接去开通页。
     case openManagedConnection
+    /// 仅限 `PairingOnboardingFixURL` 白名单内的固定 HTTPS 说明链接，绝不接受任意 URL 或私有 scheme。
+    case openHelpURL(PairingOnboardingFixURL)
 }
 enum QRCodeScannerFailure: Equatable {
     case permissionDenied
@@ -19,6 +21,7 @@ enum QRCodeScannerFailure: Equatable {
     case configurationFailed(String)
     case rejectedCode(String)
     case managedConnectionRequired(String)
+    case onboardingError(MappedPairingError)
 
     var message: String {
         switch self {
@@ -34,6 +37,8 @@ enum QRCodeScannerFailure: Equatable {
             return reason
         case .managedConnectionRequired(let reason):
             return reason
+        case .onboardingError(let mapped):
+            return mapped.userFacingMessage
         }
     }
 
@@ -48,6 +53,15 @@ enum QRCodeScannerFailure: Equatable {
         case .managedConnectionRequired:
             // 换入口或手动输入都绕不过准入，只给开通和重新扫码。
             return [.openManagedConnection, .retryScanning]
+        case .onboardingError(let mapped):
+            switch mapped.action {
+            case .openManagedConnection:
+                return [.openManagedConnection, .retryScanning]
+            case .openURL(let fixURL):
+                return [.openHelpURL(fixURL), .retryScanning, .pasteLink]
+            case .retry, .showDateTimeGuidanceAndRetry, .desktopGuidanceAndRescan, .none:
+                return [.retryScanning, .pasteLink, .manualConnection]
+            }
         }
     }
 }
@@ -58,6 +72,7 @@ enum QRCodeScannerSubmissionResult: Equatable {
     case activated(String)
     case rejected(String)
     case requiresManagedConnection(String)
+    case onboardingFailure(MappedPairingError)
 }
 
 /// 同一个取景器的两种用途：连电脑，或扫另一台设备出示的邀请码（#989）。
@@ -83,13 +98,17 @@ enum QRCodeScannerPurpose: Equatable {
 
     /// 粘贴配对链接和手动输入地址都是连电脑的后备，开通时出现只会把人带偏。
     func allows(_ action: QRCodeScannerRecoveryAction) -> Bool {
-        self == .pairing || (action != .pasteLink && action != .manualConnection)
+        if case .openHelpURL = action {
+            return self == .pairing
+        }
+        return self == .pairing || (action != .pasteLink && action != .manualConnection)
     }
 }
 
 struct QRCodeScannerSheet: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
     @State private var scannerFailure: QRCodeScannerFailure?
     @State private var isCameraReady = false
     @State private var isSubmittingCode = false
@@ -354,6 +373,8 @@ struct QRCodeScannerSheet: View {
                 chooseManualConnection()
             case .openManagedConnection:
                 onOpenManagedConnection?()
+            case .openHelpURL(let fixURL):
+                openURL(fixURL.url)
             }
         } label: {
             Text(recoveryTitle(action))
@@ -388,6 +409,8 @@ struct QRCodeScannerSheet: View {
             L10n.text("ui.use_manual_connection_instead")
         case .openManagedConnection:
             L10n.text("ui.managed_devices_subscribe_action")
+        case .openHelpURL:
+            L10n.text("ui.pairing_onboarding_open_guide")
         }
     }
 
@@ -475,6 +498,13 @@ struct QRCodeScannerSheet: View {
             case .requiresManagedConnection(let message):
                 isSubmittingCode = false
                 scannerFailure = .managedConnectionRequired(message)
+            case .onboardingFailure(let mapped):
+                isSubmittingCode = false
+                if mapped.action == .openManagedConnection {
+                    scannerFailure = .managedConnectionRequired(mapped.userFacingMessage)
+                } else {
+                    scannerFailure = .onboardingError(mapped)
+                }
             }
             submissionTask = nil
         }
