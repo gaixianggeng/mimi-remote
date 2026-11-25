@@ -59,6 +59,205 @@ func TestResolveCodexBinFallsBackToDesktopApp(t *testing.T) {
 	}
 }
 
+func TestDarwinCodexCandidatesCoverEmbeddedChatGPTAndCodexApps(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "example")
+	candidates := darwinCodexCandidates(home)
+	for _, expected := range []string{
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		filepath.Join(home, ".local", "bin", "codex"),
+		filepath.Join(home, ".npm-global", "bin", "codex"),
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+	} {
+		if !slices.Contains(candidates, expected) {
+			t.Fatalf("macOS Codex fallback 缺少 %q：%v", expected, candidates)
+		}
+	}
+
+	const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+	resolved, err := resolveCodexBin("codex", func(candidate string) (string, error) {
+		if candidate == embedded {
+			return embedded, nil
+		}
+		return "", errors.New("missing")
+	}, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs(embedded)
+	if resolved != filepath.Clean(want) {
+		t.Fatalf("PATH 未命中时应发现 ChatGPT.app 新版内嵌 Codex：%s", resolved)
+	}
+}
+
+func TestResolveCodexBinDarwinPrecedenceWhenMultipleCandidatesExist(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "example")
+	candidates := darwinCodexCandidates(home)
+
+	systemChatGPT := "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+	userChatGPT := filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex")
+	userCodexLegacy := filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex")
+	homebrewAppleSilicon := "/opt/homebrew/bin/codex"
+	homebrewIntel := "/usr/local/bin/codex"
+	userLocal := filepath.Join(home, ".local", "bin", "codex")
+	pathCodex := "/custom/path/bin/codex"
+	explicitCodex := "/explicit/config/bin/codex"
+
+	desktopApps := []string{
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/ChatGPT.app/Contents/Resources/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+		"/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+		"/Applications/Codex.app/Contents/Resources/codex",
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+		filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
+	}
+	installerFallbacks := []string{
+		homebrewAppleSilicon,
+		homebrewIntel,
+		userLocal,
+		filepath.Join(home, ".npm-global", "bin", "codex"),
+		filepath.Join(home, ".local", "share", "mise", "shims", "codex"),
+		filepath.Join(home, ".local", "share", "mise", "installs", "codex", "latest", "bin", "codex"),
+	}
+	maxAppIndex := -1
+	for _, app := range desktopApps {
+		idx := slices.Index(candidates, app)
+		if idx < 0 {
+			t.Fatalf("macOS 候选列表缺少桌面 App 路径 %q", app)
+		}
+		if idx > maxAppIndex {
+			maxAppIndex = idx
+		}
+	}
+	for _, fallback := range installerFallbacks {
+		idx := slices.Index(candidates, fallback)
+		if idx < 0 {
+			t.Fatalf("macOS 候选列表缺少兜底安装路径 %q", fallback)
+		}
+		if idx <= maxAppIndex {
+			t.Fatalf("兜底安装路径 %q (index=%d) 不得排在桌面 App (maxIndex=%d) 之前：%v", fallback, idx, maxAppIndex, candidates)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		configured string
+		available  map[string]string
+		want       string
+	}{
+		{
+			name:       "explicit configured path beats PATH and desktop apps",
+			configured: explicitCodex,
+			available: map[string]string{
+				explicitCodex:        explicitCodex,
+				"codex":              pathCodex,
+				systemChatGPT:        systemChatGPT,
+				userChatGPT:          userChatGPT,
+				homebrewAppleSilicon: homebrewAppleSilicon,
+			},
+			want: explicitCodex,
+		},
+		{
+			name:       "PATH beats desktop apps and homebrew when both exist",
+			configured: "codex",
+			available: map[string]string{
+				"codex":              pathCodex,
+				systemChatGPT:        systemChatGPT,
+				userChatGPT:          userChatGPT,
+				homebrewAppleSilicon: homebrewAppleSilicon,
+				homebrewIntel:        homebrewIntel,
+			},
+			want: pathCodex,
+		},
+		{
+			name:       "system Applications beats user Applications and homebrew",
+			configured: "codex",
+			available: map[string]string{
+				systemChatGPT:        systemChatGPT,
+				userChatGPT:          userChatGPT,
+				homebrewAppleSilicon: homebrewAppleSilicon,
+				homebrewIntel:        homebrewIntel,
+			},
+			want: systemChatGPT,
+		},
+		{
+			name:       "user Applications new embedded path beats /usr/local/bin/codex and homebrew",
+			configured: "codex",
+			available: map[string]string{
+				userChatGPT:          userChatGPT,
+				homebrewAppleSilicon: homebrewAppleSilicon,
+				homebrewIntel:        homebrewIntel,
+				userLocal:            userLocal,
+			},
+			want: userChatGPT,
+		},
+		{
+			name:       "user Applications legacy path beats /usr/local/bin/codex",
+			configured: "/missing/codex",
+			available: map[string]string{
+				userCodexLegacy: userCodexLegacy,
+				homebrewIntel:   homebrewIntel,
+				userLocal:       userLocal,
+			},
+			want: userCodexLegacy,
+		},
+		{
+			name:       "homebrew fallback used only when PATH and desktop apps miss",
+			configured: "codex",
+			available: map[string]string{
+				homebrewIntel: homebrewIntel,
+				userLocal:     userLocal,
+			},
+			want: homebrewIntel,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resolved, err := resolveCodexBin(tc.configured, func(candidate string) (string, error) {
+				if hit, ok := tc.available[candidate]; ok {
+					return hit, nil
+				}
+				return "", errors.New("missing")
+			}, candidates)
+			if err != nil {
+				t.Fatalf("resolveCodexBin 失败：%v", err)
+			}
+			want, err := filepath.Abs(tc.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved != filepath.Clean(want) {
+				t.Fatalf("获选候选异常：got=%q want=%q", resolved, filepath.Clean(want))
+			}
+		})
+	}
+}
+
+func TestDarwinPlatformCodexCandidatesIncludeEmbeddedChatGPTCLI(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS candidate list only applies to Darwin hosts")
+	}
+	candidates := platformCodexCandidates()
+	const expected = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+	if !slices.Contains(candidates, expected) {
+		t.Fatalf("Darwin platformCodexCandidates 缺少 %q：%v", expected, candidates)
+	}
+}
+
 func TestLinuxCodexCandidatesCoverCommonUserInstallers(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux candidate list only applies to Linux hosts")
