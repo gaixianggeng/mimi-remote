@@ -51,7 +51,6 @@ final class OpenWorkspaceSheetModel: ObservableObject {
     private var hasStartedInitialBrowse = false
     private weak var sessionStore: SessionStore?
     private var onOpened: (String) -> Void = { _ in }
-    private var dismissAction: (() -> Void)?
 
     var trimmedPath: String {
         path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -61,14 +60,13 @@ final class OpenWorkspaceSheetModel: ObservableObject {
         !isOpening && !trimmedPath.isEmpty
     }
 
+    /// 绑定当前会话存储与打开成功回调；不保存视图的 dismiss 闭包，避免与 `OpenWorkspaceSheet` 形成循环引用。
     func attach(
         sessionStore: SessionStore,
-        onOpened: @escaping (String) -> Void,
-        dismiss: @escaping () -> Void
+        onOpened: @escaping (String) -> Void
     ) {
         self.sessionStore = sessionStore
         self.onOpened = onOpened
-        self.dismissAction = dismiss
     }
 
     func updateManualPath(_ next: String) {
@@ -91,14 +89,16 @@ final class OpenWorkspaceSheetModel: ObservableObject {
         await browse(to: "")
     }
 
-    func openCurrentBrowsePath() {
-        guard let browsePath else { return }
-        Task { await open(path: browsePath) }
+    @discardableResult
+    func openCurrentBrowsePath() async -> Bool {
+        guard let browsePath, !isOpening else { return false }
+        return await open(path: browsePath)
     }
 
-    func openTypedPath() {
-        guard canOpenTypedPath else { return }
-        Task { await open(path: path) }
+    @discardableResult
+    func openTypedPath() async -> Bool {
+        guard canOpenTypedPath else { return false }
+        return await open(path: path)
     }
 
     func browse(to target: String) async {
@@ -159,12 +159,13 @@ final class OpenWorkspaceSheetModel: ObservableObject {
         }
     }
 
-    func open(path: String) async {
-        guard let sessionStore else { return }
+    @discardableResult
+    func open(path: String) async -> Bool {
+        guard let sessionStore, !isOpening else { return false }
         let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetPath.isEmpty else {
             localError = L10n.text("ui.please_enter_the_directory_path_in_the_development")
-            return
+            return false
         }
         isOpening = true
         localError = nil
@@ -172,12 +173,13 @@ final class OpenWorkspaceSheetModel: ObservableObject {
         switch await sessionStore.openWorkspaceOutcome(path: targetPath) {
         case .opened(let workspaceID):
             onOpened(workspaceID)
-            dismissAction?()
+            return true
         case .cancelled:
             // 关闭 Sheet、切主机或后台凭据挂起都属于生命周期取消；保留输入供用户恢复后重试。
-            return
+            return false
         case .failed(let message):
             localError = userFacingOpenWorkspaceError(message, path: targetPath)
+            return false
         }
     }
 
@@ -211,7 +213,6 @@ struct OpenWorkspaceSheet: View {
     /// 图标底板宽 + 与名称的间距。分隔线按同一常量内缩，让线头正好落在名称基线上。
     fileprivate static let rowTextInset: CGFloat = 42
 
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var sessionStore: SessionStore
 
     private let externalModel: OpenWorkspaceSheetModel?
@@ -234,8 +235,7 @@ struct OpenWorkspaceSheet: View {
         let model = resolvedModel
         model.attach(
             sessionStore: sessionStore,
-            onOpened: onOpened,
-            dismiss: { dismiss() }
+            onOpened: onOpened
         )
         // SessionStore 轮询更新时只刷新最外层弱引用，内层以模型身份判等跳过重绘，
         // 不把全局列表刷新传导到正在粘贴/编辑的手动路径输入框（#1107）。
@@ -279,7 +279,7 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
                         WorkspaceOpenCurrentDirectoryToolbarButton(
                             isOpening: model.isOpening,
                             isDisabled: model.browsePath == nil || model.isOpening || model.isBrowsing,
-                            action: { model.openCurrentBrowsePath() }
+                            action: openCurrentBrowsePath
                         )
                     }
                 }
@@ -298,6 +298,26 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
             selection: $model.presentationDetent
         )
         .presentationDragIndicator(.visible)
+    }
+
+    private func openCurrentBrowsePath() {
+        let model = model
+        let dismissAction = dismiss
+        Task {
+            if await model.openCurrentBrowsePath() {
+                dismissAction()
+            }
+        }
+    }
+
+    private func openTypedPath() {
+        let model = model
+        let dismissAction = dismiss
+        Task {
+            if await model.openTypedPath() {
+                dismissAction()
+            }
+        }
     }
 
     private func cancelButton(tokens: ThemeTokens) -> some View {
@@ -511,7 +531,7 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
                                 model.handleManualPathFocusChange(isFocused)
                             },
                             onSubmit: {
-                                model.openTypedPath()
+                                openTypedPath()
                             }
                         )
                         // 路径是等宽内容：斜杠与层级在等宽字下才对得齐，也更容易核对粘贴结果。
@@ -527,7 +547,7 @@ private struct OpenWorkspaceSheetContent: View, Equatable {
                         }
 
                         Button {
-                            model.openTypedPath()
+                            openTypedPath()
                         } label: {
                             Text(model.isOpening ? L10n.text("ui.opening") : L10n.text("ui.open_the_input_path"))
                                 .font(themeStore.uiFont(size: 14, weight: .semibold))

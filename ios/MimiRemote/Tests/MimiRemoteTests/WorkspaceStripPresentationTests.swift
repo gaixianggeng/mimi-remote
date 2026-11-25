@@ -573,7 +573,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         _ = appStore
 
         let model = OpenWorkspaceSheetModel()
-        model.attach(sessionStore: sessionStore, onOpened: { _ in }, dismiss: {})
+        model.attach(sessionStore: sessionStore, onOpened: { _ in })
 
         await model.startInitialBrowseIfNeeded()
         await model.startInitialBrowseIfNeeded()
@@ -618,9 +618,146 @@ final class WorkspaceStripPresentationTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenWorkspaceSheetReleasesModelAfterDismissal() async throws {
+        let rootResponse = DirectoryListResponse(
+            path: "/Users/me",
+            parentPath: "/Users",
+            entries: [
+                DirectoryEntry(name: "finance", path: "/Users/me/finance", isDir: true, canOpen: true, canBrowse: true),
+            ],
+            truncated: false
+        )
+        let openedWorkspace = AgentWorkspace(
+            project: AgentProject(id: "proj-finance", name: "finance", path: "/Users/me/finance"),
+            lastOpenedAt: Date()
+        )
+        let (appStore, sessionStore, _) = makeOpenWorkspaceTestStores(
+            directoryListResults: [
+                "": .success(rootResponse),
+                "/Users/me": .success(rootResponse),
+            ],
+            resolveResults: [
+                "/Users/me/finance": .success(openedWorkspace),
+            ]
+        )
+        let themeStore = ThemeStore(defaults: UserDefaults(suiteName: "OpenWorkspaceSheetReleaseTest.\(UUID().uuidString)")!)
+
+        final class SheetPresenterState: ObservableObject {
+            @Published var presentation: OpenWorkspaceSheetPresentation?
+            var openedWorkspaceIDs: [String] = []
+        }
+
+        struct ReleaseHost: View {
+            @EnvironmentObject var sessionStore: SessionStore
+            @ObservedObject var presenter: SheetPresenterState
+
+            var body: some View {
+                VStack {
+                    Text("sessions:\(sessionStore.sessions.count)")
+                }
+                .sheet(item: $presenter.presentation) { presentation in
+                    OpenWorkspaceSheet(model: presentation.model) { workspaceID in
+                        presenter.openedWorkspaceIDs.append(workspaceID)
+                    }
+                }
+            }
+        }
+
+        let presenter = SheetPresenterState()
+        let rootView = ReleaseHost(presenter: presenter)
+            .environmentObject(appStore)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+            .environment(\.horizontalSizeClass, .compact)
+
+        let window = makePhoneTestWindow(rootView: rootView)
+        defer { tearDownTestWindow(window) }
+
+        // 1. 打开 Sheet、触发重绘并展开手动路径，再由 presenter 关闭并释放 item，验证 model 无循环引用并被释放。
+        weak var weakFirstModel: OpenWorkspaceSheetModel?
+        do {
+            let presentation = OpenWorkspaceSheetPresentation()
+            weakFirstModel = presentation.model
+            presenter.presentation = presentation
+        }
+
+        let firstPresented = await waitUntil(timeout: .seconds(3)) {
+            window.rootViewController?.presentedViewController?.view != nil
+                && weakFirstModel?.browsePath == "/Users/me"
+        }
+        XCTAssertTrue(firstPresented, "首次 OpenWorkspaceSheet 应当完成呈现并加载根目录")
+
+        weakFirstModel?.isManualPathExpanded = true
+        weakFirstModel?.updateManualPath("/Users/me/finance")
+        sessionStore.objectWillChange.send()
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertNotNil(weakFirstModel)
+
+        presenter.presentation = nil
+        let firstReleased = await waitUntil(timeout: .seconds(4)) {
+            presenter.presentation == nil
+                && window.rootViewController?.presentedViewController == nil
+                && weakFirstModel == nil
+        }
+        XCTAssertTrue(firstReleased, "关闭 Sheet 且 presenter 释放 presentation item 后，OpenWorkspaceSheetModel 必须被释放")
+        XCTAssertNil(weakFirstModel)
+
+        // 2. 再次打开新 Sheet，通过界面提交成功打开路径：视图应自动关闭 Sheet 并释放第二个 model。
+        weak var weakSecondModel: OpenWorkspaceSheetModel?
+        do {
+            let presentation = OpenWorkspaceSheetPresentation()
+            weakSecondModel = presentation.model
+            presenter.presentation = presentation
+        }
+
+        let secondPresented = await waitUntil(timeout: .seconds(3)) {
+            window.rootViewController?.presentedViewController?.view != nil
+                && weakSecondModel?.browsePath == "/Users/me"
+        }
+        XCTAssertTrue(secondPresented, "再次打开的 OpenWorkspaceSheet 应当完成呈现")
+        XCTAssertEqual(weakSecondModel?.path, "", "重新打开的 Sheet 应当拥有干净的空路径草稿")
+
+        weakSecondModel?.isManualPathExpanded = true
+        weakSecondModel?.updateManualPath("/Users/me/finance")
+        let submitReady = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            guard let submit = self.findAccessibilityElement(
+                identifier: "workspace.open.manualPath.submit",
+                in: window.rootViewController?.presentedViewController?.view
+            ) else {
+                return false
+            }
+            return !submit.accessibilityTraits.contains(.notEnabled)
+        }
+        XCTAssertTrue(submitReady, "输入有效路径后提交按钮应当可用")
+
+        do {
+            let submitButton = try XCTUnwrap(
+                findAccessibilityElement(
+                    identifier: "workspace.open.manualPath.submit",
+                    in: window.rootViewController?.presentedViewController?.view
+                )
+            )
+            XCTAssertTrue(submitButton.accessibilityActivate(), "激活提交按钮应触发打开路径流程")
+        }
+
+        let secondReleased = await waitUntil(timeout: .seconds(4)) {
+            presenter.openedWorkspaceIDs == ["proj-finance"]
+                && presenter.presentation == nil
+                && window.rootViewController?.presentedViewController == nil
+                && weakSecondModel == nil
+        }
+        XCTAssertEqual(presenter.openedWorkspaceIDs, ["proj-finance"])
+        XCTAssertNil(presenter.presentation)
+        XCTAssertNil(window.rootViewController?.presentedViewController)
+        XCTAssertTrue(secondReleased, "成功打开工作区后视图应自动关闭 Sheet 并释放 OpenWorkspaceSheetModel")
+        XCTAssertNil(weakSecondModel)
+    }
+
+    @MainActor
     func testOpenWorkspaceSheetRenderedManualPathSurvivesPasteAndSessionStorePolling() async throws {
-        let previousPasteboard = UIPasteboard.general.string
-        defer { UIPasteboard.general.string = previousPasteboard }
+        let previousClipboardItems = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousClipboardItems }
 
         let rootResponse = DirectoryListResponse(
             path: "/Users/me",
@@ -644,17 +781,25 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             ],
             truncated: false
         )
+        let openedWorkspace = AgentWorkspace(
+            project: AgentProject(id: "proj-finance", name: "finance", path: "/Users/me/finance"),
+            lastOpenedAt: Date()
+        )
         let (appStore, sessionStore, client) = makeOpenWorkspaceTestStores(
             directoryListResults: [
                 "": .success(rootResponse),
                 "/Users/me": .success(rootResponse),
                 "/Users/me/folder-0": .success(childResponse),
+            ],
+            resolveResults: [
+                "/Users/me/finance": .success(openedWorkspace),
             ]
         )
         let themeStore = ThemeStore(defaults: UserDefaults(suiteName: "OpenWorkspaceSheetTest.\(UUID().uuidString)")!)
 
         final class SheetPresenterState: ObservableObject {
             @Published var presentation: OpenWorkspaceSheetPresentation?
+            var openedWorkspaceIDs: [String] = []
         }
 
         struct ParentObservingHost: View {
@@ -666,7 +811,9 @@ final class WorkspaceStripPresentationTests: XCTestCase {
                     Text("sessions:\(sessionStore.sessions.count)")
                 }
                 .sheet(item: $presenter.presentation) { presentation in
-                    OpenWorkspaceSheet(model: presentation.model)
+                    OpenWorkspaceSheet(model: presentation.model) { workspaceID in
+                        presenter.openedWorkspaceIDs.append(workspaceID)
+                    }
                 }
             }
         }
@@ -684,38 +831,44 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let window = makePhoneTestWindow(rootView: rootView)
         defer { tearDownTestWindow(window) }
 
-        try? await Task.sleep(for: .milliseconds(350))
+        let sheetPresented = await waitUntil(timeout: .seconds(3)) {
+            window.rootViewController?.presentedViewController?.view != nil
+                && presentation.model.browsePath == "/Users/me"
+        }
+        XCTAssertTrue(sheetPresented, "OpenWorkspaceSheet 应当已呈现")
+
         presentation.model.isManualPathExpanded = true
-        try? await Task.sleep(for: .milliseconds(300))
-
-        guard let presentedRoot = window.rootViewController?.presentedViewController?.view else {
-            XCTFail("OpenWorkspaceSheet 应当已呈现")
-            return
+        let initialFieldMounted = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            return self.findLiveManualPathTextField(in: window) != nil
         }
+        XCTAssertTrue(initialFieldMounted, "展开手动输入路径后应当挂载稳定输入框")
 
-        // 滚到底部确保内联手动路径输入框已完成挂载并进入视口。
-        if let collectionView = allDescendantViews(in: presentedRoot).compactMap({ $0 as? UIScrollView }).first {
-            let maxY = max(0, collectionView.contentSize.height - collectionView.bounds.height + collectionView.adjustedContentInset.bottom)
-            collectionView.setContentOffset(CGPoint(x: 0, y: maxY), animated: false)
-            collectionView.layoutIfNeeded()
-        }
-        try? await Task.sleep(for: .milliseconds(250))
-
-        let textField = try XCTUnwrap(
-            allDescendantViews(in: presentedRoot)
-                .compactMap { $0 as? OpenWorkspaceManualPathTextField.ManualPathUITextField }
-                .first { $0.accessibilityIdentifier == "workspace.open.manualPath" },
+        let initialTextField = try XCTUnwrap(
+            findLiveManualPathTextField(in: window),
             "展开手动输入路径后应当挂载稳定输入框"
         )
+        if let submitBeforePaste = findAccessibilityElement(
+            identifier: "workspace.open.manualPath.submit",
+            in: window.rootViewController?.presentedViewController?.view
+        ) {
+            XCTAssertTrue(
+                submitBeforePaste.accessibilityTraits.contains(.notEnabled),
+                "粘贴路径前手动提交按钮应当禁用"
+            )
+        }
 
-        textField.becomeFirstResponder()
+        initialTextField.becomeFirstResponder()
         try? await Task.sleep(for: .milliseconds(150))
         UIPasteboard.general.string = "/Users/me/finance"
-        textField.paste(nil)
-        try? await Task.sleep(for: .milliseconds(150))
-
+        initialTextField.paste(nil)
+        let pasteSynced = await waitUntil(timeout: .seconds(2)) {
+            presentation.model.path == "/Users/me/finance"
+                && initialTextField.text == "/Users/me/finance"
+        }
+        XCTAssertTrue(pasteSynced, "粘贴后模型与输入框都应立即同步路径")
         XCTAssertEqual(presentation.model.path, "/Users/me/finance")
-        XCTAssertEqual(textField.text, "/Users/me/finance")
+        XCTAssertEqual(initialTextField.text, "/Users/me/finance")
         XCTAssertTrue(presentation.model.canOpenTypedPath)
 
         // 连续触发父层观察到的 SessionStore 轮询更新与目录刷新，验证输入框内容不被清空。
@@ -740,70 +893,205 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(120))
         }
         await presentation.model.browse(to: "/Users/me/folder-0")
-        try? await Task.sleep(for: .milliseconds(200))
+
+        // 从当前呈现窗口重新定位正在显示的输入框，而不是读取可能已脱离窗口的旧实例。
+        let fieldPresentAfterBrowse = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            return self.findLiveManualPathTextField(in: window) != nil
+        }
+        XCTAssertTrue(fieldPresentAfterBrowse, "目录切换后当前窗口中仍应呈现手动路径输入框")
+        let liveFieldAfterBrowse = try XCTUnwrap(findLiveManualPathTextField(in: window))
+        XCTAssertTrue(liveFieldAfterBrowse.window === window)
+        XCTAssertFalse(liveFieldAfterBrowse.isHidden)
+        XCTAssertGreaterThan(liveFieldAfterBrowse.alpha, 0.01)
+        XCTAssertGreaterThan(liveFieldAfterBrowse.bounds.height, 0)
+        XCTAssertEqual(liveFieldAfterBrowse.text, "/Users/me/finance")
+
+        // 触发一次真实的折叠卸载再展开重建，确保替换后的新 UITextField 仍可见地显示已粘贴路径且提交按钮可点。
+        presentation.model.isManualPathExpanded = false
+        let fieldUnmounted = await waitUntil(timeout: .seconds(3)) {
+            self.findLiveManualPathTextField(in: window) == nil && initialTextField.window == nil
+        }
+        XCTAssertTrue(fieldUnmounted, "折叠手动路径区后原 UITextField 应当从窗口卸载")
+
+        presentation.model.isManualPathExpanded = true
+        let remountedReady = await waitUntil(timeout: .seconds(3)) {
+            self.scrollPresentedSheetToBottom(in: window)
+            guard let field = self.findLiveManualPathTextField(in: window) else {
+                return false
+            }
+            return field !== initialTextField && field.bounds.height > 0
+        }
+        XCTAssertTrue(remountedReady, "重新展开后应当挂载新的可见 UITextField 实例")
+
+        let remountedTextField = try XCTUnwrap(
+            findLiveManualPathTextField(in: window),
+            "重新展开后应当能从当前窗口重新找到手动路径输入框"
+        )
+        XCTAssertTrue(remountedTextField !== initialTextField, "重建后的输入框必须是新的 UITextField 实例")
+        XCTAssertTrue(remountedTextField.window === window)
+        XCTAssertFalse(remountedTextField.isHidden)
+        XCTAssertGreaterThan(remountedTextField.alpha, 0.01)
+        XCTAssertGreaterThan(remountedTextField.bounds.height, 0)
+        XCTAssertEqual(remountedTextField.text, "/Users/me/finance")
+
+        let submitButton = try XCTUnwrap(
+            findAccessibilityElement(
+                identifier: "workspace.open.manualPath.submit",
+                in: window.rootViewController?.presentedViewController?.view
+            ),
+            "重新展开后应当能从当前窗口找到手动路径提交按钮"
+        )
+        XCTAssertTrue(submitButton.accessibilityTraits.contains(.button))
+        XCTAssertFalse(
+            submitButton.accessibilityTraits.contains(.notEnabled),
+            "替换后的输入框已有有效粘贴路径，提交按钮必须处于可点状态"
+        )
+        XCTAssertFalse(submitButton.accessibilityFrame.isEmpty)
 
         XCTAssertEqual(presentation.model.path, "/Users/me/finance")
-        XCTAssertEqual(textField.text, "/Users/me/finance")
         XCTAssertTrue(presentation.model.isManualPathExpanded)
         XCTAssertTrue(presentation.model.canOpenTypedPath)
         XCTAssertEqual(client.requestedDirectoryPaths, ["", "/Users/me/folder-0"])
+
+        XCTAssertTrue(submitButton.accessibilityActivate(), "可点提交按钮应能直接提交已粘贴路径")
+        let openedFromSubmit = await waitUntil(timeout: .seconds(3)) {
+            presenter.openedWorkspaceIDs == ["proj-finance"]
+        }
+        XCTAssertTrue(openedFromSubmit, "激活提交按钮后应打开粘贴的工作区路径")
     }
 
     @MainActor
-    func testOpenWorkspaceManualPathTextFieldUpdateGuardPreservesActiveText() {
-        var boundText = ""
-        let field = OpenWorkspaceManualPathTextField(
-            placeholder: "/Users/me/finance",
-            text: Binding(get: { boundText }, set: { boundText = $0 }),
-            fontSize: 13,
-            textColor: .label,
-            placeholderColor: .secondaryLabel,
-            onFocusChange: { _ in },
-            onSubmit: {}
-        )
-        let coordinator = field.makeCoordinator()
-        let uiTextField = OpenWorkspaceManualPathTextField.ManualPathUITextField()
-        uiTextField.text = ""
-        coordinator.lastSyncedText = ""
+    func testOpenWorkspaceManualPathTextFieldUpdateGuardPreservesActiveText() async throws {
+        let previousClipboardItems = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = previousClipboardItems }
 
-        // 模拟用户粘贴后，Coordinator 立刻同步到 Binding 并记录 lastSyncedText。
-        uiTextField.text = "/Users/me/finance"
-        coordinator.syncFromTextField(uiTextField)
-        XCTAssertEqual(boundText, "/Users/me/finance")
-        XCTAssertEqual(coordinator.lastSyncedText, "/Users/me/finance")
-
-        // 视图因外部刷新重绘但 boundText 与 lastSyncedText 一致时，不应覆写 UITextField。
-        let unchangedBinding = OpenWorkspaceManualPathTextField(
-            placeholder: "/Users/me/finance",
-            text: Binding(get: { boundText }, set: { boundText = $0 }),
-            fontSize: 13,
-            textColor: .label,
-            placeholderColor: .secondaryLabel,
-            onFocusChange: { _ in },
-            onSubmit: {}
-        )
-        coordinator.parent = unchangedBinding
-        XCTAssertEqual(uiTextField.text, "/Users/me/finance")
-
-        // 显式外部清空（与 lastSyncedText 不同）时应当同步到输入框。
-        boundText = ""
-        coordinator.lastSyncedText = "/Users/me/finance"
-        let clearedField = OpenWorkspaceManualPathTextField(
-            placeholder: "/Users/me/finance",
-            text: Binding(get: { boundText }, set: { boundText = $0 }),
-            fontSize: 13,
-            textColor: .label,
-            placeholderColor: .secondaryLabel,
-            onFocusChange: { _ in },
-            onSubmit: {}
-        )
-        coordinator.parent = clearedField
-        if uiTextField.markedTextRange == nil && coordinator.lastSyncedText != boundText {
-            uiTextField.text = boundText
-            coordinator.lastSyncedText = boundText
+        final class ManualPathFieldHostState: ObservableObject {
+            @Published var text = ""
+            @Published var placeholder = "/Users/me/finance"
+            @Published var remountID = UUID()
         }
-        XCTAssertEqual(uiTextField.text, "")
-        XCTAssertEqual(coordinator.lastSyncedText, "")
+
+        struct ManualPathFieldHostView: View {
+            @ObservedObject var state: ManualPathFieldHostState
+
+            var body: some View {
+                VStack {
+                    OpenWorkspaceManualPathTextField(
+                        placeholder: state.placeholder,
+                        text: $state.text,
+                        fontSize: 13,
+                        textColor: .label,
+                        placeholderColor: .secondaryLabel,
+                        onFocusChange: { _ in },
+                        onSubmit: {}
+                    )
+                    .id(state.remountID)
+                    .frame(height: 44)
+                }
+                .padding()
+            }
+        }
+
+        let state = ManualPathFieldHostState()
+        let window = makePhoneTestWindow(rootView: ManualPathFieldHostView(state: state))
+        defer { tearDownTestWindow(window) }
+
+        let mounted = await waitUntil(timeout: .seconds(2)) {
+            self.findLiveManualPathTextField(in: window, searchRoot: window) != nil
+        }
+        XCTAssertTrue(mounted, "托管的 OpenWorkspaceManualPathTextField 应当完成挂载")
+
+        let textField = try XCTUnwrap(findLiveManualPathTextField(in: window, searchRoot: window))
+        textField.becomeFirstResponder()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        // 1. 真实粘贴走生产 Coordinator，立即同步到 SwiftUI Binding。
+        UIPasteboard.general.string = "/Users/me/finance"
+        textField.paste(nil)
+        let pasted = await waitUntil(timeout: .seconds(2)) {
+            state.text == "/Users/me/finance" && textField.text == "/Users/me/finance"
+        }
+        XCTAssertTrue(pasted)
+        XCTAssertEqual(state.text, "/Users/me/finance")
+        XCTAssertEqual(textField.text, "/Users/me/finance")
+
+        // 2. 模拟 UIKit 局部编辑尚未回传时外部触发无关重绘（binding 仍等于 lastSyncedText）：
+        // 生产 updateUIView 必须实际执行（以 placeholder 更新为证），且不得把输入框回写成旧值。
+        textField.text = "/Users/me/finance/in-progress"
+        state.placeholder = "redraw-guard-check"
+        let guardRedrawApplied = await waitUntil(timeout: .seconds(2)) {
+            textField.attributedPlaceholder?.string == "redraw-guard-check"
+        }
+        XCTAssertTrue(guardRedrawApplied, "SwiftUI 应调用生产 updateUIView 刷新占位符")
+        XCTAssertEqual(
+            textField.text,
+            "/Users/me/finance/in-progress",
+            "binding 未偏离 lastSyncedText 时，生产 updateUIView 不应覆盖当前编辑中的文本"
+        )
+
+        // 3. IME 组合态（markedTextRange != nil）下，即使外部修改 binding，生产 updateUIView 也不得打断组合输入。
+        textField.text = "/Users/me/"
+        textField.sendActions(for: .editingChanged)
+        _ = await waitUntil(timeout: .seconds(2)) { state.text == "/Users/me/" }
+        textField.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0))
+        XCTAssertNotNil(textField.markedTextRange, "输入框应处于 IME 组合态")
+
+        state.text = "/Users/me/external-during-ime"
+        state.placeholder = "redraw-ime-guard"
+        let imeRedrawApplied = await waitUntil(timeout: .seconds(2)) {
+            textField.attributedPlaceholder?.string == "redraw-ime-guard"
+        }
+        XCTAssertTrue(imeRedrawApplied, "IME 组合态期间生产 updateUIView 应当已执行")
+        XCTAssertNotNil(textField.markedTextRange)
+        XCTAssertNotEqual(
+            textField.text,
+            "/Users/me/external-during-ime",
+            "存在 markedTextRange 时，生产 updateUIView 不得覆写输入框文本"
+        )
+
+        textField.unmarkText()
+        let unmarked = await waitUntil(timeout: .seconds(2)) { textField.markedTextRange == nil }
+        XCTAssertTrue(unmarked)
+
+        // 4. 外部通过 binding 改写和清空文本时，生产 updateUIView 必须同步 UIKit 文本并更新 lastSyncedText。
+        state.text = "/Users/me/finance"
+        state.placeholder = "redraw-external-set"
+        let externalSetApplied = await waitUntil(timeout: .seconds(2)) {
+            textField.attributedPlaceholder?.string == "redraw-external-set"
+                && textField.text == "/Users/me/finance"
+        }
+        XCTAssertTrue(externalSetApplied, "外部更新 binding 时生产 updateUIView 应写回 UITextField")
+
+        state.text = ""
+        state.placeholder = "redraw-external-clear"
+        let externalClearApplied = await waitUntil(timeout: .seconds(2)) {
+            textField.attributedPlaceholder?.string == "redraw-external-clear"
+                && textField.text == ""
+        }
+        XCTAssertTrue(externalClearApplied, "外部清空 binding 时生产 updateUIView 应清空 UITextField")
+        XCTAssertEqual(textField.text, "")
+
+        // 清空后重新粘贴同一个路径：若生产 updateUIView 漏更新 lastSyncedText，此处会静默丢弃粘贴。
+        UIPasteboard.general.string = "/Users/me/finance"
+        textField.paste(nil)
+        let repasted = await waitUntil(timeout: .seconds(2)) {
+            state.text == "/Users/me/finance" && textField.text == "/Users/me/finance"
+        }
+        XCTAssertTrue(repasted, "外部清空后再次粘贴同一路径必须仍能写回 binding")
+
+        // 5. 触发真实 remount 后，新建的 UITextField 必须从生产 makeUIView 恢复当前 binding 文本。
+        state.remountID = UUID()
+        let remounted = await waitUntil(timeout: .seconds(2)) {
+            guard let live = self.findLiveManualPathTextField(in: window, searchRoot: window) else {
+                return false
+            }
+            return live !== textField
+        }
+        XCTAssertTrue(remounted, "修改视图 id 后应挂载新的 UITextField 实例")
+        let replacementField = try XCTUnwrap(findLiveManualPathTextField(in: window, searchRoot: window))
+        XCTAssertTrue(replacementField !== textField)
+        XCTAssertEqual(replacementField.text, "/Users/me/finance")
     }
 
     // MARK: - #1108 iPhone 工作区 Tab 底部边距与安全区避让回归测试
@@ -1045,7 +1333,8 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         projectCount: Int = 2,
         sessionCount: Int = 2,
         openedWorkspaces: Bool = true,
-        directoryListResults: [String: Result<DirectoryListResponse, Error>] = [:]
+        directoryListResults: [String: Result<DirectoryListResponse, Error>] = [:],
+        resolveResults: [String: Result<AgentWorkspace, Error>] = [:]
     ) -> (AppStore, SessionStore, MockSessionStoreClient) {
         let suite = "WorkspaceStripPresentationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -1098,6 +1387,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             projectSessions: projectSessions,
             workspaceSessions: workspaceSessions,
             workspacePages: workspacePages,
+            resolveResults: resolveResults,
             directoryListResults: directoryListResults,
             runtimeChannelAvailability: ["codex": true, "claude": true]
         )
@@ -1149,5 +1439,118 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             result.append(contentsOf: allDescendantViews(in: subview))
         }
         return result
+    }
+
+    @MainActor
+    private func scrollPresentedSheetToBottom(in window: UIWindow) {
+        guard let presentedRoot = window.rootViewController?.presentedViewController?.view else {
+            return
+        }
+        presentedRoot.layoutIfNeeded()
+        if let collectionView = allDescendantViews(in: presentedRoot)
+            .compactMap({ $0 as? UIScrollView })
+            .first(where: { $0.bounds.height > 200 }) {
+            let maxY = max(
+                0,
+                collectionView.contentSize.height
+                    - collectionView.bounds.height
+                    + collectionView.adjustedContentInset.bottom
+            )
+            collectionView.setContentOffset(CGPoint(x: 0, y: maxY), animated: false)
+            collectionView.layoutIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func findLiveManualPathTextField(
+        in window: UIWindow,
+        searchRoot: UIView? = nil
+    ) -> OpenWorkspaceManualPathTextField.ManualPathUITextField? {
+        guard let root = searchRoot ?? window.rootViewController?.presentedViewController?.view else {
+            return nil
+        }
+        root.layoutIfNeeded()
+        return allDescendantViews(in: root)
+            .compactMap { $0 as? OpenWorkspaceManualPathTextField.ManualPathUITextField }
+            .first {
+                $0.accessibilityIdentifier == "workspace.open.manualPath"
+                    && $0.window === window
+            }
+    }
+
+    @MainActor
+    private func accessibilityIdentifier(of object: NSObject) -> String? {
+        if let identifiable = object as? UIAccessibilityIdentification,
+           let identifier = identifiable.accessibilityIdentifier {
+            return identifier
+        }
+        let selector = #selector(getter: UIAccessibilityIdentification.accessibilityIdentifier)
+        guard object.responds(to: selector),
+              let rawValue = object.perform(selector)?.takeUnretainedValue() as? String else {
+            return nil
+        }
+        return rawValue
+    }
+
+    @MainActor
+    private func findAccessibilityElement(identifier: String, in root: UIView?) -> NSObject? {
+        guard let root else { return nil }
+        var visited = Set<ObjectIdentifier>()
+
+        func search(_ object: NSObject) -> NSObject? {
+            let objectID = ObjectIdentifier(object)
+            guard visited.insert(objectID).inserted else { return nil }
+
+            if accessibilityIdentifier(of: object) == identifier {
+                return object
+            }
+
+            if let elements = object.accessibilityElements {
+                for element in elements {
+                    if let child = element as? NSObject, let match = search(child) {
+                        return match
+                    }
+                }
+            }
+
+            let count = object.accessibilityElementCount()
+            if count != NSNotFound && count > 0 {
+                for index in 0..<count {
+                    if let child = object.accessibilityElement(at: index) as? NSObject,
+                       let match = search(child) {
+                        return match
+                    }
+                }
+            }
+
+            if let view = object as? UIView {
+                for subview in view.subviews {
+                    if let match = search(subview) {
+                        return match
+                    }
+                }
+            }
+
+            return nil
+        }
+
+        return search(root)
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: Duration,
+        pollInterval: Duration = .milliseconds(25),
+        condition: () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if condition() {
+                return true
+            }
+            try? await Task.sleep(for: pollInterval)
+        }
+        return condition()
     }
 }
