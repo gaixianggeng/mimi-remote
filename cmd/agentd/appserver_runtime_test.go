@@ -51,6 +51,11 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 	if err != nil || runtime == nil || runtime.routerOptions.AppServerSSH == nil {
 		t.Fatalf("Codex 初始化故障不应阻止 agentd 提供诊断：runtime=%v err=%v", runtime, err)
 	}
+	t.Cleanup(func() { _ = runtime.shutdown() })
+	waitForCodex(t, func() bool {
+		_, e := runtime.supervisor.current()
+		return e != nil && strings.Contains(e.Error(), "非 socket 文件占用")
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := runtime.routerOptions.AppServerSSH.EnsureReady(ctx); err == nil {

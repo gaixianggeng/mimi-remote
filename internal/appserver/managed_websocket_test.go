@@ -93,3 +93,43 @@ func TestManagedWebSocketWaitReadyRetriesUntilInitializeSucceeds(t *testing.T) {
 		t.Fatalf("就绪探测次数 = %d，want 3", attempts.Load())
 	}
 }
+
+func TestInitializeProbeCancellationInterruptsSilentUpstream(t *testing.T) {
+	started := make(chan struct{})
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if _, _, err := c.ReadMessage(); err == nil {
+			close(started)
+			_, _, _ = c.ReadMessage()
+		}
+	}))
+	defer server.Close()
+	c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() { finished <- initializeWebSocket(ctx, c) }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no initialize frame")
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("canceled initialize succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("canceled readiness probe still blocked on read")
+	}
+}

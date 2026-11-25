@@ -446,6 +446,10 @@ func initializeWebSocketResult(ctx context.Context, conn *websocket.Conn) (Initi
 	if conn == nil {
 		return InitializeResult{}, errors.New("WebSocket connection 为空")
 	}
+	// An agentd shutdown can precede the readiness deadline while initialize is
+	// waiting for a reply. Cancel only this probe connection.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetReadDeadline(deadline)
 		_ = conn.SetWriteDeadline(deadline)
