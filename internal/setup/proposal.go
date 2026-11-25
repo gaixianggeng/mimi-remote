@@ -393,6 +393,11 @@ func (p *proposal) applyPin(id, value string) error {
 	switch id {
 	case "codex":
 		if value == "auto" {
+			if p.cfg.Codex.Bin == "codex" {
+				// Older configs can omit the bin field entirely. They already
+				// use discovery, so clearing the pin requires no write or restart.
+				return nil
+			}
 			value = "codex"
 		}
 		p.set(value, "codex", "bin")

@@ -165,7 +165,27 @@ func TestWorkspaceCommandConfirmsAndRestoresPendingRoots(t *testing.T) {
 func TestRuntimePathCommandSetsAndClearsPins(t *testing.T) {
 	path := isolatedSaveCommand(t)
 	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", t.TempDir())
-	_, initial := savedFixtureConfig(t, path)
+	raw, initial := savedFixtureConfig(t, path)
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy["codex"] = json.RawMessage(`{"enabled":false,"future":true}`)
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cleared := runSaveJSON(t, path, "runtime", "--runtime-path", "codex=auto")
+	var noop setup.RuntimePathResult
+	if err := json.Unmarshal(cleared, &noop); err != nil || noop.Changed || noop.RestartRequired {
+		t.Fatal("clearing an implicit automatic selection requested a restart")
+	}
+	if stored, _ := savedFixtureConfig(t, path); !bytes.Equal(raw, stored) {
+		t.Fatal("clearing an absent pin rewrote the legacy config")
+	}
 	pins := map[string]string{}
 	for _, id := range []string{"codex", "claude", "agy"} {
 		pins[id] = filepath.Join(t.TempDir(), id)
