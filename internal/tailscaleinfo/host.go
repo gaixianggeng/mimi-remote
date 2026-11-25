@@ -150,7 +150,11 @@ func IsTailscaleAddress(ip netip.Addr) bool {
 // IsTunnelInterface reports the interface families used by Tailscale on supported hosts.
 func IsTunnelInterface(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return strings.HasPrefix(name, "tailscale") || strings.HasPrefix(name, "utun") || strings.HasPrefix(name, "tun")
+	switch strings.TrimRight(name, "0123456789") {
+	case "tailscale", "utun", "tun":
+		return true
+	}
+	return false
 }
 
 // TunnelAvailable checks an observed, active CGNAT tunnel against the CLI. App

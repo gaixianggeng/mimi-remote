@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
-	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
@@ -300,17 +300,6 @@ func (p agyAdapterProbe) launchEnv(cfg config.AgyConfig) map[string]string {
 	return env
 }
 
-func (r *Router) configuredAgyBinary(probe agyAdapterProbe, env []string) (string, error) {
-	if probe.cliPath != "" {
-		return claudebridge.LookPathIn(probe.cliPath, env)
-	}
-	agyBin := strings.TrimSpace(r.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
-	if agyBin == "" {
-		agyBin = "agy"
-	}
-	return claudebridge.LookPathIn(agyBin, env)
-}
-
 func (r *Router) invalidateAgyMissingProbe() agyAdapterProbe {
 	r.agyMu.Lock()
 	probe := r.agyProbe
@@ -328,13 +317,19 @@ func (r *Router) invalidateAgyMissingProbe() agyAdapterProbe {
 // 每次读取都在微秒级校验 agy 可执行入口是否仍在；若二进制已消失，立即令就绪缓存失效，
 // 消除 5 秒 TTL 窗口内三者结论不一致的问题。
 func (r *Router) currentAgyAdapterProbe() agyAdapterProbe {
+	return r.currentAgyAdapterProbeWithDiscovery(setup.NewRuntimeDiscovery())
+}
+
+func (r *Router) currentAgyAdapterProbeWithDiscovery(discovery setup.RuntimeDiscovery) agyAdapterProbe {
 	if !r.cfg.Agy.Enabled {
 		return r.agyAdapterProbeSnapshot()
 	}
 	r.refreshAgyAdapterProbeIfStale()
 	probe := r.agyAdapterProbeSnapshot()
 	env := agybridge.BuildEnv(r.cfg.Agy.Env)
-	if _, err := r.configuredAgyBinary(probe, env); err != nil {
+	req := setup.AgyRuntime(r.cfg.Agy, probe.MinimumCLIVersion, env)
+	path := firstNonEmpty(probe.cliPath, os.Getenv(agybridge.AgyBinaryEnvKey), req.Pin, "agy")
+	if _, err := discovery.LookupExecutable(context.Background(), req, path); err != nil {
 		if probe.Healthy || probe.Status != "agy_missing" {
 			return r.invalidateAgyMissingProbe()
 		}

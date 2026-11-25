@@ -38,7 +38,8 @@ func newDiscoveryFixture(t *testing.T) *discoveryFixture {
 			}
 			return "", exec.ErrNotFound
 		},
-		stat: func(path string) (os.FileInfo, error) {
+		sameFile: os.SameFile,
+		Stat: func(path string) (os.FileInfo, error) {
 			if real, ok := f.files[path]; ok {
 				return os.Stat(real)
 			}
@@ -261,4 +262,76 @@ func TestWindowsCandidatesUseProfileWithoutAppData(t *testing.T) {
 			t.Fatalf("%s missing %s", tc.name, tc.path)
 		}
 	}
+}
+
+func TestResolveRuntimeBoundsFileIdentityLookup(t *testing.T) {
+	for _, count := range []int{1, 6} {
+		synctest.Test(t, func(t *testing.T) {
+			f := newDiscoveryFixture(t)
+			f.GOOS = "windows"
+			dir := t.TempDir()
+			first := filepath.Join(dir, "codex.exe")
+			f.add(t, first, "0.150.0")
+			dirs := []string{dir}
+			offline := filepath.Join(t.TempDir(), "offline")
+			if err := os.WriteFile(offline, nil, 0700); err != nil {
+				t.Fatal(err)
+			}
+			for range count {
+				dir := t.TempDir()
+				f.files[filepath.Join(dir, "codex.exe")] = offline
+				dirs = append(dirs, dir)
+			}
+			dir = t.TempDir()
+			last := filepath.Join(dir, "codex.exe")
+			f.add(t, last, "0.155.0")
+			dirs = append(dirs, dir)
+			release := make(chan struct{})
+			defer close(release)
+			f.sameFile = func(prior, info os.FileInfo) bool {
+				if info.Name() == "offline" {
+					<-release
+				}
+				return os.SameFile(prior, info)
+			}
+			start := time.Now()
+			got, err := f.Resolve(context.Background(), codexRequestWithPATH(dirs...))
+			want, elapsed := last, 4*time.Second
+			if count > 1 {
+				want, elapsed = first, 20*time.Second
+			}
+			if err != nil || got.Path != want || time.Since(start) != elapsed {
+				t.Fatalf("%d stalled file identities: %+v, %v after %s", count, got, err, time.Since(start))
+			}
+		})
+	}
+}
+
+func TestMigrationPreservesCodexPinAfterProbeTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDiscoveryFixture(t)
+		const original = `{"codex":{"bin":"pinned-codex"},"app_server":{"transport":"ws","managed":true}}`
+		cfg := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
+			t.Fatal(err)
+		}
+		f.add(t, "pinned-codex", "hang")
+		f.add(t, discoveryTestBundle, "0.155.0")
+		prev := resolveMigrationCodexBin
+		defer func() { resolveMigrationCodexBin = prev }()
+		resolveMigrationCodexBin = func(pin string) (string, error) {
+			candidate, err := f.repairCodex(context.Background(), RuntimeRequest{Name: "codex", Pin: pin})
+			return candidate.Path, err
+		}
+		err := MigrateAppServerToSharedLocalWithPreflight(context.Background(), cfg, func(context.Context, string, map[string]string) error {
+			t.Fatal("migration proceeded after pin timeout")
+			return nil
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || !slices.Equal(f.calls, []string{"pinned-codex"}) {
+			t.Fatalf("after timeout: probes %q, error %v", f.calls, err)
+		}
+		if raw, err := os.ReadFile(cfg); err != nil || string(raw) != original {
+			t.Fatalf("migration changed config after pin timeout, read error %v", err)
+		}
+	})
 }

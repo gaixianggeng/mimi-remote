@@ -60,7 +60,7 @@ func prepareAgentAppServerRuntimeWithFrontDoor(cfg config.Config, frontDoorRequi
 		if err != nil {
 			return nil, fmt.Errorf("初始化共享本机 App Server transport 失败：%w", err)
 		}
-		localVersion, err := appserver.CheckLocalCodex(prepareCtx, cfg.Codex.Bin)
+		localVersion, err := appserver.CheckLocalCodex(prepareCtx, cfg.Codex.Bin, cfg.Codex.Env)
 		if err != nil {
 			return nil, err
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -36,11 +36,7 @@ func AgyRuntime(cfg config.AgyConfig, minimum string, environment []string) Runt
 }
 
 func CodexRuntime(cfg config.CodexConfig, transport string) RuntimeRequest {
-	env := os.Environ()
-	for key, value := range cfg.Env {
-		env = append(env, key+"="+value)
-	}
-	return RuntimeRequest{Name: "codex", Pin: cfg.Bin, Transport: transport, Environment: env}
+	return RuntimeRequest{Name: "codex", Pin: cfg.Bin, Transport: transport, Environment: appserver.ManagedEnvironment(cfg.Env)}
 }
 
 type RuntimeCandidate struct {
@@ -58,7 +54,8 @@ type RuntimeDiscovery struct {
 	GOOS, Home string
 	getenv     func(string) string
 	LookPath   func(string, []string) (string, error)
-	stat       func(string) (os.FileInfo, error)
+	Stat       func(string) (os.FileInfo, error)
+	sameFile   func(os.FileInfo, os.FileInfo) bool
 	glob       func(string) ([]string, error)
 	run        func(context.Context, string, []string, ...string) (string, error)
 	timeout    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
@@ -68,7 +65,7 @@ func NewRuntimeDiscovery() RuntimeDiscovery {
 	home, _ := os.UserHomeDir()
 	return RuntimeDiscovery{
 		GOOS: runtime.GOOS, Home: home, getenv: os.Getenv, LookPath: hostLookPath,
-		stat: os.Stat, glob: filepath.Glob, run: runInspection, timeout: context.WithTimeout,
+		Stat: os.Stat, sameFile: os.SameFile, glob: filepath.Glob, run: cliinspect.Run, timeout: context.WithTimeout,
 	}
 }
 
@@ -124,15 +121,19 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 			break
 		}
 		candidateCtx, stop := d.timeout(ctx, 4*time.Second)
-		file, err := inspectFilesystem(candidateCtx, func() (executableFile, error) { return d.lookupFile(req, path) })
-		if err != nil || sameExecutable(seen, file.info) {
-			if err != nil && candidateCtx.Err() != nil && failed.Path == "" {
-				failure = candidateCtx.Err()
+		file, err := d.uniqueExecutable(candidateCtx, req, path, seen)
+		if err != nil || file.path == "" {
+			if timedOut := candidateCtx.Err(); timedOut != nil && failed.Path == "" {
+				failure = timedOut
+			} else if source != "auto" && err != nil {
+				failure = err
 			}
 			stop()
 			continue
 		}
-		seen = append(seen, file.info)
+		if file.info != nil {
+			seen = append(seen, file.info)
+		}
 		candidate := RuntimeCandidate{Path: file.path, Source: source}
 		candidate.Version, err = d.inspect(candidateCtx, req, file.path)
 		if candidateCtx.Err() != nil {
@@ -180,13 +181,25 @@ func (d RuntimeDiscovery) executable(req RuntimeRequest, path string) (string, e
 	return resolved, nil
 }
 
-func sameExecutable(seen []os.FileInfo, info os.FileInfo) bool {
-	for _, prior := range seen {
-		if os.SameFile(prior, info) {
-			return true
+// Windows may reopen a file to read its ID in SameFile. Resolve the ID under
+// this candidate's deadline before retaining it for comparisons with later paths.
+func (d RuntimeDiscovery) uniqueExecutable(ctx context.Context, req RuntimeRequest, path string, seen []os.FileInfo) (executableFile, error) {
+	return cliinspect.Filesystem(ctx, func() (executableFile, error) {
+		file, err := d.lookupFile(req, path)
+		if err != nil {
+			return executableFile{}, err
 		}
-	}
-	return false
+		if !d.sameFile(file.info, file.info) {
+			file.info = nil // still inspect launchable aliases without an accessible file ID
+			return file, nil
+		}
+		for _, prior := range seen {
+			if d.sameFile(prior, file.info) {
+				return executableFile{}, nil
+			}
+		}
+		return file, nil
+	})
 }
 
 func (d RuntimeDiscovery) inspect(ctx context.Context, req RuntimeRequest, path string) (string, error) {
@@ -218,36 +231,4 @@ func (d RuntimeDiscovery) inspect(ctx context.Context, req RuntimeRequest, path 
 		}
 	}
 	return version, nil
-}
-
-func runInspection(ctx context.Context, path string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = env
-	configureInspection(cmd)
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	cmd.Stderr = cmd.Stdout
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-	// A shim may exit and leave a descendant holding stdout open. The budget
-	// bounds reading that pipe as well as waiting for the original process.
-	stop := context.AfterFunc(ctx, func() { _ = out.Close() })
-	defer stop()
-	const limit = 64 << 10
-	data, err := io.ReadAll(io.LimitReader(out, limit+1))
-	_ = out.Close()
-	waitErr := cmd.Wait()
-	if err != nil {
-		return "", err
-	}
-	if waitErr != nil {
-		return "", waitErr
-	}
-	if len(data) > limit {
-		return "", errors.New("CLI inspection output too large")
-	}
-	return string(data), nil
 }

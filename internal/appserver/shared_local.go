@@ -330,7 +330,7 @@ func startSharedLocalAppServerListening(ctx context.Context, options SharedLocal
 	if err := validateSharedLocalLaunchSession(ctx); err != nil {
 		return err
 	}
-	if _, err := CheckLocalCodex(ctx, options.CodexBin); err != nil {
+	if _, err := CheckLocalCodex(ctx, options.CodexBin, options.Env); err != nil {
 		return fmt.Errorf("拒绝启动不兼容的共享 Codex App Server：%w", err)
 	}
 	bin := strings.TrimSpace(options.CodexBin)
@@ -382,7 +382,7 @@ func startSharedLocalAppServerListening(ctx context.Context, options SharedLocal
 			systemdRun,
 			args,
 			workingDirectory,
-			buildManagedEnv(env),
+			ManagedEnvironment(env),
 		)
 		_ = os.Remove(environmentFile)
 		if launchErr == nil {
@@ -455,7 +455,7 @@ func sharedLocalResidentEnvironment(extraEnv map[string]string) []string {
 		"WATCHDOG_PID":          {},
 		"WATCHDOG_USEC":         {},
 	}
-	managed := buildManagedEnv(extraEnv)
+	managed := ManagedEnvironment(extraEnv)
 	result := make([]string, 0, len(managed))
 	for _, entry := range managed {
 		key, _, ok := strings.Cut(entry, "=")
@@ -531,7 +531,7 @@ func startResidentCommand(bin string, args []string, extraEnv map[string]string)
 	// The resident server outlives that directory, and Codex needs a valid cwd
 	// later when it resolves thread/list workspace filters.
 	cmd.Dir = workingDirectory
-	cmd.Env = buildManagedEnv(extraEnv)
+	cmd.Env = ManagedEnvironment(extraEnv)
 	// resident outlives agentd. os/exec turns any non-*os.File writer (including
 	// io.Discard) into a pipe drained by a goroutine in this process, so a later
 	// log write after agentd exits would hit EPIPE. nil connects the child to the

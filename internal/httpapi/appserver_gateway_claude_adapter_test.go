@@ -14,6 +14,24 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
+func TestMain(m *testing.M) {
+	// A developer's CLI overrides must never redirect the gateway fixtures.
+	os.Unsetenv("CLAUDE_BRIDGE_CLAUDE_BIN")
+	os.Unsetenv("AGY_ADAPTER_AGY_BIN")
+	os.Exit(m.Run())
+}
+
+func configureTestClaudeCLI(t *testing.T, cfg *config.ClaudeConfig) {
+	t.Helper()
+	if !cfg.Enabled || cfg.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] != "" {
+		return
+	}
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
+	cfg.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = writeTestBridgeWithVersion(t, "2.1.300 (Claude Code)")
+}
+
 func writeTestAdapterBridge(t *testing.T, capabilities string) string {
 	t.Helper()
 	path := writeTestBridgeWithVersion(t, "mimi-claude-adapter 0.3.0")
@@ -79,6 +97,7 @@ func TestClaudeBridgeProbeFailsClosedWithoutAdapterDeclaration(t *testing.T) {
 func TestClaudeAdapterWithoutFullAccessRejectsNoApprovalRequests(t *testing.T) {
 	bridgePath := writeTestAdapterBridge(t, `{"methods":["initialize","thread/start","turn/start"],"fullAccess":false}`)
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
+	configureTestClaudeCLI(t, &router.cfg.Claude)
 	probe := router.refreshClaudeBridgeProbe(true)
 	if !probe.Healthy || probe.fullAccessAvailable() {
 		t.Fatalf("未声明完全访问的适配器不应开放完全访问：%+v", probe)
@@ -123,6 +142,12 @@ func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 	}
 	d := setup.NewRuntimeDiscovery()
 	d.Home = t.TempDir()
+	d.Stat = func(path string) (os.FileInfo, error) {
+		if filepath.Dir(path) != pathDir {
+			return nil, os.ErrNotExist
+		}
+		return os.Stat(path)
+	}
 	d.LookPath = func(path string, _ []string) (string, error) {
 		if filepath.Dir(path) != pathDir {
 			return "", exec.ErrNotFound
@@ -133,6 +158,12 @@ func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 	router.cfg.Claude.Env = map[string]string{"PATH": pathDir}
 	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_unsupported" {
 		t.Fatalf("应按 claude.env.PATH 找到并拦下过旧的 claude：%+v", probe)
+	}
+	if err := os.Remove(pathClaude); err != nil {
+		t.Fatal(err)
+	}
+	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_missing" || probe.cliPath != "" {
+		t.Fatalf("SDK adapter with no automatic CLI: %+v", probe)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os/exec"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/winjob"
 )
 
 // 与 Claude bridge 一样放进独立的 kill-on-close Job Object：受管服务的生命周期
@@ -24,7 +26,7 @@ func releaseTailcatSidecarProcess(cmd *exec.Cmd) {
 }
 
 func killTailcatSidecarProcess(cmd *exec.Cmd) {
-	if value, ok := gatewayWindowsJobs.Load(cmd); ok && value.(*gatewayWindowsJob).terminate() {
+	if value, ok := gatewayWindowsJobs.Load(cmd); ok && value.(*winjob.Job).Terminate(gatewayTaskkillTimeout) {
 		return
 	}
 	// reap 可能已释放 Job。os.Process 持有进程句柄，不会像按 PID taskkill 那样误杀复用 PID 的进程。

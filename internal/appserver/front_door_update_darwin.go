@@ -24,7 +24,7 @@ func (f *FrontDoor) RuntimeVersions(ctx context.Context) (CodexRuntimeVersions, 
 	if err != nil {
 		return CodexRuntimeVersions{}, err
 	}
-	installed, err := CheckLocalCodex(ctx, bin)
+	installed, err := CheckLocalCodex(ctx, bin, f.options.Env)
 	if err != nil {
 		return CodexRuntimeVersions{}, errors.New("无法检查已安装的 Codex，请运行诊断后重试。")
 	}

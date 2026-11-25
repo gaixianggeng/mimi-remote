@@ -5,12 +5,13 @@ import (
 	"iter"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
-	"path/filepath"
-	"strings"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 func (d RuntimeDiscovery) envValue(env []string, name string) string {
@@ -113,7 +114,7 @@ func (d RuntimeDiscovery) autoPaths(ctx context.Context, req RuntimeRequest) ite
 				return
 			}
 			globCtx, cancel := d.timeout(ctx, 4*time.Second)
-			matches, _ := inspectFilesystem(globCtx, func() ([]string, error) { return d.glob(filepath.Join(d.Home, prefix, req.Name)) })
+			matches, _ := cliinspect.Filesystem(globCtx, func() ([]string, error) { return d.glob(filepath.Join(d.Home, prefix, req.Name)) })
 			cancel()
 			for _, path := range matches {
 				if !yield(path) {
@@ -121,39 +122,6 @@ func (d RuntimeDiscovery) autoPaths(ctx context.Context, req RuntimeRequest) ite
 				}
 			}
 		}
-	}
-}
-
-// Go file operations may block in the kernel on a disconnected network mount.
-// Limit outstanding system calls across requests and let the caller's deadline
-// release the resolver while the kernel finishes the call.
-var discoveryFSSlots = make(chan struct{}, 8)
-
-func inspectFilesystem[T any](ctx context.Context, fn func() (T, error)) (T, error) {
-	var zero T
-	if err := ctx.Err(); err != nil {
-		return zero, err
-	}
-	select {
-	case discoveryFSSlots <- struct{}{}:
-	case <-ctx.Done():
-		return zero, ctx.Err()
-	}
-	type result struct {
-		value T
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() {
-		defer func() { <-discoveryFSSlots }()
-		value, err := fn()
-		done <- result{value, err}
-	}()
-	select {
-	case r := <-done:
-		return r.value, r.err
-	case <-ctx.Done():
-		return zero, ctx.Err()
 	}
 }
 
@@ -167,7 +135,7 @@ func (d RuntimeDiscovery) lookupFile(req RuntimeRequest, path string) (executabl
 	if err != nil {
 		return executableFile{}, err
 	}
-	info, err := d.stat(resolved)
+	info, err := d.Stat(resolved)
 	if err != nil {
 		return executableFile{}, err
 	}
@@ -175,6 +143,15 @@ func (d RuntimeDiscovery) lookupFile(req RuntimeRequest, path string) (executabl
 		return executableFile{}, exec.ErrNotFound
 	}
 	return executableFile{path: resolved, info: info}, nil
+}
+
+// LookupExecutable rechecks the filesystem entry of a selected runtime without
+// launching it. Status polling uses the same Windows alias rules as discovery.
+func (d RuntimeDiscovery) LookupExecutable(ctx context.Context, req RuntimeRequest, path string) (string, error) {
+	ctx, cancel := d.timeout(ctx, 4*time.Second)
+	defer cancel()
+	file, err := cliinspect.Filesystem(ctx, func() (executableFile, error) { return d.lookupFile(req, path) })
+	return file.path, err
 }
 
 func (d RuntimeDiscovery) windowsAlias(req RuntimeRequest, path string) bool {
@@ -202,13 +179,13 @@ func (d RuntimeDiscovery) nativeClaude(path string) (string, error) {
 	case ".exe":
 		return path, nil
 	case ".cmd", ".bat", ".ps1", "":
-		info, err := d.stat(path)
+		info, err := d.Stat(path)
 		base := filepath.Base(path)
 		if err != nil || !info.Mode().IsRegular() || !strings.EqualFold(strings.TrimSuffix(base, filepath.Ext(base)), "claude") {
 			return "", exec.ErrNotFound
 		}
 		native := filepath.Join(filepath.Dir(path), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
-		if info, err := d.stat(native); err == nil && info.Mode().IsRegular() {
+		if info, err := d.Stat(native); err == nil && info.Mode().IsRegular() {
 			return native, nil
 		}
 	}

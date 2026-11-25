@@ -32,10 +32,17 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	bin := filepath.Join(home, "codex")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex-cli 0.155.1; exit 0; fi\nexit 99\n"), 0700); err != nil {
+	// The daemon cannot run this shim unless both discovery and startup
+	// give /usr/bin/env the interpreter directory from codex.env.PATH.
+	t.Setenv("AGENTD_CODEX_BIN", "")
+	t.Setenv("PATH", t.TempDir())
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env test-codex-interpreter\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"CODEX_HOME": home}
+	if err := os.WriteFile(filepath.Join(home, "test-codex-interpreter"), []byte("#!/bin/sh\nif [ \"$2\" = --version ]; then echo codex-cli 0.155.1; exit 0; fi\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"CODEX_HOME": home, "PATH": home}
 	socket, err := appserver.SharedLocalSocketPath(env)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +54,9 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{Codex: config.CodexConfig{Bin: bin, Env: env}, AppServer: config.AppServerConfig{Transport: "local"}}
+	if err := resolveLaunchCodex(&cfg); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
 	runtime, err := prepareAgentAppServerRuntime(cfg)
 	if err != nil || runtime == nil || runtime.routerOptions.AppServerSSH == nil {
 		t.Fatalf("Codex 初始化故障不应阻止 agentd 提供诊断：runtime=%v err=%v", runtime, err)

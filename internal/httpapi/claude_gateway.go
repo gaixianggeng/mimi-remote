@@ -152,7 +152,7 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 		minimum = capabilities.ClaudeCode.MinimumVersion
 	}
 	cli, err := r.claudeCode.resolve(setup.ClaudeRuntime(r.cfg.Claude, minimum, buildClaudeBridgeEnv(r.cfg.Claude.Env)))
-	if err != nil && (cli.Source != "auto" || !errors.Is(err, exec.ErrNotFound)) {
+	if err != nil {
 		probe.Status, probe.Error = "claude_missing", "请检查 Claude Code 安装或配置的路径"
 		if errors.Is(err, setup.ErrRuntimeIncompatible) {
 			probe.Status = "claude_unsupported"

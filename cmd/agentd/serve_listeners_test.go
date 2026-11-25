@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -256,7 +257,10 @@ func TestServeListenersRecoveryKeepsAuthenticatedLocalControl(t *testing.T) {
 	if err != nil || !localOnly || len(listeners) != 1 {
 		t.Fatalf("recovery: %v %t %v", listeners, localOnly, err)
 	}
-	handler, router := httpapi.NewRouterWithInstallationIDAndOptions(cfg, nil, nil, "test", "synthetic-installation", httpapi.RouterOptions{ConfigPath: path})
+	handler, router := httpapi.NewRouterWithInstallationIDAndOptions(cfg, nil, nil, "test", "synthetic-installation", httpapi.RouterOptions{
+		ConfigPath:          path,
+		NetworkAvailability: func(context.Context) (bool, bool) { return false, false },
+	})
 	defer router.Shutdown()
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}
 	done := make(chan error, 1)

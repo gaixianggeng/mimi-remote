@@ -27,13 +27,13 @@ func TestBuildManagedEnvUsesSystemProxyRelayOnlyWithoutExplicitProxy(t *testing.
 		_ = relay.Close()
 	})
 
-	env := strings.Join(buildManagedEnv(nil), "\n")
+	env := strings.Join(ManagedEnvironment(nil), "\n")
 	for _, want := range []string{"HTTPS_PROXY=" + relay.URL(), "HTTP_PROXY=" + relay.URL(), "NO_PROXY=localhost,127.0.0.1,::1"} {
 		if !strings.Contains(env, want) {
 			t.Fatalf("受管 Codex 必须经系统代理中转联网，缺少 %q", want)
 		}
 	}
-	configured := strings.Join(buildManagedEnv(map[string]string{"HTTPS_PROXY": "http://corp.example:3128"}), "\n")
+	configured := strings.Join(ManagedEnvironment(map[string]string{"HTTPS_PROXY": "http://corp.example:3128"}), "\n")
 	if strings.Contains(configured, relay.URL()) || !strings.Contains(configured, "HTTPS_PROXY=http://corp.example:3128") {
 		t.Fatal("codex.env 中的代理必须优先于系统代理中转")
 	}

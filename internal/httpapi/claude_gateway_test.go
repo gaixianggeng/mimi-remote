@@ -106,7 +106,7 @@ func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing
 		if ok {
 			canonical := strings.ToUpper(key)
 			if _, exists := values[canonical]; exists {
-				t.Fatalf("代理环境变量不应因大小写重复：%v", env)
+				t.Fatal("代理环境变量不应因大小写重复")
 			}
 			values[canonical] = value
 		}
@@ -114,7 +114,7 @@ func TestClaudeGatewayInheritsProxyEnvironmentAndAllowsConfigOverride(t *testing
 	if values["HTTP_PROXY"] != "http://127.0.0.1:10808" ||
 		values["HTTPS_PROXY"] != "http://127.0.0.1:18080" ||
 		values["NO_PROXY"] != "localhost,127.0.0.1" {
-		t.Fatalf("Claude bridge 应继承代理并允许 claude.env 覆盖：%v", values)
+		t.Fatal("Claude bridge 应继承代理并允许 claude.env 覆盖")
 	}
 }
 
