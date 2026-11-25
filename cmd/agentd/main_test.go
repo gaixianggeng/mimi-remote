@@ -1770,6 +1770,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 
 func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
+	t.Setenv("AGENTD_CODEX_BIN", writeMainTestCodex(t, filepath.Join(t.TempDir(), "codex")))
 	installMainTestSSH(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)

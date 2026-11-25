@@ -78,7 +78,7 @@ func TestNativeClaudeExecutableCandidateMigratesNPMShim(t *testing.T) {
 		t.Fatalf("npm shim 应迁移到包内原生 claude.exe：resolved=%q err=%v", resolved, err)
 	}
 	d := NewRuntimeDiscovery()
-	d.run = func(context.Context, string, []string, ...string) (string, error) {
+	d.run = func(context.Context, string, RuntimeRequest, ...string) (string, error) {
 		return "2.1.100 (Claude Code)", nil
 	}
 	selected, err := d.Resolve(context.Background(), RuntimeRequest{Name: "claude", Override: shim})

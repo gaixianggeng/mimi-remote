@@ -51,7 +51,7 @@ func newDiscoveryFixture(t *testing.T) *discoveryFixture {
 		},
 		glob:    func(string) ([]string, error) { return nil, nil },
 		timeout: context.WithTimeout,
-		run: func(ctx context.Context, path string, _ []string, args ...string) (string, error) {
+		run: func(ctx context.Context, path string, _ RuntimeRequest, args ...string) (string, error) {
 			if !slices.Equal(args, []string{"--version"}) {
 				t.Fatalf("unexpected inspection %q", args)
 			}
@@ -198,14 +198,14 @@ func TestResolveRuntimeFiltersWebSocketCapabilitiesBeforeRanking(t *testing.T) {
 	f.add(t, shim, "codex-cli 0.199.0")
 	f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
 	probeVersion := f.run
-	f.run = func(ctx context.Context, path string, env []string, args ...string) (string, error) {
+	f.run = func(ctx context.Context, path string, req RuntimeRequest, args ...string) (string, error) {
 		if slices.Equal(args, []string{"app-server", "--help"}) {
 			if path == shim {
 				return "--listen", nil
 			}
 			return "--listen --ws-auth --ws-token-file", nil
 		}
-		return probeVersion(ctx, path, env, args...)
+		return probeVersion(ctx, path, req, args...)
 	}
 	req := codexRequestWithPATH(dir)
 	req.Transport = "ws"
@@ -323,6 +323,31 @@ func TestResolveRuntimeBoundsFileIdentityLookup(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeProbesWindowsAliasOnceWithoutFileID(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDiscoveryFixture(t)
+		f.GOOS = "windows"
+		dir := filepath.Join(f.Home, "AppData", "Local", "Microsoft", "WindowsApps")
+		alias := filepath.Join(dir, "codex.exe")
+		f.add(t, alias, "hang")
+		f.sameFile = func(os.FileInfo, os.FileInfo) bool { return false }
+		lookup := f.LookPath
+		f.LookPath = func(path string, env []string) (string, error) {
+			if path == filepath.Join(dir, "codex") {
+				return alias, nil
+			}
+			return lookup(path, env)
+		}
+		fallback := filepath.Join(f.Home, "scoop", "shims", "codex.exe")
+		f.add(t, fallback, "codex-cli 0.155.0")
+		start := time.Now()
+		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dir, dir))
+		if err != nil || got.Path != fallback || time.Since(start) != 4*time.Second || !slices.Equal(f.calls(), []string{alias, fallback}) {
+			t.Fatalf("repeated Windows alias: %+v, %v, calls=%v, elapsed=%s", got, err, f.calls(), time.Since(start))
+		}
+	})
+}
+
 func TestMigrationPreservesCodexPinAfterProbeTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newDiscoveryFixture(t)
@@ -362,12 +387,12 @@ func TestResolveRuntimeContinuesAfterBlockedRunnerStartup(t *testing.T) {
 		run := f.run
 		release := make(chan struct{})
 		defer close(release)
-		f.run = func(ctx context.Context, path string, env []string, args ...string) (string, error) {
+		f.run = func(ctx context.Context, path string, req RuntimeRequest, args ...string) (string, error) {
 			if path == shim {
 				<-release // startup does not observe the context
 				return "", ctx.Err()
 			}
-			return run(ctx, path, env, args...)
+			return run(ctx, path, req, args...)
 		}
 		start := time.Now()
 		got, err := f.Resolve(context.Background(), codexRequestWithPATH(dir))
@@ -384,6 +409,48 @@ func TestResolveRuntimeRejectsUnrelatedVersionBanner(t *testing.T) {
 	got, err := f.Resolve(context.Background(), RuntimeRequest{Name: "codex", Override: picker, Transport: "local"})
 	if !errors.Is(err, ErrRuntimeVersion) || got.Path != picker || got.Source != "override" {
 		t.Fatalf("picked an unrelated CLI: %+v, %v", got, err)
+	}
+}
+
+func TestResolveRuntimeVersionWithWrapperDiagnostics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX wrapper")
+	}
+	for _, tc := range []struct {
+		name, banner, minimum, want string
+		err                         error
+	}{
+		{"codex", "codex-cli 0.155.0", "", "0.155.0", nil},
+		{"claude", "2.1.0 (Claude Code)", "2.1.100", "2.1.0", ErrRuntimeIncompatible},
+		{"claude", "", "", "", ErrRuntimeVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.name)
+			writeExecutableFixture(t, path, "echo 'wrapper 24.1.0' >&2\necho '"+tc.banner+"'\n")
+			got, err := ResolveRuntime(context.Background(), RuntimeRequest{
+				Name: tc.name, Override: path, MinimumVersion: tc.minimum, Transport: "local",
+			})
+			if !errors.Is(err, tc.err) || got.Version != tc.want {
+				t.Fatalf("selected version %q, error %v; want %q, %v", got.Version, err, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestResolveCodexUsesConfiguredRuntimeHome(t *testing.T) {
+	f := newDiscoveryFixture(t)
+	home := t.TempDir()
+	path := filepath.Join(home, ".local", "bin", "codex")
+	f.add(t, path, "codex-cli 0.155.0")
+	req := RuntimeRequest{Name: "codex", Transport: "local", Environment: []string{"HOME=" + home, "PATH="}}
+	got, err := f.Resolve(context.Background(), req)
+	if err != nil || got.Path != path || got.Source != "auto" {
+		t.Fatalf("configured runtime home: %+v, %v", got, err)
+	}
+	serviceBundle := filepath.Join(f.Home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex")
+	f.add(t, serviceBundle, "codex-cli 0.156.0")
+	if got, err = f.Resolve(context.Background(), req); err != nil || got.Path != serviceBundle {
+		t.Fatalf("service account bundle: %+v, %v", got, err)
 	}
 }
 

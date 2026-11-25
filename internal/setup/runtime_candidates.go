@@ -14,12 +14,19 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
-func (d RuntimeDiscovery) envValue(env []string, name string) string {
+func (d RuntimeDiscovery) childEnvValue(env []string, name string) (string, bool) {
 	for i := len(env) - 1; i >= 0; i-- {
 		key, value, found := strings.Cut(env[i], "=")
 		if found && (key == name || (d.GOOS == "windows" && strings.EqualFold(key, name))) {
-			return value
+			return value, true
 		}
+	}
+	return "", false
+}
+
+func (d RuntimeDiscovery) envValue(env []string, name string) string {
+	if value, ok := d.childEnvValue(env, name); ok {
+		return value
 	}
 	return d.getenv(name)
 }
@@ -80,6 +87,11 @@ func (d RuntimeDiscovery) candidates(req RuntimeRequest) []string {
 	if d.GOOS == "darwin" && name == "codex" {
 		add(d.envValue(req.Environment, "CODEX_INSTALL_DIR"), name)
 		paths = append(paths, darwinCodexCandidates(d.Home)...)
+		// Desktop can install under the configured Codex HOME while the
+		// service account owns a different home and application bundles.
+		if home, ok := d.childEnvValue(req.Environment, "HOME"); ok && filepath.IsAbs(home) && home != d.Home {
+			add(home, ".local", "bin", name)
+		}
 	} else {
 		if d.GOOS == "darwin" || name == "agy" {
 			add("/opt/homebrew/bin", name)

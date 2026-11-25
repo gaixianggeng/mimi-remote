@@ -57,7 +57,7 @@ type RuntimeDiscovery struct {
 	Stat       func(string) (os.FileInfo, error)
 	sameFile   func(os.FileInfo, os.FileInfo) bool
 	glob       func(string) ([]string, error)
-	run        func(context.Context, string, []string, ...string) (string, error)
+	run        func(context.Context, string, RuntimeRequest, ...string) (string, error)
 	timeout    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
@@ -65,7 +65,7 @@ func NewRuntimeDiscovery() RuntimeDiscovery {
 	home, _ := os.UserHomeDir()
 	return RuntimeDiscovery{
 		GOOS: runtime.GOOS, Home: home, getenv: os.Getenv, LookPath: hostLookPath,
-		Stat: os.Stat, sameFile: os.SameFile, glob: filepath.Glob, run: cliinspect.Run, timeout: context.WithTimeout,
+		Stat: os.Stat, sameFile: os.SameFile, glob: filepath.Glob, run: runRuntimeProbe, timeout: context.WithTimeout,
 	}
 }
 
@@ -113,7 +113,7 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 		paths = d.autoPaths(ctx, req)
 	}
 	var best, failed RuntimeCandidate
-	var seen []os.FileInfo
+	var seen []executableFile
 	failure := error(exec.ErrNotFound)
 	deadline, _ := ctx.Deadline()
 	for path := range paths {
@@ -131,9 +131,7 @@ func (d RuntimeDiscovery) Resolve(parent context.Context, req RuntimeRequest) (R
 			stop()
 			continue
 		}
-		if file.info != nil {
-			seen = append(seen, file.info)
-		}
+		seen = append(seen, file)
 		candidate := RuntimeCandidate{Path: file.path, Source: source}
 		candidate.Version, err = cliinspect.Bounded(candidateCtx, func() (string, error) {
 			return d.inspect(candidateCtx, req, file.path)
@@ -198,18 +196,25 @@ func (d RuntimeDiscovery) executable(req RuntimeRequest, path string) (string, e
 
 // Windows may reopen a file to read its ID in SameFile. Resolve the ID under
 // this candidate's deadline before retaining it for comparisons with later paths.
-func (d RuntimeDiscovery) uniqueExecutable(ctx context.Context, req RuntimeRequest, path string, seen []os.FileInfo) (executableFile, error) {
+func (d RuntimeDiscovery) uniqueExecutable(ctx context.Context, req RuntimeRequest, path string, seen []executableFile) (executableFile, error) {
 	return cliinspect.Bounded(ctx, func() (executableFile, error) {
 		file, err := d.lookupFile(req, path)
 		if err != nil {
 			return executableFile{}, err
+		}
+		// PATH and the WindowsApps fallback can resolve to the same alias
+		// even when Windows denies access to its file ID.
+		for _, prior := range seen {
+			if prior.path == file.path {
+				return executableFile{}, nil
+			}
 		}
 		if !d.sameFile(file.info, file.info) {
 			file.info = nil // still inspect launchable aliases without an accessible file ID
 			return file, nil
 		}
 		for _, prior := range seen {
-			if d.sameFile(prior, file.info) {
+			if prior.info != nil && d.sameFile(prior.info, file.info) {
 				return executableFile{}, nil
 			}
 		}
@@ -217,8 +222,18 @@ func (d RuntimeDiscovery) uniqueExecutable(ctx context.Context, req RuntimeReque
 	})
 }
 
+func runRuntimeProbe(ctx context.Context, path string, req RuntimeRequest, args ...string) (string, error) {
+	if req.Name == "claude" {
+		// Claude reports its version on stdout. Its launcher can print a
+		// different product's version (such as Node's) on stderr.
+		out, err := cliinspect.Stdout(ctx, path, req.Environment, args...)
+		return string(out), err
+	}
+	return cliinspect.Run(ctx, path, req.Environment, args...)
+}
+
 func (d RuntimeDiscovery) inspect(ctx context.Context, req RuntimeRequest, path string) (string, error) {
-	output, err := d.run(ctx, path, req.Environment, "--version")
+	output, err := d.run(ctx, path, req, "--version")
 	if err != nil {
 		return "", err
 	}
@@ -235,7 +250,7 @@ func (d RuntimeDiscovery) inspect(ctx context.Context, req RuntimeRequest, path 
 		return version, fmt.Errorf("%w: %s (minimum %s)", ErrRuntimeIncompatible, version, req.MinimumVersion)
 	}
 	if req.Name == "codex" && req.Transport == "ws" {
-		help, err := d.run(ctx, path, req.Environment, "app-server", "--help")
+		help, err := d.run(ctx, path, req, "app-server", "--help")
 		if err != nil {
 			return version, err
 		}

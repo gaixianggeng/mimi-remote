@@ -49,11 +49,15 @@ const defaultManagedWebSocketEarlyExitGrace = 2 * time.Second
 
 // ParseCodexBanner validates the product name before interpreting its version.
 func ParseCodexBanner(output string) (string, bool) {
-	fields := strings.Fields(output)
-	if len(fields) < 2 || !(strings.EqualFold(fields[0], "codex-cli") || strings.EqualFold(fields[0], "codex")) {
-		return "", false
+	for line := range strings.Lines(output) {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && (strings.EqualFold(fields[0], "codex-cli") || strings.EqualFold(fields[0], "codex")) {
+			if version, ok := ParseCodexVersion(fields[1]); ok {
+				return version, true
+			}
+		}
 	}
-	return ParseCodexVersion(fields[1])
+	return "", false
 }
 
 func CheckLocalCodex(ctx context.Context, configuredBin string, env map[string]string) (string, error) {
