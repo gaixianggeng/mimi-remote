@@ -1347,19 +1347,23 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             AgentProject(id: "proj-\(index)", name: "project-\(index)", path: "/Users/me/code/project-\(index)")
         }
         let now = Date()
-        let sessions = (0..<sessionCount).map { index in
-            AgentSession(
-                id: "sess-\(index)",
-                projectID: projects[0].id,
-                project: projects[0].name,
-                dir: projects[0].path,
+        let sessions = (0..<sessionCount).map { (index: Int) -> AgentSession in
+            let project = projects[0]
+            let sessionID = "sess-\(index)"
+            let createdAt = now.addingTimeInterval(-TimeInterval(index) * 120)
+            let updatedAt = now.addingTimeInterval(-TimeInterval(index) * 60)
+            return AgentSession(
+                id: sessionID,
+                projectID: project.id,
+                project: project.name,
+                dir: project.path,
                 title: "Session Row \(index)",
                 status: SessionStatus.completed.rawValue,
                 source: "codex",
                 runtimeProvider: "codex",
-                resumeID: "sess-\(index)",
-                createdAt: now.addingTimeInterval(TimeInterval(-index * 120)),
-                updatedAt: now.addingTimeInterval(TimeInterval(-index * 60))
+                resumeID: sessionID,
+                createdAt: createdAt,
+                updatedAt: updatedAt
             )
         }
         var projectSessions: [String: [AgentSession]] = [:]
