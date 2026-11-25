@@ -10,6 +10,14 @@ import (
 	"sync"
 )
 
+type parentLifetimeKey struct{}
+
+// WithParentLifetime ties any probes in this request to the calling CLI process.
+// On Unix a pipe signals process death even when the CLI cannot run defers.
+func WithParentLifetime(ctx context.Context) context.Context {
+	return context.WithValue(ctx, parentLifetimeKey{}, true)
+}
+
 const versionOutputLimit = 64 << 10
 
 // Process workers use their own slots so a bounded resolver can invoke a command
@@ -99,7 +107,7 @@ func capture(ctx context.Context, cmd *exec.Cmd, limit int64, combined bool) (ou
 		}
 		cmd.Stderr = stderr
 	}
-	cleanup, err := start(cmd)
+	cleanup, err := start(ctx, cmd)
 	stdout.Close()
 	if stderr != nil {
 		stderr.Close()

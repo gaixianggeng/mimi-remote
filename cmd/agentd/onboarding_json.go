@@ -52,7 +52,7 @@ func onboardingJSONCommand(args []string) bool {
 	case "doctor":
 		return commandBool(args[2:], "fix")
 	case "tailcat":
-		switch args[2] {
+		switch strings.ToLower(strings.TrimSpace(args[2])) {
 		case "pair", "enable", "relay-set":
 			return true
 		case "relay":
@@ -81,8 +81,18 @@ func commandBool(args []string, name string) bool {
 	return enabled
 }
 
+func onboardingJSONFlags(name string, args []string) bool {
+	if name == "doctor" && !commandBool(args, "fix") {
+		return false
+	}
+	if strings.HasPrefix(name, "tailcat ") && name != "tailcat pair" && name != "tailcat enable" && name != "tailcat relay-set" {
+		return false
+	}
+	return commandBool(args, "json")
+}
+
 func onboardingFlagSet(name string, args []string) *flag.FlagSet {
-	if commandBool(args, "json") {
+	if onboardingJSONFlags(name, args) {
 		fs := flag.NewFlagSet(name, flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		return fs
@@ -91,7 +101,7 @@ func onboardingFlagSet(name string, args []string) *flag.FlagSet {
 }
 
 func parseOnboardingFlags(fs *flag.FlagSet, args []string) error {
-	asJSON := commandBool(args, "json")
+	asJSON := onboardingJSONFlags(fs.Name(), args)
 	if asJSON {
 		fs.SetOutput(io.Discard)
 	}
@@ -146,7 +156,7 @@ func commandDiagnostic(args []string, err error) setup.OnboardingError {
 		return setup.OnboardingDiagnostic("config_invalid", "config_store", "pair", true, "")
 	}
 	step := "config_store"
-	if args[1] == "pair" || args[1] == "tailcat" && args[2] == "pair" {
+	if args[1] == "pair" || args[1] == "tailcat" && strings.EqualFold(strings.TrimSpace(args[2]), "pair") {
 		step = "network_any"
 	}
 	code := "internal_error"

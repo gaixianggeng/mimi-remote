@@ -60,10 +60,19 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 			Activation string `json:"activation"`
 		} `json:"claude"`
 		Onboarding struct {
-			WorkspaceConfirmed *bool `json:"workspace_confirmed"`
+			WorkspaceConfirmed json.RawMessage `json:"workspace_confirmed"`
 		} `json:"onboarding"`
 	}
 	if json.Unmarshal(raw, &marker) != nil || strings.TrimSpace(string(raw)) == "null" {
+		s.Code = "config_invalid"
+		return s
+	}
+	confirmed := true
+	switch string(marker.Onboarding.WorkspaceConfirmed) {
+	case "", "true":
+	case "false":
+		confirmed = false
+	default:
 		s.Code = "config_invalid"
 		return s
 	}
@@ -97,7 +106,7 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 	}
 	s.ClaudeActivation = marker.Claude.Activation
 	s.Config = cfg
-	s.Confirmed = marker.Onboarding.WorkspaceConfirmed == nil || *marker.Onboarding.WorkspaceConfirmed
+	s.Confirmed = confirmed
 	return s
 }
 

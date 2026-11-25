@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -41,7 +42,7 @@ func boundedPreflight[T any](ctx context.Context, fn func() T) (T, bool) {
 }
 
 func RunPreflight(ctx context.Context, o PreflightOptions, progress func(PreflightCheck)) PreflightReport {
-	return InspectPreflight(ctx, o, PreflightProbes{Platform: runtime.GOOS, Host: FetchPreflightHost, Member: observePreflightMember, HomebrewOwner: preflightHomebrewOwner}, progress)
+	return InspectPreflight(cliinspect.WithParentLifetime(ctx), o, PreflightProbes{Platform: runtime.GOOS, Host: FetchPreflightHost, Member: observePreflightMember, HomebrewOwner: preflightHomebrewOwner}, progress)
 }
 
 func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightProbes, progress func(PreflightCheck)) PreflightReport {
@@ -92,18 +93,40 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 	}
 	complete("config_store", code)
 	home, _ := os.UserHomeDir()
-	r.ScanRoot = proposedRoot(o.ScanRoot, cfg.ScanRoots, filepath.Join(home, "code"))
-	r.BrowseRoot = proposedRoot(o.BrowseRoot, cfg.BrowseRoots, r.ScanRoot)
+	scan, scanValid := proposedRoot(o.ScanRoot, cfg.ScanRoots, filepath.Join(home, "code"))
+	browse, browseValid := proposedRoot(o.BrowseRoot, cfg.BrowseRoots, scan)
+	r.ScanRoot, r.BrowseRoot = scan, browse
 	type rootResult struct {
 		exists bool
 		code   string
 	}
-	scan, browse := r.ScanRoot, r.BrowseRoot
 	rootCtx, stopRoots := context.WithTimeout(ctx, 2*time.Second)
 	roots, ok := boundedPreflight(rootCtx, func() rootResult {
+		if !scanValid {
+			return rootResult{false, "workspace_not_found"}
+		}
 		exists, code := config.InspectWorkspaceRoot(scan)
+		if !browseValid && code == "" {
+			code = "workspace_not_found"
+		}
 		if code == "" && browse != scan {
 			_, code = config.InspectWorkspaceRoot(browse)
+		}
+		if pair && code == "" {
+			for _, stored := range [][]string{cfg.ScanRoots, cfg.BrowseRoots} {
+				for i := 1; i < len(stored); i++ {
+					if rootCtx.Err() != nil {
+						return rootResult{exists, "probe_timeout"}
+					}
+					path := config.ExpandPath(stored[i])
+					if !filepath.IsAbs(path) {
+						return rootResult{exists, "workspace_not_found"}
+					}
+					if _, code := config.InspectWorkspaceRoot(path); code != "" {
+						return rootResult{exists, code}
+					}
+				}
+			}
 		}
 		return rootResult{exists, code}
 	})
@@ -134,7 +157,7 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 		case errors.As(result.err, &hostErr):
 			serviceCode = string(hostErr)
 		case result.err != nil:
-		case o.Version != "" && o.Version != result.h.Version:
+		case !AgentVersionsCompatible(o.Version, result.h.Version):
 			serviceCode = "service_version_mismatch"
 		default:
 			host, serviceCode = result.h, ""
@@ -229,14 +252,17 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 	return r
 }
 
-func proposedRoot(override string, stored []string, fallback string) string {
+func proposedRoot(override string, stored []string, fallback string) (string, bool) {
 	if override != "" {
-		return config.ExpandPath(override)
+		return config.ExpandPath(override), true
 	}
-	if len(stored) > 0 && stored[0] != "" {
-		return config.ExpandPath(stored[0])
+	if len(stored) > 0 {
+		if root := config.ExpandPath(stored[0]); filepath.IsAbs(root) {
+			return root, true
+		}
+		return fallback, false
 	}
-	return fallback
+	return fallback, true
 }
 
 func (r *PreflightReport) aggregate(group string) (bool, string) {

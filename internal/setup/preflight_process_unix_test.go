@@ -61,7 +61,7 @@ func TestPreflightRuntimeOnlyExecutesVersionAndScrubsPickerPath(t *testing.T) {
 	t.Setenv("AGENTD_CODEX_BIN", "/bin/echo")
 	pin := filepath.Join(home, "private-picker-name")
 	// Only the explicit picker is permitted to run, and only in inspect mode.
-	script := "#!/bin/sh\nif [ \"$#:$1\" = '1:--version' ]; then echo 'codex-cli 0.155.0'; else : > \"$HOME/unexpected-command\"; exit 1; fi\n"
+	script := "#!/bin/sh\nif [ -f \"$CODEX_HOME\" ] && [ \"$#:$1\" = '1:--version' ]; then echo 'codex-cli 0.155.0'; else : > \"$HOME/unexpected-command\"; exit 1; fi\n"
 	if err := os.WriteFile(pin, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,32 @@ func TestPreflightRuntimeOnlyExecutesVersionAndScrubsPickerPath(t *testing.T) {
 	if strings.Contains(obs.Candidates[0].Path, home) || strings.Contains(obs.Candidates[0].Path, "private-picker-name") {
 		t.Fatal("picker path leaked")
 	}
+	// A current daemon outage takes precedence over local account evidence.
+	t.Setenv("AGENTD_CODEX_BIN", "")
+	cfg.Codex.Bin = pin
+	host := PreflightHost{Accounts: map[string]string{"codex": "upstream_unavailable"}}
+	obs = observePreflightMember(t.Context(), "assistant_codex", cfg, "", host)
+	if obs.Code != "codex_upstream_unavailable" || obs.Available == nil || *obs.Available {
+		t.Fatal("reported an unusable upstream as eligible")
+	}
 	if _, err := os.Stat(filepath.Join(home, "unexpected-command")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unexpected CLI invocation")
+	}
+}
+
+func TestPreflightChecksAgyAdapterVersion(t *testing.T) {
+	dir := preflightSandbox(t)
+	path := filepath.Join(dir, "fixture-adapter")
+	for _, tc := range []struct{ version, want string }{
+		{"", "agy_adapter_missing"}, {"0.0.1", "agy_adapter_missing"}, {"0.1.0", ""},
+	} {
+		body := "#!/bin/sh\necho '{\"version\":\"" + tc.version + "\",\"methods\":[\"initialize\"]}'\n"
+		if err := os.WriteFile(path, []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+		_, got := preflightAdapter(t.Context(), "agy", config.Config{Agy: config.AgyConfig{AdapterBin: path}})
+		if got != tc.want {
+			t.Errorf("version %q: got %q, want %q", tc.version, got, tc.want)
+		}
 	}
 }

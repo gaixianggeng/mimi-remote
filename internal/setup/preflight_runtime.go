@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
@@ -70,7 +71,23 @@ func inspectPreflightRuntime(ctx context.Context, name string, cfg config.Config
 	req := CodexRuntime(cfg.Codex, cfg.AppServer.Transport)
 	req.MinimumVersion = appserver.MinimumCodexVersion
 	adapterCode := ""
-	if name != "codex" {
+	if name == "codex" {
+		// Even --version and app-server --help create argument shims in CODEX_HOME.
+		// Point these two metadata commands at a known non-directory. Account
+		// evidence below still reads the original, effective runtime home.
+		executable, err := os.Executable()
+		if err != nil {
+			return PreflightObservation{Code: "runtime_probe_failed"}
+		}
+		env := req.Environment[:0]
+		for _, entry := range req.Environment {
+			key, _, _ := strings.Cut(entry, "=")
+			if !strings.EqualFold(key, "CODEX_HOME") {
+				env = append(env, entry)
+			}
+		}
+		req.Environment = append(env, "CODEX_HOME="+executable)
+	} else {
 		req, adapterCode = preflightAdapter(ctx, name, cfg)
 	}
 	req.Override = override
@@ -124,6 +141,13 @@ func inspectPreflightRuntime(ctx context.Context, name string, cfg config.Config
 			account = passiveFileAccount(cfg, name)
 		}
 		switch account {
+		case "upstream_unavailable":
+			if name == "codex" {
+				obs.Code = "codex_upstream_unavailable"
+				obs.Available = knownAvailability(false)
+			} else {
+				obs.Code = "runtime_probe_failed"
+			}
 		case "connected":
 			obs.Available = knownAvailability(true)
 		case "signed_out":
@@ -150,7 +174,7 @@ func preflightAdapter(parent context.Context, name string, cfg config.Config) (R
 		if ctx.Err() != nil {
 			return req, "probe_timeout"
 		}
-		if err != nil {
+		if err != nil || !agybridge.IsSupported(caps.Version) {
 			return req, "agy_adapter_missing"
 		}
 		req.MinimumVersion = caps.Agy.MinimumVersion

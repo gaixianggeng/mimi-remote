@@ -1916,34 +1916,10 @@ func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.R
 		return doctor.Results{}, readyVersionCheckError("readyz 响应缺少 server version")
 	}
 	expectedVersion = strings.TrimSpace(expectedVersion)
-	if agentVersionsCompatible(expectedVersion, runningVersion) {
+	if agentsetup.AgentVersionsCompatible(expectedVersion, runningVersion) {
 		return payload, nil
 	}
 	return payload, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
-}
-
-func agentVersionsCompatible(expectedVersion string, runningVersion string) bool {
-	expected := strings.TrimSpace(expectedVersion)
-	running := strings.TrimSpace(runningVersion)
-	if isDevelopmentAgentVersion(expected) || running == expected {
-		return true
-	}
-	// 独立安装的正式 CLI 只有 marketing version，应能检查同版本的 Mac 构建。
-	// 反向不放宽：App 内嵌版本含 mac build，必须精确识别覆盖安装后的旧进程。
-	return !strings.Contains(expected, "+") &&
-		strings.HasPrefix(running, expected+"+mac.")
-}
-
-func isDevelopmentAgentVersion(value string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	if normalized == "" || normalized == "devel" || normalized == "(devel)" {
-		return true
-	}
-	// GoReleaser/本地 make 会把提交摘要追加成 devel-<sha>；它和裸 devel
-	// 一样没有可用于部署一致性判断的正式版本，不能误报 App 托管服务过旧。
-	return strings.HasPrefix(normalized, "devel-") ||
-		strings.Contains(normalized, "-next") ||
-		strings.Contains(normalized, "dirty")
 }
 
 func readyVersionCheckError(reason string) error {

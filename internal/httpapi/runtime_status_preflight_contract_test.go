@@ -36,6 +36,9 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 			{"unconfigured", "pair", false, false, false},
 			{"invalid", "pair", true, false, false},
 			{"ready", "pair", true, true, true},
+			{"blank-root", "pair", true, true, false},
+			{"relative-root", "pair", true, true, false},
+			{"missing-secondary", "pair", true, true, false},
 		} {
 			t.Run(platform+"/"+scenario.name, func(t *testing.T) {
 				dir := t.TempDir()
@@ -44,12 +47,23 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 				if scenario.committed {
 					data := []byte("{")
 					if scenario.valid {
+						scan, browse := dir, dir
+						switch scenario.name {
+						case "blank-root":
+							scan = " "
+						case "relative-root":
+							browse = "."
+						}
+						scans := []string{scan}
+						if scenario.name == "missing-secondary" {
+							scans = append(scans, filepath.Join(dir, "unmounted"))
+						}
 						var err error
 						data, err = json.Marshal(map[string]any{
 							"listen": "127.0.0.1:8787", "auth": map[string]string{"token": fixtureToken},
 							"app_server": map[string]string{"transport": "ssh", "ssh_target": "fixture.invalid"},
 							"codex":      map[string]any{"enabled": true}, "network": map[string]any{"allow_tailscale": true},
-							"scan_roots": []string{dir}, "browse_roots": []string{dir},
+							"scan_roots": scans, "browse_roots": []string{browse},
 						})
 						if err != nil {
 							t.Fatal(err)
@@ -63,7 +77,7 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 					if cfg.Auth.Token != fixtureToken {
 						return setup.PreflightHost{}, setup.PreflightHostError("pair_token_mismatch")
 					}
-					return setup.PreflightHost{Ready: true, Version: "fixture", Assistants: map[string]bool{"codex": true}, Networks: map[string]bool{"tailscale": true}, Accounts: map[string]string{"codex": "connected"}}, nil
+					return setup.PreflightHost{Ready: true, Version: "1.2.3+mac.42", Assistants: map[string]bool{"codex": true}, Networks: map[string]bool{"tailscale": true}, Accounts: map[string]string{"codex": "connected"}}, nil
 				}, Member: func(_ context.Context, id string, _ config.Config, _ string, _ setup.PreflightHost) setup.PreflightObservation {
 					yes, no := true, false
 					switch id {
@@ -75,7 +89,10 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 					codes := map[string]string{"assistant_claude": "claude_not_found", "assistant_agy": "runtime_probe_failed", "assistant_deepseek": "deepseek_auth_failed", "network_lan": "lan_unavailable", "network_tailcat": "tailcat_unavailable"}
 					return setup.PreflightObservation{Available: &no, Code: codes[id]}
 				}}
-				opts := setup.PreflightOptions{Stage: scenario.stage, Version: "fixture", ConfigPath: path, ScanRoot: dir, BrowseRoot: dir}
+				opts := setup.PreflightOptions{Stage: scenario.stage, Version: "1.2.3", ConfigPath: path, ScanRoot: dir, BrowseRoot: dir}
+				if scenario.valid {
+					opts.ScanRoot, opts.BrowseRoot = "", ""
+				}
 				var progress []wireObject
 				asObject := func(v any) wireObject {
 					raw, err := json.Marshal(v)
@@ -106,23 +123,35 @@ func TestLivePreflightHostCLIContract(t *testing.T) {
 	}
 }
 
-// Exercise the process boundary as well as the typed report. The agentd test
-// binary injects the host observations, keeping installed CLIs and the user's
-// daemon out of both the report and the build environment.
+// Exercise the shipping CLI, including its real probes, with absent runtime pins
+// and an isolated home. Validate observations for this platform, regardless of
+// which network interfaces the test runner has.
 func TestPreflightCLIStdoutAgainstPublishedContract(t *testing.T) {
 	c := loadOnboarding(t)
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "agentd-test")
+	bin := filepath.Join(dir, "agentd")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	build := exec.CommandContext(t.Context(), "go", "test", "-c", "-o", bin, "../../cmd/agentd")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, "../../cmd/agentd")
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI test process: %v: %s", err, output)
+		t.Fatalf("build CLI: %v: %s", err, output)
 	}
-	cmd := exec.CommandContext(t.Context(), bin, "-test.run=^TestPreflightProgressCLIProcess$", "--", "preflight", "--json", "--config", filepath.Join(dir, "missing.json"), "--scan-root", dir, "--assistant", "codex=enabled")
-	cmd.Env = []string{"MIMI_TEST_PREFLIGHT_PROGRESS=1", "HOME=" + dir, "USERPROFILE=" + dir, "APPDATA=" + dir, "LOCALAPPDATA=" + dir, "XDG_CONFIG_HOME=" + dir, "PATH=" + dir, "SystemRoot=" + os.Getenv("SystemRoot")}
-	cmd.Stdin = strings.NewReader("x")
+	// Intercept the PATH lookup before any system Tailscale app fallback.
+	tsName, tsBody := "tailscale", "#!/bin/sh\nexit 1\n"
+	if runtime.GOOS == "windows" {
+		tsName, tsBody = "tailscale.cmd", "@exit /b 1\r\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, tsName), []byte(tsBody), 0700); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "absent")
+	args := []string{"preflight", "--json", "--config", filepath.Join(dir, "missing.json"), "--scan-root", dir, "--assistant", "codex=enabled"}
+	for _, id := range []string{"codex", "claude", "agy"} {
+		args = append(args, "--runtime-path", id+"="+missing)
+	}
+	cmd := exec.CommandContext(t.Context(), bin, args...)
+	cmd.Env = []string{"HOME=" + dir, "USERPROFILE=" + dir, "APPDATA=" + dir, "LOCALAPPDATA=" + dir, "XDG_CONFIG_HOME=" + dir, "PATH=" + dir, "SystemRoot=" + os.Getenv("SystemRoot"), "AGENTD_TAILCAT_BIN=" + missing}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -130,7 +159,11 @@ func TestPreflightCLIStdoutAgainstPublishedContract(t *testing.T) {
 		t.Fatalf("CLI status %v, diagnostics %q", err, stderr.String())
 	}
 	doc := contractJSON[wireObject](t, out)
-	if err := c.report(doc, wireObject{"platform": "linux"}); err != nil {
+	platform := runtime.GOOS
+	if platform == "darwin" {
+		platform = "macos"
+	}
+	if err := c.report(doc, wireObject{"platform": platform}); err != nil {
 		t.Fatalf("CLI stdout: %v", err)
 	}
 }

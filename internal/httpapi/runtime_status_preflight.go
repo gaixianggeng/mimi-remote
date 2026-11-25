@@ -51,9 +51,11 @@ func (c *runtimeStatusSnapshotCache) preflightAccounts() map[string]string {
 	}
 	for _, s := range c.snapshot.Runtimes {
 		switch {
+		case s.ID == "codex" && s.State == runtimeStateUnavailable && (s.Reason == "upstream_unavailable" || s.Reason == "shared_local_session_unavailable"):
+			accounts[s.ID] = "upstream_unavailable"
 		case s.State == runtimeStateSignedOut:
 			accounts[s.ID] = "signed_out"
-		case s.State == runtimeStateConnected || s.State == runtimeStateAvailable && (s.ID == "deepseek" && s.Reason == "ready" || s.ID == "agy" && s.Reason == ""):
+		case s.State == runtimeStateConnected || s.State == runtimeStateAvailable && (s.ID == "deepseek" && s.Reason == "ready" || s.ID == "agy" && (s.Reason == "" || s.Reason == "quota_refresh_in_progress")):
 			accounts[s.ID] = "connected"
 		case s.ID == "deepseek" && s.Reason == "models_unavailable":
 			accounts[s.ID] = "no_models"

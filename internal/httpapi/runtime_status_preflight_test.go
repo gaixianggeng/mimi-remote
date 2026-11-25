@@ -96,6 +96,15 @@ func TestPreflightLocalCacheEndpoint(t *testing.T) {
 	if h := read(); !h.Ready || h.Version != "test" || !h.Assistants["codex"] || !h.Networks["lan"] || !reflect.DeepEqual(h.Accounts, map[string]string{"codex": "connected", "claude": "signed_out"}) {
 		t.Fatalf("fresh cache projection: %+v", h)
 	}
+	cache.mu.Lock()
+	cache.snapshot.Runtimes = []runtimeAccountStatus{
+		{ID: "codex", State: runtimeStateUnavailable, Reason: "shared_local_session_unavailable"},
+		{ID: "agy", State: runtimeStateAvailable, Reason: "quota_refresh_in_progress"},
+	}
+	cache.mu.Unlock()
+	if h := read(); h.Accounts["codex"] != "upstream_unavailable" || h.Accounts["agy"] != "connected" {
+		t.Fatal("cached upstream and quota observations lost")
+	}
 	stale := now.Add(-time.Hour)
 	server.router.preflightReadyAt.Store(stale.UnixNano())
 	cache.mu.Lock()

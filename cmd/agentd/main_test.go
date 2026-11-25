@@ -1516,7 +1516,7 @@ func TestAgentVersionsKeepMacBuildStrictButAllowReleaseCLI(t *testing.T) {
 		{expected: "0.1.6", running: "0.1.5+mac.240", want: false},
 	}
 	for _, testCase := range tests {
-		if got := agentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
+		if got := agentsetup.AgentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
 			t.Fatalf(
 				"agentd 版本兼容判断错误：expected=%q running=%q got=%v want=%v",
 				testCase.expected,

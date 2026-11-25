@@ -33,12 +33,12 @@ func TestOnboardingErrorCLIProcess(t *testing.T) {
 }
 
 func TestOnboardingEarlyJSONFailures(t *testing.T) {
-	for _, name := range []string{"preflight", "setup", "up", "start", "restart", "pair", "tailcat pair", "tailcat enable", "tailcat relay set", "network", "runtime", "workspace", "doctor --fix"} {
+	for _, name := range []string{"preflight", "setup", "up", "start", "restart", "pair", "tailcat pair", "tailcat enable", "tailcat relay set", "tailcat PAIR", "tailcat ENABLE", "tailcat RELAY set", "network", "runtime", "workspace", "doctor --fix"} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			args := append([]string{"-test.run=^TestOnboardingErrorCLIProcess$", "--"}, strings.Fields(name)...)
 			cmd := exec.Command(os.Args[0], append(args, "--invalid-private-input", "--json")...)
-			cmd.Env = []string{"MIMI_TEST_ONBOARDING_ERROR_CLI=1", "HOME=" + home, "USERPROFILE=" + home, "APPDATA=" + home, "XDG_CONFIG_HOME=" + home, "PATH=" + home, "SystemRoot=" + os.Getenv("SystemRoot")}
+			cmd.Env = []string{"MIMI_TEST_ONBOARDING_ERROR_CLI=1", "HOME=" + home, "USERPROFILE=" + home, "APPDATA=" + home, "XDG_CONFIG_HOME=" + home, "PATH=" + home, "TMPDIR=" + home, "TEMP=" + home, "TMP=" + home, "SystemRoot=" + os.Getenv("SystemRoot")}
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
 			var exit *exec.ExitError
@@ -99,7 +99,7 @@ func isolateOnboardingCommandEnv(t *testing.T) {
 			t.Setenv(key, "")
 		}
 	}
-	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "PATH"} {
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA", "LOCALAPPDATA", "PATH", "TMPDIR", "TEMP", "TMP"} {
 		t.Setenv(key, home)
 	}
 }
@@ -191,5 +191,17 @@ func TestOnboardingJSONMissingConfigAndInvalidInputs(t *testing.T) {
 			t.Fatalf("%v unexpectedly succeeded", tc.args)
 		}
 		assertOnboardingError(t, out.Bytes(), stderr.String(), tc.code, "config_store")
+	}
+}
+
+func TestReadOnlyDoctorRetainsJSONHelp(t *testing.T) {
+	isolateOnboardingCommandEnv(t)
+	t.Setenv("MIMI_TEST_ONBOARDING_ERROR_CLI", "1")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestOnboardingErrorCLIProcess$", "--", "doctor", "--json", "--help")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || len(out) != 0 || !strings.Contains(stderr.String(), "Usage of doctor") {
+		t.Fatalf("help status %v, stdout=%q stderr=%q", err, out, stderr.String())
 	}
 }

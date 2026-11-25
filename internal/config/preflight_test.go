@@ -17,6 +17,7 @@ func TestPreflightConfigReadsPersistedIdentityWithoutScanning(t *testing.T) {
 		{"bad", "{", "config_invalid", false},
 		{"identity", "{}", "config_recovery_required", false},
 		{"newer", `{"auth":{"token":"synthetic-test-value"},"app_server":{"transport":"future"}}`, "config_requires_newer_version", false},
+		{"null confirmation", `{"auth":{"token":"synthetic-test-value"},"onboarding":{"workspace_confirmed":null}}`, "config_invalid", false},
 		{"pending", `{"auth":{"token":"synthetic-test-value"},"onboarding":{"workspace_confirmed":false}}`, "", false},
 		{"legacy", `{"auth":{"token":"synthetic-test-value"},"scan_roots":["missing-root"]}`, "", true},
 	}
