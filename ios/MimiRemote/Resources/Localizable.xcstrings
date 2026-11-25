@@ -51723,18 +51723,18 @@
       }
     },
     "ui.writer_conflict_shared_guide_mac_body": {
-      "comment": "Explains the one-time Mac setup so Codex Desktop and Mimi Remote share live chats.",
+      "comment": "Explains the one-time Mac one-click safe SSH setup (PR #1115) and how already-configured users open projects via the local SSH connection in Codex Desktop.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On your Mac, open Mimi Remote → Sessions → Connect Codex Desktop for a one-time setup. Once connected, open your project through the local shared connection in Codex Desktop so both Mac and phone share the same live chat."
+            "value": "On your Mac, open Mimi Remote Mac from the menu bar and choose “Connect Codex Desktop…” (or click “Connect Codex Desktop” in the Sessions window toolbar). Follow the guided steps to turn on Remote Login, click “One-Click Local SSH Setup” (no manual terminal commands needed), then click “Open Codex Connection Settings” to connect to the local host (mimi-local). If you already set this up, open your project through that local SSH connection in Codex Desktop instead of the default local mode to share the live chat with your phone."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 上打开 Mimi Remote，进入「会话」窗口并点「连接 Codex 桌面版」，按引导完成一次配置。之后在 Codex 桌面版通过本机共享连接打开项目，电脑和手机就能实时共用同一条会话，不再互锁。"
+            "value": "在 Mac 上打开 Mimi Remote Mac 菜单栏，点「连接 Codex 桌面版…」（或在「会话」窗口工具栏点「连接 Codex 桌面版」），按引导打开「远程登录」、点「一键配置本机 SSH」，再点「打开 Codex 连接设置」连接本机主机（mimi-local），无需手动执行终端命令。若已完成配置，请改在 Codex 桌面版通过该本机 SSH 连接（而非默认本地模式）打开项目，即可与手机实时共用同一条会话。"
           }
         }
       }
@@ -51757,18 +51757,103 @@
       }
     },
     "ui.writer_conflict_shared_guide_now_body": {
-      "comment": "Explains immediate options when the user wants to continue right away or is not on macOS.",
+      "comment": "Explains immediate options when branching is available for an idle locked chat.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tap “Branch to new chat” to continue immediately from a copy, or quit Codex Desktop completely and tap “Retry” to continue the original chat. On non-Mac computers, desktop live sharing isn’t supported yet—use either option above."
+            "value": "Tap “Branch to new chat” to copy the saved progress into a new chat and continue right away. To continue the original chat, make sure no desktop task is running, quit Codex Desktop completely, and tap “Retry”. (Live desktop sharing isn’t supported on non-Mac computers yet.)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "点「分支到新聊天」可从当前进度复制出新会话马上继续；如果要继续原会话，请先完全退出电脑上的 Codex 桌面版，再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
+            "value": "点「分支到新聊天」可基于已保存的进度复制出新会话马上继续；如果要继续原会话，请先确认桌面端没有运行中的任务，完全退出电脑上的 Codex 桌面版，再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_no_fork_body": {
+      "comment": "Explains immediate options when branching is not available for the locked chat.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Branching isn’t available for this chat. To continue the original chat, make sure any task on Codex Desktop has finished, quit Codex Desktop completely, and tap “Retry”. (Live desktop sharing isn’t supported on non-Mac computers yet.)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话暂不支持分支复制。要继续原会话，请先确认桌面端任务已结束，再完全退出电脑上的 Codex 桌面版并回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这种方式。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_no_terminal_turn_body": {
+      "comment": "Explains immediate options when a running locked chat has no completed turn to branch from yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Branch to new chat” isn’t available yet because this running chat has no completed turn to copy. Wait for the current desktop reply to finish before branching, or after confirming desktop tasks have finished, quit Codex Desktop completely and tap “Retry” to continue the original chat. (Live desktop sharing isn’t supported on non-Mac computers yet.)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话正在运行且尚无已完成回合，暂时无法使用「分支到新聊天」。请等待桌面端当前回复完成后再分支；若要继续原会话，请确认桌面端任务已结束，完全退出 Codex 桌面版后回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接按上述方式处理。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_pending_body": {
+      "comment": "Explains immediate options while branch availability is still checking or needs rechecking.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Once branching is ready, tap “Branch to new chat” to continue in a copy (while desktop is running, only up to the last completed turn is copied; if the check failed, tap “Check again”). To continue the original chat, make sure desktop tasks have finished, quit Codex Desktop completely, and tap “Retry”. (Live desktop sharing isn’t supported on non-Mac computers yet.)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分支可用后可点「分支到新聊天」复制到新会话继续（桌面端运行中时，仅会复制到最近已完成的回合，不含进行中的回复）；若检查失败，可先点「重新检查」。要继续原会话，请先确认桌面端任务已结束，完全退出 Codex 桌面版后再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_resolved_body": {
+      "comment": "Explains what to do when the writer conflict was resolved while the shared guide sheet was open.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This chat is now unlocked—tap “Done” to return and continue typing. To share live chats between your Mac and phone going forward, complete the one-time Mac setup above."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话已解除锁定，点「完成」返回即可直接继续输入。如果之后希望电脑和手机实时共用同一条会话，按上方 Mac 配置步骤设置一次即可。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_running_body": {
+      "comment": "Explains immediate options when branching is available for a running locked chat, noting the copy stops at the last completed turn.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap “Branch to new chat” to continue in a copy up to the last completed turn—the in-progress desktop reply won’t be included. To continue the original chat, make sure desktop tasks have finished, quit Codex Desktop completely, and tap “Retry”. (Live desktop sharing isn’t supported on non-Mac computers yet.)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点「分支到新聊天」可复制出新会话继续，但桌面端运行中时仅会复制到最近已完成的回合，不会包含当前进行中的回复。要继续原会话，请先确认桌面端任务已结束，完全退出 Codex 桌面版后再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
           }
         }
       }

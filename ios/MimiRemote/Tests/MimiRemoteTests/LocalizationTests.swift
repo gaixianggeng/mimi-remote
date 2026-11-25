@@ -188,13 +188,32 @@ final class LocalizationTests: XCTestCase {
         for bodyKey in [
             "ui.writer_conflict_shared_guide_why_body",
             "ui.writer_conflict_shared_guide_mac_body",
-            "ui.writer_conflict_shared_guide_now_body"
+            "ui.writer_conflict_shared_guide_now_body",
+            "ui.writer_conflict_shared_guide_now_running_body",
+            "ui.writer_conflict_shared_guide_now_no_fork_body",
+            "ui.writer_conflict_shared_guide_now_no_terminal_turn_body",
+            "ui.writer_conflict_shared_guide_now_pending_body",
+            "ui.writer_conflict_shared_guide_now_resolved_body"
         ] {
             XCTAssertNotEqual(L10n.text(bodyKey, language: .english), bodyKey)
             XCTAssertNotEqual(L10n.text(bodyKey, language: .simplifiedChinese), bodyKey)
             XCTAssertFalse(L10n.text(bodyKey, language: .english).isEmpty)
             XCTAssertFalse(L10n.text(bodyKey, language: .simplifiedChinese).isEmpty)
         }
+        let macGuideZh = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .simplifiedChinese)
+        XCTAssertTrue(macGuideZh.contains("连接 Codex 桌面版…"))
+        XCTAssertTrue(macGuideZh.contains("一键配置本机 SSH"))
+        XCTAssertTrue(macGuideZh.contains("打开 Codex 连接设置"))
+        XCTAssertTrue(macGuideZh.contains("mimi-local"))
+        XCTAssertFalse(macGuideZh.contains("ssh-keygen"))
+        XCTAssertFalse(macGuideZh.contains("authorized_keys"))
+        let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
+        XCTAssertTrue(macGuideEn.contains("Connect Codex Desktop…"))
+        XCTAssertTrue(macGuideEn.contains("One-Click Local SSH Setup"))
+        XCTAssertTrue(macGuideEn.contains("Open Codex Connection Settings"))
+        XCTAssertTrue(macGuideEn.contains("mimi-local"))
+        XCTAssertFalse(macGuideEn.contains("ssh-keygen"))
+        XCTAssertFalse(macGuideEn.contains("authorized_keys"))
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
         XCTAssertEqual(

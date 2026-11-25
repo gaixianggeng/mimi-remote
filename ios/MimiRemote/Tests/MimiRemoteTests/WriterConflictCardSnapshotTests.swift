@@ -70,13 +70,13 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         assertSnapshot(
             of: makeCard(
                 width: 390,
-                height: 330,
+                height: 520,
                 colorScheme: .light,
                 dynamicTypeSize: .accessibility3,
                 sourceIsRunning: true,
                 availability: .unavailableNoTerminalTurn
             ),
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 330))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 520))
         )
     }
 
@@ -109,14 +109,39 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let themeStore = ThemeStore(defaults: defaults)
         themeStore.mode = .light
 
-        let view = WriterConflictSharedGuideSheet()
-            .environmentObject(themeStore)
-            .environment(\.colorScheme, .light)
-            .frame(width: 390, height: 520)
+        let view = WriterConflictSharedGuideSheet(
+            sourceIsRunning: false,
+            availability: .available(lastTurnID: nil)
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .frame(width: 390, height: 600)
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 520))
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 600))
+        )
+    }
+
+    func testSharedGuideSheetNarrowAccessibility3() {
+        let suiteName = "WriterConflictCardSnapshotTests.GuideA11y.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .light
+
+        let view = WriterConflictSharedGuideSheet(
+            sourceIsRunning: true,
+            availability: .available(lastTurnID: "turn-terminal")
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .environment(\.dynamicTypeSize, .accessibility3)
+        .frame(width: 320, height: 640)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 640))
         )
     }
 
