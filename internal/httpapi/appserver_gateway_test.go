@@ -564,9 +564,7 @@ func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
 }
 
 // A bridge that starts but never binds its socket must fail the start and
-// leave the supervisor usable. ensure() holds the supervisor lock across
-// start(), so anything in there that waits on the reaper — which takes the
-// same lock — wedges every later connection, not just this one.
+// leave the supervisor usable for the next connection.
 func TestClaudeBridgeStartTimeoutDoesNotWedgeSupervisor(t *testing.T) {
 	previous := claudeBridgeStartTimeout
 	claudeBridgeStartTimeout = 200 * time.Millisecond
@@ -588,8 +586,8 @@ func TestClaudeBridgeStartTimeoutDoesNotWedgeSupervisor(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("bridge 从未监听 socket，ensure 应当失败")
+		if err == nil || !strings.Contains(err.Error(), "未监听本地端点") {
+			t.Fatalf("silent bridge error = %v, want listener timeout", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("ensure 在启动超时后卡死，supervisor 锁没有释放")
