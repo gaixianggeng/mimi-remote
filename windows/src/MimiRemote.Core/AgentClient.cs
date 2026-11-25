@@ -122,15 +122,30 @@ public sealed class AgentClient(string executable) : IAgentCommand
         string platform = "windows",
         CancellationToken cancellationToken = default)
     {
+        if (!string.Equals(options.Stage, "setup", StringComparison.Ordinal)
+            && !string.Equals(options.Stage, "pair", StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"Unsupported preflight stage '{options.Stage}'.", nameof(options));
+        }
+        var verifiedConfigured = options.VerifiedConfigured ?? false;
+        var progressContext = new OnboardingValidationContext
+        {
+            Surface = "check",
+            Platform = platform,
+            Stage = options.Stage,
+            Configured = verifiedConfigured,
+            VerifiedCapability = options.VerifiedCapability,
+        };
+        var accumulator = new OnboardingProgressAccumulator(1, progressContext);
         var arguments = PreflightArguments(options);
         Action<string>? stderrLine = null;
-        if (options.ProgressJson && onProgress is not null)
+        if (options.ProgressJson)
         {
             stderrLine = line =>
             {
-                if (OnboardingCopyCatalog.TryDecodeCheck(line, out var check, out _))
+                if (accumulator.TryApplyLine(1, line, out var validated))
                 {
-                    onProgress(check);
+                    onProgress?.Invoke(validated);
                 }
             };
         }
@@ -140,17 +155,21 @@ public sealed class AgentClient(string executable) : IAgentCommand
             input: null,
             onStderrLine: stderrLine,
             platform: platform,
+            verifiedConfigured: verifiedConfigured,
+            verifiedCapability: options.VerifiedCapability,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!OnboardingCopyCatalog.TryDecodeAndValidateReport(
             stdout,
             platform,
+            expectedStage: options.Stage,
             nativeOverlay: false,
-            verifiedCapability: null,
+            verifiedCapability: options.VerifiedCapability,
             out var report,
             out var error))
         {
             throw new InvalidDataException($"无法解析预检报告：{error}");
         }
+        accumulator.Complete(1, report);
         return report;
     }
 
@@ -159,7 +178,15 @@ public sealed class AgentClient(string executable) : IAgentCommand
         OnboardingSetupOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        var stdout = await RunAsync(SetupArguments(scanRoot, options), cancellationToken).ConfigureAwait(false);
+        var stdout = await RunCoreAsync(
+            SetupArguments(scanRoot, options),
+            allowFailure: false,
+            input: null,
+            onStderrLine: null,
+            platform: "windows",
+            verifiedConfigured: options?.VerifiedConfigured,
+            verifiedCapability: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!OnboardingCopyCatalog.TryDecodeSetupReceipt(stdout, out var receipt, out var error))
         {
             throw new InvalidDataException($"无法解析首次设置结果：{error}");
@@ -198,10 +225,10 @@ public sealed class AgentClient(string executable) : IAgentCommand
         RunAsync(arguments, false, cancellationToken);
 
     public Task<string> RunAsync(string[] arguments, bool allowFailure, CancellationToken cancellationToken = default) =>
-        RunCoreAsync(arguments, allowFailure, null, null, "windows", cancellationToken);
+        RunCoreAsync(arguments, allowFailure, null, null, "windows", null, null, cancellationToken);
 
     public Task<string> RunWithInputAsync(string[] arguments, string input, CancellationToken cancellationToken = default) =>
-        RunCoreAsync(arguments, false, input, null, "windows", cancellationToken);
+        RunCoreAsync(arguments, false, input, null, "windows", null, null, cancellationToken);
 
     private async Task<string> RunCoreAsync(
         string[] arguments,
@@ -209,6 +236,8 @@ public sealed class AgentClient(string executable) : IAgentCommand
         string? input,
         Action<string>? onStderrLine,
         string platform,
+        bool? verifiedConfigured,
+        string? verifiedCapability,
         CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo(executable)
@@ -251,14 +280,15 @@ public sealed class AgentClient(string executable) : IAgentCommand
                     Surface = "cli",
                     Platform = platform,
                     Stage = stage,
-                    Configured = true,
+                    Configured = verifiedConfigured ?? false,
+                    VerifiedCapability = verifiedCapability,
                 };
                 if (OnboardingCopyCatalog.ResolveCliError(output, error, context) is { } resolved)
                 {
                     throw new OnboardingCliException(resolved);
                 }
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(error)
-                    ? $"电脑服务未能完成操作（退出码 {process.ExitCode}）。请运行诊断。" : error.Trim());
+                throw new OnboardingCliException(
+                    OnboardingCopyCatalog.UnknownCommandFallback(process.ExitCode, error));
             }
             return string.IsNullOrWhiteSpace(output) ? error : output;
         }
@@ -341,12 +371,31 @@ public sealed class AgentClient(string executable) : IAgentCommand
         return text.ToString();
     }
 
-    private static string ResolveStage(string[] arguments)
+    public static string ResolveStage(IReadOnlyList<string> arguments)
     {
-        if (arguments.Length > 0
-            && (string.Equals(arguments[0], "setup", StringComparison.Ordinal)
-                || string.Equals(arguments[0], "preflight", StringComparison.Ordinal)))
+        if (arguments.Count == 0)
         {
+            return "setup";
+        }
+        if (string.Equals(arguments[0], "setup", StringComparison.Ordinal))
+        {
+            return "setup";
+        }
+        if (string.Equals(arguments[0], "preflight", StringComparison.Ordinal))
+        {
+            for (var i = 1; i < arguments.Count; i++)
+            {
+                var arg = arguments[i];
+                if (string.Equals(arg, "--stage", StringComparison.Ordinal) && i + 1 < arguments.Count)
+                {
+                    return string.Equals(arguments[i + 1], "pair", StringComparison.Ordinal) ? "pair" : "setup";
+                }
+                if (arg.StartsWith("--stage=", StringComparison.Ordinal))
+                {
+                    var raw = arg["--stage=".Length..];
+                    return string.Equals(raw, "pair", StringComparison.Ordinal) ? "pair" : "setup";
+                }
+            }
             return "setup";
         }
         return "pair";

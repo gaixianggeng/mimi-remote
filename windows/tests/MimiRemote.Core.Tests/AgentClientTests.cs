@@ -57,6 +57,10 @@ public sealed class AgentClientTests
                     mode := os.Args[1]
                     switch mode {
                     case "preflight":
+                        if os.Getenv("MIMI_TEST_BAD_PROGRESS") != "" {
+                            fmt.Fprintln(os.Stderr, `{"id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://learn.chatgpt.com/docs/codex/cli"}}`)
+                            fmt.Fprintln(os.Stderr, `{"id":"service_daemon","group":"service","state":"action_needed","title":"后台服务","detail":"未运行","blocking":true,"code":"service_not_running","fix":{"kind":"run_fix","action":"restart_service"}}`)
+                        }
                         ndjson, _ := os.ReadFile(os.Getenv("MIMI_TEST_NDJSON"))
                         report, _ := os.ReadFile(os.Getenv("MIMI_TEST_REPORT"))
                         lines := strings.Split(strings.TrimSpace(string(ndjson)), "\n")
@@ -70,6 +74,14 @@ public sealed class AgentClientTests
                         }
                         os.Stdout.Write(report)
                     case "setup":
+                        if os.Getenv("MIMI_TEST_RAW_STDERR") != "" {
+                            fmt.Fprintln(os.Stderr, os.Getenv("MIMI_TEST_RAW_STDERR"))
+                            os.Exit(2)
+                        }
+                        if os.Getenv("MIMI_TEST_RESTART_ERR") != "" {
+                            fmt.Fprintln(os.Stdout, `{"ok":false,"error":{"code":"service_not_running","step":"service_daemon","message":"未运行","fix":{"kind":"run_fix","action":"restart_service"}}}`)
+                            os.Exit(1)
+                        }
                         if os.Getenv("MIMI_TEST_ERR") != "" {
                             data, _ := os.ReadFile(os.Getenv("MIMI_TEST_ERR"))
                             os.Stdout.Write(data)
@@ -85,6 +97,7 @@ public sealed class AgentClientTests
 
             var ndjsonPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "preflight-progress-slow-assistant.ndjson");
             var reportPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "preflight-codex-chatgpt-app.json");
+            var setupReportPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "preflight-claude-only-no-network.json");
             var setupPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "setup-ok-pairing-deferred.json");
             var errPath = Path.Combine(AppContext.BaseDirectory, "fixtures", "setup-error-config-invalid.json");
 
@@ -92,6 +105,9 @@ public sealed class AgentClientTests
             Environment.SetEnvironmentVariable("MIMI_TEST_REPORT", reportPath);
             Environment.SetEnvironmentVariable("MIMI_TEST_SETUP", setupPath);
             Environment.SetEnvironmentVariable("MIMI_TEST_ERR", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_BAD_PROGRESS", "1");
+            Environment.SetEnvironmentVariable("MIMI_TEST_RAW_STDERR", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_RESTART_ERR", null);
 
             var client = new AgentClient(executable);
             var progress = new List<OnboardingCheck>();
@@ -106,14 +122,22 @@ public sealed class AgentClientTests
                 },
                 platform: "macos");
             Assert.True(report.Ok);
+            // The 2 invalid progress rows MUST be dropped before reaching onProgress; only the 36 valid rows are delivered.
             Assert.Equal(36, progress.Count);
             var codexOkIdx = progress.FindIndex(c => c.Id == "assistant_codex" && c.State == "ok");
             var claudeFinalIdx = progress.FindIndex(c => c.Id == "assistant_claude" && c.State == "action_needed");
             Assert.True(codexOkIdx >= 0 && codexOkIdx < claudeFinalIdx);
 
+            // P1-3: A valid ok:true setup report MUST NOT satisfy a pair preflight request
+            Environment.SetEnvironmentVariable("MIMI_TEST_REPORT", setupReportPath);
+            await Assert.ThrowsAsync<InvalidDataException>(() => client.PreflightAsync(
+                new OnboardingPreflightOptions { Stage = "pair", ProgressJson = false },
+                platform: "linux"));
+            Environment.SetEnvironmentVariable("MIMI_TEST_REPORT", reportPath);
+
             var receipt = await client.SetupAsync("/fixture/workspace");
             Assert.True(receipt.Ok);
-            Assert.Equal(true, receipt.PairingDeferred);
+            Assert.True(receipt.PairingDeferred);
             Assert.False(receipt.HasTicket);
 
             Environment.SetEnvironmentVariable("MIMI_TEST_ERR", errPath);
@@ -122,6 +146,31 @@ public sealed class AgentClientTests
             Assert.True(error.Diagnostic!.Trusted);
             Assert.Equal("config_invalid", error.Diagnostic.Code);
             Assert.Equal("host_recovery", error.Diagnostic.AllowedFix?.Target);
+
+            // P1-2: Fresh setup error MUST NOT authorize restart_service
+            Environment.SetEnvironmentVariable("MIMI_TEST_ERR", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_RESTART_ERR", "1");
+            var restartErr = await Assert.ThrowsAsync<OnboardingCliException>(() => client.SetupAsync("/fixture/workspace"));
+            Assert.NotNull(restartErr.Diagnostic);
+            Assert.False(restartErr.Diagnostic!.Trusted);
+            Assert.Null(restartErr.Diagnostic.AllowedFix);
+
+            // P1-1: Unrecognized stderr MUST NOT leak secrets/paths into user-facing error message
+            Environment.SetEnvironmentVariable("MIMI_TEST_RESTART_ERR", null);
+            Environment.SetEnvironmentVariable(
+                "MIMI_TEST_RAW_STDERR",
+                @"fatal: Bearer topSecret123 mimiremote://pair?pair_sig=abc C:\Users\alice\config.json UnmarkedCred9876543210ABCDEF");
+            var rawErr = await Assert.ThrowsAsync<OnboardingCliException>(() => client.SetupAsync("/fixture/workspace"));
+            Assert.Contains("退出码 2", rawErr.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("topSecret123", rawErr.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("mimiremote://", rawErr.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(@"C:\Users\alice", rawErr.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("UnmarkedCred9876543210ABCDEF", rawErr.Message, StringComparison.Ordinal);
+            Assert.NotNull(rawErr.Diagnostic?.SanitizedDiagnostic);
+            Assert.DoesNotContain("topSecret123", rawErr.Diagnostic!.SanitizedDiagnostic!, StringComparison.Ordinal);
+            Assert.DoesNotContain("mimiremote://", rawErr.Diagnostic.SanitizedDiagnostic!, StringComparison.Ordinal);
+            Assert.DoesNotContain(@"C:\Users\alice", rawErr.Diagnostic.SanitizedDiagnostic!, StringComparison.Ordinal);
+            Assert.DoesNotContain("UnmarkedCred9876543210ABCDEF", rawErr.Diagnostic.SanitizedDiagnostic!, StringComparison.Ordinal);
         }
         finally
         {
@@ -129,6 +178,9 @@ public sealed class AgentClientTests
             Environment.SetEnvironmentVariable("MIMI_TEST_REPORT", null);
             Environment.SetEnvironmentVariable("MIMI_TEST_SETUP", null);
             Environment.SetEnvironmentVariable("MIMI_TEST_ERR", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_BAD_PROGRESS", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_RAW_STDERR", null);
+            Environment.SetEnvironmentVariable("MIMI_TEST_RESTART_ERR", null);
             CleanupDirectory(root, source, executable);
         }
     }

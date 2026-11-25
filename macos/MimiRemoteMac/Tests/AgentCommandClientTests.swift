@@ -37,17 +37,35 @@ final class AgentCommandClientTests: XCTestCase {
         }
     }
 
-    func testSetupUsesSeparateProjectScanAndHomeBrowseRoots() {
-        let arguments = AgentCommandClient.setupArguments(
-            workspaceRoot: URL(filePath: "/test-user/code"),
-            browseRoot: URL(filePath: "/test-user")
+    func testSetupDefaultsBrowseRootToWorkspaceAndAllowsExplicitOverride() {
+        let defaultArgs = AgentCommandClient.setupArguments(
+            workspaceRoot: URL(filePath: "/test-user/code")
         )
-
-        XCTAssertEqual(arguments, [
+        XCTAssertEqual(defaultArgs, [
             "setup", "--json", "--qr-only",
             "--scan-root", "/test-user/code",
-            "--browse-root", "/test-user",
+            "--browse-root", "/test-user/code",
         ])
+
+        let explicitArgs = AgentCommandClient.setupArguments(
+            workspaceRoot: URL(filePath: "/test-user/code"),
+            browseRoot: URL(filePath: "/test-user/custom-browse")
+        )
+        XCTAssertEqual(explicitArgs, [
+            "setup", "--json", "--qr-only",
+            "--scan-root", "/test-user/code",
+            "--browse-root", "/test-user/custom-browse",
+        ])
+    }
+
+    func testResolveStageParsesPreflightStageFlag() {
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage", "pair"]), .pair)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage=pair"]), .pair)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage", "setup"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--stage", "unknown"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["setup", "--no-pair", "--json"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["pair", "--json"]), .pair)
     }
 
     func testStatusOnlyRequestsRuntimeFromBundledAgent() {
@@ -274,5 +292,28 @@ final class AgentCommandClientTests: XCTestCase {
         lock.unlock()
         XCTAssertEqual(captured.map(\.0), ["first", "second"])
         XCTAssertGreaterThanOrEqual(captured[0].1.duration(to: finishedAt), .milliseconds(150))
+    }
+
+    func testProcessTimeoutBoundsPipeDrainWhenDescendantHoldsWriteHandle() async {
+        let executor = ProcessExecutor()
+        let startedAt = ContinuousClock.now
+        do {
+            _ = try await executor.run(
+                executable: URL(filePath: "/bin/sh"),
+                // 主 shell 立即输出并退出，但后台 sleep 继承并保持 stdout/stderr 写端打开；
+                // 管道排空必须受总 deadline 约束，不能因为主进程已退出而无限期挂起。
+                arguments: ["-c", "/bin/sleep 4 & echo done"],
+                timeout: .milliseconds(250)
+            )
+            XCTFail("后代进程持有写端句柄超过 deadline 时必须超时")
+        } catch ProcessExecutorError.timedOut {
+            XCTAssertLessThan(
+                startedAt.duration(to: .now),
+                .seconds(2),
+                "deadline 到期后必须立即终止管道排空，不能等待后代退出"
+            )
+        } catch {
+            XCTFail("应保留 timedOut 语义，实际为 \(error)")
+        }
     }
 }

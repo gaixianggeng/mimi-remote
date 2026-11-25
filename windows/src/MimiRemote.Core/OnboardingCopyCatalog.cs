@@ -1,5 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace MimiRemote.Core;
 
@@ -31,7 +34,7 @@ public sealed record OnboardingCatalogEntry(
     OnboardingFix? SecondaryFix = null,
     string? SecondaryLabelZh = null);
 
-public static class OnboardingCopyCatalog
+public static partial class OnboardingCopyCatalog
 {
     public const string SafeFallbackCopy = "当前操作暂时无法自动处理。请检查电脑端状态后手动重新检查。";
     public const string LegacyHostCopy = "当前电脑端版本较旧，不支持新的引导检查。请更新桌面端后重试。";
@@ -567,6 +570,17 @@ public static class OnboardingCopyCatalog
             error = $"{check.Id} group/platform mismatch";
             return false;
         }
+        if (string.Equals(context.Surface, "native", StringComparison.Ordinal))
+        {
+            var isPermission = string.Equals(spec.Group, "permission", StringComparison.Ordinal);
+            var isApproval = string.Equals(check.Id, "service_daemon", StringComparison.Ordinal)
+                && string.Equals(check.Code, "service_requires_approval", StringComparison.Ordinal);
+            if (!string.Equals(context.Platform, "macos", StringComparison.Ordinal) || !(isPermission || isApproval))
+            {
+                error = $"invalid native overlay on {check.Id}";
+                return false;
+            }
+        }
         if (!ValidCheckStates.Contains(check.State))
         {
             error = $"unknown check state '{check.State}'";
@@ -601,6 +615,11 @@ public static class OnboardingCopyCatalog
         else if (!check.HasCodeKey || !check.HasFixKey || string.IsNullOrEmpty(check.Code) || check.Fix is null)
         {
             error = $"{check.Id} state {check.State} requires code and fix";
+            return false;
+        }
+        if (string.Equals(check.State, "optional", StringComparison.Ordinal) && check.Blocking)
+        {
+            error = $"{check.Id} optional state cannot block";
             return false;
         }
         if (IndividualCheckIds.Contains(check.Id))
@@ -706,6 +725,23 @@ public static class OnboardingCopyCatalog
         bool nativeOverlay,
         string? verifiedCapability,
         [NotNullWhen(true)] out OnboardingPreflightReport? report,
+        out string error) =>
+        TryDecodeAndValidateReport(
+            json,
+            platform,
+            expectedStage: null,
+            nativeOverlay,
+            verifiedCapability,
+            out report,
+            out error);
+
+    public static bool TryDecodeAndValidateReport(
+        string json,
+        string platform,
+        string? expectedStage,
+        bool nativeOverlay,
+        string? verifiedCapability,
+        [NotNullWhen(true)] out OnboardingPreflightReport? report,
         out string error)
     {
         report = null;
@@ -744,6 +780,11 @@ public static class OnboardingCopyCatalog
                 && !string.Equals(stage, "pair", StringComparison.Ordinal))
             {
                 error = $"invalid stage '{stage}'";
+                return false;
+            }
+            if (expectedStage is not null && !string.Equals(stage, expectedStage, StringComparison.Ordinal))
+            {
+                error = $"report stage '{stage}' does not match requested stage '{expectedStage}'";
                 return false;
             }
             string? recommendedTransport = null;
@@ -798,6 +839,8 @@ public static class OnboardingCopyCatalog
             string? firstBlocker = null;
             var eligibleByGroup = new Dictionary<string, bool>(StringComparer.Ordinal);
             string? expectedRecommended = null;
+            OnboardingCheck? configStoreRow = null;
+            OnboardingCheck? workspaceRootRow = null;
 
             for (var i = 0; i < checks.Count; i++)
             {
@@ -830,6 +873,14 @@ public static class OnboardingCopyCatalog
                 {
                     return false;
                 }
+                if (string.Equals(row.Id, "config_store", StringComparison.Ordinal))
+                {
+                    configStoreRow = row;
+                }
+                else if (string.Equals(row.Id, "workspace_root", StringComparison.Ordinal))
+                {
+                    workspaceRootRow = row;
+                }
                 if (row.Blocking)
                 {
                     if (string.Equals(stage, "setup", StringComparison.Ordinal)
@@ -840,7 +891,7 @@ public static class OnboardingCopyCatalog
                     }
                     firstBlocker ??= row.Id;
                 }
-                if (row.Enabled is not null)
+                if (IndividualCheckIds.Contains(row.Id))
                 {
                     var ready = row.Enabled == true && row.Available == true;
                     if (string.Equals(row.State, "ok", StringComparison.Ordinal) != ready)
@@ -873,6 +924,24 @@ public static class OnboardingCopyCatalog
                     error = "daemon readiness mismatch";
                     return false;
                 }
+            }
+            if (!scanRootExists && workspaceRootRow?.Blocking != true)
+            {
+                error = "missing scan_root requires blocking workspace_root";
+                return false;
+            }
+            if (string.Equals(stage, "pair", StringComparison.Ordinal) && !configured && configStoreRow?.Blocking != true)
+            {
+                error = "unconfigured pair report requires blocking config_store";
+                return false;
+            }
+            if (string.Equals(stage, "pair", StringComparison.Ordinal)
+                && !workspaceConfirmed
+                && string.Equals(configStoreRow?.State, "ok", StringComparison.Ordinal)
+                && workspaceRootRow?.Blocking != true)
+            {
+                error = "unconfirmed workspace in pair report requires blocking workspace_root";
+                return false;
             }
             if (!string.Equals(recommendedTransport, expectedRecommended, StringComparison.Ordinal))
             {
@@ -934,16 +1003,15 @@ public static class OnboardingCopyCatalog
                 return false;
             }
             var isHttp = string.Equals(context.Surface, "http", StringComparison.Ordinal);
-            if (isHttp)
+            if (HasUnsupportedOnboardingSchema(root))
             {
-                foreach (var prop in root.EnumerateObject())
-                {
-                    if (HttpForbiddenFields.Contains(prop.Name))
-                    {
-                        error = $"forbidden public field '{prop.Name}'";
-                        return false;
-                    }
-                }
+                error = "unsupported onboarding schema";
+                return false;
+            }
+            if (isHttp && TryFindForbiddenHttpField(root, out var forbiddenField))
+            {
+                error = $"forbidden public field '{forbiddenField}'";
+                return false;
             }
             if (!TryGetRequiredBool(root, "ok", out var ok) || ok
                 || !root.TryGetProperty("error", out var errElement)
@@ -951,17 +1019,6 @@ public static class OnboardingCopyCatalog
             {
                 error = "error envelope requires ok=false and error object";
                 return false;
-            }
-            if (isHttp)
-            {
-                foreach (var prop in errElement.EnumerateObject())
-                {
-                    if (HttpForbiddenFields.Contains(prop.Name))
-                    {
-                        error = $"forbidden public error field '{prop.Name}'";
-                        return false;
-                    }
-                }
             }
             if (!TryGetRequiredString(errElement, "code", out var code)
                 || !TryGetRequiredString(errElement, "step", out var step)
@@ -1083,6 +1140,12 @@ public static class OnboardingCopyCatalog
                 error = "setup receipt must be an object";
                 return false;
             }
+            var hasOk = root.TryGetProperty("ok", out var okProp);
+            if (hasOk && okProp.ValueKind != JsonValueKind.True)
+            {
+                error = "setup receipt ok is not true";
+                return false;
+            }
             var hasConfigured = root.TryGetProperty("configured", out var cfgProp);
             var hasCreated = root.TryGetProperty("created", out var createdProp);
             var pairUrl = TryGetOptionalString(root, "pair_url", out var hasPairUrl);
@@ -1093,13 +1156,20 @@ public static class OnboardingCopyCatalog
             var device = TryGetOptionalString(root, "tailscale_device_name", out _);
             var warnings = ReadOptionalStringArray(root, "warnings");
 
-            if (!hasConfigured && !hasCreated && !string.IsNullOrWhiteSpace(pairUrl))
+            if (network is not null && !ValidTransports.Contains(network))
             {
-                if (!pairUrl.StartsWith("mimiremote://pair?", StringComparison.Ordinal)
+                error = $"invalid setup network '{network}'";
+                return false;
+            }
+
+            if (!hasOk && !hasConfigured && !hasCreated && !string.IsNullOrWhiteSpace(pairUrl))
+            {
+                if (!IsValidPairUrl(pairUrl)
                     || string.IsNullOrWhiteSpace(endpoint)
-                    || string.IsNullOrWhiteSpace(pairExpires))
+                    || string.IsNullOrWhiteSpace(pairExpires)
+                    || !IsValidRfc3339(pairExpires, requireUtc: false))
                 {
-                    error = "incomplete legacy setup ticket";
+                    error = "incomplete or invalid legacy setup ticket";
                     return false;
                 }
                 receipt = new SetupReceipt
@@ -1147,20 +1217,13 @@ public static class OnboardingCopyCatalog
             }
             if (hasPairUrl)
             {
-                if (pairUrl is null
-                    || !pairUrl.StartsWith("mimiremote://pair?", StringComparison.Ordinal)
+                if (!IsValidPairUrl(pairUrl)
                     || string.IsNullOrWhiteSpace(endpoint)
-                    || string.IsNullOrWhiteSpace(pairExpires)
-                    || !OnboardingProgressAccumulator.IsValidUtcRfc3339(pairExpires))
+                    || !IsValidRfc3339(pairExpires, requireUtc: true))
                 {
-                    error = "setup receipt ticket fields incomplete";
+                    error = "setup receipt ticket fields incomplete or invalid";
                     return false;
                 }
-            }
-            if (network is not null && !ValidTransports.Contains(network))
-            {
-                error = $"invalid setup network '{network}'";
-                return false;
             }
             receipt = new SetupReceipt
             {
@@ -1248,18 +1311,20 @@ public static class OnboardingCopyCatalog
                 error = "pairing receipt must be an object";
                 return false;
             }
-            if (root.TryGetProperty("ok", out var okProp) && okProp.ValueKind != JsonValueKind.True)
+            var hasOk = root.TryGetProperty("ok", out var okProp);
+            if (hasOk && okProp.ValueKind != JsonValueKind.True)
             {
                 error = "pairing receipt ok is not true";
                 return false;
             }
             if (!TryGetRequiredString(root, "endpoint", out var endpoint)
+                || string.IsNullOrWhiteSpace(endpoint)
                 || !TryGetRequiredString(root, "pair_url", out var pairUrl)
-                || !pairUrl.StartsWith("mimiremote://pair?", StringComparison.Ordinal)
+                || !IsValidPairUrl(pairUrl)
                 || !TryGetRequiredString(root, "pair_expires_at", out var expires)
-                || !OnboardingProgressAccumulator.IsValidUtcRfc3339(expires))
+                || !IsValidRfc3339(expires, requireUtc: hasOk || requireNetwork))
             {
-                error = "pairing receipt missing required ticket fields";
+                error = "pairing receipt missing or invalid required ticket fields";
                 return false;
             }
             var network = TryGetOptionalString(root, "network", out _);
@@ -1490,4 +1555,315 @@ public static class OnboardingCopyCatalog
         }
         return [.. items];
     }
+
+    public static string UnknownCommandFailureMessage(int exitCode) =>
+        string.Create(CultureInfo.InvariantCulture, $"电脑服务未能完成操作（退出码 {exitCode}）。请运行诊断或查看本机日志后重试。");
+
+    public static OnboardingResolvedDiagnostic UnknownCommandFallback(
+        int exitCode,
+        string? rawStderr,
+        string step = "service_daemon")
+    {
+        var sanitized = SanitizeDiagnostic(rawStderr);
+        return new OnboardingResolvedDiagnostic
+        {
+            Step = step,
+            Message = UnknownCommandFailureMessage(exitCode),
+            AllowedFix = null,
+            Trusted = false,
+            SanitizedDiagnostic = sanitized.Length == 0 ? null : sanitized,
+        };
+    }
+
+    public static string SanitizeDiagnostic(string? raw, int maxCharacters = 180)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "";
+        }
+        var text = PairUrlRegex().Replace(raw, "[已隐藏配对链接]");
+        text = CredentialUrlRegex().Replace(text, "[已隐藏带凭据地址]");
+        text = ParameterizedUrlRegex().Replace(text, "[已隐藏含参数地址]");
+        text = MarkedSecretWithValueRegex().Replace(text, "[已隐藏凭据]");
+        text = MarkedSecretWordRegex().Replace(text, "[已隐藏凭据]");
+        text = JwtRegex().Replace(text, "[已隐藏凭据]");
+        text = PrefixedSecretRegex().Replace(text, "[已隐藏凭据]");
+        text = UnixPathRegex().Replace(text, "[已隐藏路径]");
+        text = WindowsDrivePathRegex().Replace(text, "[已隐藏路径]");
+        text = WindowsUncPathRegex().Replace(text, "[已隐藏路径]");
+        text = EnvPathRegex().Replace(text, "[已隐藏路径]");
+        text = LongHexRegex().Replace(text, "[已隐藏凭据]");
+        text = OpaqueTokenRegex().Replace(text, static match => HasLetterAndDigit(match.Value) ? "[已隐藏凭据]" : match.Value);
+
+        var normalized = new StringBuilder(Math.Min(text.Length, maxCharacters + 8));
+        var previousSpace = true;
+        foreach (var ch in text)
+        {
+            if (char.IsControl(ch) || char.IsWhiteSpace(ch))
+            {
+                if (!previousSpace)
+                {
+                    normalized.Append(' ');
+                    previousSpace = true;
+                }
+            }
+            else
+            {
+                normalized.Append(ch);
+                previousSpace = false;
+            }
+        }
+        var result = normalized.ToString().Trim();
+        if (result.Length <= maxCharacters)
+        {
+            return result;
+        }
+        return string.Concat(result.AsSpan(0, Math.Max(1, maxCharacters - 1)), "…".AsSpan());
+    }
+
+    public static bool IsValidPairUrl(string? value)
+    {
+        if (string.IsNullOrEmpty(value)
+            || !value.StartsWith("mimiremote://pair?", StringComparison.Ordinal)
+            || value.Length <= "mimiremote://pair?".Length)
+        {
+            return false;
+        }
+        foreach (var ch in value)
+        {
+            if (char.IsWhiteSpace(ch) || char.IsControl(ch))
+            {
+                return false;
+            }
+        }
+        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && string.Equals(uri.Scheme, "mimiremote", StringComparison.Ordinal)
+            && string.Equals(uri.Host, "pair", StringComparison.Ordinal);
+    }
+
+    public static bool IsValidRfc3339(string? value, bool requireUtc)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length < 20)
+        {
+            return false;
+        }
+        if (value[4] != '-' || value[7] != '-' || value[10] != 'T' || value[13] != ':' || value[16] != ':')
+        {
+            return false;
+        }
+        if (!TryParseAsciiDigits(value, 0, 4, out var year) || year < 1
+            || !TryParseAsciiDigits(value, 5, 2, out var month) || month is < 1 or > 12
+            || !TryParseAsciiDigits(value, 8, 2, out var day)
+            || !TryParseAsciiDigits(value, 11, 2, out var hour) || hour is < 0 or > 23
+            || !TryParseAsciiDigits(value, 14, 2, out var minute) || minute is < 0 or > 59
+            || !TryParseAsciiDigits(value, 17, 2, out var second) || second is < 0 or > 59)
+        {
+            return false;
+        }
+        var maxDay = month switch
+        {
+            1 or 3 or 5 or 7 or 8 or 10 or 12 => 31,
+            4 or 6 or 9 or 11 => 30,
+            2 => DateTime.IsLeapYear(year) ? 29 : 28,
+            _ => 0,
+        };
+        if (day < 1 || day > maxDay)
+        {
+            return false;
+        }
+        var idx = 19;
+        if (idx < value.Length && value[idx] == '.')
+        {
+            idx++;
+            var fracStart = idx;
+            while (idx < value.Length && char.IsAsciiDigit(value[idx]))
+            {
+                idx++;
+            }
+            var fracLen = idx - fracStart;
+            if (fracLen is < 1 or > 9)
+            {
+                return false;
+            }
+        }
+        if (idx >= value.Length)
+        {
+            return false;
+        }
+        if (value[idx] == 'Z')
+        {
+            return idx + 1 == value.Length;
+        }
+        if (requireUtc)
+        {
+            return false;
+        }
+        return (value[idx] == '+' || value[idx] == '-')
+            && idx + 6 == value.Length
+            && value[idx + 3] == ':'
+            && TryParseAsciiDigits(value, idx + 1, 2, out var offsetHour) && offsetHour is >= 0 and <= 23
+            && TryParseAsciiDigits(value, idx + 4, 2, out var offsetMinute) && offsetMinute is >= 0 and <= 59;
+    }
+
+    public static bool TryParseRfc3339Timestamp(string? value, bool requireUtc, out DateTimeOffset timestamp)
+    {
+        timestamp = default;
+        if (!IsValidRfc3339(value, requireUtc) || value is null)
+        {
+            return false;
+        }
+        var normalized = value;
+        var dotIdx = value.IndexOf('.');
+        if (dotIdx >= 0)
+        {
+            var tzIdx = dotIdx + 1;
+            while (tzIdx < value.Length && char.IsAsciiDigit(value[tzIdx]))
+            {
+                tzIdx++;
+            }
+            if (tzIdx - (dotIdx + 1) > 7)
+            {
+                normalized = string.Concat(value.AsSpan(0, dotIdx + 8), value.AsSpan(tzIdx));
+            }
+        }
+        return DateTimeOffset.TryParse(
+            normalized,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind,
+            out timestamp);
+    }
+
+    private static bool TryParseAsciiDigits(string text, int start, int length, out int value)
+    {
+        value = 0;
+        for (var i = 0; i < length; i++)
+        {
+            var ch = text[start + i];
+            if (!char.IsAsciiDigit(ch))
+            {
+                return false;
+            }
+            value = (value * 10) + (ch - '0');
+        }
+        return true;
+    }
+
+    private static bool HasLetterAndDigit(string value)
+    {
+        var hasLetter = false;
+        var hasDigit = false;
+        foreach (var ch in value)
+        {
+            if (char.IsAsciiLetter(ch))
+            {
+                hasLetter = true;
+            }
+            else if (char.IsAsciiDigit(ch))
+            {
+                hasDigit = true;
+            }
+            if (hasLetter && hasDigit)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool HasUnsupportedOnboardingSchema(JsonElement root)
+    {
+        if (IsUnsupportedSchemaProperty(root))
+        {
+            return true;
+        }
+        return root.TryGetProperty("error", out var errElement)
+            && errElement.ValueKind == JsonValueKind.Object
+            && IsUnsupportedSchemaProperty(errElement);
+    }
+
+    private static bool IsUnsupportedSchemaProperty(JsonElement obj)
+    {
+        if (!obj.TryGetProperty("schema", out var prop))
+        {
+            return false;
+        }
+        if (prop.ValueKind != JsonValueKind.String)
+        {
+            return true;
+        }
+        var schema = prop.GetString();
+        return schema is not null
+            && schema.StartsWith("mimi.onboarding.", StringComparison.Ordinal)
+            && !schema.EndsWith("/v1", StringComparison.Ordinal);
+    }
+
+    private static bool TryFindForbiddenHttpField(JsonElement element, [NotNullWhen(true)] out string? forbiddenName)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (HttpForbiddenFields.Contains(prop.Name))
+                {
+                    forbiddenName = prop.Name;
+                    return true;
+                }
+                if (TryFindForbiddenHttpField(prop.Value, out forbiddenName))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindForbiddenHttpField(item, out forbiddenName))
+                {
+                    return true;
+                }
+            }
+        }
+        forbiddenName = null;
+        return false;
+    }
+
+    [GeneratedRegex(@"mimiremote://\S+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PairUrlRegex();
+
+    [GeneratedRegex(@"(?:https?|wss?)://[^\s/@]+:[^\s/@]+@[^\s]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CredentialUrlRegex();
+
+    [GeneratedRegex(@"(?:https?|wss?)://[^\s?#]+[?#][^\s]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ParameterizedUrlRegex();
+
+    [GeneratedRegex(@"\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b(?:\s*[:=]\s*|\s+)\S+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MarkedSecretWithValueRegex();
+
+    [GeneratedRegex(@"\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MarkedSecretWordRegex();
+
+    [GeneratedRegex(@"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)?\b", RegexOptions.CultureInvariant)]
+    private static partial Regex JwtRegex();
+
+    [GeneratedRegex(@"\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|tskey|mimi|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b", RegexOptions.CultureInvariant)]
+    private static partial Regex PrefixedSecretRegex();
+
+    [GeneratedRegex(@"(?:~|(?:\.\.)?)/[^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
+    private static partial Regex UnixPathRegex();
+
+    [GeneratedRegex(@"[A-Za-z]:[\\/][^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
+    private static partial Regex WindowsDrivePathRegex();
+
+    [GeneratedRegex(@"\\\\[^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
+    private static partial Regex WindowsUncPathRegex();
+
+    [GeneratedRegex(@"%[A-Za-z0-9_]+%[\\/][^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
+    private static partial Regex EnvPathRegex();
+
+    [GeneratedRegex(@"\b[0-9a-fA-F]{32,}\b", RegexOptions.CultureInvariant)]
+    private static partial Regex LongHexRegex();
+
+    [GeneratedRegex(@"[A-Za-z0-9+/_=-]{24,}", RegexOptions.CultureInvariant)]
+    private static partial Regex OpaqueTokenRegex();
 }

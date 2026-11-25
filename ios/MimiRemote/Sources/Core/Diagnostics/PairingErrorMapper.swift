@@ -378,22 +378,20 @@ enum PairingErrorMapper {
     }
 
     /// Strictly decodes an HTTP `application/vnd.mimi.onboarding.v1+json` error envelope.
-    /// Rejects UI-local codes, non-HTTP codes, private local fields, unknown URLs/actions,
+    /// Rejects UI-local codes, non-HTTP codes, private local fields (including nested ones),
+    /// unsupported major schemas, unknown URLs/actions, unverified privileged context,
     /// and extra fix parameters (including `rotates_token: true`) with zero execution.
     static func mapHTTPErrorEnvelope(
         data: Data,
-        configured: Bool = true
+        configured: Bool? = nil
     ) -> MappedPairingError {
         guard let topObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return untrustedFallback()
         }
-        for key in topObject.keys where httpForbiddenFields.contains(key) {
+        if hasUnsupportedOnboardingSchema(topObject) || containsForbiddenHTTPField(topObject) {
             return untrustedFallback()
         }
-        guard let errorObj = topObject["error"] as? [String: Any] else {
-            return untrustedFallback()
-        }
-        for key in errorObj.keys where httpForbiddenFields.contains(key) {
+        guard topObject["error"] is [String: Any] else {
             return untrustedFallback()
         }
         guard let envelope = try? JSONDecoder().decode(WireEnvelope.self, from: data),
@@ -418,6 +416,9 @@ enum PairingErrorMapper {
             return untrustedFallback(code: code, step: step)
         }
         if code == "pair_token_mismatch" {
+            guard let configured else {
+                return untrustedFallback(code: code, step: step)
+            }
             let expectedFix: PairingOnboardingWireFix = configured ? .runFix("restart_service") : .runFix("save_setup")
             guard fix == expectedFix else {
                 return untrustedFallback(code: code, step: step)
@@ -435,21 +436,86 @@ enum PairingErrorMapper {
         )
     }
 
-    /// Maps an HTTP pairing response: prefers v1 onboarding error envelope, then
-    /// falls back to recognized legacy host JSON shapes (`{"error":"...","code":"..."}`).
+    private enum MediaTypeClassification {
+        case v1
+        case unsupportedOnboardingMajor
+        case other
+    }
+
+    private static func classifyMediaType(_ contentType: String?) -> MediaTypeClassification {
+        guard let raw = contentType else { return .other }
+        let essence = raw
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if essence == acceptMediaType {
+            return .v1
+        }
+        if essence.hasPrefix("application/vnd.mimi.onboarding.") {
+            return .unsupportedOnboardingMajor
+        }
+        return .other
+    }
+
+    private static func hasUnsupportedOnboardingSchema(_ object: [String: Any]) -> Bool {
+        if let schemaVal = object["schema"] {
+            guard let schema = schemaVal as? String else { return true }
+            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
+                return true
+            }
+        }
+        if let errObj = object["error"] as? [String: Any], let schemaVal = errObj["schema"] {
+            guard let schema = schemaVal as? String else { return true }
+            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func containsForbiddenHTTPField(_ value: Any) -> Bool {
+        if let dict = value as? [String: Any] {
+            for (key, nested) in dict {
+                if httpForbiddenFields.contains(key) || containsForbiddenHTTPField(nested) {
+                    return true
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array where containsForbiddenHTTPField(item) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Maps an HTTP pairing response: enforces declared onboarding major version first,
+    /// prefers v1 onboarding error envelope, then falls back to recognized legacy host
+    /// JSON shapes (`{"error":"...","code":"..."}`).
     static func mapHTTPResponse(
         data: Data,
         statusCode: Int,
         contentType: String? = nil,
-        configured: Bool = true
+        configured: Bool? = nil
     ) -> MappedPairingError {
-        if looksLikeV1ErrorEnvelope(data) || contentType?.lowercased().contains(acceptMediaType) == true {
+        switch classifyMediaType(contentType) {
+        case .unsupportedOnboardingMajor:
+            return untrustedFallback()
+        case .v1:
             return mapHTTPErrorEnvelope(data: data, configured: configured)
+        case .other:
+            if let topObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               hasUnsupportedOnboardingSchema(topObject) {
+                return untrustedFallback()
+            }
+            if looksLikeV1ErrorEnvelope(data) {
+                return mapHTTPErrorEnvelope(data: data, configured: configured)
+            }
+            if let legacy = mapLegacyHTTPError(data: data, statusCode: statusCode) {
+                return legacy
+            }
+            return untrustedFallback()
         }
-        if let legacy = mapLegacyHTTPError(data: data, statusCode: statusCode) {
-            return legacy
-        }
-        return untrustedFallback()
     }
 
     private static func mapLegacyHTTPError(data: Data, statusCode: Int) -> MappedPairingError? {

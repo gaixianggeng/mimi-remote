@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode"
@@ -128,7 +132,7 @@ func TestTrayOnboardingCatalogSetEquality(t *testing.T) {
 		}
 	}
 
-	// Timeouts alignment.
+	// Timeouts alignment verified through production trayCommandTimeout lookup.
 	if len(onboardingCommandTimeouts) != len(manifest.Timeouts) {
 		t.Fatalf("timeouts count mismatch")
 	}
@@ -138,6 +142,19 @@ func TestTrayOnboardingCatalogSetEquality(t *testing.T) {
 			got.ClientMin < time.Duration(want.ClientMin)*time.Second ||
 			got.BackendMax != time.Duration(want.BackendMax)*time.Second {
 			t.Errorf("timeout[%d] mismatch: got %+v want %+v", i, got, want)
+		}
+		winMin := want.ClientMin
+		if want.WindowsClient > winMin {
+			winMin = want.WindowsClient
+		}
+		for _, command := range want.Commands {
+			cmdArgs := strings.Fields(command)
+			if linuxBudget := trayCommandTimeout("linux", cmdArgs...); linuxBudget < time.Duration(want.ClientMin)*time.Second {
+				t.Errorf("linux trayCommandTimeout(%q) = %s, want >= %ds", command, linuxBudget, want.ClientMin)
+			}
+			if winBudget := trayCommandTimeout("windows", cmdArgs...); winBudget < time.Duration(winMin)*time.Second {
+				t.Errorf("windows trayCommandTimeout(%q) = %s, want >= %ds", command, winBudget, winMin)
+			}
 		}
 	}
 }
@@ -156,19 +173,37 @@ func applyTrayReportPatch(t *testing.T, fixture string, patches []trayReportPatc
 	}
 	for _, p := range patches {
 		key := strings.TrimPrefix(p.Path, "/")
-		if strings.HasPrefix(key, "checks/") {
+		if suffix, found := strings.CutPrefix(key, "checks/"); found {
 			items := doc["checks"].([]any)
-			idxStr := strings.TrimPrefix(key, "checks/")
-			if p.Op == "add" && idxStr == "-" {
+			if p.Op == "add" && suffix == "-" {
 				doc["checks"] = append(items, p.Value)
-			} else if p.Op == "remove" {
-				idx, err := strconv.Atoi(idxStr)
-				if err != nil {
-					t.Fatal(err)
+				continue
+			}
+			idxStr, field, nested := strings.Cut(suffix, "/")
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 0 || idx >= len(items) {
+				t.Fatalf("invalid checks index in patch %+v", p)
+			}
+			if !nested {
+				switch p.Op {
+				case "replace":
+					items[idx] = p.Value
+					doc["checks"] = items
+				case "remove":
+					doc["checks"] = slices.Delete(items, idx, idx+1)
+				default:
+					t.Fatalf("unsupported checks patch %+v", p)
 				}
-				doc["checks"] = slices.Delete(items, idx, idx+1)
-			} else {
-				t.Fatalf("unsupported checks patch %+v", p)
+				continue
+			}
+			rowObj := items[idx].(map[string]any)
+			switch p.Op {
+			case "add", "replace":
+				rowObj[field] = p.Value
+			case "remove":
+				delete(rowObj, field)
+			default:
+				t.Fatalf("unsupported checks field patch %+v", p)
 			}
 			continue
 		}
@@ -459,5 +494,202 @@ func TestTrayDecodeCommandErrorStdoutFirstAndZeroExecutionOnUntrusted(t *testing
 	missingBin := newTrayUILocalError("embedded_binary_missing", "service_daemon", "")
 	if !missingBin.Diagnostic.Trusted || missingBin.Diagnostic.AllowedFix.URL != onboardingURLDesktop {
 		t.Fatalf("unexpected ui-local missing binary diagnostic: %+v", missingBin.Diagnostic)
+	}
+}
+
+func TestTrayStageContextSanitizationReceiptsAndTimeouts(t *testing.T) {
+	// P1-2: trayValidationContextForArgs defaults to configured=false and parses preflight --stage pair.
+	setupCtx := trayValidationContextForArgs("windows", []string{"setup", "--no-pair", "--json"})
+	if setupCtx.Stage != "setup" || setupCtx.Configured == nil || *setupCtx.Configured {
+		t.Fatalf("setup context must default to configured=false, got %+v", setupCtx)
+	}
+	restartPayload := []byte(`{"ok":false,"error":{"code":"service_not_running","step":"service_daemon","message":"未运行","fix":{"kind":"run_fix","action":"restart_service"}}}`)
+	err := decodeTrayCommandError(restartPayload, nil, errors.New("exit status 1"), setupCtx)
+	var cliErr *onboardingCLIError
+	if !errors.As(err, &cliErr) || cliErr.Diagnostic.Trusted || cliErr.Diagnostic.AllowedFix != nil {
+		t.Fatalf("fresh setup must NOT authorize restart_service: %+v", cliErr)
+	}
+
+	pairPreflightCtx := trayValidationContextForArgs("windows", []string{"preflight", "--json", "--stage", "pair"})
+	if pairPreflightCtx.Stage != "pair" || pairPreflightCtx.Configured == nil || *pairPreflightCtx.Configured {
+		t.Fatalf("preflight --stage pair context wrong: %+v", pairPreflightCtx)
+	}
+	pairEqCtx := trayValidationContextForArgs("linux", []string{"preflight", "--stage=pair"})
+	if pairEqCtx.Stage != "pair" {
+		t.Fatalf("preflight --stage=pair stage = %q, want pair", pairEqCtx.Stage)
+	}
+	verifiedPairCtx := trayValidationContextForArgs("windows", []string{"pair", "--json"}, true)
+	if verifiedPairCtx.Configured == nil || !*verifiedPairCtx.Configured {
+		t.Fatalf("explicitly verified configured=true was not preserved: %+v", verifiedPairCtx)
+	}
+	verifiedErr := decodeTrayCommandError(restartPayload, nil, errors.New("exit status 1"), verifiedPairCtx)
+	if !errors.As(verifiedErr, &cliErr) || !cliErr.Diagnostic.Trusted || cliErr.Diagnostic.AllowedFix == nil || cliErr.Diagnostic.AllowedFix.Action != "restart_service" {
+		t.Fatalf("verified configured host should accept restart_service: %+v", cliErr)
+	}
+
+	// P1-1: Unknown failure maps to generic Chinese + sanitized bounded diagnostic (no bearer, pair_url, paths, or unmarked creds).
+	rawLeak := `fatal: Bearer secretBearer999 mimiremote://pair?pair_sig=leak123 /Users/alice/private/key.json C:\Users\alice\secret.txt \\fileserver\share\token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF ` + strings.Repeat("x", 300)
+	unknownErr := newTrayUnknownCommandError(errors.New("exit status 2"), "config_store", rawLeak)
+	userMsg := unknownErr.Error()
+	if unknownErr.Diagnostic.Trusted || unknownErr.Diagnostic.AllowedFix != nil {
+		t.Fatalf("unknown command error must not be trusted: %+v", unknownErr.Diagnostic)
+	}
+	forbidden := []string{"secretBearer999", "mimiremote://", "pair_sig", "/Users/alice", `C:\Users\alice`, `\\fileserver`, "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"}
+	for _, secret := range forbidden {
+		if strings.Contains(userMsg, secret) {
+			t.Fatalf("user-facing error leaked %q: %q", secret, userMsg)
+		}
+	}
+	sanitized := unknownErr.Diagnostic.SanitizedDiagnostic
+	if len([]rune(sanitized)) > 180 || len(sanitized) == 0 {
+		t.Fatalf("sanitized diagnostic length out of bounds: %d (%q)", len([]rune(sanitized)), sanitized)
+	}
+	for _, secret := range forbidden[:len(forbidden)-1] {
+		if strings.Contains(sanitized, secret) {
+			t.Fatalf("sanitized diagnostic leaked %q: %q", secret, sanitized)
+		}
+	}
+	if fallback := redactOnboardingFallback(rawLeak); len([]rune(fallback)) > 180 || strings.Contains(fallback, "/Users/alice") || strings.Contains(fallback, "UnmarkedCred9876543210ABCDEF") {
+		t.Fatalf("redactOnboardingFallback failed to scrub/bound: %q", fallback)
+	}
+
+	// P1-3: A valid ok:true setup report MUST NOT satisfy a pair preflight request.
+	if _, err := decodeAndValidatePreflightReportForStage(
+		loadTrayContractFile(t, "preflight-claude-only-no-network.json"),
+		"linux",
+		"pair",
+		false,
+		"",
+	); err == nil {
+		t.Fatal("setup report must not satisfy pair preflight")
+	}
+
+	// P2-1: Legacy setup output with explicit ok:false MUST be rejected.
+	if _, err := decodeOnboardingSetupReceipt([]byte(`{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T00:05:00Z"}`)); err == nil {
+		t.Fatal("legacy setup with ok:false must be rejected")
+	}
+
+	// P2-2: Strict RFC3339 / UTC expiry validation.
+	for _, bad := range []string{
+		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00","network":"tailscale"}`,
+		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01","network":"tailscale"}`,
+		`{"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"not-a-date"}`,
+		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-02-30T00:05:00Z","network":"tailscale"}`,
+		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?","pair_expires_at":"2030-01-01T00:05:00Z","network":"tailscale"}`,
+	} {
+		if _, err := decodeOnboardingPairingTicketReceipt([]byte(bad), false); err == nil {
+			t.Fatalf("pairing ticket must reject invalid payload: %s", bad)
+		}
+	}
+	if _, err := decodeOnboardingPairingTicketReceipt(
+		[]byte(`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=ok","pair_expires_at":"2030-01-01T00:05:00.123456789Z","network":"tailscale"}`),
+		true,
+	); err != nil {
+		t.Fatalf("nanosecond UTC ticket should decode: %v", err)
+	}
+	if _, err := decodeOnboardingPairingTicketReceipt(
+		[]byte(`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T08:05:00+08:00"}`),
+		false,
+	); err != nil {
+		t.Fatalf("legacy offset ticket without ok should decode: %v", err)
+	}
+}
+
+func TestTrayBoundedOutputBlocksReadFromAndStreamsLiveProgress(t *testing.T) {
+	// P1-5: Neither writer may expose io.ReaderFrom (which lets os/exec bypass capped Write).
+	if _, ok := any(&boundedTrayOutput{}).(io.ReaderFrom); ok {
+		t.Fatal("boundedTrayOutput must not implement io.ReaderFrom")
+	}
+	if _, ok := any(newTrayStderrProgressWriter(16, nil, 0, nil)).(io.ReaderFrom); ok {
+		t.Fatal("trayStderrProgressWriter must not implement io.ReaderFrom")
+	}
+
+	capped := &boundedTrayOutput{remaining: 16}
+	huge := strings.NewReader(strings.Repeat("A", 1024*64))
+	if _, err := io.Copy(capped, huge); err != nil {
+		t.Fatalf("io.Copy into boundedTrayOutput failed: %v", err)
+	}
+	if !capped.truncated || capped.Len() != 16 {
+		t.Fatalf("boundedTrayOutput cap bypassed: truncated=%v len=%d", capped.truncated, capped.Len())
+	}
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	// Live subprocess streaming through runTrayCommand (shared by both Windows and Linux controllers):
+	// verifies fast progress arrives live BEFORE exit, invalid progress tuples are dropped,
+	// and stdout/stderr caps are enforced through os/exec.
+	ndjsonPath, err := filepath.Abs(filepath.Join(trayContractDir, "preflight-progress-slow-assistant.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportPath, err := filepath.Abs(filepath.Join(trayContractDir, "preflight-codex-chatgpt-app.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "fake-agentd.sh")
+	badProgress1 := `{"id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://learn.chatgpt.com/docs/codex/cli"}}`
+	badProgress2 := `{"id":"service_daemon","group":"service","state":"action_needed","title":"后台服务","detail":"未运行","blocking":true,"code":"service_not_running","fix":{"kind":"run_fix","action":"restart_service"}}`
+	script := "#!/bin/sh\n" +
+		"echo 'malformed noise line' >&2\n" +
+		"printf '%s\\n' '" + badProgress1 + "' >&2\n" +
+		"printf '%s\\n' '" + badProgress2 + "' >&2\n" +
+		"head -n 26 \"" + ndjsonPath + "\" >&2\n" +
+		"sleep 0.25\n" +
+		"tail -n +27 \"" + ndjsonPath + "\" >&2\n" +
+		"cat \"" + reportPath + "\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	configured := false
+	acc := newOnboardingProgressAccumulatorWithContext(1, onboardingValidationContext{
+		Surface:    "check",
+		Platform:   "macos",
+		Stage:      "pair",
+		Configured: &configured,
+	})
+	var mu sync.Mutex
+	var events []onboardingCheck
+	var codexOKAt time.Time
+	cmd := exec.Command(scriptPath)
+	stdout, _, truncated, err := runTrayCommand(cmd, acc, 1, func(row onboardingCheck) {
+		mu.Lock()
+		events = append(events, row)
+		if row.ID == "assistant_codex" && row.State == "ok" && codexOKAt.IsZero() {
+			codexOKAt = time.Now()
+		}
+		mu.Unlock()
+	}, 1024*1024, 64*1024)
+	finishedAt := time.Now()
+	if err != nil || truncated {
+		t.Fatalf("runTrayCommand failed: err=%v truncated=%v", err, truncated)
+	}
+	report, err := decodeAndValidatePreflightReportForStage(stdout, "macos", "pair", false, "")
+	if err != nil {
+		t.Fatalf("validate streamed report: %v", err)
+	}
+	if !acc.Complete(1, report) {
+		t.Fatal("accumulator completion failed")
+	}
+	mu.Lock()
+	gotCount := len(events)
+	earlyGap := finishedAt.Sub(codexOKAt)
+	mu.Unlock()
+	if gotCount != 36 {
+		t.Fatalf("expected exactly 36 valid progress events (2 invalid rows dropped), got %d", gotCount)
+	}
+	if codexOKAt.IsZero() || earlyGap < 100*time.Millisecond {
+		t.Fatalf("expected live progress arrival before process exit, gap=%s", earlyGap)
+	}
+
+	// Verify os/exec stdout cap holds when child writes > cap.
+	bigCmd := exec.Command("/bin/sh", "-c", "head -c 65536 /dev/zero | tr '\\0' 'A'")
+	bigOut, _, bigTrunc, err := runTrayCommand(bigCmd, nil, 0, nil, 32, 32)
+	if err != nil {
+		t.Fatalf("bigCmd failed: %v", err)
+	}
+	if !bigTrunc || len(bigOut) != 32 {
+		t.Fatalf("os/exec bypassed stdout cap: truncated=%v len=%d", bigTrunc, len(bigOut))
 	}
 }

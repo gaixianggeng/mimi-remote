@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -219,17 +218,20 @@ func pairingArguments() []string {
 }
 
 func parsePairingInfo(payload []byte) (pairingInfo, error) {
-	var result pairingInfo
-	if err := json.Unmarshal(payload, &result); err != nil {
+	receipt, err := decodeOnboardingPairingTicketReceipt(payload, false)
+	if err != nil {
 		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
 	}
-	if result.OK != nil && !*result.OK {
-		return pairingInfo{}, errors.New("短期配对信息返回失败状态")
-	}
-	if strings.TrimSpace(result.PairURL) == "" {
-		return pairingInfo{}, errors.New("短期配对信息缺少二维码链接")
-	}
-	return result, nil
+	return pairingInfo{
+		OK:                  receipt.OK,
+		Endpoint:            receipt.Endpoint,
+		Network:             receipt.Network,
+		TailscaleDNSName:    receipt.TailscaleDNSName,
+		TailscaleDeviceName: receipt.TailscaleDeviceName,
+		PairURL:             receipt.PairURL,
+		PairExpiresAt:       receipt.PairExpiresAt,
+		Warnings:            receipt.Warnings,
+	}, nil
 }
 
 func doctorArguments(fix bool) []string {
@@ -240,36 +242,81 @@ func doctorArguments(fix bool) []string {
 	return arguments
 }
 
+func (c *agentController) preflight(
+	ctx context.Context,
+	stage string,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	if stage != "setup" && stage != "pair" {
+		return onboardingPreflightReport{}, fmt.Errorf("不支持的预检阶段：%q", stage)
+	}
+	if progress == nil {
+		configured := false
+		progress = newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
+			Surface:    "check",
+			Platform:   "windows",
+			Stage:      stage,
+			Configured: &configured,
+		})
+	}
+	args := append([]string{"preflight", "--json", "--stage", stage, "--progress-json"}, extraArgs...)
+	payload, err := c.runHiddenWithProgress(ctx, progress, generation, onProgress, args...)
+	if err != nil {
+		return onboardingPreflightReport{}, err
+	}
+	report, err := decodeAndValidatePreflightReportForStage(payload, "windows", stage, false, "")
+	if err != nil {
+		return onboardingPreflightReport{}, fmt.Errorf("无法解析预检报告：%w", err)
+	}
+	progress.Complete(generation, report)
+	return report, nil
+}
+
 func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte, error) {
+	return c.runHiddenWithProgress(ctx, nil, 0, nil, args...)
+}
+
+func (c *agentController) runHiddenWithProgress(
+	ctx context.Context,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	args ...string,
+) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, trayCommandTimeout("windows", args...))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, c.agentPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
-	stdout := &boundedTrayOutput{remaining: 1024 * 1024}
-	stderr := &boundedTrayOutput{remaining: 64 * 1024}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
+	if err != nil {
 		if ctx.Err() != nil {
-			return nil, newTrayUILocalError("command_timeout", "service_daemon", "")
+			return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args), "")
 		}
-		if cliErr := decodeTrayCommandError(stdout.Bytes(), stderr.Bytes(), err, trayValidationContextForArgs("windows", args)); cliErr != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("windows", args)); cliErr != nil {
 			return nil, cliErr
 		}
-		detail := strings.TrimSpace(stderr.String())
+		detail := strings.TrimSpace(string(stderr))
 		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
+			detail = strings.TrimSpace(string(stdout))
 		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("%s", redactOnboardingFallback(detail))
+		return nil, newTrayUnknownCommandError(err, trayActiveStepForArgs(args), detail)
 	}
-	if stdout.truncated {
+	if stdoutTruncated {
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
 func (c *agentController) openLogsTerminal() error {
@@ -343,9 +390,10 @@ const (
 	serviceReadyWait = 60 * time.Second
 	// restart 先停旧实例：等待 PID 退出最多 10 秒、同步计划任务最多 10 秒
 	// （cmd/agentd/windows_service.go），再加上配置检查与提交启动的余量。
-	serviceStopBudget   = 20 * time.Second
-	actionCommandBudget = serviceReadyWait + serviceStopBudget + 30*time.Second
+	serviceStopBudget = 20 * time.Second
 )
+
+var actionCommandBudget = trayCommandTimeout("windows", "start")
 
 func statusContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), statusQueueTimeout)

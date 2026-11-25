@@ -289,6 +289,44 @@ final class OnboardingContractTests: XCTestCase {
             XCTAssertTrue(ticket.hasExplicitNetwork)
             XCTAssertTrue(ticket.asPairingInfo.hasTicket)
         }
+
+        // P2-1: Legacy ticket-shaped setup output with explicit ok:false MUST be rejected
+        let legacyOkFalse = Data(#"{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T00:05:00Z"}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(SetupReceipt.self, from: legacyOkFalse))
+
+        // P2-2: Strict RFC3339 / UTC ticket expiry validation on PairingTicketReceipt & SetupReceipt
+        let v1NanoTicket = Data(#"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=ok","pair_expires_at":"2030-01-01T00:05:00.123456789Z","network":"tailscale"}"#.utf8)
+        XCTAssertNoThrow(try JSONDecoder().decode(PairingTicketReceipt.self, from: v1NanoTicket))
+
+        let invalidTicketPayloads: [String] = [
+            // Non-UTC offset rejected when ok:true (v1 ticket requires Z)
+            #"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00","network":"tailscale"}"#,
+            // Non-RFC3339 date-only or arbitrary string rejected
+            #"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01","network":"tailscale"}"#,
+            #"{"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"not-a-date"}"#,
+            // Impossible calendar date rejected
+            #"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-02-30T00:05:00Z","network":"tailscale"}"#,
+            // Bare scheme without query rejected
+            #"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?","pair_expires_at":"2030-01-01T00:05:00Z","network":"tailscale"}"#,
+        ]
+        for raw in invalidTicketPayloads {
+            XCTAssertThrowsError(try JSONDecoder().decode(PairingTicketReceipt.self, from: Data(raw.utf8)), "Must reject \(raw)")
+        }
+
+        // Legacy ticket (no ok key) still accepts valid RFC3339 offset
+        let legacyOffsetTicket = Data(#"{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T08:05:00+08:00"}"#.utf8)
+        XCTAssertNoThrow(try JSONDecoder().decode(PairingTicketReceipt.self, from: legacyOffsetTicket))
+        XCTAssertNoThrow(try JSONDecoder().decode(SetupReceipt.self, from: legacyOffsetTicket))
+
+        // Legacy setup with non-RFC3339 expiry rejected; v1 setup with non-UTC expiry rejected
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            SetupReceipt.self,
+            from: Data(#"{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"tomorrow"}"#.utf8)
+        ))
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            SetupReceipt.self,
+            from: Data(#"{"ok":true,"configured":true,"created":true,"config_path":"/c","scan_root":"/s","browse_root":"/s","endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00"}"#.utf8)
+        ))
     }
 
     // MARK: - Streaming stderr NDJSON progress, out-of-order slow assistant, cancel safety
@@ -437,6 +475,148 @@ final class OnboardingContractTests: XCTestCase {
         }
     }
 
+    func testProductionSetupUsesWorkspaceBrowseRootAndSanitizesUnknownErrorsAndChecksStageAndDoctorFix() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appending(path: "mimi-ui1-fixes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // 1. P1-4: Production HostStore setup path must pass workspaceRoot (NEVER homeDirectory) as --browse-root
+        let argsFile = tempDir.appending(path: "captured-args.txt")
+        let setupOKFixture = Self.contractsDirectory().appendingPathComponent("setup-ok-pairing-deferred.json")
+        let captureSetupScript = tempDir.appending(path: "capture-setup.sh")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$@" > "\(argsFile.path)"
+        cat "\(setupOKFixture.path)"
+        """.write(to: captureSetupScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: captureSetupScript.path)
+
+        let workspaceDir = tempDir.appending(path: "my-project")
+        try FileManager.default.createDirectory(at: workspaceDir, withIntermediateDirectories: true)
+        let setupClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: captureSetupScript)
+        _ = try await setupClient.setup(workspaceDir)
+        let capturedArgs = try String(contentsOf: argsFile, encoding: .utf8)
+            .split(separator: "\n")
+            .map(String.init)
+        let browseIdx = try XCTUnwrap(capturedArgs.firstIndex(of: "--browse-root"))
+        XCTAssertEqual(capturedArgs[browseIdx + 1], workspaceDir.path)
+        XCTAssertNotEqual(capturedArgs[browseIdx + 1], FileManager.default.homeDirectoryForCurrentUser.path)
+
+        // 2. P1-1: Unrecognized stderr MUST NOT leak raw stderr, bearer, pair_url, private paths, or unmarked secrets
+        let leakyScript = tempDir.appending(path: "leaky-err.sh")
+        try """
+        #!/bin/sh
+        echo "fatal: Bearer topsecretbearer999 mimiremote://pair?pair_sig=leak123 /Users/alice/private/config.json eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF $(printf 'x%.0s' $(seq 1 300))" >&2
+        exit 2
+        """.write(to: leakyScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: leakyScript.path)
+
+        let leakyClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: leakyScript)
+        do {
+            _ = try await leakyClient.setupNoPair(workspaceDir, .init())
+            XCTFail("Expected failure")
+        } catch let error as AgentClientError {
+            let userFacing = error.localizedDescription
+            let diag = try XCTUnwrap(error.onboardingDiagnostic)
+            XCTAssertFalse(diag.isTrusted)
+            XCTAssertNil(diag.primaryAction)
+            XCTAssertTrue(userFacing.contains("退出码 2"))
+            for forbidden in ["topsecretbearer999", "mimiremote://", "pair_sig", "/Users/alice", "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"] {
+                XCTAssertFalse(userFacing.contains(forbidden), "User-facing error leaked \(forbidden)")
+            }
+            let sanitized = try XCTUnwrap(diag.sanitizedDiagnostic)
+            XCTAssertLessThanOrEqual(sanitized.count, 180)
+            for forbidden in ["topsecretbearer999", "mimiremote://", "pair_sig", "/Users/alice", "eyJhbGci", "UnmarkedCred9876543210ABCDEF"] {
+                XCTAssertFalse(sanitized.contains(forbidden), "Sanitized diagnostic leaked \(forbidden)")
+            }
+        }
+
+        // 3. P1-2: Fresh setup CLI error must NOT trust restart_service (least-privileged configured=false default)
+        let restartDuringSetupScript = tempDir.appending(path: "restart-in-setup.sh")
+        let restartBody = #"{"ok":false,"error":{"code":"service_not_running","step":"service_daemon","message":"未运行","fix":{"kind":"run_fix","action":"restart_service"}}}"#
+        try "#!/bin/sh\nprintf '%s\\n' '\(restartBody)'\nexit 1\n".write(to: restartDuringSetupScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: restartDuringSetupScript.path)
+        let freshClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: restartDuringSetupScript)
+        do {
+            _ = try await freshClient.setupNoPair(workspaceDir, .init())
+            XCTFail("Expected error")
+        } catch let error as AgentClientError {
+            let diag = try XCTUnwrap(error.onboardingDiagnostic)
+            XCTAssertFalse(diag.isTrusted)
+            XCTAssertNil(diag.primaryAction)
+        }
+
+        // 4. P1-3: A valid ok:true setup report MUST NOT satisfy a pair preflight, AND invalid progress rows MUST NOT be published
+        let setupReportData = try applyReportPatch(
+            fixture: "preflight-all-green.json",
+            patches: [
+                ["op": "replace", "path": "/stage", "value": "setup"],
+                ["op": "replace", "path": "/configured", "value": false],
+                ["op": "replace", "path": "/workspace_confirmed", "value": false],
+                ["op": "replace", "path": "/recommended_next", "value": "config_store"],
+            ]
+        )
+        let setupReportURL = tempDir.appending(path: "setup-report.json")
+        try setupReportData.write(to: setupReportURL)
+        let wrongStageScript = tempDir.appending(path: "wrong-stage-preflight.sh")
+        let badProgress1 = #"{"id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://learn.chatgpt.com/docs/codex/cli"}}"#
+        let badProgress2 = #"{"id":"service_daemon","group":"service","state":"action_needed","title":"后台服务","detail":"未运行","blocking":true,"code":"service_not_running","fix":{"kind":"run_fix","action":"restart_service"}}"#
+        let goodProgress = #"{"id":"config_store","group":"workspace","state":"checking","title":"配置文件","detail":"正在检查。","blocking":false}"#
+        try """
+        #!/bin/sh
+        printf '%s\\n' '\(badProgress1)' >&2
+        printf '%s\\n' '\(badProgress2)' >&2
+        printf '%s\\n' '\(goodProgress)' >&2
+        cat "\(setupReportURL.path)"
+        """.write(to: wrongStageScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrongStageScript.path)
+
+        let recorder = ProgressRecorder()
+        let wrongStageClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: wrongStageScript)
+        do {
+            _ = try await wrongStageClient.preflight(OnboardingPreflightOptions(stage: .pair, progressJSON: true)) { check in
+                recorder.record(check)
+            }
+            XCTFail("Setup report must NOT satisfy a pair preflight")
+        } catch let error as AgentClientError {
+            if case .invalidResponse(let detail) = error {
+                XCTAssertTrue(detail.contains("stage"), "Expected stage mismatch error, got \(detail)")
+            } else {
+                XCTFail("Expected invalidResponse for stage mismatch, got \(error)")
+            }
+        }
+        let published = recorder.events()
+        XCTAssertEqual(published.map(\.id), [.configStore], "Invalid code/fix progress rows must never be published")
+
+        // 5. P2-3: macOS doctor --fix preserves typed stdout error envelopes AND still decodes DoctorFixResults on exit 1
+        let errFixture = Self.contractsDirectory().appendingPathComponent("setup-error-config-invalid.json")
+        let doctorErrScript = tempDir.appending(path: "doctor-fix-err.sh")
+        try "#!/bin/sh\ncat \"\(errFixture.path)\"\nexit 1\n".write(to: doctorErrScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: doctorErrScript.path)
+
+        let doctorErrClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: doctorErrScript)
+        do {
+            _ = try await doctorErrClient.doctor(true)
+            XCTFail("Expected typed onboarding error from doctor --fix")
+        } catch let error as AgentClientError {
+            let diag = try XCTUnwrap(error.onboardingDiagnostic)
+            XCTAssertTrue(diag.isTrusted)
+            XCTAssertEqual(diag.code, "config_invalid")
+            XCTAssertEqual(diag.primaryAction, .openSettings(.hostRecovery))
+            XCTAssertEqual(diag.configPath, "/fixture/config/config.json")
+            XCTAssertEqual(diag.recoveryPath, "/fixture/config/config.previous.json")
+        }
+
+        let doctorLegacyScript = tempDir.appending(path: "doctor-fix-legacy.sh")
+        let doctorLegacyBody = #"{"fixes":["tightened permissions"],"results":{"ok":false,"version":"1.0.0","listen":"127.0.0.1:8787","checks":[]},"restart_required":false}"#
+        try "#!/bin/sh\nprintf '%s\\n' '\(doctorLegacyBody)'\nexit 1\n".write(to: doctorLegacyScript, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: doctorLegacyScript.path)
+        let doctorLegacyClient = AgentCommandClient.live(executor: ProcessExecutor(), binaryOverride: doctorLegacyScript)
+        let fixResults = try await doctorLegacyClient.doctor(true)
+        XCTAssertEqual(fixResults.fixes, ["tightened permissions"])
+        XCTAssertFalse(fixResults.results.ok)
+    }
+
     @MainActor
     func testHostStoreCompleteSetupAcceptsNoTicketPairingInfo() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appending(path: "mimi-ui1-store-\(UUID().uuidString)")
@@ -513,11 +693,37 @@ final class OnboardingContractTests: XCTestCase {
                 if op == "add", suffix == "-", let val = patch["value"] {
                     items.append(val)
                     doc["checks"] = items
-                } else if op == "remove", let index = Int(suffix) {
-                    items.remove(at: index)
-                    doc["checks"] = items
                 } else {
-                    XCTFail("Unsupported checks patch \(patch)")
+                    let parts = suffix.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard let index = Int(parts[0]), index >= 0, index < items.count else {
+                        XCTFail("Invalid checks index in patch \(patch)")
+                        continue
+                    }
+                    if parts.count == 1 {
+                        switch op {
+                        case "replace":
+                            items[index] = try XCTUnwrap(patch["value"])
+                            doc["checks"] = items
+                        case "remove":
+                            items.remove(at: index)
+                            doc["checks"] = items
+                        default:
+                            XCTFail("Unsupported checks patch \(patch)")
+                        }
+                    } else {
+                        let field = String(parts[1])
+                        var rowObj = try XCTUnwrap(items[index] as? [String: Any])
+                        switch op {
+                        case "add", "replace":
+                            rowObj[field] = patch["value"]
+                        case "remove":
+                            rowObj.removeValue(forKey: field)
+                        default:
+                            XCTFail("Unsupported checks field patch \(patch)")
+                        }
+                        items[index] = rowObj
+                        doc["checks"] = items
+                    }
                 }
             } else {
                 switch op {

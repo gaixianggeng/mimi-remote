@@ -582,14 +582,29 @@ struct SetupReceipt: Decodable, Equatable, Sendable {
         let decodedDevice = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
         let decodedWarnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
 
-        // Legacy setup JSON from pre-BE-3 hosts only returned ticket fields without configured/created.
-        if decodedConfigured == nil, decodedCreated == nil, let ticketURL = decodedPairURL, !ticketURL.isEmpty {
-            guard ticketURL.hasPrefix("mimiremote://pair?"),
-                  let endpoint = decodedEndpoint, !endpoint.isEmpty,
-                  let expires = decodedExpires, !expires.isEmpty
+        let hasOKKey = rawKeys.contains("ok")
+        if hasOKKey {
+            let explicitOK = try container.decode(Bool.self, forKey: .ok)
+            guard explicitOK else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "setup receipt returned ok=false")
+                )
+            }
+        }
+        if let decodedNetwork, decodedNetwork == .automatic {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "invalid setup transport auto")
+            )
+        }
+
+        // Legacy setup JSON from pre-BE-3 hosts only returned ticket fields without ok/configured/created.
+        if !hasOKKey, decodedConfigured == nil, decodedCreated == nil, let ticketURL = decodedPairURL, !ticketURL.isEmpty {
+            guard OnboardingDateParser.isValidPairURL(ticketURL),
+                  let endpoint = decodedEndpoint, !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let expires = decodedExpires, OnboardingDateParser.isValidRFC3339(expires, requireUTC: false)
             else {
                 throw DecodingError.dataCorrupted(
-                    .init(codingPath: decoder.codingPath, debugDescription: "incomplete legacy setup ticket")
+                    .init(codingPath: decoder.codingPath, debugDescription: "incomplete or invalid legacy setup ticket")
                 )
             }
             self.ok = true
@@ -631,12 +646,12 @@ struct SetupReceipt: Decodable, Equatable, Sendable {
             )
         }
         if let ticketURL = decodedPairURL {
-            guard ticketURL.hasPrefix("mimiremote://pair?"),
-                  let endpoint = decodedEndpoint, !endpoint.isEmpty,
-                  let expires = decodedExpires, OnboardingDateParser.parseRFC3339(expires) != nil
+            guard OnboardingDateParser.isValidPairURL(ticketURL),
+                  let endpoint = decodedEndpoint, !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let expires = decodedExpires, OnboardingDateParser.isValidRFC3339(expires, requireUTC: true)
             else {
                 throw DecodingError.dataCorrupted(
-                    .init(codingPath: decoder.codingPath, debugDescription: "setup receipt ticket fields incomplete")
+                    .init(codingPath: decoder.codingPath, debugDescription: "setup receipt ticket fields incomplete or invalid")
                 )
             }
         }
@@ -684,8 +699,15 @@ struct UpReadinessReceipt: Decodable, Equatable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        let rawKeys = Set(raw.allKeys.map(\.stringValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let okVal = try container.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        let okVal: Bool
+        if rawKeys.contains("ok") {
+            okVal = try container.decode(Bool.self, forKey: .ok)
+        } else {
+            okVal = true
+        }
         let readyVal = try container.decode(Bool.self, forKey: .serviceOK)
         let ver = try container.decode(String.self, forKey: .version)
         guard okVal, readyVal, !ver.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -721,8 +743,16 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
     }
 
     init(from decoder: Decoder) throws {
+        let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        let rawKeys = Set(raw.allKeys.map(\.stringValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let okVal = try container.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        let hasOKKey = rawKeys.contains("ok")
+        let okVal: Bool
+        if hasOKKey {
+            okVal = try container.decode(Bool.self, forKey: .ok)
+        } else {
+            okVal = true
+        }
         guard okVal else {
             throw DecodingError.dataCorrupted(
                 .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket returned ok=false")
@@ -731,12 +761,20 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
         let ep = try container.decode(String.self, forKey: .endpoint)
         let ticket = try container.decode(String.self, forKey: .pairURL)
         let expires = try container.decode(String.self, forKey: .pairExpiresAt)
-        guard !ep.isEmpty, ticket.hasPrefix("mimiremote://pair?"), !expires.isEmpty else {
+        guard !ep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              OnboardingDateParser.isValidPairURL(ticket),
+              OnboardingDateParser.isValidRFC3339(expires, requireUTC: hasOKKey)
+        else {
             throw DecodingError.dataCorrupted(
-                .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket missing required fields")
+                .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket missing or invalid required fields")
             )
         }
         let explicitNetwork = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
+        if explicitNetwork == .automatic {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket network cannot be auto")
+            )
+        }
         self.ok = okVal
         self.endpoint = ep
         self.hasExplicitNetwork = explicitNetwork != nil
@@ -782,32 +820,53 @@ struct OnboardingErrorEnvelope: Decodable, Equatable, Sendable {
 }
 
 /// Thread-safe accumulator for `--progress-json` NDJSON stderr rows with
-/// generation gating so cancelled or late updates never overwrite terminal state.
+/// tuple validation and generation gating so invalid, cancelled, or late updates
+/// never get published or overwrite terminal state.
 final class OnboardingProgressAccumulator: @unchecked Sendable {
     private let lock = NSLock()
+    private let validationContext: OnboardingValidationContext
     private var order: [OnboardingCheckID] = []
     private var rowsByID: [OnboardingCheckID: OnboardingCheck] = [:]
     private var finalReport: OnboardingPreflightReport?
     private var isTerminal = false
     private var generation: UInt64
 
-    init(generation: UInt64 = 1) {
+    init(
+        generation: UInt64 = 1,
+        context: OnboardingValidationContext = OnboardingValidationContext(
+            surface: .check,
+            platform: .macos,
+            stage: .setup,
+            configured: false
+        )
+    ) {
         self.generation = generation
+        self.validationContext = context
     }
 
     @discardableResult
     func applyLine(_ line: String, generation: UInt64) -> Bool {
+        applyValidatedLine(line, generation: generation) != nil
+    }
+
+    func applyValidatedLine(_ line: String, generation: UInt64) -> OnboardingCheck? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let check = try? JSONDecoder().decode(OnboardingCheck.self, from: Data(trimmed.utf8))
         else {
-            return false
+            return nil
         }
-        return applyCheck(check, generation: generation)
+        guard applyCheck(check, generation: generation) else {
+            return nil
+        }
+        return check
     }
 
     @discardableResult
     func applyCheck(_ check: OnboardingCheck, generation: UInt64) -> Bool {
+        guard case .success = OnboardingCopyCatalog.validateCheck(check, context: validationContext) else {
+            return false
+        }
         lock.lock()
         defer { lock.unlock() }
         guard !isTerminal, generation == self.generation else { return false }
@@ -846,7 +905,92 @@ final class OnboardingProgressAccumulator: @unchecked Sendable {
 }
 
 enum OnboardingDateParser {
+    static func isValidPairURL(_ raw: String) -> Bool {
+        guard raw.hasPrefix("mimiremote://pair?"),
+              raw.count > "mimiremote://pair?".count,
+              !raw.contains(where: \.isWhitespace),
+              let components = URLComponents(string: raw),
+              components.scheme == "mimiremote",
+              components.host == "pair"
+        else {
+            return false
+        }
+        return true
+    }
+
+    static func isValidRFC3339(_ raw: String, requireUTC: Bool) -> Bool {
+        let bytes = Array(raw.utf8)
+        guard bytes.count >= 20 else { return false }
+        func digit(_ index: Int) -> Int? {
+            let b = bytes[index]
+            guard b >= 0x30 && b <= 0x39 else { return nil }
+            return Int(b - 0x30)
+        }
+        func number(_ start: Int, _ length: Int) -> Int? {
+            var value = 0
+            for offset in 0..<length {
+                guard let d = digit(start + offset) else { return nil }
+                value = value * 10 + d
+            }
+            return value
+        }
+        guard bytes[4] == 0x2D, bytes[7] == 0x2D, // '-'
+              bytes[10] == 0x54,                  // 'T'
+              bytes[13] == 0x3A, bytes[16] == 0x3A // ':'
+        else {
+            return false
+        }
+        guard let year = number(0, 4), year >= 1,
+              let month = number(5, 2), (1...12).contains(month),
+              let day = number(8, 2),
+              let hour = number(11, 2), (0...23).contains(hour),
+              let minute = number(14, 2), (0...59).contains(minute),
+              let second = number(17, 2), (0...59).contains(second)
+        else {
+            return false
+        }
+        let maxDay: Int
+        switch month {
+        case 1, 3, 5, 7, 8, 10, 12: maxDay = 31
+        case 4, 6, 9, 11: maxDay = 30
+        case 2:
+            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+            maxDay = leap ? 29 : 28
+        default:
+            return false
+        }
+        guard (1...maxDay).contains(day) else { return false }
+
+        var idx = 19
+        if idx < bytes.count && bytes[idx] == 0x2E { // '.'
+            idx += 1
+            let fracStart = idx
+            while idx < bytes.count, digit(idx) != nil {
+                idx += 1
+            }
+            let fracLen = idx - fracStart
+            guard (1...9).contains(fracLen) else { return false }
+        }
+        guard idx < bytes.count else { return false }
+        if bytes[idx] == 0x5A { // 'Z'
+            return idx + 1 == bytes.count
+        }
+        if requireUTC {
+            return false
+        }
+        guard (bytes[idx] == 0x2B || bytes[idx] == 0x2D), // '+' or '-'
+              idx + 6 == bytes.count,
+              bytes[idx + 3] == 0x3A,
+              let offsetHour = number(idx + 1, 2), (0...23).contains(offsetHour),
+              let offsetMin = number(idx + 4, 2), (0...59).contains(offsetMin)
+        else {
+            return false
+        }
+        return true
+    }
+
     static func parseRFC3339(_ raw: String) -> Date? {
+        guard isValidRFC3339(raw, requireUTC: false) else { return nil }
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let parsed = fractional.date(from: raw) {

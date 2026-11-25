@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -314,6 +314,8 @@ public sealed record OnboardingPreflightOptions
     public bool ProgressJson { get; init; } = true;
     public IReadOnlyList<(string Id, string Value)> RuntimePaths { get; init; } = [];
     public IReadOnlyList<(string Id, string Value)> Assistants { get; init; } = [];
+    public bool? VerifiedConfigured { get; init; }
+    public string? VerifiedCapability { get; init; }
 }
 
 public sealed record OnboardingSetupOptions
@@ -322,14 +324,15 @@ public sealed record OnboardingSetupOptions
     public bool NoPair { get; init; } = true;
     public IReadOnlyList<(string Id, string Value)> RuntimePaths { get; init; } = [];
     public IReadOnlyList<(string Id, string Value)> Assistants { get; init; } = [];
+    public bool? VerifiedConfigured { get; init; }
 }
 
 public sealed record OnboardingValidationContext
 {
     public required string Surface { get; init; }
     public string Platform { get; init; } = "windows";
-    public string Stage { get; init; } = "pair";
-    public bool? Configured { get; init; } = true;
+    public string Stage { get; init; } = "setup";
+    public bool? Configured { get; init; } = false;
     public bool HasRecommendedTransport { get; init; }
     public string? RecommendedTransport { get; init; }
     public string? VerifiedCapability { get; init; }
@@ -346,6 +349,7 @@ public sealed record OnboardingResolvedDiagnostic
     public string? SecondaryLabel { get; init; }
     public string? ConfigPath { get; init; }
     public string? RecoveryPath { get; init; }
+    public string? SanitizedDiagnostic { get; init; }
     public bool Trusted { get; init; }
     public bool LegacyHost { get; init; }
 }
@@ -378,19 +382,31 @@ public sealed class OnboardingCliException : InvalidOperationException
 public sealed class OnboardingProgressAccumulator
 {
     private readonly object gate = new();
+    private readonly OnboardingValidationContext validationContext;
     private readonly List<string> order = [];
     private readonly Dictionary<string, OnboardingCheck> byId = new(StringComparer.Ordinal);
     private OnboardingPreflightReport? finalReport;
     private bool terminal;
     private ulong generation;
 
-    public OnboardingProgressAccumulator(ulong generation = 1)
+    public OnboardingProgressAccumulator(ulong generation = 1, OnboardingValidationContext? validationContext = null)
     {
         this.generation = generation;
+        this.validationContext = validationContext ?? new OnboardingValidationContext
+        {
+            Surface = "check",
+            Platform = "windows",
+            Stage = "setup",
+            Configured = false,
+        };
     }
 
-    public bool ApplyLine(ulong runGeneration, string line)
+    public bool ApplyLine(ulong runGeneration, string line) =>
+        TryApplyLine(runGeneration, line, out _);
+
+    public bool TryApplyLine(ulong runGeneration, string line, [NotNullWhen(true)] out OnboardingCheck? appliedCheck)
     {
+        appliedCheck = null;
         if (string.IsNullOrWhiteSpace(line))
         {
             return false;
@@ -399,12 +415,17 @@ public sealed class OnboardingProgressAccumulator
         {
             return false;
         }
-        return ApplyCheck(runGeneration, check);
+        if (!ApplyCheck(runGeneration, check))
+        {
+            return false;
+        }
+        appliedCheck = check;
+        return true;
     }
 
     public bool ApplyCheck(ulong runGeneration, OnboardingCheck check)
     {
-        if (!OnboardingCopyCatalog.IsKnownCheckId(check.Id) || !OnboardingCopyCatalog.IsValidCheckState(check.State))
+        if (!OnboardingCopyCatalog.TryValidateCheck(check, validationContext, out _, out _))
         {
             return false;
         }
@@ -414,11 +435,14 @@ public sealed class OnboardingProgressAccumulator
             {
                 return false;
             }
-            if (!byId.ContainsKey(check.Id))
+            if (byId.TryAdd(check.Id, check))
             {
                 order.Add(check.Id);
             }
-            byId[check.Id] = check;
+            else
+            {
+                byId[check.Id] = check;
+            }
             return true;
         }
     }
@@ -468,11 +492,4 @@ public sealed class OnboardingProgressAccumulator
             return (list, finalReport);
         }
     }
-
-    internal static bool IsValidUtcRfc3339(string value) =>
-        DateTimeOffset.TryParse(
-            value,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.RoundtripKind,
-            out _);
 }

@@ -1,6 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MimiRemote.App;
+using MimiRemote.App.Pages;
+using MimiRemote.App.ViewModels;
 using MimiRemote.Core;
 using Xunit;
 
@@ -67,7 +70,7 @@ public sealed class HostCliContractTests
         Assert.True(OnboardingCopyCatalog.UiLocalCodes.SetEquals(wantLocal));
         foreach (var entry in OnboardingCopyCatalog.Entries)
         {
-            Assert.True(entry.MessageZh.Any(ch => ch >= '\u4E00' && ch <= '\u9FFF'));
+            Assert.Contains(entry.MessageZh, ch => ch >= '\u4E00' && ch <= '\u9FFF');
         }
 
         var urls = root.GetProperty("urls").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!, StringComparer.Ordinal);
@@ -128,7 +131,10 @@ public sealed class HostCliContractTests
             {
                 var patched = ApplyReportPatch(item.GetProperty("fixture").GetString()!, item.GetProperty("patch"));
                 var ok = OnboardingCopyCatalog.TryDecodeAndValidateReport(patched, platform, nativeOverlay: false, verifiedCap, out _, out var err);
-                Assert.True(ok == valid, $"report case {id}: expected valid={valid}, err={err}");
+                if (ok != valid)
+                {
+                    Assert.Fail($"report case {id}: expected valid={valid}, err={err}");
+                }
                 continue;
             }
 
@@ -155,7 +161,10 @@ public sealed class HostCliContractTests
                 OnboardingResolvedDiagnostic? resolved = null;
                 var ok = OnboardingCopyCatalog.TryDecodeCheck(payload, out var check, out var err)
                     && OnboardingCopyCatalog.TryValidateCheck(check, ctx, out resolved, out err);
-                Assert.True(ok == valid, $"check case {id}: expected valid={valid}, err={err}");
+                if (ok != valid)
+                {
+                    Assert.Fail($"check case {id}: expected valid={valid}, err={err}");
+                }
                 if (!valid && resolved is not null)
                 {
                     Assert.Null(resolved.AllowedFix);
@@ -164,7 +173,10 @@ public sealed class HostCliContractTests
             else
             {
                 var ok = OnboardingCopyCatalog.TryDecodeErrorEnvelope(payload, ctx, out var resolved, out var err);
-                Assert.True(ok == valid, $"envelope case {id}: expected valid={valid}, err={err}");
+                if (ok != valid)
+                {
+                    Assert.Fail($"envelope case {id}: expected valid={valid}, err={err}");
+                }
                 if (valid)
                 {
                     Assert.True(resolved.Trusted, id);
@@ -228,7 +240,7 @@ public sealed class HostCliContractTests
         Assert.False(noAssist.ToPairingInfo().HasTicket);
 
         Assert.True(OnboardingCopyCatalog.TryDecodeSetupReceipt(ReadFixture("setup-ok-pairing-deferred.json"), out var deferred, out _));
-        Assert.Equal(true, deferred!.PairingDeferred);
+        Assert.True(deferred!.PairingDeferred);
         Assert.False(deferred.HasTicket);
 
         var pairingFromNoTicket = JsonSerializer.Deserialize<PairingInfo>(ReadFixture("setup-ok-pairing-deferred.json"), AgentClient.JsonOptions)!;
@@ -241,16 +253,56 @@ public sealed class HostCliContractTests
         Assert.True(legacy!.IsLegacy);
         Assert.True(legacy.HasTicket);
 
+        // P2-1: Legacy setup output with explicit ok:false MUST be rejected
+        const string legacySetupOkFalse = """{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T00:05:00Z"}""";
+        Assert.False(OnboardingCopyCatalog.TryDecodeSetupReceipt(legacySetupOkFalse, out _, out _));
+
         // Up readiness vs submitted
         Assert.True(OnboardingCopyCatalog.TryDecodeUpReadinessReceipt(ReadFixture("up-ok-ready.json"), out var ready, out _));
         Assert.Equal("1.0.0", ready!.Version);
         Assert.False(OnboardingCopyCatalog.TryDecodeUpReadinessReceipt("""{"ok":true,"start_submitted":true}""", out _, out _));
 
-        // Pair tickets
+        // Pair tickets + P2-2 strict RFC3339 / UTC expiry validation
         Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ReadFixture("pair-ok-direct.json"), requireNetwork: true, out var direct, out _));
         Assert.Equal("tailscale", direct!.Network);
         Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ReadFixture("pair-ok-tailcat.json"), requireNetwork: true, out var tailcat, out _));
         Assert.Equal("tailcat", tailcat!.Network);
+        Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+            """{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=ok","pair_expires_at":"2030-01-01T00:05:00.123456789Z","network":"tailscale"}""",
+            requireNetwork: true,
+            out _,
+            out _));
+        // Non-UTC offset rejected on v1 ticket (ok:true), non-RFC3339 & impossible dates always rejected
+        Assert.False(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+            """{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00","network":"tailscale"}""",
+            requireNetwork: false,
+            out _,
+            out _));
+        Assert.False(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+            """{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01","network":"tailscale"}""",
+            requireNetwork: false,
+            out _,
+            out _));
+        Assert.False(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+            """{"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-02-30T00:05:00Z"}""",
+            requireNetwork: false,
+            out _,
+            out _));
+        Assert.False(OnboardingCopyCatalog.TryDecodeSetupReceipt(
+            """{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"tomorrow"}""",
+            out _,
+            out _));
+        Assert.False(OnboardingCopyCatalog.TryDecodeSetupReceipt(
+            """{"ok":true,"configured":true,"created":true,"config_path":"/c","scan_root":"/s","browse_root":"/s","endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00"}""",
+            out _,
+            out _));
+        // Legacy ticket without ok still accepts valid RFC3339 offset
+        Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+            """{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T08:05:00+08:00"}""",
+            requireNetwork: false,
+            out _,
+            out _));
+        Assert.True(OnboardingCopyCatalog.TryParseRfc3339Timestamp("2030-01-01T00:05:00.123456789Z", requireUtc: true, out _));
     }
 
     [Fact]
@@ -260,8 +312,18 @@ public sealed class HostCliContractTests
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.Equal(36, lines.Length);
 
-        var acc = new OnboardingProgressAccumulator(1);
+        var macPairCtx = new OnboardingValidationContext
+        {
+            Surface = "check",
+            Platform = "macos",
+            Stage = "pair",
+            Configured = false,
+        };
+        var acc = new OnboardingProgressAccumulator(1, macPairCtx);
         Assert.False(acc.ApplyLine(1, "malformed non-json stderr noise"));
+        // Invalid code/action progress rows MUST be rejected before publishing
+        Assert.False(acc.ApplyLine(1, """{"id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://learn.chatgpt.com/docs/codex/cli"}}"""));
+        Assert.False(acc.ApplyLine(1, """{"id":"service_daemon","group":"service","state":"action_needed","title":"后台服务","detail":"未运行","blocking":true,"code":"service_not_running","fix":{"kind":"run_fix","action":"restart_service"}}"""));
         for (var i = 0; i < 26; i++)
         {
             Assert.True(acc.ApplyLine(1, lines[i]));
@@ -281,6 +343,7 @@ public sealed class HostCliContractTests
         Assert.True(OnboardingCopyCatalog.TryDecodeAndValidateReport(
             ReadFixture("preflight-codex-chatgpt-app.json"),
             "macos",
+            expectedStage: "pair",
             nativeOverlay: false,
             verifiedCapability: null,
             out var finalReport,
@@ -293,12 +356,107 @@ public sealed class HostCliContractTests
         Assert.Equal(finalReport, acc.Snapshot().Report);
 
         // Cancelled generation rejects subsequent updates and completion.
-        var cancelled = new OnboardingProgressAccumulator(2);
+        var cancelled = new OnboardingProgressAccumulator(2, macPairCtx);
         Assert.True(cancelled.ApplyLine(2, lines[0]));
         cancelled.Cancel(2);
         Assert.False(cancelled.ApplyLine(2, lines[18]));
         Assert.False(cancelled.Complete(2, finalReport));
     }
+
+    [Fact]
+    public async Task 阶段校验脱敏诊断和WinUI设置回执门禁生效()
+    {
+        // P1-2: ResolveStage distinguishes preflight --stage pair from setup
+        Assert.Equal("pair", AgentClient.ResolveStage(["preflight", "--json", "--stage", "pair"]));
+        Assert.Equal("pair", AgentClient.ResolveStage(["preflight", "--json", "--stage=pair"]));
+        Assert.Equal("setup", AgentClient.ResolveStage(["preflight", "--json", "--stage", "setup"]));
+        Assert.Equal("setup", AgentClient.ResolveStage(["preflight", "--json"]));
+        Assert.Equal("setup", AgentClient.ResolveStage(["setup", "--no-pair", "--json"]));
+
+        // P1-3: A valid ok:true setup report MUST NOT satisfy a pair preflight request
+        Assert.False(OnboardingCopyCatalog.TryDecodeAndValidateReport(
+            ReadFixture("preflight-claude-only-no-network.json"),
+            "linux",
+            expectedStage: "pair",
+            nativeOverlay: false,
+            verifiedCapability: null,
+            out _,
+            out var stageError));
+        Assert.Contains("stage", stageError, StringComparison.Ordinal);
+
+        // P1-1: Diagnostic sanitizer strips bearer, pair_url, private paths, JWT, unmarked credentials and bounds length
+        var raw = @"fatal: Bearer secretBearer999 mimiremote://pair?pair_sig=leak123 C:\Users\alice\secret.json /Users/alice/key eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF " + new string('z', 300);
+        var sanitized = OnboardingCopyCatalog.SanitizeDiagnostic(raw);
+        Assert.InRange(sanitized.Length, 1, 180);
+        foreach (var secret in ForbiddenLeakTokens)
+        {
+            Assert.DoesNotContain(secret, sanitized, StringComparison.Ordinal);
+        }
+
+        // P1-4: Production SetupViewModel validates SetupReceipt before starting service
+        var tempRoot = Path.Combine(Path.GetTempPath(), "mimi-setup-vm-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousConfigPath = DesktopPreferences.ConfigPath;
+        try
+        {
+            DesktopPreferences.ConfigPath = Path.Combine(tempRoot, "missing-config.json");
+
+            // Invalid setup stdout (ok:false) MUST fail and NEVER call start or workspace
+            var badContext = new ClientContext
+            {
+                Confirm = (_, _) => Task.FromResult(true),
+            };
+            badContext.Agent.RunHandler = (args, _) => Task.FromResult(args[0] == "setup"
+                ? """{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T00:05:00Z"}"""
+                : "{}");
+            using var badVm = new SetupViewModel(badContext) { Root = tempRoot };
+            await badVm.FinishCommand.ExecuteAsync(null);
+            Assert.True(badVm.Failed);
+            Assert.Single(badContext.Agent.Calls);
+            Assert.Equal("setup", badContext.Agent.Calls[0][0]);
+
+            // Valid no-ticket setup receipt succeeds and proceeds to start + workspace
+            Type? navigated = null;
+            var goodContext = new ClientContext
+            {
+                Confirm = (_, _) => Task.FromResult(true),
+                Navigate = page => navigated = page,
+            };
+            var deferredJson = ReadFixture("setup-ok-pairing-deferred.json");
+            goodContext.Agent.RunHandler = (args, _) => Task.FromResult(args[0] switch
+            {
+                "setup" => deferredJson,
+                "workspace" => """{"restart_required":false}""",
+                "status" => """{"service_ok":true}""",
+                _ => "{}",
+            });
+            using var goodVm = new SetupViewModel(goodContext) { Root = tempRoot };
+            await goodVm.FinishCommand.ExecuteAsync(null);
+            Assert.False(goodVm.Failed);
+            Assert.Equal(typeof(PairingPage), navigated);
+            Assert.Equal("setup", goodContext.Agent.Calls[0][0]);
+            Assert.Equal("start", goodContext.Agent.Calls[1][0]);
+        }
+        finally
+        {
+            DesktopPreferences.ConfigPath = previousConfigPath;
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    private static readonly string[] ForbiddenLeakTokens =
+    [
+        "secretBearer999",
+        "mimiremote://",
+        "pair_sig",
+        @"C:\Users\alice",
+        "/Users/alice",
+        "eyJhbGci",
+        "UnmarkedCred9876543210ABCDEF",
+    ];
 
     private static string ApplyReportPatch(string fixture, JsonElement patches)
     {
@@ -316,13 +474,39 @@ public sealed class HostCliContractTests
                 {
                     checks.Add(JsonNode.Parse(patch.GetProperty("value").GetRawText()));
                 }
-                else if (string.Equals(op, "remove", StringComparison.Ordinal))
-                {
-                    checks.RemoveAt(int.Parse(suffix, CultureInfo.InvariantCulture));
-                }
                 else
                 {
-                    throw new InvalidOperationException($"unsupported checks patch {op} {path}");
+                    var slash = suffix.IndexOf('/');
+                    if (slash < 0)
+                    {
+                        var idx = int.Parse(suffix, CultureInfo.InvariantCulture);
+                        if (string.Equals(op, "replace", StringComparison.Ordinal))
+                        {
+                            checks[idx] = JsonNode.Parse(patch.GetProperty("value").GetRawText());
+                        }
+                        else if (string.Equals(op, "remove", StringComparison.Ordinal))
+                        {
+                            checks.RemoveAt(idx);
+                        }
+                        else
+                        {
+                            throw new InvalidOperationException($"unsupported checks patch {op} {path}");
+                        }
+                    }
+                    else
+                    {
+                        var idx = int.Parse(suffix[..slash], CultureInfo.InvariantCulture);
+                        var field = suffix[(slash + 1)..];
+                        var rowObj = checks[idx]!.AsObject();
+                        if (string.Equals(op, "remove", StringComparison.Ordinal))
+                        {
+                            rowObj.Remove(field);
+                        }
+                        else
+                        {
+                            rowObj[field] = JsonNode.Parse(patch.GetProperty("value").GetRawText());
+                        }
+                    }
                 }
             }
             else if (string.Equals(op, "remove", StringComparison.Ordinal))

@@ -47,28 +47,76 @@ func newLinuxController(agentPath string) (*linuxController, error) {
 // The CLI is the only service/configuration owner. Never invoke a shell or read
 // long-lived credentials into the tray process.
 func (c *linuxController) run(ctx context.Context, args ...string) ([]byte, error) {
+	return c.runWithProgress(ctx, nil, 0, nil, args...)
+}
+
+func (c *linuxController) runWithProgress(
+	ctx context.Context,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	args ...string,
+) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, trayCommandTimeout("linux", args...))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, c.agentPath, args...)
 	cmd.Dir = filepath.Dir(c.agentPath) // release/worktree directories may be removed after launch.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
-	stdout := &boundedTrayOutput{remaining: 1024 * 1024}
-	stderr := &boundedTrayOutput{remaining: 64 * 1024}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
+	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
 	if ctx.Err() != nil {
-		return nil, errors.New("agentd 操作超时或已取消，请刷新状态后重试")
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args), "")
 	}
-	if stdout.truncated {
+	if stdoutTruncated {
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	if err != nil {
-		if cliErr := decodeTrayCommandError(stdout.Bytes(), stderr.Bytes(), err, trayValidationContextForArgs("linux", args)); cliErr != nil {
-			return stdout.Bytes(), cliErr
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args)); cliErr != nil {
+			return stdout, cliErr
 		}
-		return stdout.Bytes(), fmt.Errorf("agentd %s 失败：%s", args[0], fallbackText(redactTrayText(stderr.String()), "请运行诊断或查看日志"))
+		return stdout, newTrayUnknownCommandError(err, trayActiveStepForArgs(args), string(stderr))
 	}
-	return stdout.Bytes(), nil
+	return stdout, nil
+}
+
+func (c *linuxController) preflight(
+	ctx context.Context,
+	stage string,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	if stage != "setup" && stage != "pair" {
+		return onboardingPreflightReport{}, fmt.Errorf("不支持的预检阶段：%q", stage)
+	}
+	if progress == nil {
+		configured := false
+		progress = newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
+			Surface:    "check",
+			Platform:   "linux",
+			Stage:      stage,
+			Configured: &configured,
+		})
+	}
+	args := append([]string{"preflight", "--json", "--stage", stage, "--progress-json"}, extraArgs...)
+	payload, err := c.runWithProgress(ctx, progress, generation, onProgress, args...)
+	if err != nil {
+		return onboardingPreflightReport{}, err
+	}
+	report, err := decodeAndValidatePreflightReportForStage(payload, "linux", stage, false, "")
+	if err != nil {
+		return onboardingPreflightReport{}, fmt.Errorf("无法解析预检报告：%w", err)
+	}
+	progress.Complete(generation, report)
+	return report, nil
 }
 
 func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus, error) {
@@ -118,6 +166,7 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 }
 
 type linuxPairingInfo struct {
+	OK            *bool  `json:"ok,omitempty"`
 	PairURL       string `json:"pair_url"`
 	PairExpiresAt string `json:"pair_expires_at"`
 }
@@ -139,6 +188,9 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 	var result linuxPairingInfo
 	if json.Unmarshal(payload, &result) != nil {
 		return result, errors.New("无法读取短期配对信息")
+	}
+	if result.OK != nil && !*result.OK {
+		return linuxPairingInfo{}, errors.New("短期配对信息返回失败状态")
 	}
 	u, err := url.Parse(result.PairURL)
 	expires, dateErr := time.Parse(time.RFC3339, result.PairExpiresAt)
@@ -196,7 +248,7 @@ func redactTrayText(text string) string {
 			lines[i] = "[已隐藏包含凭据的内容]"
 			continue
 		}
-		lines[i] = trayURLCredential.ReplaceAllString(line, "[已隐藏带凭据的地址]")
+		lines[i] = scrubTraySensitiveText(trayURLCredential.ReplaceAllString(line, "[已隐藏带凭据的地址]"))
 	}
 	return strings.Join(lines, "\n")
 }

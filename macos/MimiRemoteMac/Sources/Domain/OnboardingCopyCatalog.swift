@@ -48,8 +48,8 @@ struct OnboardingValidationContext: Equatable, Sendable {
     init(
         surface: OnboardingSurface,
         platform: OnboardingPlatform = .macos,
-        stage: OnboardingStage = .pair,
-        configured: Bool? = true,
+        stage: OnboardingStage = .setup,
+        configured: Bool? = false,
         hasRecommendedTransport: Bool = false,
         recommendedTransport: OnboardingTransport? = nil,
         verifiedCapability: String? = nil,
@@ -77,6 +77,33 @@ struct OnboardingResolvedDiagnostic: Equatable, Sendable {
     let recoveryPath: String?
     let isTrusted: Bool
     let isLegacyHost: Bool
+    let sanitizedDiagnostic: String?
+
+    init(
+        code: String?,
+        step: OnboardingCheckID?,
+        message: String,
+        primaryAction: OnboardingFix?,
+        secondaryAction: OnboardingFix?,
+        secondaryLabel: String?,
+        configPath: String?,
+        recoveryPath: String?,
+        isTrusted: Bool,
+        isLegacyHost: Bool,
+        sanitizedDiagnostic: String? = nil
+    ) {
+        self.code = code
+        self.step = step
+        self.message = message
+        self.primaryAction = primaryAction
+        self.secondaryAction = secondaryAction
+        self.secondaryLabel = secondaryLabel
+        self.configPath = configPath
+        self.recoveryPath = recoveryPath
+        self.isTrusted = isTrusted
+        self.isLegacyHost = isLegacyHost
+        self.sanitizedDiagnostic = sanitizedDiagnostic
+    }
 }
 
 enum OnboardingValidationError: LocalizedError, Equatable, Sendable {
@@ -490,6 +517,13 @@ enum OnboardingCopyCatalog {
         guard check.group == check.id.group, check.id.platforms.contains(context.platform) else {
             return .failure(.invalidTuple("\(check.id.rawValue) group/platform mismatch"))
         }
+        if context.surface == .native {
+            let isPermission = check.id.group == .permission
+            let isApproval = check.id == .serviceDaemon && check.code == "service_requires_approval"
+            guard context.platform == .macos && (isPermission || isApproval) else {
+                return .failure(.invalidTuple("invalid native overlay on \(check.id.rawValue)"))
+            }
+        }
         guard !check.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !check.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -506,6 +540,9 @@ enum OnboardingCopyCatalog {
             guard check.hasCodeKey, check.hasFixKey, check.code != nil, check.fix != nil else {
                 return .failure(.missingRequiredField("\(check.id.rawValue) missing code/fix"))
             }
+        }
+        if check.state == .optional && check.blocking {
+            return .failure(.invalidTuple("\(check.id.rawValue) optional state cannot block"))
         }
         if check.id.isIndividualAssistant || check.id.isIndividualNetwork {
             guard check.enabled != nil, check.hasAvailableKey, !check.blocking else {
@@ -583,11 +620,15 @@ enum OnboardingCopyCatalog {
     static func validateReport(
         _ report: OnboardingPreflightReport,
         platform: OnboardingPlatform,
+        expectedStage: OnboardingStage? = nil,
         nativeOverlay: Bool = false,
         verifiedCapability: String? = nil
     ) -> Result<[OnboardingCheckID: OnboardingResolvedDiagnostic], OnboardingValidationError> {
         guard report.schema == OnboardingSchema.preflightV1 else {
             return .failure(.unsupportedSchema(report.schema))
+        }
+        if let expectedStage, report.stage != expectedStage {
+            return .failure(.invalidTuple("report stage \(report.stage.rawValue) does not match requested stage \(expectedStage.rawValue)"))
         }
         guard !report.configPath.isEmpty, !report.scanRoot.isEmpty, !report.browseRoot.isEmpty else {
             return .failure(.missingRequiredField("report missing required paths"))
@@ -614,6 +655,8 @@ enum OnboardingCopyCatalog {
         var eligibleByGroup: [OnboardingCheckGroup: Bool] = [:]
         var expectedRecommended: OnboardingTransport?
         var resolvedByID: [OnboardingCheckID: OnboardingResolvedDiagnostic] = [:]
+        var configStoreRow: OnboardingCheck?
+        var workspaceRootRow: OnboardingCheck?
 
         for (index, check) in report.checks.enumerated() {
             let expectedID = applicable[index]
@@ -642,13 +685,18 @@ enum OnboardingCopyCatalog {
             case .success(let resolved):
                 resolvedByID[check.id] = resolved
             }
+            if check.id == .configStore {
+                configStoreRow = check
+            } else if check.id == .workspaceRoot {
+                workspaceRootRow = check
+            }
             if check.blocking {
                 if report.stage == .setup && check.group != .workspace {
                     return .failure(.invalidTuple("unexpected setup blocker \(check.id.rawValue)"))
                 }
                 if firstBlocker == nil { firstBlocker = check.id }
             }
-            if check.enabled != nil {
+            if check.id.isIndividualAssistant || check.id.isIndividualNetwork {
                 let ready = check.enabled == true && check.available == true
                 guard (check.state == .ok) == ready else {
                     return .failure(.invalidTuple("\(check.id.rawValue) intent/availability mismatch"))
@@ -677,6 +725,15 @@ enum OnboardingCopyCatalog {
                 }
             }
         }
+        if !report.scanRootExists && workspaceRootRow?.blocking != true {
+            return .failure(.invalidTuple("missing scan_root requires blocking workspace_root"))
+        }
+        if report.stage == .pair && !report.configured && configStoreRow?.blocking != true {
+            return .failure(.invalidTuple("unconfigured pair report requires blocking config_store"))
+        }
+        if report.stage == .pair && !report.workspaceConfirmed && configStoreRow?.state == .ok && workspaceRootRow?.blocking != true {
+            return .failure(.invalidTuple("unconfirmed workspace in pair report requires blocking workspace_root"))
+        }
         guard report.recommendedTransport == expectedRecommended else {
             return .failure(.invalidTuple("unexpected recommended_transport"))
         }
@@ -698,18 +755,14 @@ enum OnboardingCopyCatalog {
         guard let rawObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .failure(.invalidTuple("error envelope is not a JSON object"))
         }
-        if context.surface == .http {
-            for key in rawObject.keys where httpForbiddenFields.contains(key) {
-                return .failure(.invalidTuple("forbidden public field \(key)"))
-            }
+        if hasUnsupportedOnboardingSchema(rawObject) {
+            return .failure(.unsupportedSchema("unsupported onboarding error schema"))
+        }
+        if context.surface == .http, let forbidden = firstForbiddenHTTPField(in: rawObject) {
+            return .failure(.invalidTuple("forbidden public field \(forbidden)"))
         }
         guard let errorObj = rawObject["error"] as? [String: Any] else {
             return .failure(.missingRequiredField("error envelope missing error object"))
-        }
-        if context.surface == .http {
-            for key in errorObj.keys where httpForbiddenFields.contains(key) {
-                return .failure(.invalidTuple("forbidden public error field \(key)"))
-            }
         }
         guard let envelope = try? JSONDecoder().decode(OnboardingErrorEnvelope.self, from: data),
               envelope.ok == false
@@ -806,6 +859,111 @@ enum OnboardingCopyCatalog {
                 isTrusted: true,
                 isLegacyHost: true
             )
+        }
+        return nil
+    }
+
+    static func unknownCommandFailureMessage(exitCode: Int32) -> String {
+        "电脑服务未能完成操作（退出码 \(exitCode)）。请运行诊断或查看本机日志后重试。"
+    }
+
+    static func unknownCommandFallback(
+        exitCode: Int32,
+        step: OnboardingCheckID = .serviceDaemon,
+        rawStderr: String
+    ) -> OnboardingResolvedDiagnostic {
+        let sanitized = sanitizeDiagnostic(rawStderr)
+        return OnboardingResolvedDiagnostic(
+            code: nil,
+            step: step,
+            message: unknownCommandFailureMessage(exitCode: exitCode),
+            primaryAction: nil,
+            secondaryAction: nil,
+            secondaryLabel: nil,
+            configPath: nil,
+            recoveryPath: nil,
+            isTrusted: false,
+            isLegacyHost: false,
+            sanitizedDiagnostic: sanitized.isEmpty ? nil : sanitized
+        )
+    }
+
+    private static let diagnosticRedactions: [(NSRegularExpression, String)] = {
+        let specs: [(String, String)] = [
+            (#"(?i)mimiremote://\S+"#, "[已隐藏配对链接]"),
+            (#"(?i)(?:https?|wss?)://[^\s/@]+:[^\s/@]+@[^\s]+"#, "[已隐藏带凭据地址]"),
+            (#"(?i)(?:https?|wss?)://[^\s?#]+[?#][^\s]+"#, "[已隐藏含参数地址]"),
+            (#"(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b(?:\s*[:=]\s*|\s+)\S+"#, "[已隐藏凭据]"),
+            (#"(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b"#, "[已隐藏凭据]"),
+            (#"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)?\b"#, "[已隐藏凭据]"),
+            (#"\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|tskey|mimi|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b"#, "[已隐藏凭据]"),
+            (#"(?:~|(?:\.\.)?)/[^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
+            (#"[A-Za-z]:[\\/][^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
+            (#"\\\\[^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
+            (#"%[A-Za-z0-9_]+%[\\/][^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
+            (#"\b[0-9a-fA-F]{32,}\b"#, "[已隐藏凭据]"),
+            (#"(?<![A-Za-z0-9+/_=-])(?=[A-Za-z0-9+/_=-]*[0-9])(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{24,}(?![A-Za-z0-9+/_=-])"#, "[已隐藏凭据]"),
+        ]
+        return specs.compactMap { pattern, replacement in
+            (try? NSRegularExpression(pattern: pattern, options: [])).map { ($0, replacement) }
+        }
+    }()
+
+    static func sanitizeDiagnostic(_ raw: String, maxCharacters: Int = 180) -> String {
+        var text = raw
+        for (regex, replacement) in diagnosticRedactions {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: replacement)
+        }
+        let collapsed = text
+            .unicodeScalars
+            .map { scalar -> Character in
+                if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    return " "
+                }
+                return Character(scalar)
+            }
+        let normalized = String(collapsed)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard normalized.count > maxCharacters else {
+            return normalized
+        }
+        return String(normalized.prefix(max(1, maxCharacters - 1))) + "…"
+    }
+
+    private static func hasUnsupportedOnboardingSchema(_ object: [String: Any]) -> Bool {
+        if let schemaVal = object["schema"] {
+            guard let schema = schemaVal as? String else { return true }
+            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
+                return true
+            }
+        }
+        if let errObj = object["error"] as? [String: Any], let schemaVal = errObj["schema"] {
+            guard let schema = schemaVal as? String else { return true }
+            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func firstForbiddenHTTPField(in value: Any) -> String? {
+        if let dict = value as? [String: Any] {
+            for (key, nested) in dict {
+                if httpForbiddenFields.contains(key) {
+                    return key
+                }
+                if let found = firstForbiddenHTTPField(in: nested) {
+                    return found
+                }
+            }
+        } else if let array = value as? [Any] {
+            for item in array {
+                if let found = firstForbiddenHTTPField(in: item) {
+                    return found
+                }
+            }
         }
         return nil
     }

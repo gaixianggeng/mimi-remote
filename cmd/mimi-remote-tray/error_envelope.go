@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os/exec"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const (
@@ -25,21 +28,141 @@ const (
 	onboardingLegacyHostCopy    = "当前电脑端版本较旧，不支持新的引导检查。请更新桌面端后重试。"
 )
 
+// boundedTrayOutput caps retained command output without embedding bytes.Buffer
+// so it does NOT implement io.ReaderFrom and os/exec cannot bypass Write.
 type boundedTrayOutput struct {
-	bytes.Buffer
+	buf       bytes.Buffer
 	remaining int
 	truncated bool
 }
 
 func (b *boundedTrayOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	if len(p) > b.remaining {
-		p = p[:b.remaining]
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if b.remaining <= 0 {
+		b.truncated = true
+		return n, nil
+	}
+	chunk := p
+	if len(chunk) > b.remaining {
+		chunk = chunk[:b.remaining]
 		b.truncated = true
 	}
-	_, _ = b.Buffer.Write(p)
-	b.remaining -= len(p)
+	_, _ = b.buf.Write(chunk)
+	b.remaining -= len(chunk)
 	return n, nil
+}
+
+func (b *boundedTrayOutput) Bytes() []byte  { return b.buf.Bytes() }
+func (b *boundedTrayOutput) String() string { return b.buf.String() }
+func (b *boundedTrayOutput) Len() int       { return b.buf.Len() }
+
+const trayStderrLineLimit = 256 * 1024
+
+// trayStderrProgressWriter caps retained stderr and streams complete NDJSON lines
+// live into onboardingProgressAccumulator before the child process exits.
+// It intentionally does NOT implement io.ReaderFrom.
+type trayStderrProgressWriter struct {
+	out        boundedTrayOutput
+	progress   *onboardingProgressAccumulator
+	generation uint64
+	onProgress func(onboardingCheck)
+	lineBuf    []byte
+	lineLimit  int
+	dropLine   bool
+}
+
+func newTrayStderrProgressWriter(
+	stderrLimit int,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+) *trayStderrProgressWriter {
+	return &trayStderrProgressWriter{
+		out:        boundedTrayOutput{remaining: stderrLimit},
+		progress:   progress,
+		generation: generation,
+		onProgress: onProgress,
+		lineLimit:  trayStderrLineLimit,
+	}
+}
+
+func (w *trayStderrProgressWriter) Write(p []byte) (int, error) {
+	n, _ := w.out.Write(p)
+	if w.progress == nil || len(p) == 0 {
+		return n, nil
+	}
+	data := p
+	for len(data) > 0 {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			w.appendLineChunk(data)
+			break
+		}
+		w.appendLineChunk(data[:idx])
+		w.dispatchLine()
+		data = data[idx+1:]
+	}
+	return n, nil
+}
+
+func (w *trayStderrProgressWriter) appendLineChunk(chunk []byte) {
+	if w.dropLine || len(chunk) == 0 {
+		return
+	}
+	if len(w.lineBuf)+len(chunk) > w.lineLimit {
+		w.lineBuf = w.lineBuf[:0]
+		w.dropLine = true
+		return
+	}
+	w.lineBuf = append(w.lineBuf, chunk...)
+}
+
+func (w *trayStderrProgressWriter) dispatchLine() {
+	if w.dropLine {
+		w.dropLine = false
+		w.lineBuf = w.lineBuf[:0]
+		return
+	}
+	line := w.lineBuf
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	if len(bytes.TrimSpace(line)) > 0 {
+		if row, ok := w.progress.ApplyValidatedLine(w.generation, line); ok && w.onProgress != nil {
+			w.onProgress(row)
+		}
+	}
+	w.lineBuf = w.lineBuf[:0]
+}
+
+func (w *trayStderrProgressWriter) Flush() {
+	if w.progress != nil && (len(w.lineBuf) > 0 || w.dropLine) {
+		w.dispatchLine()
+	}
+}
+
+func (w *trayStderrProgressWriter) Bytes() []byte   { return w.out.Bytes() }
+func (w *trayStderrProgressWriter) String() string  { return w.out.String() }
+func (w *trayStderrProgressWriter) Truncated() bool { return w.out.truncated }
+
+func runTrayCommand(
+	cmd *exec.Cmd,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	stdoutLimit int,
+	stderrLimit int,
+) (stdout []byte, stderr []byte, stdoutTruncated bool, err error) {
+	out := &boundedTrayOutput{remaining: stdoutLimit}
+	errWriter := newTrayStderrProgressWriter(stderrLimit, progress, generation, onProgress)
+	cmd.Stdout = out
+	cmd.Stderr = errWriter
+	err = cmd.Run()
+	errWriter.Flush()
+	return out.Bytes(), errWriter.Bytes(), out.truncated, err
 }
 
 // onboardingFix decodes strictly against the closed v1 fix allow-list and rejects any extra fields.
@@ -238,16 +361,17 @@ type onboardingValidationContext struct {
 }
 
 type onboardingResolvedDiagnostic struct {
-	Code           string
-	Step           string
-	Message        string
-	AllowedFix     *onboardingFix
-	SecondaryFix   *onboardingFix
-	SecondaryLabel string
-	ConfigPath     string
-	RecoveryPath   string
-	Trusted        bool
-	LegacyHost     bool
+	Code                string
+	Step                string
+	Message             string
+	AllowedFix          *onboardingFix
+	SecondaryFix        *onboardingFix
+	SecondaryLabel      string
+	ConfigPath          string
+	RecoveryPath        string
+	SanitizedDiagnostic string
+	Trusted             bool
+	LegacyHost          bool
 }
 
 type onboardingCLIError struct {
@@ -376,6 +500,44 @@ var onboardingCommandTimeouts = []onboardingCommandTimeout{
 	{Commands: []string{"pair", "tailcat pair"}, BackendMax: 25 * time.Second, ClientMin: 45 * time.Second},
 	{Commands: []string{"runtime", "network", "workspace", "doctor --fix"}, BackendMax: 30 * time.Second, ClientMin: 45 * time.Second},
 	{Commands: []string{"up", "start", "restart"}, BackendMax: 85 * time.Second, ClientMin: 110 * time.Second, WindowsValue: 120 * time.Second},
+}
+
+func trayTimeoutKeyForArgs(args ...string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	first := args[0]
+	if first == "tailcat" && len(args) > 1 && args[1] == "pair" {
+		return "tailcat pair"
+	}
+	if first == "doctor" {
+		for _, arg := range args[1:] {
+			if arg == "--fix" {
+				return "doctor --fix"
+			}
+		}
+		return "doctor --fix"
+	}
+	if first == "tailcat" {
+		return "network"
+	}
+	return first
+}
+
+func trayCommandTimeout(platform string, args ...string) time.Duration {
+	key := trayTimeoutKeyForArgs(args...)
+	for _, entry := range onboardingCommandTimeouts {
+		if slices.Contains(entry.Commands, key) {
+			if platform == "windows" && entry.WindowsValue > 0 {
+				return entry.WindowsValue
+			}
+			return entry.ClientMin
+		}
+	}
+	if platform == "windows" {
+		return 120 * time.Second
+	}
+	return 110 * time.Second
 }
 
 var (
@@ -743,6 +905,13 @@ func validateOnboardingCheck(row onboardingCheck, ctx onboardingValidationContex
 	if row.Group != spec.Group || !slices.Contains(spec.Platforms, ctx.Platform) {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("check %s group/platform mismatch", row.ID)
 	}
+	if ctx.Surface == "native" {
+		isPermission := spec.Group == "permission"
+		isApproval := row.ID == "service_daemon" && row.Code == "service_requires_approval"
+		if ctx.Platform != "macos" || !(isPermission || isApproval) {
+			return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("invalid native overlay on %s", row.ID)
+		}
+	}
 	if !slices.Contains(validCheckStates, row.State) {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("unknown check state %q", row.State)
 	}
@@ -761,6 +930,9 @@ func validateOnboardingCheck(row onboardingCheck, ctx onboardingValidationContex
 		}
 	} else if !row.hasCodeKey || !row.hasFixKey || row.Fix == nil {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("%s state %s requires code and fix", row.ID, row.State)
+	}
+	if row.State == "optional" && *row.Blocking {
+		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("%s optional state cannot block", row.ID)
 	}
 	isIndividual := slices.Contains([]string{
 		"assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek",
@@ -840,6 +1012,10 @@ func selectedOrDetectedVersion(row onboardingCheck) string {
 }
 
 func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay bool, verifiedCapability string) (onboardingPreflightReport, error) {
+	return decodeAndValidatePreflightReportForStage(raw, platform, "", nativeOverlay, verifiedCapability)
+}
+
+func decodeAndValidatePreflightReportForStage(raw []byte, platform, expectedStage string, nativeOverlay bool, verifiedCapability string) (onboardingPreflightReport, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return onboardingPreflightReport{}, err
@@ -860,6 +1036,9 @@ func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay
 	}
 	if report.Stage != "setup" && report.Stage != "pair" {
 		return onboardingPreflightReport{}, fmt.Errorf("invalid stage %q", report.Stage)
+	}
+	if expectedStage != "" && report.Stage != expectedStage {
+		return onboardingPreflightReport{}, fmt.Errorf("report stage %q does not match requested stage %q", report.Stage, expectedStage)
 	}
 	if strings.TrimSpace(report.ConfigPath) == "" || strings.TrimSpace(report.ScanRoot) == "" || strings.TrimSpace(report.BrowseRoot) == "" {
 		return onboardingPreflightReport{}, errors.New("missing required report path field")
@@ -889,6 +1068,8 @@ func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay
 	eligible := map[string]bool{}
 	recommended := ""
 	hasRec := false
+	var configStoreRow *onboardingCheck
+	var workspaceRootRow *onboardingCheck
 
 	recTransport := ""
 	if report.RecommendedTransport != nil {
@@ -926,6 +1107,13 @@ func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay
 		if _, err := validateOnboardingCheck(row, ctx); err != nil {
 			return onboardingPreflightReport{}, fmt.Errorf("%s: %w", row.ID, err)
 		}
+		if row.ID == "config_store" {
+			rowCopy := row
+			configStoreRow = &rowCopy
+		} else if row.ID == "workspace_root" {
+			rowCopy := row
+			workspaceRootRow = &rowCopy
+		}
 		if *row.Blocking {
 			if report.Stage == "setup" && row.Group != "workspace" {
 				return onboardingPreflightReport{}, fmt.Errorf("unexpected setup blocker %s", row.ID)
@@ -934,8 +1122,10 @@ func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay
 				firstBlocker = row.ID
 			}
 		}
-		if row.Enabled != nil {
-			ready := *row.Enabled && row.Available != nil && *row.Available
+		switch row.ID {
+		case "assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek",
+			"network_tailscale", "network_tailcat", "network_lan":
+			ready := row.Enabled != nil && *row.Enabled && row.Available != nil && *row.Available
 			if (row.State == "ok") != ready {
 				return onboardingPreflightReport{}, fmt.Errorf("%s intent/availability mismatch", row.ID)
 			}
@@ -954,6 +1144,15 @@ func decodeAndValidatePreflightReport(raw []byte, platform string, nativeOverlay
 			return onboardingPreflightReport{}, errors.New("daemon readiness mismatch")
 		}
 		report.Checks = append(report.Checks, row)
+	}
+	if !*report.ScanRootExists && (workspaceRootRow == nil || workspaceRootRow.Blocking == nil || !*workspaceRootRow.Blocking) {
+		return onboardingPreflightReport{}, errors.New("missing scan_root requires blocking workspace_root")
+	}
+	if report.Stage == "pair" && !*report.Configured && (configStoreRow == nil || configStoreRow.Blocking == nil || !*configStoreRow.Blocking) {
+		return onboardingPreflightReport{}, errors.New("unconfigured pair report requires blocking config_store")
+	}
+	if report.Stage == "pair" && !*report.WorkspaceConfirmed && configStoreRow != nil && configStoreRow.State == "ok" && (workspaceRootRow == nil || workspaceRootRow.Blocking == nil || !*workspaceRootRow.Blocking) {
+		return onboardingPreflightReport{}, errors.New("unconfirmed workspace in pair report requires blocking workspace_root")
 	}
 	if (report.RecommendedTransport == nil && hasRec) || (report.RecommendedTransport != nil && (!hasRec || *report.RecommendedTransport != recommended)) {
 		return onboardingPreflightReport{}, errors.New("unexpected recommended_transport")
@@ -984,6 +1183,52 @@ func platformCheckIDs(platform string) []string {
 	return ids
 }
 
+func hasUnsupportedOnboardingSchemaAny(v any) bool {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	checkObj := func(m map[string]any) bool {
+		rawSchema, present := m["schema"]
+		if !present {
+			return false
+		}
+		schema, ok := rawSchema.(string)
+		if !ok {
+			return true
+		}
+		return strings.HasPrefix(schema, "mimi.onboarding.") && !strings.HasSuffix(schema, "/v1")
+	}
+	if checkObj(obj) {
+		return true
+	}
+	if errObj, ok := obj["error"].(map[string]any); ok && checkObj(errObj) {
+		return true
+	}
+	return false
+}
+
+func firstForbiddenHTTPFieldAny(v any) string {
+	switch typed := v.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if _, forbidden := httpForbiddenKeys[key]; forbidden {
+				return key
+			}
+			if found := firstForbiddenHTTPFieldAny(nested); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if found := firstForbiddenHTTPFieldAny(item); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
 func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) (onboardingResolvedDiagnostic, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -992,11 +1237,16 @@ func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) 
 	if top == nil {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, errors.New("envelope must be an object")
 	}
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, err
+	}
+	if hasUnsupportedOnboardingSchemaAny(generic) {
+		return onboardingResolvedDiagnostic{Message: onboardingUnknownMajorCopy}, errors.New("unsupported onboarding schema")
+	}
 	if ctx.Surface == "http" {
-		for key := range top {
-			if _, forbidden := httpForbiddenKeys[key]; forbidden {
-				return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("forbidden public field %q", key)
-			}
+		if forbidden := firstForbiddenHTTPFieldAny(generic); forbidden != "" {
+			return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("forbidden public field %q", forbidden)
 		}
 	}
 	var env onboardingErrorEnvelope
@@ -1016,13 +1266,7 @@ func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) 
 	if strings.TrimSpace(env.Error.Code) == "" || strings.TrimSpace(env.Error.Step) == "" || strings.TrimSpace(env.Error.Message) == "" {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, errors.New("error envelope missing required fields")
 	}
-	if ctx.Surface == "http" {
-		for key := range errFields {
-			if _, forbidden := httpForbiddenKeys[key]; forbidden {
-				return onboardingResolvedDiagnostic{Code: env.Error.Code, Step: env.Error.Step, Message: onboardingSafeFallbackCopy}, fmt.Errorf("forbidden public error field %q", key)
-			}
-		}
-	} else {
+	if ctx.Surface != "http" {
 		_, hasCfg := errFields["config_path"]
 		_, hasRec := errFields["recovery_path"]
 		if (hasCfg || hasRec) && !(env.Error.Fix.Kind == "open_settings" && env.Error.Fix.Target == "host_recovery") {
@@ -1113,6 +1357,40 @@ func newTrayUILocalError(code, step, title string) *onboardingCLIError {
 	return &onboardingCLIError{Diagnostic: resolved}
 }
 
+func isValidOnboardingPairURL(raw string) bool {
+	if !strings.HasPrefix(raw, "mimiremote://pair?") || len(raw) <= len("mimiremote://pair?") {
+		return false
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "mimiremote" && parsed.Host == "pair"
+}
+
+func isValidOnboardingRFC3339(raw string, requireUTC bool) bool {
+	if len(raw) < 20 {
+		return false
+	}
+	if raw[4] != '-' || raw[7] != '-' || raw[10] != 'T' || raw[13] != ':' || raw[16] != ':' {
+		return false
+	}
+	if requireUTC && !strings.HasSuffix(raw, "Z") {
+		return false
+	}
+	if !strings.HasSuffix(raw, "Z") {
+		if len(raw) < 25 {
+			return false
+		}
+		tzSign := raw[len(raw)-6]
+		if (tzSign != '+' && tzSign != '-') || raw[len(raw)-3] != ':' {
+			return false
+		}
+	}
+	_, err := time.Parse(time.RFC3339Nano, raw)
+	return err == nil
+}
+
 func decodeOnboardingSetupReceipt(raw []byte) (onboardingSetupReceipt, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -1125,10 +1403,17 @@ func decodeOnboardingSetupReceipt(raw []byte) (onboardingSetupReceipt, error) {
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingSetupReceipt{}, err
 	}
-	// Legacy setup output (pre-BE-3): only has endpoint/pair_url/pair_expires_at without configured/created.
-	if receipt.Configured == nil && receipt.Created == nil && strings.TrimSpace(receipt.PairURL) != "" {
-		if !strings.HasPrefix(receipt.PairURL, "mimiremote://pair?") || strings.TrimSpace(receipt.Endpoint) == "" || strings.TrimSpace(receipt.PairExpiresAt) == "" {
-			return onboardingSetupReceipt{}, errors.New("incomplete legacy setup ticket")
+	_, hasOK := top["ok"]
+	if hasOK && (receipt.OK == nil || !*receipt.OK) {
+		return onboardingSetupReceipt{}, errors.New("setup receipt ok is not true")
+	}
+	if receipt.Network != "" && !slices.Contains(validTransports, receipt.Network) {
+		return onboardingSetupReceipt{}, fmt.Errorf("invalid setup network %q", receipt.Network)
+	}
+	// Legacy setup output (pre-BE-3): only has endpoint/pair_url/pair_expires_at without ok/configured/created.
+	if !hasOK && receipt.Configured == nil && receipt.Created == nil && strings.TrimSpace(receipt.PairURL) != "" {
+		if !isValidOnboardingPairURL(receipt.PairURL) || strings.TrimSpace(receipt.Endpoint) == "" || !isValidOnboardingRFC3339(receipt.PairExpiresAt, false) {
+			return onboardingSetupReceipt{}, errors.New("incomplete or invalid legacy setup ticket")
 		}
 		receipt.Legacy = true
 		return receipt, nil
@@ -1145,26 +1430,24 @@ func decodeOnboardingSetupReceipt(raw []byte) (onboardingSetupReceipt, error) {
 		return onboardingSetupReceipt{}, errors.New("deferred setup receipt cannot contain ticket fields")
 	}
 	if hasPairURL {
-		if !strings.HasPrefix(receipt.PairURL, "mimiremote://pair?") || strings.TrimSpace(receipt.Endpoint) == "" || strings.TrimSpace(receipt.PairExpiresAt) == "" {
-			return onboardingSetupReceipt{}, errors.New("setup receipt ticket fields incomplete")
+		if !isValidOnboardingPairURL(receipt.PairURL) || strings.TrimSpace(receipt.Endpoint) == "" || !isValidOnboardingRFC3339(receipt.PairExpiresAt, true) {
+			return onboardingSetupReceipt{}, errors.New("setup receipt ticket fields incomplete or invalid")
 		}
-		if _, err := time.Parse(time.RFC3339Nano, receipt.PairExpiresAt); err != nil {
-			return onboardingSetupReceipt{}, err
-		}
-	}
-	if receipt.Network != "" && !slices.Contains(validTransports, receipt.Network) {
-		return onboardingSetupReceipt{}, fmt.Errorf("invalid setup network %q", receipt.Network)
 	}
 	return receipt, nil
 }
 
 func decodeOnboardingUpReadinessReceipt(raw []byte) (onboardingUpReadinessReceipt, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return onboardingUpReadinessReceipt{}, err
+	}
 	var receipt onboardingUpReadinessReceipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingUpReadinessReceipt{}, err
 	}
-	if receipt.OK != nil && !*receipt.OK {
-		return onboardingUpReadinessReceipt{}, errors.New("up receipt ok=false")
+	if _, hasOK := top["ok"]; hasOK && (receipt.OK == nil || !*receipt.OK) {
+		return onboardingUpReadinessReceipt{}, errors.New("up receipt ok is not true")
 	}
 	if receipt.ServiceOK == nil || !*receipt.ServiceOK || strings.TrimSpace(receipt.Version) == "" {
 		return onboardingUpReadinessReceipt{}, errors.New("up receipt does not confirm authenticated readiness")
@@ -1173,25 +1456,26 @@ func decodeOnboardingUpReadinessReceipt(raw []byte) (onboardingUpReadinessReceip
 }
 
 func decodeOnboardingPairingTicketReceipt(raw []byte, requireNetwork bool) (onboardingPairingTicketReceipt, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return onboardingPairingTicketReceipt{}, err
+	}
+	if top == nil {
+		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt must be an object")
+	}
 	var receipt onboardingPairingTicketReceipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingPairingTicketReceipt{}, err
 	}
-	if receipt.OK != nil && !*receipt.OK {
-		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt ok=false")
+	_, hasOK := top["ok"]
+	if hasOK && (receipt.OK == nil || !*receipt.OK) {
+		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt ok is not true")
 	}
-	if strings.TrimSpace(receipt.Endpoint) == "" || !strings.HasPrefix(receipt.PairURL, "mimiremote://pair?") {
+	if strings.TrimSpace(receipt.Endpoint) == "" || !isValidOnboardingPairURL(receipt.PairURL) {
 		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt missing endpoint or valid pair_url")
 	}
-	if _, err := url.Parse(receipt.PairURL); err != nil {
-		return onboardingPairingTicketReceipt{}, err
-	}
-	if !strings.HasSuffix(receipt.PairExpiresAt, "Z") {
-		if _, err := time.Parse(time.RFC3339Nano, receipt.PairExpiresAt); err != nil {
-			return onboardingPairingTicketReceipt{}, err
-		}
-	} else if _, err := time.Parse(time.RFC3339Nano, receipt.PairExpiresAt); err != nil {
-		return onboardingPairingTicketReceipt{}, err
+	if !isValidOnboardingRFC3339(receipt.PairExpiresAt, hasOK || requireNetwork) {
+		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt has invalid pair_expires_at")
 	}
 	if receipt.Network != "" && !slices.Contains(validTransports, receipt.Network) {
 		return onboardingPairingTicketReceipt{}, fmt.Errorf("invalid transport %q", receipt.Network)
@@ -1202,46 +1486,74 @@ func decodeOnboardingPairingTicketReceipt(raw []byte, requireNetwork bool) (onbo
 	return receipt, nil
 }
 
-// onboardingProgressAccumulator applies out-of-order NDJSON progress checks while
-// ensuring cancelled or superseded runs never overwrite a terminal state.
+// onboardingProgressAccumulator applies out-of-order NDJSON progress checks after
+// schema and code/action tuple validation while ensuring cancelled or superseded runs
+// never overwrite a terminal state.
 type onboardingProgressAccumulator struct {
-	mu          sync.Mutex
-	order       []string
-	byID        map[string]onboardingCheck
-	finalReport *onboardingPreflightReport
-	terminal    bool
-	generation  uint64
+	mu                sync.Mutex
+	validationContext onboardingValidationContext
+	order             []string
+	byID              map[string]onboardingCheck
+	finalReport       *onboardingPreflightReport
+	terminal          bool
+	generation        uint64
 }
 
 func newOnboardingProgressAccumulator(generation uint64) *onboardingProgressAccumulator {
+	configured := false
+	return newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
+		Surface:    "check",
+		Platform:   "macos",
+		Stage:      "setup",
+		Configured: &configured,
+	})
+}
+
+func newOnboardingProgressAccumulatorWithContext(generation uint64, ctx onboardingValidationContext) *onboardingProgressAccumulator {
+	if ctx.Surface == "" {
+		ctx.Surface = "check"
+	}
+	if ctx.Stage == "" {
+		ctx.Stage = "setup"
+	}
+	if ctx.Configured == nil {
+		configured := false
+		ctx.Configured = &configured
+	}
 	return &onboardingProgressAccumulator{
-		byID:       make(map[string]onboardingCheck),
-		generation: generation,
+		validationContext: ctx,
+		byID:              make(map[string]onboardingCheck),
+		generation:        generation,
 	}
 }
 
 func (a *onboardingProgressAccumulator) ApplyLine(generation uint64, line []byte) bool {
+	_, ok := a.ApplyValidatedLine(generation, line)
+	return ok
+}
+
+func (a *onboardingProgressAccumulator) ApplyValidatedLine(generation uint64, line []byte) (onboardingCheck, bool) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 {
-		return false
+		return onboardingCheck{}, false
 	}
 	row, err := decodeOnboardingCheck(trimmed)
 	if err != nil {
-		return false
+		return onboardingCheck{}, false
 	}
-	if _, known := onboardingCheckIndex[row.ID]; !known || !slices.Contains(validCheckStates, row.State) {
-		return false
+	if _, err := validateOnboardingCheck(row, a.validationContext); err != nil {
+		return onboardingCheck{}, false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.terminal || generation != a.generation {
-		return false
+		return onboardingCheck{}, false
 	}
 	if _, exists := a.byID[row.ID]; !exists {
 		a.order = append(a.order, row.ID)
 	}
 	a.byID[row.ID] = row
-	return true
+	return row, true
 }
 
 func (a *onboardingProgressAccumulator) ApplyStream(generation uint64, reader io.Reader) int {
@@ -1298,28 +1610,169 @@ func (a *onboardingProgressAccumulator) Snapshot() ([]onboardingCheck, *onboardi
 	return rows, rep
 }
 
-var trayOnboardingSecretPattern = regexp.MustCompile(`(?i)(token|secret|password|authorization|capability|pair_sig|private[_ -]?key|bearer\s|mimiremote://)`)
+var (
+	trayPairURLPattern         = regexp.MustCompile(`(?i)mimiremote://\S+`)
+	trayCredURLPattern         = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s/@]+:[^\s/@]+@[^\s]+`)
+	trayParamURLPattern        = regexp.MustCompile(`(?i)(?:https?|wss?)://[^\s?#]+[?#][^\s]+`)
+	trayMarkedSecretValPattern = regexp.MustCompile(`(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b(?:\s*[:=]\s*|\s+)\S+`)
+	trayMarkedSecretPattern    = regexp.MustCompile(`(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b`)
+	trayJWTPattern             = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)?\b`)
+	trayPrefixedSecretPattern  = regexp.MustCompile(`\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|tskey|mimi|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b`)
+	trayUnixPathPattern        = regexp.MustCompile(`(?:~|(?:\.\.)?)/[^\s"'` + "`" + `<>|;,)\]}]+`)
+	trayWindowsPathPattern     = regexp.MustCompile(`[A-Za-z]:[\\/][^\s"'` + "`" + `<>|;,)\]}]+`)
+	trayUNCPathPattern         = regexp.MustCompile(`\\\\[^\s"'` + "`" + `<>|;,)\]}]+`)
+	trayEnvPathPattern         = regexp.MustCompile(`%[A-Za-z0-9_]+%[\\/][^\s"'` + "`" + `<>|;,)\]}]+`)
+	trayLongHexPattern         = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+	trayOpaqueTokenPattern     = regexp.MustCompile(`[A-Za-z0-9+/_=-]{24,}`)
+)
 
-func redactOnboardingFallback(text string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i, line := range lines {
-		if trayOnboardingSecretPattern.MatchString(line) {
-			lines[i] = "[已隐藏包含凭据的内容]"
+func trayTokenHasLetterAndDigit(s string) bool {
+	hasLetter, hasDigit := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			hasLetter = true
+		} else if c >= '0' && c <= '9' {
+			hasDigit = true
+		}
+		if hasLetter && hasDigit {
+			return true
 		}
 	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return false
 }
 
-func trayValidationContextForArgs(platform string, args []string) onboardingValidationContext {
-	configured := true
-	stage := "pair"
-	if len(args) > 0 && (args[0] == "setup" || args[0] == "preflight") {
-		stage = "setup"
+func scrubTraySensitiveText(text string) string {
+	s := trayPairURLPattern.ReplaceAllString(text, "[已隐藏配对链接]")
+	s = trayCredURLPattern.ReplaceAllString(s, "[已隐藏带凭据地址]")
+	s = trayParamURLPattern.ReplaceAllString(s, "[已隐藏含参数地址]")
+	s = trayMarkedSecretValPattern.ReplaceAllString(s, "[已隐藏凭据]")
+	s = trayMarkedSecretPattern.ReplaceAllString(s, "[已隐藏凭据]")
+	s = trayJWTPattern.ReplaceAllString(s, "[已隐藏凭据]")
+	s = trayPrefixedSecretPattern.ReplaceAllString(s, "[已隐藏凭据]")
+	s = trayUnixPathPattern.ReplaceAllString(s, "[已隐藏路径]")
+	s = trayWindowsPathPattern.ReplaceAllString(s, "[已隐藏路径]")
+	s = trayUNCPathPattern.ReplaceAllString(s, "[已隐藏路径]")
+	s = trayEnvPathPattern.ReplaceAllString(s, "[已隐藏路径]")
+	s = trayLongHexPattern.ReplaceAllString(s, "[已隐藏凭据]")
+	s = trayOpaqueTokenPattern.ReplaceAllStringFunc(s, func(match string) string {
+		if trayTokenHasLetterAndDigit(match) {
+			return "[已隐藏凭据]"
+		}
+		return match
+	})
+	return s
+}
+
+func sanitizeTrayDiagnostic(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		maxRunes = 180
+	}
+	scrubbed := scrubTraySensitiveText(text)
+	var b strings.Builder
+	prevSpace := true
+	for _, r := range scrubbed {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	out := strings.TrimSpace(b.String())
+	runes := []rune(out)
+	if len(runes) <= maxRunes {
+		return out
+	}
+	limit := maxRunes - 1
+	if limit < 1 {
+		limit = 1
+	}
+	return string(runes[:limit]) + "…"
+}
+
+func redactOnboardingFallback(text string) string {
+	return sanitizeTrayDiagnostic(text, 180)
+}
+
+func formatTrayUnknownFailureMessage(exitErr error) string {
+	var ee *exec.ExitError
+	if errors.As(exitErr, &ee) && ee.ExitCode() >= 0 {
+		return "电脑服务未能完成操作（退出码 " + strconv.Itoa(ee.ExitCode()) + "）。请运行诊断或查看本机日志后重试。"
+	}
+	return "电脑服务未能完成操作。请运行诊断或查看本机日志后重试。"
+}
+
+func newTrayUnknownCommandError(exitErr error, step, rawDetail string) *onboardingCLIError {
+	if step == "" {
+		step = "service_daemon"
+	}
+	return &onboardingCLIError{
+		Diagnostic: onboardingResolvedDiagnostic{
+			Step:                step,
+			Message:             formatTrayUnknownFailureMessage(exitErr),
+			AllowedFix:          nil,
+			Trusted:             false,
+			SanitizedDiagnostic: sanitizeTrayDiagnostic(rawDetail, 180),
+		},
+	}
+}
+
+func trayStageForArgs(args []string) string {
+	if len(args) == 0 {
+		return "setup"
+	}
+	if args[0] == "setup" {
+		return "setup"
+	}
+	if args[0] == "preflight" {
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--stage" && i+1 < len(args) {
+				if args[i+1] == "pair" {
+					return "pair"
+				}
+				return "setup"
+			}
+			if strings.HasPrefix(args[i], "--stage=") {
+				if strings.TrimPrefix(args[i], "--stage=") == "pair" {
+					return "pair"
+				}
+				return "setup"
+			}
+		}
+		return "setup"
+	}
+	return "pair"
+}
+
+func trayActiveStepForArgs(args []string) string {
+	if len(args) == 0 {
+		return "service_daemon"
+	}
+	switch args[0] {
+	case "setup", "doctor", "workspace":
+		return "config_store"
+	case "pair", "network":
+		return "network_any"
+	case "tailcat":
+		return "network_tailcat"
+	default:
+		return "service_daemon"
+	}
+}
+
+func trayValidationContextForArgs(platform string, args []string, verifiedConfigured ...bool) onboardingValidationContext {
+	configured := false
+	if len(verifiedConfigured) > 0 && verifiedConfigured[0] {
+		configured = true
 	}
 	return onboardingValidationContext{
 		Surface:    "cli",
 		Platform:   platform,
-		Stage:      stage,
+		Stage:      trayStageForArgs(args),
 		Configured: &configured,
 	}
 }

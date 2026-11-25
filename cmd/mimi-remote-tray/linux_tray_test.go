@@ -141,3 +141,21 @@ func TestLinuxConcurrentActionsDoNotOverlap(t *testing.T) {
 		t.Fatal("busy flag was not cleared")
 	}
 }
+func TestLinuxPerformTimeoutMeetsOnboardingBudget(t *testing.T) {
+	if got := linuxPerformTimeout("start"); got < 110*time.Second {
+		t.Fatalf("linux start timeout = %s, want >= 110s", got)
+	}
+	if got := linuxPerformTimeout("restart"); got < 110*time.Second {
+		t.Fatalf("linux restart timeout = %s, want >= 110s", got)
+	}
+	if got := linuxPerformTimeout("pair-tailscale"); got < 45*time.Second {
+		t.Fatalf("linux pair timeout = %s, want >= 45s", got)
+	}
+	if got := linuxPerformTimeout("pair-tailcat"); got < 45*time.Second {
+		t.Fatalf("linux tailcat pair timeout = %s, want >= 45s", got)
+	}
+	redacted := redactTrayText("safe line\n/home/alice/.config/secret.json UnmarkedCred9876543210ABCDEF")
+	if !strings.Contains(redacted, "safe line") || strings.Contains(redacted, "/home/alice") || strings.Contains(redacted, "UnmarkedCred9876543210ABCDEF") {
+		t.Fatalf("redactTrayText leaked private path or unmarked credential: %q", redacted)
+	}
+}

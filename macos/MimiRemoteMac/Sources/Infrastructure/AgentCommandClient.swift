@@ -35,6 +35,8 @@ struct OnboardingPreflightOptions: Equatable, Sendable {
     var progressJSON: Bool = true
     var runtimePaths: [(id: String, value: String)] = []
     var assistants: [(id: String, value: String)] = []
+    var verifiedConfigured: Bool? = nil
+    var verifiedCapability: String? = nil
 
     static func == (lhs: OnboardingPreflightOptions, rhs: OnboardingPreflightOptions) -> Bool {
         lhs.stage == rhs.stage
@@ -44,6 +46,8 @@ struct OnboardingPreflightOptions: Equatable, Sendable {
             && lhs.progressJSON == rhs.progressJSON
             && lhs.runtimePaths.map { "\($0.id)=\($0.value)" } == rhs.runtimePaths.map { "\($0.id)=\($0.value)" }
             && lhs.assistants.map { "\($0.id)=\($0.value)" } == rhs.assistants.map { "\($0.id)=\($0.value)" }
+            && lhs.verifiedConfigured == rhs.verifiedConfigured
+            && lhs.verifiedCapability == rhs.verifiedCapability
     }
 }
 
@@ -51,11 +55,13 @@ struct OnboardingSetupOptions: Equatable, Sendable {
     var browseRoot: URL? = nil
     var runtimePaths: [(id: String, value: String)] = []
     var assistants: [(id: String, value: String)] = []
+    var verifiedConfigured: Bool? = nil
 
     static func == (lhs: OnboardingSetupOptions, rhs: OnboardingSetupOptions) -> Bool {
         lhs.browseRoot == rhs.browseRoot
             && lhs.runtimePaths.map { "\($0.id)=\($0.value)" } == rhs.runtimePaths.map { "\($0.id)=\($0.value)" }
             && lhs.assistants.map { "\($0.id)=\($0.value)" } == rhs.assistants.map { "\($0.id)=\($0.value)" }
+            && lhs.verifiedConfigured == rhs.verifiedConfigured
     }
 }
 
@@ -231,8 +237,8 @@ extension AgentCommandClient {
                 let context = errorContext ?? OnboardingValidationContext(
                     surface: .cli,
                     platform: .macos,
-                    stage: (arguments.first == "setup" || arguments.first == "preflight") ? .setup : .pair,
-                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                    stage: resolveStage(for: arguments),
+                    configured: false
                 )
                 if let resolved = OnboardingCopyCatalog.resolveCLIError(
                     stdout: result.stdout,
@@ -241,8 +247,12 @@ extension AgentCommandClient {
                 ) {
                     throw AgentClientError.onboarding(resolved)
                 }
-                throw AgentClientError.commandFailed(
-                    result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw AgentClientError.onboarding(
+                    OnboardingCopyCatalog.unknownCommandFallback(
+                        exitCode: result.status,
+                        step: activeStep,
+                        rawStderr: result.stderrText
+                    )
                 )
             }
             return result
@@ -262,14 +272,14 @@ extension AgentCommandClient {
                 binary: binary,
                 arguments: setupArguments(
                     workspaceRoot: workspaceRoot,
-                    browseRoot: homeDirectory
+                    browseRoot: workspaceRoot
                 ),
                 timeout: AgentCommandTimeouts.setup,
                 errorContext: OnboardingValidationContext(
                     surface: .cli,
                     platform: .macos,
                     stage: .setup,
-                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                    configured: false
                 ),
                 activeStep: .configStore
             )
@@ -282,16 +292,22 @@ extension AgentCommandClient {
             onProgress: (@Sendable (OnboardingCheck) -> Void)?
         ) async throws -> OnboardingPreflightReport {
             let binary = try requireEmbeddedBinary()
+            let verifiedConfigured = options.verifiedConfigured ?? false
+            let progressContext = OnboardingValidationContext(
+                surface: .check,
+                platform: .macos,
+                stage: options.stage,
+                configured: verifiedConfigured,
+                verifiedCapability: options.verifiedCapability
+            )
+            let accumulator = OnboardingProgressAccumulator(generation: 1, context: progressContext)
             let stderrHandler: (@Sendable (String) -> Void)?
             if options.progressJSON {
                 stderrHandler = { line in
-                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty,
-                          let check = try? JSONDecoder().decode(OnboardingCheck.self, from: Data(trimmed.utf8))
-                    else {
+                    guard let validated = accumulator.applyValidatedLine(line, generation: 1) else {
                         return
                     }
-                    onProgress?(check)
+                    onProgress?(validated)
                 }
             } else {
                 stderrHandler = nil
@@ -305,14 +321,21 @@ extension AgentCommandClient {
                     surface: .cli,
                     platform: .macos,
                     stage: options.stage,
-                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                    configured: verifiedConfigured,
+                    verifiedCapability: options.verifiedCapability
                 ),
                 activeStep: .serviceDaemon,
                 onStderrLine: stderrHandler
             )
             let report = try decode(OnboardingPreflightReport.self, from: result)
-            switch OnboardingCopyCatalog.validateReport(report, platform: .macos) {
+            switch OnboardingCopyCatalog.validateReport(
+                report,
+                platform: .macos,
+                expectedStage: options.stage,
+                verifiedCapability: options.verifiedCapability
+            ) {
             case .success:
+                accumulator.complete(with: report, generation: 1)
                 return report
             case .failure(let error):
                 throw AgentClientError.invalidResponse(error.localizedDescription)
@@ -332,7 +355,7 @@ extension AgentCommandClient {
                     surface: .cli,
                     platform: .macos,
                     stage: .setup,
-                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                    configured: options.verifiedConfigured ?? false
                 ),
                 activeStep: .configStore
             )
@@ -349,7 +372,7 @@ extension AgentCommandClient {
                     surface: .cli,
                     platform: .macos,
                     stage: .pair,
-                    configured: true
+                    configured: false
                 ),
                 activeStep: .serviceDaemon
             )
@@ -366,7 +389,7 @@ extension AgentCommandClient {
                     surface: .cli,
                     platform: .macos,
                     stage: .pair,
-                    configured: true
+                    configured: false
                 ),
                 activeStep: .networkAny
             )
@@ -416,10 +439,52 @@ extension AgentCommandClient {
                     // Doctor --fix 可能等待服务诊断和配置提交，并在提交后重新跑
                     // 完整检查；给它覆盖事务上界的时间，避免配置已提交却因
                     // 客户端过早终止而漏掉 restart_required。
-                    timeout: .seconds(90)
+                    timeout: AgentCommandTimeouts.doctorFix,
+                    activeStep: .configStore
                 )
+                if result.status != 0, OnboardingCopyCatalog.looksLikeErrorEnvelopeJSON(result.stdout) {
+                    let doctorContext = OnboardingValidationContext(
+                        surface: .cli,
+                        platform: .macos,
+                        stage: .pair,
+                        configured: false
+                    )
+                    if let resolved = OnboardingCopyCatalog.resolveCLIError(
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        context: doctorContext
+                    ) {
+                        throw AgentClientError.onboarding(resolved)
+                    }
+                }
                 if fix {
-                    return try decode(DoctorFixResults.self, from: result)
+                    do {
+                        return try decode(DoctorFixResults.self, from: result)
+                    } catch {
+                        if result.status != 0 {
+                            let doctorContext = OnboardingValidationContext(
+                                surface: .cli,
+                                platform: .macos,
+                                stage: .pair,
+                                configured: false
+                            )
+                            if let resolved = OnboardingCopyCatalog.resolveCLIError(
+                                stdout: result.stdout,
+                                stderr: result.stderr,
+                                context: doctorContext
+                            ) {
+                                throw AgentClientError.onboarding(resolved)
+                            }
+                            throw AgentClientError.onboarding(
+                                OnboardingCopyCatalog.unknownCommandFallback(
+                                    exitCode: result.status,
+                                    step: .configStore,
+                                    rawStderr: result.stderrText
+                                )
+                            )
+                        }
+                        throw error
+                    }
                 }
                 let results = try decode(AgentDoctorResults.self, from: result)
                 return DoctorFixResults(fixes: [], results: results)
@@ -680,13 +745,36 @@ extension AgentCommandClient {
         return arguments
     }
 
-    static func setupArguments(workspaceRoot: URL, browseRoot: URL) -> [String] {
-        [
+    static func resolveStage(for arguments: [String]) -> OnboardingStage {
+        guard let first = arguments.first else { return .setup }
+        if first == "setup" {
+            return .setup
+        }
+        if first == "preflight" {
+            var index = 1
+            while index < arguments.count {
+                let arg = arguments[index]
+                if arg == "--stage", index + 1 < arguments.count {
+                    return OnboardingStage(rawValue: arguments[index + 1]) ?? .setup
+                }
+                if arg.hasPrefix("--stage=") {
+                    let raw = String(arg.dropFirst("--stage=".count))
+                    return OnboardingStage(rawValue: raw) ?? .setup
+                }
+                index += 1
+            }
+            return .setup
+        }
+        return .pair
+    }
+
+    static func setupArguments(workspaceRoot: URL, browseRoot: URL? = nil) -> [String] {
+        let resolvedBrowseRoot = browseRoot ?? workspaceRoot
+        return [
             "setup", "--json", "--qr-only",
-            // 项目发现只扫描用户选择的代码目录，避免遍历整个 Home。
+            // 按最小权限原则，首次设置默认将用户所选代码目录同时作为扫描与浏览根目录，不默认开放整个 Home。
             "--scan-root", workspaceRoot.path,
-            // 文件预览和会话产物可能位于 ~/.codex 等目录，浏览权限默认覆盖当前用户 Home。
-            "--browse-root", browseRoot.path,
+            "--browse-root", resolvedBrowseRoot.path,
         ]
     }
 

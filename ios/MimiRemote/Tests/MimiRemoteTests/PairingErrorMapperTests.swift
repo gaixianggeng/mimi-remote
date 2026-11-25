@@ -87,7 +87,7 @@ final class PairingErrorMapperTests: XCTestCase {
                 httpCount += 1
                 let payloadObj = try XCTUnwrap(item["payload"] as? [String: Any], id)
                 let payloadData = try JSONSerialization.data(withJSONObject: payloadObj)
-                let configured = (rawCtx["configured"] as? Bool) ?? true
+                let configured = rawCtx["configured"] as? Bool
                 let mapped = PairingErrorMapper.mapHTTPErrorEnvelope(data: payloadData, configured: configured)
                 XCTAssertEqual(mapped.isTrusted, valid, "HTTP case \(id) expected trusted=\(valid)")
                 XCTAssertTrue(mapped.preservesSavedProfiles, id)
@@ -149,7 +149,7 @@ final class PairingErrorMapperTests: XCTestCase {
         }
 
         let tokenMismatchData = Data(#"{"ok":false,"error":{"code":"pair_token_mismatch","step":"service_daemon","message":"身份未同步","fix":{"kind":"run_fix","action":"restart_service"}}}"#.utf8)
-        let tokenMismatch = PairingErrorMapper.mapHTTPErrorEnvelope(data: tokenMismatchData)
+        let tokenMismatch = PairingErrorMapper.mapHTTPErrorEnvelope(data: tokenMismatchData, configured: true)
         XCTAssertTrue(tokenMismatch.isTrusted)
         XCTAssertTrue(tokenMismatch.preservesSavedProfiles)
         if case .desktopGuidanceAndRescan = tokenMismatch.action {
@@ -157,6 +157,21 @@ final class PairingErrorMapperTests: XCTestCase {
         } else {
             XCTFail("Expected desktopGuidanceAndRescan, got \(tokenMismatch.action)")
         }
+
+        // Unverified or unconfigured context must NOT grant trusted restart_service for pair_token_mismatch
+        let unverifiedTokenMismatch = PairingErrorMapper.mapHTTPErrorEnvelope(data: tokenMismatchData)
+        XCTAssertFalse(unverifiedTokenMismatch.isTrusted)
+        XCTAssertEqual(unverifiedTokenMismatch.action, .none)
+        XCTAssertNil(unverifiedTokenMismatch.wireFix)
+        let freshTokenMismatch = PairingErrorMapper.mapHTTPErrorEnvelope(data: tokenMismatchData, configured: false)
+        XCTAssertFalse(freshTokenMismatch.isTrusted)
+        XCTAssertEqual(freshTokenMismatch.action, .none)
+
+        // Nested forbidden public field must be rejected
+        let nestedPrivate = Data(#"{"ok":false,"extra":{"token":"secret-bearer"},"error":{"code":"pair_ticket_expired","step":"network_any","message":"过期","fix":{"kind":"retry"}}}"#.utf8)
+        let nestedMapped = PairingErrorMapper.mapHTTPErrorEnvelope(data: nestedPrivate)
+        XCTAssertFalse(nestedMapped.isTrusted)
+        XCTAssertEqual(nestedMapped.action, .none)
 
         // Harmless additive fields accepted
         let additiveData = Data(#"{"ok":false,"future_top":true,"error":{"code":"pair_ticket_expired","step":"network_any","message":"过期","fix":{"kind":"retry"},"future_hint":"新增提示"}}"#.utf8)
@@ -214,5 +229,48 @@ final class PairingErrorMapperTests: XCTestCase {
         XCTAssertTrue(legacy401.preservesSavedProfiles)
         XCTAssertEqual(legacy401.code, "pair_ticket_invalid")
         XCTAssertEqual(legacy401.action, .retry)
+    }
+
+    func testUnsupportedMajorVersionRejectedEvenWithV1ShapedBody() throws {
+        let v1ExpiredBody = try loadContractData("pair-error-expired.json")
+
+        // Server explicitly declares v2 media type — must NOT grant a trusted action even for a v1-shaped body or 401.
+        for mediaType in [
+            "application/vnd.mimi.onboarding.v2+json",
+            "application/vnd.mimi.onboarding.v2+json; charset=utf-8",
+            "APPLICATION/VND.MIMI.ONBOARDING.V99+JSON",
+        ] {
+            let mapped = PairingErrorMapper.mapHTTPResponse(
+                data: v1ExpiredBody,
+                statusCode: 401,
+                contentType: mediaType,
+                configured: true
+            )
+            XCTAssertFalse(mapped.isTrusted, "v2 media type \(mediaType) must not be trusted")
+            XCTAssertEqual(mapped.action, .none, "v2 media type \(mediaType) must yield zero execution")
+            XCTAssertNil(mapped.wireFix, mediaType)
+            XCTAssertFalse(mapped.isLegacyFallback, mediaType)
+            XCTAssertTrue(mapped.preservesSavedProfiles, mediaType)
+        }
+
+        // Valid v1 media type with charset parameter IS accepted.
+        let v1WithCharset = PairingErrorMapper.mapHTTPResponse(
+            data: v1ExpiredBody,
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v1+json; charset=utf-8"
+        )
+        XCTAssertTrue(v1WithCharset.isTrusted)
+        XCTAssertEqual(v1WithCharset.code, "pair_ticket_expired")
+        XCTAssertEqual(v1WithCharset.action, .retry)
+
+        // Explicit v2 schema field in body is also rejected even without media type.
+        let v2SchemaBody = Data(#"{"ok":false,"schema":"mimi.onboarding.error/v2","error":{"code":"pair_ticket_expired","step":"network_any","message":"过期","fix":{"kind":"retry"}}}"#.utf8)
+        let schemaMapped = PairingErrorMapper.mapHTTPResponse(
+            data: v2SchemaBody,
+            statusCode: 401,
+            contentType: "application/json"
+        )
+        XCTAssertFalse(schemaMapped.isTrusted)
+        XCTAssertEqual(schemaMapped.action, .none)
     }
 }
