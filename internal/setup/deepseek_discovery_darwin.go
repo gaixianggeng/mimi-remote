@@ -5,13 +5,14 @@ package setup
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 const (
@@ -47,27 +48,11 @@ func currentDeepSeekLaunchAgentPID(ctx context.Context) (int, error) {
 
 func inspectDeepSeekLaunchAgent(ctx context.Context) (int, string, error) {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), deepSeekLaunchAgentLabel)
-	command := exec.CommandContext(ctx, "launchctl", "print", target)
-	var stdout limitedDeepSeekBuffer
-	stdout.limit = maxLaunchctlOutputBytes
-	command.Stdout = &stdout
-	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
+	raw, _, err := cliinspect.Output(ctx, func() (*exec.Cmd, error) { return exec.CommandContext(ctx, "launchctl", "print", target), nil }, maxLaunchctlOutputBytes)
+	if err != nil {
 		return 0, "", errDeepSeekNotDiscovered
 	}
-	return parseDeepSeekLaunchctlPrint(stdout.Bytes())
-}
-
-type limitedDeepSeekBuffer struct {
-	bytes.Buffer
-	limit int
-}
-
-func (b *limitedDeepSeekBuffer) Write(raw []byte) (int, error) {
-	if b.Len()+len(raw) > b.limit {
-		return 0, errors.New("launchctl 输出超过安全上限")
-	}
-	return b.Buffer.Write(raw)
+	return parseDeepSeekLaunchctlPrint(raw)
 }
 
 func parseDeepSeekLaunchctlPrint(raw []byte) (int, string, error) {

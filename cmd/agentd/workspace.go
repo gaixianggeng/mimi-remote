@@ -22,11 +22,11 @@ func runWorkspaceWithWriters(args []string, stdout, stderr io.Writer) error {
 	root := fs.String("root", "", "项目扫描与移动设备浏览授权目录")
 	restore := fs.String("restore-state", "", "恢复先前目录设置事务 JSON")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || (*root == "") == (*restore == "") {
-		return fmt.Errorf("必须且只能传入 --root 或 --restore-state，不能带位置参数")
+		return invalidOnboardingRequest(fmt.Errorf("必须且只能传入 --root 或 --restore-state，不能带位置参数"))
 	}
 	if err := prepareDefaultConfigMigration(fs, *path, stderr); err != nil {
 		return err
@@ -34,16 +34,25 @@ func runWorkspaceWithWriters(args []string, stdout, stderr io.Writer) error {
 	var result agentsetup.WorkspaceConfigurationResult
 	var err error
 	if *restore != "" {
-		var previous agentsetup.WorkspaceConfigurationResult
-		if err := json.Unmarshal([]byte(*restore), &previous); err != nil {
-			return err
+		var receipt struct {
+			Previous *agentsetup.WorkspaceState `json:"previous"`
+			Applied  *agentsetup.WorkspaceState `json:"applied"`
 		}
-		result, err = agentsetup.RestoreWorkspace(*path, previous)
+		if err := json.Unmarshal([]byte(*restore), &receipt); err != nil {
+			return invalidOnboardingRequest(err)
+		}
+		if receipt.Previous == nil || receipt.Applied == nil {
+			return invalidOnboardingRequest(fmt.Errorf("目录恢复记录不完整"))
+		}
+		result, err = agentsetup.RestoreWorkspace(*path, agentsetup.WorkspaceConfigurationResult{Previous: *receipt.Previous, Applied: *receipt.Applied})
 	} else {
 		result, err = agentsetup.ConfigureWorkspace(*path, *root)
+		if err != nil {
+			return moduleConfigFailure(*path, workspaceFailure(*root, err))
+		}
 	}
 	if err != nil {
-		return err
+		return moduleConfigFailure(*path, err)
 	}
 	if *asJSON {
 		return printJSONTo(stdout, result)

@@ -9,7 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 const privateLANFirewallRuleName = "Mimi Remote agentd (Private LAN)"
@@ -91,29 +92,30 @@ func Check(ctx context.Context, agentPath string) (Status, error) {
 	if strings.TrimSpace(agentPath) == "" {
 		return Status{}, fmt.Errorf("agentd.exe 路径不能为空")
 	}
-	cmd := exec.CommandContext(
-		ctx,
-		resolvedPath,
-		"-NoLogo",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		policyScript,
-	)
-	cmd.Env = append(
-		os.Environ(),
-		"MIMI_FIREWALL_RULE_NAME="+privateLANFirewallRuleName,
-		"MIMI_FIREWALL_AGENT_PATH="+agentPath,
-	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.CombinedOutput()
+	output, diagnostic, err := cliinspect.Output(ctx, func() (*exec.Cmd, error) {
+		cmd := exec.CommandContext(
+			ctx,
+			resolvedPath,
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			policyScript,
+		)
+		cmd.Env = append(
+			os.Environ(),
+			"MIMI_FIREWALL_RULE_NAME="+privateLANFirewallRuleName,
+			"MIMI_FIREWALL_AGENT_PATH="+agentPath,
+		)
+		return cmd, nil
+	}, 64<<10)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			// 超时或取消时 CommandContext 强杀 PowerShell，Windows 上只剩 exit status 1；
 			// 保留真实原因，避免被误读成防火墙规则问题。
 			return Status{}, fmt.Errorf("检查 Windows 局域网安全策略超时或被取消：%w", ctxErr)
 		}
-		detail := strings.TrimSpace(string(output))
+		detail := strings.TrimSpace(string(diagnostic))
 		if detail != "" {
 			return Status{}, fmt.Errorf("检查 Windows 局域网安全策略失败：%s", detail)
 		}

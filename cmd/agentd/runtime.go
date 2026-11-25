@@ -29,7 +29,7 @@ func runRuntimeWithWriters(args []string, stdout, stderr io.Writer) error {
 	return runRuntimeWithIO(args, strings.NewReader(""), stdout, stderr)
 }
 
-func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) (commandErr error) {
 	fs := flag.NewFlagSet("runtime", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
@@ -45,11 +45,14 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	deepSeekURLStdin := fs.Bool("deepseek-url-stdin", false, "从标准输入读取 Harness 启动链接")
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("runtime 不接受位置参数；含凭据的 Harness 链接只能通过标准输入传入")
+		return invalidOnboardingRequest(fmt.Errorf("runtime 不接受位置参数；含凭据的 Harness 链接只能通过标准输入传入"))
+	}
+	if *asJSON {
+		defer func() { commandErr = moduleConfigFailure(*configPath, commandErr) }()
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
 	hasRestoreClaude := strings.TrimSpace(*restoreClaude) != ""
@@ -70,9 +73,9 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 	}
 	if count != 1 {
-		return fmt.Errorf(
+		return invalidOnboardingRequest(fmt.Errorf(
 			"必须且只能选择 --claude、--restore-claude、--claude-turn-hints、--restore-claude-turn-hints、--codex、--restore-codex、--agy、--restore-agy 或 --deepseek 之一",
-		)
+		))
 	}
 	if hasDeepSeek {
 		return runDeepSeekRuntime(
@@ -88,7 +91,14 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		)
 	}
 	if *deepSeekURLStdin {
-		return fmt.Errorf("--deepseek-url-stdin 只能与 --deepseek connect 一起使用")
+		return invalidOnboardingRequest(fmt.Errorf("--deepseek-url-stdin 只能与 --deepseek connect 一起使用"))
+	}
+	if hasCodex {
+		switch strings.ToLower(strings.TrimSpace(*codexPreference)) {
+		case "auto", "enabled", "disabled":
+		default:
+			return invalidOnboardingRequest(fmt.Errorf("Codex 启用策略只支持 auto、enabled 或 disabled"))
+		}
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
@@ -99,13 +109,13 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		if hasRestoreClaudeTurnHints {
 			var previous agentsetup.ClaudeTurnHintsConfigurationResult
 			if err = json.Unmarshal([]byte(*restoreClaudeTurnHints), &previous); err != nil {
-				return err
+				return invalidOnboardingRequest(err)
 			}
 			result, err = agentsetup.RestoreClaudeTurnHints(*configPath, previous)
 		} else {
 			enabled, parseErr := parseRuntimeEnabled(*claudeTurnHints, "Claude 回合提示卡")
 			if parseErr != nil {
-				return parseErr
+				return invalidOnboardingRequest(parseErr)
 			}
 			result, err = agentsetup.ConfigureClaudeTurnHints(*configPath, enabled)
 		}
@@ -129,7 +139,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		if hasRestoreCodex {
 			var previous agentsetup.CodexConfigurationResult
 			if err = json.Unmarshal([]byte(*restoreCodex), &previous); err != nil {
-				return err
+				return invalidOnboardingRequest(err)
 			}
 			result, err = agentsetup.RestoreCodex(*configPath, previous)
 		} else {
@@ -151,7 +161,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		if hasRestoreAgy {
 			var previous agentsetup.AgyConfigurationResult
 			if err := json.Unmarshal([]byte(*restoreAgy), &previous); err != nil {
-				return err
+				return invalidOnboardingRequest(err)
 			}
 			result, err := agentsetup.RestoreAgy(*configPath, previous)
 			if err != nil {
@@ -168,7 +178,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 		pref, err := agentsetup.ParseAgyActivationPreference(*agyPreference)
 		if err != nil {
-			return err
+			return invalidOnboardingRequest(err)
 		}
 		var restored *bool
 		fs.Visit(func(item *flag.Flag) {
@@ -202,7 +212,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	if hasRestoreClaude {
 		var previous agentsetup.ClaudeConfigurationResult
 		if err := json.Unmarshal([]byte(*restoreClaude), &previous); err != nil {
-			return err
+			return invalidOnboardingRequest(err)
 		}
 		result, err := agentsetup.RestoreClaude(*configPath, previous)
 		if err != nil {
@@ -219,7 +229,7 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	preference, err := agentsetup.ParseClaudeActivationPreference(*claudePreference)
 	if err != nil {
-		return err
+		return invalidOnboardingRequest(err)
 	}
 	var restored *bool
 	fs.Visit(func(item *flag.Flag) {
@@ -288,20 +298,20 @@ func runDeepSeekRuntime(
 		}
 	})
 	if restoreWasSet || restoreEnabled {
-		return fmt.Errorf("--restore-enabled 只适用于 --claude")
+		return invalidOnboardingRequest(fmt.Errorf("--restore-enabled 只适用于 --claude"))
 	}
 	action, err := agentsetup.ParseDeepSeekRuntimeAction(rawAction)
 	if err != nil {
-		return err
+		return invalidOnboardingRequest(err)
 	}
 	if readURLFromStdin && action != agentsetup.DeepSeekRuntimeConnect {
-		return fmt.Errorf("--deepseek-url-stdin 只能与 --deepseek connect 一起使用")
+		return invalidOnboardingRequest(fmt.Errorf("--deepseek-url-stdin 只能与 --deepseek connect 一起使用"))
 	}
 	startupURL := ""
 	if readURLFromStdin {
 		startupURL, err = readDeepSeekStartupURL(stdin)
 		if err != nil {
-			return err
+			return invalidOnboardingRequest(err)
 		}
 	}
 	// inspect 明确只读；其它操作保留现有默认配置迁移语义。

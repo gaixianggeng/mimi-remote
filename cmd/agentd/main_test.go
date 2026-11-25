@@ -211,7 +211,7 @@ func TestUpNoPairJSONOmitsSetupResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		t.Fatalf("安全启动 JSON 无法解析：%v output=%q", err, stdout)
 	}
-	if output["service_ok"] != true || output["version"] != version {
+	if output["start_submitted"] != true || output["ok"] != true || output["service_ok"] != nil || output["version"] != version {
 		t.Fatalf("安全启动 JSON 缺少非敏感状态：%+v", output)
 	}
 	for _, forbiddenKey := range []string{"result", "token", "endpoint", "connect_url", "pair_url", "config_path"} {

@@ -402,7 +402,7 @@ func resultFromConfigForNetwork(
 	lookups pairingNetworkLookups,
 ) (Result, error) {
 	if !cfg.HasEnabledAgent() {
-		return Result{}, fmt.Errorf("全部 AI 编程助手已关闭，请先启用至少一个助手")
+		return Result{}, &PairingDiagnostic{"no_enabled_assistant", "assistant_any", "全部 AI 编程助手已关闭，请先启用至少一个助手"}
 	}
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {

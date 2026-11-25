@@ -41,14 +41,19 @@ var managedServicePlatform = runtime.GOOS
 const serveHTTPDrainTimeout = 5 * time.Second
 
 func main() {
-	if err := run(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "错误：%v\n", err)
-		appendManagedServiceFailure(os.Args, err)
-		os.Exit(1)
+	if onboardingJSONCommand(os.Args) {
+		log.SetOutput(io.Discard)
+	}
+	if status := commandExit(os.Args, os.Stdout, os.Stderr); status != 0 {
+		os.Exit(status)
 	}
 }
 
 func run(args []string) error {
+	return runCommand(args, os.Stdout, os.Stderr, os.Stderr)
+}
+
+func runCommand(args []string, stdout, stderr, notice io.Writer) error {
 	cmd := "serve"
 	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
 		cmd = args[1]
@@ -67,14 +72,16 @@ func run(args []string) error {
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "preflight":
+		return runPreflight(args, stdout, stderr)
 	case "setup":
-		return runSetup(args)
+		return runSetupWithWriters(args, stdout, notice)
 	case "up":
-		return runUp(args)
+		return runUpWithWriters(args, stdout, notice)
 	case "start":
-		return runStart(args)
+		return runStart(args, stdout, notice)
 	case "restart":
-		return runRestart(args)
+		return runRestart(args, stdout, notice)
 	case "stop":
 		return runStop(args)
 	case "status":
@@ -82,15 +89,15 @@ func run(args []string) error {
 	case "logs":
 		return runLogs(args)
 	case "pair":
-		return runPair(args)
+		return runPairWithWriters(args, stdout, notice)
 	case "tailcat":
-		return runTailcat(args)
+		return runTailcatWithWriters(args, stdout, notice)
 	case "network":
-		return runNetwork(args)
+		return runNetworkWithWriters(args, stdout, notice)
 	case "workspace":
-		return runWorkspace(args)
+		return runWorkspaceWithWriters(args, stdout, notice)
 	case "runtime":
-		return runRuntime(args)
+		return runRuntimeWithIO(args, os.Stdin, stdout, notice)
 	case "repair-codex-session":
 		return runCodexSessionRepair(args)
 	case "handoff-command":
@@ -98,7 +105,7 @@ func run(args []string) error {
 	case "codex-front":
 		return runCodexFront(args)
 	case "doctor":
-		return runDoctor(args)
+		return runDoctorWithWriters(args, stdout, notice)
 	case "diagnostics":
 		return runDiagnostics(args)
 	case "check-config":
@@ -106,7 +113,7 @@ func run(args []string) error {
 	case "serve":
 		return runServe(args)
 	default:
-		return fmt.Errorf("未知命令 %q，可用命令：up、setup、start、restart、stop、status、logs、pair、tailcat、network、workspace、runtime、repair-codex-session、handoff-command、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
+		return fmt.Errorf("未知命令 %q，可用命令：preflight、up、setup、start、restart、stop、status、logs、pair、tailcat、network、workspace、runtime、repair-codex-session、handoff-command、codex-front、serve、doctor、diagnostics、check-config、version", cmd)
 	}
 }
 
@@ -115,7 +122,7 @@ func runSetup(args []string) error {
 }
 
 func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	fs := onboardingFlagSet("setup", args[1:])
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
@@ -124,7 +131,7 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
@@ -133,13 +140,16 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
+	if *asJSON && *force && onboardingConfigured(*configPath) {
+		return onboardingFailure("token_rotation_requires_approval", "config_store", true, errors.New("已保留现有配置"))
+	}
 	result, err := runAgentSetup(context.Background(), agentsetup.Options{
 		ConfigPath:         *configPath,
 		ScanRoot:           *scanRoot,
 		BrowseRoot:         *browseRoot,
 		Listen:             *listen,
 		AppServerSSHTarget: *appServerSSHTarget,
-		Force:              *force,
+		Force:              *force && !*asJSON,
 	})
 	if err != nil {
 		return err
@@ -211,7 +221,11 @@ func runServe(args []string) (serveErr error) {
 }
 
 func runUp(args []string) error {
-	fs := flag.NewFlagSet("up", flag.ExitOnError)
+	return runUpWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
+	fs := onboardingFlagSet("up", args[1:])
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
 	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
@@ -220,24 +234,24 @@ func runUp(args []string) error {
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
 		return err
 	}
 	if err := ensureManagedServiceDefaultConfig(managedServicePlatform, *configPath); err != nil {
-		return err
+		return invalidOnboardingRequest(err)
 	}
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
-		return err
+		return onboardingFailure("service_not_registered", "service_daemon", onboardingConfigured(*configPath), err)
 	}
 
 	if !*asJSON {
-		fmt.Fprintln(os.Stdout, "正在准备 Mimi Remote 助手...")
+		fmt.Fprintln(stdout, "正在准备 Mimi Remote 助手...")
 	}
 	result, err := runAgentSetup(context.Background(), agentsetup.Options{
 		ConfigPath:         *configPath,
@@ -254,13 +268,16 @@ func runUp(args []string) error {
 		return err
 	}
 
-	serviceStdout := io.Writer(os.Stdout)
-	serviceStderr := io.Writer(os.Stderr)
+	serviceStdout := io.Writer(stdout)
+	serviceStderr := io.Writer(stderr)
 	if *asJSON {
 		serviceStdout = io.Discard
 		serviceStderr = io.Discard
 	}
 	if err := runManagedServiceForPlatform(managedServicePlatform, "start", serviceStdout, serviceStderr); err != nil {
+		if *asJSON {
+			return onboardingFailure("service_start_failed", "service_daemon", true, err)
+		}
 		if managedServicePlatform == "darwin" {
 			return fmt.Errorf("%w\n\n安装 Homebrew 后请重新运行：agentd up\n排查环境可以运行：agentd doctor --fix", err)
 		}
@@ -276,30 +293,35 @@ func runUp(args []string) error {
 			serviceError = safeUpServiceError(serviceError, result)
 		}
 		if *asJSON {
-			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
+			return onboardingFailure("service_start_timeout", "service_daemon", true, err)
 		}
 		return fmt.Errorf("Mimi Remote 助手还没有启动成功，暂时不要扫码。\n\n原因：%s\n下一步：\n  agentd doctor --fix\n  agentd logs", serviceError)
 	} else if *waitTimeout > 0 {
 		if *asJSON {
-			return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
+			return printJSONTo(stdout, upJSONOutput(result, serviceOK, serviceError, *noPair))
 		}
-		fmt.Fprintln(os.Stdout, "Mimi Remote 助手已准备好")
+		fmt.Fprintln(stdout, "Mimi Remote 助手已准备好")
 	}
 	if *asJSON {
-		return printJSON(upJSONOutput(result, serviceOK, serviceError, *noPair))
+		output := upJSONOutput(result, serviceOK, serviceError, *noPair)
+		if *noPair && *waitTimeout <= 0 {
+			delete(output, "service_ok")
+			output["start_submitted"] = true
+		}
+		return printJSONTo(stdout, output)
 	}
 
 	if *noPair {
 		// Agent/自动化日志可以保留安装进度和安全警告，但不能留存任何连接凭据。
-		printWarnings(os.Stdout, safeUpWarnings(result))
+		printWarnings(stdout, safeUpWarnings(result))
 	} else {
-		printServeConnection(os.Stdout, result)
+		printServeConnection(stdout, result)
 	}
-	fmt.Fprintln(os.Stdout, "常用命令：")
-	fmt.Fprintln(os.Stdout, "  agentd status       查看当前连接状态")
-	fmt.Fprintln(os.Stdout, "  agentd pair         刷新配对二维码")
-	fmt.Fprintln(os.Stdout, "  agentd stop         停止当前平台后台服务")
-	fmt.Fprintln(os.Stdout, "  agentd doctor --fix 自动检查并修复常见问题")
+	fmt.Fprintln(stdout, "常用命令：")
+	fmt.Fprintln(stdout, "  agentd status       查看当前连接状态")
+	fmt.Fprintln(stdout, "  agentd pair         刷新配对二维码")
+	fmt.Fprintln(stdout, "  agentd stop         停止当前平台后台服务")
+	fmt.Fprintln(stdout, "  agentd doctor --fix 自动检查并修复常见问题")
 	return nil
 }
 
@@ -311,6 +333,7 @@ func upJSONOutput(result agentsetup.Result, serviceOK bool, serviceError string,
 		// 保持既有 JSON 输出兼容；调用方只有显式启用安全模式时才收窄字段。
 		output["result"] = result
 	} else {
+		output["ok"] = serviceOK
 		output["version"] = version
 		if len(result.Warnings) > 0 {
 			output["warnings"] = safeUpWarnings(result)
@@ -356,8 +379,8 @@ type managedServiceCommandCopy struct {
 	readyMessage    string
 }
 
-func runStart(args []string) error {
-	return runManagedServiceCommand(args, managedServiceCommandCopy{
+func runStart(args []string, stdout, stderr io.Writer) error {
+	return runManagedServiceCommand(args, stdout, stderr, managedServiceCommandCopy{
 		flagSetName:     "start",
 		noPairHelp:      "启动成功后不输出二维码和长期访问码，适合托盘与自动化",
 		pairHint:        "setup",
@@ -370,8 +393,8 @@ func runStart(args []string) error {
 	})
 }
 
-func runRestart(args []string) error {
-	return runManagedServiceCommand(args, managedServiceCommandCopy{
+func runRestart(args []string, stdout, stderr io.Writer) error {
+	return runManagedServiceCommand(args, stdout, stderr, managedServiceCommandCopy{
 		flagSetName:     "restart",
 		noPairHelp:      "重启成功后不输出二维码和长期访问码，适合远程自动化",
 		pairHint:        "up",
@@ -384,25 +407,26 @@ func runRestart(args []string) error {
 	})
 }
 
-func runManagedServiceCommand(args []string, copy managedServiceCommandCopy) error {
-	fs := flag.NewFlagSet(copy.flagSetName, flag.ExitOnError)
+func runManagedServiceCommand(args []string, stdout, stderr io.Writer, copy managedServiceCommandCopy) error {
+	fs := onboardingFlagSet(copy.flagSetName, args[1:])
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	waitTimeout := fs.Duration("wait", 8*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
+	asJSON := fs.Bool("json", false, "输出 JSON")
 	noPair := fs.Bool("no-pair", false, copy.noPairHelp)
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+	if err := prepareRequiredConfig(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
 		return err
 	}
 	if err := ensureManagedServiceDefaultConfig(managedServicePlatform, *configPath); err != nil {
-		return err
+		return invalidOnboardingRequest(err)
 	}
 	if err := ensureManagedServiceInstalled(managedServicePlatform); err != nil {
-		return err
+		return onboardingFailure("service_not_registered", "service_daemon", onboardingConfigured(*configPath), err)
 	}
 	if err := ensureAppServerTransportMigration(context.Background(), *configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 		return err
@@ -416,18 +440,29 @@ func runManagedServiceCommand(args []string, copy managedServiceCommandCopy) err
 		return err
 	}
 
-	fmt.Fprintln(os.Stdout, copy.startingMessage)
-	if err := runManagedServiceForPlatform(managedServicePlatform, copy.serviceAction, os.Stdout, os.Stderr); err != nil {
-		return err
+	serviceOutput, serviceErrors := stdout, stderr
+	if *asJSON {
+		serviceOutput, serviceErrors = io.Discard, io.Discard
+	}
+	fmt.Fprintln(serviceOutput, copy.startingMessage)
+	if err := runManagedServiceForPlatform(managedServicePlatform, copy.serviceAction, serviceOutput, serviceErrors); err != nil {
+		return onboardingFailure("service_start_failed", "service_daemon", true, err)
 	}
 
 	if err := waitForServiceReady(context.Background(), loopbackServiceEndpoint(result.Endpoint), result.Token, version, *waitTimeout); err != nil {
-		return copy.notReadyError(err)
-	} else if *waitTimeout > 0 {
-		fmt.Fprintln(os.Stdout, copy.readyMessage)
+		return onboardingFailure("service_start_timeout", "service_daemon", true, copy.notReadyError(err))
+	}
+	if *asJSON {
+		if *waitTimeout <= 0 {
+			return printJSONTo(stdout, map[string]any{"ok": true, "start_submitted": true})
+		}
+		return printJSONTo(stdout, map[string]any{"ok": true, "service_ok": true, "version": version})
+	}
+	if *waitTimeout > 0 {
+		fmt.Fprintln(stdout, copy.readyMessage)
 	}
 	if !*noPair {
-		printServeConnection(os.Stdout, result)
+		printServeConnection(stdout, result)
 	}
 	return nil
 }
@@ -720,19 +755,19 @@ func runPair(args []string) error {
 }
 
 func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
-	fs := flag.NewFlagSet("pair", flag.ExitOnError)
+	fs := onboardingFlagSet("pair", args[1:])
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	networkName := fs.String("network", string(agentsetup.PairingNetworkAuto), "二维码网络：auto、tailscale 或 lan")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息和二维码，不输出长期 Token")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	network, err := agentsetup.ParsePairingNetwork(*networkName)
 	if err != nil {
+		return invalidOnboardingRequest(err)
+	}
+	if err := prepareRequiredConfig(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	result, err := agentsetup.PairForNetwork(context.Background(), *configPath, network)
@@ -754,21 +789,29 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 }
 
 func runDoctor(args []string) error {
+	return runDoctorWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 	doctorCtx, cancelDoctor := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancelDoctor()
 	checkPort := false
 	asJSON := false
 	fix := false
 	configPath := config.DefaultPath()
-	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	fs := onboardingFlagSet("doctor", args[1:])
 	fs.StringVar(&configPath, "config", config.DefaultPath(), "配置文件路径")
 	fs.BoolVar(&checkPort, "check-port", false, "检查当前配置端口是否可监听")
 	fs.BoolVar(&asJSON, "json", false, "只输出 JSON")
 	fs.BoolVar(&fix, "fix", false, "自动修复安全的常见问题")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, configPath, os.Stderr); err != nil {
+	prepare := prepareDefaultConfigMigration
+	if fix {
+		prepare = prepareRequiredConfig
+	}
+	if err := prepare(fs, configPath, stderr); err != nil {
 		return err
 	}
 	_, _, checker, err := loadRuntimeConfigFromPath(configPath, true)
@@ -779,29 +822,25 @@ func runDoctor(args []string) error {
 		if !fix {
 			return err
 		}
+		if asJSON {
+			return onboardingFailure("config_invalid", "config_store", true, err)
+		}
 		fixes, repairedChecker, repairedResults, repairErr := rebuildDoctorConfig(doctorCtx, configPath, checkPort)
 		if repairErr != nil {
 			return fmt.Errorf("%v；自动修复也失败：%w", err, repairErr)
 		}
 		restartRequired := len(fixes) > 0
-		if asJSON {
-			return printJSON(map[string]any{
-				"fixes":            fixes,
-				"results":          repairedResults,
-				"restart_required": restartRequired,
-			})
-		}
-		fmt.Fprintf(os.Stdout, "配置加载失败，已尝试自动修复：%v\n\n", err)
+		fmt.Fprintf(stdout, "配置加载失败，已尝试自动修复：%v\n\n", err)
 		if len(fixes) > 0 {
-			fmt.Fprintln(os.Stdout, "已修复：")
+			fmt.Fprintln(stdout, "已修复：")
 			for _, item := range fixes {
-				fmt.Fprintf(os.Stdout, "  OK %s\n", item)
+				fmt.Fprintf(stdout, "  OK %s\n", item)
 			}
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(stdout)
 		}
-		doctor.Print(os.Stdout, repairedResults)
+		doctor.Print(stdout, repairedResults)
 		if restartRequired {
-			fmt.Fprintln(os.Stdout, "\n配置已更新，需要重启 agentd 后生效。")
+			fmt.Fprintln(stdout, "\n配置已更新，需要重启 agentd 后生效。")
 		}
 		_ = repairedChecker
 		if !repairedResults.OK {
@@ -813,12 +852,15 @@ func runDoctor(args []string) error {
 	fixes := []string{}
 	restartRequired := false
 	if fix {
-		fixes, restartRequired, checker, results, err = runDoctorFix(doctorCtx, configPath, checkPort, results)
+		fixes, restartRequired, checker, results, err = repairDoctor(doctorCtx, configPath, checkPort, results, asJSON)
 		if err != nil {
 			return err
 		}
 	}
 	if asJSON {
+		if fix && !results.OK {
+			return fmt.Errorf("doctor 检查未通过")
+		}
 		payload := any(results)
 		if fix {
 			payload = map[string]any{
@@ -827,20 +869,20 @@ func runDoctor(args []string) error {
 				"restart_required": restartRequired,
 			}
 		}
-		if err := printJSON(payload); err != nil {
+		if err := printJSONTo(stdout, payload); err != nil {
 			return err
 		}
 	} else {
 		if fix && len(fixes) > 0 {
-			fmt.Fprintln(os.Stdout, "已修复：")
+			fmt.Fprintln(stdout, "已修复：")
 			for _, item := range fixes {
-				fmt.Fprintf(os.Stdout, "  OK %s\n", item)
+				fmt.Fprintf(stdout, "  OK %s\n", item)
 			}
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(stdout)
 		}
-		doctor.Print(os.Stdout, results)
+		doctor.Print(stdout, results)
 		if fix && restartRequired {
-			fmt.Fprintln(os.Stdout, "\n配置已更新，需要重启 agentd 后生效。")
+			fmt.Fprintln(stdout, "\n配置已更新，需要重启 agentd 后生效。")
 		}
 		_ = checker
 	}
@@ -925,11 +967,12 @@ func loadRuntimeConfigFromPath(configPath string, forDoctor bool) (config.Config
 	return cfg, registry, checker, nil
 }
 
-func runDoctorFix(
+func repairDoctor(
 	ctx context.Context,
 	configPath string,
 	checkPort bool,
 	current doctor.Results,
+	preserveIdentity bool,
 ) ([]string, bool, *doctor.Checker, doctor.Results, error) {
 	if hasFailedCheck(current, "legacy-codex-experiment") {
 		return nil, false, nil, current, fmt.Errorf("检测到旧 Codex Desktop 共享实验残留；doctor --fix 不会终止任务或改写 owner")
@@ -950,6 +993,9 @@ func runDoctorFix(
 	}
 	if hasFailedCheck(current, "token") || hasFailedCheck(current, "projects") {
 		needsSetup = true
+	}
+	if needsSetup && preserveIdentity {
+		return nil, false, nil, current, blockedDoctorRebuild(configPath, current)
 	}
 	if hasFailedCheck(current, "config-file") {
 		fixed, err := tightenSensitiveFilePermissions(configPath)
@@ -1507,7 +1553,7 @@ func prepareDefaultConfigMigration(fs *flag.FlagSet, requestedPath string, notic
 	})
 	migrated, err := config.MigrateLegacyDefaultConfig(requestedPath, explicitConfig)
 	if err != nil {
-		return fmt.Errorf("迁移旧版默认配置失败：%w", err)
+		return onboardingFailure("config_recovery_required", "config_store", true, fmt.Errorf("迁移旧版默认配置失败：%w", err))
 	}
 	if migrated && notice != nil {
 		// 只提示路径和保留策略，不输出 auth.token 或配置原文；JSON 命令的 stdout 也保持纯净。
@@ -1601,10 +1647,10 @@ func ensureNoLegacyCodexExperimentResidue() error {
 	if residue == "" {
 		return nil
 	}
-	return fmt.Errorf(
+	return onboardingFailure("legacy_codex_residue", "config_store", true, fmt.Errorf(
 		"检测到旧 Codex Desktop 共享实验残留（%s）。为避免两套 owner 混跑，agentd 已拒绝启动；请先退出 Codex Desktop，并用旧实验版本关闭共享",
 		residue,
-	)
+	))
 }
 
 func printSetupResult(w io.Writer, result agentsetup.Result) {
@@ -1650,6 +1696,7 @@ func printPairResult(w io.Writer, result agentsetup.Result) {
 }
 
 type qrOnlyPairOutput struct {
+	OK                  bool                      `json:"ok"`
 	Endpoint            string                    `json:"endpoint"`
 	Network             agentsetup.PairingNetwork `json:"network,omitempty"`
 	TailscaleDNSName    string                    `json:"tailscale_dns_name,omitempty"`
@@ -1662,6 +1709,7 @@ type qrOnlyPairOutput struct {
 func qrOnlyPairResult(result agentsetup.Result) qrOnlyPairOutput {
 	// 安装日志可能被终端或 CI 留存；安全模式只暴露短期票据，绝不复制长期 Token/connect URL。
 	return qrOnlyPairOutput{
+		OK:                  true,
 		Endpoint:            result.Endpoint,
 		Network:             result.Network,
 		TailscaleDNSName:    result.TailscaleDNSName,
@@ -1899,7 +1947,7 @@ func isDevelopmentAgentVersion(value string) bool {
 }
 
 func readyVersionCheckError(reason string) error {
-	return fmt.Errorf("%s%s", reason, readyServiceRecoveryHint)
+	return onboardingFailure("service_version_mismatch", "service_daemon", true, fmt.Errorf("%s%s", reason, readyServiceRecoveryHint))
 }
 
 const readyServiceRecoveryHint = "，无法确认新的 Homebrew 服务已经接管当前 Endpoint。\n请运行：\n  agentd restart\n  agentd logs"
