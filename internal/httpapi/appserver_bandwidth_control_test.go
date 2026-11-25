@@ -129,6 +129,41 @@ func TestAppServerGatewayGlobalHistoryBudgetLimitsAcrossThreads(t *testing.T) {
 	}
 }
 
+func TestGatewayHistoryReservationFollowsPolicyLifetime(t *testing.T) {
+	for _, runtimeID := range []string{"codex", "claude", "agy"} {
+		t.Run(runtimeID, func(t *testing.T) {
+			router := &Router{monitor: newRelayMonitor()}
+			old := newAppServerGatewayPolicy(router, runtimeID)
+			next := newAppServerGatewayPolicy(router, runtimeID)
+			defer next.close()
+			id := json.RawMessage(`1`)
+			params := map[string]any{"threadId": "history-thread"}
+			reserve := func(policy *appServerGatewayPolicy) *appServerGatewayPolicyError {
+				return policy.reserveHistoryRequest(&id, "thread/turns/list", params, 128)
+			}
+			if err := reserve(old); err != nil {
+				t.Fatalf("first request: %+v", err)
+			}
+			if err := reserve(next); err == nil || err.data["reason"] != "history_request_in_flight" {
+				t.Fatalf("duplicate while the owner is active: %+v", err)
+			}
+			old.close()
+			if err := reserve(next); err != nil {
+				t.Fatalf("retry after disconnect: %+v", err)
+			}
+			old.close()
+			old.cancelPendingHistoryRequest(&id)
+			if err := reserve(next); err == nil || err.data["reason"] != "history_request_in_flight" {
+				t.Fatalf("late cleanup released the new owner's reservation: %+v", err)
+			}
+			next.cancelPendingHistoryRequest(&id)
+			if err := reserve(old); err == nil {
+				t.Fatal("closed policy accepted a new reservation")
+			}
+		})
+	}
+}
+
 func TestAppServerGatewayRejectsDuplicateInflightHistoryAndReleases(t *testing.T) {
 	monitor := newRelayMonitor()
 	router := &Router{monitor: monitor}

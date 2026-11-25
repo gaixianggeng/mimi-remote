@@ -69,6 +69,43 @@ func TestInstallClaudeApprovalObserverReplacesGenerationAtomically(t *testing.T)
 	}
 }
 
+func TestClaudeObserverRetainsHistoryUntilReattach(t *testing.T) {
+	router := &Router{monitor: newRelayMonitor()}
+	epoch := router.stopClaudeApprovalObserver("history")
+	observer := testClaudeApprovalObserver(t, router, "history")
+	id := json.RawMessage(`1`)
+	params := map[string]any{"threadId": "history-thread"}
+	if err := observer.policy.reserveHistoryRequest(&id, "thread/turns/list", params, 128); err != nil {
+		t.Fatal(err.message)
+	}
+	if _, ok := router.installClaudeApprovalObserver(observer, epoch); !ok {
+		t.Fatal("observer handoff failed")
+	}
+	next := newAppServerGatewayPolicy(router, "claude")
+	defer next.close()
+	if err := next.reserveHistoryRequest(&id, "thread/turns/list", params, 128); err == nil || err.data["reason"] != "history_request_in_flight" {
+		t.Fatalf("observer should still own the in-flight page: %+v", err)
+	}
+	// Stop the first close after it publishes the closed flag but before socket teardown.
+	entered, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	cancel := observer.cancel
+	observer.cancel = func() {
+		close(entered)
+		<-resume
+		cancel()
+	}
+	go func() {
+		defer close(done)
+		observer.close("bridge_stdout_closed")
+	}()
+	<-entered
+	defer func() { close(resume); <-done }()
+	router.stopClaudeApprovalObserver("history")
+	if err := next.reserveHistoryRequest(&id, "thread/turns/list", params, 128); err != nil {
+		t.Fatalf("reattached client could not retry history: %+v", err)
+	}
+}
+
 func TestInstallClaudeApprovalObserverConcurrentReplacementLeavesOneCurrent(t *testing.T) {
 	router := &Router{}
 	epoch := router.stopClaudeApprovalObserver("session-race")

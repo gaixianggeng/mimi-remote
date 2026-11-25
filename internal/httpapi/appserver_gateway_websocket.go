@@ -17,7 +17,6 @@ func (r *Router) proxyAppServerGateway(ctx context.Context, client *websocket.Co
 	configureGatewayReadConn(client)
 	configureGatewayReadConn(upstream)
 	policy := newAppServerGatewayPolicy(r, "codex")
-	defer policy.releaseAllHistoryInflight()
 	defer policy.close()
 
 	go func() {

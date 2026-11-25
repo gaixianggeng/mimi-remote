@@ -440,6 +440,9 @@ func (o *claudeApprovalObserver) sweepCloseReason(now time.Time) string {
 }
 
 func (o *claudeApprovalObserver) close(reason string) {
+	// Reattachment may race the observer pump while it is closing the connection.
+	// Every closer must retire this policy before returning to the next client.
+	o.policy.close()
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
@@ -456,7 +459,6 @@ func (o *claudeApprovalObserver) close(reason string) {
 		o.cancel()
 	}
 	_ = o.conn.Close()
-	o.policy.close()
 	runtimeID := o.effectiveRuntimeID()
 	mapKey := residentObserverMapKey(runtimeID, o.sessionKey)
 	o.router.claudeObserverMu.Lock()
