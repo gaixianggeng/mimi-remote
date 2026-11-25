@@ -166,8 +166,9 @@ struct ComposerTextView: UIViewRepresentable {
     let onSkillAutocompleteMove: (Int) -> Void
     let onSkillAutocompleteCommit: () -> Void
     let onSkillAutocompleteDismiss: () -> Void
-    /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片交给输入框作为附件（#829）；nil 表示当前通道不收附件。
-    var onPasteImages: (([Data]) -> Void)? = nil
+    /// 剪贴板里只有图片时，⌘V 或长按「粘贴」把图片及取图前后确认一致的剪贴板 changeCount 交给输入框作为附件（#829）；
+    /// changeCount 为 nil 表示取图期间剪贴板已更新，应保留已读图片但跳过关闭并刷新提示；回调本身为 nil 表示当前通道不收附件。
+    var onPasteImages: (([Data], Int?) -> Void)? = nil
     var onEditingStateChange: ((Bool) -> Void)? = nil
 
     func makeUIView(context: Context) -> CommandSubmitTextView {
@@ -534,6 +535,16 @@ extension UITextView {
     }
 }
 
+@MainActor
+protocol ComposerImagePasteboard {
+    var hasImages: Bool { get }
+    var hasStrings: Bool { get }
+    var changeCount: Int { get }
+    var images: [UIImage]? { get }
+}
+
+extension UIPasteboard: ComposerImagePasteboard {}
+
 final class CommandSubmitTextView: UITextView {
     var onCommandSubmit: (() -> Bool)?
     var onContentLayoutChanged: ((CommandSubmitTextView) -> Void)?
@@ -541,7 +552,8 @@ final class CommandSubmitTextView: UITextView {
     var onSkillAutocompleteMove: ((Int) -> Void)?
     var onSkillAutocompleteCommit: (() -> Void)?
     var onSkillAutocompleteDismiss: (() -> Void)?
-    var onPasteImages: (([Data]) -> Void)?
+    var onPasteImages: (([Data], Int?) -> Void)?
+    var pasteboardProvider: () -> any ComposerImagePasteboard = { UIPasteboard.general }
     var onRetireFromComposer: (() -> Void)?
     var isSkillAutocompleteActive = false
     private(set) var isRetiredFromComposer = false
@@ -583,7 +595,7 @@ final class CommandSubmitTextView: UITextView {
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
-        case #selector(paste(_:)) where onPasteImages != nil && UIPasteboard.general.hasImages:
+        case #selector(paste(_:)) where onPasteImages != nil && pasteboardProvider().hasImages:
             return true
         case #selector(selectPreviousSkill),
              #selector(selectNextSkill),
@@ -598,17 +610,23 @@ final class CommandSubmitTextView: UITextView {
     /// 只有图片、没有文字时才当作图片附件；同时带文字（例如从网页复制）仍按文字粘贴。
     /// 这是用户主动的粘贴动作，读取剪贴板不会触发系统授权提示。
     override func paste(_ sender: Any?) {
-        let pasteboard = UIPasteboard.general
+        let pasteboard = pasteboardProvider()
         guard let onPasteImages, pasteboard.hasImages, !pasteboard.hasStrings else {
             super.paste(sender)
             return
         }
-        let images = (pasteboard.images ?? []).compactMap { $0.pngData() }
+        // 在实际取图前后各读一次 changeCount，并在 PNG 编码前完成校验：
+        // 若取图期间系统剪贴板被其他应用或设备更新，则保留已读图片但传 nil 跳过关闭，由调用方刷新提示。
+        let changeCountBeforeRead = pasteboard.changeCount
+        let rawImages = pasteboard.images ?? []
+        let changeCountAfterRead = pasteboard.changeCount
+        let confirmedChangeCount = changeCountBeforeRead == changeCountAfterRead ? changeCountAfterRead : nil
+        let images = rawImages.compactMap { $0.pngData() }
         guard !images.isEmpty else {
             super.paste(sender)
             return
         }
-        onPasteImages(images)
+        onPasteImages(images, confirmedChangeCount)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

@@ -638,7 +638,7 @@ struct AppearanceView: View {
                     selection: $themeStore.interfaceStyle,
                     tokens: tokens
                 )
-                .padding(.vertical, 6)
+                .padding(.vertical, 2)
                 .settingsRow(.descriptive)
             } header: {
                 SettingsGroupHeader(title: L10n.text("ui.interface_style"))
@@ -982,7 +982,7 @@ private struct WorkspaceIconStylePressButtonStyle: ButtonStyle {
     }
 }
 
-/// 「外观」页双卡可视化界面风格选择器：左侧「经典」（无折射扁平圆），右侧「玻璃」（透明液态玻璃圆）。
+/// 「外观」页双卡可视化界面风格选择器：左侧「经典」（不透明扁平圆），右侧「玻璃」（半透明液态玻璃圆）。
 private struct InterfaceStylePickerRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -993,7 +993,7 @@ private struct InterfaceStylePickerRow: View {
     let tokens: ThemeTokens
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             ForEach(ThemeInterfaceStyle.allCases) { style in
                 styleCard(style)
             }
@@ -1014,20 +1014,20 @@ private struct InterfaceStylePickerRow: View {
                 }
             }
         } label: {
-            VStack(spacing: 8) {
+            VStack(spacing: 5) {
                 previewTile(for: style)
-                    .padding(4)
+                    .padding(3)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
                             .strokeBorder(
                                 isSelected ? tokens.accent : Color.clear,
-                                lineWidth: 2.5
+                                lineWidth: 2
                             )
                     }
 
                 Text(style.title)
-                    .font(themeStore.uiFont(.subheadline, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? tokens.primaryText : tokens.secondaryText)
+                    .font(themeStore.uiFont(.footnote, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
@@ -1042,77 +1042,88 @@ private struct InterfaceStylePickerRow: View {
     }
 
     private func previewTile(for style: ThemeInterfaceStyle) -> some View {
-        let tileShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let tileShape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let isDark = colorScheme == .dark
         return ZStack {
-            // 分层深蓝几何纹理底图，直观拉开「经典」不透明/扁平磨砂与「玻璃」折射高光的观感差异。
+            // 跟随当前主题与明暗外观的微缩界面底纹，让「经典」实色遮挡与「玻璃」透底折射一眼可辨。
             LinearGradient(
-                colors: [
-                    Color(red: 0.05, green: 0.23, blue: 0.52),
-                    Color(red: 0.03, green: 0.14, blue: 0.34)
-                ],
+                colors: isDark
+                    ? [tokens.background, tokens.surface]
+                    : [tokens.elevatedSurface, tokens.background],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
 
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.16, green: 0.54, blue: 0.96).opacity(0.55),
-                            Color(red: 0.08, green: 0.34, blue: 0.72).opacity(0.18)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 120, height: 42)
-                .rotationEffect(.degrees(-28))
-                .offset(x: -24, y: -12)
+            LinearGradient(
+                colors: [
+                    tokens.accent.opacity(isDark ? 0.16 : 0.10),
+                    Color.clear
+                ],
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
+            )
 
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.28, green: 0.70, blue: 1.0).opacity(0.36),
-                            Color(red: 0.10, green: 0.40, blue: 0.82).opacity(0.10)
-                        ],
-                        startPoint: .bottomLeading,
-                        endPoint: .topTrailing
-                    )
-                )
-                .frame(width: 130, height: 34)
-                .rotationEffect(.degrees(22))
-                .offset(x: 24, y: 18)
+            previewSurfaceStrips(isDark: isDark)
 
             previewOrb(for: style)
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 78)
+        .frame(height: 52)
         .clipShape(tileShape)
         .overlay {
-            tileShape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75)
+            tileShape.strokeBorder(tokens.groupRule.opacity(isDark ? 0.9 : 0.85), lineWidth: 0.75)
         }
+    }
+
+    /// 模拟当前主题里的一小块对话界面条纹，居中穿过预览圆后方以衬托经典实色与玻璃通透的差别。
+    private func previewSurfaceStrips(isDark: Bool) -> some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                Capsule()
+                    .fill(tokens.primaryText.opacity(isDark ? 0.10 : 0.08))
+                    .frame(height: 6)
+                Capsule()
+                    .fill(tokens.accent.opacity(isDark ? 0.34 : 0.24))
+                    .frame(width: 34, height: 6)
+            }
+
+            Capsule()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            tokens.primaryText.opacity(isDark ? 0.12 : 0.09),
+                            tokens.accent.opacity(isDark ? 0.30 : 0.22),
+                            tokens.primaryText.opacity(isDark ? 0.08 : 0.06)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(height: 7)
+
+            HStack(spacing: 6) {
+                Capsule()
+                    .fill(tokens.secondaryText.opacity(isDark ? 0.16 : 0.13))
+                    .frame(width: 42, height: 6)
+                Capsule()
+                    .fill(tokens.border.opacity(isDark ? 0.65 : 0.75))
+                    .frame(height: 6)
+            }
+        }
+        .padding(.horizontal, 12)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
     private func previewOrb(for style: ThemeInterfaceStyle) -> some View {
-        let orbSize: CGFloat = 46
+        let orbSize: CGFloat = 32
         switch style {
         case .classic:
             Circle()
-                .fill(
-                    colorScheme == .light
-                        ? Color(red: 0.94, green: 0.94, blue: 0.95)
-                        : Color(red: 0.09, green: 0.10, blue: 0.12)
-                )
+                .fill(colorScheme == .dark ? tokens.elevatedSurface : tokens.surface)
                 .overlay {
                     Circle()
-                        .strokeBorder(
-                            colorScheme == .light
-                                ? Color.black.opacity(0.12)
-                                : Color.white.opacity(0.14),
-                            lineWidth: 0.75
-                        )
+                        .strokeBorder(tokens.groupRule, lineWidth: 0.85)
                 }
                 .frame(width: orbSize, height: orbSize)
         case .glass:
@@ -1124,17 +1135,37 @@ private struct InterfaceStylePickerRow: View {
     /// 快照宿主往往栅格化不出 `glassEffect`；若只用 `Color.clear` + `glassEffect`，右卡会只剩底纹。
     @ViewBuilder
     private func glassPreviewOrb(size: CGFloat) -> some View {
+        let isDark = colorScheme == .dark
         let base = Circle()
             .fill(.ultraThinMaterial)
             .overlay {
                 Circle()
-                    .strokeBorder(
+                    .fill(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(0.62),
-                                Color.white.opacity(0.16),
-                                Color.white.opacity(0.42)
+                                Color.white.opacity(isDark ? 0.20 : 0.45),
+                                Color.clear
                             ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: isDark
+                                ? [
+                                    Color.white.opacity(0.62),
+                                    Color.white.opacity(0.16),
+                                    Color.white.opacity(0.42)
+                                ]
+                                : [
+                                    Color.white.opacity(0.88),
+                                    tokens.border.opacity(0.55),
+                                    tokens.primaryText.opacity(0.18)
+                                ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
