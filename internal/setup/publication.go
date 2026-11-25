@@ -131,7 +131,7 @@ func inspectPublication(path string, ops setupFileTransactionOps, identity *inte
 		}
 		identity.Bearer = parsed.Config.Auth.Token
 		if record.TokenStage != "" {
-			ws, e := config.ReadPrivatePreflightFile(filepath.Join(dir, record.TokenStage), 4096)
+			ws, e := config.ReadPrivateTokenFile(filepath.Join(dir, record.TokenStage), 4096)
 			if e != nil || digest(ws) != record.TokenDigest {
 				return recoveryError(journal, errors.New("无法验证中断的初始凭据"))
 			}
@@ -142,7 +142,7 @@ func inspectPublication(path string, ops setupFileTransactionOps, identity *inte
 		}
 	}
 	if current == record.After && record.Companion != "" {
-		tok, e := config.ReadPrivatePreflightFile(filepath.Join(dir, record.Companion), 4096)
+		tok, e := config.ReadPrivateTokenFile(filepath.Join(dir, record.Companion), 4096)
 		if e != nil || digest(tok) != record.TokenDigest {
 			return recoveryError(journal, errors.New("配置引用的凭据需要恢复"))
 		}
@@ -222,12 +222,12 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 		if p.source.exists {
 			permissionsFrom = p.source.path
 		}
-		stage, err = ops.stage(dir, ".config.json.tmp-", raw, permissionsFrom)
+		stage, err = ops.stage(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: permissionsFrom})
 		if err == nil {
 			stageInfo, err = config.FileIdentity(stage)
 		}
 		if err == nil && p.companion != "" {
-			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token, "")
+			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token, config.StagePermissions{Token: true})
 			if err == nil {
 				tokenInfo, err = config.FileIdentity(tokenStage)
 			}
@@ -282,7 +282,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			return err
 		}
 		if changes {
-			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupFile(tokenStage, tokenInfo, p.token)) {
+			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupContents(tokenStage, tokenInfo, p.token, config.ReadPrivateTokenFile)) {
 				return saveFailure("config_concurrent_change", errors.New("暂存文件已被替换"))
 			}
 			if p.source.exists {
@@ -329,7 +329,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				}
 			}()
 			manifest, _ := json.Marshal(r)
-			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest, "")
+			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest, config.StagePermissions{})
 			if err != nil {
 				return err
 			}
@@ -380,7 +380,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				keep = false
 				return cause
 			}
-			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupFile(p.companion, tokenInfo, p.token)) {
+			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupContents(p.companion, tokenInfo, p.token, config.ReadPrivateTokenFile)) {
 				return recoveryError(journal, errors.New("暂存文件已更改"))
 			}
 			if err = p.check(ctx); err != nil {
@@ -389,6 +389,11 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			publish := ops.rename
 			if !p.dest.exists {
 				publish = ops.renameNew
+			}
+			if runtime.GOOS == "windows" && p.source.exists && !p.dest.exists {
+				if err := config.CopyPrivatePermissions(p.source.path, stage); err != nil {
+					return abandon(saveFailure("config_concurrent_change", err))
+				}
 			}
 			if err = publish(stage, path); err != nil {
 				if !p.dest.exists && errors.Is(err, os.ErrExist) {
@@ -451,6 +456,10 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 }
 
 func sameSetupFile(path string, expected os.FileInfo, raw []byte) bool {
+	return sameSetupContents(path, expected, raw, config.ReadPrivatePreflightFile)
+}
+
+func sameSetupContents(path string, expected os.FileInfo, raw []byte, read func(string, int64) ([]byte, error)) bool {
 	if expected == nil || !expected.Mode().IsRegular() {
 		return false
 	}
@@ -458,7 +467,7 @@ func sameSetupFile(path string, expected os.FileInfo, raw []byte) bool {
 	if err != nil || !os.SameFile(expected, now) {
 		return false
 	}
-	current, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	current, err := read(path, 4<<20)
 	return err == nil && bytes.Equal(current, raw)
 }
 

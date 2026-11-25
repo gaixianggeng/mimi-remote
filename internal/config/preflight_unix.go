@@ -24,6 +24,10 @@ func checkPreflightFileAccess(file *os.File, info os.FileInfo) error {
 	return checkExtendedACL(file)
 }
 
+func checkTokenFileAccess(file *os.File, info os.FileInfo) error {
+	return checkPreflightFileAccess(file, info)
+}
+
 func directoryAccessible(path string, info os.FileInfo, write bool) bool {
 	if write {
 		return info.Mode().Perm()&0222 != 0 && unix.Access(path, unix.W_OK|unix.X_OK) == nil

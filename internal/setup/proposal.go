@@ -241,7 +241,7 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 
 func (p *proposal) captureToken(path string) error {
 	path = config.ExpandPath(path)
-	raw, err := config.ReadPrivatePreflightFile(path, 4096)
+	raw, err := config.ReadPrivateTokenFile(path, 4096)
 	if err != nil || strings.TrimSpace(string(raw)) == "" {
 		code := "config_recovery_required"
 		if p.dest.exists && filepath.Dir(path) == filepath.Dir(p.dest.path) && err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {

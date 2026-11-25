@@ -38,17 +38,9 @@ func TestCopyAndRepairPrivateWindowsDACL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dacl := func(path string) string {
-		t.Helper()
-		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd.String()
-	}
 	setACL(source, "(A;;FR;;;SY)(A;;0x80;;;BU)")
-	expected := dacl(source)
-	stage, err := CreatePrivateTemp(dir, "transaction-")
+	expected := configtest.FileAccess(t, source)
+	stage, err := CreatePrivateStage(dir, "transaction-", StagePermissions{Source: source})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +56,7 @@ func TestCopyAndRepairPrivateWindowsDACL(t *testing.T) {
 	if err := CopyPrivatePermissions(source, stage.Name()); err != nil {
 		t.Fatal(err)
 	}
-	if dacl(stage.Name()) != expected || dacl(source) != expected {
+	if configtest.FileAccess(t, stage.Name()) != expected || configtest.FileAccess(t, source) != expected {
 		t.Fatal("copy changed a protected Windows access policy")
 	}
 	setACL(source, "(A;;FR;;;WD)")
@@ -155,27 +147,32 @@ func TestWindowsCopyPrivatePermissionsBeforeAndAfterWrite(t *testing.T) {
 				return entries
 			}
 			want := aces(path)
-			stage, err := CreatePrivateTemp(dir, "stage-")
+			stage, err := CreatePrivateStage(dir, "stage-", StagePermissions{Source: path})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer stage.Close()
-			if err := MakeFilePrivate(stage); err != nil {
+			sd, err := readStageDescriptor(stage, false)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
-				t.Fatalf("empty stage: %v", err)
-			}
-			if got := aces(stage.Name()); got != want {
-				t.Fatal("stage did not preserve the source ACEs before writing")
+			policy, err := filePolicy(sd)
+			if err != nil || policy.protected != tc.protected {
+				t.Fatalf("policy before first write: %v", err)
 			}
 			if _, err := stage.WriteString("fixture"); err != nil {
+				t.Fatal(err)
+			}
+			if err := stage.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
 				t.Fatalf("populated stage: %v", err)
 			}
-			if aces(path) != want || aces(stage.Name()) != want {
+			published := filepath.Join(dir, tc.name+"-published")
+			if err := os.Rename(stage.Name(), published); err != nil {
+				t.Fatal(err)
+			}
+			if aces(path) != want || aces(published) != want {
 				t.Fatal("source or stage ACEs changed at final verification")
 			}
 		})

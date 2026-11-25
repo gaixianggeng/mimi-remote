@@ -3,11 +3,12 @@ package config
 import "slices"
 
 // fileDACL describes a regular Windows file. The reader rejects NULL DACLs and
-// checks ownership separately. Of the descriptor control flags, only protection
-// is part of the policy we copy.
+// compares the owner and access-governing system ACEs separately from grants.
 type fileDACL struct {
-	protected bool
-	entries   []fileACE
+	owner      string
+	systemACEs []string
+	protected  bool
+	entries    []fileACE
 }
 
 type fileACE struct {
@@ -18,7 +19,7 @@ type fileACE struct {
 }
 
 func (source fileDACL) preservedBy(stage fileDACL) bool {
-	if source.protected != stage.protected {
+	if source.owner != stage.owner || source.protected != stage.protected || !slices.Equal(source.systemACEs, stage.systemACEs) {
 		return false
 	}
 	if slices.Equal(source.entries, stage.entries) {

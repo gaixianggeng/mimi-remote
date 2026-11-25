@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type setupFileTransactionOps struct {
-	stage     func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error)
+	stage     func(dir string, pattern string, raw []byte, permissions config.StagePermissions) (string, error)
 	rename    func(oldPath string, newPath string) error
 	renameNew func(oldPath, newPath string) error
 	link      func(oldPath string, newPath string) error
@@ -43,16 +45,42 @@ func writeSetupFilesAtomically(
 		return fmt.Errorf("app-server token file 必须与配置文件位于同一目录")
 	}
 
-	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw, "")
+	tokenSource, configSource := "", ""
+	if tokenExisted && runtime.GOOS == "windows" {
+		tokenSource = tokenPath
+		if _, err := config.ReadPrivateTokenFile(tokenPath, 4096); err != nil {
+			return err
+		}
+	}
+	if configExisted && runtime.GOOS == "windows" {
+		configSource = configPath
+	}
+	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw, config.StagePermissions{Source: tokenSource, Token: true})
 	if err != nil {
 		return fmt.Errorf("暂存 app-server token file 失败：%w", err)
 	}
 	defer ops.remove(stagedToken)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw, "")
+	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw, config.StagePermissions{Source: configSource})
 	if err != nil {
 		return fmt.Errorf("暂存配置文件失败：%w", err)
 	}
 	defer ops.remove(stagedConfig)
+	publish := func(stage, destination, source string, existed bool) error {
+		if !existed {
+			return ops.renameNew(stage, destination)
+		}
+		if source != "" {
+			if err := copyAndSyncPermissions(source, stage); err != nil {
+				return err
+			}
+		}
+		return ops.rename(stage, destination)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := config.ReadPrivateTokenFile(stagedToken, 4096); err != nil {
+			return err
+		}
+	}
 
 	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
 	if err != nil {
@@ -71,10 +99,10 @@ func writeSetupFilesAtomically(
 
 	// 先提交上游 token，再提交引用它的配置。第二步失败时恢复旧 token，
 	// 防止运行中的服务看到未配套提交的新凭证。
-	if err := ops.rename(stagedToken, tokenPath); err != nil {
+	if err := publish(stagedToken, tokenPath, tokenSource, tokenExisted); err != nil {
 		return fmt.Errorf("提交 app-server token file 失败：%w", err)
 	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
+	if err := publish(stagedConfig, configPath, configSource, configExisted); err != nil {
 		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
 		syncErr := ops.syncDir(dir)
 		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))

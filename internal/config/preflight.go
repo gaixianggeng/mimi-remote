@@ -129,7 +129,7 @@ func InspectCommittedDocument(raw []byte) PreflightSnapshot {
 	s := ParseSetupDocument(raw)
 	if s.Code == "" && s.Config.AppServer.Transport == "ws" {
 		path := ExpandPath(s.Config.AppServer.WSTokenFile)
-		token, err := ReadPrivatePreflightFile(path, 4096)
+		token, err := ReadPrivateTokenFile(path, 4096)
 		if err != nil || strings.TrimSpace(string(token)) == "" {
 			s.Code = "config_recovery_required"
 			if errors.Is(err, errPreflightFileNotPrivate) {
@@ -155,14 +155,28 @@ var errPreflightFileNotPrivate = errors.New("文件权限未能保护本机凭�
 // regular file. Check the opened file before reading, without following a
 // final symlink or changing permissions.
 func ReadPrivatePreflightFile(path string, limit int64) ([]byte, error) {
+	return readPrivatePath(path, limit, checkPreflightFileAccess)
+}
+
+// ReadPrivateTokenFile requires every effective Windows grant on a credential
+// to belong to the owner, LocalSystem or the local Administrators group.
+func ReadPrivateTokenFile(path string, limit int64) ([]byte, error) {
+	return readPrivatePath(path, limit, checkTokenFileAccess)
+}
+
+func readPrivatePath(path string, limit int64, check func(*os.File, os.FileInfo) error) ([]byte, error) {
 	expected, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	return readPreflightFile(path, expected, limit)
+	return readCheckedFile(path, expected, limit, check)
 }
 
 func readPreflightFile(path string, expected os.FileInfo, limit int64) ([]byte, error) {
+	return readCheckedFile(path, expected, limit, checkPreflightFileAccess)
+}
+
+func readCheckedFile(path string, expected os.FileInfo, limit int64, check func(*os.File, os.FileInfo) error) ([]byte, error) {
 	if !expected.Mode().IsRegular() {
 		return nil, errors.New("凭据路径必须是普通文件")
 	}
@@ -178,7 +192,7 @@ func readPreflightFile(path string, expected os.FileInfo, limit int64) ([]byte, 
 	if err != nil || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
 		return nil, errors.New("配置文件已变更")
 	}
-	if err := checkPreflightFileAccess(f, info); err != nil {
+	if err := check(f, info); err != nil {
 		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))

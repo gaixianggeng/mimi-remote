@@ -3,7 +3,15 @@ package config
 import (
 	"errors"
 	"os"
+	"runtime"
 )
+
+// StagePermissions identifies the original policy and the stricter Windows
+// trustee set required for token files.
+type StagePermissions struct {
+	Source string
+	Token  bool
+}
 
 // FileIdentity reads metadata from an open handle. Windows path-based Stat
 // can defer the file ID lookup until SameFile, after a rename or replacement.
@@ -47,12 +55,20 @@ func openPermissionTarget(path string, modify bool) (*os.File, os.FileInfo, erro
 // RepairPrivatePermissions tightens access in place only after identifying an
 // owned regular file. The ownership check and repair use the same open handle.
 func RepairPrivatePermissions(path string) (bool, error) {
+	return repairPrivatePermissions(path, checkPreflightFileAccess)
+}
+
+func RepairPrivateTokenPermissions(path string) (bool, error) {
+	return repairPrivatePermissions(path, checkTokenFileAccess)
+}
+
+func repairPrivatePermissions(path string, check func(*os.File, os.FileInfo) error) (bool, error) {
 	file, info, err := openPermissionTarget(path, true)
 	if err != nil {
 		return false, err
 	}
 	defer file.Close()
-	err = checkPreflightFileAccess(file, info)
+	err = check(file, info)
 	if !errors.Is(err, errPreflightFileNotPrivate) {
 		return false, err
 	}
@@ -63,13 +79,14 @@ func RepairPrivatePermissions(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err = checkPreflightFileAccess(file, info); err != nil {
+	if err = check(file, info); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// CopyPrivatePermissions applies a validated original access policy to a private staging file.
+// CopyPrivatePermissions verifies the creation-time policy on Windows.
+// Unix applies the source mode and extended ACL before publication.
 func CopyPrivatePermissions(source, stage string) error {
 	original, info, err := openPermissionTarget(source, false)
 	if err != nil {
@@ -79,7 +96,7 @@ func CopyPrivatePermissions(source, stage string) error {
 	if err := checkPreflightFileAccess(original, info); err != nil {
 		return err
 	}
-	target, stageInfo, err := openPermissionTarget(stage, true)
+	target, stageInfo, err := openPermissionTarget(stage, runtime.GOOS != "windows")
 	if err != nil {
 		return err
 	}

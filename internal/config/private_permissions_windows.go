@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,36 +19,122 @@ func ownerOnlyDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
 		return nil, err
 	}
 	sid := user.User.Sid.String()
+	if sid == "" {
+		return nil, windows.ERROR_INVALID_SID
+	}
 	return windows.SecurityDescriptorFromString("O:" + sid + "D:P(A;;FA;;;" + sid + ")")
 }
 
-// CreatePrivateTemp supplies an owner DACL at CREATE_NEW so an inherited ACE can
-// never give another process a handle to the staged credentials.
 func CreatePrivateTemp(dir, prefix string) (*os.File, error) {
-	if prefix == "" || prefix != filepath.Base(prefix) {
+	return CreatePrivateStage(dir, prefix, StagePermissions{})
+}
+
+// CreatePrivateStage requests the original policy at CREATE_NEW. The handle
+// excludes other data and delete opens until its caller has finished writing.
+// An inheritance mismatch discards the empty object without ever repurposing it.
+func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, error) {
+	if prefix == "" || !filepath.IsLocal(prefix) || prefix != filepath.Base(prefix) || strings.Contains(prefix, ":") {
 		return nil, errors.New("暂存文件前缀无效")
+	}
+	parent, err := openSnapshotFile(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := checkStageDirectory(parent); err != nil {
+		return nil, err
 	}
 	sd, err := ownerOnlyDescriptor()
 	if err != nil {
 		return nil, err
 	}
-	var sa windows.SecurityAttributes
-	sa.Length = uint32(unsafe.Sizeof(sa))
-	sa.SecurityDescriptor = sd
-	for {
-		path := filepath.Join(dir, prefix+rand.Text())
-		name, err := windows.UTF16PtrFromString(path)
+	if policy.Source != "" {
+		original, _, err := openPermissionTarget(policy.Source, false)
 		if err != nil {
 			return nil, err
 		}
-		h, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.WRITE_DAC, permissionFileShare, &sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
-		if errors.Is(err, windows.ERROR_FILE_EXISTS) || errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		defer original.Close()
+		sd, err = readStageDescriptor(original, policy.Token)
+		if err != nil {
+			return nil, err
+		}
+	}
+	want, err := filePolicy(sd)
+	if err != nil {
+		return nil, err
+	}
+	// Keep only explicit DACL entries in the creation request. Windows
+	// computes the actual inherited entries from this stage's parent.
+	acl, _, err := sd.DACL()
+	if err != nil {
+		return nil, err
+	}
+	if !want.protected {
+		for i := len(want.entries) - 1; i >= 0; i-- {
+			if want.entries[i].inherited {
+				if err := removeACE(acl, i); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	// Request only the owner and DACL. The destination supplies its system
+	// ACL and inherited entries, which must pass the handle readback.
+	if policy.Source != "" {
+		owner, _, err := sd.Owner()
+		if err != nil {
+			return nil, err
+		}
+		creation, err := windows.NewSecurityDescriptor()
+		if err != nil {
+			return nil, err
+		}
+		if err := creation.SetOwner(owner, false); err != nil {
+			return nil, err
+		}
+		if err := creation.SetDACL(acl, true, false); err != nil {
+			return nil, err
+		}
+		if want.protected {
+			if err := creation.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+				return nil, err
+			}
+		}
+		sd, err = creation.ToSelfRelative()
+		if err != nil {
+			return nil, err
+		}
+	}
+	for {
+		base := prefix + rand.Text()
+		name, err := windows.NewNTUnicodeString(base)
+		if err != nil {
+			return nil, err
+		}
+		attrs := windows.OBJECT_ATTRIBUTES{
+			Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+			RootDirectory: windows.Handle(parent.Fd()), ObjectName: name,
+			Attributes: windows.OBJ_CASE_INSENSITIVE, SecurityDescriptor: sd,
+		}
+		var h windows.Handle
+		var status windows.IO_STATUS_BLOCK
+		const access = windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.DELETE
+		const options = windows.FILE_NON_DIRECTORY_FILE | windows.FILE_SYNCHRONOUS_IO_NONALERT
+		err = windows.NtCreateFile(&h, access, &attrs, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, 0, windows.FILE_CREATE, options, 0, 0)
+		if errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		return os.NewFile(uintptr(h), path), nil
+		f := os.NewFile(uintptr(h), filepath.Join(dir, base))
+		if err := verifyStagePolicy(want, f, policy); err != nil {
+			// Dispose of the rejected object by handle while its name is pinned.
+			remove := byte(1)
+			cleanupErr := windows.SetFileInformationByHandle(h, windows.FileDispositionInfo, &remove, 1)
+			return nil, errors.Join(err, cleanupErr, f.Close())
+		}
+		return f, nil
 	}
 }
 
@@ -63,8 +150,14 @@ func openPermissionWriter(path string) (*os.File, error) {
 	return os.NewFile(uintptr(h), path), nil
 }
 
+// Repair an existing DACL by subtracting grants. Replacing it with owner
+// full control could undo a deny or restore implicit rights to the owner.
 func MakeFilePrivate(file *os.File) error {
-	sd, err := ownerOnlyDescriptor()
+	sd, err := fileSecurityDescriptor(file, ownerDACL)
+	if err != nil {
+		return err
+	}
+	owner, err := currentFileOwner(sd)
 	if err != nil {
 		return err
 	}
@@ -72,99 +165,57 @@ func MakeFilePrivate(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return setFileDACL(file, acl, windows.PROTECTED_DACL_SECURITY_INFORMATION)
-}
-
-func copyFileAccess(original, target *os.File, _ os.FileInfo) error {
-	sourceACL, source, err := readFileDACL(original)
-	if err != nil {
-		return err
-	}
-	_, stage, err := readFileDACL(target)
-	if err != nil || source.preservedBy(stage) {
-		return err
-	}
-	protection := windows.SECURITY_INFORMATION(windows.PROTECTED_DACL_SECURITY_INFORMATION)
-	if !source.protected {
-		// Unprotecting may add access from the destination directory. Verify
-		// the result while the stage is empty, before anyone can read secrets.
-		info, err := target.Stat()
+	if acl == nil { // A confirmed NULL DACL grants everyone full control.
+		private, err := ownerOnlyDescriptor()
 		if err != nil {
 			return err
 		}
-		if info.Size() != 0 {
-			return errors.New("凭据暂存文件的继承权限已变更")
+		acl, _, err = private.DACL()
+		if err != nil || acl == nil {
+			return windows.ERROR_INVALID_ACL
 		}
-		protection = windows.UNPROTECTED_DACL_SECURITY_INFORMATION
-		// Only edit the local ACL returned by GetSecurityInfo. Windows will
-		// supply the inherited entries from the stage's own parent.
-		for i := len(source.entries) - 1; i >= 0; i-- {
-			if source.entries[i].inherited {
-				r, _, err := deleteAce.Call(uintptr(unsafe.Pointer(sourceACL)), uintptr(i))
-				if r == 0 {
+	} else {
+		for i := int(acl.AceCount) - 1; i >= 0; i-- {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
+				return err
+			}
+			if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
+				continue
+			}
+			if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+				return windows.ERROR_NOT_SUPPORTED
+			}
+			if !privateTrustee((*windows.SID)(unsafe.Pointer(&ace.SidStart)), owner) {
+				if err := removeACE(acl, i); err != nil {
 					return err
 				}
 			}
 		}
 	}
-	if err := setFileDACL(target, sourceACL, protection); err != nil {
-		return err
-	}
-	_, stage, err = readFileDACL(target)
-	if err != nil {
-		return err
-	}
-	if !source.preservedBy(stage) {
-		return errors.New("暂存文件无法保留原访问权限")
-	}
-	return nil
+	return windows.SetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 }
 
 var deleteAce = windows.NewLazySystemDLL("advapi32.dll").NewProc("DeleteAce")
 
-func setFileDACL(file *os.File, acl *windows.ACL, protection windows.SECURITY_INFORMATION) error {
-	if acl == nil {
-		return errors.New("无法验证文件 DACL")
+func removeACE(acl *windows.ACL, index int) error {
+	r, _, err := deleteAce.Call(uintptr(unsafe.Pointer(acl)), uintptr(index))
+	if r == 0 {
+		return err
 	}
-	return windows.SetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil)
+	return nil
 }
 
-func readFileDACL(file *os.File) (*windows.ACL, fileDACL, error) {
-	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+// Populated Windows stages are only verified. No pathname-based check may
+// change their ACL or introduce an access window after the first write.
+func copyFileAccess(original, target *os.File, _ os.FileInfo) error {
+	sd, err := readStageDescriptor(original, false)
 	if err != nil {
-		return nil, fileDACL{}, err
+		return err
 	}
-	acl, _, err := sd.DACL()
+	want, err := filePolicy(sd)
 	if err != nil {
-		return nil, fileDACL{}, err
+		return err
 	}
-	if acl == nil {
-		return nil, fileDACL{}, errors.New("无法验证文件 DACL")
-	}
-	control, _, err := sd.Control()
-	if err != nil {
-		return nil, fileDACL{}, err
-	}
-	policy := fileDACL{protected: control&windows.SE_DACL_PROTECTED != 0}
-	for i := uint16(0); i < acl.AceCount; i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
-			return nil, fileDACL{}, err
-		}
-		entry := fileACE{
-			encoded:   string(unsafe.Slice((*byte)(unsafe.Pointer(ace)), ace.Header.AceSize)),
-			inherited: ace.Header.AceFlags&windows.INHERITED_ACE != 0,
-		}
-		const fileFlags = windows.INHERITED_ACE | windows.OBJECT_INHERIT_ACE | windows.CONTAINER_INHERIT_ACE | windows.NO_PROPAGATE_INHERIT_ACE
-		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceFlags&^fileFlags == 0 {
-			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-			// Removing an OWNER RIGHTS ACE can restore implicit owner access.
-			if !sid.IsWellKnown(windows.WinCreatorOwnerRightsSid) {
-				entry.allowSID = sid.String()
-				entry.allowMask = uint32(ace.Mask)
-			}
-		}
-		policy.entries = append(policy.entries, entry)
-	}
-	return acl, policy, nil
+	return verifyStagePolicy(want, target, StagePermissions{Source: original.Name()})
 }
