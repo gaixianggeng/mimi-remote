@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestMigrateLegacyDefaultConfigPreservesRawConfig(t *testing.T) {
@@ -24,7 +26,7 @@ func TestMigrateLegacyDefaultConfigPreservesRawConfig(t *testing.T) {
   "future_unknown_field": {"keep": true}
 }
 `)
-	writeLegacyMigrationFile(t, source, raw, 0o644)
+	writeLegacyMigrationFile(t, source, raw, 0o600)
 	otherState := filepath.Join(filepath.Dir(source), "app-server-ws-token")
 	writeLegacyMigrationFile(t, otherState, []byte("legacy-upstream-secret\n"), 0o600)
 
@@ -36,7 +38,7 @@ func TestMigrateLegacyDefaultConfigPreservesRawConfig(t *testing.T) {
 		t.Fatal("旧版配置存在且新版缺失时应执行迁移")
 	}
 	assertLegacyMigrationFile(t, destination, raw, 0o600)
-	assertLegacyMigrationFile(t, source, raw, 0o644)
+	assertLegacyMigrationFile(t, source, raw, 0o600)
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(destination), "app-server-ws-token")); !os.IsNotExist(err) {
 		t.Fatalf("迁移不得擅自复制 upstream token 或其他状态：%v", err)
 	}
@@ -57,6 +59,24 @@ func TestMigrateLegacyDefaultConfigNewConfigAlwaysWins(t *testing.T) {
 		t.Fatal("新版配置已存在时不得再次迁移")
 	}
 	assertLegacyMigrationFile(t, destination, currentRaw, 0o640)
+}
+
+func TestLegacyMigrationPreservesInterruptedSetup(t *testing.T) {
+	for _, suffix := range []string{"", ".identity", ".recovery"} {
+		t.Run("journal"+suffix, func(t *testing.T) {
+			destination, source := legacyDefaultMigrationPaths(t)
+			marker := SetupJournalPath(destination) + suffix
+			old, interrupted := []byte("prior configuration"), []byte("setup recovery fixture")
+			writeLegacyMigrationFile(t, source, old, 0600)
+			writeLegacyMigrationFile(t, marker, interrupted, 0600)
+			if migrated, err := MigrateLegacyDefaultConfig(destination, false); migrated || err == nil {
+				t.Fatal("legacy migration bypassed an interrupted setup")
+			}
+			assertLegacyMigrationMissing(t, destination)
+			assertLegacyMigrationFile(t, source, old, 0600)
+			assertLegacyMigrationFile(t, marker, interrupted, 0600)
+		})
+	}
 }
 
 func TestMigrateLegacyDefaultConfigRejectsUnsafeLegacyPath(t *testing.T) {
@@ -198,9 +218,7 @@ func writeLegacyMigrationFile(t *testing.T, path string, raw []byte, mode os.Fil
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, raw, mode); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, raw)
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}

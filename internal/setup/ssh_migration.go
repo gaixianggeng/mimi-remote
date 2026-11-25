@@ -75,7 +75,7 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 		return nil
 	}
 	// 默认的本机 local 只在显式给出 SSH target 时才切到远端 SSH；没有 target 的 local 保持不变，
-	// 这样 macOS 用户不必 setup --force（会轮换配对 Token）就能启用高级远端模式。
+	// 迁移只切换 transport，保留原有身份。
 	convertsLocal := transportName == "local" && !legacy
 	if convertsLocal && strings.TrimSpace(requestedTarget) == "" {
 		return nil
@@ -84,7 +84,7 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.AppServerTransportError(transportName))
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
-		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请执行 agentd setup --force")
+		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请保留原配置并检查连接设置")
 	}
 
 	target := requestedTarget

@@ -19,6 +19,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -69,9 +70,7 @@ func newLinkTestServer(t *testing.T) (testServer, *linkTestSidecar, *managedPair
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(r.configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, r.configPath, raw)
 	s := &linkTestSidecar{fakeTailcatSidecar: fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true, Running: true, Mode: config.TailcatModeSelfHosted,
 		Address: "tailcat:test-stable", PublicKey: testManagedMacKey,

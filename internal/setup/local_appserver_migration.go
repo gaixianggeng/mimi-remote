@@ -91,7 +91,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.AppServerTransportError(transportName))
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
-		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请执行 agentd setup --force")
+		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请保留原配置并检查连接设置")
 	}
 
 	var runtimeConfig struct {

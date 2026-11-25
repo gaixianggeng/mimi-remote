@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type configWriter func(path string, raw []byte) error
@@ -19,7 +21,7 @@ type privateFileStageOps struct {
 }
 
 func writePrivateFileAtomically(path string, raw []byte) error {
-	return writePrivateFileAtomicallyWithRename(path, raw, os.Rename)
+	return writePrivateFileAtomicallyWithRename(path, raw, renameSetupFile)
 }
 
 func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) error {
@@ -31,7 +33,7 @@ func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) err
 			return fmt.Errorf("重新读取配置失败：%w", err)
 		}
 		if !bytes.Equal(current, expected) {
-			return fmt.Errorf("配置已被其他进程修改，请重新执行")
+			return saveFailure("config_concurrent_change", fmt.Errorf("配置已被其他进程修改，请重新执行"))
 		}
 		return writePrivateFileAtomically(path, raw)
 	})
@@ -44,6 +46,13 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 		return err
 	}
 	defer os.Remove(tempPath)
+	if _, err := os.Lstat(path); err == nil {
+		if err = copyAndSyncPermissions(path, tempPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if err := rename(tempPath, path); err != nil {
 		return err
 	}
@@ -68,7 +77,7 @@ func stagePrivateFile(dir string, pattern string, raw []byte) (string, error) {
 }
 
 func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops privateFileStageOps) (string, error) {
-	file, err := os.CreateTemp(dir, pattern)
+	file, err := config.CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +90,7 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops private
 		}
 	}()
 
-	if err := makePrivateFile(file); err != nil {
+	if err := config.MakeFilePrivate(file); err != nil {
 		return "", err
 	}
 	written, err := ops.write(file, raw)

@@ -10,11 +10,12 @@ import (
 )
 
 type setupFileTransactionOps struct {
-	stage   func(dir string, pattern string, raw []byte) (string, error)
-	rename  func(oldPath string, newPath string) error
-	link    func(oldPath string, newPath string) error
-	remove  func(path string) error
-	syncDir func(dir string) error
+	stage     func(dir string, pattern string, raw []byte) (string, error)
+	rename    func(oldPath string, newPath string) error
+	renameNew func(oldPath, newPath string) error
+	link      func(oldPath string, newPath string) error
+	remove    func(path string) error
+	syncDir   func(dir string) error
 }
 
 func writeSetupFilesAtomically(
@@ -89,44 +90,14 @@ func writeSetupFilesAtomically(
 	return nil
 }
 
-// writeConfigAtomically 只提交 SSH 配置文件，不创建、轮换或删除旧 app-server token file。
-func writeConfigAtomically(configPath string, configRaw []byte, ops setupFileTransactionOps) error {
-	configPath = filepath.Clean(configPath)
-	configExisted, err := regularFileOrMissing(configPath, "配置文件")
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(configPath)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
-	if err != nil {
-		return fmt.Errorf("暂存配置文件失败：%w", err)
-	}
-	defer ops.remove(stagedConfig)
-	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
-	if err != nil {
-		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
-	}
-	if configBackup != "" {
-		defer ops.remove(configBackup)
-	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
-		return fmt.Errorf("提交配置文件失败：%w", err)
-	}
-	if err := ops.syncDir(dir); err != nil {
-		rollbackErr := restoreSetupTarget(configPath, configBackup, configExisted, ops)
-		rollbackSyncErr := ops.syncDir(dir)
-		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
-	}
-	return nil
-}
-
 func defaultSetupFileTransactionOps() setupFileTransactionOps {
 	return setupFileTransactionOps{
-		stage:   stagePrivateFile,
-		rename:  os.Rename,
-		link:    os.Link,
-		remove:  os.Remove,
-		syncDir: syncDirectory,
+		stage:     stagePrivateFile,
+		rename:    renameSetupFile,
+		renameNew: renameNewSetupFile,
+		link:      os.Link,
+		remove:    os.Remove,
+		syncDir:   syncDirectory,
 	}
 }
 

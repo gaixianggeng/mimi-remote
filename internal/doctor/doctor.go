@@ -306,7 +306,7 @@ func (c *Checker) appServerTokenFileCheck() Check {
 			Name:    "app-server-token-file",
 			OK:      false,
 			Message: "app-server token file 未配置",
-			Fix:     "运行 agentd setup --force 重新生成本机 App Server 配置",
+			Fix:     "请保留原配置，在本机检查 App Server 连接设置",
 		}
 	}
 	return sensitiveFileCheck("app-server-token-file", "app-server token file", path)

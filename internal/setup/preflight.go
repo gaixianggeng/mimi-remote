@@ -63,7 +63,7 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 		}
 	}
 	metadataCtx, stopMetadata := context.WithTimeout(ctx, 2*time.Second)
-	snapshot, ok := boundedPreflight(metadataCtx, func() config.PreflightSnapshot { return config.ReadPreflightSnapshot(r.ConfigPath) })
+	snapshot, ok := boundedPreflight(metadataCtx, func() config.PreflightSnapshot { return previewSavedSetup(r.ConfigPath, o.LegacyPath) })
 	stopMetadata()
 	if !ok {
 		snapshot.Code = "probe_timeout"
@@ -90,6 +90,7 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 	}
 	if code == "config_invalid" || code == "config_recovery_required" || code == "legacy_codex_residue" {
 		r.Checks[indices["config_store"]].ConfigPath = "<配置目录>/config.json"
+		r.Checks[indices["config_store"]].RecoveryPath = snapshot.RecoveryPath
 	}
 	complete("config_store", code)
 	home, _ := os.UserHomeDir()

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestTailcatConfigureRequiresExplicitDERPMapFlag(t *testing.T) {
@@ -94,9 +96,7 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 		"listen": strings.TrimPrefix(server.URL, "http://"), "auth": map[string]string{"token": "0123456789abcdef0123456789abcdef"},
 		"codex": map[string]bool{"enabled": false}, "claude": map[string]bool{"enabled": false},
 	})
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, data)
 	if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -148,9 +148,7 @@ func TestTailcatPairOnlyAdvertisesManagedFieldsInManagedMode(t *testing.T) {
 			"listen": strings.TrimPrefix(server.URL, "http://"), "auth": map[string]string{"token": "0123456789abcdef0123456789abcdef"},
 			"codex": map[string]bool{"enabled": false}, "claude": map[string]bool{"enabled": false},
 		})
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.CreatePrivateFile(t, path, data)
 		if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
 			t.Fatal(err)
 		}

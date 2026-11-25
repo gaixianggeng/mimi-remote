@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const legacyAppName = "codex-ipad-agent"
@@ -31,7 +33,7 @@ type legacyMigrationFileOps struct {
 func defaultLegacyMigrationFileOps() legacyMigrationFileOps {
 	return legacyMigrationFileOps{
 		lstat:       os.Lstat,
-		readRegular: readUnchangedRegularFile,
+		readRegular: func(path string, info os.FileInfo) ([]byte, error) { return readPreflightFile(path, info, 4<<20) },
 		stage:       stageLegacyConfig,
 		link:        os.Link,
 		remove:      os.Remove,
@@ -69,7 +71,24 @@ func MigrateLegacyDefaultConfig(requestedPath string, explicitlyConfigured bool)
 	if err != nil {
 		return false, fmt.Errorf("解析旧版配置路径失败：%w", err)
 	}
-	return migrateLegacyDefaultConfig(requested, legacyPath, defaultLegacyMigrationFileOps())
+	if _, err := os.Lstat(requested); !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if _, err := os.Lstat(legacyPath); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var migrated bool
+	err = WithConfigCommitLock(ctx, requested, func() error {
+		if err := CheckSetupWriteAvailable(requested); err != nil {
+			return err
+		}
+		var err error
+		migrated, err = migrateLegacyDefaultConfig(requested, legacyPath, defaultLegacyMigrationFileOps())
+		return err
+	})
+	return migrated, err
 }
 
 func migrateLegacyDefaultConfig(destination string, source string, ops legacyMigrationFileOps) (bool, error) {
@@ -118,6 +137,14 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 		return false, fmt.Errorf("暂存旧版配置副本失败：缺少完整暂存文件")
 	}
 
+	// Another command can change the historical source while the private copy is staged.
+	current, err := ops.readRegular(source, sourceInfo)
+	if err != nil || !bytes.Equal(current, raw) {
+		return false, errors.New("旧版配置已更改，请重新选择")
+	}
+	if err := CopyPrivatePermissions(source, staged.path); err != nil {
+		return false, err
+	}
 	// hard link 是这里的 no-clobber 提交点：目标并发出现时返回 EEXIST，不会像 rename 一样覆盖新文件。
 	if err := ops.link(staged.path, destination); err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -144,24 +171,8 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	return true, nil
 }
 
-func readUnchangedRegularFile(path string, expected os.FileInfo) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(expected, opened) {
-		return nil, fmt.Errorf("旧版配置在读取前发生变化，拒绝继续迁移")
-	}
-	return io.ReadAll(file)
-}
-
 func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLegacyConfig, resultErr error) {
-	file, err := os.CreateTemp(dir, pattern)
+	file, err := CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return result, err
 	}

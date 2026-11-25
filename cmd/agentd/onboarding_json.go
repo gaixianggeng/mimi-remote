@@ -139,6 +139,13 @@ func invalidOnboardingRequest(cause error) error {
 }
 
 func commandDiagnostic(args []string, err error) setup.OnboardingError {
+	var save *setup.SaveError
+	if errors.As(err, &save) {
+		d := setup.OnboardingDiagnostic(save.Code, save.Step, "setup", save.Code != "config_missing", "")
+		d.ConfigPath = save.ConfigPath
+		d.RecoveryPath = save.RecoveryPath
+		return d
+	}
 	var typed *onboardingCommandError
 	if errors.As(err, &typed) {
 		return setup.OnboardingDiagnostic(typed.code, typed.step, "pair", typed.configured, "")

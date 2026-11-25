@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 const deepSeekTestToken = "deepseek-startup-secret-never-output"
@@ -539,9 +541,7 @@ func writeDeepSeekConfigAtPath(t *testing.T, configPath string, enabled bool, ba
 		t.Fatal(err)
 	}
 	raw = append(raw, '\n')
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, configPath, raw)
 	return raw
 }
 

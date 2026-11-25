@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
@@ -70,9 +71,7 @@ func TestOnboardingUpReadinessFailure(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"codex":{"enabled":false}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, []byte(`{"codex":{"enabled":false}}`))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -129,12 +128,8 @@ func TestOnboardingJSONPreservesExistingIdentity(t *testing.T) {
 	companion := filepath.Join(dir, "app-server-token")
 	original := []byte(`{"auth":{"token":"private-fixture-bearer"}`)
 	token := []byte("private-fixture-companion")
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(companion, token, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
+	configtest.CreatePrivateFile(t, companion, token)
 	for _, tc := range []struct{ cmd, flag, code string }{
 		{"setup", "--force", "token_rotation_requires_approval"},
 		{"doctor", "--fix", "config_invalid"},

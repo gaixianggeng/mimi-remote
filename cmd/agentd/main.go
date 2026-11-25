@@ -121,53 +121,6 @@ func runSetup(args []string) error {
 	return runSetupWithWriters(args, os.Stdout, os.Stderr)
 }
 
-func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
-	fs := onboardingFlagSet("setup", args[1:])
-	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
-	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
-	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
-	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
-	force := fs.Bool("force", false, "覆盖已有配置并重新生成 token")
-	asJSON := fs.Bool("json", false, "输出 JSON")
-	qrOnly := fs.Bool("qr-only", false, "只输出短期配对信息，不输出长期 Token")
-	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
-		return err
-	}
-	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
-		return err
-	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
-		return err
-	}
-	if *asJSON && *force && onboardingConfigured(*configPath) {
-		return onboardingFailure("token_rotation_requires_approval", "config_store", true, errors.New("已保留现有配置"))
-	}
-	result, err := runAgentSetup(context.Background(), agentsetup.Options{
-		ConfigPath:         *configPath,
-		ScanRoot:           *scanRoot,
-		BrowseRoot:         *browseRoot,
-		Listen:             *listen,
-		AppServerSSHTarget: *appServerSSHTarget,
-		Force:              *force && !*asJSON,
-	})
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		if *qrOnly {
-			return printJSONTo(stdout, qrOnlyPairResult(result))
-		}
-		return printJSONTo(stdout, result)
-	}
-	if *qrOnly {
-		printQROnlyPairResult(stdout, result)
-		return nil
-	}
-	printSetupResult(stdout, result)
-	return nil
-}
-
 func runServe(args []string) (serveErr error) {
 	logFile := ""
 	managedService := false
@@ -228,8 +181,8 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := onboardingFlagSet("up", args[1:])
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	scanRoot := fs.String("scan-root", "", "项目扫描根目录，默认优先使用 ~/code，其次使用当前目录")
-	browseRoot := fs.String("browse-root", "", "移动设备浏览目录或打开 workspace 时的授权根目录，默认使用用户 Home")
-	listen := fs.String("listen", "", "agentd 监听地址，默认优先 Tailscale；Windows 的 LAN 需要显式启用")
+	browseRoot := fs.String("browse-root", "", "移动设备浏览授权目录，新安装默认使用项目扫描目录")
+	listen := fs.String("listen", "", "agentd 监听地址，新安装默认只监听本机")
 	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
@@ -237,9 +190,7 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
-		return err
-	}
+
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
 		return err
 	}
@@ -255,6 +206,7 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	}
 	result, err := runAgentSetup(context.Background(), agentsetup.Options{
 		ConfigPath:         *configPath,
+		LegacyPath:         setupLegacyPath(fs),
 		ScanRoot:           *scanRoot,
 		BrowseRoot:         *browseRoot,
 		Listen:             *listen,
@@ -264,6 +216,7 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	setupMigrationNotice(stderr, result)
 	if err := ensureCodexCLIAvailable(result.ConfigPath); err != nil {
 		return err
 	}
@@ -603,6 +556,7 @@ func runStatus(args []string) error {
 	status["version"] = version
 	status["endpoint"] = result.Endpoint
 	status["config_path"] = result.ConfigPath
+	status["workspace_confirmed"] = config.ReadPreflightSnapshot(config.ExpandPath(*configPath)).Confirmed
 	status["projects"] = len(registry.List())
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
@@ -807,12 +761,27 @@ func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	prepare := prepareDefaultConfigMigration
-	if fix {
-		prepare = prepareRequiredConfig
-	}
-	if err := prepare(fs, configPath, stderr); err != nil {
-		return err
+	if !fix {
+		if err := prepareDefaultConfigMigration(fs, configPath, stderr); err != nil {
+			return err
+		}
+	} else {
+		if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
+			return err
+		}
+		// A legacy default may supply the existing identity, but doctor never
+		// creates one. Validate the original bytes before copying anything.
+		if !onboardingConfigured(configPath) {
+			result, err := runAgentSetup(doctorCtx, agentsetup.Options{ConfigPath: configPath, LegacyPath: setupLegacyPath(fs), RequireExisting: true, LocalServiceOnly: true})
+			if err != nil {
+				return err
+			}
+			setupMigrationNotice(stderr, result)
+		}
+		handled, err := repairDoctorFileAccess(doctorCtx, config.ExpandPath(configPath), asJSON, stdout)
+		if handled || err != nil {
+			return err
+		}
 	}
 	_, _, checker, err := loadRuntimeConfigFromPath(configPath, true)
 	if err != nil {
@@ -822,31 +791,10 @@ func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 		if !fix {
 			return err
 		}
-		if asJSON {
-			return onboardingFailure("config_invalid", "config_store", true, err)
+		if !onboardingConfigured(configPath) {
+			return onboardingFailure("config_missing", "config_store", false, err)
 		}
-		fixes, repairedChecker, repairedResults, repairErr := rebuildDoctorConfig(doctorCtx, configPath, checkPort)
-		if repairErr != nil {
-			return fmt.Errorf("%v；自动修复也失败：%w", err, repairErr)
-		}
-		restartRequired := len(fixes) > 0
-		fmt.Fprintf(stdout, "配置加载失败，已尝试自动修复：%v\n\n", err)
-		if len(fixes) > 0 {
-			fmt.Fprintln(stdout, "已修复：")
-			for _, item := range fixes {
-				fmt.Fprintf(stdout, "  OK %s\n", item)
-			}
-			fmt.Fprintln(stdout)
-		}
-		doctor.Print(stdout, repairedResults)
-		if restartRequired {
-			fmt.Fprintln(stdout, "\n配置已更新，需要重启 agentd 后生效。")
-		}
-		_ = repairedChecker
-		if !repairedResults.OK {
-			return fmt.Errorf("doctor 检查未通过")
-		}
-		return nil
+		return onboardingFailure("config_invalid", "config_store", true, err)
 	}
 	results := checker.Run(doctorCtx, checkPort)
 	fixes := []string{}
@@ -910,6 +858,9 @@ func loadRuntimeConfig(args []string, forDoctor bool, configure ...func(*flag.Fl
 		}
 	}
 	if !forDoctor && fileExists(*configPath) {
+		if err := agentsetup.CheckRepairSource(config.ExpandPath(*configPath)); err != nil {
+			return config.Config{}, nil, nil, err
+		}
 		beforeMigration, err := config.LoadForDoctor(*configPath)
 		if err != nil {
 			return config.Config{}, nil, nil, err
@@ -972,7 +923,7 @@ func repairDoctor(
 	configPath string,
 	checkPort bool,
 	current doctor.Results,
-	preserveIdentity bool,
+	_ bool,
 ) ([]string, bool, *doctor.Checker, doctor.Results, error) {
 	if hasFailedCheck(current, "legacy-codex-experiment") {
 		return nil, false, nil, current, fmt.Errorf("检测到旧 Codex Desktop 共享实验残留；doctor --fix 不会终止任务或改写 owner")
@@ -994,11 +945,11 @@ func repairDoctor(
 	if hasFailedCheck(current, "token") || hasFailedCheck(current, "projects") {
 		needsSetup = true
 	}
-	if needsSetup && preserveIdentity {
+	if needsSetup {
 		return nil, false, nil, current, blockedDoctorRebuild(configPath, current)
 	}
 	if hasFailedCheck(current, "config-file") {
-		fixed, err := tightenSensitiveFilePermissions(configPath)
+		fixed, err := config.RepairPrivatePermissions(configPath)
 		if err != nil {
 			return nil, false, nil, current, fmt.Errorf("修复配置文件权限失败：%w", err)
 		}
@@ -1006,14 +957,14 @@ func repairDoctor(
 			fixes = append(fixes, "已将配置文件权限收紧为 0600")
 		}
 	}
-	if hasFailedCheck(current, "app-server") && !needsSetup {
+	if hasFailedCheck(current, "app-server") {
 		if err := ensureAppServerTransportMigration(ctx, configPath, os.Getenv("AGENTD_APP_SERVER_SSH_TARGET")); err != nil {
 			return nil, false, nil, current, err
 		}
 		fixes = append(fixes, "已在共享 App Server 预检通过后原子迁移旧配置")
 		restartRequired = true
 	}
-	if (hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server")) && !needsSetup {
+	if hasFailedCheck(current, "codex") || hasFailedCheck(current, "codex-app-server") {
 		// 旧的绝对路径失效或 Windows CLI 缺少 single-writer 基线时只修复
 		// codex.bin；无法发现安全替代项则保留原 Doctor 结果继续给出升级指引。
 		codexPath, repaired, repairErr := agentsetup.RepairCodexBin(configPath)
@@ -1022,73 +973,11 @@ func repairDoctor(
 			restartRequired = true
 		}
 	}
-	if needsSetup {
-		setupFixes, err := forceSetupWithBackup(ctx, configPath)
-		if err != nil {
-			return nil, false, nil, current, err
-		}
-		fixes = append(fixes, setupFixes...)
-		restartRequired = restartRequired || len(setupFixes) > 0
-	}
-	_, registry, checker, err := loadRuntimeConfigFromPath(configPath, true)
+	_, _, checker, err := loadRuntimeConfigFromPath(configPath, true)
 	if err != nil {
 		return nil, false, nil, current, err
 	}
-	_ = registry
 	return fixes, restartRequired, checker, checker.Run(ctx, checkPort), nil
-}
-
-func tightenSensitiveFilePermissions(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 == 0 {
-		return false, nil
-	}
-	// 不读取也不重写文件内容，只收紧 mode，避免 doctor --fix 意外轮换现有 token。
-	if err := os.Chmod(path, 0o600); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func rebuildDoctorConfig(ctx context.Context, configPath string, checkPort bool) ([]string, *doctor.Checker, doctor.Results, error) {
-	fixes, err := forceSetupWithBackup(ctx, configPath)
-	if err != nil {
-		return nil, nil, doctor.Results{}, err
-	}
-	_, _, checker, err := loadRuntimeConfigFromPath(configPath, true)
-	if err != nil {
-		return nil, nil, doctor.Results{}, err
-	}
-	return fixes, checker, checker.Run(ctx, checkPort), nil
-}
-
-func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, error) {
-	fixes := []string{}
-	if fileExists(configPath) {
-		raw, err := os.ReadFile(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取待修复配置失败：%w", err)
-		}
-		if err := config.RejectLegacyAppServerConfiguration(raw); err != nil {
-			return nil, err
-		}
-		backup, err := backupFile(configPath)
-		if err != nil {
-			return nil, err
-		}
-		fixes = append(fixes, "已备份旧配置："+backup)
-	}
-	if _, err := runAgentSetup(ctx, agentsetup.Options{ConfigPath: configPath, Force: true}); err != nil {
-		return nil, fmt.Errorf("自动生成配置失败：%w", err)
-	}
-	fixes = append(fixes, "已生成可配对的默认配置")
-	return fixes, nil
 }
 
 func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker, diagnostics *managedDiagnosticLogs) error {
@@ -1525,18 +1414,6 @@ func hasFailedCheck(results doctor.Results, name string) bool {
 		}
 	}
 	return false
-}
-
-func backupFile(path string) (string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("备份配置前读取失败：%w", err)
-	}
-	backup := fmt.Sprintf("%s.bak-%s", path, time.Now().Format("20060102150405"))
-	if err := os.WriteFile(backup, raw, 0o600); err != nil {
-		return "", fmt.Errorf("写入配置备份失败：%w", err)
-	}
-	return backup, nil
 }
 
 func fileExists(path string) bool {

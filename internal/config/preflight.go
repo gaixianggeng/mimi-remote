@@ -15,7 +15,7 @@ type PreflightSnapshot struct {
 	Config                Config
 	Configured, Confirmed bool
 	ClaudeActivation      string
-	Code                  string
+	Code, RecoveryPath    string
 }
 
 func ReadPreflightSnapshot(path string) PreflightSnapshot {
@@ -29,6 +29,12 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 	s.Configured = !errors.Is(err, os.ErrNotExist)
 	if err != nil && s.Configured {
 		s.Code = "config_invalid"
+		return s
+	}
+	journal := SetupJournalPath(path)
+	if _, e := os.Lstat(journal + ".recovery"); !errors.Is(e, os.ErrNotExist) {
+		s.Code = "config_recovery_required"
+		s.RecoveryPath = "<配置目录>/" + filepath.Base(journal)
 		return s
 	}
 	dir := filepath.Dir(path)
@@ -51,10 +57,17 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 	if err != nil {
 		s.Code = "config_invalid"
 		if errors.Is(err, errPreflightFileNotPrivate) {
-			s.Code = "config_recovery_required"
+			s.Code = "config_permissions_unsafe"
 		}
 		return s
 	}
+	return InspectCommittedDocument(raw)
+}
+
+// ParseSetupDocument checks persisted intent without environment overrides,
+// runtime probes or project discovery. A proposed WS file may not be published yet.
+func ParseSetupDocument(raw []byte) PreflightSnapshot {
+	s := PreflightSnapshot{Configured: true}
 	var marker struct {
 		Claude struct {
 			Activation string `json:"activation"`
@@ -63,7 +76,7 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 			WorkspaceConfirmed json.RawMessage `json:"workspace_confirmed"`
 		} `json:"onboarding"`
 	}
-	if json.Unmarshal(raw, &marker) != nil || strings.TrimSpace(string(raw)) == "null" {
+	if ValidateSetupDocumentKeys(raw) != nil || json.Unmarshal(raw, &marker) != nil || strings.TrimSpace(string(raw)) == "null" {
 		s.Code = "config_invalid"
 		return s
 	}
@@ -96,18 +109,34 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 		}
 		return s
 	}
-	if cfg.AppServer.Transport == "ws" {
-		path := ExpandPath(cfg.AppServer.WSTokenFile)
-		token, err := ReadPrivatePreflightFile(path, 4096)
-		if err != nil || strings.TrimSpace(string(token)) == "" {
-			s.Code = "config_recovery_required"
-			return s
-		}
-	}
 	s.ClaudeActivation = marker.Claude.Activation
 	s.Config = cfg
 	s.Confirmed = confirmed
 	return s
+}
+
+func InspectCommittedDocument(raw []byte) PreflightSnapshot {
+	s := ParseSetupDocument(raw)
+	if s.Code == "" && s.Config.AppServer.Transport == "ws" {
+		path := ExpandPath(s.Config.AppServer.WSTokenFile)
+		token, err := ReadPrivatePreflightFile(path, 4096)
+		if err != nil || strings.TrimSpace(string(token)) == "" {
+			s.Code = "config_recovery_required"
+			if errors.Is(err, errPreflightFileNotPrivate) {
+				s.Code = "config_permissions_unsafe"
+			}
+			s.Confirmed = false
+		}
+	}
+	return s
+}
+
+// PrivateFileDiagnostic distinguishes repairable access from untrusted files.
+func PrivateFileDiagnostic(err error) string {
+	if errors.Is(err, errPreflightFileNotPrivate) {
+		return "config_permissions_unsafe"
+	}
+	return "config_invalid"
 }
 
 var errPreflightFileNotPrivate = errors.New("文件权限未能保护本机凭据")

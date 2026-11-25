@@ -18,6 +18,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -51,9 +52,7 @@ func newModeTestHost(t *testing.T, binary, previous string, enabled bool) (*tail
 	}}
 	cfg.Auth.Token = testToken
 	data, _ := json.Marshal(cfg)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, data)
 	s := newTailcatSidecarSupervisor(cfg, path)
 	t.Cleanup(s.Close)
 	if enabled {

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestResolveCodexBinFallsBackFromStaleConfiguredPath(t *testing.T) {
@@ -279,9 +280,7 @@ func TestRepairCodexBinPreservesUserConfigAndSecrets(t *testing.T) {
 	if err := json.Unmarshal(raw, &expected); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, append(raw, '\n'))
 
 	const recovered = "/Applications/ChatGPT.app/Contents/Resources/codex"
 	path, repaired, err := repairCodexBin(configPath, func(configured string) (string, error) {

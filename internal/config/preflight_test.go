@@ -50,7 +50,7 @@ func TestPreflightConfigReadsPersistedIdentityWithoutScanning(t *testing.T) {
 		if err := os.Chmod(path, 0644); err != nil {
 			t.Fatal(err)
 		}
-		if got := ReadPreflightSnapshot(path); got.Code != "config_recovery_required" {
+		if got := ReadPreflightSnapshot(path); got.Code != "config_permissions_unsafe" {
 			t.Fatal("unsafe config accepted")
 		}
 	}

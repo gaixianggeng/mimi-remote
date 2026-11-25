@@ -13,7 +13,7 @@ import (
 func openSnapshotFile(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 }
-func checkPreflightFileAccess(_ *os.File, info os.FileInfo) error {
+func checkPreflightFileAccess(file *os.File, info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
 		return errors.New("文件不属于当前用户")
@@ -21,7 +21,7 @@ func checkPreflightFileAccess(_ *os.File, info os.FileInfo) error {
 	if info.Mode().Perm()&0077 != 0 {
 		return errPreflightFileNotPrivate
 	}
-	return nil
+	return checkExtendedACL(file)
 }
 
 func directoryAccessible(path string, info os.FileInfo, write bool) bool {

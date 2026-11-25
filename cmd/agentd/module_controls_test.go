@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing.T) {
@@ -88,9 +88,7 @@ func TestModuleCLIRejectsAmbiguousMutations(t *testing.T) {
 
 func TestDisabledCodexStartupSkipsMigrationAndBinaryRepair(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:8787","auth":{"token":"module-test-only"},"codex":{"enabled":false,"bin":"/missing/module-test-codex"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, []byte(`{"listen":"127.0.0.1:8787","auth":{"token":"module-test-only"},"codex":{"enabled":false,"bin":"/missing/module-test-codex"}}`))
 	if err := ensureCodexCLIAvailable(path); err != nil {
 		t.Fatal(err)
 	}

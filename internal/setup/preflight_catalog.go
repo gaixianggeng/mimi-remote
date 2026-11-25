@@ -9,10 +9,12 @@ type OnboardingFix struct {
 	URL    string `json:"url,omitempty"`
 }
 type OnboardingError struct {
-	Code    string        `json:"code"`
-	Step    string        `json:"step"`
-	Message string        `json:"message"`
-	Fix     OnboardingFix `json:"fix"`
+	ConfigPath   string        `json:"config_path,omitempty"`
+	RecoveryPath string        `json:"recovery_path,omitempty"`
+	Code         string        `json:"code"`
+	Step         string        `json:"step"`
+	Message      string        `json:"message"`
+	Fix          OnboardingFix `json:"fix"`
 }
 
 // Project the catalog action against current intent. Clients receive only the
@@ -60,7 +62,7 @@ func OnboardingDiagnostic(code, step, stage string, configured bool, recommended
 	case "open_settings", "choose_path":
 		f.Target = value
 	}
-	return OnboardingError{code, step, strings.ReplaceAll(d.message, "{title}", preflightTitles[step]), f}
+	return OnboardingError{Code: code, Step: step, Message: strings.ReplaceAll(d.message, "{title}", preflightTitles[step]), Fix: f}
 }
 
 type diagnosticSpec struct{ state, kind, value, message string }

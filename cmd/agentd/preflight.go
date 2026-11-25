@@ -41,6 +41,7 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 	if o.Stage == "pair" && (len(o.RuntimePaths)+len(o.Assistants) > 0 || o.ScanRoot != "" || o.BrowseRoot != "") {
 		return invalidOnboardingRequest(errors.New("配对检查使用已保存的配置"))
 	}
+	o.LegacyPath = setupLegacyPath(fs)
 	var progress func(setup.PreflightCheck)
 	var streamErr error
 	if *stream {

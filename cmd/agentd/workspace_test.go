@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestWorkspaceCLIChangesRootsWithoutDisclosingToken(t *testing.T) {
@@ -21,7 +22,18 @@ func TestWorkspaceCLIChangesRootsWithoutDisclosingToken(t *testing.T) {
 	server := config.DefaultSharedLocalAppServerConfig()
 	if runtime.GOOS == "windows" {
 		server = config.DefaultManagedAppServerConfig()
-		server.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
+
+		token, err := config.CreatePrivateTemp(t.TempDir(), "app-server-token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := token.WriteString("synthetic-test-companion"); err != nil {
+			t.Fatal(err)
+		}
+		if err := token.Close(); err != nil {
+			t.Fatal(err)
+		}
+		server.WSTokenFile = token.Name()
 	}
 	raw, err := json.Marshal(map[string]any{
 		"listen": "127.0.0.1:8787", "auth": config.AuthConfig{Token: "workspace-cli-private"}, "app_server": server,
@@ -31,9 +43,7 @@ func TestWorkspaceCLIChangesRootsWithoutDisclosingToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, raw)
 	var stdout, stderr bytes.Buffer
 	if err := runWorkspaceWithWriters([]string{"workspace", "--config", path, "--root", root, "--json"}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
