@@ -82,6 +82,13 @@ final class SessionOpenTargetTests: XCTestCase {
         XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(psOutput: remoteOnly, desktopPIDs: [1914], localHosts: hosts), "只连了远端主机")
         XCTAssertTrue(CodexDesktopLink.hasLocalSSHChild(
             psOutput: " 9 1914 /usr/bin/ssh -T me@LOCALHOST sh", desktopPIDs: [1914], localHosts: hosts))
+        XCTAssertTrue(CodexDesktopLink.localHosts().contains(CodexLocalSSHConfigurator.hostAlias))
+        XCTAssertTrue(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 12 1914 /usr/bin/ssh -T -v -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'",
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts()
+        ))
+        XCTAssertEqual(CodexDesktopLink.connectionsSettingsURL.absoluteString, "codex://settings/connections")
     }
 
     func testCodexDesktopLinkURLRejectsUnsafeIDs() {

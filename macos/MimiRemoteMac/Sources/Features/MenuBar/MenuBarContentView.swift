@@ -82,6 +82,15 @@ struct MenuBarContentView: View {
                     .opacity(MenuBarLayout.actionDividerOpacity)
                     .padding(.leading, MenuBarLayout.textColumnLeading)
 
+                // 让非编程用户也能从菜单栏直接完成 Codex 桌面版共享接入（#376）。
+                MenuActionRow(title: "连接 Codex 桌面版…", systemImage: "arrow.triangle.2.circlepath") {
+                    presentWindow(.codexSharedSetup)
+                }
+
+                Divider()
+                    .opacity(MenuBarLayout.actionDividerOpacity)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
+
                 MenuActionRow(title: "配对设备…", systemImage: "qrcode", isEnabled: !store.isBusy) {
                     // 空状态也可打开：说明是缺少助手、连接方式，还是服务未启动。
                     presentWindow(.pairing)

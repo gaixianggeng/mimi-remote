@@ -13,6 +13,8 @@ enum CodexDesktopLink {
     }
 
 
+    static let connectionsSettingsURL = URL(string: "codex://settings/connections")!
+
     static func url(threadID: String) -> URL? {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
         guard !threadID.isEmpty, threadID.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
@@ -37,13 +39,32 @@ enum CodexDesktopLink {
     }
 
     static func localHosts() -> Set<String> {
-        var hosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+        var hosts: Set<String> = ["127.0.0.1", "localhost", "::1", CodexLocalSSHConfigurator.hostAlias]
         let name = ProcessInfo.processInfo.hostName
         if !name.isEmpty {
             hosts.insert(name)
             if let short = name.split(separator: ".").first { hosts.insert(String(short)) }
         }
         return hosts
+    }
+
+    @MainActor
+    static func openConnectionsSettings() async {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID) else {
+            return
+        }
+        do {
+            _ = try await NSWorkspace.shared.open(
+                [connectionsSettingsURL],
+                withApplicationAt: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        } catch {
+            _ = try? await NSWorkspace.shared.openApplication(
+                at: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        }
     }
 
     @MainActor
