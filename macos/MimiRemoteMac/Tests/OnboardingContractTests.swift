@@ -299,6 +299,8 @@ final class OnboardingContractTests: XCTestCase {
         XCTAssertNoThrow(try JSONDecoder().decode(PairingTicketReceipt.self, from: v1NanoTicket))
 
         let invalidTicketPayloads: [String] = [
+            // Only legacy tickets without the additive ok flag may omit network.
+            #"{"ok":true,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T00:05:00Z"}"#,
             // Non-UTC offset rejected when ok:true (v1 ticket requires Z)
             #"{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00","network":"tailscale"}"#,
             // Non-RFC3339 date-only or arbitrary string rejected
@@ -317,6 +319,12 @@ final class OnboardingContractTests: XCTestCase {
         let legacyOffsetTicket = Data(#"{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=legacy","pair_expires_at":"2030-01-01T08:05:00+08:00"}"#.utf8)
         XCTAssertNoThrow(try JSONDecoder().decode(PairingTicketReceipt.self, from: legacyOffsetTicket))
         XCTAssertNoThrow(try JSONDecoder().decode(SetupReceipt.self, from: legacyOffsetTicket))
+
+        let setupWithUnknownMajor = try loadContractData("setup-ok-no-assistant.json")
+        var futureSetup = try XCTUnwrap(JSONSerialization.jsonObject(with: setupWithUnknownMajor) as? [String: Any])
+        futureSetup["schema"] = "mimi.onboarding.setup/v2"
+        let futureSetupData = try JSONSerialization.data(withJSONObject: futureSetup)
+        XCTAssertThrowsError(try JSONDecoder().decode(SetupReceipt.self, from: futureSetupData))
 
         // Legacy setup with non-RFC3339 expiry rejected; v1 setup with non-UTC expiry rejected
         XCTAssertThrowsError(try JSONDecoder().decode(
@@ -439,8 +447,8 @@ final class OnboardingContractTests: XCTestCase {
             XCTAssertTrue(diag.isTrusted)
             XCTAssertEqual(diag.code, "config_invalid")
             XCTAssertEqual(diag.primaryAction, .openSettings(.hostRecovery))
-            XCTAssertEqual(diag.configPath, "/fixture/config/config.json")
-            XCTAssertEqual(diag.recoveryPath, "/fixture/config/config.previous.json")
+            XCTAssertEqual(diag.configPath, "…/config.json")
+            XCTAssertEqual(diag.recoveryPath, "…/config.previous.json")
         }
 
         // 3. Tampered rotates_token:true on stdout => zero execution (primaryAction == nil)
@@ -475,6 +483,69 @@ final class OnboardingContractTests: XCTestCase {
         }
     }
 
+    func testReceiptsKeepKnownWarningsAndHideUnstructuredWarnings() throws {
+        let lan = "仅用于受信任的局域网；仍需 Mimi 配对鉴权"
+        let other = "电脑端报告了其他警告，请检查服务状态。"
+        for fixture in ["pair-ok-direct.json", "setup-ok-pairing-deferred.json", "up-ok-ready.json"] {
+            let data = try loadContractData(fixture)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            object["warnings"] = [lan, "Authorization: Bearer privateword", "mimiremote://pair?pair_sig=fixture"]
+            let payload = try JSONSerialization.data(withJSONObject: object)
+            switch fixture {
+            case "pair-ok-direct.json":
+                let ticket = try JSONDecoder().decode(PairingTicketReceipt.self, from: payload)
+                XCTAssertEqual(ticket.asPairingInfo.warnings, [lan, other])
+                XCTAssertEqual(try JSONDecoder().decode(PairingInfo.self, from: payload).warnings, [lan, other])
+            case "setup-ok-pairing-deferred.json":
+                XCTAssertEqual(try JSONDecoder().decode(SetupReceipt.self, from: payload).asPairingInfo.warnings, [lan, other])
+            default:
+                XCTAssertEqual(try JSONDecoder().decode(UpReadinessReceipt.self, from: payload).warnings, [lan, other])
+            }
+        }
+    }
+
+    func testStructuredDiagnosticsProjectOnlyDisplaySafeFields() throws {
+        let privateText = "Bearer privateword"
+        let reportData = try applyReportPatch(
+            fixture: "preflight-codex-chatgpt-app.json",
+            patches: [
+                ["op": "replace", "path": "/checks/0/detail", "value": privateText],
+                ["op": "replace", "path": "/checks/5/detected_version", "value": privateText],
+            ]
+        )
+        let report = try JSONDecoder().decode(OnboardingPreflightReport.self, from: reportData)
+        let messages = try OnboardingCopyCatalog.validateReport(report, platform: .macos).get()
+        XCTAssertFalse(try XCTUnwrap(messages[.configStore]).message.contains(privateText))
+        XCTAssertFalse(try XCTUnwrap(messages[.assistantClaude]).message.contains(privateText))
+
+        let envelope = Data(#"{"ok":false,"error":{"code":"config_invalid","step":"config_store","message":"Bearer privateword","fix":{"kind":"open_settings","target":"host_recovery"},"config_path":"/private/customer/config.json","recovery_path":"/private/customer/privateword"}}"#.utf8)
+        let diagnostic = try OnboardingCopyCatalog.decodeErrorEnvelope(
+            from: envelope, context: .init(surface: .cli)
+        ).get()
+        XCTAssertEqual(diagnostic.primaryAction, .openSettings(.hostRecovery))
+        XCTAssertEqual(diagnostic.configPath, "…/config.json")
+        XCTAssertEqual(diagnostic.recoveryPath, "…")
+        XCTAssertFalse(String(reflecting: diagnostic).contains("privateword"))
+    }
+
+    func testOnlyEmptyStdoutAndMatchingProbeCanIndicateLegacyHost() throws {
+        let ctx = OnboardingValidationContext(surface: .cli, platform: .macos, stage: .setup)
+        let oldPreflight = Data(#"错误：未知命令 "preflight"，可用命令：setup、pair"#.utf8)
+        let unknownFlag = Data("flag provided but not defined: -no-pair\nUsage of setup:".utf8)
+        let futureFailure = Data(#"{"schema":"mimi.onboarding.error/v2","status":"failed"}"#.utf8)
+        XCTAssertNil(OnboardingCopyCatalog.resolveCLIError(
+            stdout: futureFailure, stderr: oldPreflight, context: ctx, arguments: ["preflight"]
+        )?.primaryAction)
+        XCTAssertNil(OnboardingCopyCatalog.resolveCLIError(
+            stdout: Data(), stderr: oldPreflight, context: ctx, arguments: ["pair"]
+        )?.primaryAction)
+        for (stderr, args) in [(oldPreflight, ["preflight"]), (unknownFlag, ["setup", "--no-pair"])] {
+            XCTAssertEqual(OnboardingCopyCatalog.resolveCLIError(
+                stdout: Data(), stderr: stderr, context: ctx, arguments: args
+            )?.primaryAction, .openURL(.desktop))
+        }
+    }
+
     func testProductionSetupUsesWorkspaceBrowseRootAndSanitizesUnknownErrorsAndChecksStageAndDoctorFix() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appending(path: "mimi-ui1-fixes-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -506,6 +577,7 @@ final class OnboardingContractTests: XCTestCase {
         let leakyScript = tempDir.appending(path: "leaky-err.sh")
         try """
         #!/bin/sh
+        echo "Authorization: Bearer privateword" >&2
         echo "fatal: Bearer topsecretbearer999 mimiremote://pair?pair_sig=leak123 /Users/alice/private/config.json eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF $(printf 'x%.0s' $(seq 1 300))" >&2
         exit 2
         """.write(to: leakyScript, atomically: true, encoding: .utf8)
@@ -524,10 +596,9 @@ final class OnboardingContractTests: XCTestCase {
             for forbidden in ["topsecretbearer999", "mimiremote://", "pair_sig", "/Users/alice", "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"] {
                 XCTAssertFalse(userFacing.contains(forbidden), "User-facing error leaked \(forbidden)")
             }
-            let sanitized = try XCTUnwrap(diag.sanitizedDiagnostic)
-            XCTAssertLessThanOrEqual(sanitized.count, 180)
-            for forbidden in ["topsecretbearer999", "mimiremote://", "pair_sig", "/Users/alice", "eyJhbGci", "UnmarkedCred9876543210ABCDEF"] {
-                XCTAssertFalse(sanitized.contains(forbidden), "Sanitized diagnostic leaked \(forbidden)")
+            let diagnostic = String(reflecting: diag)
+            for forbidden in ["privateword", "topsecretbearer999", "mimiremote://", "pair_sig", "/Users/alice", "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"] {
+                XCTAssertFalse(diagnostic.contains(forbidden), "Stored diagnostic leaked fixture data")
             }
         }
 
@@ -561,11 +632,13 @@ final class OnboardingContractTests: XCTestCase {
         let wrongStageScript = tempDir.appending(path: "wrong-stage-preflight.sh")
         let badProgress1 = #"{"id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://learn.chatgpt.com/docs/codex/cli"}}"#
         let badProgress2 = #"{"id":"service_daemon","group":"service","state":"action_needed","title":"后台服务","detail":"未运行","blocking":true,"code":"service_not_running","fix":{"kind":"run_fix","action":"restart_service"}}"#
+        let futureProgress = #"{"schema":"mimi.onboarding.preflight/v2","id":"assistant_claude","group":"assistant","state":"action_needed","title":"Claude","detail":"请登录","blocking":false,"enabled":true,"available":false,"candidates":[{"path":"/fixture/bin/claude","outcome":"selected"}],"code":"claude_signed_out","fix":{"kind":"open_url","url":"https://code.claude.com/docs/en/quickstart"}}"#
         let goodProgress = #"{"id":"config_store","group":"workspace","state":"checking","title":"配置文件","detail":"正在检查。","blocking":false}"#
         try """
         #!/bin/sh
         printf '%s\\n' '\(badProgress1)' >&2
         printf '%s\\n' '\(badProgress2)' >&2
+        printf '%s\\n' '\(futureProgress)' >&2
         printf '%s\\n' '\(goodProgress)' >&2
         cat "\(setupReportURL.path)"
         """.write(to: wrongStageScript, atomically: true, encoding: .utf8)
@@ -588,6 +661,20 @@ final class OnboardingContractTests: XCTestCase {
         let published = recorder.events()
         XCTAssertEqual(published.map(\.id), [.configStore], "Invalid code/fix progress rows must never be published")
 
+        let privateCode = "Bearer privateword"
+        let invalidReportData = try applyReportPatch(
+            fixture: "preflight-codex-chatgpt-app.json",
+            patches: [["op": "replace", "path": "/checks/5/code", "value": privateCode]]
+        )
+        try invalidReportData.write(to: setupReportURL)
+        do {
+            _ = try await wrongStageClient.preflight(.init(stage: .pair), nil)
+            XCTFail("Unknown code must fail validation")
+        } catch let error as AgentClientError {
+            guard case .invalidResponse = error else { return XCTFail("Expected invalidResponse") }
+            XCTAssertFalse(error.localizedDescription.contains(privateCode))
+        }
+
         // 5. P2-3: macOS doctor --fix preserves typed stdout error envelopes AND still decodes DoctorFixResults on exit 1
         let errFixture = Self.contractsDirectory().appendingPathComponent("setup-error-config-invalid.json")
         let doctorErrScript = tempDir.appending(path: "doctor-fix-err.sh")
@@ -603,8 +690,8 @@ final class OnboardingContractTests: XCTestCase {
             XCTAssertTrue(diag.isTrusted)
             XCTAssertEqual(diag.code, "config_invalid")
             XCTAssertEqual(diag.primaryAction, .openSettings(.hostRecovery))
-            XCTAssertEqual(diag.configPath, "/fixture/config/config.json")
-            XCTAssertEqual(diag.recoveryPath, "/fixture/config/config.previous.json")
+            XCTAssertEqual(diag.configPath, "…/config.json")
+            XCTAssertEqual(diag.recoveryPath, "…/config.previous.json")
         }
 
         let doctorLegacyScript = tempDir.appending(path: "doctor-fix-legacy.sh")

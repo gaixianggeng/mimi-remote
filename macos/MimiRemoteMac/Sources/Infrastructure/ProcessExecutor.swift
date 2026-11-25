@@ -90,12 +90,7 @@ actor ProcessExecutor {
         let timeoutState = LockedFlag()
         let processFinished = LockedFlag()
         let allDone = LockedFlag()
-        // 不能把 timeout 也放进 Swift cooperative executor：stdout、stderr 和
-        // waitUntilExit 都可能同步阻塞，在小规格 CI/用户机器上会占满可用线程，
-        // 让本应唤醒并回收进程的 timeout task 永远得不到调度。
-        let timeoutWorkItem = DispatchWorkItem {
-            guard !allDone.value else { return }
-            timeoutState.set()
+        @Sendable func stopCommand() {
             if !processFinished.value {
                 // 先给 agentd 控制命令正常退出机会；如果它卡在不可取消的系统调用，
                 // 仅发送 SIGTERM 会让 waitUntilExit 永久挂住，设置页也就一直显示
@@ -113,6 +108,12 @@ actor ProcessExecutor {
             }
             // 无论主子进程是否已退出，到期立即唤醒管道读线程，避免后代进程持有写端导致无限等待。
             wakePipe.trigger()
+        }
+        // Run the deadline independently of the workers draining the child process.
+        let timeoutWorkItem = DispatchWorkItem {
+            guard !allDone.value else { return }
+            timeoutState.set()
+            stopCommand()
         }
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: Self.dispatchDeadline(after: timeout),
@@ -148,10 +149,7 @@ actor ProcessExecutor {
             timeoutWorkItem.cancel()
             return (exitStatus, stdoutResult, stderrResult)
         } onCancel: {
-            if !processFinished.value {
-                _ = Darwin.kill(processIdentifier, SIGTERM)
-            }
-            wakePipe.trigger()
+            stopCommand()
         }
 
         if Task.isCancelled {
@@ -235,6 +233,7 @@ actor ProcessExecutor {
                             }
                             if (pfds[1].revents & Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL)) != 0 {
                                 // deadline 到期或任务已取消，立即停止管道排空。
+                                lineBuffer.removeAll()
                                 break
                             }
                             if (pfds[0].revents & Int16(POLLIN)) != 0 {

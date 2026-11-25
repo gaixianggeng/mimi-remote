@@ -459,15 +459,10 @@ enum PairingErrorMapper {
     }
 
     private static func hasUnsupportedOnboardingSchema(_ object: [String: Any]) -> Bool {
-        if let schemaVal = object["schema"] {
-            guard let schema = schemaVal as? String else { return true }
-            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
-                return true
-            }
-        }
-        if let errObj = object["error"] as? [String: Any], let schemaVal = errObj["schema"] {
-            guard let schema = schemaVal as? String else { return true }
-            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
+        for part in [object, object["error"] as? [String: Any]] {
+            guard let value = part?["schema"] else { continue }
+            guard let schema = value as? String, schema.hasPrefix("mimi.onboarding."),
+                  schema.split(separator: "/", maxSplits: 1).last == "v1" else {
                 return true
             }
         }
@@ -504,25 +499,29 @@ enum PairingErrorMapper {
         case .v1:
             return mapHTTPErrorEnvelope(data: data, configured: configured)
         case .other:
-            if let topObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               hasUnsupportedOnboardingSchema(topObject) {
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  !hasUnsupportedOnboardingSchema(object) else {
                 return untrustedFallback()
             }
-            if looksLikeV1ErrorEnvelope(data) {
+            if object["ok"] != nil || object["error"] is [String: Any] {
                 return mapHTTPErrorEnvelope(data: data, configured: configured)
             }
-            if let legacy = mapLegacyHTTPError(data: data, statusCode: statusCode) {
+            if let legacy = mapLegacyHTTPError(object, statusCode: statusCode, configured: configured) {
                 return legacy
             }
             return untrustedFallback()
         }
     }
 
-    private static func mapLegacyHTTPError(data: Data, statusCode: Int) -> MappedPairingError? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    private static func mapLegacyHTTPError(
+        _ obj: [String: Any], statusCode: Int, configured: Bool?
+    ) -> MappedPairingError? {
+        guard obj["error"] is String,
+              Set(obj.keys).isSubset(of: ["error", "code"])
+        else {
             return nil
         }
-        let rawCode = (obj["code"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawCode = obj["code"] as? String
         let mappedCode: String? = switch rawCode {
         case "tailcat_managed_mode_required", "tailcat_managed_grant_required":
             "pair_managed_grant_conflict"
@@ -537,7 +536,13 @@ enum PairingErrorMapper {
         }
         if let mappedCode, let entry = entriesByCode[mappedCode] {
             let step = entry.steps.first ?? .serviceDaemon
-            let fix = entry.allowedFixes.last ?? .retry
+            let fix: PairingOnboardingWireFix
+            if mappedCode == "pair_token_mismatch" {
+                guard let configured else { return nil }
+                fix = .runFix(configured ? "restart_service" : "save_setup")
+            } else {
+                fix = entry.allowedFixes.last ?? .retry
+            }
             return MappedPairingError(
                 code: mappedCode,
                 step: step,
@@ -549,7 +554,7 @@ enum PairingErrorMapper {
                 isLegacyFallback: true
             )
         }
-        if statusCode == 401 {
+        if statusCode == 401, obj["code"] == nil {
             return MappedPairingError(
                 code: "pair_ticket_invalid",
                 step: .networkAny,
@@ -562,17 +567,6 @@ enum PairingErrorMapper {
             )
         }
         return nil
-    }
-
-    private static func looksLikeV1ErrorEnvelope(_ data: Data) -> Bool {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let ok = obj["ok"] as? Bool,
-              ok == false,
-              obj["error"] is [String: Any]
-        else {
-            return false
-        }
-        return true
     }
 
     private static func iosAction(for fix: PairingOnboardingWireFix, code: String) -> PairingErrorAction {
@@ -599,7 +593,7 @@ enum PairingErrorMapper {
         step: PairingOnboardingStep? = nil
     ) -> MappedPairingError {
         MappedPairingError(
-            code: code,
+            code: code.flatMap { entriesByCode[$0]?.code },
             step: step,
             message: safeFallbackCopy,
             action: .none,

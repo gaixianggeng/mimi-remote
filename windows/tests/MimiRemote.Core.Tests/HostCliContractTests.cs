@@ -306,6 +306,67 @@ public sealed class HostCliContractTests
     }
 
     [Fact]
+    public void 不兼容的输出不得授权动作或签发票据()
+    {
+        var row = JsonNode.Parse(ReadFixture("preflight-progress-slow-assistant.ndjson")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)[^1])!.AsObject();
+        var context = new OnboardingValidationContext { Surface = "check", Platform = "macos", Stage = "pair" };
+        var acc = new OnboardingProgressAccumulator(1, context);
+        Assert.True(acc.ApplyLine(1, row.ToJsonString()));
+        foreach (var schema in new[] { "mimi.onboarding.preflight/v2", "other/v2", "mimi.onboarding.preflight/v2/v1" })
+        {
+            row["schema"] = schema;
+            Assert.False(acc.ApplyLine(1, row.ToJsonString()));
+        }
+        var unsupported = """{"schema":"mimi.onboarding.preflight/v2"}""";
+        var legacy = OnboardingCopyCatalog.ResolveCliError(unsupported, "unknown command preflight", context with { Surface = "cli" }, ["preflight"]);
+        Assert.Null(legacy?.AllowedFix);
+
+        var ticket = JsonNode.Parse(ReadFixture("pair-ok-direct.json"))!.AsObject();
+        ticket.Remove("network");
+        Assert.False(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ticket.ToJsonString(), false, out _, out _));
+        ticket.Remove("ok");
+        Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ticket.ToJsonString(), false, out _, out _));
+        ticket["schema"] = "mimi.onboarding.ticket/v2";
+        Assert.False(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ticket.ToJsonString(), false, out _, out _));
+        Assert.False(OnboardingCopyCatalog.TryDecodeSetupReceipt(ticket.ToJsonString(), out _, out _));
+    }
+
+    [Fact]
+    public void 仅匹配当前命令的首行旧版诊断()
+    {
+        const string oldPreflight = "错误：未知命令 \"preflight\"，可用命令：up、setup、start";
+        const string oldFlag = "flag provided but not defined: -no-pair\nUsage of setup:";
+        var context = new OnboardingValidationContext { Surface = "cli" };
+        Assert.True(OnboardingCopyCatalog.ResolveCliError("", oldPreflight, context, ["preflight"])?.LegacyHost);
+        Assert.True(OnboardingCopyCatalog.ResolveCliError("", oldFlag, context, ["setup", "--no-pair"])?.LegacyHost);
+        Assert.Null(OnboardingCopyCatalog.ResolveCliError("", oldPreflight, context, ["pair"]));
+        Assert.Null(OnboardingCopyCatalog.ResolveCliError("", oldFlag, context, ["setup", "--qr-only"]));
+        Assert.Null(OnboardingCopyCatalog.ResolveCliError("", "failed\n" + oldPreflight, context, ["preflight"]));
+    }
+
+    [Fact]
+    public void 回退诊断和票据警告不返回任意命令文本()
+    {
+        const string raw = "Authorization: Bearer samplepassword";
+        var diagnostic = OnboardingCopyCatalog.UnknownCommandFallback(1, raw);
+        Assert.DoesNotContain("samplepassword", diagnostic.SanitizedDiagnostic!, StringComparison.Ordinal);
+        var ticket = JsonNode.Parse(ReadFixture("pair-ok-direct.json"))!.AsObject();
+        ticket["warnings"] = new JsonArray(raw);
+        Assert.True(OnboardingCopyCatalog.TryDecodePairingTicketReceipt(ticket.ToJsonString(), false, out var receipt, out _));
+        Assert.DoesNotContain("samplepassword", Assert.Single(receipt!.Warnings), StringComparison.Ordinal);
+
+        var envelope = JsonNode.Parse(ReadFixture("setup-error-config-invalid.json"))!.AsObject();
+        var fields = envelope["error"]!.AsObject();
+        fields["config_path"] = @"C:\private\example\config.json";
+        fields["recovery_path"] = "/private/example/samplepassword";
+        var context = new OnboardingValidationContext { Surface = "cli" };
+        Assert.True(OnboardingCopyCatalog.TryDecodeErrorEnvelope(envelope.ToJsonString(), context, out var error, out _));
+        Assert.Equal("…/config.json", error.ConfigPath);
+        Assert.Equal("恢复文件", error.RecoveryPath);
+    }
+
+    [Fact]
     public void 慢助手流式进度先显示已完成项且取消不覆盖终态()
     {
         var lines = ReadFixture("preflight-progress-slow-assistant.ndjson")

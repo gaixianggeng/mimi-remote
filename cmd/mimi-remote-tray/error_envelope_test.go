@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -476,7 +477,7 @@ func TestTrayDecodeCommandErrorStdoutFirstAndZeroExecutionOnUntrusted(t *testing
 	}
 
 	// Old-host compatibility fallback only on recognized legacy stderr.
-	legacyErr := decodeTrayCommandError(nil, []byte(`Error: unknown command "preflight" for "agentd"`), errors.New("exit status 1"), ctx)
+	legacyErr := decodeTrayCommandError(nil, []byte(`Error: unknown command "preflight" for "agentd"`), errors.New("exit status 1"), ctx, "preflight")
 	if !errors.As(legacyErr, &cliErr) || !cliErr.Diagnostic.LegacyHost || cliErr.Diagnostic.AllowedFix == nil || cliErr.Diagnostic.AllowedFix.URL != onboardingURLDesktop {
 		t.Fatalf("expected legacy host update link, got %+v", legacyErr)
 	}
@@ -487,11 +488,11 @@ func TestTrayDecodeCommandErrorStdoutFirstAndZeroExecutionOnUntrusted(t *testing
 	}
 
 	// UI-local synthesis works and defaults unknown step to service_daemon.
-	timeoutErr := newTrayUILocalError("command_timeout", "", "")
+	timeoutErr := newTrayUILocalError("command_timeout", "")
 	if !timeoutErr.Diagnostic.Trusted || timeoutErr.Diagnostic.Step != "service_daemon" || timeoutErr.Diagnostic.AllowedFix.Kind != "retry" {
 		t.Fatalf("unexpected ui-local timeout diagnostic: %+v", timeoutErr.Diagnostic)
 	}
-	missingBin := newTrayUILocalError("embedded_binary_missing", "service_daemon", "")
+	missingBin := newTrayUILocalError("embedded_binary_missing", "service_daemon")
 	if !missingBin.Diagnostic.Trusted || missingBin.Diagnostic.AllowedFix.URL != onboardingURLDesktop {
 		t.Fatalf("unexpected ui-local missing binary diagnostic: %+v", missingBin.Diagnostic)
 	}
@@ -528,13 +529,13 @@ func TestTrayStageContextSanitizationReceiptsAndTimeouts(t *testing.T) {
 	}
 
 	// P1-1: Unknown failure maps to generic Chinese + sanitized bounded diagnostic (no bearer, pair_url, paths, or unmarked creds).
-	rawLeak := `fatal: Bearer secretBearer999 mimiremote://pair?pair_sig=leak123 /Users/alice/private/key.json C:\Users\alice\secret.txt \\fileserver\share\token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF ` + strings.Repeat("x", 300)
-	unknownErr := newTrayUnknownCommandError(errors.New("exit status 2"), "config_store", rawLeak)
+	rawLeak := `Authorization: Bearer short-private-value fatal: Bearer secretBearer999 mimiremote://pair?pair_sig=leak123 /Users/alice/private/key.json C:\Users\alice\secret.txt \\fileserver\share\token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456 UnmarkedCred9876543210ABCDEF ` + strings.Repeat("x", 300)
+	unknownErr := newTrayUnknownCommandError(errors.New(rawLeak), "config_store")
 	userMsg := unknownErr.Error()
 	if unknownErr.Diagnostic.Trusted || unknownErr.Diagnostic.AllowedFix != nil {
 		t.Fatalf("unknown command error must not be trusted: %+v", unknownErr.Diagnostic)
 	}
-	forbidden := []string{"secretBearer999", "mimiremote://", "pair_sig", "/Users/alice", `C:\Users\alice`, `\\fileserver`, "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"}
+	forbidden := []string{"short-private-value", "secretBearer999", "mimiremote://", "pair_sig", "/Users/alice", `C:\Users\alice`, `\\fileserver`, "eyJhbGci", "UnmarkedCred9876543210ABCDEF", "fatal:"}
 	for _, secret := range forbidden {
 		if strings.Contains(userMsg, secret) {
 			t.Fatalf("user-facing error leaked %q: %q", secret, userMsg)
@@ -571,6 +572,7 @@ func TestTrayStageContextSanitizationReceiptsAndTimeouts(t *testing.T) {
 
 	// P2-2: Strict RFC3339 / UTC expiry validation.
 	for _, bad := range []string{
+		`{"ok":true,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T00:05:00Z"}`,
 		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01T08:05:00+08:00","network":"tailscale"}`,
 		`{"ok":true,"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"2030-01-01","network":"tailscale"}`,
 		`{"endpoint":"http://100.64.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x","pair_expires_at":"not-a-date"}`,
@@ -691,5 +693,168 @@ func TestTrayBoundedOutputBlocksReadFromAndStreamsLiveProgress(t *testing.T) {
 	}
 	if !bigTrunc || len(bigOut) != 32 {
 		t.Fatalf("os/exec bypassed stdout cap: truncated=%v len=%d", bigTrunc, len(bigOut))
+	}
+}
+
+func TestTrayDropsProgressWithoutAnAuthorizedTuple(t *testing.T) {
+	progress := newOnboardingProgressAccumulator(1)
+	for _, fields := range []string{
+		`"state":"checking","Fix":{"kind":"run_fix","action":"restart_service"}`,
+		`"state":"action_needed","code":null,"fix":{"kind":"run_fix","action":"restart_service"}`,
+		`"state":"action_needed","code":"","fix":{"kind":"retry"}`,
+		`"schema":"mimi.onboarding.preflight/v2","state":"action_needed","code":"service_not_running","fix":{"kind":"run_fix","action":"save_setup"}`,
+	} {
+		line := []byte(`{"id":"service_daemon","group":"service","title":"服务","detail":"检查","blocking":false,` + fields + `}`)
+		if _, ok := progress.ApplyValidatedLine(1, line); ok {
+			t.Errorf("unregistered progress tuple published: %s", fields)
+		}
+	}
+}
+
+func TestTrayUnknownJSONProtocolTakesPrecedenceOverLegacyStderr(t *testing.T) {
+	ctx := trayValidationContextForArgs("windows", []string{"preflight"})
+	if err := decodeTrayCommandError([]byte("incompatible response"), []byte(`Error: unknown command "preflight" for "agentd"`), errors.New("exit status 1"), ctx, "preflight"); err != nil {
+		t.Fatal("unexpected stdout selected a legacy action")
+	}
+	err := decodeTrayCommandError([]byte(`{"schema":"mimi.onboarding.preflight/v2"}`), []byte(`Error: unknown command "preflight" for "agentd"`), errors.New("exit status 1"), ctx, "preflight")
+	var structured *onboardingCLIError
+	if !errors.As(err, &structured) || structured.Diagnostic.Trusted || structured.Diagnostic.AllowedFix != nil {
+		t.Fatal("unknown protocol enabled an action")
+	}
+}
+
+func TestTrayCommandBoundsInheritedPipes(t *testing.T) {
+	const role = "MIMI_TEST_TRAY_PIPE_ROLE"
+	switch os.Getenv(role) {
+	case "holder":
+		time.Sleep(3 * time.Second)
+		return
+	case "parent":
+		cmd := exec.Command(os.Args[0], "-test.run=^TestTrayCommandBoundsInheritedPipes$")
+		cmd.Env = append(os.Environ(), role+"=holder")
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTrayCommandBoundsInheritedPipes$")
+	cmd.Env = append(os.Environ(), role+"=parent")
+	_, _, _, err := runTrayCommand(cmd, nil, 0, nil, 1024, 1024)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("expected inherited pipe handles to hit the drain deadline, got %v", err)
+	}
+}
+
+func TestTrayLegacyEvidenceMatchesInvocationAndFirstLine(t *testing.T) {
+	const preflight = `错误：未知命令 "preflight"，可用命令：setup、start、pair`
+	const missingFlag = "flag provided but not defined: -no-pair\nUsage of setup:"
+	for _, tc := range []struct {
+		stderr string
+		args   []string
+		legacy bool
+	}{
+		{preflight, []string{"preflight", "--json"}, true},
+		{missingFlag, []string{"setup", "--no-pair"}, true},
+		{preflight, []string{"setup", "--no-pair"}, false},
+		{missingFlag, []string{"pair"}, false},
+		{"another failure\n" + preflight, []string{"preflight"}, false},
+		{"probe: unknown command in preflight output", []string{"preflight"}, false},
+	} {
+		if got := isLegacyHostCLIOutput([]byte(tc.stderr), tc.args); got != tc.legacy {
+			t.Errorf("legacy recognition on %v with %q = %v", tc.args, tc.stderr, got)
+		}
+	}
+}
+
+func TestTrayReceiptsRejectDeclaredFutureProtocol(t *testing.T) {
+	future := func(name string) []byte {
+		var receipt map[string]json.RawMessage
+		if err := json.Unmarshal(loadTrayContractFile(t, name), &receipt); err != nil {
+			t.Fatal(err)
+		}
+		receipt["schema"] = json.RawMessage(`"mimi.onboarding.future/v2"`)
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	if _, err := decodeOnboardingSetupReceipt(future("setup-ok-no-assistant.json")); err == nil {
+		t.Error("future setup accepted")
+	}
+	if _, err := decodeOnboardingUpReadinessReceipt(future("up-ok-ready.json")); err == nil {
+		t.Error("future readiness accepted")
+	}
+	if _, err := decodeOnboardingPairingTicketReceipt(future("pair-ok-direct.json"), false); err == nil {
+		t.Error("future pairing accepted")
+	}
+}
+
+func TestTrayPreflightHonorsRequestContextAndCancelledGeneration(t *testing.T) {
+	calls := 0
+	run := func(_ context.Context, acc *onboardingProgressAccumulator, generation uint64, _ func(onboardingCheck), _ ...string) ([]byte, error) {
+		calls++
+		acc.Cancel(generation)
+		return loadTrayContractFile(t, "preflight-windows-public.json"), nil
+	}
+	acc := newOnboardingProgressAccumulatorWithContext(1, onboardingValidationContext{
+		Surface: "check", Platform: "windows", Stage: "pair",
+	})
+	if _, err := runTrayPreflight(context.Background(), "windows", "setup", acc, 1, nil, run); err == nil || calls != 0 {
+		t.Fatal("started a command with progress validation for a different stage")
+	}
+	if report, err := runTrayPreflight(context.Background(), "windows", "pair", acc, 1, nil, run); !errors.Is(err, context.Canceled) || report.OK != nil {
+		t.Fatal("returned a terminal report from a cancelled generation")
+	}
+}
+
+func TestTrayPairingWarningsKeepKnownMessagesAndOmitPrivateText(t *testing.T) {
+	var raw map[string]any
+	if err := json.Unmarshal(loadTrayContractFile(t, "pair-ok-direct.json"), &raw); err != nil {
+		t.Fatal(err)
+	}
+	const known = "局域网配对仅适用于与这台电脑位于同一局域网的设备"
+	const private = "Authorization: Bearer private-fixture"
+	raw["warnings"] = []string{known, private, raw["pair_url"].(string)}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := decodeOnboardingPairingTicketReceipt(data, false)
+	if err != nil || len(receipt.Warnings) != 2 || receipt.Warnings[0] != known ||
+		strings.Contains(receipt.Warnings[1], "private-fixture") || strings.Contains(receipt.Warnings[1], "mimiremote://") {
+		t.Fatal("pairing warning rendering did not preserve safe content and remove private values")
+	}
+}
+
+func TestTrayDiagnosticProjectionUsesLocalCopyAndPathAliases(t *testing.T) {
+	const private = "private-fixture"
+	if got := formatOnboardingMessage("claude_signed_out", "assistant_claude", private); strings.Contains(got, private) {
+		t.Fatal("untrusted version appeared in localized message")
+	}
+	if got := formatOnboardingMessage("claude_signed_out", "assistant_claude", "v2.1.30-rc.2"); !strings.Contains(got, "v2.1.30-rc.2") {
+		t.Fatal("safe runtime version missing")
+	}
+	ctx := onboardingValidationContext{Platform: "linux", Surface: "check", Stage: "setup"}
+	for _, fields := range []string{
+		`"state":"checking"`,
+		`"state":"error","code":"internal_error","fix":{"kind":"retry"}`,
+	} {
+		blocking := strings.Contains(fields, "internal_error")
+		line := `{"id":"config_store","group":"workspace","title":"private-fixture","detail":"private-fixture","config_path":"/private-fixture/config.json","blocking":` + strconv.FormatBool(blocking) + `,` + fields + `}`
+		row, err := decodeOnboardingCheck([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		diag, err := validateOnboardingCheck(row, ctx)
+		if err != nil || !diag.Trusted || strings.Contains(diag.Message, private) || diag.ConfigPath != "…/config.json" || row.ConfigPath != "/private-fixture/config.json" {
+			t.Fatal("diagnostic did not project safe copy and paths while preserving source data")
+		}
+	}
+	raw := []byte(`{"ok":false,"error":{"code":"config_invalid","step":"config_store","message":"private-fixture","fix":{"kind":"open_settings","target":"host_recovery"},"config_path":"C:\\private-fixture\\config.json","recovery_path":"/private-fixture/other.json"}}`)
+	diag, err := decodeOnboardingErrorEnvelope(raw, trayValidationContextForArgs("windows", []string{"setup"}))
+	if err != nil || !diag.Trusted || strings.Contains(diag.Message, private) || diag.ConfigPath != "…/config.json" || diag.RecoveryPath != "…" {
+		t.Fatal("host recovery diagnostic exposed a private path or message")
 	}
 }

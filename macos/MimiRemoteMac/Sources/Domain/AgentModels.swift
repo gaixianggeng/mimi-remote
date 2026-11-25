@@ -84,7 +84,9 @@ struct PairingInfo: Codable, Equatable, Sendable {
         pairURL = try container.decodeIfPresent(String.self, forKey: .pairURL)
         expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt) ?? ""
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。
-        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        warnings = OnboardingCopyCatalog.displayWarnings(
+            try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        )
     }
 }
 

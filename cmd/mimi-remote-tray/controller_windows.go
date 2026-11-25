@@ -220,7 +220,7 @@ func pairingArguments() []string {
 func parsePairingInfo(payload []byte) (pairingInfo, error) {
 	receipt, err := decodeOnboardingPairingTicketReceipt(payload, false)
 	if err != nil {
-		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
+		return pairingInfo{}, errors.New("解析短期配对信息失败，请重新生成")
 	}
 	return pairingInfo{
 		OK:                  receipt.OK,
@@ -250,29 +250,7 @@ func (c *agentController) preflight(
 	onProgress func(onboardingCheck),
 	extraArgs ...string,
 ) (onboardingPreflightReport, error) {
-	if stage != "setup" && stage != "pair" {
-		return onboardingPreflightReport{}, fmt.Errorf("不支持的预检阶段：%q", stage)
-	}
-	if progress == nil {
-		configured := false
-		progress = newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
-			Surface:    "check",
-			Platform:   "windows",
-			Stage:      stage,
-			Configured: &configured,
-		})
-	}
-	args := append([]string{"preflight", "--json", "--stage", stage, "--progress-json"}, extraArgs...)
-	payload, err := c.runHiddenWithProgress(ctx, progress, generation, onProgress, args...)
-	if err != nil {
-		return onboardingPreflightReport{}, err
-	}
-	report, err := decodeAndValidatePreflightReportForStage(payload, "windows", stage, false, "")
-	if err != nil {
-		return onboardingPreflightReport{}, fmt.Errorf("无法解析预检报告：%w", err)
-	}
-	progress.Complete(generation, report)
-	return report, nil
+	return runTrayPreflight(ctx, "windows", stage, progress, generation, onProgress, c.runHiddenWithProgress, extraArgs...)
 }
 
 func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte, error) {
@@ -300,21 +278,20 @@ func (c *agentController) runHiddenWithProgress(
 		CreationFlags: createNoWindow,
 	}
 	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args), "")
-		}
-		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("windows", args)); cliErr != nil {
-			return nil, cliErr
-		}
-		detail := strings.TrimSpace(string(stderr))
-		if detail == "" {
-			detail = strings.TrimSpace(string(stdout))
-		}
-		return nil, newTrayUnknownCommandError(err, trayActiveStepForArgs(args), detail)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, context.Canceled
+	}
+	if ctx.Err() != nil {
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args))
 	}
 	if stdoutTruncated {
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
+	}
+	if err != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("windows", args), args...); cliErr != nil {
+			return nil, cliErr
+		}
+		return nil, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
 	}
 	return stdout, nil
 }

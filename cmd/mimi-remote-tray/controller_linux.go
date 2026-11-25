@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -69,19 +68,21 @@ func (c *linuxController) runWithProgress(
 	cmd.Dir = filepath.Dir(c.agentPath) // release/worktree directories may be removed after launch.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
 	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, context.Canceled
+	}
 	if ctx.Err() != nil {
-		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args), "")
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args))
 	}
 	if stdoutTruncated {
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	if err != nil {
-		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args)); cliErr != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args), args...); cliErr != nil {
 			return stdout, cliErr
 		}
-		return stdout, newTrayUnknownCommandError(err, trayActiveStepForArgs(args), string(stderr))
+		return stdout, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
 	}
 	return stdout, nil
 }
@@ -94,29 +95,7 @@ func (c *linuxController) preflight(
 	onProgress func(onboardingCheck),
 	extraArgs ...string,
 ) (onboardingPreflightReport, error) {
-	if stage != "setup" && stage != "pair" {
-		return onboardingPreflightReport{}, fmt.Errorf("不支持的预检阶段：%q", stage)
-	}
-	if progress == nil {
-		configured := false
-		progress = newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
-			Surface:    "check",
-			Platform:   "linux",
-			Stage:      stage,
-			Configured: &configured,
-		})
-	}
-	args := append([]string{"preflight", "--json", "--stage", stage, "--progress-json"}, extraArgs...)
-	payload, err := c.runWithProgress(ctx, progress, generation, onProgress, args...)
-	if err != nil {
-		return onboardingPreflightReport{}, err
-	}
-	report, err := decodeAndValidatePreflightReportForStage(payload, "linux", stage, false, "")
-	if err != nil {
-		return onboardingPreflightReport{}, fmt.Errorf("无法解析预检报告：%w", err)
-	}
-	progress.Complete(generation, report)
-	return report, nil
+	return runTrayPreflight(ctx, "linux", stage, progress, generation, onProgress, c.runWithProgress, extraArgs...)
 }
 
 func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus, error) {
@@ -154,6 +133,20 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 		return "", errors.New("不支持的操作")
 	}
 	payload, err := c.runner(ctx, args...)
+	// Failed service commands may put a private error envelope on stdout.
+	// Keep the legacy read-only doctor report visible when it reports a problem.
+	if err != nil && action != "logs" {
+		if action != "doctor" {
+			return "", err
+		}
+		var report struct {
+			Checks []json.RawMessage `json:"checks"`
+			Error  json.RawMessage   `json:"error"`
+		}
+		if json.Unmarshal(payload, &report) != nil || report.Checks == nil || report.Error != nil {
+			return "", err
+		}
+	}
 	// Diagnostic data is displayed, never parsed as an unstable command result.
 	// The doctor contract uses JSON and may exit unsuccessfully with valid results.
 	if action == "doctor" {
@@ -166,7 +159,6 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 }
 
 type linuxPairingInfo struct {
-	OK            *bool  `json:"ok,omitempty"`
 	PairURL       string `json:"pair_url"`
 	PairExpiresAt string `json:"pair_expires_at"`
 }
@@ -185,12 +177,18 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 	if err != nil {
 		return linuxPairingInfo{}, err
 	}
+	var keys map[string]json.RawMessage
 	var result linuxPairingInfo
-	if json.Unmarshal(payload, &result) != nil {
-		return result, errors.New("无法读取短期配对信息")
+	if json.Unmarshal(payload, &keys) != nil || json.Unmarshal(payload, &result) != nil {
+		return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
 	}
-	if result.OK != nil && !*result.OK {
-		return linuxPairingInfo{}, errors.New("短期配对信息返回失败状态")
+	if !supportedOnboardingSchema(keys) {
+		return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+	}
+	if _, v1 := keys["ok"]; v1 {
+		if _, err := decodeOnboardingPairingTicketReceipt(payload, true); err != nil {
+			return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+		}
 	}
 	u, err := url.Parse(result.PairURL)
 	expires, dateErr := time.Parse(time.RFC3339, result.PairExpiresAt)

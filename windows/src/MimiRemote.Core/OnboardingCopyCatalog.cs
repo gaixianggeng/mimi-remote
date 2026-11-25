@@ -1,8 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace MimiRemote.Core;
 
@@ -34,7 +32,7 @@ public sealed record OnboardingCatalogEntry(
     OnboardingFix? SecondaryFix = null,
     string? SecondaryLabelZh = null);
 
-public static partial class OnboardingCopyCatalog
+public static class OnboardingCopyCatalog
 {
     public const string SafeFallbackCopy = "当前操作暂时无法自动处理。请检查电脑端状态后手动重新检查。";
     public const string LegacyHostCopy = "当前电脑端版本较旧，不支持新的引导检查。请更新桌面端后重试。";
@@ -387,9 +385,9 @@ public static partial class OnboardingCopyCatalog
             resolvedTitle = "后台服务";
         }
         var text = entry.MessageZh.Replace("{title}", resolvedTitle, StringComparison.Ordinal);
-        if (code.EndsWith("_signed_out", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(detectedVersion))
+        if (code.EndsWith("_signed_out", StringComparison.Ordinal) && Version.TryParse(detectedVersion, out var version))
         {
-            return $"已检测到版本 {detectedVersion.Trim()}。{text}";
+            return $"已检测到版本 {version}。{text}";
         }
         return text;
     }
@@ -664,7 +662,7 @@ public static partial class OnboardingCopyCatalog
             resolved = new OnboardingResolvedDiagnostic
             {
                 Step = check.Id,
-                Message = check.Detail,
+                Message = spec.TitleZh,
                 ConfigPath = check.ConfigPath,
                 RecoveryPath = check.RecoveryPath,
                 Trusted = true,
@@ -712,7 +710,7 @@ public static partial class OnboardingCopyCatalog
         }
         resolved = diag with
         {
-            Message = LocalizedMessage(check.Code, check.Id, check.Title, check.SelectedOrDetectedVersion),
+            Message = LocalizedMessage(check.Code, check.Id, spec.TitleZh, check.SelectedOrDetectedVersion),
             ConfigPath = check.ConfigPath,
             RecoveryPath = check.RecoveryPath,
         };
@@ -1047,7 +1045,11 @@ public static partial class OnboardingCopyCatalog
             {
                 return false;
             }
-            resolved = validated with { ConfigPath = configPath, RecoveryPath = recoveryPath };
+            resolved = validated with
+            {
+                ConfigPath = DiagnosticPathLabel(configPath, "配置文件"),
+                RecoveryPath = DiagnosticPathLabel(recoveryPath, "恢复文件"),
+            };
             return true;
         }
         catch (JsonException ex)
@@ -1079,24 +1081,34 @@ public static partial class OnboardingCopyCatalog
         }
     }
 
-    public static bool IsRecognizedLegacyHostStderr(string stderr)
+    private static bool IsRecognizedLegacyHostStderr(string stderr, IReadOnlyList<string>? arguments)
     {
-        if (string.IsNullOrWhiteSpace(stderr))
+        if (arguments is null || arguments.Count == 0)
         {
             return false;
         }
-        return (stderr.Contains("unknown command", StringComparison.OrdinalIgnoreCase)
-                && stderr.Contains("preflight", StringComparison.OrdinalIgnoreCase))
-            || (stderr.Contains("未知命令", StringComparison.Ordinal)
-                && stderr.Contains("preflight", StringComparison.OrdinalIgnoreCase))
-            || stderr.Contains("flag provided but not defined: -no-pair", StringComparison.OrdinalIgnoreCase)
-            || stderr.Contains("unknown flag: --no-pair", StringComparison.OrdinalIgnoreCase);
+        using var reader = new StringReader(stderr);
+        var first = reader.ReadLine()?.Trim();
+        if (first is null)
+        {
+            return false;
+        }
+        if (arguments[0] == "preflight")
+        {
+            return first.StartsWith("错误：未知命令 \"preflight\"，可用命令：", StringComparison.Ordinal)
+                || first is "错误：未知命令 \"preflight\"" or "unknown command preflight"
+                    or "unknown command \"preflight\"" or "Error: unknown command \"preflight\" for \"agentd\"";
+        }
+        return (arguments[0] is "setup" or "up" or "start" or "restart")
+            && arguments.Contains("--no-pair", StringComparer.Ordinal)
+            && first is "flag provided but not defined: -no-pair" or "unknown flag: --no-pair";
     }
 
     public static OnboardingResolvedDiagnostic? ResolveCliError(
         string stdout,
         string stderr,
-        OnboardingValidationContext context)
+        OnboardingValidationContext context,
+        IReadOnlyList<string>? arguments = null)
     {
         if (LooksLikeErrorEnvelopeJson(stdout))
         {
@@ -1111,7 +1123,7 @@ public static partial class OnboardingCopyCatalog
                 Trusted = false,
             };
         }
-        if (IsRecognizedLegacyHostStderr(stderr))
+        if (string.IsNullOrWhiteSpace(stdout) && IsRecognizedLegacyHostStderr(stderr, arguments))
         {
             return new OnboardingResolvedDiagnostic
             {
@@ -1135,9 +1147,9 @@ public static partial class OnboardingCopyCatalog
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object || IsUnsupportedSchemaProperty(root))
             {
-                error = "setup receipt must be an object";
+                error = "unsupported setup receipt";
                 return false;
             }
             var hasOk = root.TryGetProperty("ok", out var okProp);
@@ -1154,7 +1166,7 @@ public static partial class OnboardingCopyCatalog
             var network = TryGetOptionalString(root, "network", out _);
             var dns = TryGetOptionalString(root, "tailscale_dns_name", out _);
             var device = TryGetOptionalString(root, "tailscale_device_name", out _);
-            var warnings = ReadOptionalStringArray(root, "warnings");
+            var warnings = ReadWarnings(root);
 
             if (network is not null && !ValidTransports.Contains(network))
             {
@@ -1262,9 +1274,9 @@ public static partial class OnboardingCopyCatalog
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object || IsUnsupportedSchemaProperty(root))
             {
-                error = "up receipt must be an object";
+                error = "unsupported up receipt";
                 return false;
             }
             if (root.TryGetProperty("ok", out var okProp) && okProp.ValueKind != JsonValueKind.True)
@@ -1283,7 +1295,7 @@ public static partial class OnboardingCopyCatalog
                 Ok = true,
                 ServiceOk = true,
                 Version = version,
-                Warnings = ReadOptionalStringArray(root, "warnings"),
+                Warnings = ReadWarnings(root),
             };
             error = "";
             return true;
@@ -1306,9 +1318,9 @@ public static partial class OnboardingCopyCatalog
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
+            if (root.ValueKind != JsonValueKind.Object || IsUnsupportedSchemaProperty(root))
             {
-                error = "pairing receipt must be an object";
+                error = "unsupported pairing receipt";
                 return false;
             }
             var hasOk = root.TryGetProperty("ok", out var okProp);
@@ -1333,7 +1345,7 @@ public static partial class OnboardingCopyCatalog
                 error = $"invalid transport '{network}'";
                 return false;
             }
-            if (requireNetwork && string.IsNullOrEmpty(network))
+            if ((hasOk || requireNetwork) && string.IsNullOrEmpty(network))
             {
                 error = "pairing receipt missing network";
                 return false;
@@ -1347,7 +1359,7 @@ public static partial class OnboardingCopyCatalog
                 Network = network,
                 TailscaleDnsName = TryGetOptionalString(root, "tailscale_dns_name", out _),
                 TailscaleDeviceName = TryGetOptionalString(root, "tailscale_device_name", out _),
-                Warnings = ReadOptionalStringArray(root, "warnings"),
+                Warnings = ReadWarnings(root),
             };
             error = "";
             return true;
@@ -1394,9 +1406,9 @@ public static partial class OnboardingCopyCatalog
         out string error)
     {
         check = null;
-        if (element.ValueKind != JsonValueKind.Object)
+        if (element.ValueKind != JsonValueKind.Object || IsUnsupportedSchemaProperty(element))
         {
-            error = "check must be an object";
+            error = "expected a v1 check object";
             return false;
         }
         if (!TryGetRequiredString(element, "id", out var id)
@@ -1487,8 +1499,8 @@ public static partial class OnboardingCopyCatalog
             Blocking = blocking,
             Code = code,
             Fix = fix,
-            ConfigPath = TryGetOptionalString(element, "config_path", out var hasConfigPath),
-            RecoveryPath = TryGetOptionalString(element, "recovery_path", out var hasRecoveryPath),
+            ConfigPath = DiagnosticPathLabel(TryGetOptionalString(element, "config_path", out var hasConfigPath), "配置文件"),
+            RecoveryPath = DiagnosticPathLabel(TryGetOptionalString(element, "recovery_path", out var hasRecoveryPath), "恢复文件"),
             Enabled = enabled,
             Available = available,
             Candidates = candidates,
@@ -1539,9 +1551,19 @@ public static partial class OnboardingCopyCatalog
         return present && prop.ValueKind == JsonValueKind.String ? prop.GetString() : null;
     }
 
-    private static string[] ReadOptionalStringArray(JsonElement obj, string name)
+    private static string? DiagnosticPathLabel(string? path, string fallback)
     {
-        if (!obj.TryGetProperty(name, out var prop) || prop.ValueKind != JsonValueKind.Array)
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+        var name = path[(path.AsSpan().LastIndexOfAny('/', '\\') + 1)..];
+        return name is "config.json" or "config.previous.json" or "recovery.json" ? $"…/{name}" : fallback;
+    }
+
+    private static string[] ReadWarnings(JsonElement obj)
+    {
+        if (!obj.TryGetProperty("warnings", out var prop) || prop.ValueKind != JsonValueKind.Array)
         {
             return [];
         }
@@ -1550,7 +1572,19 @@ public static partial class OnboardingCopyCatalog
         {
             if (entry.ValueKind == JsonValueKind.String && entry.GetString() is { Length: > 0 } text)
             {
-                items.Add(text);
+                var warning = text switch
+                {
+                    "Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。"
+                        or "仅用于受信任的局域网；仍需 Mimi 配对鉴权"
+                        or "局域网配对仅适用于与这台电脑位于同一局域网的设备"
+                        or "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑"
+                        or "当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；移动设备连接前建议先安装并登录 Tailscale，或显式启用受限的局域网访问" => text,
+                    _ => "电脑端报告了其他警告，请检查服务状态。",
+                };
+                if (!items.Contains(warning))
+                {
+                    items.Add(warning);
+                }
             }
         }
         return [.. items];
@@ -1577,48 +1611,9 @@ public static partial class OnboardingCopyCatalog
 
     public static string SanitizeDiagnostic(string? raw, int maxCharacters = 180)
     {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return "";
-        }
-        var text = PairUrlRegex().Replace(raw, "[已隐藏配对链接]");
-        text = CredentialUrlRegex().Replace(text, "[已隐藏带凭据地址]");
-        text = ParameterizedUrlRegex().Replace(text, "[已隐藏含参数地址]");
-        text = MarkedSecretWithValueRegex().Replace(text, "[已隐藏凭据]");
-        text = MarkedSecretWordRegex().Replace(text, "[已隐藏凭据]");
-        text = JwtRegex().Replace(text, "[已隐藏凭据]");
-        text = PrefixedSecretRegex().Replace(text, "[已隐藏凭据]");
-        text = UnixPathRegex().Replace(text, "[已隐藏路径]");
-        text = WindowsDrivePathRegex().Replace(text, "[已隐藏路径]");
-        text = WindowsUncPathRegex().Replace(text, "[已隐藏路径]");
-        text = EnvPathRegex().Replace(text, "[已隐藏路径]");
-        text = LongHexRegex().Replace(text, "[已隐藏凭据]");
-        text = OpaqueTokenRegex().Replace(text, static match => HasLetterAndDigit(match.Value) ? "[已隐藏凭据]" : match.Value);
-
-        var normalized = new StringBuilder(Math.Min(text.Length, maxCharacters + 8));
-        var previousSpace = true;
-        foreach (var ch in text)
-        {
-            if (char.IsControl(ch) || char.IsWhiteSpace(ch))
-            {
-                if (!previousSpace)
-                {
-                    normalized.Append(' ');
-                    previousSpace = true;
-                }
-            }
-            else
-            {
-                normalized.Append(ch);
-                previousSpace = false;
-            }
-        }
-        var result = normalized.ToString().Trim();
-        if (result.Length <= maxCharacters)
-        {
-            return result;
-        }
-        return string.Concat(result.AsSpan(0, Math.Max(1, maxCharacters - 1)), "…".AsSpan());
+        // Arbitrary subprocess text has no reliable boundary between prose and credentials.
+        const string omitted = "已隐藏命令输出。";
+        return string.IsNullOrWhiteSpace(raw) || maxCharacters <= 0 ? "" : omitted[..Math.Min(omitted.Length, maxCharacters)];
     }
 
     public static bool IsValidPairUrl(string? value)
@@ -1748,28 +1743,6 @@ public static partial class OnboardingCopyCatalog
         return true;
     }
 
-    private static bool HasLetterAndDigit(string value)
-    {
-        var hasLetter = false;
-        var hasDigit = false;
-        foreach (var ch in value)
-        {
-            if (char.IsAsciiLetter(ch))
-            {
-                hasLetter = true;
-            }
-            else if (char.IsAsciiDigit(ch))
-            {
-                hasDigit = true;
-            }
-            if (hasLetter && hasDigit)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static bool HasUnsupportedOnboardingSchema(JsonElement root)
     {
         if (IsUnsupportedSchemaProperty(root))
@@ -1792,9 +1765,10 @@ public static partial class OnboardingCopyCatalog
             return true;
         }
         var schema = prop.GetString();
-        return schema is not null
-            && schema.StartsWith("mimi.onboarding.", StringComparison.Ordinal)
-            && !schema.EndsWith("/v1", StringComparison.Ordinal);
+        return schema is null
+            || !schema.StartsWith("mimi.onboarding.", StringComparison.Ordinal)
+            || !schema.EndsWith("/v1", StringComparison.Ordinal)
+            || schema.IndexOf('/') != schema.Length - "/v1".Length;
     }
 
     private static bool TryFindForbiddenHttpField(JsonElement element, [NotNullWhen(true)] out string? forbiddenName)
@@ -1827,43 +1801,4 @@ public static partial class OnboardingCopyCatalog
         forbiddenName = null;
         return false;
     }
-
-    [GeneratedRegex(@"mimiremote://\S+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex PairUrlRegex();
-
-    [GeneratedRegex(@"(?:https?|wss?)://[^\s/@]+:[^\s/@]+@[^\s]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex CredentialUrlRegex();
-
-    [GeneratedRegex(@"(?:https?|wss?)://[^\s?#]+[?#][^\s]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex ParameterizedUrlRegex();
-
-    [GeneratedRegex(@"\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b(?:\s*[:=]\s*|\s+)\S+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex MarkedSecretWithValueRegex();
-
-    [GeneratedRegex(@"\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex MarkedSecretWordRegex();
-
-    [GeneratedRegex(@"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)?\b", RegexOptions.CultureInvariant)]
-    private static partial Regex JwtRegex();
-
-    [GeneratedRegex(@"\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|tskey|mimi|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b", RegexOptions.CultureInvariant)]
-    private static partial Regex PrefixedSecretRegex();
-
-    [GeneratedRegex(@"(?:~|(?:\.\.)?)/[^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
-    private static partial Regex UnixPathRegex();
-
-    [GeneratedRegex(@"[A-Za-z]:[\\/][^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
-    private static partial Regex WindowsDrivePathRegex();
-
-    [GeneratedRegex(@"\\\\[^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
-    private static partial Regex WindowsUncPathRegex();
-
-    [GeneratedRegex(@"%[A-Za-z0-9_]+%[\\/][^\s""'`<>|;,)\]}]+", RegexOptions.CultureInvariant)]
-    private static partial Regex EnvPathRegex();
-
-    [GeneratedRegex(@"\b[0-9a-fA-F]{32,}\b", RegexOptions.CultureInvariant)]
-    private static partial Regex LongHexRegex();
-
-    [GeneratedRegex(@"[A-Za-z0-9+/_=-]{24,}", RegexOptions.CultureInvariant)]
-    private static partial Regex OpaqueTokenRegex();
 }

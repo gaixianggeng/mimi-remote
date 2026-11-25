@@ -137,6 +137,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
             VerifiedCapability = options.VerifiedCapability,
         };
         var accumulator = new OnboardingProgressAccumulator(1, progressContext);
+        using var registration = cancellationToken.Register(() => accumulator.Cancel(1));
         var arguments = PreflightArguments(options);
         Action<string>? stderrLine = null;
         if (options.ProgressJson)
@@ -165,11 +166,14 @@ public sealed class AgentClient(string executable) : IAgentCommand
             nativeOverlay: false,
             verifiedCapability: options.VerifiedCapability,
             out var report,
-            out var error))
+            out _))
         {
-            throw new InvalidDataException($"无法解析预检报告：{error}");
+            throw new InvalidDataException("无法解析预检报告。请重新检查。");
         }
-        accumulator.Complete(1, report);
+        if (!accumulator.Complete(1, report))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+        }
         return report;
     }
 
@@ -187,9 +191,9 @@ public sealed class AgentClient(string executable) : IAgentCommand
             verifiedConfigured: options?.VerifiedConfigured,
             verifiedCapability: null,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (!OnboardingCopyCatalog.TryDecodeSetupReceipt(stdout, out var receipt, out var error))
+        if (!OnboardingCopyCatalog.TryDecodeSetupReceipt(stdout, out var receipt, out _))
         {
-            throw new InvalidDataException($"无法解析首次设置结果：{error}");
+            throw new InvalidDataException("无法解析首次设置结果。请检查电脑端状态。");
         }
         return receipt;
     }
@@ -197,9 +201,9 @@ public sealed class AgentClient(string executable) : IAgentCommand
     public async Task<UpReadinessReceipt> UpAsync(int waitSeconds = 60, CancellationToken cancellationToken = default)
     {
         var stdout = await RunAsync(UpArguments(waitSeconds), cancellationToken).ConfigureAwait(false);
-        if (!OnboardingCopyCatalog.TryDecodeUpReadinessReceipt(stdout, out var receipt, out var error))
+        if (!OnboardingCopyCatalog.TryDecodeUpReadinessReceipt(stdout, out var receipt, out _))
         {
-            throw new InvalidDataException($"后台服务尚未确认就绪：{error}");
+            throw new InvalidDataException("后台服务尚未确认就绪。请刷新后重试。");
         }
         return receipt;
     }
@@ -207,9 +211,9 @@ public sealed class AgentClient(string executable) : IAgentCommand
     public async Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken = default)
     {
         var stdout = await RunAsync(PairArguments(network), cancellationToken).ConfigureAwait(false);
-        if (!OnboardingCopyCatalog.TryDecodePairingTicketReceipt(stdout, requireNetwork: false, out var receipt, out var error))
+        if (!OnboardingCopyCatalog.TryDecodePairingTicketReceipt(stdout, requireNetwork: false, out var receipt, out _))
         {
-            throw new InvalidDataException($"无法解析配对票据：{error}");
+            throw new InvalidDataException("无法解析配对票据。请重新生成。");
         }
         return receipt;
     }
@@ -270,8 +274,12 @@ public sealed class AgentClient(string executable) : IAgentCommand
             }
             process.StandardInput.Close();
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-            var output = await stdout.ConfigureAwait(false);
-            var error = await stderr.ConfigureAwait(false);
+            var (output, truncated) = await stdout.ConfigureAwait(false);
+            var (error, _) = await stderr.ConfigureAwait(false);
+            if (truncated)
+            {
+                throw new InvalidDataException("电脑服务返回的数据过长，请重新检查。");
+            }
             if (process.ExitCode != 0 && !allowFailure)
             {
                 var stage = ResolveStage(arguments);
@@ -283,14 +291,18 @@ public sealed class AgentClient(string executable) : IAgentCommand
                     Configured = verifiedConfigured ?? false,
                     VerifiedCapability = verifiedCapability,
                 };
-                if (OnboardingCopyCatalog.ResolveCliError(output, error, context) is { } resolved)
+                if (OnboardingCopyCatalog.ResolveCliError(output, error, context, arguments) is { } resolved)
                 {
                     throw new OnboardingCliException(resolved);
                 }
                 throw new OnboardingCliException(
                     OnboardingCopyCatalog.UnknownCommandFallback(process.ExitCode, error));
             }
-            return string.IsNullOrWhiteSpace(output) ? error : output;
+            if (allowFailure && process.ExitCode != 0 && string.IsNullOrWhiteSpace(output))
+            {
+                return OnboardingCopyCatalog.UnknownCommandFailureMessage(process.ExitCode);
+            }
+            return output;
         }
         catch (OperationCanceledException)
         {
@@ -320,7 +332,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
         }
     }
 
-    private static async Task<string> ReadBoundedAsync(
+    private static async Task<(string Text, bool Truncated)> ReadBoundedAsync(
         StreamReader reader,
         Action<string>? onLine,
         CancellationToken token)
@@ -329,46 +341,47 @@ public sealed class AgentClient(string executable) : IAgentCommand
         var text = new StringBuilder();
         var lineBuffer = onLine is not null ? new StringBuilder() : null;
         var buffer = new char[4096];
-        var total = 0;
+        var truncated = false;
+        var oversizedLine = false;
         int count;
         while ((count = await reader.ReadAsync(buffer.AsMemory(), token).ConfigureAwait(false)) != 0)
         {
-            total += count;
             var retained = Math.Min(count, limit - text.Length);
+            truncated |= retained < count;
             if (retained > 0)
             {
                 text.Append(buffer, 0, retained);
             }
-            if (onLine is not null && lineBuffer is not null && total <= limit)
+            if (onLine is not null && lineBuffer is not null)
             {
                 for (var i = 0; i < count; i++)
                 {
                     var ch = buffer[i];
                     if (ch == '\n')
                     {
-                        if (lineBuffer.Length > 0 && lineBuffer[^1] == '\r')
+                        if (!oversizedLine)
                         {
-                            lineBuffer.Length--;
+                            onLine(lineBuffer.ToString().TrimEnd('\r'));
                         }
-                        onLine(lineBuffer.ToString());
                         lineBuffer.Clear();
+                        oversizedLine = false;
+                    }
+                    else if (lineBuffer.Length < limit && !oversizedLine)
+                    {
+                        lineBuffer.Append(ch);
                     }
                     else
                     {
-                        lineBuffer.Append(ch);
+                        oversizedLine = true;
                     }
                 }
             }
         }
-        if (onLine is not null && lineBuffer is not null && lineBuffer.Length > 0 && total <= limit)
+        if (onLine is not null && lineBuffer is not null && lineBuffer.Length > 0 && !oversizedLine)
         {
-            if (lineBuffer[^1] == '\r')
-            {
-                lineBuffer.Length--;
-            }
-            onLine(lineBuffer.ToString());
+            onLine(lineBuffer.ToString().TrimEnd('\r'));
         }
-        return text.ToString();
+        return (text.ToString(), truncated);
     }
 
     public static string ResolveStage(IReadOnlyList<string> arguments)

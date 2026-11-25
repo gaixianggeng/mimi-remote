@@ -77,33 +77,6 @@ struct OnboardingResolvedDiagnostic: Equatable, Sendable {
     let recoveryPath: String?
     let isTrusted: Bool
     let isLegacyHost: Bool
-    let sanitizedDiagnostic: String?
-
-    init(
-        code: String?,
-        step: OnboardingCheckID?,
-        message: String,
-        primaryAction: OnboardingFix?,
-        secondaryAction: OnboardingFix?,
-        secondaryLabel: String?,
-        configPath: String?,
-        recoveryPath: String?,
-        isTrusted: Bool,
-        isLegacyHost: Bool,
-        sanitizedDiagnostic: String? = nil
-    ) {
-        self.code = code
-        self.step = step
-        self.message = message
-        self.primaryAction = primaryAction
-        self.secondaryAction = secondaryAction
-        self.secondaryLabel = secondaryLabel
-        self.configPath = configPath
-        self.recoveryPath = recoveryPath
-        self.isTrusted = isTrusted
-        self.isLegacyHost = isLegacyHost
-        self.sanitizedDiagnostic = sanitizedDiagnostic
-    }
 }
 
 enum OnboardingValidationError: LocalizedError, Equatable, Sendable {
@@ -408,31 +381,58 @@ enum OnboardingCopyCatalog {
         Set(allEntries.filter(\.isUILocal).map(\.code))
     }
 
+    static func displayWarnings(_ warnings: [String]) -> [String] {
+        var result: [String] = []
+        for warning in warnings where !warning.isEmpty {
+            let message: String
+            switch warning {
+            case "局域网配对仅适用于与这台电脑位于同一局域网的设备",
+                 "仅用于受信任的局域网；仍需 Mimi 配对鉴权",
+                 "Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。",
+                 "agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑",
+                 "当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；移动设备连接前建议先安装并登录 Tailscale，或显式启用受限的局域网访问":
+                message = warning
+            default:
+                message = "电脑端报告了其他警告，请检查服务状态。"
+            }
+            if !result.contains(message) { result.append(message) }
+        }
+        return result
+    }
+
+    private static func displayPath(_ path: String?) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        // Report models retain local paths. Only project standard filenames into shareable diagnostics.
+        let name = path.split { $0 == "/" || $0 == "\\" }.last
+        switch name {
+        case "config.json", "config.previous.json", "recovery.json":
+            return name.map { "…/\($0)" }
+        default:
+            return "…"
+        }
+    }
+
     static func localizedMessage(
         code: String,
         step: OnboardingCheckID? = nil,
-        title: String? = nil,
         detectedVersion: String? = nil
     ) -> String {
         guard let entry = entriesByCode[code] else {
             return safeFallbackCopy
         }
-        let resolvedTitle = (title?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
-            ?? step?.localizedTitle
-            ?? OnboardingCheckID.serviceDaemon.localizedTitle
+        let resolvedTitle = (step ?? .serviceDaemon).localizedTitle
         let base = entry.messageZH.replacingOccurrences(of: "{title}", with: resolvedTitle)
         if code.hasSuffix("_signed_out"),
-           let ver = detectedVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !ver.isEmpty {
-            return "已检测到版本 \(ver)。\(base)"
+           let version = detectedVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+           version.range(of: #"^v?[0-9]{1,6}(?:\.[0-9]{1,6}){1,2}(?:-(?:alpha|beta|rc)\.?[0-9]{0,4})?\z"#, options: .regularExpression) != nil {
+            return "已检测到版本 \(version)。\(base)"
         }
         return base
     }
 
     static func synthesizeLocal(
         code: String,
-        step: OnboardingCheckID? = nil,
-        title: String? = nil
+        step: OnboardingCheckID? = nil
     ) -> OnboardingResolvedDiagnostic {
         let resolvedStep = step ?? .serviceDaemon
         guard let entry = entriesByCode[code], entry.isUILocal, let fix = entry.variants.first?.fix else {
@@ -442,7 +442,7 @@ enum OnboardingCopyCatalog {
                 configPath: nil, recoveryPath: nil, isTrusted: false, isLegacyHost: false
             )
         }
-        let message = localizedMessage(code: code, step: resolvedStep, title: title)
+        let message = localizedMessage(code: code, step: resolvedStep)
         return OnboardingResolvedDiagnostic(
             code: code, step: resolvedStep, message: message,
             primaryAction: fix, secondaryAction: entry.secondaryFix, secondaryLabel: entry.secondaryLabelZH,
@@ -458,7 +458,7 @@ enum OnboardingCopyCatalog {
         state: OnboardingCheckState? = nil
     ) -> Result<OnboardingResolvedDiagnostic, OnboardingValidationError> {
         guard let entry = entriesByCode[code] else {
-            return .failure(.invalidTuple("unknown code \(code)"))
+            return .failure(.invalidTuple("无法识别当前诊断码。请重新检查。"))
         }
         if context.surface != .uiLocal && entry.isUILocal {
             return .failure(.invalidTuple("ui_local code \(code) rejected on wire"))
@@ -563,9 +563,10 @@ enum OnboardingCopyCatalog {
         }
         guard let code = check.code, let fix = check.fix else {
             return .success(OnboardingResolvedDiagnostic(
-                code: nil, step: check.id, message: check.detail,
+                code: nil, step: check.id,
+                message: check.state == .checking ? "正在检查\(check.id.localizedTitle)。" : "\(check.id.localizedTitle)检查通过。",
                 primaryAction: nil, secondaryAction: nil, secondaryLabel: nil,
-                configPath: check.configPath, recoveryPath: check.recoveryPath,
+                configPath: displayPath(check.configPath), recoveryPath: displayPath(check.recoveryPath),
                 isTrusted: true, isLegacyHost: false
             ))
         }
@@ -599,7 +600,6 @@ enum OnboardingCopyCatalog {
             let msg = localizedMessage(
                 code: code,
                 step: check.id,
-                title: check.title,
                 detectedVersion: check.selectedOrDetectedVersion
             )
             return .success(OnboardingResolvedDiagnostic(
@@ -609,8 +609,8 @@ enum OnboardingCopyCatalog {
                 primaryAction: resolved.primaryAction,
                 secondaryAction: resolved.secondaryAction,
                 secondaryLabel: resolved.secondaryLabel,
-                configPath: check.configPath,
-                recoveryPath: check.recoveryPath,
+                configPath: displayPath(check.configPath),
+                recoveryPath: displayPath(check.recoveryPath),
                 isTrusted: true,
                 isLegacyHost: false
             ))
@@ -773,7 +773,7 @@ enum OnboardingCopyCatalog {
             return .failure(.missingRequiredField("error envelope missing required strings"))
         }
         guard let step = OnboardingCheckID(rawValue: envelope.error.step) else {
-            return .failure(.invalidTuple("unknown error step \(envelope.error.step)"))
+            return .failure(.invalidTuple("无法识别当前检查项。请重新检查。"))
         }
         if context.surface != .http {
             let hasRecoveryPaths = errorObj["config_path"] != nil || errorObj["recovery_path"] != nil
@@ -792,8 +792,8 @@ enum OnboardingCopyCatalog {
                 primaryAction: resolved.primaryAction,
                 secondaryAction: resolved.secondaryAction,
                 secondaryLabel: resolved.secondaryLabel,
-                configPath: envelope.error.configPath,
-                recoveryPath: envelope.error.recoveryPath,
+                configPath: displayPath(envelope.error.configPath),
+                recoveryPath: displayPath(envelope.error.recoveryPath),
                 isTrusted: true,
                 isLegacyHost: false
             ))
@@ -811,12 +811,17 @@ enum OnboardingCopyCatalog {
         return true
     }
 
-    static func isRecognizedLegacyHostStderr(_ stderrText: String) -> Bool {
-        let lower = stderrText.lowercased()
-        return (lower.contains("unknown command") && lower.contains("preflight"))
-            || (lower.contains("未知命令") && lower.contains("preflight"))
-            || lower.contains("flag provided but not defined: -no-pair")
-            || lower.contains("unknown flag: --no-pair")
+    static func isRecognizedLegacyHostStderr(_ stderrText: String, arguments: [String]) -> Bool {
+        guard let firstLine = stderrText.split(whereSeparator: \.isNewline).first else { return false }
+        let line = firstLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if arguments.first == "preflight" {
+            return line == #"error: unknown command "preflight" for "agentd""#
+                || line == #"unknown command "preflight""#
+                || line.hasPrefix(#"错误：未知命令 "preflight"，可用命令："#)
+        }
+        guard arguments.contains("--no-pair") else { return false }
+        return line == "flag provided but not defined: -no-pair"
+            || line == "unknown flag: --no-pair"
     }
 
     /// Resolves CLI exit-1 output: reads stdout v1 JSON envelope first; any unknown,
@@ -824,7 +829,8 @@ enum OnboardingCopyCatalog {
     static func resolveCLIError(
         stdout: Data,
         stderr: Data,
-        context: OnboardingValidationContext
+        context: OnboardingValidationContext,
+        arguments: [String] = []
     ) -> OnboardingResolvedDiagnostic? {
         if looksLikeErrorEnvelopeJSON(stdout) {
             switch decodeErrorEnvelope(from: stdout, context: context) {
@@ -846,7 +852,8 @@ enum OnboardingCopyCatalog {
             }
         }
         let stderrText = String(decoding: stderr, as: UTF8.self)
-        if isRecognizedLegacyHostStderr(stderrText) {
+        if stdout.allSatisfy({ [9, 10, 13, 32].contains($0) }),
+           isRecognizedLegacyHostStderr(stderrText, arguments: arguments) {
             return OnboardingResolvedDiagnostic(
                 code: nil,
                 step: .serviceDaemon,
@@ -869,10 +876,8 @@ enum OnboardingCopyCatalog {
 
     static func unknownCommandFallback(
         exitCode: Int32,
-        step: OnboardingCheckID = .serviceDaemon,
-        rawStderr: String
+        step: OnboardingCheckID = .serviceDaemon
     ) -> OnboardingResolvedDiagnostic {
-        let sanitized = sanitizeDiagnostic(rawStderr)
         return OnboardingResolvedDiagnostic(
             code: nil,
             step: step,
@@ -883,66 +888,16 @@ enum OnboardingCopyCatalog {
             configPath: nil,
             recoveryPath: nil,
             isTrusted: false,
-            isLegacyHost: false,
-            sanitizedDiagnostic: sanitized.isEmpty ? nil : sanitized
+            isLegacyHost: false
         )
     }
 
-    private static let diagnosticRedactions: [(NSRegularExpression, String)] = {
-        let specs: [(String, String)] = [
-            (#"(?i)mimiremote://\S+"#, "[已隐藏配对链接]"),
-            (#"(?i)(?:https?|wss?)://[^\s/@]+:[^\s/@]+@[^\s]+"#, "[已隐藏带凭据地址]"),
-            (#"(?i)(?:https?|wss?)://[^\s?#]+[?#][^\s]+"#, "[已隐藏含参数地址]"),
-            (#"(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b(?:\s*[:=]\s*|\s+)\S+"#, "[已隐藏凭据]"),
-            (#"(?i)\b(?:authorization|bearer|token|secret|password|passwd|api[_-]?key|private[_-]?key|capability|pair_sig|grant|signature|cookie|session[_-]?id|connect_url|token_file)\b"#, "[已隐藏凭据]"),
-            (#"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]*)?\b"#, "[已隐藏凭据]"),
-            (#"\b(?:sk|pk|rk|ghp|gho|ghu|ghs|ghr|glpat|tskey|mimi|xox[baprs])[-_][A-Za-z0-9._-]{8,}\b"#, "[已隐藏凭据]"),
-            (#"(?:~|(?:\.\.)?)/[^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
-            (#"[A-Za-z]:[\\/][^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
-            (#"\\\\[^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
-            (#"%[A-Za-z0-9_]+%[\\/][^\s"'`<>|;,)\]}]+"#, "[已隐藏路径]"),
-            (#"\b[0-9a-fA-F]{32,}\b"#, "[已隐藏凭据]"),
-            (#"(?<![A-Za-z0-9+/_=-])(?=[A-Za-z0-9+/_=-]*[0-9])(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{24,}(?![A-Za-z0-9+/_=-])"#, "[已隐藏凭据]"),
-        ]
-        return specs.compactMap { pattern, replacement in
-            (try? NSRegularExpression(pattern: pattern, options: [])).map { ($0, replacement) }
-        }
-    }()
-
-    static func sanitizeDiagnostic(_ raw: String, maxCharacters: Int = 180) -> String {
-        var text = raw
-        for (regex, replacement) in diagnosticRedactions {
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: replacement)
-        }
-        let collapsed = text
-            .unicodeScalars
-            .map { scalar -> Character in
-                if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.whitespacesAndNewlines.contains(scalar) {
-                    return " "
-                }
-                return Character(scalar)
-            }
-        let normalized = String(collapsed)
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard normalized.count > maxCharacters else {
-            return normalized
-        }
-        return String(normalized.prefix(max(1, maxCharacters - 1))) + "…"
-    }
-
     private static func hasUnsupportedOnboardingSchema(_ object: [String: Any]) -> Bool {
-        if let schemaVal = object["schema"] {
-            guard let schema = schemaVal as? String else { return true }
-            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
-                return true
-            }
-        }
-        if let errObj = object["error"] as? [String: Any], let schemaVal = errObj["schema"] {
-            guard let schema = schemaVal as? String else { return true }
-            if schema.hasPrefix("mimi.onboarding.") && !schema.hasSuffix("/v1") {
-                return true
+        for part in [object, object["error"] as? [String: Any]] {
+            if let value = part?["schema"] {
+                guard let schema = value as? String, OnboardingSchema.isSupportedDeclaration(schema) else {
+                    return true
+                }
             }
         }
         return false

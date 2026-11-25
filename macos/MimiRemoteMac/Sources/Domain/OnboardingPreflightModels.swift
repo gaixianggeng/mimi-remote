@@ -4,6 +4,18 @@ enum OnboardingSchema {
     static let preflightV1 = "mimi.onboarding.preflight/v1"
     static let codesV1 = "mimi.onboarding.codes/v1"
     static let mediaTypeV1 = "application/vnd.mimi.onboarding.v1+json"
+    static func isSupportedDeclaration(_ schema: String) -> Bool {
+        schema.hasPrefix("mimi.onboarding.") && schema.split(separator: "/", maxSplits: 1).last == "v1"
+    }
+
+    static func checkDeclaredVersion(in raw: KeyedDecodingContainer<OnboardingDynamicKey>) throws {
+        guard let key = OnboardingDynamicKey(stringValue: "schema"), raw.contains(key) else { return }
+        let schema = try raw.decode(String.self, forKey: key)
+        guard isSupportedDeclaration(schema) else {
+            throw DecodingError.dataCorruptedError(forKey: key, in: raw, debugDescription: "Unsupported onboarding schema")
+        }
+    }
+
     static let doctorFixCapability = "identity_preserving_doctor_fix"
 }
 
@@ -340,7 +352,7 @@ enum OnboardingFix: Equatable, Hashable, Sendable, Decodable {
             self = .runFix(action)
         default:
             throw DecodingError.dataCorrupted(
-                .init(codingPath: decoder.codingPath, debugDescription: "unknown fix kind \(kind)")
+                .init(codingPath: decoder.codingPath, debugDescription: "unknown fix kind")
             )
         }
     }
@@ -409,6 +421,7 @@ struct OnboardingCheck: Decodable, Equatable, Identifiable, Sendable {
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        try OnboardingSchema.checkDeclaredVersion(in: raw)
         let rawKeys = Set(raw.allKeys.map(\.stringValue))
         hasAvailableKey = rawKeys.contains("available")
         hasCandidatesKey = rawKeys.contains("candidates")
@@ -484,7 +497,7 @@ struct OnboardingPreflightReport: Decodable, Equatable, Sendable {
             throw DecodingError.dataCorruptedError(
                 forKey: .schema,
                 in: container,
-                debugDescription: "unsupported preflight schema \(schema)"
+                debugDescription: "unsupported preflight schema"
             )
         }
         ok = try container.decode(Bool.self, forKey: .ok)
@@ -563,12 +576,13 @@ struct SetupReceipt: Decodable, Equatable, Sendable {
         self.network = network
         self.tailscaleDNSName = tailscaleDNSName
         self.tailscaleDeviceName = tailscaleDeviceName
-        self.warnings = warnings
+        self.warnings = OnboardingCopyCatalog.displayWarnings(warnings)
         self.isLegacy = isLegacy
     }
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        try OnboardingSchema.checkDeclaredVersion(in: raw)
         let rawKeys = Set(raw.allKeys.map(\.stringValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
@@ -580,7 +594,9 @@ struct SetupReceipt: Decodable, Equatable, Sendable {
         let decodedNetwork = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
         let decodedDNS = try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
         let decodedDevice = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
-        let decodedWarnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        let decodedWarnings = OnboardingCopyCatalog.displayWarnings(
+            try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        )
 
         let hasOKKey = rawKeys.contains("ok")
         if hasOKKey {
@@ -700,6 +716,7 @@ struct UpReadinessReceipt: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        try OnboardingSchema.checkDeclaredVersion(in: raw)
         let rawKeys = Set(raw.allKeys.map(\.stringValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let okVal: Bool
@@ -718,7 +735,9 @@ struct UpReadinessReceipt: Decodable, Equatable, Sendable {
         self.ok = okVal
         self.serviceOK = readyVal
         self.version = ver
-        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        self.warnings = OnboardingCopyCatalog.displayWarnings(
+            try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        )
     }
 }
 
@@ -744,6 +763,7 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.container(keyedBy: OnboardingDynamicKey.self)
+        try OnboardingSchema.checkDeclaredVersion(in: raw)
         let rawKeys = Set(raw.allKeys.map(\.stringValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let hasOKKey = rawKeys.contains("ok")
@@ -770,9 +790,9 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
             )
         }
         let explicitNetwork = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
-        if explicitNetwork == .automatic {
+        if (hasOKKey && explicitNetwork == nil) || explicitNetwork == .automatic {
             throw DecodingError.dataCorrupted(
-                .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket network cannot be auto")
+                .init(codingPath: decoder.codingPath, debugDescription: "pairing ticket requires a supported network")
             )
         }
         self.ok = okVal
@@ -783,7 +803,9 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
         self.pairExpiresAt = expires
         self.tailscaleDNSName = try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
         self.tailscaleDeviceName = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
-        self.warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        self.warnings = OnboardingCopyCatalog.displayWarnings(
+            try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        )
     }
 
     var asPairingInfo: PairingInfo {

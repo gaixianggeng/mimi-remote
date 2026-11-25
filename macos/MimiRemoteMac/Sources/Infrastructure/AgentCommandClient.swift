@@ -217,6 +217,8 @@ extension AgentCommandClient {
             onStderrLine: (@Sendable (String) -> Void)? = nil
         ) async throws -> CommandResult {
             let result: CommandResult
+            let boundedCommands = ["preflight", "setup", "up", "start", "restart", "pair", "tailcat",
+                                   "runtime", "network", "workspace", "doctor"]
             do {
                 result = try await executor.run(
                     executable: binary,
@@ -224,7 +226,7 @@ extension AgentCommandClient {
                     timeout: timeout,
                     outputLimit: outputLimit,
                     environment: environment,
-                    forceKillAfterTimeout: forceKillAfterTimeout,
+                    forceKillAfterTimeout: forceKillAfterTimeout || arguments.first.map(boundedCommands.contains) == true,
                     standardInput: standardInput,
                     onStderrLine: onStderrLine
                 )
@@ -243,15 +245,15 @@ extension AgentCommandClient {
                 if let resolved = OnboardingCopyCatalog.resolveCLIError(
                     stdout: result.stdout,
                     stderr: result.stderr,
-                    context: context
+                    context: context,
+                    arguments: arguments
                 ) {
                     throw AgentClientError.onboarding(resolved)
                 }
                 throw AgentClientError.onboarding(
                     OnboardingCopyCatalog.unknownCommandFallback(
                         exitCode: result.status,
-                        step: activeStep,
-                        rawStderr: result.stderrText
+                        step: activeStep
                     )
                 )
             }
@@ -312,33 +314,37 @@ extension AgentCommandClient {
             } else {
                 stderrHandler = nil
             }
-            let result = try await execute(
-                binary: binary,
-                arguments: preflightArguments(options: options),
-                timeout: AgentCommandTimeouts.preflight,
-                forceKillAfterTimeout: true,
-                errorContext: OnboardingValidationContext(
-                    surface: .cli,
+            return try await withTaskCancellationHandler {
+                let result = try await execute(
+                    binary: binary,
+                    arguments: preflightArguments(options: options),
+                    timeout: AgentCommandTimeouts.preflight,
+                    forceKillAfterTimeout: true,
+                    errorContext: OnboardingValidationContext(
+                        surface: .cli,
+                        platform: .macos,
+                        stage: options.stage,
+                        configured: verifiedConfigured,
+                        verifiedCapability: options.verifiedCapability
+                    ),
+                    activeStep: .serviceDaemon,
+                    onStderrLine: stderrHandler
+                )
+                let report = try decode(OnboardingPreflightReport.self, from: result)
+                switch OnboardingCopyCatalog.validateReport(
+                    report,
                     platform: .macos,
-                    stage: options.stage,
-                    configured: verifiedConfigured,
+                    expectedStage: options.stage,
                     verifiedCapability: options.verifiedCapability
-                ),
-                activeStep: .serviceDaemon,
-                onStderrLine: stderrHandler
-            )
-            let report = try decode(OnboardingPreflightReport.self, from: result)
-            switch OnboardingCopyCatalog.validateReport(
-                report,
-                platform: .macos,
-                expectedStage: options.stage,
-                verifiedCapability: options.verifiedCapability
-            ) {
-            case .success:
-                accumulator.complete(with: report, generation: 1)
-                return report
-            case .failure(let error):
-                throw AgentClientError.invalidResponse(error.localizedDescription)
+                ) {
+                case .success:
+                    guard accumulator.complete(with: report, generation: 1) else { throw CancellationError() }
+                    return report
+                case .failure(let error):
+                    throw AgentClientError.invalidResponse(error.localizedDescription)
+                }
+            } onCancel: {
+                accumulator.cancel(generation: 1)
             }
         }
 
@@ -478,8 +484,7 @@ extension AgentCommandClient {
                             throw AgentClientError.onboarding(
                                 OnboardingCopyCatalog.unknownCommandFallback(
                                     exitCode: result.status,
-                                    step: .configStore,
-                                    rawStderr: result.stderrText
+                                    step: .configStore
                                 )
                             )
                         }

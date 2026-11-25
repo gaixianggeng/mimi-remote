@@ -70,11 +70,19 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	expires := time.Now().Add(time.Minute).UTC().Truncate(time.Second).Format(time.RFC3339)
 	query := url.Values{"endpoint": {"http://100.64.0.1:8787"}, "issued_at": {time.Now().UTC().Format(time.RFC3339)}, "expires_at": {expires}, "pair_sig": {"short-signature"}}
 	calls := 0
+	future := false
+	v1 := false
 	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
 		if strings.Join(args, " ") != "pair --network tailscale --qr-only --json" {
 			t.Fatal("unsafe pairing arguments", args)
 		}
 		calls++
+		if future {
+			return json.Marshal(map[string]string{"schema": "mimi.onboarding.future/v2", "pair_url": "mimiremote://pair?" + query.Encode(), "pair_expires_at": expires})
+		}
+		if v1 {
+			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
+		}
 		return json.Marshal(linuxPairingInfo{PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 	}}
 	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
@@ -85,6 +93,16 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
 		t.Fatal("agentd nanosecond ticket rejected", err)
 	}
+	future = true
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("future ticket accepted as legacy")
+	}
+	future = false
+	v1 = true
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("v1 ticket missing network accepted")
+	}
+	v1 = false
 	query.Set("token", "long-lived-secret")
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("legacy token accepted")
@@ -95,7 +113,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("expired ticket accepted")
 	}
-	if calls != 4 {
+	if calls != 6 {
 		t.Fatal(calls)
 	}
 }
@@ -157,5 +175,19 @@ func TestLinuxPerformTimeoutMeetsOnboardingBudget(t *testing.T) {
 	redacted := redactTrayText("safe line\n/home/alice/.config/secret.json UnmarkedCred9876543210ABCDEF")
 	if !strings.Contains(redacted, "safe line") || strings.Contains(redacted, "/home/alice") || strings.Contains(redacted, "UnmarkedCred9876543210ABCDEF") {
 		t.Fatalf("redactTrayText leaked private path or unmarked credential: %q", redacted)
+	}
+}
+
+func TestLinuxFailedActionsOnlyDisplayTheLocalizedError(t *testing.T) {
+	var stdout = `{"ok":false,"error":{"message":"private-fixture"}}`
+	c := &linuxController{runner: func(context.Context, ...string) ([]byte, error) { return []byte(stdout), fmt.Errorf("操作失败") }}
+	for _, action := range []string{"restart", "doctor"} {
+		if output, err := c.action(context.Background(), action); err == nil || output != "" {
+			t.Fatalf("failed %s exposed the raw envelope", action)
+		}
+	}
+	stdout = `{"ok":false,"checks":[{"name":"service","message":"服务未运行"}]}`
+	if output, err := c.action(context.Background(), "doctor"); err == nil || !strings.Contains(output, "服务未运行") {
+		t.Fatal("legacy read-only doctor report lost")
 	}
 }

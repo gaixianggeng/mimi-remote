@@ -272,5 +272,35 @@ final class PairingErrorMapperTests: XCTestCase {
         )
         XCTAssertFalse(schemaMapped.isTrusted)
         XCTAssertEqual(schemaMapped.action, .none)
+        let error = try XCTUnwrap(JSONSerialization.jsonObject(with: v1ExpiredBody) as? [String: Any])
+        for declared in ["other/v2", "mimi.onboarding.error/v2/v1"] {
+            var body = error
+            body["schema"] = declared
+            let data = try JSONSerialization.data(withJSONObject: body)
+            XCTAssertEqual(PairingErrorMapper.mapHTTPErrorEnvelope(data: data).action, .none)
+        }
+    }
+
+    func testMalformedAndUnknownResponsesCannotAcquireLegacyActions() {
+        let responses = [
+            #"{"code":"tailcat_agents_disabled","error":{"step":"assistant_any"}}"#,
+            #"{"ok":true,"error":"invalid","code":"tailcat_agents_disabled"}"#,
+            #"{"error":"invalid","code":"future_ticket_error"}"#,
+            #"{"error":"invalid","code":"pair_token_mismatch"}"#,
+            #"{"error":"invalid","code":"tailcat_agents_disabled","fix":{"rotates_token":true}}"#,
+            #"{"error":"invalid","code":null}"#,
+            #"{}"#,
+        ]
+        for response in responses {
+            let mapped = PairingErrorMapper.mapHTTPResponse(
+                data: Data(response.utf8), statusCode: 401, contentType: "application/json"
+            )
+            XCTAssertFalse(mapped.isTrusted)
+            XCTAssertNil(mapped.wireFix)
+            XCTAssertEqual(mapped.action, .none)
+            XCTAssertTrue(mapped.preservesSavedProfiles)
+        }
+        let unknown = Data(#"{"ok":false,"error":{"code":"private sample","step":"network_any","message":"x","fix":{"kind":"retry"}}}"#.utf8)
+        XCTAssertNil(PairingErrorMapper.mapHTTPErrorEnvelope(data: unknown).code)
     }
 }

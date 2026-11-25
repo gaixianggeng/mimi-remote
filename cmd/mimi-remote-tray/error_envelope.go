@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,11 +159,57 @@ func runTrayCommand(
 ) (stdout []byte, stderr []byte, stdoutTruncated bool, err error) {
 	out := &boundedTrayOutput{remaining: stdoutLimit}
 	errWriter := newTrayStderrProgressWriter(stderrLimit, progress, generation, onProgress)
+	// A child may exit with inherited writer handles still open in a descendant.
+	cmd.WaitDelay = time.Second
 	cmd.Stdout = out
 	cmd.Stderr = errWriter
 	err = cmd.Run()
-	errWriter.Flush()
+	if err == nil {
+		errWriter.Flush()
+	}
 	return out.Bytes(), errWriter.Bytes(), out.truncated, err
+}
+
+func runTrayPreflight(
+	ctx context.Context, platform, stage string, progress *onboardingProgressAccumulator, generation uint64,
+	onProgress func(onboardingCheck),
+	run func(context.Context, *onboardingProgressAccumulator, uint64, func(onboardingCheck), ...string) ([]byte, error),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	if stage != "setup" && stage != "pair" {
+		return onboardingPreflightReport{}, errors.New("不支持的预检阶段")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if progress == nil {
+		progress = newOnboardingProgressAccumulatorWithContext(generation, onboardingValidationContext{
+			Surface: "check", Platform: platform, Stage: stage,
+		})
+	}
+	validation := progress.validationContext
+	if validation.Surface != "check" || validation.Platform != platform || validation.Stage != stage {
+		return onboardingPreflightReport{}, errors.New("预检进度与当前请求不匹配")
+	}
+	stop := context.AfterFunc(ctx, func() { progress.Cancel(generation) })
+	defer stop()
+
+	args := append([]string{"preflight", "--json", "--stage", stage, "--progress-json"}, extraArgs...)
+	payload, err := run(ctx, progress, generation, onProgress, args...)
+	if err != nil {
+		return onboardingPreflightReport{}, err
+	}
+	report, err := decodeAndValidatePreflightReportForStage(payload, platform, stage, false, validation.VerifiedCapability)
+	if err != nil {
+		return onboardingPreflightReport{}, errors.New("无法解析预检报告，请更新桌面端后重新检查")
+	}
+	if err := ctx.Err(); err != nil {
+		return onboardingPreflightReport{}, err
+	}
+	if !progress.Complete(generation, report) {
+		return onboardingPreflightReport{}, context.Canceled
+	}
+	return report, nil
 }
 
 // onboardingFix decodes strictly against the closed v1 fix allow-list and rejects any extra fields.
@@ -259,7 +306,7 @@ type onboardingDiagnostic struct {
 }
 
 type onboardingErrorEnvelope struct {
-	OK    *bool                `json:"ok"`
+	OK    *bool                 `json:"ok"`
 	Error *onboardingDiagnostic `json:"error"`
 }
 
@@ -757,23 +804,35 @@ func isAllowedOnboardingURL(value string) bool {
 	return false
 }
 
-func onboardingCheckTitle(step, overrideTitle string) string {
-	if trimmed := strings.TrimSpace(overrideTitle); trimmed != "" {
-		return trimmed
-	}
+func onboardingCheckTitle(step string) string {
 	if spec, ok := onboardingCheckIndex[step]; ok {
 		return spec.TitleZH
 	}
 	return "后台服务"
 }
 
-func formatOnboardingMessage(code, step, title, detectedVersion string) string {
+var trayDisplayVersion = regexp.MustCompile(`^v?[0-9]{1,6}(\.[0-9]{1,6}){1,2}(-(alpha|beta|rc)\.?[0-9]{0,4})?$`)
+
+func trayDiagnosticPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	name := path[strings.LastIndexAny(path, `/\`)+1:]
+	switch name {
+	case "config.json", "config.previous.json", "recovery.json":
+		return "…/" + name
+	default:
+		return "…"
+	}
+}
+
+func formatOnboardingMessage(code, step, detectedVersion string) string {
 	entry, ok := onboardingCodeIndex[code]
 	if !ok {
 		return onboardingSafeFallbackCopy
 	}
-	msg := strings.ReplaceAll(entry.MessageZH, "{title}", onboardingCheckTitle(step, title))
-	if strings.HasSuffix(code, "_signed_out") && strings.TrimSpace(detectedVersion) != "" {
+	msg := strings.ReplaceAll(entry.MessageZH, "{title}", onboardingCheckTitle(step))
+	if strings.HasSuffix(code, "_signed_out") && trayDisplayVersion.MatchString(strings.TrimSpace(detectedVersion)) {
 		msg = fmt.Sprintf("已检测到版本 %s。%s", strings.TrimSpace(detectedVersion), msg)
 	}
 	return msg
@@ -845,7 +904,7 @@ func validateOnboardingDiagnostic(code, step string, fix onboardingFix, ctx onbo
 	return onboardingResolvedDiagnostic{
 		Code:           code,
 		Step:           step,
-		Message:        formatOnboardingMessage(code, step, checkSpec.TitleZH, ""),
+		Message:        formatOnboardingMessage(code, step, ""),
 		AllowedFix:     &allowedFix,
 		SecondaryFix:   secFix,
 		SecondaryLabel: entry.SecondaryLabelZH,
@@ -883,6 +942,12 @@ func decodeOnboardingCheck(raw []byte) (onboardingCheck, error) {
 	}
 	if keys == nil {
 		return onboardingCheck{}, errors.New("check must be a JSON object")
+	}
+	if schema, ok := keys["schema"]; ok {
+		var name string
+		if json.Unmarshal(schema, &name) != nil || name != onboardingPreflightSchemaV1 {
+			return onboardingCheck{}, errors.New("unsupported check schema")
+		}
 	}
 	var row onboardingCheck
 	if err := json.Unmarshal(raw, &row); err != nil {
@@ -925,10 +990,10 @@ func validateOnboardingCheck(row onboardingCheck, ctx onboardingValidationContex
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("unexpected path fields on %s", row.ID)
 	}
 	if row.State == "ok" || row.State == "checking" {
-		if row.hasCodeKey || row.hasFixKey || *row.Blocking {
+		if row.hasCodeKey || row.Code != "" || row.hasFixKey || row.Fix != nil || *row.Blocking {
 			return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("%s state %s cannot carry code/fix or block", row.ID, row.State)
 		}
-	} else if !row.hasCodeKey || !row.hasFixKey || row.Fix == nil {
+	} else if !row.hasCodeKey || row.Code == "" || !row.hasFixKey || row.Fix == nil {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, fmt.Errorf("%s state %s requires code and fix", row.ID, row.State)
 	}
 	if row.State == "optional" && *row.Blocking {
@@ -963,7 +1028,11 @@ func validateOnboardingCheck(row onboardingCheck, ctx onboardingValidationContex
 		}
 	}
 	if row.Code == "" {
-		return onboardingResolvedDiagnostic{Step: row.ID, Message: row.Detail, Trusted: true}, nil
+		message := spec.TitleZH + "检查通过。"
+		if row.State == "checking" {
+			message = "正在检查" + spec.TitleZH + "。"
+		}
+		return onboardingResolvedDiagnostic{Step: row.ID, Message: message, ConfigPath: trayDiagnosticPath(row.ConfigPath), RecoveryPath: trayDiagnosticPath(row.RecoveryPath), Trusted: true}, nil
 	}
 	isPair := ctx.Stage == "pair"
 	switch row.ID {
@@ -990,12 +1059,12 @@ func validateOnboardingCheck(row onboardingCheck, ctx onboardingValidationContex
 				return onboardingResolvedDiagnostic{Code: row.Code, Step: row.ID, Message: onboardingSafeFallbackCopy}, errors.New("incorrect signed_out state")
 			}
 		}
-		resolved.Message = formatOnboardingMessage(row.Code, row.ID, row.Title, selectedOrDetectedVersion(row))
+		resolved.Message = formatOnboardingMessage(row.Code, row.ID, selectedOrDetectedVersion(row))
 	} else {
-		resolved.Message = formatOnboardingMessage(row.Code, row.ID, row.Title, "")
+		resolved.Message = formatOnboardingMessage(row.Code, row.ID, "")
 	}
-	resolved.ConfigPath = row.ConfigPath
-	resolved.RecoveryPath = row.RecoveryPath
+	resolved.ConfigPath = trayDiagnosticPath(row.ConfigPath)
+	resolved.RecoveryPath = trayDiagnosticPath(row.RecoveryPath)
 	return resolved, nil
 }
 
@@ -1183,29 +1252,19 @@ func platformCheckIDs(platform string) []string {
 	return ids
 }
 
-func hasUnsupportedOnboardingSchemaAny(v any) bool {
-	obj, ok := v.(map[string]any)
-	if !ok {
+// V1 receipts and CLI errors normally omit schema. When the host declares a
+// version, do not interpret a different protocol using legacy field names.
+func supportedOnboardingSchema(obj map[string]json.RawMessage) bool {
+	raw, present := obj["schema"]
+	if !present {
+		return true
+	}
+	var schema string
+	if json.Unmarshal(raw, &schema) != nil {
 		return false
 	}
-	checkObj := func(m map[string]any) bool {
-		rawSchema, present := m["schema"]
-		if !present {
-			return false
-		}
-		schema, ok := rawSchema.(string)
-		if !ok {
-			return true
-		}
-		return strings.HasPrefix(schema, "mimi.onboarding.") && !strings.HasSuffix(schema, "/v1")
-	}
-	if checkObj(obj) {
-		return true
-	}
-	if errObj, ok := obj["error"].(map[string]any); ok && checkObj(errObj) {
-		return true
-	}
-	return false
+	family, major, ok := strings.Cut(schema, "/")
+	return ok && strings.HasPrefix(family, "mimi.onboarding.") && major == "v1"
 }
 
 func firstForbiddenHTTPFieldAny(v any) string {
@@ -1241,7 +1300,7 @@ func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) 
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, err
 	}
-	if hasUnsupportedOnboardingSchemaAny(generic) {
+	if !supportedOnboardingSchema(top) {
 		return onboardingResolvedDiagnostic{Message: onboardingUnknownMajorCopy}, errors.New("unsupported onboarding schema")
 	}
 	if ctx.Surface == "http" {
@@ -1260,6 +1319,9 @@ func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) 
 	if err := json.Unmarshal(top["error"], &errFields); err != nil {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, err
 	}
+	if !supportedOnboardingSchema(errFields) {
+		return onboardingResolvedDiagnostic{Message: onboardingUnknownMajorCopy}, errors.New("unsupported onboarding schema")
+	}
 	if _, hasFix := errFields["fix"]; !hasFix {
 		return onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}, errors.New("error envelope missing fix")
 	}
@@ -1277,45 +1339,33 @@ func decodeOnboardingErrorEnvelope(raw []byte, ctx onboardingValidationContext) 
 	if err != nil {
 		return resolved, err
 	}
-	resolved.ConfigPath = env.Error.ConfigPath
-	resolved.RecoveryPath = env.Error.RecoveryPath
+	resolved.ConfigPath = trayDiagnosticPath(env.Error.ConfigPath)
+	resolved.RecoveryPath = trayDiagnosticPath(env.Error.RecoveryPath)
 	return resolved, nil
 }
 
-func looksLikeOnboardingEnvelopeJSON(stdout []byte) bool {
+func isLegacyHostCLIOutput(stderr []byte, args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	first, _, _ := bytes.Cut(stderr, []byte("\n"))
+	line := strings.ToLower(strings.TrimSpace(string(first)))
+	if args[0] == "preflight" {
+		return line == `error: unknown command "preflight" for "agentd"` ||
+			line == `unknown command "preflight"` ||
+			strings.HasPrefix(line, `错误：未知命令 "preflight"，可用命令：`)
+	}
+	return slices.Contains(args[1:], "--no-pair") &&
+		(line == "flag provided but not defined: -no-pair" || line == "unknown flag: --no-pair")
+}
+
+func decodeTrayCommandError(stdout, stderr []byte, exitErr error, ctx onboardingValidationContext, args ...string) error {
 	trimmed := bytes.TrimSpace(stdout)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return false
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &probe); err != nil {
-		return false
-	}
-	okRaw, hasOK := probe["ok"]
-	_, hasError := probe["error"]
-	if !hasOK || !hasError {
-		return false
-	}
-	var okVal bool
-	return json.Unmarshal(okRaw, &okVal) == nil && !okVal
-}
-
-func isLegacyHostCLIOutput(stderr []byte) bool {
-	lower := strings.ToLower(string(stderr))
-	return (strings.Contains(lower, "unknown command") && strings.Contains(lower, "preflight")) ||
-		(strings.Contains(lower, "未知命令") && strings.Contains(lower, "preflight")) ||
-		strings.Contains(lower, "flag provided but not defined: -no-pair") ||
-		strings.Contains(lower, "unknown flag: --no-pair")
-}
-
-func decodeTrayCommandError(stdout, stderr []byte, exitErr error, ctx onboardingValidationContext) error {
-	if looksLikeOnboardingEnvelopeJSON(stdout) {
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
 		resolved, err := decodeOnboardingErrorEnvelope(stdout, ctx)
 		if err != nil {
 			return &onboardingCLIError{
 				Diagnostic: onboardingResolvedDiagnostic{
-					Code:       resolved.Code,
-					Step:       resolved.Step,
 					Message:    onboardingSafeFallbackCopy,
 					AllowedFix: nil,
 					Trusted:    false,
@@ -1324,7 +1374,7 @@ func decodeTrayCommandError(stdout, stderr []byte, exitErr error, ctx onboarding
 		}
 		return &onboardingCLIError{Diagnostic: resolved}
 	}
-	if isLegacyHostCLIOutput(stderr) {
+	if len(trimmed) == 0 && isLegacyHostCLIOutput(stderr, args) {
 		updateFix := desktopURLFix
 		return &onboardingCLIError{
 			Diagnostic: onboardingResolvedDiagnostic{
@@ -1339,7 +1389,7 @@ func decodeTrayCommandError(stdout, stderr []byte, exitErr error, ctx onboarding
 	return nil
 }
 
-func newTrayUILocalError(code, step, title string) *onboardingCLIError {
+func newTrayUILocalError(code, step string) *onboardingCLIError {
 	if step == "" {
 		step = "service_daemon"
 	}
@@ -1353,7 +1403,6 @@ func newTrayUILocalError(code, step, title string) *onboardingCLIError {
 	if err != nil {
 		return &onboardingCLIError{Diagnostic: onboardingResolvedDiagnostic{Message: onboardingSafeFallbackCopy}}
 	}
-	resolved.Message = formatOnboardingMessage(code, step, title, "")
 	return &onboardingCLIError{Diagnostic: resolved}
 }
 
@@ -1399,6 +1448,9 @@ func decodeOnboardingSetupReceipt(raw []byte) (onboardingSetupReceipt, error) {
 	if top == nil {
 		return onboardingSetupReceipt{}, errors.New("setup receipt must be an object")
 	}
+	if !supportedOnboardingSchema(top) {
+		return onboardingSetupReceipt{}, errors.New("unsupported receipt schema")
+	}
 	var receipt onboardingSetupReceipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingSetupReceipt{}, err
@@ -1442,6 +1494,9 @@ func decodeOnboardingUpReadinessReceipt(raw []byte) (onboardingUpReadinessReceip
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return onboardingUpReadinessReceipt{}, err
 	}
+	if !supportedOnboardingSchema(top) {
+		return onboardingUpReadinessReceipt{}, errors.New("unsupported receipt schema")
+	}
 	var receipt onboardingUpReadinessReceipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingUpReadinessReceipt{}, err
@@ -1463,6 +1518,9 @@ func decodeOnboardingPairingTicketReceipt(raw []byte, requireNetwork bool) (onbo
 	if top == nil {
 		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt must be an object")
 	}
+	if !supportedOnboardingSchema(top) {
+		return onboardingPairingTicketReceipt{}, errors.New("unsupported receipt schema")
+	}
 	var receipt onboardingPairingTicketReceipt
 	if err := json.Unmarshal(raw, &receipt); err != nil {
 		return onboardingPairingTicketReceipt{}, err
@@ -1478,12 +1536,34 @@ func decodeOnboardingPairingTicketReceipt(raw []byte, requireNetwork bool) (onbo
 		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt has invalid pair_expires_at")
 	}
 	if receipt.Network != "" && !slices.Contains(validTransports, receipt.Network) {
-		return onboardingPairingTicketReceipt{}, fmt.Errorf("invalid transport %q", receipt.Network)
+		return onboardingPairingTicketReceipt{}, errors.New("invalid pairing transport")
 	}
-	if requireNetwork && receipt.Network == "" {
+	if (hasOK || requireNetwork) && receipt.Network == "" {
 		return onboardingPairingTicketReceipt{}, errors.New("pairing receipt missing network")
 	}
+	receipt.Warnings = trayPairingWarnings(receipt.Warnings)
 	return receipt, nil
+}
+
+// Pairing warnings are user-visible. Only show text shipped by a known host;
+// future hosts can still provide a ticket and an indication that a warning exists.
+func trayPairingWarnings(warnings []string) []string {
+	var result []string
+	for _, warning := range warnings {
+		switch warning {
+		case "局域网配对仅适用于与这台电脑位于同一局域网的设备",
+			"仅用于受信任的局域网；仍需 Mimi 配对鉴权",
+			"Tailcat 是邀请实验；二维码十分钟内有效，且不会包含长期访问码。",
+			"agentd 绑定在所有网卡，但未检测到 Tailscale IP；请确认移动设备能访问这台电脑",
+			"当前 Endpoint 是本机地址，只适合这台电脑本机或模拟器；移动设备连接前建议先安装并登录 Tailscale，或显式启用受限的局域网访问":
+		default:
+			warning = "电脑返回了配对提示，请在电脑上检查连接状态。"
+		}
+		if !slices.Contains(result, warning) {
+			result = append(result, warning)
+		}
+	}
+	return result
 }
 
 // onboardingProgressAccumulator applies out-of-order NDJSON progress checks after
@@ -1706,17 +1786,18 @@ func formatTrayUnknownFailureMessage(exitErr error) string {
 	return "电脑服务未能完成操作。请运行诊断或查看本机日志后重试。"
 }
 
-func newTrayUnknownCommandError(exitErr error, step, rawDetail string) *onboardingCLIError {
+func newTrayUnknownCommandError(exitErr error, step string) *onboardingCLIError {
 	if step == "" {
 		step = "service_daemon"
 	}
+	message := formatTrayUnknownFailureMessage(exitErr)
 	return &onboardingCLIError{
 		Diagnostic: onboardingResolvedDiagnostic{
 			Step:                step,
-			Message:             formatTrayUnknownFailureMessage(exitErr),
+			Message:             message,
 			AllowedFix:          nil,
 			Trusted:             false,
-			SanitizedDiagnostic: sanitizeTrayDiagnostic(rawDetail, 180),
+			SanitizedDiagnostic: message,
 		},
 	}
 }

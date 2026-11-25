@@ -231,6 +231,37 @@ final class AgentCommandClientTests: XCTestCase {
         }
     }
 
+    func testCancelReapsAnUnresponsivePairCommand() async throws {
+        let files = FileManager.default
+        let dir = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try files.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("pair")
+        try """
+        #!/bin/sh
+        trap '' TERM
+        touch "$0.ready"
+        exec /bin/sleep 10
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let client = AgentCommandClient.live(binaryOverride: script)
+        let task = Task { try await client.pair(.tailscale) }
+        let ready = script.path + ".ready"
+        let launchDeadline = ContinuousClock.now + .seconds(3)
+        while !files.fileExists(atPath: ready), ContinuousClock.now < launchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(files.fileExists(atPath: ready))
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled pairing returned a ticket")
+        } catch is CancellationError {
+            XCTAssertLessThan(cancelledAt.duration(to: .now), .seconds(5))
+        }
+    }
+
     func testOnboardingCommandArgumentsAndTimeouts() {
         let preflightArgs = AgentCommandClient.preflightArguments(
             options: OnboardingPreflightOptions(
@@ -302,8 +333,9 @@ final class AgentCommandClientTests: XCTestCase {
                 executable: URL(filePath: "/bin/sh"),
                 // 主 shell 立即输出并退出，但后台 sleep 继承并保持 stdout/stderr 写端打开；
                 // 管道排空必须受总 deadline 约束，不能因为主进程已退出而无限期挂起。
-                arguments: ["-c", "/bin/sleep 4 & echo done"],
-                timeout: .milliseconds(250)
+                arguments: ["-c", "printf unfinished >&2; /bin/sleep 4 & echo done"],
+                timeout: .milliseconds(250),
+                onStderrLine: { _ in XCTFail("Deadline must discard an unfinished progress line") }
             )
             XCTFail("后代进程持有写端句柄超过 deadline 时必须超时")
         } catch ProcessExecutorError.timedOut {

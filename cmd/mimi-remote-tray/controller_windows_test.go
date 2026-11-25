@@ -164,6 +164,10 @@ func TestParsePairingInfoRequiresValidTicketReceipt(t *testing.T) {
 			t.Fatalf("invalid pairing receipt should fail closed: %s", invalid)
 		}
 	}
+	privateTransport := `{"ok":true,"endpoint":"http://127.0.0.1","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2030-01-01T00:05:00Z","network":"private-value"}`
+	if _, err := parsePairingInfo([]byte(privateTransport)); err == nil || strings.Contains(err.Error(), "private-value") {
+		t.Fatal("invalid pairing transport leaked into tray diagnostics")
+	}
 	if actionCommandBudget < 120*time.Second {
 		t.Fatalf("Windows actionCommandBudget = %s, want >= 120s", actionCommandBudget)
 	}
