@@ -297,6 +297,11 @@ final class AgentCommandClientTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.deepSeekRuntime, .seconds(45))
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.workspace, .seconds(45))
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.doctorFix, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.tailcatControl, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.tailcatReconfigure, .seconds(85))
+        for command in ["tailcat configure", "tailcat enter-managed", "tailcat exit-managed", "tailcat relay set", "tailcat relay-set"] {
+            XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.duration(for: command), .seconds(85), command)
+        }
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.serviceWait, .seconds(110))
     }
 

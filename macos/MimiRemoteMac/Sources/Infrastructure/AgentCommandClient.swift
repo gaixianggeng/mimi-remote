@@ -10,6 +10,11 @@ enum AgentCommandTimeouts {
     static let workspace: Duration = .seconds(45)
     static let doctorFix: Duration = .seconds(90)
     static let tailcatControl: Duration = .seconds(45)
+    // cmd/agentd/tailcat.go requestTailcatControl allows 50s for configure /
+    // enter-managed / exit-managed / relay-set, and rollbackDERPMap gives sidecar
+    // restoration its own 25s context. Keep >= 85s so the client waits for completion
+    // or rollback instead of timing out mid-switch.
+    static let tailcatReconfigure: Duration = .seconds(85)
     static let serviceWait: Duration = .seconds(110)
 
     static func duration(for command: String) -> Duration {
@@ -21,6 +26,8 @@ enum AgentCommandTimeouts {
         case "network": network
         case "workspace": workspace
         case "doctor --fix": doctorFix
+        case "tailcat configure", "tailcat enter-managed", "tailcat exit-managed", "tailcat relay set", "tailcat relay-set":
+            tailcatReconfigure
         case "up", "start", "restart": serviceWait
         default: .seconds(45)
         }
@@ -628,7 +635,7 @@ extension AgentCommandClient {
                 return try decode(TailcatStatus.self, from: try await execute(
                     binary: binary,
                     arguments: tailcatArguments(action: "configure", derpMapURL: derpMapURL),
-                    timeout: .seconds(55)
+                    timeout: AgentCommandTimeouts.tailcatReconfigure
                 ))
             },
             resetTailcat: {
@@ -645,7 +652,7 @@ extension AgentCommandClient {
                     binary: binary,
                     arguments: tailcatArguments(action: managed ? "enter-managed" : "exit-managed"),
                     // 切换模式会验证新 sidecar，失败时恢复原中继，与修改中继同一量级。
-                    timeout: .seconds(55)
+                    timeout: AgentCommandTimeouts.tailcatReconfigure
                 ))
             },
             setTailcatRelay: { choice, url in
@@ -653,7 +660,7 @@ extension AgentCommandClient {
                 return try decode(TailcatStatus.self, from: try await execute(
                     binary: binary,
                     arguments: tailcatRelayArguments(choice: choice, url: url),
-                    timeout: .seconds(55)
+                    timeout: AgentCommandTimeouts.tailcatReconfigure
                 ))
             },
             configureDeepSeek: { action, startupURL in

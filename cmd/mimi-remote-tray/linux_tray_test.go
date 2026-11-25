@@ -118,17 +118,25 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	}
 }
 func TestLinuxControllerUsesServiceSafeArgumentsAndRedactsDiagnostics(t *testing.T) {
-	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
-		if strings.Join(args, " ") != "restart --wait 20s --no-pair" {
-			t.Fatal(args)
-		}
-		return []byte("safe line\nauthorization=Bearer sensitive\nmimiremote://pair?pair_sig=short\nhttp://user:password@host"), nil
-	}}
-	result, err := c.action(context.Background(), "restart")
-	if err != nil || !strings.Contains(result, "safe line") || strings.Contains(result, "sensitive") || strings.Contains(result, "pair_sig") || strings.Contains(result, "user:") {
-		t.Fatal(result, err)
+	if linuxServiceReadyWait != 60*time.Second {
+		t.Fatalf("linuxServiceReadyWait = %s, want 60s", linuxServiceReadyWait)
 	}
-	if _, err = c.action(context.Background(), "serve; echo unsafe"); err == nil {
+	for _, svcAction := range []string{"start", "restart"} {
+		var seen []string
+		c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
+			seen = append([]string(nil), args...)
+			return []byte("safe line\nauthorization=Bearer sensitive\nmimiremote://pair?pair_sig=short\nhttp://user:password@host"), nil
+		}}
+		result, err := c.action(context.Background(), svcAction)
+		if strings.Join(seen, " ") != svcAction+" --wait 60s --no-pair" {
+			t.Fatalf("%s args = %v, want --wait 60s --no-pair", svcAction, seen)
+		}
+		if err != nil || !strings.Contains(result, "safe line") || strings.Contains(result, "sensitive") || strings.Contains(result, "pair_sig") || strings.Contains(result, "user:") {
+			t.Fatal(result, err)
+		}
+	}
+	c := &linuxController{runner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }}
+	if _, err := c.action(context.Background(), "serve; echo unsafe"); err == nil {
 		t.Fatal("unknown action accepted")
 	}
 	b := &boundedTrayOutput{remaining: 4}
@@ -160,17 +168,27 @@ func TestLinuxConcurrentActionsDoNotOverlap(t *testing.T) {
 	}
 }
 func TestLinuxPerformTimeoutMeetsOnboardingBudget(t *testing.T) {
-	if got := linuxPerformTimeout("start"); got < 110*time.Second {
-		t.Fatalf("linux start timeout = %s, want >= 110s", got)
+	if got := linuxPerformTimeout("start"); got < 110*time.Second || got <= linuxServiceReadyWait {
+		t.Fatalf("linux start timeout = %s, want >= 110s and > %s", got, linuxServiceReadyWait)
 	}
-	if got := linuxPerformTimeout("restart"); got < 110*time.Second {
-		t.Fatalf("linux restart timeout = %s, want >= 110s", got)
+	if got := linuxPerformTimeout("restart"); got < 110*time.Second || got <= linuxServiceReadyWait {
+		t.Fatalf("linux restart timeout = %s, want >= 110s and > %s", got, linuxServiceReadyWait)
 	}
 	if got := linuxPerformTimeout("pair-tailscale"); got < 45*time.Second {
 		t.Fatalf("linux pair timeout = %s, want >= 45s", got)
 	}
 	if got := linuxPerformTimeout("pair-tailcat"); got < 45*time.Second {
 		t.Fatalf("linux tailcat pair timeout = %s, want >= 45s", got)
+	}
+	for _, action := range []string{"tailcat-enable", "tailcat-disable"} {
+		if got := linuxPerformTimeout(action); got < 45*time.Second {
+			t.Fatalf("linux %s timeout = %s, want >= 45s (BE 25s)", action, got)
+		}
+	}
+	for _, action := range []string{"tailcat-enter-managed", "tailcat-exit-managed"} {
+		if got := linuxPerformTimeout(action); got < 85*time.Second {
+			t.Fatalf("linux %s timeout = %s, want >= 85s (BE 50s + 25s rollback)", action, got)
+		}
 	}
 	redacted := redactTrayText("safe line\n/home/alice/.config/secret.json UnmarkedCred9876543210ABCDEF")
 	if !strings.Contains(redacted, "safe line") || strings.Contains(redacted, "/home/alice") || strings.Contains(redacted, "UnmarkedCred9876543210ABCDEF") {

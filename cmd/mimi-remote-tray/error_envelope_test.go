@@ -158,6 +158,37 @@ func TestTrayOnboardingCatalogSetEquality(t *testing.T) {
 			}
 		}
 	}
+
+	// Tailcat mode and relay reconfigurations (cmd/agentd/tailcat.go requestTailcatControl=50s
+	// + internal/httpapi/tailcat_sidecar.go rollbackDERPMap=25s) must stay >= 85s (> BE budget).
+	const tailcatReconfigBackendMax = 50 * time.Second
+	const tailcatReconfigClientMin = 85 * time.Second
+	for _, entry := range trayExtraCommandTimeouts {
+		if entry.ClientMin <= entry.BackendMax || entry.BackendMax < tailcatReconfigBackendMax || entry.ClientMin < tailcatReconfigClientMin {
+			t.Errorf("extra timeout entry %+v must exceed 50s backend budget and stay >= 85s", entry)
+		}
+	}
+	reconfigCommands := [][]string{
+		{"tailcat", "configure", "--derp-map-url=https://relay.example/map", "--json"},
+		{"tailcat", "enter-managed", "--json"},
+		{"tailcat", "exit-managed", "--json"},
+		{"tailcat", "relay", "set", "--choice", "mimi", "--json"},
+		{"tailcat", "relay-set", "--choice", "mimi", "--json"},
+	}
+	for _, platform := range []string{"linux", "windows"} {
+		for _, args := range reconfigCommands {
+			got := trayCommandTimeout(platform, args...)
+			if got <= tailcatReconfigBackendMax || got < tailcatReconfigClientMin {
+				t.Errorf("%s trayCommandTimeout(%v) = %s, want >= %s (BE %s)", platform, args, got, tailcatReconfigClientMin, tailcatReconfigBackendMax)
+			}
+		}
+		for _, sub := range []string{"enable", "disable", "pair"} {
+			got := trayCommandTimeout(platform, "tailcat", sub, "--json")
+			if got < 45*time.Second {
+				t.Errorf("%s trayCommandTimeout(tailcat %s) = %s, want >= 45s (BE 25s)", platform, sub, got)
+			}
+		}
+	}
 }
 
 type trayReportPatch struct {

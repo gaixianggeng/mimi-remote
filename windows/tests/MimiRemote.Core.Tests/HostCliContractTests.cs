@@ -107,6 +107,21 @@ public sealed class HostCliContractTests
                 Assert.True(actual >= TimeSpan.FromSeconds(winSeconds), $"{command} windows timeout {actual} < {winSeconds}s");
             }
         }
+
+        // Tailcat mode/relay reconfigurations allow 50s in cmd/agentd/tailcat.go plus 25s rollback.
+        Assert.True(OnboardingTimeouts.TailcatReconfigure >= TimeSpan.FromSeconds(85));
+        foreach (var command in new[] { "tailcat configure", "tailcat enter-managed", "tailcat exit-managed", "tailcat relay set", "tailcat relay-set" })
+        {
+            var byCommand = OnboardingTimeouts.ForCommand(command);
+            var byArgs = OnboardingTimeouts.ForArguments(command.Split(' '));
+            Assert.True(byCommand >= TimeSpan.FromSeconds(85), $"{command} timeout {byCommand} < 85s");
+            Assert.True(byArgs >= TimeSpan.FromSeconds(85), $"{command} args timeout {byArgs} < 85s");
+        }
+        foreach (var sub in new[] { "enable", "disable", "pair" })
+        {
+            var actual = OnboardingTimeouts.ForArguments(["tailcat", sub, "--json"]);
+            Assert.True(actual >= TimeSpan.FromSeconds(45), $"tailcat {sub} timeout {actual} < 45s");
+        }
     }
 
     [Fact]

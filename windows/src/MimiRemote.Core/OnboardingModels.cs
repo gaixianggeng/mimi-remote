@@ -21,6 +21,11 @@ public static class OnboardingTimeouts
     public static TimeSpan Network { get; } = TimeSpan.FromSeconds(45);
     public static TimeSpan Workspace { get; } = TimeSpan.FromSeconds(45);
     public static TimeSpan DoctorFix { get; } = TimeSpan.FromSeconds(45);
+    // cmd/agentd/tailcat.go requestTailcatControl allows 50s for configure /
+    // enter-managed / exit-managed / relay-set, and rollbackDERPMap gives sidecar
+    // restoration its own 25s context. Keep >= 85s (matching pre-UI-1 90s WinUI
+    // budget) so the client never kills agentd before completion or rollback.
+    public static TimeSpan TailcatReconfigure { get; } = TimeSpan.FromSeconds(90);
     public static TimeSpan ServiceWait { get; } = TimeSpan.FromSeconds(120);
 
     public static TimeSpan ForCommand(string command) => command switch
@@ -32,6 +37,7 @@ public static class OnboardingTimeouts
         "network" => Network,
         "workspace" => Workspace,
         "doctor --fix" => DoctorFix,
+        "tailcat configure" or "tailcat enter-managed" or "tailcat exit-managed" or "tailcat relay set" or "tailcat relay-set" => TailcatReconfigure,
         "up" or "start" or "restart" => ServiceWait,
         _ => ServiceWait,
     };
@@ -50,10 +56,16 @@ public static class OnboardingTimeouts
             {
                 return Pair;
             }
-            if (string.Equals(sub, "enable", StringComparison.Ordinal)
-                || string.Equals(sub, "disable", StringComparison.Ordinal)
+            if (string.Equals(sub, "configure", StringComparison.Ordinal)
+                || string.Equals(sub, "enter-managed", StringComparison.Ordinal)
+                || string.Equals(sub, "exit-managed", StringComparison.Ordinal)
                 || string.Equals(sub, "relay", StringComparison.Ordinal)
-                || string.Equals(sub, "configure", StringComparison.Ordinal))
+                || string.Equals(sub, "relay-set", StringComparison.Ordinal))
+            {
+                return TailcatReconfigure;
+            }
+            if (string.Equals(sub, "enable", StringComparison.Ordinal)
+                || string.Equals(sub, "disable", StringComparison.Ordinal))
             {
                 return TimeSpan.FromSeconds(55);
             }

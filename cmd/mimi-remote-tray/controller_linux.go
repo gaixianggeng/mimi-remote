@@ -12,10 +12,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// Matches contracts/host-cli/onboarding-codes-v1.json (wait=60s within BE<=85s
+// and Linux tray client timeout>=110s).
+const linuxServiceReadyWait = 60 * time.Second
 
 type linuxController struct {
 	agentPath string
@@ -114,7 +119,7 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 	var args []string
 	switch action {
 	case "start", "restart":
-		args = []string{action, "--wait", "20s", "--no-pair"}
+		args = []string{action, "--wait", strconv.Itoa(int(linuxServiceReadyWait/time.Second)) + "s", "--no-pair"}
 	case "stop":
 		args = []string{"stop"}
 	case "doctor":

@@ -213,7 +213,7 @@ func linuxPerformTimeout(action string) time.Duration {
 	case action == "doctor":
 		return trayCommandTimeout("linux", "doctor", "--fix")
 	case strings.HasPrefix(action, "tailcat-"):
-		return trayCommandTimeout("linux", "tailcat", "enable")
+		return trayCommandTimeout("linux", "tailcat", strings.TrimPrefix(action, "tailcat-"))
 	default:
 		return trayCommandTimeout("linux", action)
 	}

@@ -549,13 +549,34 @@ var onboardingCommandTimeouts = []onboardingCommandTimeout{
 	{Commands: []string{"up", "start", "restart"}, BackendMax: 85 * time.Second, ClientMin: 110 * time.Second, WindowsValue: 120 * time.Second},
 }
 
+// Tailcat mode and relay reconfigurations (configure, enter-managed,
+// exit-managed, relay set / relay-set) allow 50s in cmd/agentd/tailcat.go
+// requestTailcatControl, and internal/httpapi/tailcat_sidecar.go
+// rollbackDERPMap additionally gives sidecar restoration its own 25s context.
+// Keep at least the pre-UI-1 85s tray budget so the client never kills agentd
+// before a completed switch or rollback result is returned.
+var trayExtraCommandTimeouts = []onboardingCommandTimeout{
+	{
+		Commands:   []string{"tailcat configure", "tailcat enter-managed", "tailcat exit-managed", "tailcat relay set", "tailcat relay-set"},
+		BackendMax: 50 * time.Second,
+		ClientMin:  85 * time.Second,
+	},
+}
+
 func trayTimeoutKeyForArgs(args ...string) string {
 	if len(args) == 0 {
 		return ""
 	}
 	first := args[0]
-	if first == "tailcat" && len(args) > 1 && args[1] == "pair" {
-		return "tailcat pair"
+	if first == "tailcat" && len(args) > 1 {
+		switch args[1] {
+		case "pair":
+			return "tailcat pair"
+		case "configure", "enter-managed", "exit-managed", "relay-set":
+			return "tailcat " + args[1]
+		case "relay":
+			return "tailcat relay set"
+		}
 	}
 	if first == "doctor" {
 		for _, arg := range args[1:] {
@@ -573,12 +594,14 @@ func trayTimeoutKeyForArgs(args ...string) string {
 
 func trayCommandTimeout(platform string, args ...string) time.Duration {
 	key := trayTimeoutKeyForArgs(args...)
-	for _, entry := range onboardingCommandTimeouts {
-		if slices.Contains(entry.Commands, key) {
-			if platform == "windows" && entry.WindowsValue > 0 {
-				return entry.WindowsValue
+	for _, table := range [][]onboardingCommandTimeout{onboardingCommandTimeouts, trayExtraCommandTimeouts} {
+		for _, entry := range table {
+			if slices.Contains(entry.Commands, key) {
+				if platform == "windows" && entry.WindowsValue > 0 {
+					return entry.WindowsValue
+				}
+				return entry.ClientMin
 			}
-			return entry.ClientMin
 		}
 	}
 	if platform == "windows" {
