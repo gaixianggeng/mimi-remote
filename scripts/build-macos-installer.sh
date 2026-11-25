@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/macos-installer-signing.sh"
 PROJECT_PATH="$ROOT_DIR/macos/MimiRemoteMac/MimiRemoteMac.xcodeproj"
 SCHEME="MimiRemoteMac"
 OUTPUT_DIR="$ROOT_DIR/dist-macos"
@@ -52,33 +53,6 @@ resolve_physical_dir() {
   (
     CDPATH= cd -P -- "$dir_path" >/dev/null && pwd -P
   )
-}
-
-expected_known_macho_identifier() {
-  local rel_path="$1"
-  case "$rel_path" in
-    "Contents/MacOS/Mimi Remote Mac")
-      printf '%s\n' "com.gaixianggeng.mimi.mac"
-      ;;
-    "Contents/Resources/agentd")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.agentd"
-      ;;
-    "Contents/Resources/alleycat-claude-bridge")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-bridge"
-      ;;
-    "Contents/Resources/mimi-claude-adapter")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-adapter"
-      ;;
-    "Contents/Resources/mimi-agy-adapter")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.agy-adapter"
-      ;;
-    "Contents/Resources/mimi-tailcat-experiment")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.tailcat"
-      ;;
-    *)
-      printf '%s\n' ""
-      ;;
-  esac
 }
 
 resolve_app_executable_path() {
@@ -167,6 +141,10 @@ verify_macho_slice_policy() {
       exit 1
     fi
 
+    if [[ "$require_developer_id" == "1" ]]; then
+      verify_developer_id_application "$target_path" "${display_label}（${slice_arch}）" --arch "$slice_arch"
+    fi
+
     if [[ "$require_team_signing" == "1" ]]; then
       slice_team_id="$(extract_codesign_field "$slice_details" "TeamIdentifier")"
       if [[ ! "$slice_team_id" =~ ^[A-Z0-9]+$ ]]; then
@@ -181,11 +159,6 @@ verify_macho_slice_policy() {
       fi
     fi
 
-    if [[ "$require_developer_id" == "1" ]] \
-      && ! grep -Fq 'Authority=Developer ID Application:' <<<"$slice_details"; then
-      echo "Mac 安装包构建失败：${display_label}（${slice_arch}）不是有效的 Developer ID Application 签名。" >&2
-      exit 1
-    fi
 
     if [[ "$require_timestamp" == "1" ]]; then
       slice_timestamp="$(extract_codesign_field "$slice_details" "Timestamp")"
@@ -205,21 +178,10 @@ verify_prepackage_macho_signatures() {
   local require_developer_id="$3"
   local require_timestamp="$4"
 
-  local physical_app_path known_rel_path expected_app_identifier=""
+  local physical_app_path expected_app_identifier=""
   physical_app_path="$(resolve_physical_dir "$target_app_path")"
 
-  for known_rel_path in \
-    "Contents/MacOS/Mimi Remote Mac" \
-    "Contents/Resources/agentd" \
-    "Contents/Resources/alleycat-claude-bridge" \
-    "Contents/Resources/mimi-claude-adapter" \
-    "Contents/Resources/mimi-agy-adapter" \
-    "Contents/Resources/mimi-tailcat-experiment"; do
-    if [[ -L "$physical_app_path/$known_rel_path" ]]; then
-      echo "Mac 安装包构建失败：固定入口不得为符号链接：${known_rel_path}。" >&2
-      exit 1
-    fi
-  done
+  verify_macos_fixed_entry_paths "$physical_app_path"
 
   if [[ -e "$physical_app_path/Contents/MacOS/Mimi Remote Mac" ]]; then
     expected_app_identifier="com.gaixianggeng.mimi.mac"
@@ -236,6 +198,8 @@ verify_prepackage_macho_signatures() {
     "$require_timestamp"
   local app_team_identifier="$RESOLVED_SLICE_TEAM_ID"
   VERIFIED_APP_TEAM_ID="$app_team_identifier"
+  verify_present_macos_fixed_machos "$physical_app_path" "$require_team_signing" \
+    "$app_team_identifier" "$require_developer_id" "$require_timestamp"
 
   # 先把 find 输出完整写入 NUL 分隔临时清单并显式校验退出码，避免 process substitution 吞错。
   local manifest_file="$WORK_DIR/prepackage-macho-manifest.nul"
@@ -244,7 +208,7 @@ verify_prepackage_macho_signatures() {
     exit 1
   fi
 
-  local candidate_path candidate_rel_path candidate_expected_identifier candidate_kind
+  local candidate_path candidate_rel_path candidate_kind
   verified_macho_count=0
   while IFS= read -r -d '' candidate_path; do
     candidate_kind="$(file -b "$candidate_path")"
@@ -253,12 +217,11 @@ verify_prepackage_macho_signatures() {
     fi
     verified_macho_count=$((verified_macho_count + 1))
     candidate_rel_path="${candidate_path#"$physical_app_path"/}"
-    candidate_expected_identifier="$(expected_known_macho_identifier "$candidate_rel_path")"
     codesign --verify --strict --verbose=2 "$candidate_path"
     verify_macho_slice_policy \
       "$candidate_path" \
       "$candidate_rel_path" \
-      "$candidate_expected_identifier" \
+      "" \
       "$require_team_signing" \
       "$app_team_identifier" \
       "$require_developer_id" \
@@ -420,7 +383,7 @@ if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || [[ "$BUILD_NUMBER" == "0" ]]; then
   exit 2
 fi
 
-for command_name in awk base64 codesign ditto file find grep hdiutil lipo mktemp openssl osascript plutil security shasum sips spctl xcodebuild xcrun; do
+for command_name in awk base64 codesign ditto file find grep hdiutil lipo mktemp openssl osascript plutil security shasum sips spctl xcodebuild xcrun python3; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Mac 安装包构建失败：缺少命令 ${command_name}。" >&2
     exit 127
@@ -441,12 +404,23 @@ if [[ "$DMG_BACKGROUND_WIDTH" != "$DMG_WINDOW_WIDTH" || "$DMG_BACKGROUND_HEIGHT"
   echo "Mac 安装包构建失败：DMG 背景必须是 ${DMG_WINDOW_WIDTH}x${DMG_WINDOW_HEIGHT}，实际为 ${DMG_BACKGROUND_WIDTH}x${DMG_BACKGROUND_HEIGHT}。" >&2
   exit 1
 fi
+PUBLISHER="$ROOT_DIR/scripts/macos-installer-publish.py"
+PUBLISH_MODE=dmg
+DMG_NAME=Mimi-Remote-Mac.dmg
+if [[ "$APP_ONLY" == "1" ]]; then
+  PUBLISH_MODE=app-only
+elif [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
+  PUBLISH_MODE=development-dmg
+  DMG_NAME=Mimi-Remote-Mac-Development.dmg
+fi
+# 提前拒绝冲突，提交时在同一个输出目录锁内再次检查。
+python3 "$PUBLISHER" "$PUBLISH_MODE" "$OUTPUT_DIR"
+OUTPUT_DIR="$(resolve_physical_dir "$OUTPUT_DIR")"
+
 if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   bash "$ROOT_DIR/scripts/check-macos-release-signing.sh"
 fi
 
-mkdir -p "$OUTPUT_DIR"
-OUTPUT_DIR="$(resolve_physical_dir "$OUTPUT_DIR")"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-macos-installer.XXXXXX")"
 
 decode_base64() {
@@ -613,6 +587,7 @@ if [[ ! -d "$APP_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$AD
   exit 1
 fi
 
+verify_macos_fixed_entry_paths "$APP_PATH"
 APP_ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/Mimi Remote Mac")"
 AGENT_ARCHS="$(lipo -archs "$AGENT_PATH")"
 BRIDGE_ARCHS="$(lipo -archs "$BRIDGE_PATH")"
@@ -805,18 +780,9 @@ verify_prepackage_macho_signatures \
   "$prepackage_require_dev_id" \
   "$prepackage_require_timestamp"
 
-known_app_team="$VERIFIED_APP_TEAM_ID"
-verify_macho_slice_policy "$APP_PATH" "主 App" "com.gaixianggeng.mimi.mac" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-verify_macho_slice_policy "$AGENT_PATH" "agentd" "com.gaixianggeng.mimi.mac.agentd" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-verify_macho_slice_policy "$BRIDGE_PATH" "alleycat-claude-bridge" "com.gaixianggeng.mimi.mac.claude-bridge" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-verify_macho_slice_policy "$ADAPTER_PATH" "mimi-claude-adapter" "com.gaixianggeng.mimi.mac.claude-adapter" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-verify_macho_slice_policy "$AGY_ADAPTER_PATH" "mimi-agy-adapter" "com.gaixianggeng.mimi.mac.agy-adapter" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-verify_macho_slice_policy "$TAILCAT_PATH" "mimi-tailcat-experiment" "com.gaixianggeng.mimi.mac.tailcat" "$prepackage_require_team" "$known_app_team" "$prepackage_require_dev_id" "$prepackage_require_timestamp"
-
 if [[ "$APP_ONLY" == "1" ]]; then
   FINAL_APP="$OUTPUT_DIR/Mimi Remote Mac.app"
-  rm -rf -- "$FINAL_APP"
-  ditto "$APP_PATH" "$FINAL_APP"
+  python3 "$PUBLISHER" "$PUBLISH_MODE" "$OUTPUT_DIR" "${APP_PATH%/*}"
   echo "Mac App 快照已生成（--app-only，已验证 ${verified_macho_count} 个 Mach-O 签名）：$FINAL_APP"
   echo "注意：这是 ad-hoc 结构快照（跳过 Finder DMG 布局），不能用于真实安装或启动 macOS 后台服务。"
   exit 0
@@ -824,7 +790,7 @@ fi
 
 DMG_ROOT="$WORK_DIR/dmg-root"
 DMG_WRITABLE_PATH="$WORK_DIR/Mimi-Remote-Mac-writable.dmg"
-DMG_PATH="$WORK_DIR/Mimi-Remote-Mac.dmg"
+DMG_PATH="$WORK_DIR/$DMG_NAME"
 mkdir -p "$DMG_ROOT"
 ditto "$APP_PATH" "$DMG_ROOT/Mimi Remote Mac.app"
 ln -s /Applications "$DMG_ROOT/Applications"
@@ -872,6 +838,7 @@ if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
     --keychain "$KEYCHAIN_PATH" \
     --timestamp \
     "$DMG_PATH"
+  verify_dmg_image_signature "$DMG_PATH" "$VERIFIED_APP_TEAM_ID"
   # 主动轮询状态，避免 Xcode beta 的 notarytool --wait 在收到提交 ID 后提前退出。
   submit_and_wait_for_notarization "$DMG_PATH"
   xcrun stapler staple "$DMG_PATH"
@@ -879,18 +846,12 @@ if [[ "$SNAPSHOT" != "1" && "$DEVELOPMENT_SIGNING" != "1" ]]; then
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 fi
 
-if [[ "$DEVELOPMENT_SIGNING" == "1" ]]; then
-  FINAL_DMG="$OUTPUT_DIR/Mimi-Remote-Mac-Development.dmg"
-  FINAL_SHA="$OUTPUT_DIR/Mimi-Remote-Mac-Development.dmg.sha256"
-else
-  FINAL_DMG="$OUTPUT_DIR/Mimi-Remote-Mac.dmg"
-  FINAL_SHA="$OUTPUT_DIR/Mimi-Remote-Mac.dmg.sha256"
-fi
-ditto "$DMG_PATH" "$FINAL_DMG"
 (
-  cd "$OUTPUT_DIR"
-  shasum -a 256 "$(basename "$FINAL_DMG")" > "$(basename "$FINAL_SHA")"
+  cd "$WORK_DIR"
+  shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256"
 )
+python3 "$PUBLISHER" "$PUBLISH_MODE" "$OUTPUT_DIR" "$WORK_DIR"
+FINAL_DMG="$OUTPUT_DIR/$DMG_NAME"
 
 echo "Mac 安装包已生成：$FINAL_DMG"
 if [[ "$SNAPSHOT" == "1" ]]; then

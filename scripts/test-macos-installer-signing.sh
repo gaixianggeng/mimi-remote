@@ -69,6 +69,7 @@ check_embedded_binary_coverage() {
   local embed_script="$1"
   local build_script="$2"
   local check_script="$3"
+  local signing_policy="$ROOT_DIR/scripts/macos-installer-signing.sh"
 
   local embedded_list
   embedded_list="$(
@@ -141,13 +142,20 @@ check_embedded_binary_coverage() {
     grep -Fq "\"\$${check_var}\"" <<<"$(grep 'for binary_path in ' "$check_script" || true)" \
       || fail "${check_script} 的 universal 架构校验列表缺少 ${binary_name}（\$${check_var}）。"
 
-    grep -Fq "verify_macho_slice_policy \"\$${check_var}\"" "$check_script" \
-      || fail "${check_script} 未对 ${binary_name}（\$${check_var}）执行逐切片签名策略校验（Identifier / Runtime / Team ID / Developer ID）。"
+    grep -Fq "Contents/Resources/${binary_name}|com.gaixianggeng.mimi.mac." "$signing_policy" \
+      || fail "共用固定入口校验缺少 ${binary_name} 的签名标识符。"
   done <<<"$embedded_list"
 
   if [[ "$binary_count" -lt 5 ]]; then
     fail "从 ${embed_script} 提取的内嵌二进制数量异常（${binary_count} < 5）。"
   fi
+
+  grep -Fq 'verify_present_macos_fixed_machos "$APP_PATH"' "$check_script" \
+    || fail "${check_script} 没有直接校验固定入口的切片签名策略。"
+  grep -Fq 'verify_present_macos_fixed_machos "$physical_app_path"' "$build_script" \
+    || fail "${build_script} 没有直接校验固定入口的切片签名策略。"
+  grep -Fq 'verify_macho_slice_policy "$app/$path" "$path" "${entry#*|}"' "$signing_policy" \
+    || fail "固定入口校验没有按固定路径和标识符调用逐切片签名策略。"
 
   grep -Fq 'find -H "$physical_app_path" -type f -print0 > "$manifest_file"' "$build_script" \
     || fail "${build_script} 未将全量文件遍历结果写入清单并校验 find 退出状态。"
@@ -186,6 +194,32 @@ run_capabilities_json_tests() {
   printf '%s' '{"name":"mimi-claude-adapter","version":"0.3.0","methods":["initialize","turn/start"],"fullAccess":true,"claudeCode":{"minimumVersion":"2.1.294"}}' \
     | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1 \
     || fail "合法 Claude capabilities JSON 未通过校验：$(<"$log_file")"
+
+  printf '%s' '{"NAME":"mimi-agy-adapter","VERSION":"0.1.0","METHODS":["turn/start"],"FULLACCESS":true,"AGY":{"MINIMUMVERSION":"1.5.0"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1 \
+    || fail "Go 可匹配的大写键名被误拒：$(<"$log_file")"
+  printf '%s' '{"VERSION":"0.3.0","METHODſ":["turn/start"],"CLAUDECODE":{"MINIMUMVERSION":"2.1.294"},"fullacceß":"ignored"}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1 \
+    || fail "Go SimpleFold 字段匹配不一致：$(<"$log_file")"
+
+  local replacement_methods
+  for replacement_methods in '[]' '["initialize"]'; do
+    if printf '{"version":"0.1.0","methods":["turn/start"],"Methods":%s,"agy":{"minimumVersion":"1.5.0"}}' "$replacement_methods" \
+      | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+      fail "大小写变体 Methods 可覆盖 turn/start，必须拒绝。"
+    fi
+    grep -Fq '拒绝重复声明' "$log_file" || fail "重复 Methods 报错不明确：$(<"$log_file")"
+  done
+  if printf '%s' '{"version":"0.3.0","methods":["turn/start"],"claudeCode":{"minimumVersion":"2.1.294","MINIMUMVERSION":"latest"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1; then
+    fail "允许大小写变体覆盖 minimumVersion。"
+  fi
+
+  if printf '%s\377' '{"version":"0.1.0","methods":["turn/start"],"agy":{"minimumVersion":"1.5.0"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+    fail "未拒绝非法 UTF-8 字节。"
+  fi
+  grep -Fq '不是合法 UTF-8 JSON' "$log_file" || fail "非法 UTF-8 报错不明确：$(<"$log_file")"
 
   # 反例 1：坏 JSON 但包含 "turn/start" 与 "minimumVersion" 字面量 -> 必败。
   if printf '%s' '{"broken": "turn/start", "minimumVersion": "1.5.0"' \
@@ -472,6 +506,138 @@ PLIST
       "$app_dir"
 }
 
+assert_fast_entries_reject() {
+  local app="$1" expected_error="$2" log_file="$TEMP_DIR/fixed-entry.log"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app" >"$log_file" 2>&1; then
+    fail "checker 快速入口放行了固定入口反例：${app}。"
+  fi
+  grep -Fq "$expected_error" "$log_file" || fail "checker 固定入口报错不准确：$(<"$log_file")"
+  if bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --snapshot "$app" >"$log_file" 2>&1; then
+    fail "builder 快速入口放行了固定入口反例：${app}。"
+  fi
+  grep -Fq "$expected_error" "$log_file" || fail "builder 固定入口报错不准确：$(<"$log_file")"
+}
+
+run_fixed_entry_path_tests() {
+  local wrong_id_app="$1"
+  local aliased_app="$TEMP_DIR/CaseAliased.app"
+  local linked_app="$TEMP_DIR/LinkedResources.app"
+
+  if [[ -d "$wrong_id_app/contents" ]]; then
+    run_logged "复制固定标识符反例" ditto "$wrong_id_app" "$aliased_app"
+    run_logged "改用不同目录项拼写" mv "$aliased_app/Contents/Resources" "$aliased_app/Contents/rename-temp"
+    run_logged "设置真实目录名为 RESOURCES" mv "$aliased_app/Contents/rename-temp" "$aliased_app/Contents/RESOURCES"
+    local renamed="$aliased_app/Contents/RESOURCES"
+    run_logged "暂移小写文件名" mv "$renamed/mimi-agy-adapter" "$renamed/rename-temp"
+    run_logged "设置真实文件名为 MIMI-AGY-ADAPTER" mv "$renamed/rename-temp" "$renamed/MIMI-AGY-ADAPTER"
+    [[ "$renamed/MIMI-AGY-ADAPTER" -ef "$aliased_app/Contents/Resources/mimi-agy-adapter" ]] \
+      || fail "测试卷的大小写路径未指向同一节点。"
+    run_logged "重封大小写别名 App" codesign --force --sign - --options runtime --timestamp=none "$aliased_app"
+    assert_fast_entries_reject "$aliased_app" 'com.gaixianggeng.mimi.mac.agy-adapter'
+    echo "大小写不敏感卷的固定入口标识符反例通过。"
+  fi
+
+  run_logged "复制父目录链接反例" ditto "$wrong_id_app" "$linked_app"
+  run_logged "移动真实 Resources" mv "$linked_app/Contents/Resources" "$linked_app/Contents/EmbeddedResources"
+  run_logged "链接 Resources 到包内父目录" ln -s EmbeddedResources "$linked_app/Contents/Resources"
+  run_logged "重封父目录链接 App" codesign --force --sign - --options runtime --timestamp=none "$linked_app"
+  assert_fast_entries_reject "$linked_app" '固定入口的父目录'
+}
+
+run_direct_builder_output_tests() {
+  local fixture_bin="$1" probe="$2" valid_app="$3"
+  local external="$TEMP_DIR/output-external" log_file="$TEMP_DIR/direct-builder.log"
+  local output artifact conflict leaf sibling name mode
+  local -a flags
+  mkdir "$external"
+  printf 'keep\n' > "$external/sentinel"
+
+  for mode in app snapshot development formal; do
+    case "$mode" in
+      app) flags=(--snapshot --app-only); name='Mimi Remote Mac.app' ;;
+      snapshot) flags=(--snapshot); name=Mimi-Remote-Mac.dmg ;;
+      development) flags=(--development-signing); name=Mimi-Remote-Mac-Development.dmg ;;
+      formal) flags=(); name=Mimi-Remote-Mac.dmg ;;
+    esac
+    for artifact in "$name" "$name.sha256"; do
+      if [[ "$mode" == app && "$artifact" == *.sha256 ]]; then
+        continue
+      fi
+      for conflict in type link directory; do
+        if [[ "$conflict" == directory && "$mode" != app ]]; then
+          continue
+        fi
+        output="$TEMP_DIR/builder-${mode}-${artifact}-${conflict}"
+        mkdir "$output"
+        leaf="$output/$artifact"
+        sibling="$output/$name.sha256"
+        if [[ "$artifact" == *.sha256 ]]; then
+          sibling="$output/$name"
+        fi
+        printf 'old artifact\n' > "$sibling"
+        if [[ "$conflict" == link ]]; then
+          if [[ "$mode" == app ]]; then
+            ln -s "$external" "$leaf"
+          else
+            ln -s "$external/sentinel" "$leaf"
+          fi
+        elif [[ "$mode" == app && "$conflict" == type ]]; then
+          printf 'old file\n' > "$leaf"
+        else
+          mkdir "$leaf"
+          printf 'old file\n' > "$leaf/sentinel"
+        fi
+        # 禁用凭据，目录冲突必须在构建和签名前被公开入口拒绝。
+        if (
+          unset MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_KEY MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER_ID
+          if [[ "$mode" == formal ]]; then
+            set -- --version 1.2.3
+          else
+            set -- --version 1.2.3 "${flags[@]}"
+          fi
+          bash "$ROOT_DIR/scripts/build-macos-installer.sh" "$@" --output-dir "$output"
+        ) >"$log_file" 2>&1; then
+          fail "直接 builder 放行了 ${mode} 的固定目标冲突：${artifact} / ${conflict}。"
+        fi
+        grep -Fq "$artifact" "$log_file" || fail "直接 builder 冲突诊断未指出产物：$(<"$log_file")"
+        grep -Eq '拒绝覆盖|已被(普通目录)?占用' "$log_file" || fail "直接 builder 未在目标检查阶段拒绝：$(<"$log_file")"
+        [[ "$(<"$sibling")" == "old artifact" ]] || fail "直接 builder 改写了已有产物。"
+        [[ "$(<"$external/sentinel")" == keep ]] || fail "直接 builder 改写了链接目标。"
+        case "$conflict:$mode" in
+          link:*) [[ -L "$leaf" ]] || fail "直接 builder 改写了符号链接节点。" ;;
+          type:app) [[ "$(<"$leaf")" == "old file" ]] || fail "直接 builder 改写了占用 App 路径的文件。" ;;
+          type:*) [[ "$(<"$leaf/sentinel")" == "old file" ]] || fail "直接 builder 改写了占用产物路径的目录。" ;;
+        esac
+      done
+    done
+  done
+
+  # 复制已创建部分内容才失败，正式路径仍应保留原有 App。
+  cat > "$fixture_bin/ditto" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${2:-}" == */.Mimi-Remote-Mac.app.staging.* ]]; then
+  printf 'partial copy\n' > "$2/partial"
+  echo 'injected App copy failure' >&2
+  exit 1
+fi
+exec /usr/bin/ditto "$@"
+STUB
+  chmod 0755 "$fixture_bin/ditto"
+  output="$TEMP_DIR/builder-copy-failure"
+  mkdir "$output"
+  ditto "$valid_app" "$output/Mimi Remote Mac.app"
+  printf 'old app\n' > "$output/Mimi Remote Mac.app/keep"
+  if PATH="$fixture_bin:$PATH" TEST_REPO_ROOT="$ROOT_DIR" TEST_PROBE_UNIVERSAL="$probe" \
+    bash "$ROOT_DIR/scripts/build-macos-installer.sh" --snapshot --app-only --version 1.2.3 --output-dir "$output" >"$log_file" 2>&1; then
+    fail "直接 builder 在 App 半复制后仍返回成功。"
+  fi
+  rm -- "$fixture_bin/ditto"
+  grep -Fq 'injected App copy failure' "$log_file" || fail "没有命中 App 半复制反例：$(<"$log_file")"
+  [[ "$(<"$output/Mimi Remote Mac.app/keep")" == "old app" ]] || fail "复制失败后旧 App 丢失。"
+  [[ "$(ls -A "$output")" == "Mimi Remote Mac.app" ]] || fail "复制失败后残留暂存 App。"
+}
+
 run_macos_codesign_tests() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
     fail "真实 codesign 行为测试只能在 macOS (Darwin) 上运行；非 macOS 环境请传 --static-only。"
@@ -742,6 +908,7 @@ run_macos_codesign_tests() {
   fi
   grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' "$test_log" \
     || fail "已知入口错误 identifier builder 报错未指出期望值：$(<"$test_log")"
+  run_fixed_entry_path_tests "$app_dir"
 
   # 恢复正确固定 identifier。
   run_logged "恢复 mimi-agy-adapter 正确固定 identifier" \
@@ -911,12 +1078,30 @@ FIND_STUB
   run_logged "重封主 App（含合法 ad-hoc 漏签侧车）" \
     codesign --force --sign - --options runtime --timestamp=none "$app_dir"
 
-  # --verify 与 --entitlements 始终走真实 /usr/bin/codesign；仅对 -d --arch <arch> --verbose=4 按用例注入受控切片元数据。
+  # 完整性和 entitlements 使用系统 codesign。证书策略矩阵为 requirement 结果和元数据单独设桩。
   local fake_bin_dir="$TEMP_DIR/fake-bin"
   mkdir -p "$fake_bin_dir"
   cat > "$fake_bin_dir/codesign" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--verify" && "${4:-}" == --test-requirement==* ]]; then
+  requirement="${4#*=}"
+  [[ "$requirement" == *'anchor apple generic'* ]] || exit 75
+  [[ "$requirement" == *'certificate 1[field.1.2.840.113635.100.6.2.6] exists'* ]] || exit 75
+  [[ "$requirement" == *'certificate leaf[field.1.2.840.113635.100.6.1.13] exists'* ]] || exit 75
+  if [[ -n "${TEST_REQUIREMENT_LOG:-}" ]]; then
+    printf '%s\n' "$*" >> "$TEST_REQUIREMENT_LOG"
+  fi
+  if [[ "${TEST_REAL_DEVELOPER_ID_REQUIREMENT:-0}" == "1" ]] \
+    || [[ "${7:-}" == *"mimi-rogue-adhoc" && "${TEST_PASSTHROUGH_ROGUE_ADHOC:-0}" == "1" ]]; then
+    exec /usr/bin/codesign "$@"
+  fi
+  [[ "${5:-}" == "--arch" && -n "${6:-}" && -n "${7:-}" ]] || exit 75
+  if [[ "${7:-}" == *"mimi-leaky-adapter" && "$6" == "${TEST_REJECT_DEVELOPER_ID_ARCH:-}" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
 if [[ "${1:-}" == "-d" && "${2:-}" == "--arch" && "${4:-}" == "--verbose=4" ]]; then
   arch="${3:-}"
   target="${5:-}"
@@ -971,6 +1156,27 @@ fi
 exec /usr/bin/codesign "$@"
 STUB
   run_logged "设置 fake codesign 权限" chmod 0755 "$fake_bin_dir/codesign"
+
+  # 真实 ad-hoc App 即使显示了合格名称、Team ID 和时间戳，仍必须在 Apple 信任链检查失败。
+  local requirement_log="$TEMP_DIR/developer-id-requirement.log"
+  if PATH="$fake_bin_dir:$PATH" TEST_REAL_DEVELOPER_ID_REQUIREMENT=1 TEST_REQUIREMENT_LOG="$requirement_log" \
+    bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-developer-id "$app_dir" >"$test_log" 2>&1; then
+    fail "伪造显示元数据的 ad-hoc App 通过了 checker Developer ID。"
+  fi
+  grep -Fq -- '--arch arm64' "$requirement_log" || grep -Fq -- '--arch x86_64' "$requirement_log" \
+    || fail "checker 没有将逐片 Apple 证书要求交给系统 codesign。"
+  grep -Fq '未通过 Apple 证书要求' "$test_log" || fail "checker 缺少证书链诊断：$(<"$test_log")"
+  grep -Eq 'test-requirement: .*failed to satisfy.*requirement' "$test_log" \
+    || fail "系统 codesign 未实际求值 checker 的内联要求：$(<"$test_log")"
+  : > "$requirement_log"
+  if PATH="$fake_bin_dir:$PATH" TEST_REAL_DEVELOPER_ID_REQUIREMENT=1 TEST_REQUIREMENT_LOG="$requirement_log" \
+    bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1; then
+    fail "伪造显示元数据的 ad-hoc App 通过了 builder 正式验收。"
+  fi
+  grep -Fq -- '--test-requirement=' "$requirement_log" || fail "builder 未使用系统 codesign 检查证书链。"
+  grep -Fq '未通过 Apple 证书要求' "$test_log" || fail "builder 缺少证书链诊断：$(<"$test_log")"
+  grep -Eq 'test-requirement: .*failed to satisfy.*requirement' "$test_log" \
+    || fail "系统 codesign 未实际求值 builder 的内联要求：$(<"$test_log")"
 
   # 9a. 有效 ad-hoc 漏签 sidecar 在正式/开发策略下必被 checker 和 builder 拒绝并指出文件名。
   if PATH="$fake_bin_dir:$PATH" TEST_PASSTHROUGH_ROGUE_ADHOC=1 \
@@ -1034,7 +1240,7 @@ STUB
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --development-signing "$app_dir" >"$test_log" 2>&1 \
     || fail "同 Team ID 的开发签名应通过 builder --verify-only --development-signing：$(<"$test_log")"
 
-  if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
+  if PATH="$fake_bin_dir:$PATH" TEST_REJECT_DEVELOPER_ID_ARCH="x86_64" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
     TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures --require-developer-id "$app_dir" >"$test_log" 2>&1; then
     fail "非 Developer ID Application 签名在 checker --require-developer-id 下被放行。"
@@ -1042,7 +1248,7 @@ STUB
   grep -Fq 'mimi-leaky-adapter（x86_64）不是有效的 Developer ID Application 签名' "$test_log" \
     || fail "Developer ID 校验报错不准确：$(<"$test_log")"
 
-  if PATH="$fake_bin_dir:$PATH" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
+  if PATH="$fake_bin_dir:$PATH" TEST_REJECT_DEVELOPER_ID_ARCH="x86_64" TEST_LEAKY_TARGET_ARCH="x86_64" TEST_LEAKY_TEAM="TEAM123456" \
     TEST_LEAKY_AUTHORITY="Apple Development: Mimi Test (TEAM123456)" TEST_LEAKY_TIMESTAMP="Nov 17, 2026 at 19:12:30" \
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1; then
     fail "非 Developer ID Application 签名在 builder 正式策略下被放行。"
@@ -1169,6 +1375,7 @@ XCODE_STUB
   [[ -d "$e2e_app" ]] || fail "端到端构建未生成 Mimi Remote Mac.app。"
   bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$e2e_app" >"$test_log" 2>&1 \
     || fail "端到端生成的 Mimi Remote Mac.app 未通过完整 check-macos-installer.sh --app 校验：$(<"$test_log")"
+  run_direct_builder_output_tests "$fake_xcode_dir" "$probe_universal" "$e2e_app"
 
   # 10b. P2-6 端到端漏签集成反例：模拟 embed-agentd.sh 注入未签侧车进入真实 build-macos-installer.sh 封包流程 -> 封包前检验必须失败并指出文件名。
   local e2e_bad_out="$TEMP_DIR/e2e-bad-out"
@@ -1287,11 +1494,16 @@ XCODE_STUB
     || fail "未签名 DMG 在 --require-developer-id 下的报错不准确：$(<"$test_log")"
 
   run_logged "给测试 DMG 签入 ad-hoc 签名" codesign --force --sign - "$dmg_unsigned_path"
-  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --require-developer-id "$dmg_unsigned_path" >"$test_log" 2>&1; then
+  : > "$requirement_log"
+  if PATH="$fake_bin_dir:$PATH" TEST_REAL_DEVELOPER_ID_REQUIREMENT=1 TEST_REQUIREMENT_LOG="$requirement_log" \
+    bash "$ROOT_DIR/scripts/check-macos-installer.sh" --require-developer-id "$dmg_unsigned_path" >"$test_log" 2>&1; then
     fail "ad-hoc 签名 DMG 在 --require-developer-id 下被 checker 放行。"
   fi
   grep -Fq 'DMG 镜像' "$test_log" \
     || fail "ad-hoc 签名 DMG 在 --require-developer-id 下的报错未指出 DMG 镜像策略失败：$(<"$test_log")"
+  grep -Fq -- '--test-requirement=' "$requirement_log" || fail "签名 DMG 没有交给系统 codesign 校验 Apple 证书链。"
+  grep -Eq 'test-requirement: .*failed to satisfy.*requirement' "$test_log" \
+    || fail "系统 codesign 未实际求值 DMG 的内联要求：$(<"$test_log")"
 
   echo "Mac 安装包真实 codesign 防回归测试通过（受控编译样例、符号链接、损坏/未签名、JIT entitlements 布尔与单切片/链接校验、混合切片与异 identifier、find 失败、选项边界、有效 ad-hoc 漏签、端到端集成漏签、DMG 卷外链接与 DMG 镜像签名全覆盖）。"
 }

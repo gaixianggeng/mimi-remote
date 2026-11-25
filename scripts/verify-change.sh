@@ -438,12 +438,12 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*|scripts/test-macos-installer-signing.sh)
+    packaging/*|.goreleaser.yml|scripts/check-packaging.sh|scripts/install-linux*.sh|scripts/test-install-linux*.sh|scripts/verify-release.sh|scripts/build-*-installer.*|scripts/check-*-installer.*|scripts/test-macos-installer-signing.sh|scripts/macos-installer-publish.py|scripts/macos-installer-signing.sh)
       has_packaging_control=true
       ;;
   esac
   case "$path" in
-    scripts/build-macos-installer.sh|scripts/check-macos-installer.sh|scripts/test-macos-installer-signing.sh|macos/MimiRemoteMac/Scripts/embed-agentd.sh|macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements|macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements)
+    scripts/build-macos-installer.sh|scripts/check-macos-installer.sh|scripts/test-macos-installer-signing.sh|scripts/macos-installer-publish.py|scripts/macos-installer-signing.sh|macos/MimiRemoteMac/Scripts/embed-agentd.sh|macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements|macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements)
       has_macos_installer_signing_control=true
       ;;
   esac

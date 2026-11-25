@@ -38,6 +38,8 @@ for required_file in \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/check-macos-notices.sh \
+  scripts/macos-installer-publish.py \
+  scripts/macos-installer-signing.sh \
   scripts/test-macos-installer-signing.sh \
   scripts/build-windows-installer.ps1 \
   scripts/check-windows-installer.ps1 \
@@ -71,6 +73,7 @@ for script_path in \
   scripts/check-pr-gate.sh \
   scripts/check-macos-installer.sh \
   scripts/check-macos-notices.sh \
+  scripts/macos-installer-signing.sh \
   scripts/test-macos-installer-signing.sh \
   scripts/check-release-prerequisites.sh \
   scripts/check-macos-release-signing.sh \
@@ -269,7 +272,7 @@ grep -Fq 'ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"' scrip
   || fail "Mac 安装包门禁没有校验内嵌 Claude 适配器。"
 grep -Fq 'AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Antigravity 适配器。"
-grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' scripts/check-macos-installer.sh \
+grep -Fq 'Contents/Resources/mimi-agy-adapter|com.gaixianggeng.mimi.mac.agy-adapter' scripts/macos-installer-signing.sh \
   || fail "Mac 安装包门禁没有校验内嵌 Antigravity 适配器的稳定 identifier。"
 grep -Fq 'com.apple.security.cs.allow-jit' scripts/check-macos-installer.sh \
   || fail "Mac 安装包门禁没有校验 Bun 适配器的 JIT 权限。"

@@ -20,6 +20,8 @@ on:
       - "scripts/build-macos-installer.sh"
       - "scripts/check-macos-installer.sh"
       - "scripts/test-macos-installer-signing.sh"
+      - "scripts/macos-installer-publish.py"
+      - "scripts/macos-installer-signing.sh"
       - "scripts/check-release-artifacts.sh"
       - "scripts/check-release-source.sh"
       - "scripts/check-source-size.sh"

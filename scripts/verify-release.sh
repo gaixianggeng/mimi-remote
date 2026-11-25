@@ -38,6 +38,8 @@ usage() {
   本脚本下载并校验官方 GoReleaser v2.15.3 预编译包。不要用
   `go run ...goreleaser@v2.15.3` 代替：编译 GoReleaser 自身会自动切换到
   更高 Go 工具链，并可能让 agentd 产物偏离 go.mod 声明的版本。
+  DMG 和 SHA 各自原子替换，以 SHA 替换为提交边界。在发布期间读取时请核对摘要，
+  如果两份文件暂时不匹配，等发布完成后重新读取。
 USAGE
 }
 
@@ -71,7 +73,7 @@ resolve_macos_snapshot_version() {
   local explicit_raw="${MIMI_MACOS_SNAPSHOT_VERSION:-}"
   local parsed=""
 
-  if [[ -n "$explicit_raw" ]]; then
+  if [[ ${MIMI_MACOS_SNAPSHOT_VERSION+x} ]]; then
     if ! parsed="$(parse_macos_snapshot_version "$explicit_raw")"; then
       echo "本地发布校验失败：MIMI_MACOS_SNAPSHOT_VERSION 无效（${explicit_raw}），必须是合法语义版本号（例如 1.2.3、v1.2.3、1.2.3-rc.1 或 v2.0.0+build.5）。" >&2
       return 2
@@ -195,35 +197,43 @@ if (
     print(f"本地发布校验失败：MIMI_MACOS_SNAPSHOT_OUTPUT_DIR（{target_real}）不得指向仓库根目录或其祖先目录。", file=sys.stderr)
     sys.exit(2)
 
-# 保护 dist 及全部子目录（同时覆盖 dist 已存在、dist 为符号链接与 dist 尚未生成时的大小写别名）。
+# 先检查原始组件，避免 realpath 把悬空的 dist 链接或 dist/nested 改写成仓库外路径。
 repo_id = stat_id(repo_real)
 case_insensitive = is_case_insensitive_dir(repo_real)
 dist_path = os.path.join(repo_real, "dist")
-dist_ids = set()
-for candidate in (dist_path, os.path.realpath(dist_path)):
-    for fn in (stat_id, lstat_id):
-        did = fn(candidate)
-        if did is not None:
-            dist_ids.add(did)
+dist_real = os.path.realpath(dist_path)
 
+
+def reject_dist():
+    print(f"本地发布校验失败：MIMI_MACOS_SNAPSHOT_OUTPUT_DIR（{target_real}）不得指向 GoReleaser 输出路径 dist 或其子目录。", file=sys.stderr)
+    sys.exit(2)
+
+
+def is_dist_entry(parent, child):
+    return (
+        (child == "dist" or (case_insensitive and child.lower() == "dist"))
+        and (os.path.realpath(parent) == repo_real or (repo_id is not None and stat_id(parent) == repo_id))
+    )
+
+
+raw_parent = "/" if os.path.isabs(requested_dir) else os.getcwd()
+for component in requested_dir.split(os.sep):
+    if is_dist_entry(raw_parent, component):
+        reject_dist()
+    raw_parent = os.path.join(raw_parent, component)
+
+# 解析后的父子关系也要比较路径本身，悬空链接的目标没有可比较的 inode。
+dist_ids = {fn(candidate) for candidate in (dist_path, dist_real) for fn in (stat_id, lstat_id)}
+dist_ids.discard(None)
 cur = target_real
 while True:
-    cid = stat_id(cur)
-    if cid is not None and cid in dist_ids:
-        print(f"本地发布校验失败：MIMI_MACOS_SNAPSHOT_OUTPUT_DIR（{target_real}）不得指向 GoReleaser 输出路径 dist 或其子目录。", file=sys.stderr)
-        sys.exit(2)
+    if cur == dist_real or stat_id(cur) in dist_ids:
+        reject_dist()
     parent = os.path.dirname(cur)
     if parent == cur:
         break
-    child_name = os.path.basename(cur)
-    parent_id = stat_id(parent)
-    parent_is_repo = (parent == repo_real) or (
-        repo_id is not None and parent_id is not None and parent_id == repo_id
-    )
-    if parent_is_repo:
-        if child_name == "dist" or (case_insensitive and child_name.lower() == "dist"):
-            print(f"本地发布校验失败：MIMI_MACOS_SNAPSHOT_OUTPUT_DIR（{target_real}）不得指向 GoReleaser 输出路径 dist 或其子目录。", file=sys.stderr)
-            sys.exit(2)
+    if is_dist_entry(parent, os.path.basename(cur)):
+        reject_dist()
     cur = parent
 
 print(target_real)
@@ -343,234 +353,8 @@ publish_macos_snapshot_artifacts() {
 
   # 发布前再次核验目标目录（此时 GoReleaser 可能已生成 dist），防止大小写别名或链接绕过。
   local resolved_output_dir
-  resolved_output_dir="$(resolve_macos_snapshot_output_dir "$output_dir" "$repo_root")"
-
-  mkdir -p -- "$resolved_output_dir"
-
-  python3 - "$stage_dir" "$resolved_output_dir" "$effective_mode" <<'PY'
-import ctypes
-import errno
-import fcntl
-import os
-import shutil
-import stat
-import subprocess
-import sys
-import tempfile
-
-stage_dir, output_dir, effective_mode = sys.argv[1:4]
-fail_step = os.environ.get("MIMI_VERIFY_RELEASE_TEST_FAIL_STEP", "")
-
-
-def fail(msg):
-    print(f"本地发布校验失败：{msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def copy_file_to_same_fs_temp(src_path, dst_dir, prefix):
-    fd, tmp_path = tempfile.mkstemp(prefix=prefix, dir=dst_dir)
-    try:
-        with os.fdopen(fd, "wb") as dst_fh, open(src_path, "rb") as src_fh:
-            shutil.copyfileobj(src_fh, dst_fh, length=1024 * 1024)
-            dst_fh.flush()
-            os.fsync(dst_fh.fileno())
-        shutil.copystat(src_path, tmp_path)
-        return tmp_path
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
-def assert_regular_file_target(path, label):
-    if not os.path.lexists(path):
-        return False
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode):
-        fail(f"输出路径 {label}（{path}）是符号链接，拒绝覆盖。")
-    if stat.S_ISDIR(st.st_mode):
-        fail(f"输出路径 {label}（{path}）已被目录占用，拒绝覆盖。")
-    if not stat.S_ISREG(st.st_mode):
-        fail(f"输出路径 {label}（{path}）不是普通文件，拒绝覆盖。")
-    return True
-
-
-def assert_directory_target(path, label):
-    if not os.path.lexists(path):
-        return False
-    st = os.lstat(path)
-    if stat.S_ISLNK(st.st_mode):
-        fail(f"输出路径 {label}（{path}）是符号链接，拒绝覆盖。")
-    if not stat.S_ISDIR(st.st_mode):
-        fail(f"输出路径 {label}（{path}）已存在且不是目录，拒绝覆盖。")
-    return True
-
-
-def atomic_swap_dirs(src_dir, dst_dir):
-    if sys.platform == "darwin":
-        libc = ctypes.CDLL("libSystem.B.dylib", use_errno=True)
-        # macOS <stdio.h> RENAME_SWAP = 0x00000002：同卷单系统调用原子交换，无空窗期。
-        rc = libc.renamex_np(os.fsencode(src_dir), os.fsencode(dst_dir), ctypes.c_uint(0x2))
-        if rc != 0:
-            err = ctypes.get_errno()
-            raise OSError(err, os.strerror(err))
-        return True
-
-    if sys.platform.startswith("linux"):
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            renameat2 = getattr(libc, "renameat2", None)
-            if renameat2 is not None:
-                AT_FDCWD = -100
-                RENAME_EXCHANGE = 2
-                rc = renameat2(
-                    ctypes.c_int(AT_FDCWD),
-                    os.fsencode(src_dir),
-                    ctypes.c_int(AT_FDCWD),
-                    os.fsencode(dst_dir),
-                    ctypes.c_uint(RENAME_EXCHANGE),
-                )
-                if rc == 0:
-                    return True
-                err = ctypes.get_errno()
-                if err not in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
-                    raise OSError(err, os.strerror(err))
-        except OSError:
-            raise
-        except Exception:
-            pass
-    return False
-
-
-out_stat = os.stat(output_dir)
-lock_path = os.path.join(
-    tempfile.gettempdir(),
-    f"mimi-snapshot-publish-{out_stat.st_dev}-{out_stat.st_ino}.lock",
-)
-
-with open(lock_path, "a+") as lock_fh:
-    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-    try:
-        if effective_mode == "dmg":
-            src_dmg = os.path.join(stage_dir, "Mimi-Remote-Mac.dmg")
-            src_sha = os.path.join(stage_dir, "Mimi-Remote-Mac.dmg.sha256")
-            if not (os.path.isfile(src_dmg) and not os.path.islink(src_dmg)):
-                fail("临时构建目录缺少普通文件 Mimi-Remote-Mac.dmg。")
-            if not (os.path.isfile(src_sha) and not os.path.islink(src_sha)):
-                fail("临时构建目录缺少普通文件 Mimi-Remote-Mac.dmg.sha256。")
-
-            dmg_final = os.path.join(output_dir, "Mimi-Remote-Mac.dmg")
-            sha_final = os.path.join(output_dir, "Mimi-Remote-Mac.dmg.sha256")
-            had_old_dmg = assert_regular_file_target(dmg_final, "Mimi-Remote-Mac.dmg")
-            assert_regular_file_target(sha_final, "Mimi-Remote-Mac.dmg.sha256")
-
-            dmg_staging = None
-            sha_staging = None
-            backup_dir = None
-            dmg_backup = None
-            dmg_replaced = False
-            rollback_failed = False
-
-            try:
-                dmg_staging = copy_file_to_same_fs_temp(src_dmg, output_dir, ".Mimi-Remote-Mac.dmg.stage.")
-                sha_staging = copy_file_to_same_fs_temp(src_sha, output_dir, ".Mimi-Remote-Mac.dmg.sha256.stage.")
-
-                if had_old_dmg:
-                    backup_dir = tempfile.mkdtemp(prefix=".mimi-dmg-backup.", dir=output_dir)
-                    dmg_backup = os.path.join(backup_dir, "Mimi-Remote-Mac.dmg")
-                    try:
-                        os.link(dmg_final, dmg_backup)
-                    except OSError:
-                        shutil.copy2(dmg_final, dmg_backup)
-
-                os.replace(dmg_staging, dmg_final)
-                dmg_staging = None
-                dmg_replaced = True
-
-                if fail_step == "sha_replace":
-                    raise OSError(errno.EIO, "injected sha_replace failure")
-                os.replace(sha_staging, sha_final)
-                sha_staging = None
-            except Exception as exc:
-                if dmg_staging and os.path.lexists(dmg_staging):
-                    try:
-                        os.unlink(dmg_staging)
-                    except OSError:
-                        pass
-                if sha_staging and os.path.lexists(sha_staging):
-                    try:
-                        os.unlink(sha_staging)
-                    except OSError:
-                        pass
-                if dmg_replaced:
-                    try:
-                        if had_old_dmg and dmg_backup and os.path.lexists(dmg_backup):
-                            os.replace(dmg_backup, dmg_final)
-                        elif not had_old_dmg and os.path.lexists(dmg_final):
-                            os.unlink(dmg_final)
-                    except Exception as rb_exc:
-                        rollback_failed = True
-                        print(
-                            f"严重错误：发布 Mimi-Remote-Mac.dmg.sha256 失败后回滚 Mimi-Remote-Mac.dmg 也失败（{rb_exc}），备份保留在 {dmg_backup}。",
-                            file=sys.stderr,
-                        )
-                fail(f"发布 DMG 与 SHA-256 产物失败：{exc}")
-            finally:
-                if backup_dir and os.path.isdir(backup_dir) and not rollback_failed:
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-        else:
-            src_app = os.path.join(stage_dir, "Mimi Remote Mac.app")
-            if not (os.path.isdir(src_app) and not os.path.islink(src_app)):
-                fail("临时构建目录缺少目录 Mimi Remote Mac.app。")
-
-            app_final = os.path.join(output_dir, "Mimi Remote Mac.app")
-            had_existing = assert_directory_target(app_final, "Mimi Remote Mac.app")
-
-            staging_dir = tempfile.mkdtemp(prefix=".Mimi-Remote-Mac.app.staging.", dir=output_dir)
-            try:
-                if shutil.which("ditto"):
-                    subprocess.run(["ditto", src_app, staging_dir], check=True)
-                else:
-                    shutil.copytree(src_app, staging_dir, symlinks=True, dirs_exist_ok=True)
-
-                if fail_step == "before_app_swap":
-                    raise RuntimeError("injected failure before atomic app swap")
-
-                if not had_existing:
-                    os.rename(staging_dir, app_final)
-                    staging_dir = None
-                else:
-                    swapped = atomic_swap_dirs(staging_dir, app_final)
-                    if swapped:
-                        # 交换后 staging_dir 指向旧 App，安全清理旧目录即可。
-                        old_dir = staging_dir
-                        staging_dir = None
-                        shutil.rmtree(old_dir)
-                    else:
-                        # 非 Darwin 且内核/FS 不支持 RENAME_EXCHANGE 时的受锁回滚兜底。
-                        prev_parent = tempfile.mkdtemp(prefix=".Mimi-Remote-Mac.app.prev.", dir=output_dir)
-                        prev_dir = os.path.join(prev_parent, "Mimi Remote Mac.app")
-                        moved_existing = False
-                        try:
-                            os.rename(app_final, prev_dir)
-                            moved_existing = True
-                            os.rename(staging_dir, app_final)
-                            staging_dir = None
-                        except Exception:
-                            if moved_existing and os.path.lexists(prev_dir) and not os.path.lexists(app_final):
-                                os.rename(prev_dir, app_final)
-                            raise
-                        else:
-                            shutil.rmtree(prev_parent)
-            except Exception as exc:
-                if staging_dir and os.path.lexists(staging_dir):
-                    shutil.rmtree(staging_dir, ignore_errors=True)
-                fail(f"原子发布 {app_final} 失败：{exc}")
-    finally:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-PY
+  resolved_output_dir="$(resolve_macos_snapshot_output_dir "$output_dir" "$repo_root")" || return
+  python3 "$ROOT_DIR/scripts/macos-installer-publish.py" "$effective_mode" "$resolved_output_dir" "$stage_dir"
 }
 
 goreleaser_asset_for() {
@@ -619,7 +403,7 @@ sha256_file() {
   return 127
 }
 
-self_test() {
+self_test() (
   require_command python3
   local actual
 
@@ -667,7 +451,7 @@ self_test() {
     fi
   done
   [[ "$(MIMI_MACOS_SNAPSHOT_VERSION="v1.4.2-rc.1" resolve_macos_snapshot_version)" == "1.4.2" ]]
-  for invalid_ver in "typo" "1.2" "01.2.3" "1.2.3-01" "1.2.3-." "1.2.3+."; do
+  for invalid_ver in "" "typo" "1.2" "01.2.3" "1.2.3-01" "1.2.3-." "1.2.3+."; do
     if MIMI_MACOS_SNAPSHOT_VERSION="$invalid_ver" resolve_macos_snapshot_version >/dev/null 2>&1; then
       echo "本地发布自测失败：显式无效 MIMI_MACOS_SNAPSHOT_VERSION 未被拒绝（${invalid_ver}）。" >&2
       return 1
@@ -718,6 +502,7 @@ self_test() {
   # 输出路径安全校验与保留既有文件的原子发布自测。
   local test_root
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mimi-verify-release-selftest.XXXXXX")"
+  trap 'rm -rf -- "$test_root"' EXIT
   local fake_repo="$test_root/workspace/repo"
   mkdir -p "$fake_repo/dist" "$fake_repo/dist-macos"
 
@@ -726,9 +511,13 @@ self_test() {
   default_ver="$(
     cd "$fake_repo"
     unset MIMI_MACOS_SNAPSHOT_VERSION
-    PATH="/nonexistent" resolve_macos_snapshot_version
+    resolve_macos_snapshot_version
   )"
   [[ "$default_ver" == "0.0.0" ]]
+  if (cd "$fake_repo" && MIMI_MACOS_SNAPSHOT_VERSION="" resolve_macos_snapshot_version >/dev/null 2>&1); then
+    echo "本地发布自测失败：无 tag 时显式空版本未被拒绝。" >&2
+    return 1
+  fi
 
   # 拒绝 dist、dist 子目录、仓库根目录、相对祖先目录以及指向 dist 的符号链接。
   ln -s "$fake_repo/dist" "$test_root/dist-link"
@@ -787,6 +576,17 @@ self_test() {
     echo "本地发布自测失败：大小写敏感卷上独立目录 DIST 不应被误拒。" >&2
     return 1
   fi
+  ln -s "$test_root/not-created" "$fake_repo/dist"
+  ln -s "$test_root/not-created" "$test_root/dangling-dist-alias"
+  for forbidden_path in "dist" "dist/nested" "$test_root/dangling-dist-alias/nested"; do
+    if (cd "$fake_repo" && resolve_macos_snapshot_output_dir "$forbidden_path" "$fake_repo" >/dev/null 2>&1); then
+      rm -rf -- "$test_root"
+      echo "本地发布自测失败：悬空 dist 链接的危险路径未被拒绝（${forbidden_path}）。" >&2
+      return 1
+    fi
+  done
+  [[ ! -e "$test_root/not-created" ]]
+  rm -- "$fake_repo/dist"
   mkdir -p "$fake_repo/dist"
 
   local safe_out
@@ -798,6 +598,7 @@ self_test() {
   local stage_app="$test_root/stage-app"
   local target_out="$test_root/custom-out"
   mkdir -p "$stage_dmg" "$stage_app/Mimi Remote Mac.app/Contents" "$target_out/Mimi Remote Mac.app/Contents"
+  touch "$stage_app/Mimi Remote Mac.app/Contents/Info.plist" "$target_out/Mimi Remote Mac.app/Contents/Info.plist"
   printf 'keep-existing-user-file\n' > "$target_out/keep-me.txt"
   printf 'old-dmg\n' > "$target_out/Mimi-Remote-Mac.dmg"
   printf 'old-sha  Mimi-Remote-Mac.dmg\n' > "$target_out/Mimi-Remote-Mac.dmg.sha256"
@@ -806,40 +607,187 @@ self_test() {
   printf 'deadbeef  Mimi-Remote-Mac.dmg\n' > "$stage_dmg/Mimi-Remote-Mac.dmg.sha256"
   printf 'new-app-v2\n' > "$stage_app/Mimi Remote Mac.app/Contents/marker.txt"
 
-  # P2-3：DMG 第二步（.sha256 替换）失败时，必须回滚 Mimi-Remote-Mac.dmg，绝不留下“新 DMG + 旧 SHA”错误组合。
-  if MIMI_VERIFY_RELEASE_TEST_FAIL_STEP="sha_replace" \
-    publish_macos_snapshot_artifacts "$stage_dmg" "$target_out" "dmg" "$fake_repo" >/dev/null 2>&1; then
-    rm -rf -- "$test_root"
-    echo "本地发布自测失败：注入 sha_replace 失败后发布不应返回成功。" >&2
-    return 1
-  fi
-  [[ "$(cat "$target_out/Mimi-Remote-Mac.dmg")" == "old-dmg" ]]
-  [[ "$(cat "$target_out/Mimi-Remote-Mac.dmg.sha256")" == "old-sha  Mimi-Remote-Mac.dmg" ]]
-  [[ "$(cat "$target_out/keep-me.txt")" == "keep-existing-user-file" ]]
+  # 只在自测进程里拦截系统调用，并执行与公开入口相同的发布器。
+  python3 - "$ROOT_DIR/scripts/macos-installer-publish.py" "$test_root" "$stage_dmg" "$stage_app" "$target_out" <<'PY'
+import os
+from pathlib import Path
+import select
+import signal
+import subprocess
+import sys
 
-  # 首次无旧产物时第二步失败，也不应残留半成品 DMG。
-  local fresh_out="$test_root/fresh-out"
-  mkdir -p "$fresh_out"
-  if MIMI_VERIFY_RELEASE_TEST_FAIL_STEP="sha_replace" \
-    publish_macos_snapshot_artifacts "$stage_dmg" "$fresh_out" "dmg" "$fake_repo" >/dev/null 2>&1; then
-    rm -rf -- "$test_root"
-    echo "本地发布自测失败：无旧产物时注入 sha_replace 失败不应返回成功。" >&2
-    return 1
-  fi
-  if [[ -e "$fresh_out/Mimi-Remote-Mac.dmg" || -e "$fresh_out/Mimi-Remote-Mac.dmg.sha256" ]]; then
-    rm -rf -- "$test_root"
-    echo "本地发布自测失败：无旧产物时第二步失败残留了半成品 DMG/SHA。" >&2
-    return 1
-  fi
+publisher = sys.argv[1]
+root, stage_dmg, stage_app, output = map(Path, sys.argv[2:])
+dmg = output / "Mimi-Remote-Mac.dmg"
+sha = output / "Mimi-Remote-Mac.dmg.sha256"
+journal = output / ".Mimi-Remote-Mac.dmg.transaction"
+app = output / "Mimi Remote Mac.app"
 
-  # P2-3：App 交换前中断，既有正式路径必须完好无损且不残留暂存目录。
-  if MIMI_VERIFY_RELEASE_TEST_FAIL_STEP="before_app_swap" \
-    publish_macos_snapshot_artifacts "$stage_app" "$target_out" "app-only" "$fake_repo" >/dev/null 2>&1; then
-    rm -rf -- "$test_root"
-    echo "本地发布自测失败：注入 before_app_swap 失败后发布不应返回成功。" >&2
-    return 1
-  fi
-  [[ "$(cat "$target_out/Mimi Remote Mac.app/Contents/marker.txt")" == "old-app" ]]
+injected_publisher = r"""
+import fcntl
+import os
+from pathlib import Path
+import runpy
+import shutil
+import signal
+import sys
+
+step = sys.argv.pop(1)
+sys.argv.pop(0)
+main = runpy.run_path(sys.argv[0])["main"]
+replace = os.replace
+rmtree = shutil.rmtree
+flock = fcntl.flock
+
+
+def replace_with_fault(src, dst):
+    if step == "sha_replace" and Path(src).name == "new.sha256":
+        raise OSError("injected sha_replace failure")
+    replace(src, dst)
+    if Path(src).name == "new.dmg" and step in ("SIGINT", "SIGTERM", "SIGKILL"):
+        os.kill(os.getpid(), getattr(signal, step))
+    if Path(src).name == "new.sha256" and step == "SIGKILL_after_sha":
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
+def fail_swap(src, dst):
+    raise OSError("injected failure before atomic app swap")
+
+
+def fail_old_app_cleanup(path, *args, **kwargs):
+    if Path(path).name.startswith(".Mimi-Remote-Mac.app.staging."):
+        raise PermissionError("injected old App cleanup failure")
+    rmtree(path, *args, **kwargs)
+
+
+def controlled_lock(fd, flags):
+    if step == "probe_lock":
+        try:
+            flock(fd, flags | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("blocked", flush=True)
+        else:
+            raise AssertionError("second publisher obtained a held directory lock")
+    flock(fd, flags)
+    if step == "hold_lock":
+        print("locked", flush=True)
+        sys.stdin.read(1)
+
+
+os.replace = replace_with_fault
+if step == "before_app_swap":
+    main.__globals__["swap_dirs"] = fail_swap
+if step == "signal_after_app_swap":
+    swap = main.__globals__["swap_dirs"]
+
+    def interrupt_after_swap(src, dst):
+        swap(src, dst)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    main.__globals__["swap_dirs"] = interrupt_after_swap
+if step == "after_app_swap":
+    shutil.rmtree = fail_old_app_cleanup
+if step in ("hold_lock", "probe_lock"):
+    fcntl.flock = controlled_lock
+sys.exit(main())
+"""
+
+
+def command(step, mode, target, source):
+    return [sys.executable, "-c", injected_publisher, step, publisher, mode, target, source]
+
+
+def run(step, mode, target, source, status):
+    result = subprocess.run(command(step, mode, target, source), capture_output=True, text=True, timeout=15)
+    assert result.returncode == status, result
+    return result
+
+
+def assert_old_pair():
+    assert dmg.read_text() == "old-dmg\n"
+    assert sha.read_text() == "old-sha  Mimi-Remote-Mac.dmg\n"
+    assert (output / "keep-me.txt").read_text() == "keep-existing-user-file\n"
+    assert not journal.exists()
+
+
+for fault, status in (("sha_replace", 1), ("SIGINT", 130), ("SIGTERM", 143)):
+    run(fault, "dmg", output, stage_dmg, status)
+    assert_old_pair()
+    fresh_out = root / ("fresh-out-" + fault)
+    run(fault, "dmg", fresh_out, stage_dmg, status)
+    assert not list(fresh_out.iterdir())
+
+# SIGKILL 无法捕获，下一次发布必须先恢复旧 DMG，随后允许重新提交。
+run("SIGKILL", "dmg", output, stage_dmg, -signal.SIGKILL)
+assert (journal / "old.dmg").read_text() == "old-dmg\n"
+assert dmg.read_text() == "new-dmg-v2\n"
+run("sha_replace", "dmg", output, stage_dmg, 1)
+assert_old_pair()
+
+journal.mkdir(mode=0o700)
+(journal / "new.dmg").write_text("unrelated user file")
+run("none", "dmg", output, stage_dmg, 1)
+assert (journal / "new.dmg").read_text() == "unrelated user file"
+(journal / "new.dmg").unlink()
+journal.rmdir()
+assert_old_pair()
+
+# SHA 已提交以后再被强制终止，下一次只清理事务，保留新的一对产物。
+run("SIGKILL_after_sha", "dmg", output, stage_dmg, -signal.SIGKILL)
+run("sha_replace", "dmg", output, stage_dmg, 1)
+assert dmg.read_text() == "new-dmg-v2\n"
+assert sha.read_text() == "deadbeef  Mimi-Remote-Mac.dmg\n"
+assert not journal.exists()
+
+run("before_app_swap", "app-only", output, stage_app, 1)
+assert (app / "Contents/marker.txt").read_text() == "old-app\n"
+assert not list(output.glob(".Mimi-Remote-Mac.app.staging.*"))
+
+result = run("after_app_swap", "app-only", output, stage_app, 0)
+assert (app / "Contents/marker.txt").read_text() == "new-app-v2\n"
+[legacy_app] = output.glob(".Mimi-Remote-Mac.app.staging.*")
+assert (legacy_app / "Contents/marker.txt").read_text() == "old-app\n"
+assert "新 App 已提交" in result.stderr and str(legacy_app) in result.stderr
+
+result = run("signal_after_app_swap", "app-only", output, stage_app, 0)
+assert (app / "Contents/marker.txt").read_text() == "new-app-v2\n"
+assert "新 App 已提交" in result.stderr and "遗留路径" in result.stderr
+
+
+def expect_line(child, line):
+    readable, _, _ = select.select([child.stdout], [], [], 10)
+    assert readable and child.stdout.readline().strip() == line, f"等待发布锁状态超时或错误：{line}"
+
+
+# 两个发布者使用不同的有效 TMPDIR 和同一物理目录的不同路径。
+tmp_a, tmp_b = root / "tmp-a", root / "tmp-b"
+tmp_a.mkdir()
+tmp_b.mkdir()
+alias = root / "output-alias"
+alias.symlink_to(output, target_is_directory=True)
+children = []
+try:
+    for step, path, tmpdir, expected in (
+        ("hold_lock", output, tmp_a, "locked"),
+        ("probe_lock", alias, tmp_b, "blocked"),
+    ):
+        child = subprocess.Popen(
+            command(step, "app-only", path, stage_app),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            env={**os.environ, "TMPDIR": str(tmpdir)},
+        )
+        children.append(child)
+        expect_line(child, expected)
+    assert children[1].poll() is None
+    for child in children:
+        assert child.communicate(timeout=10)[0] == ""
+        assert child.returncode == 0
+finally:
+    for child in children:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+PY
 
   # 正常发布 DMG 与 App。
   publish_macos_snapshot_artifacts "$stage_dmg" "$target_out" "dmg" "$fake_repo"
@@ -855,6 +803,7 @@ self_test() {
   # P2-3：同输出目录并发发布 App，必须通过互斥锁串行化，绝不能嵌套成 .app/.app。
   local stage_app_b="$test_root/stage-app-b"
   mkdir -p "$stage_app_b/Mimi Remote Mac.app/Contents"
+  touch "$stage_app_b/Mimi Remote Mac.app/Contents/Info.plist"
   printf 'new-app-v3\n' > "$stage_app_b/Mimi Remote Mac.app/Contents/marker.txt"
   publish_macos_snapshot_artifacts "$stage_app" "$target_out" "app-only" "$fake_repo" &
   local pid_a=$!
@@ -939,9 +888,8 @@ self_test() {
     esac
   done
 
-  rm -rf -- "$test_root"
   echo "本地发布工具平台映射、版本校验、输出目录边界与原子发布自测通过。"
-}
+)
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -1019,7 +967,8 @@ main() {
   local macos_effective_mode=""
   if [[ "$mode" == "verify" && "$os_name" == "Darwin" ]]; then
     macos_version="$(resolve_macos_snapshot_version)"
-    macos_output_dir="$(resolve_macos_snapshot_output_dir "${MIMI_MACOS_SNAPSHOT_OUTPUT_DIR:-$ROOT_DIR/dist-macos}" "$ROOT_DIR")"
+    macos_output_dir="${MIMI_MACOS_SNAPSHOT_OUTPUT_DIR:-$ROOT_DIR/dist-macos}"
+    resolve_macos_snapshot_output_dir "$macos_output_dir" "$ROOT_DIR" >/dev/null
     macos_build_number="${GITHUB_RUN_NUMBER:-1}"
     macos_requested_mode="${MIMI_MACOS_SNAPSHOT_MODE:-auto}"
     if [[ "$macos_requested_mode" == "auto" ]]; then

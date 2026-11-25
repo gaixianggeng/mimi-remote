@@ -22,6 +22,7 @@ VERIFIED_APP_TEAM_ID=""
 VERIFIED_DMG_TEAM_ID=""
 macho_count=0
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/macos-installer-signing.sh"
 
 cleanup() {
   if [[ "$MOUNTED" == "1" ]]; then
@@ -99,33 +100,6 @@ resolve_dmg_app_path() {
   printf '%s\n' "$app_real"
 }
 
-expected_known_macho_identifier() {
-  local rel_path="$1"
-  case "$rel_path" in
-    "Contents/MacOS/Mimi Remote Mac")
-      printf '%s\n' "com.gaixianggeng.mimi.mac"
-      ;;
-    "Contents/Resources/agentd")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.agentd"
-      ;;
-    "Contents/Resources/alleycat-claude-bridge")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-bridge"
-      ;;
-    "Contents/Resources/mimi-claude-adapter")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-adapter"
-      ;;
-    "Contents/Resources/mimi-agy-adapter")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.agy-adapter"
-      ;;
-    "Contents/Resources/mimi-tailcat-experiment")
-      printf '%s\n' "com.gaixianggeng.mimi.mac.tailcat"
-      ;;
-    *)
-      printf '%s\n' ""
-      ;;
-  esac
-}
-
 verify_fixed_entry_regular_executable() {
   local target_path="$1"
   local display_label="$2"
@@ -138,41 +112,6 @@ verify_fixed_entry_regular_executable() {
     echo "Mac 安装包校验失败：缺少可执行普通文件 ${display_label}：${target_path}。" >&2
     exit 1
   fi
-}
-
-verify_dmg_image_signature() {
-  local dmg_path="$1"
-  local expected_team_id="${2:-}"
-  local dmg_details dmg_team_id dmg_timestamp
-
-  codesign --verify --strict --verbose=2 "$dmg_path"
-  if ! dmg_details="$(codesign -d --verbose=4 "$dmg_path" 2>&1)"; then
-    echo "Mac 安装包校验失败：无法读取 DMG 镜像签名详情：${dmg_details}" >&2
-    exit 1
-  fi
-
-  dmg_team_id="$(extract_codesign_field "$dmg_details" "TeamIdentifier")"
-  if [[ ! "$dmg_team_id" =~ ^[A-Z0-9]+$ ]]; then
-    echo "Mac 安装包校验失败：DMG 镜像缺少有效的非空 Team ID（实际：${dmg_team_id:-<空>}）。" >&2
-    exit 1
-  fi
-  if [[ -n "$expected_team_id" && "$dmg_team_id" != "$expected_team_id" ]]; then
-    echo "Mac 安装包校验失败：DMG 镜像的 Team ID（${dmg_team_id}）与主 App（${expected_team_id}）不一致。" >&2
-    exit 1
-  fi
-
-  if ! grep -Fq 'Authority=Developer ID Application:' <<<"$dmg_details"; then
-    echo "Mac 安装包校验失败：DMG 镜像不是有效的 Developer ID Application 签名。" >&2
-    exit 1
-  fi
-
-  dmg_timestamp="$(extract_codesign_field "$dmg_details" "Timestamp")"
-  if [[ -z "$dmg_timestamp" || "$dmg_timestamp" == "none" ]]; then
-    echo "Mac 安装包校验失败：DMG 镜像缺少有效的安全时间戳（Timestamp=${dmg_timestamp:-<空>}）。" >&2
-    exit 1
-  fi
-
-  VERIFIED_DMG_TEAM_ID="$dmg_team_id"
 }
 
 resolve_app_executable_path() {
@@ -261,6 +200,10 @@ verify_macho_slice_policy() {
       exit 1
     fi
 
+    if [[ "$require_developer_id" == "1" ]]; then
+      verify_developer_id_application "$target_path" "${display_label}（${slice_arch}）" --arch "$slice_arch"
+    fi
+
     if [[ "$require_team_signing" == "1" ]]; then
       slice_team_id="$(extract_codesign_field "$slice_details" "TeamIdentifier")"
       if [[ ! "$slice_team_id" =~ ^[A-Z0-9]+$ ]]; then
@@ -275,11 +218,6 @@ verify_macho_slice_policy() {
       fi
     fi
 
-    if [[ "$require_developer_id" == "1" ]] \
-      && ! grep -Fq 'Authority=Developer ID Application:' <<<"$slice_details"; then
-      echo "Mac 安装包校验失败：${display_label}（${slice_arch}）不是有效的 Developer ID Application 签名。" >&2
-      exit 1
-    fi
 
     if [[ "$require_timestamp" == "1" ]]; then
       slice_timestamp="$(extract_codesign_field "$slice_details" "Timestamp")"
@@ -411,59 +349,46 @@ except UnicodeDecodeError as exc:
 def reject_constant(token):
     raise ValueError(f"不允许非标准 JSON 常量：{token}")
 
-class PairTrackingDict(dict):
-    def __init__(self, pairs):
-        super().__init__(pairs)
-        self._pairs = list(pairs)
+class ObjectPairs(list):
+    pass
 
-def track_pairs(pairs):
-    return PairTrackingDict(pairs)
+
+def fail(message):
+    print(f"Mac 安装包校验失败：{label}的 {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def select_fields(pairs, fields, path):
+    # Go 的 SimpleFold 对 ASCII 字段名还匹配长 s 和 Kelvin 符号，但不展开多字符。
+    ascii_fold = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZſK", "abcdefghijklmnopqrstuvwxyzsk")
+    result = {}
+    for key, value in pairs:
+        folded = key.translate(ascii_fold)
+        if folded not in fields:
+            continue
+        if folded in result:
+            fail(f"{path}.{key} 与先前字段映射到同一个键，拒绝重复声明。")
+        result[folded] = value
+    return result
+
 
 try:
-    payload = json.loads(text, parse_constant=reject_constant, object_pairs_hook=track_pairs)
-except Exception as exc:
-    print(f"Mac 安装包校验失败：{label}的 --capabilities 输出不是合法 JSON：{exc}", file=sys.stderr)
-    sys.exit(1)
+    raw_payload = json.loads(text, parse_constant=reject_constant, object_pairs_hook=ObjectPairs)
+except ValueError as exc:
+    fail(f"--capabilities 输出不是合法 JSON：{exc}")
 
-if not isinstance(payload, dict):
-    print(f"Mac 安装包校验失败：{label}的 --capabilities 顶层必须是 JSON object。", file=sys.stderr)
-    sys.exit(1)
+if not isinstance(raw_payload, ObjectPairs):
+    fail("--capabilities 顶层必须是 JSON object。")
 
-# 严格对齐 Go encoding/json 对 AdapterCapabilities 的大小写不敏感字段匹配与类型校验（含重复键顺序校验）。
-runtime_key_lower = runtime_key.lower()
-for key, val in payload._pairs:
-    kl = key.lower()
-    if kl == "fullaccess":
-        if val is not None and not isinstance(val, bool):
-            print(
-                f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是布尔值（实际类型：{type(val).__name__}，值：{val!r}）。",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    elif kl == "methods":
-        if val is not None and (not isinstance(val, list) or not all(isinstance(item, str) for item in val)):
-            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串数组。", file=sys.stderr)
-            sys.exit(1)
-    elif kl == "name":
-        if val is not None and not isinstance(val, str):
-            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串。", file=sys.stderr)
-            sys.exit(1)
-    elif kl == "version":
-        if val is not None and not isinstance(val, str):
-            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串。", file=sys.stderr)
-            sys.exit(1)
-    elif kl == runtime_key_lower:
-        if val is not None and not isinstance(val, dict):
-            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是 JSON object。", file=sys.stderr)
-            sys.exit(1)
-        if isinstance(val, PairTrackingDict):
-            for nested_key, nested_val in val._pairs:
-                if nested_key.lower() == "minimumversion" and nested_val is not None and not isinstance(nested_val, str):
-                    print(
-                        f"Mac 安装包校验失败：{label}的 capabilities.{key}.{nested_key} 必须是字符串。",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
+# Go 按输入顺序读取重复字段。发布验收拒绝映射到同一字段的重复键，避免依赖覆盖、合并或 null 规则。
+payload = select_fields(raw_payload, {"fullaccess", "methods", "name", "version", runtime_key.lower()}, "capabilities")
+full_access = payload.get("fullaccess")
+if full_access is not None and not isinstance(full_access, bool):
+    fail(f"capabilities.fullAccess 必须是布尔值（实际类型：{type(full_access).__name__}）。")
+for field in ("name", "version"):
+    value = payload.get(field)
+    if value is not None and not isinstance(value, str):
+        fail(f"capabilities.{field} 必须是字符串。")
 
 version = payload.get("version")
 if not isinstance(version, str) or version != expected_version:
@@ -474,19 +399,20 @@ if not isinstance(version, str) or version != expected_version:
     sys.exit(1)
 
 methods = payload.get("methods")
-if not isinstance(methods, list) or not methods or not all(isinstance(item, str) for item in methods):
+if type(methods) is not list or not methods or not all(isinstance(item, str) for item in methods):
     print(f"Mac 安装包校验失败：{label}的 capabilities.methods 必须是非空字符串数组。", file=sys.stderr)
     sys.exit(1)
 if "turn/start" not in methods:
     print(f"Mac 安装包校验失败：{label}的 capabilities.methods 缺少 turn/start。", file=sys.stderr)
     sys.exit(1)
 
-runtime_block = payload.get(runtime_key)
-if not isinstance(runtime_block, dict):
+runtime_block = payload.get(runtime_key.lower())
+if not isinstance(runtime_block, ObjectPairs):
     print(f"Mac 安装包校验失败：{label}的 capabilities.{runtime_key} 必须是 JSON object。", file=sys.stderr)
     sys.exit(1)
 
-min_ver = runtime_block.get("minimumVersion")
+minimum_fields = select_fields(runtime_block, {"minimumversion"}, f"capabilities.{runtime_key}")
+min_ver = minimum_fields.get("minimumversion")
 if not isinstance(min_ver, str) or not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+", min_ver):
     print(
         f"Mac 安装包校验失败：{label}的 capabilities.{runtime_key}.minimumVersion 不是合法版本号（实际：{min_ver!r}）。",
@@ -525,23 +451,8 @@ verify_app_machos() {
   local check_arch_and_vtool="${1:-1}"
   local app_team=""
   local expected_app_identifier=""
-  local known_rel_path
-  local candidate_path candidate_rel_path candidate_expected_identifier candidate_kind candidate_team_identifier
+  local candidate_path candidate_rel_path candidate_kind candidate_team_identifier
   local binary_archs reference_sdk reference_sdk_arch binary_arch build_metadata binary_sdk
-
-  # 固定入口不得使用包内符号链接绕过后续切片与权限校验。
-  for known_rel_path in \
-    "Contents/MacOS/Mimi Remote Mac" \
-    "Contents/Resources/agentd" \
-    "Contents/Resources/alleycat-claude-bridge" \
-    "Contents/Resources/mimi-claude-adapter" \
-    "Contents/Resources/mimi-agy-adapter" \
-    "Contents/Resources/mimi-tailcat-experiment"; do
-    if [[ -L "$APP_PATH/$known_rel_path" ]]; then
-      echo "Mac 安装包校验失败：固定入口不得为符号链接：${known_rel_path}。" >&2
-      exit 1
-    fi
-  done
 
   if [[ -e "$APP_PATH/Contents/MacOS/Mimi Remote Mac" ]]; then
     expected_app_identifier="com.gaixianggeng.mimi.mac"
@@ -557,6 +468,8 @@ verify_app_machos() {
     "$REQUIRE_DEVELOPER_ID"
   app_team="$RESOLVED_SLICE_TEAM_ID"
   VERIFIED_APP_TEAM_ID="$app_team"
+  verify_present_macos_fixed_machos "$APP_PATH" "$REQUIRE_TEAM_SIGNING" \
+    "$app_team" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
 
   # 先完整写入 NUL 分隔临时清单并显式校验 find 退出状态，避免遍历部分失败后仍报告通过。
   local manifest_file="$CHECK_TEMP_DIR/app-macho-manifest.nul"
@@ -576,7 +489,6 @@ verify_app_machos() {
 
     macho_count=$((macho_count + 1))
     candidate_rel_path="${candidate_path#"$APP_PATH"/}"
-    candidate_expected_identifier="$(expected_known_macho_identifier "$candidate_rel_path")"
     # codesign --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O。逐个校验，避免未签名
     # sidecar 或残留损坏签名一直拖到 Apple 公证阶段才暴露。
     codesign --verify --strict --verbose=2 "$candidate_path"
@@ -584,7 +496,7 @@ verify_app_machos() {
     verify_macho_slice_policy \
       "$candidate_path" \
       "$candidate_rel_path" \
-      "$candidate_expected_identifier" \
+      "" \
       "$REQUIRE_TEAM_SIGNING" \
       "$app_team" \
       "$REQUIRE_DEVELOPER_ID" \
@@ -728,6 +640,7 @@ if [[ "$VERIFY_APP_MACHO_SIGNATURES" == "1" ]]; then
   APP_PATH="$(resolve_physical_dir "$TARGET_PATH")"
   ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-claude-adapter"
   AGY_ADAPTER_PATH="$APP_PATH/Contents/Resources/mimi-agy-adapter"
+  verify_macos_fixed_entry_paths "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
   verify_app_machos 0
   echo "Mac App Mach-O 签名校验通过：已枚举 ${macho_count} 个 Mach-O。"
@@ -802,6 +715,7 @@ if [[ ! -d "$APP_PATH" || -L "$LAUNCH_AGENT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]
   echo "Mac 安装包校验失败：缺少 App 或 LaunchAgent（且 LaunchAgent 不得为符号链接）。" >&2
   exit 1
 fi
+verify_macos_fixed_entry_paths "$APP_PATH"
 verify_fixed_entry_regular_executable "$APP_EXECUTABLE_PATH" "主 App 可执行文件"
 verify_fixed_entry_regular_executable "$AGENT_PATH" "agentd"
 verify_fixed_entry_regular_executable "$BRIDGE_PATH" "alleycat-claude-bridge"
@@ -934,13 +848,6 @@ for binary_path in "$APP_EXECUTABLE_PATH" "$AGENT_PATH" "$BRIDGE_PATH" "$ADAPTER
     fi
   done
 done
-
-verify_macho_slice_policy "$APP_PATH" "主 App" "com.gaixianggeng.mimi.mac" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
-verify_macho_slice_policy "$AGENT_PATH" "agentd" "com.gaixianggeng.mimi.mac.agentd" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
-verify_macho_slice_policy "$BRIDGE_PATH" "alleycat-claude-bridge" "com.gaixianggeng.mimi.mac.claude-bridge" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
-verify_macho_slice_policy "$ADAPTER_PATH" "mimi-claude-adapter" "com.gaixianggeng.mimi.mac.claude-adapter" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
-verify_macho_slice_policy "$AGY_ADAPTER_PATH" "mimi-agy-adapter" "com.gaixianggeng.mimi.mac.agy-adapter" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
-verify_macho_slice_policy "$TAILCAT_PATH" "mimi-tailcat-experiment" "com.gaixianggeng.mimi.mac.tailcat" "$REQUIRE_TEAM_SIGNING" "$app_team_identifier" "$REQUIRE_DEVELOPER_ID" "$REQUIRE_DEVELOPER_ID"
 
 verify_boolean_true_entitlements \
   "$APP_PATH" \
