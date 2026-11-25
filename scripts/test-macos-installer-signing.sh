@@ -72,7 +72,7 @@ check_embedded_binary_coverage() {
 
   local embedded_list
   embedded_list="$(
-    sed -nE 's/^[[:space:]]*([a-zA-Z0-9_]+)_output="\$bundle_root\/Resources\/([^"\/]+)"[[:space:]]*$/\1 \2/p' \
+    sed -nE 's/^[[:space:]]*([a-zA-Z0-9_]+)_output="\$\{?bundle_root\}?\/Resources\/([^"\/]+)"[[:space:]]*$/\1 \2/p' \
       "$embed_script"
   )"
   [[ -n "$embedded_list" ]] || fail "无法从 ${embed_script} 提取内嵌 Resources 二进制列表。"
@@ -226,6 +226,45 @@ run_capabilities_json_tests() {
     | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1; then
     fail "缺少 claudeCode.minimumVersion 的 JSON 未被拦截。"
   fi
+
+  # 反例 7（P2-5）：fullAccess 为字符串 "true"（Go encoding/json 拒绝，必须为布尔值）-> 必败。
+  if printf '%s' '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["turn/start"],"fullAccess":"true","agy":{"minimumVersion":"1.5.0"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+    fail 'fullAccess="true"（字符串）未被拦截。'
+  fi
+  grep -Fq '必须是布尔值' "$log_file" \
+    || fail "fullAccess 非布尔报错不明确：$(<"$log_file")"
+
+  # 反例 7b（P2-5）：大小写变体 FullAccess 为字符串，或重复键首项非法（Go encoding/json 均拒绝）-> 必败。
+  if printf '%s' '{"name":"mimi-claude-adapter","version":"0.3.0","methods":["turn/start"],"FullAccess":"true","claudeCode":{"minimumVersion":"2.1.294"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1; then
+    fail '大小写变体 FullAccess="true" 未被拦截。'
+  fi
+  if printf '%s' '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["turn/start"],"fullAccess":"true","fullAccess":true,"agy":{"minimumVersion":"1.5.0"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+    fail '重复键首项 fullAccess="true" 未被拦截。'
+  fi
+
+  # 反例 8（P2-5）：额外字段包含非标准 JSON 常量 NaN / Infinity（Go 拒绝）-> 必败。
+  if printf '%s' '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["turn/start"],"fullAccess":true,"agy":{"minimumVersion":"1.5.0"},"extra":NaN}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+    fail "包含 NaN 的非标准 JSON 未被拦截。"
+  fi
+  grep -Fq '非标准 JSON 常量' "$log_file" \
+    || fail "NaN 报错不明确：$(<"$log_file")"
+
+  if printf '%s' '{"name":"mimi-claude-adapter","version":"0.3.0","methods":["turn/start"],"fullAccess":true,"claudeCode":{"minimumVersion":"2.1.294"},"extra":Infinity}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json claude 0.3.0 >"$log_file" 2>&1; then
+    fail "包含 Infinity 的非标准 JSON 未被拦截。"
+  fi
+
+  # 反例 9（P2-5）：合法 JSON 后紧跟原始 NUL 字节 \x00（不能被 Bash 命令替换吞掉）-> 必败。
+  if printf '%s\0' '{"name":"mimi-agy-adapter","version":"0.1.0","methods":["turn/start"],"fullAccess":true,"agy":{"minimumVersion":"1.5.0"}}' \
+    | bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-capabilities-json agy 0.1.0 >"$log_file" 2>&1; then
+    fail "合法 JSON 后跟 NUL 字节未被拦截。"
+  fi
+  grep -Fq 'NUL' "$log_file" \
+    || fail "尾随 NUL 字节报错不明确：$(<"$log_file")"
 }
 
 run_static_consistency_tests() {
@@ -234,25 +273,30 @@ run_static_consistency_tests() {
     "$ROOT_DIR/scripts/build-macos-installer.sh" \
     "$ROOT_DIR/scripts/check-macos-installer.sh"
 
-  # 变异反例：向 embed-agentd.sh 注入未加入签名列表的新内嵌二进制，校验器必须拦截。
+  # 变异反例（快速静态提示）：覆盖 $bundle_root 与 ${bundle_root} 两种赋值拼写。
   local mutated_embed="$TEMP_DIR/embed-agentd-mutated.sh"
-  cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/embed-agentd.sh" "$mutated_embed"
-  printf '\nrogue_sidecar_output="$bundle_root/Resources/mimi-rogue-sidecar"\n' >> "$mutated_embed"
   local mutation_log="$TEMP_DIR/static-mutation.log"
-  if (
-    check_embedded_binary_coverage \
-      "$mutated_embed" \
-      "$ROOT_DIR/scripts/build-macos-installer.sh" \
-      "$ROOT_DIR/scripts/check-macos-installer.sh"
-  ) >"$mutation_log" 2>&1; then
-    fail "静态一致性变异用例未拦截漏出签名列表的 mimi-rogue-sidecar。"
-  fi
-  grep -Fq 'mimi-rogue-sidecar' "$mutation_log" \
-    || fail "静态一致性变异用例报错未指出遗漏的 mimi-rogue-sidecar：$(<"$mutation_log")"
+  local mutation_line
+  for mutation_line in \
+    'rogue_sidecar_output="$bundle_root/Resources/mimi-rogue-sidecar"' \
+    'rogue_output="${bundle_root}/Resources/mimi-rogue-sidecar"'; do
+    cp "$ROOT_DIR/macos/MimiRemoteMac/Scripts/embed-agentd.sh" "$mutated_embed"
+    printf '\n%s\n' "$mutation_line" >> "$mutated_embed"
+    if (
+      check_embedded_binary_coverage \
+        "$mutated_embed" \
+        "$ROOT_DIR/scripts/build-macos-installer.sh" \
+        "$ROOT_DIR/scripts/check-macos-installer.sh"
+    ) >"$mutation_log" 2>&1; then
+      fail "静态一致性变异用例未拦截漏出签名列表的 mimi-rogue-sidecar（${mutation_line}）。"
+    fi
+    grep -Fq 'mimi-rogue-sidecar' "$mutation_log" \
+      || fail "静态一致性变异用例报错未指出遗漏的 mimi-rogue-sidecar：$(<"$mutation_log")"
+  done
 
   run_capabilities_json_tests
 
-  echo "Mac 安装包签名静态一致性与能力 JSON 自测通过（含漏签变异与非法 JSON 反例）。"
+  echo "Mac 安装包签名静态一致性与能力 JSON 自测通过（含漏签变异与严格 Go JSON 反例）。"
 }
 
 build_controlled_sample_machos() {
@@ -275,6 +319,62 @@ C_SRC
 
   [[ "$(file -b "$out_dir/sample-universal")" == Mach-O* ]] \
     || fail "编译生成的 sample-universal 不是 Mach-O。"
+
+  # 额外编译一个按可执行文件名响应 version/--version/--capabilities 的受控 universal Mach-O，
+  # 用于端到端测试 build-macos-installer.sh 完整签名循环与 check-macos-installer.sh --app 完整验收。
+  local probe_src="$out_dir/probe.c"
+  cat > "$probe_src" <<'PROBE_C'
+#include <stdio.h>
+#include <string.h>
+
+static const char *base_name(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return slash ? slash + 1 : path;
+}
+
+int main(int argc, char **argv) {
+  const char *name = argc > 0 ? base_name(argv[0]) : "";
+  const char *arg1 = argc > 1 ? argv[1] : "";
+
+  if (strcmp(name, "agentd") == 0 || strcmp(name, "mimi-tailcat-experiment") == 0) {
+    if (strcmp(arg1, "version") == 0) {
+      printf("%s 9.9.9\n", name);
+      return 0;
+    }
+  } else if (strcmp(name, "alleycat-claude-bridge") == 0) {
+    if (strcmp(arg1, "--version") == 0) {
+      printf("alleycat-claude-bridge 9.9.9\n");
+      return 0;
+    }
+  } else if (strcmp(name, "mimi-claude-adapter") == 0) {
+    if (strcmp(arg1, "--version") == 0) {
+      printf("mimi-claude-adapter 9.9.9\n");
+      return 0;
+    }
+    if (strcmp(arg1, "--capabilities") == 0) {
+      printf("{\"name\":\"mimi-claude-adapter\",\"version\":\"9.9.9\",\"methods\":[\"initialize\",\"turn/start\"],\"fullAccess\":true,\"claudeCode\":{\"minimumVersion\":\"2.1.294\"}}\n");
+      return 0;
+    }
+  } else if (strcmp(name, "mimi-agy-adapter") == 0) {
+    if (strcmp(arg1, "--version") == 0) {
+      printf("mimi-agy-adapter 9.9.9\n");
+      return 0;
+    }
+    if (strcmp(arg1, "--capabilities") == 0) {
+      printf("{\"name\":\"mimi-agy-adapter\",\"version\":\"9.9.9\",\"methods\":[\"initialize\",\"turn/start\"],\"fullAccess\":true,\"agy\":{\"minimumVersion\":\"1.5.0\"}}\n");
+      return 0;
+    }
+  }
+  return 0;
+}
+PROBE_C
+
+  run_logged "编译受控探针 arm64 Mach-O" \
+    xcrun clang -arch arm64 -O0 "$probe_src" -o "$out_dir/probe-arm64"
+  run_logged "编译受控探针 x86_64 Mach-O" \
+    xcrun clang -arch x86_64 -O0 "$probe_src" -o "$out_dir/probe-x86_64"
+  run_logged "合成受控探针 universal Mach-O" \
+    lipo -create "$out_dir/probe-arm64" "$out_dir/probe-x86_64" -output "$out_dir/probe-universal"
 }
 
 tamper_payload_in_binary() {
@@ -376,7 +476,7 @@ run_macos_codesign_tests() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
     fail "真实 codesign 行为测试只能在 macOS (Darwin) 上运行；非 macOS 环境请传 --static-only。"
   fi
-  for command_name in chmod codesign cp file lipo ln mktemp plutil python3 xcrun; do
+  for command_name in chmod codesign cp ditto file hdiutil lipo ln mktemp plutil python3 xcrun; do
     command -v "$command_name" >/dev/null 2>&1 || fail "缺少 macOS 测试命令 ${command_name}。"
   done
 
@@ -387,6 +487,9 @@ run_macos_codesign_tests() {
   local sample_universal="$sample_dir/sample-universal"
   local sample_arm64="$sample_dir/sample-arm64"
   local sample_x86_64="$sample_dir/sample-x86_64"
+  local probe_universal="$sample_dir/probe-universal"
+  local probe_arm64="$sample_dir/probe-arm64"
+  local probe_x86_64="$sample_dir/probe-x86_64"
   local app_dir="$TEMP_DIR/Test.app"
   local test_log="$TEMP_DIR/codesign-test.log"
 
@@ -554,7 +657,148 @@ run_macos_codesign_tests() {
   bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app_dir" >"$test_log" 2>&1 \
     || fail "合法 JIT entitlements 的 mimi-agy-adapter 未通过校验：$(<"$test_log")"
 
-  # 6. P2-1：lipo -create 拼接两个不同签名切片（arm64 带 runtime，x86_64 无 runtime）-> 必拒。
+  # 5b. P1-1（单切片 false 反例）：arm64 带合法 JIT entitlements，仅 x86_64 为 allow-jit=<false/> -> 必拒。
+  local jit_arm64="$TEMP_DIR/jit-arm64"
+  local jit_x86_64="$TEMP_DIR/jit-x86_64"
+  run_logged "准备单切片 JIT arm64" cp "$sample_arm64" "$jit_arm64"
+  run_logged "准备单切片 JIT x86_64" cp "$sample_x86_64" "$jit_x86_64"
+  run_logged "签名 JIT arm64（合法 true）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements" \
+      "$jit_arm64"
+  run_logged "签名 JIT x86_64（allow-jit=false）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$bad_ent_false" \
+      "$jit_x86_64"
+  run_logged "合成单切片 allow-jit=false universal 适配器" \
+    lipo -create "$jit_arm64" "$jit_x86_64" -output "$agy_bin"
+  run_logged "设置单切片 JIT 适配器权限" chmod 0755 "$agy_bin"
+  run_logged "重封主 App（单切片 allow-jit=false 用例）" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app_dir" >"$test_log" 2>&1; then
+    fail "仅 x86_64 为 allow-jit=false 的 mimi-agy-adapter 被 checker 放行。"
+  fi
+  grep -Fq 'x86_64' "$test_log" \
+    || fail "单切片 allow-jit=false 报错未指出 x86_64：$(<"$test_log")"
+  grep -Fq 'com.apple.security.cs.allow-jit' "$test_log" \
+    || fail "单切片 allow-jit=false 报错未指出 allow-jit：$(<"$test_log")"
+
+  # 5c. P1-1（包内符号链接绕过反例）：mimi-agy-adapter 指向同目录合法签名但 allow-jit=false 的文件 -> 必拒。
+  local agy_real_bad="$app_dir/Contents/Resources/mimi-agy-adapter-real"
+  run_logged "复制符号链接目标适配器" cp "$sample_universal" "$agy_real_bad"
+  run_logged "设置符号链接目标权限" chmod 0755 "$agy_real_bad"
+  run_logged "签名符号链接目标（allow-jit=false）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$bad_ent_false" \
+      "$agy_real_bad"
+  rm -f -- "$agy_bin"
+  run_logged "创建包内适配器符号链接" ln -s "mimi-agy-adapter-real" "$agy_bin"
+  run_logged "重封主 App（包内符号链接适配器用例）" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app_dir" >"$test_log" 2>&1; then
+    fail "包内符号链接适配器（指向 allow-jit=false 文件）被 checker 快速模式放行。"
+  fi
+  grep -Fq '符号链接' "$test_log" \
+    || fail "包内符号链接适配器报错未指出符号链接拒绝：$(<"$test_log")"
+  if bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --snapshot "$app_dir" >"$test_log" 2>&1; then
+    fail "包内符号链接适配器被 builder --verify-only 放行。"
+  fi
+
+  # 恢复合法普通文件 mimi-agy-adapter。
+  rm -f -- "$agy_bin" "$agy_real_bad"
+  run_logged "恢复合法普通文件 mimi-agy-adapter" cp "$sample_universal" "$agy_bin"
+  run_logged "设置恢复后的 mimi-agy-adapter 权限" chmod 0755 "$agy_bin"
+  run_logged "恢复签入正式 ClaudeAdapter.entitlements" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements" \
+      "$agy_bin"
+  run_logged "重封主 App（恢复合法适配器）" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+
+  # 5d. P2-4（已知入口错误固定 identifier）：两切片均具备合法 runtime/entitlements 且一致，但 identifier 偏离固定值 -> 两个快速入口均必拒。
+  run_logged "给 mimi-agy-adapter 签入错误固定 identifier" \
+    codesign --force --sign - \
+      --identifier com.example.wrong.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements" \
+      "$agy_bin"
+  run_logged "重封主 App（已知入口错误 identifier 用例）" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app_dir" >"$test_log" 2>&1; then
+    fail "已知入口 mimi-agy-adapter 使用错误 identifier 被 checker 快速模式放行。"
+  fi
+  grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' "$test_log" \
+    || fail "已知入口错误 identifier checker 报错未指出期望值：$(<"$test_log")"
+  if bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --snapshot "$app_dir" >"$test_log" 2>&1; then
+    fail "已知入口 mimi-agy-adapter 使用错误 identifier 被 builder --verify-only 放行。"
+  fi
+  grep -Fq 'com.gaixianggeng.mimi.mac.agy-adapter' "$test_log" \
+    || fail "已知入口错误 identifier builder 报错未指出期望值：$(<"$test_log")"
+
+  # 恢复正确固定 identifier。
+  run_logged "恢复 mimi-agy-adapter 正确固定 identifier" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements" \
+      "$agy_bin"
+  run_logged "重封主 App（恢复正确固定 identifier）" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+
+  # 6. P2-1 & P2-4：
+  # 6a. 仅改变某切片 Identifier（两端均具备合法 runtime、同签名身份）-> checker 快速模式与 builder --verify-only 均必拒。
+  local id_arm64="$TEMP_DIR/id-arm64"
+  local id_x86_64="$TEMP_DIR/id-x86_64"
+  local id_mismatch_bin="$app_dir/Contents/Resources/mimi-id-mismatch"
+  run_logged "准备异 identifier 切片 arm64" cp "$sample_arm64" "$id_arm64"
+  run_logged "准备异 identifier 切片 x86_64" cp "$sample_x86_64" "$id_x86_64"
+  run_logged "签名异 identifier arm64（带 runtime）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.signing-test.id-a \
+      --options runtime --timestamp=none \
+      "$id_arm64"
+  run_logged "签名异 identifier x86_64（带 runtime、仅改 identifier）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.signing-test.id-b \
+      --options runtime --timestamp=none \
+      "$id_x86_64"
+  run_logged "合成仅 identifier 不一致的 universal 二进制" \
+    lipo -create "$id_arm64" "$id_x86_64" -output "$id_mismatch_bin"
+  run_logged "设置异 identifier 二进制权限" chmod 0755 "$id_mismatch_bin"
+  run_logged "重封含异 identifier 二进制的主 App" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --verify-app-macho-signatures "$app_dir" >"$test_log" 2>&1; then
+    fail "仅切片 identifier 不一致（均带 runtime）的 universal Mach-O 被 checker 快速模式放行。"
+  fi
+  grep -Fq 'mimi-id-mismatch' "$test_log" \
+    || fail "异 identifier checker 报错缺少文件名：$(<"$test_log")"
+  grep -Fq 'x86_64' "$test_log" \
+    || fail "异 identifier checker 报错未指出问题切片 x86_64：$(<"$test_log")"
+  grep -Fq 'identifier' "$test_log" \
+    || fail "异 identifier checker 报错未指出 identifier 不一致：$(<"$test_log")"
+
+  if bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only --snapshot "$app_dir" >"$test_log" 2>&1; then
+    fail "仅切片 identifier 不一致（均带 runtime）的 universal Mach-O 被 builder --verify-only 放行。"
+  fi
+  grep -Fq 'mimi-id-mismatch' "$test_log" \
+    || fail "异 identifier builder 报错缺少文件名：$(<"$test_log")"
+  grep -Fq 'x86_64' "$test_log" \
+    || fail "异 identifier builder 报错未指出问题切片 x86_64：$(<"$test_log")"
+
+  rm -f -- "$id_mismatch_bin"
+  run_logged "移除异 identifier 样例后重封主 App" \
+    codesign --force --sign - --options runtime --timestamp=none "$app_dir"
+
+  # 6b. lipo -create 拼接两个不同签名切片（arm64 带 runtime，x86_64 无 runtime）-> 必拒。
   local mixed_arm64="$TEMP_DIR/mixed-arm64"
   local mixed_x86_64="$TEMP_DIR/mixed-x86_64"
   local mixed_bin="$app_dir/Contents/Resources/mimi-mixed-slices"
@@ -694,7 +938,29 @@ if [[ "${1:-}" == "-d" && "${2:-}" == "--arch" && "${4:-}" == "--verbose=4" ]]; 
     exit 0
   fi
   printf 'Executable=%s\n' "$target"
-  printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test\n'
+  case "$target" in
+    *"/Contents/Resources/mimi-agy-adapter")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.agy-adapter\n'
+      ;;
+    *"/Contents/Resources/mimi-claude-adapter")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.claude-adapter\n'
+      ;;
+    *"/Contents/Resources/agentd")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.agentd\n'
+      ;;
+    *"/Contents/Resources/alleycat-claude-bridge")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.claude-bridge\n'
+      ;;
+    *"/Contents/Resources/mimi-tailcat-experiment")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.tailcat\n'
+      ;;
+    *"/Contents/Resources/mimi-leaky-adapter")
+      printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test.leaky\n'
+      ;;
+    *)
+      printf 'Identifier=com.gaixianggeng.mimi.mac.signing-test\n'
+      ;;
+  esac
   printf 'Format=Mach-O thin (%s)\n' "$arch"
   printf 'CodeDirectory v=20500 size=401 flags=0x10000(runtime) hashes=2+7 location=embedded\n'
   printf 'Authority=Developer ID Application: Mimi Test (TEAM123456)\n'
@@ -808,7 +1074,226 @@ STUB
     bash "$ROOT_DIR/scripts/build-macos-installer.sh" --verify-only "$app_dir" >"$test_log" 2>&1 \
     || fail "全部 Mach-O 具备同 Team ID Developer ID 与安全时间戳时应通过 builder 正式策略：$(<"$test_log")"
 
-  echo "Mac 安装包真实 codesign 防回归测试通过（受控编译样例、符号链接、损坏/未签名、JIT entitlements 布尔校验、混合切片、find 失败、选项边界、有效 ad-hoc 漏签与 builder/checker 逐片策略全覆盖）。"
+  # 10. P2-6 / P1-1 / P2-4 端到端集成测试：
+  # 仅对 xcodebuild 做受控替换以输出最小完整 universal Mimi Remote Mac.app，不打桩跳过
+  # build-macos-installer.sh 的真实生产签名循环、封包前检验与 check-macos-installer.sh --app 完整验收。
+  local fake_xcode_dir="$TEMP_DIR/fake-xcodebuild-bin"
+  mkdir -p "$fake_xcode_dir"
+  cat > "$fake_xcode_dir/xcodebuild" <<'XCODE_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+derived_data=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-derivedDataPath" ]]; then
+    derived_data="${2:-}"
+    shift 2
+  else
+    shift
+  fi
+done
+if [[ -z "$derived_data" ]]; then
+  echo "fake xcodebuild 缺少 -derivedDataPath" >&2
+  exit 2
+fi
+app_out="$derived_data/Build/Products/Release/Mimi Remote Mac.app"
+mkdir -p \
+  "$app_out/Contents/MacOS" \
+  "$app_out/Contents/Resources" \
+  "$app_out/Contents/Library/LaunchAgents"
+
+cat > "$app_out/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>Mimi Remote Mac</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.gaixianggeng.mimi.mac</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Mimi Remote Mac</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.2.3</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>Photo library test description</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Desktop folder test description</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Documents folder test description</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Downloads folder test description</string>
+</dict>
+</plist>
+PLIST
+
+cp "$TEST_REPO_ROOT/THIRD_PARTY_NOTICES.md" "$app_out/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cp "$TEST_REPO_ROOT/macos/MimiRemoteMac/Resources/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist" \
+  "$app_out/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
+
+for rel_bin in \
+  "Contents/MacOS/Mimi Remote Mac" \
+  "Contents/Resources/agentd" \
+  "Contents/Resources/alleycat-claude-bridge" \
+  "Contents/Resources/mimi-claude-adapter" \
+  "Contents/Resources/mimi-agy-adapter" \
+  "Contents/Resources/mimi-tailcat-experiment"; do
+  cp "$TEST_PROBE_UNIVERSAL" "$app_out/$rel_bin"
+  chmod 0755 "$app_out/$rel_bin"
+done
+
+if [[ "${TEST_INJECT_ROGUE_SIDECAR:-0}" == "1" ]]; then
+  # 模拟 embed-agentd.sh 新增了一个未进入 build-macos-installer.sh 签名列表的未签侧车。
+  rogue_path="$app_out/Contents/Resources/mimi-rogue-sidecar"
+  cp "$TEST_PROBE_UNIVERSAL" "$rogue_path"
+  chmod 0755 "$rogue_path"
+  /usr/bin/codesign --remove-signature "$rogue_path"
+fi
+XCODE_STUB
+  run_logged "设置 fake xcodebuild 权限" chmod 0755 "$fake_xcode_dir/xcodebuild"
+
+  # 10a. 端到端正向：真实运行 build-macos-installer.sh --snapshot --app-only 签名循环 + check-macos-installer.sh --app 完整验收。
+  local e2e_ok_out="$TEMP_DIR/e2e-ok-out"
+  mkdir -p "$e2e_ok_out"
+  PATH="$fake_xcode_dir:$PATH" TEST_REPO_ROOT="$ROOT_DIR" TEST_PROBE_UNIVERSAL="$probe_universal" \
+    bash "$ROOT_DIR/scripts/build-macos-installer.sh" --snapshot --app-only --version 1.2.3 --output-dir "$e2e_ok_out" >"$test_log" 2>&1 \
+    || fail "端到端 build-macos-installer.sh --snapshot --app-only 失败：$(<"$test_log")"
+  local e2e_app="$e2e_ok_out/Mimi Remote Mac.app"
+  [[ -d "$e2e_app" ]] || fail "端到端构建未生成 Mimi Remote Mac.app。"
+  bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$e2e_app" >"$test_log" 2>&1 \
+    || fail "端到端生成的 Mimi Remote Mac.app 未通过完整 check-macos-installer.sh --app 校验：$(<"$test_log")"
+
+  # 10b. P2-6 端到端漏签集成反例：模拟 embed-agentd.sh 注入未签侧车进入真实 build-macos-installer.sh 封包流程 -> 封包前检验必须失败并指出文件名。
+  local e2e_bad_out="$TEMP_DIR/e2e-bad-out"
+  mkdir -p "$e2e_bad_out"
+  if PATH="$fake_xcode_dir:$PATH" TEST_REPO_ROOT="$ROOT_DIR" TEST_PROBE_UNIVERSAL="$probe_universal" TEST_INJECT_ROGUE_SIDECAR=1 \
+    bash "$ROOT_DIR/scripts/build-macos-installer.sh" --snapshot --app-only --version 1.2.3 --output-dir "$e2e_bad_out" >"$test_log" 2>&1; then
+    fail "端到端集成反例：包含漏签侧车 mimi-rogue-sidecar 时 build-macos-installer.sh 未阻断发布。"
+  fi
+  grep -Fq 'mimi-rogue-sidecar' "$test_log" \
+    || fail "端到端漏签集成反例报错未指出 mimi-rogue-sidecar：$(<"$test_log")"
+  [[ ! -e "$e2e_bad_out/Mimi Remote Mac.app" ]] \
+    || fail "端到端漏签集成反例失败后不应输出 Mimi Remote Mac.app。"
+
+  # 10c. P1-1 完整 --app 验收反例：包内符号链接适配器指向同目录合法签名但 allow-jit=false 的文件 -> 完整 --app 必拒。
+  local full_app_symlink_case="$TEMP_DIR/full-app-symlink/Mimi Remote Mac.app"
+  mkdir -p "$(dirname "$full_app_symlink_case")"
+  run_logged "复制完整测试 App（P1-1 链接反例）" ditto "$e2e_app" "$full_app_symlink_case"
+  local full_agy_real="$full_app_symlink_case/Contents/Resources/mimi-agy-adapter-real"
+  run_logged "准备完整 App 符号链接目标" cp "$probe_universal" "$full_agy_real"
+  run_logged "设置完整 App 符号链接目标权限" chmod 0755 "$full_agy_real"
+  run_logged "签名完整 App 符号链接目标（allow-jit=false）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$bad_ent_false" \
+      "$full_agy_real"
+  rm -f -- "$full_app_symlink_case/Contents/Resources/mimi-agy-adapter"
+  run_logged "创建完整 App 包内适配器符号链接" \
+    ln -s "mimi-agy-adapter-real" "$full_app_symlink_case/Contents/Resources/mimi-agy-adapter"
+  run_logged "重封完整 App（P1-1 链接反例）" \
+    codesign --force --sign - --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
+      "$full_app_symlink_case"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$full_app_symlink_case" >"$test_log" 2>&1; then
+    fail "完整 --app 验收放行了包内符号链接适配器（指向 allow-jit=false 文件）。"
+  fi
+  grep -Fq '符号链接' "$test_log" \
+    || fail "完整 --app 包内符号链接报错不准确：$(<"$test_log")"
+
+  # 10d. P1-1 完整 --app 单切片 allow-jit=false 反例 -> 完整 --app 必拒。
+  local full_app_slice_case="$TEMP_DIR/full-app-slice/Mimi Remote Mac.app"
+  mkdir -p "$(dirname "$full_app_slice_case")"
+  run_logged "复制完整测试 App（P1-1 单切片反例）" ditto "$e2e_app" "$full_app_slice_case"
+  local full_jit_arm64="$TEMP_DIR/full-jit-arm64"
+  local full_jit_x86_64="$TEMP_DIR/full-jit-x86_64"
+  run_logged "准备完整 App 单切片 arm64" cp "$probe_arm64" "$full_jit_arm64"
+  run_logged "准备完整 App 单切片 x86_64" cp "$probe_x86_64" "$full_jit_x86_64"
+  run_logged "签名完整 App 单切片 arm64（合法 true）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/ClaudeAdapter.entitlements" \
+      "$full_jit_arm64"
+  run_logged "签名完整 App 单切片 x86_64（allow-jit=false）" \
+    codesign --force --sign - \
+      --identifier com.gaixianggeng.mimi.mac.agy-adapter \
+      --options runtime --timestamp=none \
+      --entitlements "$bad_ent_false" \
+      "$full_jit_x86_64"
+  run_logged "合成完整 App 单切片 false 适配器" \
+    lipo -create "$full_jit_arm64" "$full_jit_x86_64" -output "$full_app_slice_case/Contents/Resources/mimi-agy-adapter"
+  run_logged "设置完整 App 单切片适配器权限" chmod 0755 "$full_app_slice_case/Contents/Resources/mimi-agy-adapter"
+  run_logged "重封完整 App（单切片 allow-jit=false）" \
+    codesign --force --sign - --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
+      "$full_app_slice_case"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$full_app_slice_case" >"$test_log" 2>&1; then
+    fail "完整 --app 验收放行了仅 x86_64 为 allow-jit=false 的适配器。"
+  fi
+  grep -Fq 'x86_64' "$test_log" \
+    || fail "完整 --app 单切片 allow-jit=false 报错未指出 x86_64：$(<"$test_log")"
+
+  # 10e. P2-4 完整 --app 仅改变某切片 Identifier 反例 -> 完整 --app 必拒。
+  local full_app_id_case="$TEMP_DIR/full-app-id-mismatch/Mimi Remote Mac.app"
+  mkdir -p "$(dirname "$full_app_id_case")"
+  run_logged "复制完整测试 App（P2-4 异 identifier 反例）" ditto "$e2e_app" "$full_app_id_case"
+  local full_id_bin="$full_app_id_case/Contents/Resources/mimi-id-mismatch"
+  run_logged "合成完整 App 异 identifier 二进制" lipo -create "$id_arm64" "$id_x86_64" -output "$full_id_bin"
+  run_logged "设置完整 App 异 identifier 权限" chmod 0755 "$full_id_bin"
+  run_logged "重封完整 App（P2-4 异 identifier 反例）" \
+    codesign --force --sign - --options runtime --timestamp=none \
+      --entitlements "$ROOT_DIR/macos/MimiRemoteMac/Resources/MimiRemoteMac.entitlements" \
+      "$full_app_id_case"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$full_app_id_case" >"$test_log" 2>&1; then
+    fail "完整 --app 验收放行了仅切片 identifier 不一致的 universal Mach-O。"
+  fi
+  grep -Fq 'mimi-id-mismatch' "$test_log" \
+    || fail "完整 --app 异 identifier 报错缺少文件名：$(<"$test_log")"
+  grep -Fq 'x86_64' "$test_log" \
+    || fail "完整 --app 异 identifier 报错未指出 x86_64：$(<"$test_log")"
+
+  # 11. P2-9 真实 DMG 卷内链接逃逸反例：DMG 内的 Mimi Remote Mac.app 是指向卷外 App 的符号链接 -> 必拒。
+  local dmg_escape_root="$TEMP_DIR/dmg-escape-root"
+  local dmg_escape_path="$TEMP_DIR/Mimi-Escape.dmg"
+  mkdir -p "$dmg_escape_root"
+  run_logged "在 DMG 源目录放置指向卷外 App 的符号链接" ln -s "$e2e_app" "$dmg_escape_root/Mimi Remote Mac.app"
+  run_logged "生成卷外链接测试 DMG" \
+    hdiutil create -quiet -volname "MimiEscapeTest" -srcfolder "$dmg_escape_root" -format UDZO "$dmg_escape_path"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" "$dmg_escape_path" >"$test_log" 2>&1; then
+    fail "DMG 卷内符号链接指向卷外 App 时被 checker 放行。"
+  fi
+  grep -Fq '不得为符号链接' "$test_log" \
+    || fail "DMG 卷内符号链接报错不准确：$(<"$test_log")"
+
+  # 12. P2-10 DMG 单独传 --require-developer-id 必须检查镜像本体签名（未签名 DMG / ad-hoc DMG 均必拒）。
+  local dmg_unsigned_root="$TEMP_DIR/dmg-unsigned-root"
+  local dmg_unsigned_path="$TEMP_DIR/Mimi-Unsigned.dmg"
+  mkdir -p "$dmg_unsigned_root"
+  run_logged "复制已签名 App 到未签名 DMG 源目录" ditto "$e2e_app" "$dmg_unsigned_root/Mimi Remote Mac.app"
+  run_logged "生成未签名测试 DMG" \
+    hdiutil create -quiet -volname "MimiUnsignedTest" -srcfolder "$dmg_unsigned_root" -format UDZO "$dmg_unsigned_path"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --require-developer-id "$dmg_unsigned_path" >"$test_log" 2>&1; then
+    fail "未签名 DMG 在 --require-developer-id 下被 checker 放行。"
+  fi
+  grep -Eq 'not signed at all|DMG 镜像' "$test_log" \
+    || fail "未签名 DMG 在 --require-developer-id 下的报错不准确：$(<"$test_log")"
+
+  run_logged "给测试 DMG 签入 ad-hoc 签名" codesign --force --sign - "$dmg_unsigned_path"
+  if bash "$ROOT_DIR/scripts/check-macos-installer.sh" --require-developer-id "$dmg_unsigned_path" >"$test_log" 2>&1; then
+    fail "ad-hoc 签名 DMG 在 --require-developer-id 下被 checker 放行。"
+  fi
+  grep -Fq 'DMG 镜像' "$test_log" \
+    || fail "ad-hoc 签名 DMG 在 --require-developer-id 下的报错未指出 DMG 镜像策略失败：$(<"$test_log")"
+
+  echo "Mac 安装包真实 codesign 防回归测试通过（受控编译样例、符号链接、损坏/未签名、JIT entitlements 布尔与单切片/链接校验、混合切片与异 identifier、find 失败、选项边界、有效 ad-hoc 漏签、端到端集成漏签、DMG 卷外链接与 DMG 镜像签名全覆盖）。"
 }
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-macos-signing-test.XXXXXX")"

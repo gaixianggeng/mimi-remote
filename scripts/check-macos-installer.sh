@@ -19,6 +19,7 @@ MOUNT_TARGET=""
 MOUNTED=0
 RESOLVED_SLICE_TEAM_ID=""
 VERIFIED_APP_TEAM_ID=""
+VERIFIED_DMG_TEAM_ID=""
 macho_count=0
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -69,6 +70,109 @@ resolve_physical_dir() {
   (
     CDPATH= cd -P -- "$dir_path" >/dev/null && pwd -P
   )
+}
+
+resolve_dmg_app_path() {
+  local mount_dir="$1"
+  local mount_real app_entry app_real
+
+  if [[ -z "$mount_dir" || ! -d "$mount_dir" ]]; then
+    echo "Mac 安装包校验失败：DMG 挂载根目录不存在：${mount_dir:-<空>}。" >&2
+    return 1
+  fi
+  mount_real="$(resolve_physical_dir "$mount_dir")"
+  app_entry="$mount_real/Mimi Remote Mac.app"
+
+  if [[ -L "$app_entry" ]]; then
+    echo "Mac 安装包校验失败：DMG 内的 Mimi Remote Mac.app 不得为符号链接。" >&2
+    return 1
+  fi
+  if [[ ! -d "$app_entry" ]]; then
+    echo "Mac 安装包校验失败：DMG 缺少 Mimi Remote Mac.app。" >&2
+    return 1
+  fi
+  app_real="$(resolve_physical_dir "$app_entry")"
+  if [[ "$app_real" != "${mount_real}/Mimi Remote Mac.app" ]]; then
+    echo "Mac 安装包校验失败：DMG 内的 Mimi Remote Mac.app 物理路径（${app_real}）逃逸出挂载根目录（${mount_real}）。" >&2
+    return 1
+  fi
+  printf '%s\n' "$app_real"
+}
+
+expected_known_macho_identifier() {
+  local rel_path="$1"
+  case "$rel_path" in
+    "Contents/MacOS/Mimi Remote Mac")
+      printf '%s\n' "com.gaixianggeng.mimi.mac"
+      ;;
+    "Contents/Resources/agentd")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.agentd"
+      ;;
+    "Contents/Resources/alleycat-claude-bridge")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-bridge"
+      ;;
+    "Contents/Resources/mimi-claude-adapter")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-adapter"
+      ;;
+    "Contents/Resources/mimi-agy-adapter")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.agy-adapter"
+      ;;
+    "Contents/Resources/mimi-tailcat-experiment")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.tailcat"
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
+}
+
+verify_fixed_entry_regular_executable() {
+  local target_path="$1"
+  local display_label="$2"
+
+  if [[ -L "$target_path" ]]; then
+    echo "Mac 安装包校验失败：${display_label} 入口不得为符号链接：${target_path}。" >&2
+    exit 1
+  fi
+  if [[ ! -f "$target_path" || ! -x "$target_path" ]]; then
+    echo "Mac 安装包校验失败：缺少可执行普通文件 ${display_label}：${target_path}。" >&2
+    exit 1
+  fi
+}
+
+verify_dmg_image_signature() {
+  local dmg_path="$1"
+  local expected_team_id="${2:-}"
+  local dmg_details dmg_team_id dmg_timestamp
+
+  codesign --verify --strict --verbose=2 "$dmg_path"
+  if ! dmg_details="$(codesign -d --verbose=4 "$dmg_path" 2>&1)"; then
+    echo "Mac 安装包校验失败：无法读取 DMG 镜像签名详情：${dmg_details}" >&2
+    exit 1
+  fi
+
+  dmg_team_id="$(extract_codesign_field "$dmg_details" "TeamIdentifier")"
+  if [[ ! "$dmg_team_id" =~ ^[A-Z0-9]+$ ]]; then
+    echo "Mac 安装包校验失败：DMG 镜像缺少有效的非空 Team ID（实际：${dmg_team_id:-<空>}）。" >&2
+    exit 1
+  fi
+  if [[ -n "$expected_team_id" && "$dmg_team_id" != "$expected_team_id" ]]; then
+    echo "Mac 安装包校验失败：DMG 镜像的 Team ID（${dmg_team_id}）与主 App（${expected_team_id}）不一致。" >&2
+    exit 1
+  fi
+
+  if ! grep -Fq 'Authority=Developer ID Application:' <<<"$dmg_details"; then
+    echo "Mac 安装包校验失败：DMG 镜像不是有效的 Developer ID Application 签名。" >&2
+    exit 1
+  fi
+
+  dmg_timestamp="$(extract_codesign_field "$dmg_details" "Timestamp")"
+  if [[ -z "$dmg_timestamp" || "$dmg_timestamp" == "none" ]]; then
+    echo "Mac 安装包校验失败：DMG 镜像缺少有效的安全时间戳（Timestamp=${dmg_timestamp:-<空>}）。" >&2
+    exit 1
+  fi
+
+  VERIFIED_DMG_TEAM_ID="$dmg_team_id"
 }
 
 resolve_app_executable_path() {
@@ -127,6 +231,8 @@ verify_macho_slice_policy() {
 
   local slice_arch slice_details slice_identifier slice_team_id slice_timestamp
   local resolved_team="$expected_team_id"
+  local resolved_identifier="$expected_identifier"
+  local resolved_identifier_arch=""
   for slice_arch in $slice_archs; do
     if ! slice_details="$(codesign -d --arch "$slice_arch" --verbose=4 "$target_path" 2>&1)"; then
       echo "Mac 安装包校验失败：无法读取 ${display_label}（${slice_arch}）的签名详情：${slice_details}" >&2
@@ -138,12 +244,21 @@ verify_macho_slice_policy() {
       exit 1
     fi
 
-    if [[ -n "$expected_identifier" ]]; then
-      slice_identifier="$(extract_codesign_field "$slice_details" "Identifier")"
-      if [[ "$slice_identifier" != "$expected_identifier" ]]; then
-        echo "Mac 安装包校验失败：${display_label}（${slice_arch}）的签名 identifier 不稳定（期望 ${expected_identifier}，实际 ${slice_identifier:-<空>}）。" >&2
-        exit 1
+    slice_identifier="$(extract_codesign_field "$slice_details" "Identifier")"
+    if [[ -z "$slice_identifier" ]]; then
+      echo "Mac 安装包校验失败：${display_label}（${slice_arch}）缺少非空的签名 identifier。" >&2
+      exit 1
+    fi
+    if [[ -z "$resolved_identifier" ]]; then
+      resolved_identifier="$slice_identifier"
+      resolved_identifier_arch="$slice_arch"
+    elif [[ "$slice_identifier" != "$resolved_identifier" ]]; then
+      if [[ -n "$expected_identifier" ]]; then
+        echo "Mac 安装包校验失败：${display_label}（${slice_arch}）的签名 identifier 不稳定（期望 ${expected_identifier}，实际 ${slice_identifier}）。" >&2
+      else
+        echo "Mac 安装包校验失败：${display_label}（${slice_arch}）的签名 identifier（${slice_identifier}）与 ${resolved_identifier_arch} 切片（${resolved_identifier}）不一致。" >&2
       fi
+      exit 1
     fi
 
     if [[ "$require_team_signing" == "1" ]]; then
@@ -258,16 +373,20 @@ PY
 validate_adapter_capabilities_json() {
   local adapter_kind="$1"
   local expected_version="$2"
-  local capabilities_json="$3"
+  local capabilities_source="$3"
 
-  if ! MIMI_CAPABILITIES_JSON="$capabilities_json" python3 - "$adapter_kind" "$expected_version" <<'PY'
+  local py_validator
+  py_validator='
 import json
-import os
 import re
 import sys
 
-kind, expected_version = sys.argv[1:3]
-raw = os.environ.get("MIMI_CAPABILITIES_JSON", "")
+kind, expected_version, source_path = sys.argv[1:4]
+if source_path == "-":
+    raw_bytes = sys.stdin.buffer.read()
+else:
+    with open(source_path, "rb") as fh:
+        raw_bytes = fh.read()
 
 if kind == "agy":
     label = "Antigravity 适配器"
@@ -279,8 +398,29 @@ else:
     print(f"Mac 安装包校验失败：未知适配器类型 {kind}。", file=sys.stderr)
     sys.exit(2)
 
+if b"\x00" in raw_bytes:
+    print(f"Mac 安装包校验失败：{label}的 --capabilities 输出包含非法 NUL 字节，不是合法 JSON。", file=sys.stderr)
+    sys.exit(1)
+
 try:
-    payload = json.loads(raw)
+    text = raw_bytes.decode("utf-8")
+except UnicodeDecodeError as exc:
+    print(f"Mac 安装包校验失败：{label}的 --capabilities 输出不是合法 UTF-8 JSON：{exc}", file=sys.stderr)
+    sys.exit(1)
+
+def reject_constant(token):
+    raise ValueError(f"不允许非标准 JSON 常量：{token}")
+
+class PairTrackingDict(dict):
+    def __init__(self, pairs):
+        super().__init__(pairs)
+        self._pairs = list(pairs)
+
+def track_pairs(pairs):
+    return PairTrackingDict(pairs)
+
+try:
+    payload = json.loads(text, parse_constant=reject_constant, object_pairs_hook=track_pairs)
 except Exception as exc:
     print(f"Mac 安装包校验失败：{label}的 --capabilities 输出不是合法 JSON：{exc}", file=sys.stderr)
     sys.exit(1)
@@ -288,6 +428,42 @@ except Exception as exc:
 if not isinstance(payload, dict):
     print(f"Mac 安装包校验失败：{label}的 --capabilities 顶层必须是 JSON object。", file=sys.stderr)
     sys.exit(1)
+
+# 严格对齐 Go encoding/json 对 AdapterCapabilities 的大小写不敏感字段匹配与类型校验（含重复键顺序校验）。
+runtime_key_lower = runtime_key.lower()
+for key, val in payload._pairs:
+    kl = key.lower()
+    if kl == "fullaccess":
+        if val is not None and not isinstance(val, bool):
+            print(
+                f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是布尔值（实际类型：{type(val).__name__}，值：{val!r}）。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    elif kl == "methods":
+        if val is not None and (not isinstance(val, list) or not all(isinstance(item, str) for item in val)):
+            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串数组。", file=sys.stderr)
+            sys.exit(1)
+    elif kl == "name":
+        if val is not None and not isinstance(val, str):
+            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串。", file=sys.stderr)
+            sys.exit(1)
+    elif kl == "version":
+        if val is not None and not isinstance(val, str):
+            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是字符串。", file=sys.stderr)
+            sys.exit(1)
+    elif kl == runtime_key_lower:
+        if val is not None and not isinstance(val, dict):
+            print(f"Mac 安装包校验失败：{label}的 capabilities.{key} 必须是 JSON object。", file=sys.stderr)
+            sys.exit(1)
+        if isinstance(val, PairTrackingDict):
+            for nested_key, nested_val in val._pairs:
+                if nested_key.lower() == "minimumversion" and nested_val is not None and not isinstance(nested_val, str):
+                    print(
+                        f"Mac 安装包校验失败：{label}的 capabilities.{key}.{nested_key} 必须是字符串。",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
 version = payload.get("version")
 if not isinstance(version, str) or version != expected_version:
@@ -317,22 +493,64 @@ if not isinstance(min_ver, str) or not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+",
         file=sys.stderr,
     )
     sys.exit(1)
-PY
-  then
+'
+
+  if ! python3 -c "$py_validator" "$adapter_kind" "$expected_version" "$capabilities_source"; then
     exit 1
+  fi
+}
+
+verify_adapter_jit_entitlements_if_present() {
+  local adapter_path="$1"
+  local display_label="$2"
+
+  if [[ -L "$adapter_path" ]]; then
+    echo "Mac 安装包校验失败：${display_label} 入口不得为符号链接：${adapter_path}。" >&2
+    exit 1
+  fi
+  if [[ -e "$adapter_path" ]]; then
+    if [[ ! -f "$adapter_path" ]]; then
+      echo "Mac 安装包校验失败：${display_label} 必须是普通文件：${adapter_path}。" >&2
+      exit 1
+    fi
+    verify_boolean_true_entitlements \
+      "$adapter_path" \
+      "$display_label" \
+      com.apple.security.cs.allow-jit \
+      com.apple.security.cs.allow-unsigned-executable-memory
   fi
 }
 
 verify_app_machos() {
   local check_arch_and_vtool="${1:-1}"
   local app_team=""
-  local candidate_path candidate_kind candidate_team_identifier
+  local expected_app_identifier=""
+  local known_rel_path
+  local candidate_path candidate_rel_path candidate_expected_identifier candidate_kind candidate_team_identifier
   local binary_archs reference_sdk reference_sdk_arch binary_arch build_metadata binary_sdk
+
+  # 固定入口不得使用包内符号链接绕过后续切片与权限校验。
+  for known_rel_path in \
+    "Contents/MacOS/Mimi Remote Mac" \
+    "Contents/Resources/agentd" \
+    "Contents/Resources/alleycat-claude-bridge" \
+    "Contents/Resources/mimi-claude-adapter" \
+    "Contents/Resources/mimi-agy-adapter" \
+    "Contents/Resources/mimi-tailcat-experiment"; do
+    if [[ -L "$APP_PATH/$known_rel_path" ]]; then
+      echo "Mac 安装包校验失败：固定入口不得为符号链接：${known_rel_path}。" >&2
+      exit 1
+    fi
+  done
+
+  if [[ -e "$APP_PATH/Contents/MacOS/Mimi Remote Mac" ]]; then
+    expected_app_identifier="com.gaixianggeng.mimi.mac"
+  fi
 
   verify_macho_slice_policy \
     "$APP_PATH" \
     "主 App" \
-    "" \
+    "$expected_app_identifier" \
     "$REQUIRE_TEAM_SIGNING" \
     "" \
     "$REQUIRE_DEVELOPER_ID" \
@@ -348,7 +566,7 @@ verify_app_machos() {
   fi
 
   # 不只检查已知入口；后续新增的 framework、helper 或工具也必须带有效签名、hardened runtime、
-  # 同 Team ID / Developer ID（按策略）、arm64 及可识别的 macOS 构建元数据。
+  # 跨切片一致 identifier、同 Team ID / Developer ID（按策略）、arm64 及可识别的 macOS 构建元数据。
   macho_count=0
   while IFS= read -r -d '' candidate_path; do
     candidate_kind="$(file -b "$candidate_path")"
@@ -357,34 +575,21 @@ verify_app_machos() {
     fi
 
     macho_count=$((macho_count + 1))
+    candidate_rel_path="${candidate_path#"$APP_PATH"/}"
+    candidate_expected_identifier="$(expected_known_macho_identifier "$candidate_rel_path")"
     # codesign --deep 不会可靠拒绝 Resources 下新增的裸 Mach-O。逐个校验，避免未签名
     # sidecar 或残留损坏签名一直拖到 Apple 公证阶段才暴露。
     codesign --verify --strict --verbose=2 "$candidate_path"
 
     verify_macho_slice_policy \
       "$candidate_path" \
-      "${candidate_path#"$APP_PATH"/}" \
-      "" \
+      "$candidate_rel_path" \
+      "$candidate_expected_identifier" \
       "$REQUIRE_TEAM_SIGNING" \
       "$app_team" \
       "$REQUIRE_DEVELOPER_ID" \
       "$REQUIRE_DEVELOPER_ID"
     candidate_team_identifier="$RESOLVED_SLICE_TEAM_ID"
-
-    # Bun 编译的适配器在 hardened runtime 下必须对全部架构切片启用布尔 true 的 JIT 权限。
-    if [[ "$candidate_path" == "$ADAPTER_PATH" ]]; then
-      verify_boolean_true_entitlements \
-        "$candidate_path" \
-        "Claude 适配器" \
-        com.apple.security.cs.allow-jit \
-        com.apple.security.cs.allow-unsigned-executable-memory
-    elif [[ "$candidate_path" == "$AGY_ADAPTER_PATH" ]]; then
-      verify_boolean_true_entitlements \
-        "$candidate_path" \
-        "Antigravity 适配器" \
-        com.apple.security.cs.allow-jit \
-        com.apple.security.cs.allow-unsigned-executable-memory
-    fi
 
     if [[ "$check_arch_and_vtool" != "1" ]]; then
       continue
@@ -392,7 +597,7 @@ verify_app_machos() {
 
     binary_archs="$(lipo -archs "$candidate_path")"
     if [[ " $binary_archs " != *" arm64 "* ]]; then
-      echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 是 x86-only Mach-O，缺少 arm64。" >&2
+      echo "Mac 安装包校验失败：${candidate_rel_path} 是 x86-only Mach-O，缺少 arm64。" >&2
       exit 1
     fi
 
@@ -403,7 +608,7 @@ verify_app_machos() {
       if ! grep -Eq 'platform[[:space:]]+MACOS|cmd[[:space:]]+LC_VERSION_MIN_MACOSX' <<<"$build_metadata" \
         || ! grep -Eq '(minos|version)[[:space:]]+[0-9]+' <<<"$build_metadata" \
         || ! grep -Eq 'sdk[[:space:]]+[1-9][0-9]*(\.[0-9]+)*' <<<"$build_metadata"; then
-        echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${binary_arch} 切片缺少可识别的 macOS 构建元数据。" >&2
+        echo "Mac 安装包校验失败：${candidate_rel_path} 的 ${binary_arch} 切片缺少可识别的 macOS 构建元数据。" >&2
         exit 1
       fi
 
@@ -416,7 +621,7 @@ verify_app_machos() {
         reference_sdk="$binary_sdk"
         reference_sdk_arch="$binary_arch"
       elif [[ "$binary_sdk" != "$reference_sdk" ]]; then
-        echo "Mac 安装包校验失败：${candidate_path#"$APP_PATH"/} 的 ${reference_sdk_arch}/${binary_arch} SDK 不一致（${reference_sdk}/${binary_sdk}）。" >&2
+        echo "Mac 安装包校验失败：${candidate_rel_path} 的 ${reference_sdk_arch}/${binary_arch} SDK 不一致（${reference_sdk}/${binary_sdk}）。" >&2
         exit 1
       fi
     done
@@ -426,6 +631,10 @@ verify_app_machos() {
     echo "Mac 安装包校验失败：App 内没有找到 Mach-O 产物。" >&2
     exit 1
   fi
+
+  # 直接对两个固定 Bun 适配器入口逐切片校验 JIT entitlements，不依赖 find 字符串匹配。
+  verify_adapter_jit_entitlements_if_present "$ADAPTER_PATH" "Claude 适配器"
+  verify_adapter_jit_entitlements_if_present "$AGY_ADAPTER_PATH" "Antigravity 适配器"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -486,8 +695,8 @@ if [[ -n "$VERIFY_CAPABILITIES_KIND" ]]; then
     echo "Mac 安装包校验失败：缺少命令 python3。" >&2
     exit 127
   fi
-  stdin_capabilities="$(cat)"
-  validate_adapter_capabilities_json "$VERIFY_CAPABILITIES_KIND" "$VERIFY_CAPABILITIES_VERSION" "$stdin_capabilities"
+  # 直接按原始字节流从 stdin 交给 python3，避免 Bash 命令替换吞掉 NUL 字节。
+  validate_adapter_capabilities_json "$VERIFY_CAPABILITIES_KIND" "$VERIFY_CAPABILITIES_VERSION" "-"
   exit 0
 fi
 
@@ -562,6 +771,12 @@ else
     )
   fi
 
+  # --require-developer-id（含 --require-notarization）在 DMG 模式下必须验证镜像本体签名，
+  # 避免未签名镜像裹着已签名 App 绕过检查。
+  if [[ "$REQUIRE_DEVELOPER_ID" == "1" ]]; then
+    verify_dmg_image_signature "$DMG_PATH" ""
+  fi
+
   ATTACH_OUTPUT="$(hdiutil attach -nobrowse -readonly "$DMG_PATH")"
   MOUNT_TARGET="$(awk -F '\t' '$1 ~ /^\/dev\/disk/ { device=$1; sub(/[[:space:]]+$/, "", device); print device; exit }' <<<"$ATTACH_OUTPUT")"
   MOUNTED=1
@@ -571,11 +786,7 @@ else
     printf '%s\n' "$ATTACH_OUTPUT" >&2
     exit 1
   fi
-  if [[ ! -d "$MOUNT_DIR/Mimi Remote Mac.app" ]]; then
-    echo "Mac 安装包校验失败：DMG 缺少 Mimi Remote Mac.app。" >&2
-    exit 1
-  fi
-  APP_PATH="$(resolve_physical_dir "$MOUNT_DIR/Mimi Remote Mac.app")"
+  APP_PATH="$(resolve_dmg_app_path "$MOUNT_DIR")"
 fi
 
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Mimi Remote Mac"
@@ -587,10 +798,16 @@ TAILCAT_PATH="$APP_PATH/Contents/Resources/mimi-tailcat-experiment"
 LAUNCH_AGENT_PATH="$APP_PATH/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
 INFO_PLIST_PATH="$APP_PATH/Contents/Info.plist"
 
-if [[ ! -d "$APP_PATH" || ! -x "$APP_EXECUTABLE_PATH" || ! -x "$AGENT_PATH" || ! -x "$BRIDGE_PATH" || ! -x "$ADAPTER_PATH" || ! -x "$AGY_ADAPTER_PATH" || ! -x "$TAILCAT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
-  echo "Mac 安装包校验失败：缺少 App、agentd、Claude 适配器、Antigravity 适配器、旧 Claude bridge、Tailcat 或 LaunchAgent。" >&2
+if [[ ! -d "$APP_PATH" || -L "$LAUNCH_AGENT_PATH" || ! -f "$LAUNCH_AGENT_PATH" ]]; then
+  echo "Mac 安装包校验失败：缺少 App 或 LaunchAgent（且 LaunchAgent 不得为符号链接）。" >&2
   exit 1
 fi
+verify_fixed_entry_regular_executable "$APP_EXECUTABLE_PATH" "主 App 可执行文件"
+verify_fixed_entry_regular_executable "$AGENT_PATH" "agentd"
+verify_fixed_entry_regular_executable "$BRIDGE_PATH" "alleycat-claude-bridge"
+verify_fixed_entry_regular_executable "$ADAPTER_PATH" "mimi-claude-adapter"
+verify_fixed_entry_regular_executable "$AGY_ADAPTER_PATH" "mimi-agy-adapter"
+verify_fixed_entry_regular_executable "$TAILCAT_PATH" "mimi-tailcat-experiment"
 bash "$ROOT_DIR/scripts/check-macos-notices.sh" "$APP_PATH"
 if [[ "$CHECK_APP_ONLY" != "1" ]]; then
   if [[ ! -L "$MOUNT_DIR/Applications" || "$(readlink "$MOUNT_DIR/Applications")" != "/Applications" ]]; then
@@ -730,8 +947,14 @@ verify_boolean_true_entitlements \
   "主 App" \
   com.apple.security.personal-information.photos-library
 
+if [[ "$CHECK_APP_ONLY" != "1" && "$REQUIRE_DEVELOPER_ID" == "1" ]]; then
+  if [[ -n "$VERIFIED_DMG_TEAM_ID" && -n "$app_team_identifier" && "$VERIFIED_DMG_TEAM_ID" != "$app_team_identifier" ]]; then
+    echo "Mac 安装包校验失败：DMG 镜像的 Team ID（${VERIFIED_DMG_TEAM_ID}）与主 App（${app_team_identifier}）不一致。" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
-  codesign --verify --strict --verbose=2 "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
   spctl --assess --type execute --verbose=4 "$APP_PATH"
@@ -764,8 +987,9 @@ else
   echo "Mac 安装包校验失败：Claude 适配器未返回标准版本：${adapter_version_output}" >&2
   exit 1
 fi
-adapter_capabilities="$(run_native_version_probe "$ADAPTER_PATH" --capabilities)"
-validate_adapter_capabilities_json claude "$adapter_version" "$adapter_capabilities"
+claude_capabilities_file="$CHECK_TEMP_DIR/claude-capabilities.json"
+run_native_version_probe "$ADAPTER_PATH" --capabilities > "$claude_capabilities_file"
+validate_adapter_capabilities_json claude "$adapter_version" "$claude_capabilities_file"
 
 agy_adapter_version_output="$(run_native_version_probe "$AGY_ADAPTER_PATH" --version)"
 if [[ "$agy_adapter_version_output" =~ ^mimi-agy-adapter[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -774,8 +998,9 @@ else
   echo "Mac 安装包校验失败：Antigravity 适配器未返回标准版本：${agy_adapter_version_output}" >&2
   exit 1
 fi
-agy_adapter_capabilities="$(run_native_version_probe "$AGY_ADAPTER_PATH" --capabilities)"
-validate_adapter_capabilities_json agy "$agy_adapter_version" "$agy_adapter_capabilities"
+agy_capabilities_file="$CHECK_TEMP_DIR/agy-capabilities.json"
+run_native_version_probe "$AGY_ADAPTER_PATH" --capabilities > "$agy_capabilities_file"
+validate_adapter_capabilities_json agy "$agy_adapter_version" "$agy_capabilities_file"
 
 minimum_agy_version_source="$ROOT_DIR/internal/agybridge/binary.go"
 minimum_agy_adapter_version="$(

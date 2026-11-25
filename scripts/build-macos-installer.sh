@@ -54,6 +54,33 @@ resolve_physical_dir() {
   )
 }
 
+expected_known_macho_identifier() {
+  local rel_path="$1"
+  case "$rel_path" in
+    "Contents/MacOS/Mimi Remote Mac")
+      printf '%s\n' "com.gaixianggeng.mimi.mac"
+      ;;
+    "Contents/Resources/agentd")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.agentd"
+      ;;
+    "Contents/Resources/alleycat-claude-bridge")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-bridge"
+      ;;
+    "Contents/Resources/mimi-claude-adapter")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.claude-adapter"
+      ;;
+    "Contents/Resources/mimi-agy-adapter")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.agy-adapter"
+      ;;
+    "Contents/Resources/mimi-tailcat-experiment")
+      printf '%s\n' "com.gaixianggeng.mimi.mac.tailcat"
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
+}
+
 resolve_app_executable_path() {
   local app_dir="$1"
   local info_plist="$app_dir/Contents/Info.plist"
@@ -110,6 +137,8 @@ verify_macho_slice_policy() {
 
   local slice_arch slice_details slice_identifier slice_team_id slice_timestamp
   local resolved_team="$expected_team_id"
+  local resolved_identifier="$expected_identifier"
+  local resolved_identifier_arch=""
   for slice_arch in $slice_archs; do
     if ! slice_details="$(codesign -d --arch "$slice_arch" --verbose=4 "$target_path" 2>&1)"; then
       echo "Mac 安装包构建失败：无法读取 ${display_label}（${slice_arch}）的签名详情：${slice_details}" >&2
@@ -121,12 +150,21 @@ verify_macho_slice_policy() {
       exit 1
     fi
 
-    if [[ -n "$expected_identifier" ]]; then
-      slice_identifier="$(extract_codesign_field "$slice_details" "Identifier")"
-      if [[ "$slice_identifier" != "$expected_identifier" ]]; then
-        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）的签名 identifier 不匹配（期望 ${expected_identifier}，实际 ${slice_identifier:-<空>}）。" >&2
-        exit 1
+    slice_identifier="$(extract_codesign_field "$slice_details" "Identifier")"
+    if [[ -z "$slice_identifier" ]]; then
+      echo "Mac 安装包构建失败：${display_label}（${slice_arch}）缺少非空的签名 identifier。" >&2
+      exit 1
+    fi
+    if [[ -z "$resolved_identifier" ]]; then
+      resolved_identifier="$slice_identifier"
+      resolved_identifier_arch="$slice_arch"
+    elif [[ "$slice_identifier" != "$resolved_identifier" ]]; then
+      if [[ -n "$expected_identifier" ]]; then
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）的签名 identifier 不匹配（期望 ${expected_identifier}，实际 ${slice_identifier}）。" >&2
+      else
+        echo "Mac 安装包构建失败：${display_label}（${slice_arch}）的签名 identifier（${slice_identifier}）与 ${resolved_identifier_arch} 切片（${resolved_identifier}）不一致。" >&2
       fi
+      exit 1
     fi
 
     if [[ "$require_team_signing" == "1" ]]; then
@@ -167,14 +205,31 @@ verify_prepackage_macho_signatures() {
   local require_developer_id="$3"
   local require_timestamp="$4"
 
-  local physical_app_path
+  local physical_app_path known_rel_path expected_app_identifier=""
   physical_app_path="$(resolve_physical_dir "$target_app_path")"
+
+  for known_rel_path in \
+    "Contents/MacOS/Mimi Remote Mac" \
+    "Contents/Resources/agentd" \
+    "Contents/Resources/alleycat-claude-bridge" \
+    "Contents/Resources/mimi-claude-adapter" \
+    "Contents/Resources/mimi-agy-adapter" \
+    "Contents/Resources/mimi-tailcat-experiment"; do
+    if [[ -L "$physical_app_path/$known_rel_path" ]]; then
+      echo "Mac 安装包构建失败：固定入口不得为符号链接：${known_rel_path}。" >&2
+      exit 1
+    fi
+  done
+
+  if [[ -e "$physical_app_path/Contents/MacOS/Mimi Remote Mac" ]]; then
+    expected_app_identifier="com.gaixianggeng.mimi.mac"
+  fi
 
   codesign --verify --deep --strict --verbose=2 "$physical_app_path"
   verify_macho_slice_policy \
     "$physical_app_path" \
     "主 App" \
-    "" \
+    "$expected_app_identifier" \
     "$require_team_signing" \
     "" \
     "$require_developer_id" \
@@ -189,7 +244,7 @@ verify_prepackage_macho_signatures() {
     exit 1
   fi
 
-  local candidate_path candidate_kind
+  local candidate_path candidate_rel_path candidate_expected_identifier candidate_kind
   verified_macho_count=0
   while IFS= read -r -d '' candidate_path; do
     candidate_kind="$(file -b "$candidate_path")"
@@ -197,11 +252,13 @@ verify_prepackage_macho_signatures() {
       continue
     fi
     verified_macho_count=$((verified_macho_count + 1))
+    candidate_rel_path="${candidate_path#"$physical_app_path"/}"
+    candidate_expected_identifier="$(expected_known_macho_identifier "$candidate_rel_path")"
     codesign --verify --strict --verbose=2 "$candidate_path"
     verify_macho_slice_policy \
       "$candidate_path" \
-      "${candidate_path#"$physical_app_path"/}" \
-      "" \
+      "$candidate_rel_path" \
+      "$candidate_expected_identifier" \
       "$require_team_signing" \
       "$app_team_identifier" \
       "$require_developer_id" \
