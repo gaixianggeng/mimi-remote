@@ -159,8 +159,12 @@ public sealed class HostCliContractTests
                 || string.Equals(surface, "native", StringComparison.Ordinal))
             {
                 OnboardingResolvedDiagnostic? resolved = null;
-                var ok = OnboardingCopyCatalog.TryDecodeCheck(payload, out var check, out var err)
-                    && OnboardingCopyCatalog.TryValidateCheck(check, ctx, out resolved, out err);
+                var ok = false;
+                if (OnboardingCopyCatalog.TryDecodeCheck(payload, out var check, out var err))
+                {
+                    ok = OnboardingCopyCatalog.TryValidateCheck(check, ctx, out var validated, out err);
+                    resolved = validated;
+                }
                 if (ok != valid)
                 {
                     Assert.Fail($"check case {id}: expected valid={valid}, err={err}");
@@ -409,7 +413,8 @@ public sealed class HostCliContractTests
             verifiedCapability: null,
             out var finalReport,
             out _));
-        Assert.True(acc.Complete(1, finalReport!));
+        Assert.NotNull(finalReport);
+        Assert.True(acc.Complete(1, finalReport));
 
         // Late cancel and late line must not overwrite terminal state.
         acc.Cancel(1);

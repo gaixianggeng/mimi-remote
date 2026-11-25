@@ -63,9 +63,15 @@ final class PairingErrorMapperTests: XCTestCase {
         XCTAssertEqual(iosURLs, manifest.urls)
 
         for entry in PairingErrorMapper.catalogEntries {
+            XCTAssertNotEqual(entry.messageZH, entry.messageKey, "Code \(entry.code) missing zh-Hans catalog entry")
             XCTAssertTrue(
                 entry.messageZH.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) },
                 "Code \(entry.code) must contain Chinese copy"
+            )
+            XCTAssertNotEqual(entry.messageEN, entry.messageKey, "Code \(entry.code) missing en catalog entry")
+            XCTAssertFalse(
+                entry.messageEN.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) },
+                "Code \(entry.code) English copy must not contain Chinese text"
             )
         }
     }
@@ -127,13 +133,23 @@ final class PairingErrorMapperTests: XCTestCase {
         XCTAssertTrue(expired.preservesSavedProfiles)
         XCTAssertFalse(expired.message.contains("10 分钟"))
 
-        // Clock skew uses pure Chinese text instructions, NEVER App-Prefs:
+        // Clock skew uses localized text instructions, NEVER App-Prefs:
         let clockSkewData = Data(#"{"ok":false,"error":{"code":"pair_clock_skew","step":"network_any","message":"时间不一致","fix":{"kind":"open_settings","target":"date_time"}}}"#.utf8)
         let clockSkew = PairingErrorMapper.mapHTTPErrorEnvelope(data: clockSkewData)
         XCTAssertTrue(clockSkew.isTrusted)
         if case .showDateTimeGuidanceAndRetry(let instructions) = clockSkew.action {
-            XCTAssertTrue(instructions.contains("日期与时间"))
+            XCTAssertEqual(instructions, PairingErrorMapper.dateTimeInstructions)
+            XCTAssertTrue(
+                instructions.contains("日期与时间") || instructions.contains("Date & Time"),
+                "Unexpected date_time instructions: \(instructions)"
+            )
             XCTAssertFalse(instructions.contains("App-Prefs:"))
+            XCTAssertTrue(
+                L10n.text("ui.pairing_onboarding_date_time_instructions", language: .simplifiedChinese).contains("日期与时间")
+            )
+            XCTAssertTrue(
+                L10n.text("ui.pairing_onboarding_date_time_instructions", language: .english).contains("Date & Time")
+            )
         } else {
             XCTFail("Expected date_time text guidance, got \(clockSkew.action)")
         }

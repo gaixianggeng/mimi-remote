@@ -50,24 +50,24 @@ enum PairingOnboardingStep: String, CaseIterable, Equatable, Hashable, Sendable 
 
     var localizedTitle: String {
         switch self {
-        case .configStore: "配置文件"
-        case .workspaceRoot: "代码目录"
-        case .serviceOwnerConflict: "后台服务归属"
-        case .serviceDaemon: "后台服务"
-        case .assistantCodex: "Codex 助手"
-        case .assistantClaude: "Claude Code 助手"
-        case .assistantAgy: "Antigravity 助手"
-        case .assistantDeepSeek: "DeepSeek 助手"
-        case .assistantAny: "可用助手"
-        case .networkTailscale: "Tailscale 连接"
-        case .networkTailcat: "内置连接"
-        case .networkLAN: "同一局域网"
-        case .networkAny: "手机连接方式"
-        case .permissionLoginItem: "登录项"
-        case .permissionFolderAccess: "文件与文件夹"
-        case .permissionLocalNetwork: "本地网络"
-        case .permissionPhotos: "照片"
-        case .permissionFullDisk: "完全磁盘访问"
+        case .configStore: L10n.text("ui.onboarding_step_config_store")
+        case .workspaceRoot: L10n.text("ui.onboarding_step_workspace_root")
+        case .serviceOwnerConflict: L10n.text("ui.onboarding_step_service_owner_conflict")
+        case .serviceDaemon: L10n.text("ui.onboarding_step_service_daemon")
+        case .assistantCodex: L10n.text("ui.onboarding_step_assistant_codex")
+        case .assistantClaude: L10n.text("ui.onboarding_step_assistant_claude")
+        case .assistantAgy: L10n.text("ui.onboarding_step_assistant_agy")
+        case .assistantDeepSeek: L10n.text("ui.onboarding_step_assistant_deepseek")
+        case .assistantAny: L10n.text("ui.onboarding_step_assistant_any")
+        case .networkTailscale: L10n.text("ui.onboarding_step_network_tailscale")
+        case .networkTailcat: L10n.text("ui.onboarding_step_network_tailcat")
+        case .networkLAN: L10n.text("ui.onboarding_step_network_lan")
+        case .networkAny: L10n.text("ui.onboarding_step_network_any")
+        case .permissionLoginItem: L10n.text("ui.onboarding_step_permission_login_item")
+        case .permissionFolderAccess: L10n.text("ui.onboarding_step_permission_folder_access")
+        case .permissionLocalNetwork: L10n.text("ui.onboarding_step_permission_local_network")
+        case .permissionPhotos: L10n.text("ui.onboarding_step_permission_photos")
+        case .permissionFullDisk: L10n.text("ui.onboarding_step_permission_full_disk")
         }
     }
 }
@@ -201,15 +201,27 @@ struct PairingErrorCatalogEntry: Equatable, Sendable {
     let steps: [PairingOnboardingStep]
     let allowsAnyStep: Bool
     let allowedFixes: [PairingOnboardingWireFix]
-    let messageZH: String
+    let messageKey: String
+
+    var messageZH: String {
+        L10n.text(messageKey, language: .simplifiedChinese)
+    }
+
+    var messageEN: String {
+        L10n.text(messageKey, language: .english)
+    }
 }
 
 enum PairingErrorMapper {
     static let acceptMediaType = "application/vnd.mimi.onboarding.v1+json"
     static let explicitClaimTimeoutSeconds: TimeInterval = 45
     static let localDiscoveryTimeoutSeconds: TimeInterval = 2
-    static let safeFallbackCopy = "配对未能完成。请确认电脑端状态后重新扫码或重试，已有配对不受影响。"
-    static let dateTimeInstructionsZH = "请前往系统“设置 → 通用 → 日期与时间”开启自动设置，确认电脑与手机时间一致后重新配对。"
+    static var safeFallbackCopy: String {
+        L10n.text("ui.pairing_onboarding_fallback")
+    }
+    static var dateTimeInstructions: String {
+        L10n.text("ui.pairing_onboarding_date_time_instructions")
+    }
 
     static let negotiatedPaths: [String] = [
         "/api/pair/claim",
@@ -234,88 +246,88 @@ enum PairingErrorMapper {
         .init(
             code: "no_enabled_assistant", isUILocal: false, steps: [.assistantAny], allowsAnyStep: false,
             allowedFixes: [.openURL(.guide)],
-            messageZH: "请启用至少一个可用助手，然后重新配对。"
+            messageKey: "ui.pairing_onboarding_no_enabled_assistant"
         ),
         .init(
             code: "workspace_confirmation_required", isUILocal: false, steps: [.workspaceRoot], allowsAnyStep: false,
             allowedFixes: [.choosePath("workspace_root")],
-            messageZH: "请先在电脑上确认要与手机共享的代码目录。"
+            messageKey: "ui.pairing_onboarding_workspace_confirmation_required"
         ),
         .init(
             code: "tailcat_relay_unreachable", isUILocal: false, steps: [.networkTailcat], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "暂时无法连接中继。请稍后重试。"
+            messageKey: "ui.pairing_onboarding_tailcat_relay_unreachable"
         ),
         .init(
             code: "tailcat_busy", isUILocal: false, steps: [.networkTailcat], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "内置连接正在处理其他操作。请稍后重试。"
+            messageKey: "ui.pairing_onboarding_tailcat_busy"
         ),
         .init(
             code: "pair_host_unreachable", isUILocal: false, steps: [.serviceDaemon], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "无法连接电脑后台服务。请检查连接后重试。"
+            messageKey: "ui.pairing_onboarding_pair_host_unreachable"
         ),
         .init(
             code: "pair_token_mismatch", isUILocal: false, steps: [.serviceDaemon], allowsAnyStep: false,
             allowedFixes: [.runFix("save_setup"), .runFix("restart_service")],
-            messageZH: "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。"
+            messageKey: "ui.pairing_onboarding_pair_token_mismatch"
         ),
         .init(
             code: "pair_ticket_expired", isUILocal: false, steps: [.networkAny], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。"
+            messageKey: "ui.pairing_onboarding_pair_ticket_expired"
         ),
         .init(
             code: "pair_ticket_invalid", isUILocal: false, steps: [.networkAny], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "配对链接无效。请在电脑上刷新二维码后重扫。"
+            messageKey: "ui.pairing_onboarding_pair_ticket_invalid"
         ),
         .init(
             code: "pair_clock_skew", isUILocal: false, steps: [.networkAny], allowsAnyStep: false,
             allowedFixes: [.openSettings("date_time")],
-            messageZH: "设备时间不一致。请检查系统日期与时间后重新配对。"
+            messageKey: "ui.pairing_onboarding_pair_clock_skew"
         ),
         .init(
             code: "pair_local_forbidden", isUILocal: false, steps: [.serviceDaemon], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "此请求无法在本机认领。请使用手机扫描电脑上的二维码。"
+            messageKey: "ui.pairing_onboarding_pair_local_forbidden"
         ),
         .init(
             code: "pair_managed_entitlement_required", isUILocal: false, steps: [.networkTailcat], allowsAnyStep: false,
             allowedFixes: [.openSettings("managed_connection")],
-            messageZH: "此托管连接需要有效的订阅权益。请查看托管连接设置。"
+            messageKey: "ui.pairing_onboarding_pair_managed_entitlement_required"
         ),
         .init(
             code: "pair_managed_grant_conflict", isUILocal: false, steps: [.networkTailcat], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "托管连接授权未生效或已过期。请重新获取配对链接。"
+            messageKey: "ui.pairing_onboarding_pair_managed_grant_conflict"
         ),
         .init(
             code: "invalid_request", isUILocal: false, steps: [.networkAny], allowsAnyStep: false,
             allowedFixes: [.retry],
-            messageZH: "{title}：请求参数无效。请检查输入后重试。"
+            messageKey: "ui.pairing_onboarding_invalid_request"
         ),
         .init(
             code: "probe_timeout", isUILocal: false, steps: [], allowsAnyStep: true,
             allowedFixes: [.retry],
-            messageZH: "{title}：检查超时。请重新检查此项。"
+            messageKey: "ui.pairing_onboarding_probe_timeout"
         ),
         .init(
             code: "internal_error", isUILocal: false, steps: [], allowsAnyStep: true,
             allowedFixes: [.retry],
-            messageZH: "{title}：未能完成此项操作。请重试。"
+            messageKey: "ui.pairing_onboarding_internal_error"
         ),
         // 2 UI-local codes (never accepted over HTTP wire)
         .init(
             code: "command_timeout", isUILocal: true, steps: [], allowsAnyStep: true,
             allowedFixes: [.retry],
-            messageZH: "{title}：命令等待超时。请重新检查当前步骤。"
+            messageKey: "ui.pairing_onboarding_command_timeout"
         ),
         .init(
             code: "embedded_binary_missing", isUILocal: true, steps: [.serviceDaemon], allowsAnyStep: false,
             allowedFixes: [.openURL(.desktop)],
-            messageZH: "缺少内置服务程序。请重新安装桌面端。"
+            messageKey: "ui.pairing_onboarding_embedded_binary_missing"
         ),
     ]
 
@@ -347,13 +359,47 @@ enum PairingErrorMapper {
         step: PairingOnboardingStep? = nil,
         title: String? = nil
     ) -> String {
-        guard let entry = entriesByCode[code] else {
-            return safeFallbackCopy
-        }
         let resolvedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? step?.localizedTitle
             ?? PairingOnboardingStep.serviceDaemon.localizedTitle
-        return entry.messageZH.replacingOccurrences(of: "{title}", with: resolvedTitle)
+        switch code {
+        case "no_enabled_assistant":
+            return L10n.text("ui.pairing_onboarding_no_enabled_assistant")
+        case "workspace_confirmation_required":
+            return L10n.text("ui.pairing_onboarding_workspace_confirmation_required")
+        case "tailcat_relay_unreachable":
+            return L10n.text("ui.pairing_onboarding_tailcat_relay_unreachable")
+        case "tailcat_busy":
+            return L10n.text("ui.pairing_onboarding_tailcat_busy")
+        case "pair_host_unreachable":
+            return L10n.text("ui.pairing_onboarding_pair_host_unreachable")
+        case "pair_token_mismatch":
+            return L10n.text("ui.pairing_onboarding_pair_token_mismatch")
+        case "pair_ticket_expired":
+            return L10n.text("ui.pairing_onboarding_pair_ticket_expired")
+        case "pair_ticket_invalid":
+            return L10n.text("ui.pairing_onboarding_pair_ticket_invalid")
+        case "pair_clock_skew":
+            return L10n.text("ui.pairing_onboarding_pair_clock_skew")
+        case "pair_local_forbidden":
+            return L10n.text("ui.pairing_onboarding_pair_local_forbidden")
+        case "pair_managed_entitlement_required":
+            return L10n.text("ui.pairing_onboarding_pair_managed_entitlement_required")
+        case "pair_managed_grant_conflict":
+            return L10n.text("ui.pairing_onboarding_pair_managed_grant_conflict")
+        case "invalid_request":
+            return L10n.format("ui.pairing_onboarding_invalid_request", resolvedTitle)
+        case "probe_timeout":
+            return L10n.format("ui.pairing_onboarding_probe_timeout", resolvedTitle)
+        case "internal_error":
+            return L10n.format("ui.pairing_onboarding_internal_error", resolvedTitle)
+        case "command_timeout":
+            return L10n.format("ui.pairing_onboarding_command_timeout", resolvedTitle)
+        case "embedded_binary_missing":
+            return L10n.text("ui.pairing_onboarding_embedded_binary_missing")
+        default:
+            return safeFallbackCopy
+        }
     }
 
     static func synthesizeLocal(
@@ -576,13 +622,13 @@ enum PairingErrorMapper {
         case .openURL(let allowed):
             return .openURL(allowed)
         case .openSettings("date_time"):
-            return .showDateTimeGuidanceAndRetry(instructions: dateTimeInstructionsZH)
+            return .showDateTimeGuidanceAndRetry(instructions: dateTimeInstructions)
         case .openSettings("managed_connection") where code == "pair_managed_entitlement_required":
             return .openManagedConnection
         case .choosePath("workspace_root"):
-            return .desktopGuidanceAndRescan(instructions: "请先在电脑端确认要共享的代码目录，然后重新扫码。")
+            return .desktopGuidanceAndRescan(instructions: L10n.text("ui.pairing_onboarding_desktop_workspace_guidance"))
         case .runFix("restart_service"), .runFix("save_setup"):
-            return .desktopGuidanceAndRescan(instructions: "请在电脑端确认后台服务状态并重新加载配置，然后重新扫码。")
+            return .desktopGuidanceAndRescan(instructions: L10n.text("ui.pairing_onboarding_desktop_service_guidance"))
         case .openSettings, .choosePath, .runFix, .skip:
             return .none
         }

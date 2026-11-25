@@ -563,7 +563,7 @@ public static class OnboardingCopyCatalog
             return false;
         }
         if (!string.Equals(check.Group, spec.Group, StringComparison.Ordinal)
-            || !spec.Platforms.Contains(context.Platform, StringComparison.Ordinal))
+            || !spec.Platforms.Contains(context.Platform, StringComparer.Ordinal))
         {
             error = $"{check.Id} group/platform mismatch";
             return false;
