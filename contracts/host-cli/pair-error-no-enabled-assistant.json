@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "error": {
+    "code": "no_enabled_assistant",
+    "step": "assistant_any",
+    "message": "请启用至少一个可用助手，然后重新配对。",
+    "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}
+  }
+}

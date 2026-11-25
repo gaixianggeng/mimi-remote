@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "error": {
+    "code": "config_concurrent_change",
+    "step": "config_store",
+    "message": "配置已在别处更改。请重新加载并确认选择。",
+    "fix": {"kind": "retry"}
+  }
+}

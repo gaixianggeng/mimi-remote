@@ -1,0 +1,154 @@
+{
+  "schema": "mimi.onboarding.preflight/v1",
+  "ok": true,
+  "stage": "setup",
+  "configured": false,
+  "workspace_confirmed": false,
+  "config_path": "/fixture/config/config.json",
+  "scan_root": "/fixture/workspace",
+  "browse_root": "/fixture/workspace",
+  "scan_root_exists": true,
+  "recommended_next": "config_store",
+  "recommended_transport": "tailcat",
+  "checks": [
+    {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "ok",
+      "title": "配置文件",
+      "detail": "可以在此位置保存配置。",
+      "blocking": false
+    },
+    {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "ok",
+      "title": "代码目录",
+      "detail": "所选目录可读取。",
+      "blocking": false
+    },
+    {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "后台服务尚未注册。请在电脑上注册并启动服务。",
+      "blocking": false,
+      "code": "service_not_registered",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    },
+    {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "未找到 Codex。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "missing"}
+      ],
+      "code": "codex_not_found",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    },
+    {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "ok",
+      "title": "Claude Code 助手",
+      "detail": "Claude Code 已就绪。",
+      "blocking": false,
+      "enabled": true,
+      "available": true,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ]
+    },
+    {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "未找到 Antigravity。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "missing"}
+      ],
+      "code": "agy_not_found",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    },
+    {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "optional",
+      "title": "DeepSeek 助手",
+      "detail": "未检测到正在运行的 DeepSeek Harness。请打开启动说明。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "deepseek_not_running",
+      "fix": {"kind": "open_url", "url": "https://github.com/deepseek-ai/deepseek-harness"}
+    },
+    {
+      "id": "assistant_any",
+      "group": "assistant",
+      "state": "ok",
+      "title": "可用助手",
+      "detail": "至少有一个已启用的助手可用。",
+      "blocking": false
+    },
+    {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "未检测到 Tailscale。需要此连接方式时请按说明安装。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "tailscale_not_installed",
+      "fix": {"kind": "open_url", "url": "https://tailscale.com/download"}
+    },
+    {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "optional",
+      "title": "内置连接",
+      "detail": "内置连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailcat_disabled",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    },
+    {
+      "id": "network_lan",
+      "group": "network",
+      "state": "optional",
+      "title": "同一局域网",
+      "detail": "未检测到可信局域网。请连接专用网络后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "lan_unavailable",
+      "fix": {"kind": "retry"}
+    },
+    {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "没有可用的直连通道。可在配对时启用内置连接。",
+      "blocking": false,
+      "code": "no_direct_network",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  ]
+}
