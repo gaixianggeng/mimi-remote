@@ -221,6 +221,7 @@ final class HostStore {
 
     func registerOrStartServiceForOnboarding(onRegistered: @MainActor () -> Void = {}) async throws -> OnboardingServiceStartOutcome {
         let brewLoaded = await homebrew.isLoaded()
+        try Task.checkCancellation()
         if brewLoaded || owner == .homebrew {
             owner = .homebrew
             guard let binary = homebrew.installedAgentBinary() else { throw HomebrewServiceError.brewMissing }
@@ -256,6 +257,7 @@ final class HostStore {
                 return .ready
             }
             do {
+                try Task.checkCancellation()
                 try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
                 try await registerMacAgentAndWaitForReady(onRegistered: onRegistered)
                 return .ready
@@ -1165,6 +1167,7 @@ final class HostStore {
         allowAutomaticRepair: Bool = true,
         onRegistered: @MainActor () -> Void = {}
     ) async throws {
+        try Task.checkCancellation()
         try validateMacAgentConfiguration()
         do {
             try services.registerAgent()
@@ -1173,7 +1176,10 @@ final class HostStore {
             try await waitForMacAgentReady()
             // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
             services.markAgentRegistrationCurrent()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            try Task.checkCancellation()
             // 配置在当前安装包下不可用：注销再登记只会重复同一个失败，直接报真实原因。
             if let lifecycleError = error as? ServiceLifecycleError, lifecycleError.isConfigurationFailure {
                 throw lifecycleError

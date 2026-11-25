@@ -1307,8 +1307,7 @@ final class OnboardingStore {
                 servicePhase = .homebrewActive
             }
         } catch is CancellationError {
-            isStartingService = false
-            return
+            servicePhase = .configSaved
         } catch {
             if deps.agentRegistrationState() == .requiresApproval {
                 activeServiceOwner = .none
@@ -1333,8 +1332,7 @@ final class OnboardingStore {
             activeServiceOwner = .macApp
             servicePhase = .ready
         } catch is CancellationError {
-            isStartingService = false
-            return
+            servicePhase = .configSaved
         } catch {
             servicePhase = .failed(diagnosticFromError(error, defaultStep: .serviceDaemon))
         }

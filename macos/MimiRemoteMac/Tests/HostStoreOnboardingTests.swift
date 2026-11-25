@@ -55,6 +55,28 @@ extension HostStoreTests {
         XCTAssertEqual(store.lifecycle, .migrationRequired)
     }
 
+    func testCancelledRegistrationDoesNotReplaceTheService() async throws {
+        var registration = ServiceRegistrationState.notRegistered
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: false,
+            agentStatus: { registration },
+            registerAgent: {
+                events.append("register")
+                registration = .enabled
+                throw CancellationError()
+            },
+            unregisterAgent: { events.append("unregister"); registration = .notRegistered }
+        )
+        store.beginOnboarding()
+        do {
+            _ = try await store.registerOrStartServiceForOnboarding()
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {}
+        XCTAssertEqual(events.values, ["register"])
+        XCTAssertEqual(store.lifecycle, .notConfigured)
+    }
+
     func testFailedHomebrewRestartRetriesSameOwner() async throws {
         let events = EventRecorder()
         let starts = CallCounter()
