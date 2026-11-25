@@ -91,25 +91,13 @@ func platformCodexCandidates() []string {
 
 func darwinCodexCandidates(home string) []string {
 	candidates := []string{
-		"/opt/homebrew/bin/codex",
-		"/usr/local/bin/codex",
-	}
-	if home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".local", "bin", "codex"),
-			filepath.Join(home, ".npm-global", "bin", "codex"),
-			filepath.Join(home, ".local", "share", "mise", "shims", "codex"),
-			filepath.Join(home, ".local", "share", "mise", "installs", "codex", "latest", "bin", "codex"),
-		)
-	}
-	candidates = append(candidates,
 		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
 		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
 		"/Applications/ChatGPT.app/Contents/Resources/codex",
 		"/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
 		"/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
 		"/Applications/Codex.app/Contents/Resources/codex",
-	)
+	}
 	if home != "" {
 		candidates = append(candidates,
 			filepath.Join(home, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
@@ -118,6 +106,18 @@ func darwinCodexCandidates(home string) []string {
 			filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "bin", "codex"),
 			filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
 			filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
+		)
+	}
+	candidates = append(candidates,
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+	)
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "bin", "codex"),
+			filepath.Join(home, ".npm-global", "bin", "codex"),
+			filepath.Join(home, ".local", "share", "mise", "shims", "codex"),
+			filepath.Join(home, ".local", "share", "mise", "installs", "codex", "latest", "bin", "codex"),
 		)
 	}
 	return candidates
