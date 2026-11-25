@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -53,7 +54,6 @@ type claudeBridgeSupervisor struct {
 	cmd       *exec.Cmd
 	startedAt time.Time
 	done      chan struct{}
-	exited    bool
 	stopped   bool
 
 	cursorMu    sync.Mutex
@@ -155,7 +155,7 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 	if s.stopped {
 		return "", fmt.Errorf("%s 管理器已停止", spec.DisplayName)
 	}
-	if s.cmd != nil && !s.exited {
+	if s.cmd != nil && !adapterProcessExited(s.done) {
 		return s.address, nil
 	}
 	if s.cmd != nil {
@@ -209,11 +209,14 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	s.done = done
 	s.network = network
 	s.address = address
-	s.exited = false
 	go s.reap(cmd, done)
 
 	if err := waitForResidentAdapterEndpoint(spec.DisplayName, network, address, done, claudeBridgeStartTimeout); err != nil {
-		terminateGatewayProcessGroup(cmd, true)
+		// An exited Unix leader may leave children in its process group. On Windows
+		// the reaper has already closed its kill-on-close job when done is closed.
+		if runtime.GOOS != "windows" || !adapterProcessExited(done) {
+			terminateGatewayProcessGroup(cmd, true)
+		}
 		return err
 	}
 	return nil
@@ -223,11 +226,8 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	spec := s.specOrDefault()
 	err := cmd.Wait()
 	releaseGatewayProcessGroup(cmd)
-	s.mu.Lock()
-	if s.cmd == cmd {
-		s.exited = true
-	}
-	s.mu.Unlock()
+	// The startup waiter holds s.mu. Its exit signal belongs only to this child.
+	close(done)
 	if err != nil {
 		log.Printf("%s exited err=%v", spec.DisplayName, err)
 		diagnosticlog.Record("bridge", "failed", diagnosticlog.Fields{})
@@ -237,7 +237,15 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 		diagnosticlog.Record("bridge", "stopped", diagnosticlog.Fields{})
 		debuglog.Printf(spec.DebugComponent, "exited pid=%d", cmd.Process.Pid)
 	}
-	close(done)
+}
+
+func adapterProcessExited(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
@@ -245,7 +253,7 @@ func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	spec := s.specOrDefault()
 	network := s.network
 	address := s.address
-	alive := s.cmd != nil && !s.exited
+	alive := s.cmd != nil && !adapterProcessExited(s.done)
 	s.cursorMu.Lock()
 	cursorEpoch := s.cursorEpoch
 	s.cursorMu.Unlock()
@@ -269,7 +277,7 @@ func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 func (s *claudeBridgeSupervisor) runningSince() *time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.exited || s.startedAt.IsZero() {
+	if s.cmd == nil || adapterProcessExited(s.done) || s.startedAt.IsZero() {
 		return nil
 	}
 	startedAt := s.startedAt
@@ -280,12 +288,12 @@ func (s *claudeBridgeSupervisor) shutdown() {
 	s.mu.Lock()
 	spec := s.specOrDefault()
 	s.stopped = true
-	cmd, done, exited, dir := s.cmd, s.done, s.exited, s.dir
+	cmd, done, dir := s.cmd, s.done, s.dir
 	s.dir = ""
 	s.reset()
 	s.mu.Unlock()
 
-	if cmd != nil && !exited {
+	if cmd != nil && !adapterProcessExited(done) {
 		terminateResidentAdapter(spec.DisplayName, cmd, done)
 	}
 	if dir != "" {
@@ -318,7 +326,6 @@ func (s *claudeBridgeSupervisor) reset() {
 	s.network = ""
 	s.address = ""
 	s.startedAt = time.Time{}
-	s.exited = false
 	s.clearCursors()
 }
 
@@ -327,12 +334,13 @@ func waitForClaudeBridgeEndpoint(network, address string, done <-chan struct{}, 
 }
 
 func waitForResidentAdapterEndpoint(displayName, network, address string, done <-chan struct{}, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
 	for {
-		select {
-		case <-done:
+		if adapterProcessExited(done) {
 			return fmt.Errorf("%s 启动后立即退出", displayName)
-		default:
 		}
 		if network == "unix" {
 			if _, err := os.Stat(address); err == nil {
@@ -345,9 +353,12 @@ func waitForResidentAdapterEndpoint(displayName, network, address string, done <
 				return nil
 			}
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-done:
+			return fmt.Errorf("%s 启动后立即退出", displayName)
+		case <-timer.C:
 			return fmt.Errorf("%s 在 %s 内未监听本地端点 %s", displayName, timeout, address)
+		case <-poll.C:
 		}
-		time.Sleep(25 * time.Millisecond)
 	}
 }

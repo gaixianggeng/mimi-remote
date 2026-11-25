@@ -49,7 +49,22 @@ func main() {
 	body := flag.String("body", "", "path to the shell script serving one connection")
 	socket := flag.String("socket", "", "unix socket to listen on")
 	tcpListen := flag.String("tcp-listen", "", "loopback TCP address to listen on")
+	startLog := flag.String("start-log", "", "record each launch in this file")
+	listenDelay := flag.Duration("listen-delay", 0, "delay before opening the listener")
 	flag.Parse()
+	if *startLog != "" {
+		starts, err := os.OpenFile(*startLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := starts.WriteString("start\n"); err != nil {
+			log.Fatal(err)
+		}
+		if err := starts.Close(); err != nil {
+			log.Fatal(err)
+		}
+	}
+	time.Sleep(*listenDelay)
 
 	if _, err := os.Stat(executable + ".silent"); err == nil {
 		time.Sleep(30 * time.Second)
