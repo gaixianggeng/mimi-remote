@@ -373,10 +373,10 @@ func selectInterfaceIPv4(interfaces []interfaceSnapshot) string {
 		}
 		lowerName := strings.ToLower(strings.TrimSpace(iface.name))
 		// 只有具备明确 Tailscale 归属证据的活跃接口才允许回退：
-		// 1) 接口名显式包含 tailscale（如 Linux tailscale0、Windows Tailscale）；
+		// 1) 接口名以 tailscale 开头（大小写不敏感，如 Linux tailscale0、Windows Tailscale）；
 		// 2) 同一接口同时持有 Tailscale 专属 ULA IPv6 前缀（fd7a:115c:a1e0::/48）。
-		// 仅有通用隧道名（utun*/tun*）与 100.64.0.0/10 可能是其他 VPN，归属不明时必须忽略。
-		if !hasTailscaleV6 && !strings.Contains(lowerName, "tailscale") {
+		// 仅有通用隧道名（utun*/tun*）或仅含子串的网桥名（如 br-tailscale）加 100.64.0.0/10 时必须忽略。
+		if !hasTailscaleV6 && !strings.HasPrefix(lowerName, "tailscale") {
 			continue
 		}
 		for _, ip := range v4s {

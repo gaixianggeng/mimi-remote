@@ -549,4 +549,33 @@ func TestSelectInterfaceIPv4PrefersTailscaleAndIgnoresPhysicalCGNAT(t *testing.T
 			t.Fatalf("应识别命名为 Tailscale 的网卡：got=%q", got)
 		}
 	})
+
+	t.Run("rejects bridge interface merely containing tailscale substring", func(t *testing.T) {
+		got := selectInterfaceIPv4([]interfaceSnapshot{
+			{name: "br-tailscale", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.5.10")}},
+		})
+		if got != "" {
+			t.Fatalf("仅包含 tailscale 子串且无 Tailscale IPv6 的网桥必须返回空：got=%q", got)
+		}
+	})
+
+	t.Run("prefers real tailscale0 over br-tailscale bridge", func(t *testing.T) {
+		got := selectInterfaceIPv4([]interfaceSnapshot{
+			{name: "br-tailscale", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.5.10")}},
+			{name: "tailscale0", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.100.20.40")}},
+		})
+		if got != "100.100.20.40" {
+			t.Fatalf("br-tailscale 与 tailscale0 并存时不得选中网桥：got=%q", got)
+		}
+	})
+
+	t.Run("prefers utun with Tailscale IPv6 over br-tailscale bridge", func(t *testing.T) {
+		got := selectInterfaceIPv4([]interfaceSnapshot{
+			{name: "br-tailscale", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.5.10")}},
+			{name: "utun4", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.100.20.41"), mustAddr("fd7a:115c:a1e0::5678")}},
+		})
+		if got != "100.100.20.41" {
+			t.Fatalf("br-tailscale 与带 Tailscale IPv6 的隧道并存时不得选中网桥：got=%q", got)
+		}
+	})
 }
