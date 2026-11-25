@@ -616,13 +616,6 @@ Dir.mktmpdir("mimi-pr-gate-eval.") do |summary_dir|
     abort("PR Gate 自检失败：未命中的 scoped 检查跳过且 safety 成功时 PR Gate 必须通过：#{stderr}")
   end
 
-  stdout, _stderr, status = run_gate_step.call("DARWIN_GO_RESULT" => "failure")
-  if status.success? || !stdout.include?("Darwin Go")
-    abort("PR Gate 自检失败：Darwin 后端检查失败时必须阻止合并并指出 Darwin Go。")
-  end
-  _stdout, _stderr, status = run_gate_step.call("DARWIN_GO_REQUIRED" => "false", "DARWIN_GO_RESULT" => "skipped")
-  abort("PR Gate 自检失败：无需 Darwin 后端检查时允许跳过。") unless status.success?
-
   %w[failure cancelled skipped].push("").each do |bad_safety_result|
     stdout, _stderr, status = run_gate_step.call("SAFETY_RESULT" => bad_safety_result)
     if status.success?
@@ -632,6 +625,13 @@ Dir.mktmpdir("mimi-pr-gate-eval.") do |summary_dir|
       abort("PR Gate 自检失败：Repository safety 为 #{bad_safety_result.inspect} 失败时未报告 Repository safety 错误。")
     end
   end
+
+  stdout, _stderr, status = run_gate_step.call("DARWIN_GO_RESULT" => "failure")
+  if status.success? || !stdout.include?("Darwin Go")
+    abort("PR Gate 自检失败：Darwin 后端检查失败时必须阻止合并并指出 Darwin Go。")
+  end
+  _stdout, _stderr, status = run_gate_step.call("DARWIN_GO_REQUIRED" => "false", "DARWIN_GO_RESULT" => "skipped")
+  abort("PR Gate 自检失败：无需 Darwin 后端检查时允许跳过。") unless status.success?
 end
 
 macos_path = ".github/workflows/macos-ci.yml"
