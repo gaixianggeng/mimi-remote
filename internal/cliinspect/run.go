@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -28,10 +29,47 @@ type output struct {
 	stdout, stderr []byte
 }
 
+var probeOverrides = map[string]string{
+	"NO_UPDATE_NOTIFIER":         "1",
+	"NPM_CONFIG_UPDATE_NOTIFIER": "false",
+	"NPM_CONFIG_LOGS_MAX":        "0",
+	// npm can still prune old logs with logs-max=0. Keep it out of the user's log directory.
+	"NPM_CONFIG_LOGS_DIR":        os.DevNull,
+	"NPM_CONFIG_TIMING":          "false",
+	"NPM_CONFIG_AUDIT":           "false",
+	"NPM_CONFIG_FUND":            "false",
+	"NODE_DISABLE_COMPILE_CACHE": "1",
+}
+
+// Preflight must leave Mimi-owned state untouched. Vendor shims run with the
+// user's permissions and may write their own caches. Suppress known writes
+// while preserving the HOME and PATH they use to find installed packages.
+func probeEnvironment(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	result := make([]string, 0, len(env)+len(probeOverrides))
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		key = strings.ToUpper(key)
+		if strings.HasPrefix(key, "NPM_CONFIG_") {
+			// npm treats dashes and underscores in option names as equivalent.
+			key = strings.ReplaceAll(key, "-", "_")
+		}
+		if _, overridden := probeOverrides[key]; !overridden {
+			result = append(result, entry)
+		}
+	}
+	for key, value := range probeOverrides {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
+
 func Run(ctx context.Context, path string, env []string, args ...string) (string, error) {
 	out, err := inspectCommand(ctx, func() (*exec.Cmd, error) {
 		cmd := exec.CommandContext(ctx, path, args...)
-		cmd.Env = env
+		cmd.Env = probeEnvironment(env)
 		return cmd, nil
 	}, versionOutputLimit, true)
 	return string(out.stdout), err
@@ -41,7 +79,7 @@ func Run(ctx context.Context, path string, env []string, args ...string) (string
 func Stdout(ctx context.Context, path string, env []string, args ...string) ([]byte, error) {
 	out, _, err := Output(ctx, func() (*exec.Cmd, error) {
 		cmd := exec.CommandContext(ctx, path, args...)
-		cmd.Env = env
+		cmd.Env = probeEnvironment(env)
 		return cmd, nil
 	}, versionOutputLimit)
 	return out, err

@@ -22,6 +22,14 @@ func TestInspectionHelper(t *testing.T) {
 		return
 	}
 	mode := args[3]
+	if mode == "--version" {
+		for _, key := range args[4:] {
+			if value, ok := os.LookupEnv(key); ok {
+				fmt.Printf("%s=%s\n", key, value)
+			}
+		}
+		os.Exit(0)
+	}
 	if mode == "child" {
 		conn, err := net.Dial("tcp", args[4])
 		if err != nil {
@@ -58,6 +66,50 @@ func TestInspectionHelper(t *testing.T) {
 	}
 	fmt.Println("codex-cli 0.155.0")
 	os.Exit(0)
+}
+
+func TestVersionProbeEnvironment(t *testing.T) {
+	home, path := t.TempDir(), t.TempDir()
+	env := []string{
+		"HOME=" + home, "PATH=" + path, "GORACE=atexit_sleep_ms=0",
+		"NO_UPDATE_NOTIFIER=0", "npm_config_logs-max=9",
+		"NPM_CONFIG_UPDATE_NOTIFIER=true", "NPM_CONFIG_LOGS_DIR=" + home,
+	}
+	want := []string{
+		"HOME=" + home, "PATH=" + path,
+		"NO_UPDATE_NOTIFIER=1", "NPM_CONFIG_UPDATE_NOTIFIER=false",
+		"NPM_CONFIG_LOGS_MAX=0", "NPM_CONFIG_LOGS_DIR=" + os.DevNull,
+		"NPM_CONFIG_TIMING=false", "NPM_CONFIG_AUDIT=false", "NPM_CONFIG_FUND=false",
+		"NODE_DISABLE_COMPILE_CACHE=1",
+	}
+	args := []string{helperFlag, "--", "--version"}
+	for _, entry := range want {
+		key, _, _ := strings.Cut(entry, "=")
+		args = append(args, key)
+	}
+	// npm also accepts mixed-case keys and dashes in its config environment.
+	args = append(args, "npm_config_logs-max")
+	check := func(t *testing.T, output string, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expected := strings.Join(want, "\n") + "\n"; output != expected {
+			t.Errorf("shim environment:\n%s\nwant:\n%s", output, expected)
+		}
+	}
+	t.Run("Run with inherited environment", func(t *testing.T) {
+		for _, entry := range env {
+			key, value, _ := strings.Cut(entry, "=")
+			t.Setenv(key, value)
+		}
+		output, err := Run(t.Context(), os.Args[0], nil, args...)
+		check(t, output, err)
+	})
+	t.Run("Stdout with explicit environment", func(t *testing.T) {
+		output, err := Stdout(t.Context(), os.Args[0], env, args...)
+		check(t, string(output), err)
+	})
 }
 
 func TestInspectionCleansDescendants(t *testing.T) {
