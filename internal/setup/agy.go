@@ -73,6 +73,16 @@ func ConfigureAgy(
 	requested AgyActivationPreference,
 	restoreEnabled *bool,
 ) (AgyConfigurationResult, error) {
+	return configureAgyWithCandidates(ctx, configPath, requested, restoreEnabled, agyExecutableCandidates)
+}
+
+func configureAgyWithCandidates(
+	ctx context.Context,
+	configPath string,
+	requested AgyActivationPreference,
+	restoreEnabled *bool,
+	candidates func(string) []string,
+) (AgyConfigurationResult, error) {
 	requested, err := ParseAgyActivationPreference(string(requested))
 	if err != nil {
 		return AgyConfigurationResult{}, err
@@ -152,7 +162,7 @@ func ConfigureAgy(
 				Message: "Antigravity 实验通道已关闭；后续启动不会自动重新启用。",
 			}
 		case AgyActivationAuto, AgyActivationEnabled:
-			preflight = preflightAgy(ctx, cfg)
+			preflight = preflightAgy(ctx, cfg, candidates(cfg.Agy.Env[agybridge.AgyBinaryEnvKey]))
 			result.AgyBin = preflight.AgyBin
 			result.AgyVersion = preflight.AgyVersion
 			result.LoggedIn = preflight.LoggedIn
@@ -312,7 +322,7 @@ func RestoreAgy(configPath string, previous AgyConfigurationResult) (AgyConfigur
 	}, nil
 }
 
-func preflightAgy(ctx context.Context, cfg config.Config) agyPreflightResult {
+func preflightAgy(ctx context.Context, cfg config.Config, candidates []string) agyPreflightResult {
 	adapterBin, ok := agybridge.ResolveBinary(cfg.Agy.AdapterBin)
 	if !ok {
 		return agyPreflightResult{
@@ -329,14 +339,10 @@ func preflightAgy(ctx context.Context, cfg config.Config) agyPreflightResult {
 		}
 	}
 
-	configuredAgy := ""
-	if cfg.Agy.Env != nil {
-		configuredAgy = cfg.Agy.Env[agybridge.AgyBinaryEnvKey]
-	}
 	bestBin := ""
 	bestVersion := ""
 	seen := map[string]bool{}
-	for _, candidate := range agyExecutableCandidates(configuredAgy) {
+	for _, candidate := range candidates {
 		trimmed := strings.TrimSpace(candidate)
 		if trimmed == "" {
 			continue

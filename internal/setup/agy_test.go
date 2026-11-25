@@ -80,8 +80,13 @@ exit 2
 		return cfgPath
 	}
 
+	configure := func(authState string) (AgyConfigurationResult, error) {
+		return configureAgyWithCandidates(context.Background(), writeCfg(t, authState), AgyActivationEnabled, nil,
+			func(configured string) []string { return []string{configured} })
+	}
+
 	// 1) Unknown / usage error must report agy_auth_unknown with LoggedIn == nil (NEVER agy_signed_out).
-	resUnknown, err := ConfigureAgy(context.Background(), writeCfg(t, "unknown"), AgyActivationEnabled, nil)
+	resUnknown, err := configure("unknown")
 	if err != nil {
 		t.Fatalf("ConfigureAgy unknown: %v", err)
 	}
@@ -90,7 +95,7 @@ exit 2
 	}
 
 	// 2) Signed out must report agy_signed_out with LoggedIn == false.
-	resSignedOut, err := ConfigureAgy(context.Background(), writeCfg(t, "signed_out"), AgyActivationEnabled, nil)
+	resSignedOut, err := configure("signed_out")
 	if err != nil {
 		t.Fatalf("ConfigureAgy signed_out: %v", err)
 	}
@@ -99,7 +104,7 @@ exit 2
 	}
 
 	// 3) Signed in with isolated account flags succeeds and enables channel.
-	resSignedIn, err := ConfigureAgy(context.Background(), writeCfg(t, "signed_in"), AgyActivationEnabled, nil)
+	resSignedIn, err := configure("signed_in")
 	if err != nil {
 		t.Fatalf("ConfigureAgy signed_in: %v", err)
 	}
