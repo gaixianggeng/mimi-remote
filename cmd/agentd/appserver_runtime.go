@@ -39,6 +39,10 @@ func prepareAgentAppServerRuntimeWithFrontDoor(ctx context.Context, cfg config.C
 		if err != nil {
 			return nil, fmt.Errorf("初始化 SSH App Server transport 失败：%w", err)
 		}
+		if _, err := transport.CheckRemoteCodex(prepareCtx); err != nil {
+			transport.Shutdown()
+			return nil, err
+		}
 		result.transport = transport
 	case "local":
 		transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{

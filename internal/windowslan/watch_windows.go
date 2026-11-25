@@ -64,7 +64,9 @@ func WatchChanges(changed func(lost bool)) (func(), error) {
 			return nil, err
 		}
 		// Local session, all future events. The OS owns callback event handles.
-		h, _, err := subscribeEvents.Call(0, 0, uintptr(unsafe.Pointer(path)), 0, 0, id, eventCallback, 1)
+		// Strict delivery reports missed records through the error callback.
+		const futureEvents, strict = 1, 0x10000
+		h, _, err := subscribeEvents.Call(0, 0, uintptr(unsafe.Pointer(path)), 0, 0, id, eventCallback, futureEvents|strict)
 		if h == 0 {
 			stop()
 			return nil, err

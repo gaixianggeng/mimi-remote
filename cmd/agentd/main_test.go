@@ -1261,6 +1261,12 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			t.Fatalf("forced runtime failure mode %d = %v, want substring %q", mode, err, want)
 		}
 	}
+	server.Close()
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+	}); err == nil {
+		t.Fatal("forced refresh reported success for an offline service")
+	}
 }
 
 func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {

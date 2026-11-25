@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -47,7 +48,7 @@ func bindServeListenersWithPolicy(cfg config.Config, addresses []string, bind fu
 		if listener == nil {
 			continue
 		}
-		if cfg.HasNetworkModuleControls() || gate != nil {
+		if cfg.HasNetworkModuleControls() || gate != nil || (runtime.GOOS == "windows" && cfg.TailscaleAccessEnabled()) {
 			listener = networkaccess.WrapWithLANGate(listener, moduleIngressPolicy(cfg), gate)
 		}
 		listeners = append(listeners, listener)

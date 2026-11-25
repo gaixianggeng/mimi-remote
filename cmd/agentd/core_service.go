@@ -44,6 +44,9 @@ func inspectCoreService(ctx context.Context, platform, endpoint, token, expected
 	}
 	defer conn.Close()
 	owner, err := inspectCorePeer(ctx, platform, conn)
+	if errors.Is(err, errCoreOwnerPending) {
+		return coreServiceOwner{}, result, err
+	}
 	if err != nil || owner.manager == "" || (expectedManager != "" && owner.manager != expectedManager) {
 		return coreServiceOwner{}, result, onboardingFailure("service_port_in_use", "service_daemon", true, errors.New("无法验证本机监听器的服务归属"))
 	}
@@ -92,7 +95,24 @@ func inspectCoreService(ctx context.Context, platform, endpoint, token, expected
 }
 
 func manageCoreService(ctx context.Context, platform, action, endpoint, token, expectedVersion string, wait time.Duration, stdout, stderr io.Writer) error {
+	started := time.Now()
 	owner, _, err := inspectCoreService(ctx, platform, endpoint, token, expectedVersion, "")
+	if errors.Is(err, errCoreOwnerPending) && wait > 0 {
+		identifying, cancel := context.WithDeadline(ctx, started.Add(wait))
+		defer cancel()
+		for errors.Is(err, errCoreOwnerPending) {
+			select {
+			case <-identifying.Done():
+				return onboardingFailure("service_start_timeout", "service_daemon", true, identifying.Err())
+			case <-time.After(200 * time.Millisecond):
+				owner, _, err = inspectCoreService(identifying, platform, endpoint, token, expectedVersion, "")
+			}
+		}
+		wait = time.Until(started.Add(wait))
+		if wait <= 0 {
+			return onboardingFailure("service_start_timeout", "service_daemon", true, context.DeadlineExceeded)
+		}
+	}
 	// A verified owner can be in the middle of starting. Wait on it, without
 	// submitting a second start. Explicit restart can also recover an old binary.
 	explicitRepair := action == "restart" && owner.manager != ""
@@ -125,7 +145,7 @@ func manageCoreService(ctx context.Context, platform, action, endpoint, token, e
 		// Only the next PID can attest readiness for an explicit restart.
 		previousProcess := action == "restart" && owner.pid > 0 && found == owner
 		if !previousProcess {
-			if err != nil && !errors.Is(err, errCoreStarting) && waiting.Err() == nil {
+			if err != nil && !errors.Is(err, errCoreStarting) && !errors.Is(err, errCoreOwnerPending) && waiting.Err() == nil {
 				return onboardingFailure("service_start_failed", "service_daemon", true, err)
 			}
 			if err == nil && found.manager != "" {

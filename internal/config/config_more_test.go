@@ -203,6 +203,10 @@ func TestValidateAcceptsDevInsecureWithoutToken(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("开发模式应允许无 token：%v", err)
 	}
+	cfg.Tailcat.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Tailcat would forward to an unauthenticated loopback listener")
+	}
 }
 
 func TestValidateRejectsDevInsecureOnNonLoopbackListen(t *testing.T) {

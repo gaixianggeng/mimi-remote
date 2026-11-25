@@ -820,3 +820,37 @@ func TestRuntimeRefreshTimeoutCannotPublishLateEvidence(t *testing.T) {
 		t.Fatalf("late observation was marked fresh: first=%+v late=%+v", first, late)
 	}
 }
+
+func TestSlowAssistantCannotDiscardTimelyAccountEvidence(t *testing.T) {
+	var workers runtimeProbeWorkers
+	release := make(chan struct{})
+	var slowCalls atomic.Int32
+	probes := map[string]runtimeMemberProbe{
+		"deepseek": {time.Second, func(context.Context) runtimeAccountStatus {
+			return runtimeAccountStatus{ID: "deepseek", Enabled: true, State: runtimeStateConnected}
+		}},
+		"agy": {time.Second, func(context.Context) runtimeAccountStatus {
+			slowCalls.Add(1)
+			<-release
+			return runtimeAccountStatus{ID: "agy", Enabled: true, State: runtimeStateConnected}
+		}},
+	}
+	placeholder := func() runtimeStatusResponse {
+		return runtimeStatusResponse{Runtimes: []runtimeAccountStatus{
+			{ID: "deepseek", Enabled: true, State: runtimeStateUnavailable},
+			{ID: "agy", Enabled: true, State: runtimeStateUnavailable},
+		}}
+	}
+	cache := newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		return workers.collect(ctx, placeholder(), probes)
+	}, placeholder)
+	defer func() { close(release); cache.Close(); workers.wg.Wait() }()
+	cache.timeout = 150 * time.Millisecond
+	for range 3 {
+		result := cache.Refresh(t.Context())
+		if result.Stale || result.Runtimes[1].State != runtimeStateUnavailable ||
+			cache.preflightAccounts()["deepseek"] != "connected" || slowCalls.Load() != 1 {
+			t.Fatalf("mixed generation %+v, slow workers %d", result, slowCalls.Load())
+		}
+	}
+}

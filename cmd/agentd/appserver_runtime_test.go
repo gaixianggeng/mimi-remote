@@ -14,6 +14,21 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
+func TestOptionalSSHRejectsUnsupportedRemoteBeforePublishingTransport(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\necho 'codex-cli 0.140.0'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	cfg := config.Config{AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}}
+	upstream := startOptionalCodex(context.Background(), cfg, "")
+	defer upstream.Shutdown()
+	<-upstream.done
+	if _, err := upstream.WebSocketURL(); err == nil {
+		t.Fatal("published a transport for an unsupported remote Codex")
+	}
+}
+
 func TestSharedCodexHomeCannotStartAnUnmanagedResident(t *testing.T) {
 	cfg := config.Config{
 		Codex:     config.CodexConfig{Bin: "/must-not-execute-codex"},

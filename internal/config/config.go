@@ -986,8 +986,8 @@ func (c Config) validate(requireProjects bool) error {
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
-	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled()) {
-		return fmt.Errorf("dev_insecure 只允许 loopback listen 且不能启用局域网；远程访问必须使用 Bearer Token")
+	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled() || c.Tailcat.Enabled) {
+		return fmt.Errorf("dev_insecure 只允许本机 loopback，远程访问必须使用 Bearer Token")
 	}
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
 		return fmt.Errorf("token 太短，建议至少 32 字符")

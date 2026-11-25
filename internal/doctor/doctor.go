@@ -202,7 +202,7 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		{Name: "projects", OK: projectsCount > 0, Level: "warning", Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
 		c.runtimeCheck(),
 	}
-	if check := c.configFileCheck(); check.Name != "" {
+	if check := c.readyConfigFileCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
 	if check := c.appServerTokenFileCheck(); check.Name != "" {
@@ -212,6 +212,22 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 		checks = append(checks, check)
 	}
 	return c.results(checks)
+}
+
+func (c *Checker) readyConfigFileCheck() Check {
+	if c.configPath == "" || c.cfg.SourceGeneration() == "" {
+		return c.configFileCheck()
+	}
+	// A running daemon can outlive a damaged config or WS credential.
+	// Validate the current private document without launching any probes.
+	raw, err := config.ReadPrivatePreflightFile(c.configPath, 4<<20)
+	if err != nil || config.InspectCommittedDocument(raw).Code != "" {
+		return Check{Name: "config-file", Message: "当前服务配置不可用", Fix: "请在本机检查配置和凭据"}
+	}
+	if _, err := os.Lstat(config.SetupJournalPath(c.configPath) + ".recovery"); !errors.Is(err, os.ErrNotExist) {
+		return Check{Name: "config-file", Message: "服务配置等待恢复", Fix: "请在本机检查配置恢复材料"}
+	}
+	return Check{Name: "config-file", OK: true, Message: "配置文件可用"}
 }
 
 func (c *Checker) results(checks []Check) Results {

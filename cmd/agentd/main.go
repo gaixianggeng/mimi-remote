@@ -480,6 +480,9 @@ func runStatus(args []string) error {
 		serviceStatus = probeAgentServiceStatus(context.Background(), loopbackEndpoint, result.Token, version, 2*time.Second)
 	}
 	var runtimeStatusCh chan runtimeStatusResult
+	if *refreshRuntime && !serviceStatus.Ready() {
+		return fmt.Errorf("强制刷新运行时状态失败：%w", serviceStatus.ReadyErr)
+	}
 	if *includeRuntime && serviceStatus.Ready() {
 		runtimeStatusCh = make(chan runtimeStatusResult, 1)
 		go func() {
@@ -973,7 +976,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}
 	}()
 	checker.StartFileAccessPreflight()
-	routerOptions := httpapi.RouterOptions{}
+	routerOptions := httpapi.RouterOptions{EnableHostMetadata: true}
 	if gate != nil {
 		routerOptions.NetworkAvailability = gate.Availability
 		routerOptions.ConfirmLANPolicy = gate.Confirm
@@ -1001,8 +1004,6 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		installationID,
 		routerOptions,
 	)
-	apiRouter.EnableTailscaleHostMetadata()
-	apiRouter.EnableHostDeviceName()
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           apiHandler,

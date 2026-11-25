@@ -22,6 +22,7 @@ var coreLaunchctl = "/bin/launchctl"
 var coreSystemctl = "/usr/bin/systemctl"
 
 var errUnknownCoreOwner = errors.New("本机监听进程与受管服务归属不符")
+var errCoreOwnerPending = errors.New("等待系统确认本机监听进程")
 
 func launchdCoreTarget(label string) string { return fmt.Sprintf("gui/%d/%s", os.Getuid(), label) }
 
@@ -159,7 +160,7 @@ func waitCoreSocketIdentity[T comparable](ctx context.Context, lookup func() (T,
 			}
 		}
 	}
-	return zero, errUnknownCoreOwner
+	return zero, errCoreOwnerPending
 }
 
 func darwinCoreSocketPID(ctx context.Context, server, client netip.AddrPort) (int, error) {

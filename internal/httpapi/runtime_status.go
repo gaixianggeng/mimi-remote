@@ -41,6 +41,7 @@ const (
 )
 
 type runtimeStatusResponse struct {
+	timelyRows bool                   // Partial generations contain only observations completed before the deadline.
 	CheckedAt  *time.Time             `json:"checked_at,omitempty"`
 	Refreshing bool                   `json:"refreshing"`
 	Stale      bool                   `json:"stale"`
@@ -184,7 +185,7 @@ func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.closed && c.ctx.Err() == nil && finishedInBudget {
+	if !c.closed && c.ctx.Err() == nil && (finishedInBudget || response.timelyRows) {
 		c.snapshot = response
 		c.publishedGen = generation
 		c.hasResult = true
@@ -413,52 +414,76 @@ func (r *Router) codexRuntimeStartTime() *time.Time {
 	return &startedAt
 }
 
-func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
-	codexResult := make(chan runtimeAccountStatus, 1)
-	claudeResult := make(chan runtimeAccountStatus, 1)
-	agyResult := make(chan runtimeAccountStatus, 1)
-	deepSeekResult := make(chan runtimeAccountStatus, 1)
-	if r.cfg.DeepSeek.Enabled {
-		go func() {
-			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
-			defer cancel()
-			deepSeekResult <- r.probeDeepSeekRuntime(probeCtx)
-		}()
-	}
-	go func() {
-		probeCtx, cancel := context.WithTimeout(ctx, codexRuntimeProbeTimeout)
-		defer cancel()
-		codexResult <- r.probeCodexRuntime(probeCtx)
-	}()
-	if r.cfg.Agy.Enabled {
-		go func() {
-			probeCtx, cancel := context.WithTimeout(ctx, agyRuntimeProbeTimeout)
-			defer cancel()
-			agyResult <- r.probeAgyRuntime(probeCtx)
-		}()
-	}
-	go func() {
-		probeCtx, cancel := context.WithTimeout(ctx, claudeRuntimeProbeTimeout)
-		defer cancel()
-		claudeResult <- r.probeClaudeRuntime(probeCtx)
-	}()
+type runtimeMemberProbe struct {
+	timeout time.Duration
+	probe   func(context.Context) runtimeAccountStatus
+}
 
-	codex := <-codexResult
-	claude := <-claudeResult
-	checkedAt := time.Now().UTC()
-	response := runtimeStatusResponse{
-		CheckedAt: &checkedAt,
-		Runtimes: []runtimeAccountStatus{
-			codex,
-			claude,
-		},
+type runtimeProbeWorkers struct {
+	slots [4]sync.Mutex
+	wg    sync.WaitGroup
+}
+
+func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
+	probes := map[string]runtimeMemberProbe{
+		"codex":    {codexRuntimeProbeTimeout, r.probeCodexRuntime},
+		"claude":   {claudeRuntimeProbeTimeout, r.probeClaudeRuntime},
+		"agy":      {agyRuntimeProbeTimeout, r.probeAgyRuntime},
+		"deepseek": {4 * time.Second, r.probeDeepSeekRuntime},
 	}
-	if r.cfg.Agy.Enabled {
-		response.Runtimes = append(response.Runtimes, <-agyResult)
+	return r.runtimeWorkers.collect(ctx, r.runtimeStatusPlaceholder(), probes)
+}
+
+func (w *runtimeProbeWorkers) collect(ctx context.Context, response runtimeStatusResponse, probes map[string]runtimeMemberProbe) runtimeStatusResponse {
+	type observation struct {
+		index  int
+		status runtimeAccountStatus
+		timely bool
 	}
-	if r.cfg.DeepSeek.Enabled {
-		response.Runtimes = append(response.Runtimes, <-deepSeekResult)
+	results := make(chan observation, len(response.Runtimes))
+	pending := 0
+	for i, row := range response.Runtimes {
+		if !row.Enabled {
+			continue
+		}
+		response.Runtimes[i].Reason = "probe_timeout"
+		// Older work owns its slot until it exits, even if its caller timed out.
+		slot := &w.slots[i]
+		if !slot.TryLock() {
+			continue
+		}
+		member := probes[row.ID]
+		pending++
+		w.wg.Go(func() {
+			defer slot.Unlock()
+			probeCtx, cancel := context.WithTimeout(ctx, member.timeout)
+			defer cancel()
+			status := member.probe(probeCtx)
+			deadline, _ := probeCtx.Deadline()
+			results <- observation{i, status, probeCtx.Err() == nil && time.Now().Before(deadline)}
+		})
 	}
+	apply := func(o observation) {
+		if o.timely {
+			response.Runtimes[o.index] = o.status
+			response.timelyRows = true
+		}
+	}
+	for pending > 0 {
+		select {
+		case o := <-results:
+			apply(o)
+			pending--
+		case <-ctx.Done():
+			// Keep timely observations already queued when cancellation won the select.
+			for len(results) > 0 {
+				apply(<-results)
+			}
+			pending = 0
+		}
+	}
+	now := time.Now().UTC()
+	response.CheckedAt = &now
 	return response
 }
 

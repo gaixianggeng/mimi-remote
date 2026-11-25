@@ -80,18 +80,23 @@ type tailcatSidecar interface {
 }
 
 type tailcatSidecarSupervisor struct {
-	operationMu sync.Mutex
-	mu          sync.Mutex
-	config      config.TailcatConfig
-	configPath  string
-	stateDir    string
-	controlPath string
-	targetAddr  string
-	cmd         *exec.Cmd
-	done        chan struct{}
-	starting    bool
-	closing     bool
-	lastError   string
+	devInsecure    bool
+	operationMu    sync.Mutex
+	mu             sync.Mutex
+	config         config.TailcatConfig
+	configPath     string
+	stateDir       string
+	controlPath    string
+	targetAddr     string
+	forwardHandler http.Handler
+	forwardMu      sync.Mutex
+	forwardServer  *http.Server
+	forwardClosed  bool
+	cmd            *exec.Cmd
+	done           chan struct{}
+	starting       bool
+	closing        bool
+	lastError      string
 	// 零值表示使用上面的默认超时；测试用短超时驱动。
 	controlTimeout time.Duration
 	pairTimeout    time.Duration
@@ -158,6 +163,7 @@ func (w *tailcatSidecarLogWriter) Write(p []byte) (int, error) {
 func newTailcatSidecarSupervisor(cfg config.Config, configPath string) *tailcatSidecarSupervisor {
 	stateDir, _ := tailcatStateDirectory(configPath)
 	supervisor := &tailcatSidecarSupervisor{
+		devInsecure: cfg.DevInsecure,
 		config:      cfg.Tailcat,
 		configPath:  configPath,
 		stateDir:    stateDir,
@@ -184,6 +190,9 @@ func (s *tailcatSidecarSupervisor) Start(ctx context.Context) error {
 func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	if s == nil {
 		return errors.New("Tailcat 管理器未初始化")
+	}
+	if s.devInsecure {
+		return errors.New("启用 Tailcat 前请关闭 dev_insecure 并重启服务")
 	}
 	s.mu.Lock()
 	if s.closing {
@@ -226,10 +235,15 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 		s.finishStart(nil, err)
 		return err
 	}
+	target, err := s.forwardAddress()
+	if err != nil {
+		s.finishStart(nil, err)
+		return err
+	}
 	_ = os.Remove(s.controlPath)
 	args := []string{
 		"managed-host",
-		"--target", s.targetAddr,
+		"--target", target,
 		"--port", strconv.Itoa(tailcatTargetPort(s.targetAddr)),
 		"--state-dir", s.stateDir,
 		"--control", s.controlPath,
@@ -617,6 +631,7 @@ func (s *tailcatSidecarSupervisor) Close() {
 	if s == nil {
 		return
 	}
+	s.closeForwarding()
 	s.mu.Lock()
 	s.cancelRestartLocked()
 	s.mu.Unlock()
@@ -631,6 +646,53 @@ func (s *tailcatSidecarSupervisor) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	_ = s.stopProcess(ctx, cmd, done)
+}
+
+// Only the sidecar target uses this listener. Remote peers arrive via a
+// loopback TCP hop but must never inherit the local client's authority.
+// The sidecar continues advertising the original configured service port.
+func (s *tailcatSidecarSupervisor) forwardAddress() (string, error) {
+	s.forwardMu.Lock()
+	defer s.forwardMu.Unlock()
+	if s.forwardClosed {
+		return "", http.ErrServerClosed
+	}
+	if s.forwardServer != nil {
+		return s.forwardServer.Addr, nil
+	}
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	handler := s.forwardHandler
+	if handler == nil {
+		handler = http.NotFoundHandler()
+	}
+	server := &http.Server{
+		Addr: l.Addr().String(), ReadHeaderTimeout: 10 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.RemoteAddr = "tailcat"
+			handler.ServeHTTP(w, req)
+		}),
+	}
+	s.forwardServer = server
+	go server.Serve(l)
+	return server.Addr, nil
+}
+
+func (s *tailcatSidecarSupervisor) closeForwarding() {
+	s.forwardMu.Lock()
+	server := s.forwardServer
+	s.forwardClosed = true
+	s.forwardServer = nil
+	s.forwardMu.Unlock()
+	if server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			_ = server.Close()
+		}
+	}
 }
 
 func (s *tailcatSidecarSupervisor) waitUntilReady(ctx context.Context) error {

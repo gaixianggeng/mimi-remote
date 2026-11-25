@@ -66,7 +66,8 @@ type Router struct {
 	upstreamReadiness *appServerReadinessProbe
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
 	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
-	runtimeStatus *runtimeStatusSnapshotCache
+	runtimeStatus  *runtimeStatusSnapshotCache
+	runtimeWorkers runtimeProbeWorkers
 	// autoThreadTitles 在 Mac 端串行生成新会话标题。它使用独立的 loopback
 	// app-server 连接，不能阻塞或消费移动端 gateway 的 JSON-RPC 响应。
 	autoThreadTitles autoThreadTitleScheduler
@@ -178,6 +179,7 @@ type Router struct {
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
 	ConfigPath             string
+	EnableHostMetadata     bool
 	NetworkAvailability    func(context.Context) (bool, bool)
 	ConfirmLANPolicy       func(context.Context) string
 	LANPolicyDiagnostic    func() string
@@ -269,13 +271,6 @@ func NewRouterWithInstallationIDAndOptions(
 		tailcatLocalToken:           tailcatLocalToken,
 		appServerSSH:                options.AppServerSSH,
 		diagnosticLogs:              options.DiagnosticLogs,
-	}
-	if cfg.Tailcat.Enabled {
-		go r.tailcat.StartAtBoot(func() {
-			if r.managedPairing != nil {
-				r.managedPairing.Start()
-			}
-		})
 	}
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
@@ -384,25 +379,22 @@ func NewRouterWithInstallationIDAndOptions(
 	// 与 rpc 并列而非合并——HTTP 与 WebSocket 的失败语义不同，混在一个入口里
 	// 会让"这条错误来自哪条通道"变得难以判断。
 	mux.Handle("/api/harness/ws", authed(http.HandlerFunc(r.harnessNativeStreamHandler)))
-	return logging(limitAPIRequestBodies(mux), r.monitor), r
-}
-
-func (r *Router) EnableTailscaleHostMetadata() {
-	if r == nil || r.tailscaleHostLookup != nil {
-		return
+	handler := logging(limitAPIRequestBodies(mux), r.monitor)
+	if options.EnableHostMetadata {
+		r.tailscaleHostLookup = tailscaleinfo.NewResolver(time.Minute).Lookup
+		r.hostDeviceNameLookup = hostinfo.NewResolver(time.Minute).Lookup
 	}
-	resolver := tailscaleinfo.NewResolver(time.Minute)
-	r.tailscaleHostLookup = resolver.Lookup
-}
-
-// EnableHostDeviceName 宣告宿主设备名，供客户端在未自定义名字时作为默认显示名。
-// 与 Tailscale 元数据分开注入：Tailcat 和局域网宿主也必须有可读设备名。
-func (r *Router) EnableHostDeviceName() {
-	if r == nil || r.hostDeviceNameLookup != nil {
-		return
+	if supervisor, ok := tailcat.(*tailcatSidecarSupervisor); ok {
+		supervisor.forwardHandler = handler
 	}
-	resolver := hostinfo.NewResolver(time.Minute)
-	r.hostDeviceNameLookup = resolver.Lookup
+	if cfg.Tailcat.Enabled {
+		go r.tailcat.StartAtBoot(func() {
+			if r.managedPairing != nil {
+				r.managedPairing.Start()
+			}
+		})
+	}
+	return handler, r
 }
 
 // Shutdown releases the long-lived runtimes the router started. Call it after
@@ -414,6 +406,9 @@ func (r *Router) Shutdown() {
 		return
 	}
 	r.shutdownOnce.Do(func() {
+		if supervisor, ok := r.tailcat.(*tailcatSidecarSupervisor); ok {
+			supervisor.closeForwarding()
+		}
 		r.tailcatActivation.close()
 		r.harnessNative.shutdown()
 		// 观察订阅可能正在投递回合提醒，必须先于 push.Close 退出。
@@ -428,6 +423,7 @@ func (r *Router) Shutdown() {
 		}
 		if r.runtimeStatus != nil {
 			r.runtimeStatus.Close()
+			r.runtimeWorkers.wg.Wait()
 		}
 		if r.claudeBridge != nil {
 			r.claudeBridge.shutdown()

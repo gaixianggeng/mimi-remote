@@ -109,6 +109,33 @@ func TestCoreRestartUsesCurrentOwnerAndRequiresNewReadiness(t *testing.T) {
 	}
 }
 
+func TestStartWaitsForPendingSocketOwnershipWithoutSubmitting(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "Bearer fixture" {
+			t.Error("missing bearer on verified connection")
+		}
+		io.WriteString(w, `{"ok":true,"version":"1"}`)
+	}))
+	defer server.Close()
+	fakeCoreManager(t, "systemd", func(string, string) error {
+		t.Fatal("submitted start for a bound listener")
+		return nil
+	})
+	attempts := 0
+	inspectCorePeer = func(context.Context, string, net.Conn) (coreServiceOwner, error) {
+		attempts++
+		if attempts == 1 {
+			return coreServiceOwner{}, errCoreOwnerPending
+		}
+		return coreServiceOwner{manager: "systemd", pid: 42}, nil
+	}
+	if err := manageCoreService(t.Context(), "linux", "start", server.URL, "fixture", "1", time.Second, io.Discard, io.Discard); err != nil || requests.Load() != 1 {
+		t.Fatalf("start err=%v requests=%d", err, requests.Load())
+	}
+}
+
 func TestCoreColdStartRequiresBoundExpectedOwner(t *testing.T) {
 	for _, owner := range []string{"systemd", "", "gui"} {
 		t.Run("after startup "+owner, func(t *testing.T) {

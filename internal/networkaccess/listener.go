@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
@@ -46,8 +47,9 @@ func (p Policy) Allows(local, remote net.IP) bool {
 
 type policyListener struct {
 	net.Listener
-	policy  Policy
-	lanGate *LANGate
+	policy        Policy
+	lanGate       *LANGate
+	tunnelAddress func(net.IP) bool
 }
 
 func Wrap(listener net.Listener, policy Policy) net.Listener {
@@ -55,7 +57,39 @@ func Wrap(listener net.Listener, policy Policy) net.Listener {
 }
 
 func WrapWithLANGate(listener net.Listener, policy Policy, gate *LANGate) net.Listener {
-	return &policyListener{Listener: listener, policy: policy, lanGate: gate}
+	l := &policyListener{Listener: listener, policy: policy, lanGate: gate}
+	if runtime.GOOS == "windows" || gate != nil {
+		l.tunnelAddress = func(ip net.IP) bool {
+			ifaces, err := net.Interfaces()
+			return err == nil && assignedToTunnel(ip, ifaces, (*net.Interface).Addrs)
+		}
+	}
+	return l
+}
+
+// A physical network may use the same address range as Tailscale. Require
+// the destination to be assigned exclusively to a live tunnel interface.
+func assignedToTunnel(ip net.IP, interfaces []net.Interface, addrs func(*net.Interface) ([]net.Addr, error)) bool {
+	found := false
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addresses, err := addrs(&iface)
+		if err != nil {
+			return false
+		}
+		for _, address := range addresses {
+			local, _, err := net.ParseCIDR(address.String())
+			if err == nil && ip.Equal(local) {
+				if !tailscaleinfo.IsTunnelInterface(iface.Name) {
+					return false
+				}
+				found = true
+			}
+		}
+	}
+	return found
 }
 
 func (l *policyListener) Accept() (net.Conn, error) {
@@ -67,6 +101,10 @@ func (l *policyListener) Accept() (net.Conn, error) {
 		local, localOK := conn.LocalAddr().(*net.TCPAddr)
 		remote, remoteOK := conn.RemoteAddr().(*net.TCPAddr)
 		if localOK && remoteOK && l.policy.Allows(local.IP, remote.IP) {
+			if isTailscaleAddress(local.IP) && l.tunnelAddress != nil && !l.tunnelAddress(local.IP) {
+				_ = conn.Close()
+				continue
+			}
 			if l.lanGate == nil || local.IP.IsLoopback() || isTailscaleAddress(local.IP) {
 				return conn, nil
 			}

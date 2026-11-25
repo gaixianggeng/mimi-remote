@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -73,18 +74,27 @@ func TrustedPeer(ctx context.Context, conn net.Conn, expectedPID int, taskName s
 	if err != nil {
 		return false
 	}
-	const script = `$ErrorActionPreference='Stop'
+	script := `$ErrorActionPreference='Stop'
 $scheduler=New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $task=$scheduler.GetFolder('\').GetTask($env:MIMI_TASK_NAME)
-$actions=$task.Definition.Actions
-if ($task.State -eq 4 -and $actions.Count -eq 1 -and $actions.Item(1).Type -eq 0 -and $actions.Item(1).Path -ieq $env:MIMI_OWNER_WRAPPER) {
-    [Console]::Out.Write('owned')
-}`
-	env := append(os.Environ(), "MIMI_TASK_NAME="+taskName, "MIMI_OWNER_WRAPPER="+image)
+` + verifyRunningTask
+	env := append(os.Environ(), "MIMI_TASK_NAME="+taskName, "MIMI_OWNER_WRAPPER="+image,
+		"MIMI_OWNER_WRAPPER_PID="+strconv.FormatUint(uint64(parent.InheritedFromUniqueProcessId), 10))
 	out, err := cliinspect.Stdout(ctx, shell, env, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
 	return err == nil && strings.TrimSpace(string(out)) == "owned"
 }
+
+// The same installed wrapper can also be launched manually. Its image and
+// the task's Running state alone do not identify the listener's task instance.
+const verifyRunningTask = `
+$actions=$task.Definition.Actions
+$running=$task.GetInstances(0)
+if ($task.State -eq 4 -and $actions.Count -eq 1 -and $actions.Item(1).Type -eq 0 -and
+    $actions.Item(1).Path -ieq $env:MIMI_OWNER_WRAPPER -and $running.Count -eq 1 -and
+    $running.Item(1).EnginePID -eq [uint32]$env:MIMI_OWNER_WRAPPER_PID) {
+    [Console]::Out.Write('owned')
+}`
 
 func processImage(process windows.Handle) string {
 	buffer := make([]uint16, 32768)

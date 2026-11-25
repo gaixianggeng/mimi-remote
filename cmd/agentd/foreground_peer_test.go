@@ -121,7 +121,11 @@ func TestCoreSocketIdentityWaitsOnlyForPendingEvidence(t *testing.T) {
 				}
 				return 0, tc.lookupErr
 			})
-			if calls != tc.wantCalls || (err == nil && pid == 42) != tc.wantOK || (!tc.wantOK && !errors.Is(err, errUnknownCoreOwner)) {
+			wantErr := tc.lookupErr
+			if !tc.wantOK && wantErr == nil {
+				wantErr = errCoreOwnerPending
+			}
+			if calls != tc.wantCalls || (err == nil && pid == 42) != tc.wantOK || !errors.Is(err, wantErr) {
 				t.Fatalf("pid=%d err=%v calls=%d", pid, err, calls)
 			}
 		})

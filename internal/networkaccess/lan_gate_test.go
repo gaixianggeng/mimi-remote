@@ -14,7 +14,8 @@ func TestLANGateRevokesExistingSocketsAndPreservesOtherTransports(t *testing.T) 
 	connect := func(local, remote string, allowed bool) *testConn {
 		t.Helper()
 		raw := &testConn{local: &net.TCPAddr{IP: net.ParseIP(local)}, remote: &net.TCPAddr{IP: net.ParseIP(remote)}}
-		l := WrapWithLANGate(&testListener{conns: []net.Conn{raw}}, policy, gate)
+		l := WrapWithLANGate(&testListener{conns: []net.Conn{raw}}, policy, gate).(*policyListener)
+		l.tunnelAddress = func(ip net.IP) bool { return ip.Equal(net.ParseIP("100.64.0.2")) }
 		c, err := l.Accept()
 		if allowed {
 			if err != nil || raw.closed || c == nil {
@@ -30,6 +31,7 @@ func TestLANGateRevokesExistingSocketsAndPreservesOtherTransports(t *testing.T) 
 	lan(false)
 	local := connect("127.0.0.1", "127.0.0.1", true)
 	tunnel := connect("100.64.0.2", "100.64.0.3", true)
+	connect("100.64.0.8", "100.64.0.9", false)
 	gate.Invalidate(true)
 	for _, denial := range []string{"lan_public_network_blocked", "lan_firewall_blocked", "probe_timeout"} {
 		code = ""
@@ -54,6 +56,20 @@ func TestLANGateRevokesExistingSocketsAndPreservesOtherTransports(t *testing.T) 
 	gate.Invalidate(false)
 	if !again.closed || gate.Confirm(context.Background()) == "" {
 		t.Fatal("lost watcher retained grant")
+	}
+}
+
+func TestTunnelDestinationRejectsPhysicalAndAmbiguousAssignments(t *testing.T) {
+	ip := net.ParseIP("100.64.0.8")
+	addrs := func(*net.Interface) ([]net.Addr, error) {
+		return []net.Addr{&net.IPNet{IP: ip, Mask: net.CIDRMask(24, 32)}}, nil
+	}
+	tunnel := net.Interface{Name: "Tailscale", Flags: net.FlagUp}
+	physical := net.Interface{Name: "Ethernet", Flags: net.FlagUp}
+	if !assignedToTunnel(ip, []net.Interface{tunnel}, addrs) ||
+		assignedToTunnel(ip, []net.Interface{physical}, addrs) ||
+		assignedToTunnel(ip, []net.Interface{tunnel, physical}, addrs) {
+		t.Fatal("only an unambiguous live tunnel may bypass Windows LAN policy")
 	}
 }
 
