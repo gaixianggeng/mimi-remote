@@ -200,8 +200,12 @@ final class HostStore {
         do {
             try validateMacAgentConfiguration()
             let nextPairing = try await agent.setup(workspaceRoot)
-            pairing = nextPairing
-            pairingNetwork = nextPairing.network
+            if nextPairing.hasTicket {
+                pairing = nextPairing
+                pairingNetwork = nextPairing.network
+            } else {
+                pairing = nil
+            }
             _ = await reconcileClaudeConfigurationAtLaunch()
             await enableLoginLaunchBestEffort()
             owner = .macApp

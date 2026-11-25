@@ -143,7 +143,7 @@ func TestPairingArgumentsRequestSafeJSONWithoutTerminalOutput(t *testing.T) {
 	}
 }
 
-func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
+func TestParsePairingInfoRequiresValidTicketReceipt(t *testing.T) {
 	payload := []byte(`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2026-08-09T18:00:00+08:00"}`)
 	result, err := parsePairingInfo(payload)
 	if err != nil {
@@ -152,8 +152,24 @@ func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
 	if result.Endpoint != "http://127.0.0.1:8787" || !strings.Contains(result.PairURL, "pair_sig=short") {
 		t.Fatalf("pairing info = %#v", result)
 	}
-	if _, err := parsePairingInfo([]byte(`{"endpoint":"http://127.0.0.1:8787"}`)); err == nil {
-		t.Fatal("missing short-lived pair URL should fail closed")
+	for _, invalid := range []string{
+		`{"endpoint":"http://127.0.0.1:8787"}`,
+		`{"pair_url":"mimiremote://pair?pair_sig=short"}`,
+		`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short"}`,
+		`{"endpoint":"http://127.0.0.1:8787","pair_url":"https://evil.example/pair","pair_expires_at":"2030-01-01T00:05:00Z"}`,
+		`{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2030-01-01T00:05:00Z"}`,
+		`{"ok":true,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"not-a-date","network":"tailscale"}`,
+	} {
+		if _, err := parsePairingInfo([]byte(invalid)); err == nil {
+			t.Fatalf("invalid pairing receipt should fail closed: %s", invalid)
+		}
+	}
+	privateTransport := `{"ok":true,"endpoint":"http://127.0.0.1","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2030-01-01T00:05:00Z","network":"private-value"}`
+	if _, err := parsePairingInfo([]byte(privateTransport)); err == nil || strings.Contains(err.Error(), "private-value") {
+		t.Fatal("invalid pairing transport leaked into tray diagnostics")
+	}
+	if actionCommandBudget < 120*time.Second {
+		t.Fatalf("Windows actionCommandBudget = %s, want >= 120s", actionCommandBudget)
 	}
 }
 
@@ -162,7 +178,7 @@ func TestPairingOnNetworkPreservesExplicitSelection(t *testing.T) {
 		var received []string
 		controller := &agentController{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
 			received = args
-			return []byte(`{"pair_url":"mimiremote://pair?endpoint=http%3A%2F%2F192.0.2.1%3A8787"}`), nil
+			return []byte(`{"ok":true,"endpoint":"http://192.0.2.1:8787","pair_url":"mimiremote://pair?endpoint=http%3A%2F%2F192.0.2.1%3A8787","pair_expires_at":"2030-01-01T00:05:00Z","network":"` + network + `"}`), nil
 		}}
 		if _, err := controller.pairingOnNetwork(context.Background(), network); err != nil {
 			t.Fatal(err)

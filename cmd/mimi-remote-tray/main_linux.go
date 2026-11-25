@@ -202,6 +202,23 @@ func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
 	cmd.WaitDelay = time.Second
 	return cmd.Run()
 }
+func linuxPerformTimeout(action string) time.Duration {
+	switch {
+	case action == "start" || action == "restart":
+		return trayCommandTimeout("linux", action)
+	case action == "pair-tailcat":
+		return trayCommandTimeout("linux", "tailcat", "pair")
+	case strings.HasPrefix(action, "pair-"):
+		return trayCommandTimeout("linux", "pair")
+	case action == "doctor":
+		return trayCommandTimeout("linux", "doctor", "--fix")
+	case strings.HasPrefix(action, "tailcat-"):
+		return trayCommandTimeout("linux", "tailcat", strings.TrimPrefix(action, "tailcat-"))
+	default:
+		return trayCommandTimeout("linux", action)
+	}
+}
+
 func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo, error) {
 	select {
 	case a.operation <- struct{}{}:
@@ -227,7 +244,7 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 	defer unlock()
 	a.update(func(s *linuxTraySnapshot) { s.Busy = true })
 	defer a.update(func(s *linuxTraySnapshot) { s.Busy = false })
-	ctx, cancel := context.WithTimeout(a.ctx, 85*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, linuxPerformTimeout(action))
 	defer cancel()
 	if strings.HasPrefix(action, "pair-") {
 		pair, err := a.controller.pairing(ctx, strings.TrimPrefix(action, "pair-"))

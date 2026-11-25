@@ -3,9 +3,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -87,6 +85,7 @@ type agentController struct {
 }
 
 type pairingInfo struct {
+	OK                  *bool    `json:"ok,omitempty"`
 	Endpoint            string   `json:"endpoint"`
 	Network             string   `json:"network,omitempty"`
 	TailscaleDNSName    string   `json:"tailscale_dns_name,omitempty"`
@@ -219,14 +218,20 @@ func pairingArguments() []string {
 }
 
 func parsePairingInfo(payload []byte) (pairingInfo, error) {
-	var result pairingInfo
-	if err := json.Unmarshal(payload, &result); err != nil {
-		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
+	receipt, err := decodeOnboardingPairingTicketReceipt(payload, false)
+	if err != nil {
+		return pairingInfo{}, errors.New("解析短期配对信息失败，请重新生成")
 	}
-	if strings.TrimSpace(result.PairURL) == "" {
-		return pairingInfo{}, errors.New("短期配对信息缺少二维码链接")
-	}
-	return result, nil
+	return pairingInfo{
+		OK:                  receipt.OK,
+		Endpoint:            receipt.Endpoint,
+		Network:             receipt.Network,
+		TailscaleDNSName:    receipt.TailscaleDNSName,
+		TailscaleDeviceName: receipt.TailscaleDeviceName,
+		PairURL:             receipt.PairURL,
+		PairExpiresAt:       receipt.PairExpiresAt,
+		Warnings:            receipt.Warnings,
+	}, nil
 }
 
 func doctorArguments(fix bool) []string {
@@ -237,26 +242,58 @@ func doctorArguments(fix bool) []string {
 	return arguments
 }
 
+func (c *agentController) preflight(
+	ctx context.Context,
+	stage string,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	return runTrayPreflight(ctx, "windows", stage, progress, generation, onProgress, c.runHiddenWithProgress, extraArgs...)
+}
+
 func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte, error) {
+	return c.runHiddenWithProgress(ctx, nil, 0, nil, args...)
+}
+
+func (c *agentController) runHiddenWithProgress(
+	ctx context.Context,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	args ...string,
+) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, trayCommandTimeout("windows", args...))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, c.agentPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("%s", detail)
+	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, context.Canceled
 	}
-	return stdout.Bytes(), nil
+	if ctx.Err() != nil {
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args))
+	}
+	if stdoutTruncated {
+		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
+	}
+	if err != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("windows", args), args...); cliErr != nil {
+			return nil, cliErr
+		}
+		return nil, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
+	}
+	return stdout, nil
 }
 
 func (c *agentController) openLogsTerminal() error {
@@ -330,9 +367,10 @@ const (
 	serviceReadyWait = 60 * time.Second
 	// restart 先停旧实例：等待 PID 退出最多 10 秒、同步计划任务最多 10 秒
 	// （cmd/agentd/windows_service.go），再加上配置检查与提交启动的余量。
-	serviceStopBudget   = 20 * time.Second
-	actionCommandBudget = serviceReadyWait + serviceStopBudget + 30*time.Second
+	serviceStopBudget = 20 * time.Second
 )
+
+var actionCommandBudget = trayCommandTimeout("windows", "start")
 
 func statusContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), statusQueueTimeout)

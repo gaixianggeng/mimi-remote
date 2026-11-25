@@ -244,11 +244,11 @@ extension HostStore {
                         case .connected, .available:
                             return
                         case .signedOut:
-                            throw ClaudeRuntimeControlError.signedOut
+                            throw ManagedRuntimeControlError.signedOut(runtimeID: runtimeID)
                         case .unavailable where runtime.reason != "refresh_in_progress":
-                            throw ClaudeRuntimeControlError.unavailable
+                            throw ManagedRuntimeControlError.unavailable(runtimeID: runtimeID)
                         case .disabled:
-                            throw ClaudeRuntimeControlError.disabled
+                            throw ManagedRuntimeControlError.disabled(runtimeID: runtimeID)
                         case .unavailable:
                             break
                         }
@@ -259,7 +259,7 @@ extension HostStore {
                 try await Task.sleep(for: .seconds(1))
             }
         }
-        throw ClaudeRuntimeControlError.timedOut(enabled: enabled)
+        throw ManagedRuntimeControlError.timedOut(runtimeID: runtimeID, enabled: enabled)
     }
 
     func reconcileClaudeConfigurationAtLaunch() async -> Bool {

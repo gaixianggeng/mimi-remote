@@ -70,11 +70,19 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	expires := time.Now().Add(time.Minute).UTC().Truncate(time.Second).Format(time.RFC3339)
 	query := url.Values{"endpoint": {"http://100.64.0.1:8787"}, "issued_at": {time.Now().UTC().Format(time.RFC3339)}, "expires_at": {expires}, "pair_sig": {"short-signature"}}
 	calls := 0
+	future := false
+	v1 := false
 	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
 		if strings.Join(args, " ") != "pair --network tailscale --qr-only --json" {
 			t.Fatal("unsafe pairing arguments", args)
 		}
 		calls++
+		if future {
+			return json.Marshal(map[string]string{"schema": "mimi.onboarding.future/v2", "pair_url": "mimiremote://pair?" + query.Encode(), "pair_expires_at": expires})
+		}
+		if v1 {
+			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
+		}
 		return json.Marshal(linuxPairingInfo{PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 	}}
 	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
@@ -85,6 +93,16 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
 		t.Fatal("agentd nanosecond ticket rejected", err)
 	}
+	future = true
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("future ticket accepted as legacy")
+	}
+	future = false
+	v1 = true
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("v1 ticket missing network accepted")
+	}
+	v1 = false
 	query.Set("token", "long-lived-secret")
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("legacy token accepted")
@@ -95,22 +113,30 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("expired ticket accepted")
 	}
-	if calls != 4 {
+	if calls != 6 {
 		t.Fatal(calls)
 	}
 }
 func TestLinuxControllerUsesServiceSafeArgumentsAndRedactsDiagnostics(t *testing.T) {
-	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
-		if strings.Join(args, " ") != "restart --wait 20s --no-pair" {
-			t.Fatal(args)
-		}
-		return []byte("safe line\nauthorization=Bearer sensitive\nmimiremote://pair?pair_sig=short\nhttp://user:password@host"), nil
-	}}
-	result, err := c.action(context.Background(), "restart")
-	if err != nil || !strings.Contains(result, "safe line") || strings.Contains(result, "sensitive") || strings.Contains(result, "pair_sig") || strings.Contains(result, "user:") {
-		t.Fatal(result, err)
+	if linuxServiceReadyWait != 60*time.Second {
+		t.Fatalf("linuxServiceReadyWait = %s, want 60s", linuxServiceReadyWait)
 	}
-	if _, err = c.action(context.Background(), "serve; echo unsafe"); err == nil {
+	for _, svcAction := range []string{"start", "restart"} {
+		var seen []string
+		c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
+			seen = append([]string(nil), args...)
+			return []byte("safe line\nauthorization=Bearer sensitive\nmimiremote://pair?pair_sig=short\nhttp://user:password@host"), nil
+		}}
+		result, err := c.action(context.Background(), svcAction)
+		if strings.Join(seen, " ") != svcAction+" --wait 60s --no-pair" {
+			t.Fatalf("%s args = %v, want --wait 60s --no-pair", svcAction, seen)
+		}
+		if err != nil || !strings.Contains(result, "safe line") || strings.Contains(result, "sensitive") || strings.Contains(result, "pair_sig") || strings.Contains(result, "user:") {
+			t.Fatal(result, err)
+		}
+	}
+	c := &linuxController{runner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil }}
+	if _, err := c.action(context.Background(), "serve; echo unsafe"); err == nil {
 		t.Fatal("unknown action accepted")
 	}
 	b := &boundedTrayOutput{remaining: 4}
@@ -139,5 +165,47 @@ func TestLinuxConcurrentActionsDoNotOverlap(t *testing.T) {
 	<-done
 	if app.snapshot().Busy {
 		t.Fatal("busy flag was not cleared")
+	}
+}
+func TestLinuxPerformTimeoutMeetsOnboardingBudget(t *testing.T) {
+	if got := linuxPerformTimeout("start"); got < 110*time.Second || got <= linuxServiceReadyWait {
+		t.Fatalf("linux start timeout = %s, want >= 110s and > %s", got, linuxServiceReadyWait)
+	}
+	if got := linuxPerformTimeout("restart"); got < 110*time.Second || got <= linuxServiceReadyWait {
+		t.Fatalf("linux restart timeout = %s, want >= 110s and > %s", got, linuxServiceReadyWait)
+	}
+	if got := linuxPerformTimeout("pair-tailscale"); got < 45*time.Second {
+		t.Fatalf("linux pair timeout = %s, want >= 45s", got)
+	}
+	if got := linuxPerformTimeout("pair-tailcat"); got < 45*time.Second {
+		t.Fatalf("linux tailcat pair timeout = %s, want >= 45s", got)
+	}
+	for _, action := range []string{"tailcat-enable", "tailcat-disable"} {
+		if got := linuxPerformTimeout(action); got < 45*time.Second {
+			t.Fatalf("linux %s timeout = %s, want >= 45s (BE 25s)", action, got)
+		}
+	}
+	for _, action := range []string{"tailcat-enter-managed", "tailcat-exit-managed"} {
+		if got := linuxPerformTimeout(action); got < 85*time.Second {
+			t.Fatalf("linux %s timeout = %s, want >= 85s (BE 50s + 25s rollback)", action, got)
+		}
+	}
+	redacted := redactTrayText("safe line\n/home/alice/.config/secret.json UnmarkedCred9876543210ABCDEF")
+	if !strings.Contains(redacted, "safe line") || strings.Contains(redacted, "/home/alice") || strings.Contains(redacted, "UnmarkedCred9876543210ABCDEF") {
+		t.Fatalf("redactTrayText leaked private path or unmarked credential: %q", redacted)
+	}
+}
+
+func TestLinuxFailedActionsOnlyDisplayTheLocalizedError(t *testing.T) {
+	var stdout = `{"ok":false,"error":{"message":"private-fixture"}}`
+	c := &linuxController{runner: func(context.Context, ...string) ([]byte, error) { return []byte(stdout), fmt.Errorf("操作失败") }}
+	for _, action := range []string{"restart", "doctor"} {
+		if output, err := c.action(context.Background(), action); err == nil || output != "" {
+			t.Fatalf("failed %s exposed the raw envelope", action)
+		}
+	}
+	stdout = `{"ok":false,"checks":[{"name":"service","message":"服务未运行"}]}`
+	if output, err := c.action(context.Background(), "doctor"); err == nil || !strings.Contains(output, "服务未运行") {
+		t.Fatal("legacy read-only doctor report lost")
 	}
 }

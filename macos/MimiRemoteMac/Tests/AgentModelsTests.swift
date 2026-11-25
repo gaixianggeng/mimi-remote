@@ -65,7 +65,8 @@ final class AgentModelsTests: XCTestCase {
         XCTAssertEqual(payload.network, .tailscale)
         XCTAssertEqual(payload.tailscaleDNSName, "studio.tailnet.ts.net")
         XCTAssertEqual(payload.tailscaleDeviceName, "studio")
-        XCTAssertTrue(payload.pairURL.contains("pair_sig"))
+        XCTAssertTrue(try XCTUnwrap(payload.pairURL).contains("pair_sig"))
+        XCTAssertTrue(payload.hasTicket)
         XCTAssertFalse(String(decoding: raw, as: UTF8.self).contains("token"))
     }
 

@@ -7,16 +7,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// Matches contracts/host-cli/onboarding-codes-v1.json (wait=60s within BE<=85s
+// and Linux tray client timeout>=110s).
+const linuxServiceReadyWait = 60 * time.Second
 
 type linuxController struct {
 	agentPath string
@@ -47,42 +51,56 @@ func newLinuxController(agentPath string) (*linuxController, error) {
 // The CLI is the only service/configuration owner. Never invoke a shell or read
 // long-lived credentials into the tray process.
 func (c *linuxController) run(ctx context.Context, args ...string) ([]byte, error) {
+	return c.runWithProgress(ctx, nil, 0, nil, args...)
+}
+
+func (c *linuxController) runWithProgress(
+	ctx context.Context,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	args ...string,
+) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, trayCommandTimeout("linux", args...))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, c.agentPath, args...)
 	cmd.Dir = filepath.Dir(c.agentPath) // release/worktree directories may be removed after launch.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
-	stdout := &boundedTrayOutput{remaining: 1024 * 1024}
-	stderr := &boundedTrayOutput{remaining: 64 * 1024}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		return nil, errors.New("agentd 操作超时或已取消，请刷新状态后重试")
+	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, context.Canceled
 	}
-	if stdout.truncated {
+	if ctx.Err() != nil {
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args))
+	}
+	if stdoutTruncated {
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	if err != nil {
-		return stdout.Bytes(), fmt.Errorf("agentd %s 失败：%s", args[0], fallbackText(redactTrayText(stderr.String()), "请运行诊断或查看日志"))
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args), args...); cliErr != nil {
+			return stdout, cliErr
+		}
+		return stdout, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
 	}
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
-type boundedTrayOutput struct {
-	bytes.Buffer
-	remaining int
-	truncated bool
-}
-
-func (b *boundedTrayOutput) Write(p []byte) (int, error) {
-	n := len(p)
-	if len(p) > b.remaining {
-		p = p[:b.remaining]
-		b.truncated = true
-	}
-	_, _ = b.Buffer.Write(p)
-	b.remaining -= len(p)
-	return n, nil
+func (c *linuxController) preflight(
+	ctx context.Context,
+	stage string,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	return runTrayPreflight(ctx, "linux", stage, progress, generation, onProgress, c.runWithProgress, extraArgs...)
 }
 
 func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus, error) {
@@ -101,7 +119,7 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 	var args []string
 	switch action {
 	case "start", "restart":
-		args = []string{action, "--wait", "20s", "--no-pair"}
+		args = []string{action, "--wait", strconv.Itoa(int(linuxServiceReadyWait/time.Second)) + "s", "--no-pair"}
 	case "stop":
 		args = []string{"stop"}
 	case "doctor":
@@ -120,6 +138,20 @@ func (c *linuxController) action(ctx context.Context, action string) (string, er
 		return "", errors.New("不支持的操作")
 	}
 	payload, err := c.runner(ctx, args...)
+	// Failed service commands may put a private error envelope on stdout.
+	// Keep the legacy read-only doctor report visible when it reports a problem.
+	if err != nil && action != "logs" {
+		if action != "doctor" {
+			return "", err
+		}
+		var report struct {
+			Checks []json.RawMessage `json:"checks"`
+			Error  json.RawMessage   `json:"error"`
+		}
+		if json.Unmarshal(payload, &report) != nil || report.Checks == nil || report.Error != nil {
+			return "", err
+		}
+	}
 	// Diagnostic data is displayed, never parsed as an unstable command result.
 	// The doctor contract uses JSON and may exit unsuccessfully with valid results.
 	if action == "doctor" {
@@ -150,9 +182,18 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 	if err != nil {
 		return linuxPairingInfo{}, err
 	}
+	var keys map[string]json.RawMessage
 	var result linuxPairingInfo
-	if json.Unmarshal(payload, &result) != nil {
-		return result, errors.New("无法读取短期配对信息")
+	if json.Unmarshal(payload, &keys) != nil || json.Unmarshal(payload, &result) != nil {
+		return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+	}
+	if !supportedOnboardingSchema(keys) {
+		return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+	}
+	if _, v1 := keys["ok"]; v1 {
+		if _, err := decodeOnboardingPairingTicketReceipt(payload, true); err != nil {
+			return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+		}
 	}
 	u, err := url.Parse(result.PairURL)
 	expires, dateErr := time.Parse(time.RFC3339, result.PairExpiresAt)
@@ -210,7 +251,7 @@ func redactTrayText(text string) string {
 			lines[i] = "[已隐藏包含凭据的内容]"
 			continue
 		}
-		lines[i] = trayURLCredential.ReplaceAllString(line, "[已隐藏带凭据的地址]")
+		lines[i] = scrubTraySensitiveText(trayURLCredential.ReplaceAllString(line, "[已隐藏带凭据的地址]"))
 	}
 	return strings.Join(lines, "\n")
 }

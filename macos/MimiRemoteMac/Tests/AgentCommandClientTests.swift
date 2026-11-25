@@ -37,17 +37,35 @@ final class AgentCommandClientTests: XCTestCase {
         }
     }
 
-    func testSetupUsesSeparateProjectScanAndHomeBrowseRoots() {
-        let arguments = AgentCommandClient.setupArguments(
-            workspaceRoot: URL(filePath: "/test-user/code"),
-            browseRoot: URL(filePath: "/test-user")
+    func testSetupDefaultsBrowseRootToWorkspaceAndAllowsExplicitOverride() {
+        let defaultArgs = AgentCommandClient.setupArguments(
+            workspaceRoot: URL(filePath: "/test-user/code")
         )
-
-        XCTAssertEqual(arguments, [
+        XCTAssertEqual(defaultArgs, [
             "setup", "--json", "--qr-only",
             "--scan-root", "/test-user/code",
-            "--browse-root", "/test-user",
+            "--browse-root", "/test-user/code",
         ])
+
+        let explicitArgs = AgentCommandClient.setupArguments(
+            workspaceRoot: URL(filePath: "/test-user/code"),
+            browseRoot: URL(filePath: "/test-user/custom-browse")
+        )
+        XCTAssertEqual(explicitArgs, [
+            "setup", "--json", "--qr-only",
+            "--scan-root", "/test-user/code",
+            "--browse-root", "/test-user/custom-browse",
+        ])
+    }
+
+    func testResolveStageParsesPreflightStageFlag() {
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage", "pair"]), .pair)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage=pair"]), .pair)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json", "--stage", "setup"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--json"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["preflight", "--stage", "unknown"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["setup", "--no-pair", "--json"]), .setup)
+        XCTAssertEqual(AgentCommandClient.resolveStage(for: ["pair", "--json"]), .pair)
     }
 
     func testStatusOnlyRequestsRuntimeFromBundledAgent() {
@@ -210,6 +228,129 @@ final class AgentCommandClientTests: XCTestCase {
             )
         } catch {
             XCTFail("超时应保留 timedOut 语义，实际为 \(error)")
+        }
+    }
+
+    func testCancelReapsAnUnresponsivePairCommand() async throws {
+        let files = FileManager.default
+        let dir = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try files.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("pair")
+        try """
+        #!/bin/sh
+        trap '' TERM
+        touch "$0.ready"
+        exec /bin/sleep 10
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let client = AgentCommandClient.live(binaryOverride: script)
+        let task = Task { try await client.pair(.tailscale) }
+        let ready = script.path + ".ready"
+        let launchDeadline = ContinuousClock.now + .seconds(3)
+        while !files.fileExists(atPath: ready), ContinuousClock.now < launchDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(files.fileExists(atPath: ready))
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled pairing returned a ticket")
+        } catch is CancellationError {
+            XCTAssertLessThan(cancelledAt.duration(to: .now), .seconds(5))
+        }
+    }
+
+    func testOnboardingCommandArgumentsAndTimeouts() {
+        let preflightArgs = AgentCommandClient.preflightArguments(
+            options: OnboardingPreflightOptions(
+                stage: .setup,
+                configPath: "/fixture/config/config.json",
+                scanRoot: URL(filePath: "/fixture/workspace"),
+                browseRoot: URL(filePath: "/fixture/workspace"),
+                progressJSON: true,
+                runtimePaths: [(id: "codex", value: "auto")],
+                assistants: [(id: "claude", value: "enabled")]
+            )
+        )
+        XCTAssertEqual(preflightArgs, [
+            "preflight", "--json", "--stage", "setup",
+            "--config", "/fixture/config/config.json",
+            "--scan-root", "/fixture/workspace",
+            "--browse-root", "/fixture/workspace",
+            "--progress-json",
+            "--runtime-path", "codex=auto",
+            "--assistant", "claude=enabled",
+        ])
+
+        XCTAssertEqual(
+            AgentCommandClient.setupNoPairArguments(workspaceRoot: URL(filePath: "/fixture/workspace")),
+            ["setup", "--no-pair", "--json", "--scan-root", "/fixture/workspace", "--browse-root", "/fixture/workspace"]
+        )
+        XCTAssertEqual(AgentCommandClient.upArguments(waitSeconds: 60), ["up", "--no-pair", "--json", "--wait", "60s"])
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.preflight, .seconds(35))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.setup, .seconds(60))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.pair, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.network, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.runtime, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.deepSeekRuntime, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.workspace, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.doctorFix, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.tailcatControl, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.tailcatReconfigure, .seconds(85))
+        for command in ["tailcat configure", "tailcat enter-managed", "tailcat exit-managed", "tailcat relay set", "tailcat relay-set"] {
+            XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.duration(for: command), .seconds(85), command)
+        }
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.serviceWait, .seconds(110))
+    }
+
+    func testProcessExecutorStreamsStderrLinesBeforeExit() async throws {
+        let executor = ProcessExecutor()
+        let lock = NSLock()
+        var arrivalTimes: [(String, ContinuousClock.Instant)] = []
+        let finishedAt: ContinuousClock.Instant
+        let result = try await executor.run(
+            executable: URL(filePath: "/bin/sh"),
+            arguments: ["-c", "echo first >&2; sleep 0.25; echo second >&2; echo done"],
+            timeout: .seconds(5),
+            onStderrLine: { line in
+                lock.lock()
+                arrivalTimes.append((line, ContinuousClock.now))
+                lock.unlock()
+            }
+        )
+        finishedAt = ContinuousClock.now
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines), "done")
+        lock.lock()
+        let captured = arrivalTimes
+        lock.unlock()
+        XCTAssertEqual(captured.map(\.0), ["first", "second"])
+        XCTAssertGreaterThanOrEqual(captured[0].1.duration(to: finishedAt), .milliseconds(150))
+    }
+
+    func testProcessTimeoutBoundsPipeDrainWhenDescendantHoldsWriteHandle() async {
+        let executor = ProcessExecutor()
+        let startedAt = ContinuousClock.now
+        do {
+            _ = try await executor.run(
+                executable: URL(filePath: "/bin/sh"),
+                // 主 shell 立即输出并退出，但后台 sleep 继承并保持 stdout/stderr 写端打开；
+                // 管道排空必须受总 deadline 约束，不能因为主进程已退出而无限期挂起。
+                arguments: ["-c", "printf unfinished >&2; /bin/sleep 4 & echo done"],
+                timeout: .milliseconds(250),
+                onStderrLine: { _ in XCTFail("Deadline must discard an unfinished progress line") }
+            )
+            XCTFail("后代进程持有写端句柄超过 deadline 时必须超时")
+        } catch ProcessExecutorError.timedOut {
+            XCTAssertLessThan(
+                startedAt.duration(to: .now),
+                .seconds(2),
+                "deadline 到期后必须立即终止管道排空，不能等待后代退出"
+            )
+        } catch {
+            XCTFail("应保留 timedOut 语义，实际为 \(error)")
         }
     }
 }
