@@ -903,10 +903,12 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
         )
     }
 
-    var asPairingInfo: PairingInfo {
+    var asPairingInfo: PairingInfo { pairingInfo(for: .automatic) }
+
+    func pairingInfo(for requestedNetwork: PairingNetwork) -> PairingInfo {
         PairingInfo(
             endpoint: endpoint,
-            network: network,
+            network: hasExplicitNetwork || requestedNetwork == .automatic ? network : requestedNetwork,
             tailscaleDNSName: tailscaleDNSName,
             tailscaleDeviceName: tailscaleDeviceName,
             pairURL: pairURL,

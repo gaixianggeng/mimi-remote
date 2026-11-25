@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct OnboardingFlowView: View {
-    let store: OnboardingStore
+    @Bindable var store: OnboardingStore
     @State private var deepSeekStartupURL = ""
 
     var body: some View {
@@ -29,24 +29,22 @@ struct OnboardingFlowView: View {
             store.handleApplicationDidBecomeActive()
         }
         .fileImporter(
-            isPresented: Binding(
-                get: { store.pendingPathPicker != nil },
-                set: { if !$0 { store.pendingPathPicker = nil } }
-            ),
+            isPresented: $store.isPathPickerPresented,
             allowedContentTypes: allowedPickerTypes,
             allowsMultipleSelection: false
         ) { result in
-            let request = store.pendingPathPicker
-            store.pendingPathPicker = nil
-            guard case .success(let urls) = result, let url = urls.first, let request else { return }
-            Task {
-                switch request {
-                case .workspaceRoot:
-                    await store.selectWorkspaceRoot(url)
-                case .runtimeBinary(let runtimeID, _):
-                    await store.selectRuntimeBinaryPath(for: runtimeID, url: url)
+            Task { await store.completePathPicker(with: try? result.get().first) }
+        } onCancellation: {
+            Task { await store.completePathPicker(with: nil) }
+        }
+        .sheet(isPresented: $store.presentsRecovery) {
+            VStack(alignment: .trailing) {
+                if let recovery = store.recoveryDiagnostic {
+                    OnboardingRecoveryCard(diagnostic: recovery)
                 }
+                Button("完成") { store.presentsRecovery = false }
             }
+            .padding()
         }
         .sheet(isPresented: Binding(
             get: { store.presentsDeepSeekConnectForm },
@@ -124,7 +122,7 @@ struct OnboardingFlowView: View {
                         .textSelection(.enabled)
                     Spacer()
                     Button("选择…") {
-                        store.pendingPathPicker = .workspaceRoot
+                        store.presentPathPicker(.workspaceRoot)
                     }
                     .disabled(store.isSavingSetup)
                 }
@@ -165,7 +163,11 @@ struct OnboardingFlowView: View {
                 }
             }
 
-            if let stepError = store.stepError {
+            ForEach(store.checks.filter(\.blocking)) { check in
+                OnboardingCheckRowView(store: store, check: check)
+            }
+
+            if let stepError = store.preflightError ?? store.stepError {
                 OnboardingDiagnosticBanner(
                     diagnostic: stepError,
                     isWorking: store.isSavingSetup || store.isCheckingPreflight,
@@ -281,7 +283,7 @@ struct OnboardingFlowView: View {
                 }
             }
 
-            if let preflightError = store.preflightError {
+            if let preflightError = store.preflightError ?? store.stepError ?? (store.isTransportReady(store.selectedTransport) ? nil : store.pairingError) {
                 OnboardingDiagnosticBanner(
                     diagnostic: preflightError,
                     isWorking: store.isCheckingPreflight,

@@ -413,7 +413,7 @@ extension AgentCommandClient {
                 activeStep: .networkAny
             )
             let receipt = try decode(PairingTicketReceipt.self, from: result)
-            return receipt.asPairingInfo
+            return receipt.pairingInfo(for: network)
         }
 
         return AgentCommandClient(

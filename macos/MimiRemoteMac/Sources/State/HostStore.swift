@@ -152,8 +152,6 @@ final class HostStore {
     var mainAppRegistrationState: ServiceRegistrationState { services.mainAppStatus() }
     var currentPhotosAccessState: PhotosAccessState { systemPrivacySettings.photosAccessState() }
 
-    func isHomebrewLoaded() async -> Bool { await homebrew.isLoaded() }
-
     func openFilesAndFoldersSettings() {
         systemPrivacySettings.openFilesAndFoldersSettings()
     }
@@ -170,15 +168,25 @@ final class HostStore {
         systemPrivacySettings.openDateTimeSettings()
     }
 
+    @ObservationIgnored private var wizard: OnboardingStore?
+
+    func onboardingWizard() -> OnboardingStore {
+        if let wizard { return wizard }
+        let wizard = OnboardingStore(dependencies: .live(hostStore: self))
+        self.wizard = wizard
+        return wizard
+    }
+
     func beginOnboarding() {
         isOnboardingInProgress = true
-        if !agent.configExists() || lifecycle == .loading {
-            lifecycle = .notConfigured
-        }
+        lifecycle = .notConfigured
+        pairingRefreshGeneration &+= 1
+        pairing = nil
     }
 
     func finishOnboarding(owner resolvedOwner: ServiceOwner) async {
         isOnboardingInProgress = false
+        wizard = nil
         lastError = nil
         switch resolvedOwner {
         case .homebrew:
@@ -211,17 +219,27 @@ final class HostStore {
         case homebrewHealthy
     }
 
-    func registerOrStartServiceForOnboarding() async throws -> OnboardingServiceStartOutcome {
-        if await homebrew.isLoaded() {
-            homebrewLoaded = true
-            if let binary = homebrew.installedAgentBinary(),
-               let current = try? await agent.statusAt(binary),
-               current.serviceOK {
-                status = current
-                doctor = current.doctor
-                owner = .homebrew
+    func registerOrStartServiceForOnboarding(onRegistered: @MainActor () -> Void = {}) async throws -> OnboardingServiceStartOutcome {
+        let brewLoaded = await homebrew.isLoaded()
+        if brewLoaded || owner == .homebrew {
+            owner = .homebrew
+            guard let binary = homebrew.installedAgentBinary() else { throw HomebrewServiceError.brewMissing }
+            if !brewLoaded {
+                try await homebrew.start()
+                homebrewLoaded = true
+                onRegistered()
+                try await waitForHomebrewReady(binary: binary)
                 return .homebrewHealthy
             }
+            homebrewLoaded = true
+            onRegistered()
+            let current = try await agent.statusAt(binary)
+            guard current.serviceOK else {
+                throw AgentClientError.commandFailed("Homebrew 后台服务尚未就绪。")
+            }
+            status = current
+            doctor = current.doctor
+            return .homebrewHealthy
         }
         try validateMacAgentConfiguration()
         await enableLoginLaunchBestEffort()
@@ -239,7 +257,7 @@ final class HostStore {
             }
             do {
                 try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-                try await registerMacAgentAndWaitForReady()
+                try await registerMacAgentAndWaitForReady(onRegistered: onRegistered)
                 return .ready
             } catch {
                 if services.agentStatus() == .requiresApproval {
@@ -251,7 +269,7 @@ final class HostStore {
         case .notRegistered, .notFound:
             owner = .macApp
             do {
-                try await registerMacAgentAndWaitForReady()
+                try await registerMacAgentAndWaitForReady(onRegistered: onRegistered)
                 return .ready
             } catch {
                 if services.agentStatus() == .requiresApproval {
@@ -265,16 +283,20 @@ final class HostStore {
     }
 
     func restartServiceForOnboarding() async throws {
-        try validateMacAgentConfiguration()
-        if services.agentStatus() == .requiresApproval {
-            owner = .none
-            throw ServiceLifecycleError.requiresApproval
+        let brewLoaded = await homebrew.isLoaded()
+        if brewLoaded || owner == .homebrew {
+            owner = .homebrew
+            guard let binary = homebrew.installedAgentBinary() else { throw HomebrewServiceError.brewMissing }
+            if brewLoaded {
+                try await homebrew.stop()
+                homebrewLoaded = false
+            }
+            try await homebrew.start()
+            homebrewLoaded = true
+            try await waitForHomebrewReady(binary: binary)
+        } else {
+            try await reloadMacAgentForConfigurationChange()
         }
-        owner = .macApp
-        if services.agentStatus() == .enabled {
-            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-        }
-        try await registerMacAgentAndWaitForReady()
     }
 
     func takeOverHomebrewForOnboarding() async throws {
@@ -317,8 +339,8 @@ final class HostStore {
         default:
             return
         }
-        if needsReload, owner == .macApp {
-            try await reloadMacAgentForConfigurationChange()
+        if needsReload {
+            try await restartServiceForOnboarding()
         }
     }
 
@@ -326,24 +348,27 @@ final class HostStore {
         switch transport {
         case .tailscale:
             let result = try await agent.configureNetwork(.tailscale, true)
-            if result.restartRequired, owner == .macApp {
-                try await reloadMacAgentForConfigurationChange()
+            if result.restartRequired {
+                try await restartServiceForOnboarding()
             }
         case .lan:
             let result = try await agent.configureNetwork(.localNetwork, true)
-            if result.restartRequired, owner == .macApp {
-                try await reloadMacAgentForConfigurationChange()
+            if result.restartRequired {
+                try await restartServiceForOnboarding()
             }
         case .tailcat:
             tailcatStatus = try await agent.setTailcatEnabled(true)
+            if tailcatStatus?.restartRequired == true {
+                try await restartServiceForOnboarding()
+            }
         }
     }
 
     func connectDeepSeekForOnboarding(startupURL: String?) async throws {
         let result = try await agent.configureDeepSeek(.connect, startupURL)
         deepSeekConfiguration = result
-        if result.restartRequired, owner == .macApp {
-            try await reloadMacAgentForConfigurationChange(fastRestart: true)
+        if result.restartRequired {
+            try await restartServiceForOnboarding()
         }
     }
 
@@ -1137,11 +1162,14 @@ final class HostStore {
     }
 
     private func registerMacAgentAndWaitForReady(
-        allowAutomaticRepair: Bool = true
+        allowAutomaticRepair: Bool = true,
+        onRegistered: @MainActor () -> Void = {}
     ) async throws {
         try validateMacAgentConfiguration()
         do {
             try services.registerAgent()
+            if services.agentStatus() == .requiresApproval { throw ServiceLifecycleError.requiresApproval }
+            onRegistered()
             try await waitForMacAgentReady()
             // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
             services.markAgentRegistrationCurrent()
@@ -1166,7 +1194,7 @@ final class HostStore {
                 // register 已落入 enabled 但进程未就绪时，完整换代一次以刷新 BTM
                 // 的 Launch Constraint；递归调用关闭修复开关，保证最多只重试一次。
                 try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
-                try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false)
+                try await registerMacAgentAndWaitForReady(allowAutomaticRepair: false, onRegistered: onRegistered)
             } catch {
                 throw ServiceLifecycleError.automaticRepairFailed(
                     initial: initialError.localizedDescription,

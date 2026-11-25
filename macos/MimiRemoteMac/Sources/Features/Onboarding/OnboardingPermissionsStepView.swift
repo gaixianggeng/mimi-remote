@@ -40,7 +40,7 @@ struct OnboardingPermissionsStepView: View {
                 }
             }
 
-            if let stepError = store.stepError {
+            if let stepError = store.preflightError ?? store.stepError {
                 OnboardingDiagnosticBanner(
                     diagnostic: stepError,
                     isWorking: store.isStartingService || store.isCheckingPreflight,

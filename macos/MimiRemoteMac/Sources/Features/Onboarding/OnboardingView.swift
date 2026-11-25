@@ -5,7 +5,6 @@ struct OnboardingView: View {
     static let codexSetupURL = OnboardingFixURL.codex.url
 
     let store: HostStore
-    @Environment(\.openWindow) private var openWindow
     @State private var onboardingStore: OnboardingStore?
 
     var body: some View {
@@ -19,12 +18,7 @@ struct OnboardingView: View {
         }
         .onAppear {
             if onboardingStore == nil {
-                onboardingStore = OnboardingStore(
-                    dependencies: .live(
-                        hostStore: store,
-                        openDiagnosticsWindow: { openWindow(id: AppWindow.diagnostics.rawValue) }
-                    )
-                )
+                onboardingStore = store.onboardingWizard()
             }
         }
     }

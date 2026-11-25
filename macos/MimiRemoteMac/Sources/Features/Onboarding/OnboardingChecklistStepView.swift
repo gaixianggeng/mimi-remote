@@ -33,7 +33,7 @@ struct OnboardingChecklistStepView: View {
 
             InfoCard("AI 编程助手") {
                 if let summary = store.check(for: .assistantAny) {
-                    OnboardingAggregateBadgeRow(store: store, check: summary)
+                    OnboardingCheckRowView(store: store, check: summary)
                     Divider().opacity(0.4)
                 }
                 if store.assistantChecks.isEmpty {
@@ -50,7 +50,7 @@ struct OnboardingChecklistStepView: View {
 
             InfoCard("手机连接方式") {
                 if let summary = store.check(for: .networkAny) {
-                    OnboardingAggregateBadgeRow(store: store, check: summary)
+                    OnboardingCheckRowView(store: store, check: summary)
                     Divider().opacity(0.4)
                 }
                 if store.networkChecks.isEmpty {
@@ -133,40 +133,6 @@ struct OnboardingChecklistStepView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
-    }
-}
-
-struct OnboardingAggregateBadgeRow: View {
-    let store: OnboardingStore
-    let check: OnboardingCheck
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            OnboardingStateIcon(state: check.state)
-            Text(displayMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            if check.blocking {
-                Text("阻断")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.red.opacity(0.12), in: Capsule())
-            }
-        }
-    }
-
-    private var displayMessage: String {
-        if check.state == .ok {
-            return check.id == .assistantAny ? "至少有一个可用助手已就绪。" : "至少有一种可用连接方式已就绪。"
-        }
-        if check.state == .checking {
-            return "正在汇总\(check.id.localizedTitle)…"
-        }
-        return store.diagnostic(for: check)?.message ?? OnboardingCopyCatalog.safeFallbackCopy
     }
 }
 
@@ -292,7 +258,7 @@ struct OnboardingCheckRowView: View {
                         Task { await store.performCheckPrimaryAction(for: check) }
                     }
                     .controlSize(.small)
-                    .disabled(store.isApplyingFix || store.isSavingSetup)
+                    .disabled(store.isCheckingPreflight || store.isApplyingFix || store.isSavingSetup)
                 }
 
                 if let secondaryFix {
@@ -317,7 +283,7 @@ struct OnboardingCheckRowView: View {
 
                 if let target = manualRuntimeTarget, let runtimeID = OnboardingStore.runtimeID(for: check.id) {
                     Button("手动选择路径…") {
-                        store.pendingPathPicker = .runtimeBinary(runtimeID: runtimeID, target: target)
+                        store.presentPathPicker(.runtimeBinary(runtimeID: runtimeID, target: target))
                     }
                     .controlSize(.small)
                     .disabled(store.isCheckingPreflight || store.isApplyingFix)
@@ -328,7 +294,8 @@ struct OnboardingCheckRowView: View {
     }
 
     private func manualPathTarget(primaryFix: OnboardingFix?) -> OnboardingPathTarget? {
-        guard check.id.isCLIAssistant, check.state != .ok, check.state != .checking else {
+        guard check.id.isCLIAssistant, check.code?.hasSuffix("_signed_out") != true,
+              check.state != .ok, check.state != .checking else {
             return nil
         }
         if case .choosePath = primaryFix {

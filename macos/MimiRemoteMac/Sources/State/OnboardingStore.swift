@@ -62,7 +62,7 @@ struct OnboardingDependencies {
     var enableAssistant: @MainActor (_ runtimeID: String) async throws -> Void
     var enableTransport: @MainActor (_ transport: OnboardingTransport) async throws -> Void
     var connectDeepSeek: @MainActor (_ startupURL: String?) async throws -> Void
-    var registerOrStartService: @MainActor () async throws -> HostStore.OnboardingServiceStartOutcome
+    var registerOrStartService: @MainActor (_ onRegistered: @MainActor () -> Void) async throws -> HostStore.OnboardingServiceStartOutcome
     var restartService: @MainActor () async throws -> Void
     var takeoverHomebrew: @MainActor () async throws -> Void
     var runSafeDoctorFix: @MainActor () async throws -> Void
@@ -82,8 +82,7 @@ struct OnboardingDependencies {
 
     @MainActor
     static func live(
-        hostStore: HostStore,
-        openDiagnosticsWindow: @escaping @MainActor () -> Void = {}
+        hostStore: HostStore
     ) -> OnboardingDependencies {
         OnboardingDependencies(
             preflight: { options, onProgress in
@@ -110,8 +109,8 @@ struct OnboardingDependencies {
             connectDeepSeek: { startupURL in
                 try await hostStore.connectDeepSeekForOnboarding(startupURL: startupURL)
             },
-            registerOrStartService: {
-                try await hostStore.registerOrStartServiceForOnboarding()
+            registerOrStartService: { onRegistered in
+                try await hostStore.registerOrStartServiceForOnboarding(onRegistered: onRegistered)
             },
             restartService: {
                 try await hostStore.restartServiceForOnboarding()
@@ -155,9 +154,7 @@ struct OnboardingDependencies {
                     hostStore.openFullDiskAccessSettings()
                 case .dateTime:
                     hostStore.openDateTimeSettings()
-                case .hostRecovery:
-                    openDiagnosticsWindow()
-                case .assistants, .connections, .windowsFirewall, .windowsNetworkProfile, .managedConnection:
+                case .hostRecovery, .assistants, .connections, .windowsFirewall, .windowsNetworkProfile, .managedConnection:
                     break
                 }
             },
@@ -230,13 +227,39 @@ final class OnboardingStore {
     private(set) var workspaceConfirmed = false
     private(set) var isApplyingFix = false
     private(set) var isCompleted = false
-    var pendingPathPicker: OnboardingPathPickerRequest?
+    private(set) var pendingPathPicker: OnboardingPathPickerRequest?
+    var isPathPickerPresented = false
+    var presentsRecovery = false
+
+    func presentPathPicker(_ request: OnboardingPathPickerRequest) {
+        pendingPathPicker = request
+        isPathPickerPresented = true
+    }
+
+    func completePathPicker(with url: URL?) async {
+        let request = pendingPathPicker
+        pendingPathPicker = nil
+        isPathPickerPresented = false
+        guard let request, let url else { return }
+        switch request {
+        case .workspaceRoot:
+            await selectWorkspaceRoot(url)
+        case .runtimeBinary(let runtimeID, _):
+            await selectRuntimeBinaryPath(for: runtimeID, url: url)
+        }
+    }
+
     var presentsDeepSeekConnectForm = false
 
     let verifiedCapability: String?
 
     private let deps: OnboardingDependencies
     private var hasStarted = false
+    private enum SaveReadback {
+        case concurrentChange
+        case uncertain(scanRoot: String, browseRoot: String)
+    }
+    private var pendingSaveReadback: SaveReadback?
     private var hasPersistedConfigFromWizard = false
     private var committedScanRootPath: String?
     private var preflightGeneration: UInt64 = 0
@@ -292,7 +315,7 @@ final class OnboardingStore {
     }
 
     var canProceedFromEnvironmentCheck: Bool {
-        guard !isCheckingPreflight, preflightError == nil else { return false }
+        guard report?.stage == .setup, !isCheckingPreflight, preflightError == nil else { return false }
         if let configCheck = check(for: .configStore), configCheck.blocking {
             return false
         }
@@ -300,14 +323,12 @@ final class OnboardingStore {
     }
 
     var canProceedFromWorkspaceSelection: Bool {
-        selectedScanRoot != nil && !isSavingSetup
-    }
-
-    var isServiceReadyOrReusable: Bool {
-        if case .ready = servicePhase { return true }
-        if case .homebrewActive = servicePhase { return true }
-        if check(for: .serviceDaemon)?.state == .ok { return true }
-        return false
+        guard !isCheckingPreflight, !isSavingSetup, preflightError == nil,
+              pendingSaveReadback == nil, let report, report.stage == .setup,
+              selectedScanRoot?.path == report.scanRoot else { return false }
+        return report.checks.allSatisfy { check in
+            !check.blocking || (check.id == .workspaceRoot && check.code == "workspace_not_found" && !report.scanRootExists)
+        }
     }
 
     /// 后台 LaunchAgent 处于系统登录项审批中：步骤 4 仅展示「打开登录项设置…」与「重新检查」，
@@ -319,7 +340,8 @@ final class OnboardingStore {
         if case .requiresApproval = servicePhase, check(for: .serviceDaemon)?.state != .ok {
             return true
         }
-        return deps.agentRegistrationState() == .requiresApproval && check(for: .serviceDaemon)?.state != .ok
+        return deps.agentRegistrationState() == .requiresApproval
+            && !(check(for: .serviceOwnerConflict)?.code == "homebrew_service_active" && check(for: .serviceDaemon)?.state == .ok)
     }
 
     /// 主应用开机启动项关闭属于非阻断警告，不阻断健康服务出码。
@@ -334,18 +356,9 @@ final class OnboardingStore {
     }
 
     var canIssuePairingQR: Bool {
-        guard let report, report.stage == .pair else { return false }
-        guard !isServiceRequiresApproval else { return false }
-        guard report.configured, report.workspaceConfirmed, report.scanRootExists else { return false }
-        guard check(for: .configStore)?.state == .ok,
-              check(for: .workspaceRoot)?.state == .ok,
-              check(for: .serviceDaemon)?.state == .ok,
-              check(for: .assistantAny)?.state == .ok,
-              check(for: .networkAny)?.state == .ok
-        else {
-            return false
-        }
-        return true
+        guard !isCheckingPreflight, preflightError == nil,
+              let report, report.stage == .pair, report.ok else { return false }
+        return !isServiceRequiresApproval
     }
 
     var issuedPairingExpiryDate: Date? {
@@ -362,6 +375,7 @@ final class OnboardingStore {
         guard canIssuePairingQR,
               !isServiceRequiresApproval,
               let pairing = issuedPairing,
+              isTransportReady(selectedTransport),
               pairing.hasTicket,
               !isIssuedPairingExpired
         else {
@@ -371,7 +385,9 @@ final class OnboardingStore {
     }
 
     var canCompleteWizard: Bool {
-        isConfigured && !isSavingSetup && !isStartingService && !isServiceRequiresApproval
+        !isCompleted && report?.stage == .pair && report?.workspaceConfirmed == true && !isCheckingPreflight
+            && preflightError == nil && check(for: .serviceDaemon)?.state == .ok
+            && !isSavingSetup && !isStartingService && !isApplyingFix && !isEnablingTransport && !isServiceRequiresApproval
     }
 
     var orderedTransports: [OnboardingTransport] {
@@ -434,7 +450,7 @@ final class OnboardingStore {
     }
 
     func goToStep(_ step: OnboardingWizardStep) async {
-        guard step != currentStep else { return }
+        guard !isCompleted, !isApplyingFix, !isSavingSetup, !isStartingService, !isEnablingTransport, step != currentStep else { return }
         if currentStep == .connectPhone {
             invalidateIssuedPairing()
         }
@@ -505,6 +521,7 @@ final class OnboardingStore {
     }
 
     func startPreflight(stage: OnboardingStage? = nil) {
+        guard !isCompleted else { return }
         let targetStage = stage ?? preflightStageForCurrentStep
         preflightTask?.cancel()
         preflightGeneration &+= 1
@@ -513,11 +530,10 @@ final class OnboardingStore {
         streamingChecksByID = [:]
         isCheckingPreflight = true
         preflightError = nil
-        if report?.stage != targetStage {
-            report = nil
-            checks = []
-            resolvedDiagnostics = [:]
-        }
+        report = nil
+        checks = []
+        resolvedDiagnostics = [:]
+        if isIssuingPairing { invalidateIssuedPairing() }
         preflightTask = Task { [weak self] in
             guard let self else { return }
             await self.executePreflight(stage: targetStage, generation: generation)
@@ -538,7 +554,7 @@ final class OnboardingStore {
             verifiedConfigured: isConfigured,
             verifiedCapability: verifiedCapability
         )
-        if stage == .setup {
+        if stage == .setup, pendingSaveReadback == nil {
             if let selectedScanRoot {
                 options.scanRoot = selectedScanRoot
                 options.browseRoot = effectiveBrowseRoot
@@ -580,8 +596,19 @@ final class OnboardingStore {
                 resolvedDiagnostics = resolvedMap
                 preflightError = nil
                 isCheckingPreflight = false
-                syncStateFromReport(overlaid)
+                if case .uncertain = pendingSaveReadback, stage == .setup, !overlaid.configured {
+                    pendingSaveReadback = nil
+                    isConfigured = false
+                    workspaceConfirmed = false
+                    hasPersistedConfigFromWizard = false
+                    hasCommittedCurrentDraft = false
+                    committedSetupReceipt = nil
+                    await runPreflight(stage: .setup)
+                } else {
+                    syncStateFromReport(overlaid)
+                }
             case .failure:
+                invalidateIssuedPairing()
                 report = nil
                 checks = []
                 resolvedDiagnostics = [:]
@@ -613,6 +640,7 @@ final class OnboardingStore {
             }
             activePreflightGeneration = nil
             isCheckingPreflight = false
+            invalidateIssuedPairing()
             preflightError = diagnosticFromError(error, defaultStep: .serviceDaemon)
         }
     }
@@ -662,15 +690,31 @@ final class OnboardingStore {
     }
 
     private func syncStateFromReport(_ report: OnboardingPreflightReport) {
-        isConfigured = report.configured || committedSetupReceipt != nil
-        workspaceConfirmed = report.workspaceConfirmed || committedSetupReceipt != nil
+        isConfigured = report.configured
+        workspaceConfirmed = report.workspaceConfirmed
+        if report.stage == .setup, let readback = pendingSaveReadback {
+            pendingSaveReadback = nil
+            hasUserEditedScanRoot = false
+            hasCommittedCurrentDraft = false
+            if case .uncertain(let scanRoot, let browseRoot) = readback, report.configured {
+                // An existing configuration must only be updated through workspace after an ambiguous write.
+                hasPersistedConfigFromWizard = true
+                committedScanRootPath = report.scanRoot
+                hasCommittedCurrentDraft = report.workspaceConfirmed && report.ok
+                    && scanRoot == report.scanRoot && browseRoot == report.browseRoot
+            }
+            if report.configured {
+                draftRuntimePaths.removeAll()
+                draftAssistants.removeAll()
+            }
+        }
 
         if !hasUserEditedScanRoot || selectedScanRoot == nil {
             selectedScanRoot = URL(filePath: report.scanRoot, directoryHint: .isDirectory)
         }
         if report.configured, report.browseRoot != report.scanRoot {
             persistedBrowseRoot = URL(filePath: report.browseRoot, directoryHint: .isDirectory)
-        } else if !report.configured {
+        } else {
             persistedBrowseRoot = nil
         }
         if selectedScanRoot?.path == report.scanRoot {
@@ -702,20 +746,21 @@ final class OnboardingStore {
                     }
                     servicePhase = .ready
                 }
-            } else if case .requiresApproval = servicePhase {
+            } else if servicePhase == .ready || servicePhase == .homebrewActive || servicePhase == .requiresApproval {
                 servicePhase = isConfigured ? .configSaved : .idle
             }
         }
 
         // 步骤 4：默认选中推荐通道但不触发任何写操作；仅在条件齐全且已选通道就绪时出码。
-        if !hasUserSelectedTransport, let recommended = report.recommendedTransport {
+        if !hasUserSelectedTransport, let recommended = report.recommendedTransport, selectedTransport != recommended {
+            invalidateIssuedPairing()
             selectedTransport = recommended
         }
 
         if currentStep == .connectPhone {
-            if !canIssuePairingQR || isServiceRequiresApproval {
+            if !canIssuePairingQR || !isTransportReady(selectedTransport) {
                 invalidateIssuedPairing()
-            } else if issuedPairing == nil, !isIssuingPairing, isTransportReady(selectedTransport) {
+            } else if issuedPairing == nil, !isIssuingPairing {
                 startIssuingPairingQR(for: selectedTransport)
             }
         }
@@ -724,7 +769,11 @@ final class OnboardingStore {
     // MARK: - macOS Native Overlay
 
     private func applyNativeOverlay(to report: OnboardingPreflightReport) -> OnboardingPreflightReport {
-        let overlaidChecks = report.checks.map { applyNativeOverlay(to: $0, stage: report.stage) }
+        let usesHomebrew = report.checks.contains { $0.id == .serviceOwnerConflict && $0.code == "homebrew_service_active" }
+        let overlaidChecks = report.checks.map { check in
+            if usesHomebrew, check.id == .permissionPhotos { return check }
+            return applyNativeOverlay(to: check, stage: report.stage)
+        }
         let firstBlocker = overlaidChecks.first(where: \.blocking)?.id
         let recomputedOK = firstBlocker == nil
         let recomputedNext: OnboardingCheckID = firstBlocker
@@ -855,6 +904,16 @@ final class OnboardingStore {
             )
             return
         }
+        await applyRuntimePath(path, for: runtimeID)
+    }
+
+    func resetRuntimePathToAuto(for runtimeID: String) async {
+        await applyRuntimePath("auto", for: runtimeID)
+    }
+
+    private func applyRuntimePath(_ path: String, for runtimeID: String) async {
+        if isConfigured, isCheckingPreflight { await preflightTask?.value }
+        guard !isCompleted, !isApplyingFix, !isConfigured || report?.configured == true else { return }
         stepError = nil
         if !isConfigured {
             draftRuntimePaths[runtimeID] = path
@@ -873,27 +932,8 @@ final class OnboardingStore {
         }
     }
 
-    func resetRuntimePathToAuto(for runtimeID: String) async {
-        stepError = nil
-        if !isConfigured {
-            draftRuntimePaths[runtimeID] = "auto"
-            await runPreflight(stage: preflightStageForCurrentStep)
-            return
-        }
-        isApplyingFix = true
-        defer { isApplyingFix = false }
-        do {
-            try await deps.setRuntimePath(runtimeID, "auto")
-            await runPreflight(stage: preflightStageForCurrentStep)
-        } catch is CancellationError {
-            return
-        } catch {
-            stepError = diagnosticFromError(error, defaultStep: Self.checkID(forRuntimeID: runtimeID))
-        }
-    }
-
     func performCheckPrimaryAction(for check: OnboardingCheck) async {
-        guard let resolved = resolvedDiagnostics[check.id],
+        guard report != nil, self.check(for: check.id) == check, let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
               let fix = resolved.primaryAction
         else {
@@ -903,7 +943,7 @@ final class OnboardingStore {
     }
 
     func performCheckSecondaryAction(for check: OnboardingCheck) async {
-        guard let resolved = resolvedDiagnostics[check.id],
+        guard report != nil, self.check(for: check.id) == check, let resolved = resolvedDiagnostics[check.id],
               resolved.isTrusted,
               let secondary = resolved.secondaryAction
         else {
@@ -940,7 +980,7 @@ final class OnboardingStore {
                 await goToStep(.environmentCheck)
             case .hostRecovery:
                 recoveryDiagnostic = diagnostic
-                deps.openSettings(.hostRecovery)
+                presentsRecovery = true
             case .loginItems, .filesAndFolders, .localNetwork, .photos, .fullDiskAccess, .dateTime:
                 deps.openSettings(target)
             case .windowsFirewall, .windowsNetworkProfile, .managedConnection:
@@ -950,16 +990,16 @@ final class OnboardingStore {
         case .choosePath(let target):
             switch target {
             case .workspaceRoot:
-                if currentStep == .environmentCheck {
+                if currentStep != .workspaceSelection {
                     await goToStep(.workspaceSelection)
                 }
-                pendingPathPicker = .workspaceRoot
+                presentPathPicker(.workspaceRoot)
             case .codexBin:
-                pendingPathPicker = .runtimeBinary(runtimeID: "codex", target: .codexBin)
+                presentPathPicker(.runtimeBinary(runtimeID: "codex", target: .codexBin))
             case .claudeBin:
-                pendingPathPicker = .runtimeBinary(runtimeID: "claude", target: .claudeBin)
+                presentPathPicker(.runtimeBinary(runtimeID: "claude", target: .claudeBin))
             case .agyBin:
-                pendingPathPicker = .runtimeBinary(runtimeID: "agy", target: .agyBin)
+                presentPathPicker(.runtimeBinary(runtimeID: "agy", target: .agyBin))
             }
 
         case .runFix(let action):
@@ -979,7 +1019,8 @@ final class OnboardingStore {
         checkID: OnboardingCheckID,
         code: String?
     ) async {
-        if action.requiresConfig && !isConfigured {
+        guard !isApplyingFix, !isCompleted, let report else { return }
+        if action.requiresConfig && !report.configured {
             return
         }
         if action.isTransportEnable && currentStep != .connectPhone {
@@ -1068,7 +1109,7 @@ final class OnboardingStore {
     }
 
     func submitDeepSeekConnection(startupURL: String?) async {
-        guard isConfigured else { return }
+        guard !isApplyingFix, report?.configured == true else { return }
         isApplyingFix = true
         stepError = nil
         defer { isApplyingFix = false }
@@ -1104,23 +1145,12 @@ final class OnboardingStore {
 
     func saveWorkspaceAndContinue(confirmCreateMissingDirectory: Bool = false) async {
         guard !isSavingSetup else { return }
-        guard let scanRoot = selectedScanRoot else {
-            stepError = OnboardingCopyCatalog.validateDiagnostic(
-                code: "workspace_confirmation_required",
-                step: .workspaceRoot,
-                fix: .choosePath(.workspaceRoot),
-                context: OnboardingValidationContext(surface: .cli, platform: .macos, stage: .setup, configured: isConfigured)
-            ).value
+        if pendingSaveReadback != nil {
+            await runPreflight(stage: .setup)
             return
         }
-
-        // 提交成功后绝不重放 setup 保存：同一目录直接前往下一步或重试启动。
-        if hasCommittedCurrentDraft, committedScanRootPath == scanRoot.path {
-            stepError = nil
-            currentStep = .serviceAndPermissions
-            await ensureServiceReady()
-            return
-        }
+        guard canProceedFromWorkspaceSelection, let scanRoot = selectedScanRoot else { return }
+        let browseRoot = effectiveBrowseRoot ?? scanRoot
 
         let existsNow: Bool
         if report?.scanRoot == scanRoot.path {
@@ -1162,24 +1192,31 @@ final class OnboardingStore {
         cancelPreflight()
         defer { isSavingSetup = false }
 
+        // 提交成功后绝不重放 setup 保存：同一目录直接前往下一步或重试启动。
+        if hasCommittedCurrentDraft, committedScanRootPath == scanRoot.path {
+            stepError = nil
+            currentStep = .serviceAndPermissions
+            await ensureServiceReady()
+            return
+        }
+
         // 已提交过一次配置且用户显式更换了目录：走 workspace 更新，绝不重放 setup --no-pair。
         if committedSetupReceipt != nil || hasPersistedConfigFromWizard {
             do {
-                try await deps.updateWorkspace(scanRoot, persistedBrowseRoot)
+                try await deps.updateWorkspace(scanRoot, browseRoot)
                 committedScanRootPath = scanRoot.path
                 hasCommittedCurrentDraft = true
                 workspaceConfirmed = true
                 currentStep = .serviceAndPermissions
                 await ensureServiceReady()
             } catch is CancellationError {
-                await readbackAfterCancelledCommit(expectedScanRoot: scanRoot)
+                await rereadAfterUncertainSave(scanRoot: scanRoot, browseRoot: browseRoot)
             } catch {
-                await handleSetupCommitFailure(error)
+                await handleSetupCommitFailure(error, scanRoot: scanRoot, browseRoot: browseRoot)
             }
             return
         }
 
-        let browseRoot = effectiveBrowseRoot ?? scanRoot
         let setupOptions = OnboardingSetupOptions(
             browseRoot: browseRoot,
             runtimePaths: sortedDraftRuntimePaths,
@@ -1207,67 +1244,33 @@ final class OnboardingStore {
             currentStep = .serviceAndPermissions
             await ensureServiceReady()
         } catch is CancellationError {
-            await readbackAfterCancelledCommit(expectedScanRoot: scanRoot)
+            await rereadAfterUncertainSave(scanRoot: scanRoot, browseRoot: browseRoot)
         } catch {
-            await handleSetupCommitFailure(error)
+            await handleSetupCommitFailure(error, scanRoot: scanRoot, browseRoot: browseRoot)
         }
     }
 
-    private func handleSetupCommitFailure(_ error: Error) async {
+    private func handleSetupCommitFailure(_ error: Error, scanRoot: URL, browseRoot: URL) async {
         let diag = diagnosticFromError(error, defaultStep: .configStore)
         stepError = diag
         if diag.code == "config_concurrent_change" {
             // 配置并发变更：重读最新配置并展示给用户重新确认，绝不静默重放保存。
-            hasUserEditedScanRoot = false
+            pendingSaveReadback = .concurrentChange
             await runPreflight(stage: .setup)
             return
+        }
+        if diag.code == "command_timeout" || !diag.isTrusted {
+            await rereadAfterUncertainSave(scanRoot: scanRoot, browseRoot: browseRoot)
         }
         if diag.primaryAction == .openSettings(.hostRecovery) {
             recoveryDiagnostic = diag
         }
     }
 
-    private func readbackAfterCancelledCommit(expectedScanRoot: URL) async {
-        let options = OnboardingPreflightOptions(
-            stage: .setup,
-            progressJSON: false,
-            verifiedConfigured: isConfigured,
-            verifiedCapability: verifiedCapability
-        )
-        // 当前任务已被取消；使用不继承取消状态的新 Task 读回配置，避免误判后重放保存。
-        let preflight = self.deps.preflight
-        let readbackTask = Task {
-            try? await preflight(options, nil)
-        }
-        guard let rawReport = await readbackTask.value else {
-            return
-        }
-        let overlaid = applyNativeOverlay(to: rawReport)
-        guard case .success(let resolvedMap) = OnboardingCopyCatalog.validateReport(
-            overlaid,
-            platform: .macos,
-            expectedStage: .setup,
-            nativeOverlay: true,
-            verifiedCapability: verifiedCapability
-        ) else {
-            return
-        }
-        report = overlaid
-        checks = overlaid.checks
-        resolvedDiagnostics = resolvedMap
-        isConfigured = overlaid.configured
-        workspaceConfirmed = overlaid.workspaceConfirmed
-        if overlaid.configured {
-            // 提交已落盘，记录已提交状态避免再次重放 setup --no-pair。
-            hasPersistedConfigFromWizard = true
-            hasCommittedCurrentDraft = (overlaid.scanRoot == expectedScanRoot.path)
-            committedScanRootPath = overlaid.scanRoot
-            selectedScanRoot = URL(filePath: overlaid.scanRoot, directoryHint: .isDirectory)
-            persistedBrowseRoot = overlaid.browseRoot != overlaid.scanRoot
-                ? URL(filePath: overlaid.browseRoot, directoryHint: .isDirectory)
-                : nil
-            servicePhase = .configSaved
-        }
+    private func rereadAfterUncertainSave(scanRoot: URL, browseRoot: URL) async {
+        pendingSaveReadback = .uncertain(scanRoot: scanRoot.path, browseRoot: browseRoot.path)
+        // runPreflight starts an independent task so cancellation of the save cannot cancel its readback.
+        await runPreflight(stage: .setup)
     }
 
     // MARK: - Step 3: Service & Permissions
@@ -1289,7 +1292,9 @@ final class OnboardingStore {
         servicePhase = .registeringService
 
         do {
-            let outcome = try await deps.registerOrStartService()
+            let outcome = try await deps.registerOrStartService {
+                self.servicePhase = .waitingForReadiness
+            }
             switch outcome {
             case .ready:
                 activeServiceOwner = .macApp
@@ -1356,7 +1361,9 @@ final class OnboardingStore {
     }
 
     func enableSelectedTransportAndIssueQR(_ transport: OnboardingTransport) async {
-        guard isConfigured, currentStep == .connectPhone, !isEnablingTransport else { return }
+        guard currentStep == .connectPhone, !isEnablingTransport, !isServiceRequiresApproval,
+              report?.stage == .pair, report?.configured == true,
+              isTransportAvailableButDisabled(transport) else { return }
         selectedTransport = transport
         hasUserSelectedTransport = true
         isEnablingTransport = true
@@ -1374,9 +1381,7 @@ final class OnboardingStore {
         }
 
         await runPreflight(stage: .pair)
-        if canIssuePairingQR, isTransportReady(transport) {
-            await issuePairingQR(for: transport)
-        }
+        await pairingTask?.value
     }
 
     func startIssuingPairingQR(for transport: OnboardingTransport? = nil) {
@@ -1398,9 +1403,9 @@ final class OnboardingStore {
     }
 
     private func executeIssuePairingQR(for transport: OnboardingTransport, generation: UInt64) async {
-        guard currentStep == .connectPhone,
+        guard !isCompleted, !Task.isCancelled, generation == pairingGeneration, currentStep == .connectPhone,
+              selectedTransport == transport,
               canIssuePairingQR,
-              !isServiceRequiresApproval,
               isTransportReady(transport)
         else {
             if pairingGeneration == generation {
@@ -1419,13 +1424,14 @@ final class OnboardingStore {
             guard !Task.isCancelled,
                   pairingGeneration == generation,
                   currentStep == .connectPhone,
-                  canIssuePairingQR,
-                  !isServiceRequiresApproval
+                  selectedTransport == transport,
+                  isTransportReady(transport),
+                  canIssuePairingQR
             else {
                 return
             }
             isIssuingPairing = false
-            guard pairing.hasTicket else {
+            guard pairing.hasTicket, pairing.network == transport.pairingNetwork else {
                 issuedPairing = nil
                 pairingError = OnboardingResolvedDiagnostic(
                     code: nil,

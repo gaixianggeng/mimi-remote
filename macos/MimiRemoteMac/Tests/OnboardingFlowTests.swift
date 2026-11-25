@@ -290,7 +290,7 @@ final class OnboardingFlowTests: XCTestCase {
             capturedSetup.modify { $0 = (root, options) }
             return setupReceipt
         }
-        deps.registerOrStartService = { .ready }
+        deps.registerOrStartService = { _ in .ready }
 
         let store = OnboardingStore(dependencies: deps)
         await store.start()
@@ -362,6 +362,12 @@ final class OnboardingFlowTests: XCTestCase {
         deps.preflight = { options, _ in
             if options.stage == .pair { return pairReport }
             let count = preflightCalls.increment()
+            if count == 3 {
+                XCTAssertNil(options.scanRoot)
+                XCTAssertNil(options.browseRoot)
+                XCTAssertTrue(options.runtimePaths.isEmpty)
+                XCTAssertTrue(options.assistants.isEmpty)
+            }
             return count <= 2 ? initialReport : reloadedReport
         }
         deps.directoryExists = { _ in true }
@@ -371,7 +377,7 @@ final class OnboardingFlowTests: XCTestCase {
             }
             return receipt
         }
-        deps.registerOrStartService = {
+        deps.registerOrStartService = { _ in
             if serviceStartCalls.increment() == 1 {
                 throw AgentClientError.onboarding(timeoutDiag)
             }
@@ -422,13 +428,20 @@ final class OnboardingFlowTests: XCTestCase {
             browseRoot: "/fixture/workspace",
             claudeReady: true
         )
+        let readbacks = CallCounter()
         let commitGate = OnboardingGate()
         let setupCalls = CallCounter()
         let committedOnDisk = LockedBox(false)
 
         var deps = Self.makeDependencies()
-        deps.preflight = { _, _ in
-            committedOnDisk.value ? afterReport : beforeReport
+        deps.preflight = { options, _ in
+            if committedOnDisk.value {
+                if readbacks.increment() == 1 { throw TestError.expected }
+                XCTAssertNil(options.scanRoot)
+                XCTAssertNil(options.browseRoot)
+                return afterReport
+            }
+            return beforeReport
         }
         deps.directoryExists = { _ in true }
         deps.setupNoPair = { _, _ in
@@ -448,6 +461,10 @@ final class OnboardingFlowTests: XCTestCase {
         commitGate.resume()
         await saveTask.value
 
+        XCTAssertNotNil(store.preflightError)
+        XCTAssertFalse(store.canProceedFromWorkspaceSelection)
+        await store.saveWorkspaceAndContinue() // retries only the failed readback
+        XCTAssertNil(store.preflightError)
         // 取消后读回确认已落盘，后续继续不再重放 setup --no-pair。
         XCTAssertTrue(store.isConfigured)
         XCTAssertTrue(store.hasCommittedCurrentDraft)
@@ -630,6 +647,8 @@ final class OnboardingFlowTests: XCTestCase {
 
         let tailcatEnabled = LockedBox(false)
         let enableTransportCalls = EventRecorder()
+        let issuedNetworks = EventRecorder()
+        let enableGate = OnboardingGate()
 
         var deps = Self.makeDependencies()
         deps.preflight = { _, _ in
@@ -637,10 +656,12 @@ final class OnboardingFlowTests: XCTestCase {
         }
         deps.enableTransport = { transport in
             enableTransportCalls.append(transport.rawValue)
+            await enableGate.wait()
             if transport == .tailcat { tailcatEnabled.modify { $0 = true } }
         }
         deps.pair = { network in
-            network == .tailcat ? tailcatTicket : directTicket
+            issuedNetworks.append(network.rawValue)
+            return network == .tailcat ? tailcatTicket : directTicket
         }
         deps.now = { OnboardingDateParser.parseRFC3339("2030-01-01T00:01:00Z")! }
 
@@ -659,8 +680,14 @@ final class OnboardingFlowTests: XCTestCase {
         XCTAssertEqual(enableTransportCalls.values, [])
 
         // 用户显式点击启用后才启用并签发 Tailcat 二维码。
-        await store.enableSelectedTransportAndIssueQR(.tailcat)
+        let enabling = Task { await store.enableSelectedTransportAndIssueQR(.tailcat) }
+        await enableGate.waitUntilWaiting()
+        await store.finishWizard()
+        XCTAssertFalse(store.isCompleted)
+        enableGate.resume()
+        await enabling.value
         XCTAssertEqual(enableTransportCalls.values, ["tailcat"])
+        XCTAssertEqual(issuedNetworks.values, ["tailscale", "tailcat"])
         XCTAssertEqual(store.issuedPairing?.pairURL, tailcatTicket.pairURL)
     }
 
@@ -758,7 +785,180 @@ final class OnboardingFlowTests: XCTestCase {
         if let diag = store.stepError {
             await store.performDiagnosticAction(diag)
         }
-        XCTAssertEqual(openedSettings.values, ["host_recovery"])
+        XCTAssertTrue(store.presentsRecovery)
+        XCTAssertEqual(openedSettings.values, [])
+    }
+
+    func testWorkspaceRepairUsesPickerResultAfterDismissalAndNarrowsBothRoots() async throws {
+        let parent = "/fixture/workspace"
+        let child = parent + "/project"
+        let saves = CallCounter()
+        let exists = LockedBox(true)
+        let created = EventRecorder()
+        let updates = EventRecorder()
+        let pair = try decodeFixture(OnboardingPreflightReport.self, filename: "preflight-all-green.json")
+        var deps = Self.makeDependencies()
+        deps.preflight = { options, _ in
+            if options.stage == .pair { return pair }
+            let root = options.scanRoot?.path ?? parent
+            return try Self.makeMacSetupReport(configured: saves.current > 0, scanRoot: root,
+                                               browseRoot: root, scanRootExists: exists.value, claudeReady: true)
+        }
+        deps.createDirectory = { url in
+            created.append(url.path)
+            exists.modify { $0 = true }
+        }
+        deps.setupNoPair = { _, _ in
+            _ = saves.increment()
+            return SetupReceipt(configPath: "/fixture/config.json", scanRoot: parent, browseRoot: parent)
+        }
+        deps.updateWorkspace = { scan, browse in
+            updates.append(scan.path)
+            updates.append(browse?.path ?? "")
+        }
+        let store = OnboardingStore(dependencies: deps)
+        await store.start()
+        await store.proceedToWorkspaceStep()
+        await store.saveWorkspaceAndContinue()
+        await store.proceedToConnectStep()
+
+        let repair = try OnboardingCopyCatalog.validateDiagnostic(
+            code: "workspace_not_found", step: .workspaceRoot, fix: .choosePath(.workspaceRoot),
+            context: OnboardingValidationContext(surface: .check, platform: .macos, stage: .pair, configured: true)
+        ).get()
+        await store.performDiagnosticAction(repair)
+        XCTAssertEqual(store.currentStep, .workspaceSelection)
+        store.isPathPickerPresented = false // SwiftUI dismisses before delivering the selection.
+        await store.completePathPicker(with: URL(filePath: child))
+        XCTAssertEqual(store.selectedScanRoot?.path, child)
+        XCTAssertTrue(updates.values.isEmpty)
+        await store.saveWorkspaceAndContinue()
+        XCTAssertEqual(updates.values, [child, child])
+        XCTAssertEqual(saves.current, 1)
+
+        exists.modify { $0 = false }
+        await store.goBack()
+        await store.saveWorkspaceAndContinue()
+        XCTAssertTrue(store.needsCreateDirectoryConfirmation)
+        XCTAssertEqual(created.values, [])
+        await store.saveWorkspaceAndContinue(confirmCreateMissingDirectory: true)
+        XCTAssertEqual(created.values, [child])
+        XCTAssertEqual(updates.values, [child, child])
+        XCTAssertEqual(saves.current, 1)
+    }
+
+    func testFailedOrBlockedPairRecheckInvalidatesIssuedCredentials() async throws {
+        let good = try loadContractData("preflight-all-green.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: good) as? [String: Any])
+        var checks = try XCTUnwrap(object["checks"] as? [[String: Any]])
+        let row = try XCTUnwrap(checks.firstIndex { $0["id"] as? String == "service_owner_conflict" })
+        checks[row]["state"] = "error"
+        checks[row]["blocking"] = true
+        checks[row]["code"] = "internal_error"
+        checks[row]["fix"] = ["kind": "retry"]
+        object["checks"] = checks
+        object["ok"] = false
+        object["recommended_next"] = "service_owner_conflict"
+        let blocked = try JSONDecoder().decode(OnboardingPreflightReport.self,
+                                               from: JSONSerialization.data(withJSONObject: object))
+        let ready = try JSONDecoder().decode(OnboardingPreflightReport.self, from: good)
+        let ticket = try decodeFixture(PairingTicketReceipt.self, filename: "pair-ok-direct.json").asPairingInfo
+        let failedProbe = OnboardingGate()
+        let calls = CallCounter()
+        let issueCalls = CallCounter()
+        var deps = Self.makeDependencies()
+        deps.preflight = { _, _ in
+            switch calls.increment() {
+            case 1: return ready
+            case 2:
+                await failedProbe.wait()
+                throw TestError.expected
+            default: return blocked
+            }
+        }
+        deps.pair = { _ in _ = issueCalls.increment(); return ticket }
+        deps.now = { Date(timeIntervalSince1970: 1_700_000_000) }
+        let store = OnboardingStore(dependencies: deps)
+        await store.goToStep(.connectPhone)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.issuedPairing == nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(store.canCopyPairingLink)
+        let recheck = Task { await store.runPreflight() }
+        await failedProbe.waitUntilWaiting()
+        XCTAssertFalse(store.canCopyPairingLink)
+        failedProbe.resume()
+        await recheck.value
+        XCTAssertNotNil(store.preflightError)
+        XCTAssertNil(store.issuedPairing)
+        await store.runPreflight()
+        XCTAssertNil(store.preflightError)
+        XCTAssertEqual(store.report?.ok, false)
+        await store.issuePairingQR()
+        XCTAssertFalse(store.copyPairingLink())
+        XCTAssertEqual(issueCalls.current, 1)
+    }
+
+    func testRecommendationChangeDiscardsTicketAndIssuesForNewTransport() async throws {
+        let ready = try decodeFixture(OnboardingPreflightReport.self, filename: "preflight-all-green.json")
+        let offline = try decodeFixture(OnboardingPreflightReport.self, filename: "preflight-claude-only-no-network.json")
+        let unavailable = try XCTUnwrap(offline.checks.first { $0.id == .networkTailscale })
+        let switched = OnboardingPreflightReport(
+            ok: true, stage: .pair, configured: true, workspaceConfirmed: true,
+            configPath: ready.configPath, scanRoot: ready.scanRoot, browseRoot: ready.browseRoot, scanRootExists: true,
+            recommendedNext: .networkAny, recommendedTransport: .tailcat,
+            checks: ready.checks.map { $0.id == .networkTailscale ? unavailable : $0 }
+        )
+        let direct = try decodeFixture(PairingTicketReceipt.self, filename: "pair-ok-direct.json").asPairingInfo
+        let relay = try decodeFixture(PairingTicketReceipt.self, filename: "pair-ok-tailcat.json").asPairingInfo
+        let calls = CallCounter()
+        let gate = OnboardingGate()
+        var deps = Self.makeDependencies()
+        deps.preflight = { _, _ in calls.increment() == 1 ? ready : switched }
+        deps.pair = { network in
+            if network == .tailcat {
+                await gate.wait()
+                return relay
+            }
+            return direct
+        }
+        let store = OnboardingStore(dependencies: deps)
+        await store.goToStep(.connectPhone)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while store.issuedPairing == nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(store.issuedPairing, direct)
+        await store.runPreflight()
+        XCTAssertEqual(store.selectedTransport, .tailcat)
+        XCTAssertNil(store.issuedPairing)
+        XCTAssertFalse(store.copyPairingLink())
+        gate.resume()
+    }
+
+    func testUncommittedSaveReadbackPreservesSelectedScopeForRetry() async throws {
+        let chosen = "/fixture/project"
+        let proposed = "/fixture/default"
+        let calls = CallCounter()
+        let previews = EventRecorder()
+        var deps = Self.makeDependencies()
+        deps.preflight = { options, _ in
+            let root = options.scanRoot?.path ?? proposed
+            previews.append(root)
+            return try Self.makeMacSetupReport(configured: false, scanRoot: root, browseRoot: root, claudeReady: true)
+        }
+        deps.setupNoPair = { _, _ in _ = calls.increment(); throw CancellationError() }
+        let store = OnboardingStore(dependencies: deps)
+        await store.start()
+        await store.proceedToWorkspaceStep()
+        await store.selectWorkspaceRoot(URL(filePath: chosen))
+        await store.saveWorkspaceAndContinue()
+        XCTAssertEqual(store.selectedScanRoot?.path, chosen)
+        XCTAssertEqual(store.effectiveBrowseRoot?.path, chosen)
+        XCTAssertEqual(Array(previews.values.suffix(2)), [proposed, chosen])
+        XCTAssertTrue(store.canProceedFromWorkspaceSelection)
+        XCTAssertEqual(calls.current, 1)
     }
 
     // MARK: - Fixture Builders
@@ -773,7 +973,7 @@ final class OnboardingFlowTests: XCTestCase {
             enableAssistant: { _ in },
             enableTransport: { _ in },
             connectDeepSeek: { _ in },
-            registerOrStartService: { .ready },
+            registerOrStartService: { _ in .ready },
             restartService: {},
             takeoverHomebrew: {},
             runSafeDoctorFix: {},
@@ -793,7 +993,7 @@ final class OnboardingFlowTests: XCTestCase {
         )
     }
 
-    private static func makeMacSetupReport(
+    private nonisolated static func makeMacSetupReport(
         configured: Bool,
         scanRoot: String,
         browseRoot: String,
