@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+const probeLogSink = os.DevNull
+
 func start(ctx context.Context, cmd *exec.Cmd) (func(), error) {
 	if ctx.Value(parentLifetimeKey{}) == true {
 		return startPreflightChild(ctx, cmd)

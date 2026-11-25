@@ -32,9 +32,9 @@ type output struct {
 var probeOverrides = map[string]string{
 	"NO_UPDATE_NOTIFIER":         "1",
 	"NPM_CONFIG_UPDATE_NOTIFIER": "false",
-	"NPM_CONFIG_LOGS_MAX":        "0",
-	// npm can still prune old logs with logs-max=0. Keep it out of the user's log directory.
-	"NPM_CONFIG_LOGS_DIR":        os.DevNull,
+	// Redirect writes and cleanup without changing retention. Older npm versions
+	// ignore logs-dir and interpret logs-max=0 as "delete all existing logs".
+	"NPM_CONFIG_LOGS_DIR":        probeLogSink,
 	"NPM_CONFIG_TIMING":          "false",
 	"NPM_CONFIG_AUDIT":           "false",
 	"NPM_CONFIG_FUND":            "false",
