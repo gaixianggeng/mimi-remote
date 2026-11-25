@@ -33,7 +33,7 @@ type Checker struct {
 	cfg                        config.Config
 	registry                   *projects.Registry
 	configPath                 string
-	folderAccessDenied         bool
+	folderAccessDeniedAt       time.Time
 	fileAccessMu               sync.RWMutex
 	fileAccessPreflightStarted bool
 	fileAccessPreflight        Check
@@ -100,6 +100,13 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	}
 	inspectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	// Each assistant gets the same inspection window, including remote SSH
+	// and Harness. A slow CLI must not starve its peers or depend on LAN policy.
+	var discovery sync.WaitGroup
+	var claude, agy, deepSeek Check
+	discovery.Go(func() { claude = c.claudeBridgeCheck(inspectCtx) })
+	discovery.Go(func() { agy = c.agyAdapterCheck(inspectCtx) })
+	discovery.Go(func() { deepSeek = c.deepSeekCheck(inspectCtx) })
 	var localCodex setup.RuntimeCandidate
 	var codexErr error
 	codexMessage := "Codex CLI 可执行"
@@ -114,7 +121,11 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 			codexMessage = "未找到 Codex CLI 或安装版本不兼容"
 		}
 	}
-	claude, agy := c.claudeBridgeCheck(inspectCtx), c.agyAdapterCheck(inspectCtx)
+	var codexAppServer Check
+	if c.needsCodexAppServerCheck() {
+		codexAppServer = c.codexAppServerCheck(inspectCtx, localCodex, codexErr)
+	}
+	discovery.Wait()
 	_, tailscaleErr := c.findTailscale()
 	checks := []Check{
 		{Name: "token", OK: tokenOK, Message: tokenMessage, Fix: "执行 agentd setup 生成随机 token，或设置 AGENTD_TOKEN"},
@@ -147,11 +158,10 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if check := c.systemProxyCheck(); check.Name != "" {
 		checks = append(checks, check)
 	}
-	if c.needsCodexAppServerCheck() {
-		checks = append(checks, c.codexAppServerCheck(ctx, localCodex, codexErr))
+	if codexAppServer.Name != "" {
+		checks = append(checks, codexAppServer)
 	}
-	checks = append(checks, claude, agy)
-	checks = append(checks, c.deepSeekCheck(ctx))
+	checks = append(checks, claude, agy, deepSeek)
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
 	}
@@ -181,7 +191,7 @@ func legacyCodexExperimentCheck() Check {
 // codesign、CLI --help、bridge --version 等外部进程属于完整诊断；把它们放进高频 readyz
 // 会在主机高负载时制造假离线，并让 status 子进程超过 macOS App 的执行上限。
 func (c *Checker) RunReadiness(ctx context.Context) Results {
-	projectsCount := len(c.registry.List())
+	projectsCount := len(c.cfg.Projects)
 	tokenOK := c.cfg.DevInsecure || c.cfg.Auth.Token != ""
 	tokenMessage := "Token 已配置"
 	if !tokenOK {
@@ -189,7 +199,7 @@ func (c *Checker) RunReadiness(ctx context.Context) Results {
 	}
 	checks := []Check{
 		{Name: "token", OK: tokenOK, Message: tokenMessage, Fix: "执行 agentd setup 生成随机 token，或设置 AGENTD_TOKEN"},
-		{Name: "projects", OK: projectsCount > 0, Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
+		{Name: "projects", OK: projectsCount > 0, Level: "warning", Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
 		c.runtimeCheck(),
 	}
 	if check := c.configFileCheck(); check.Name != "" {

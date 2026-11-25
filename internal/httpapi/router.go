@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -35,20 +34,18 @@ type Router struct {
 	// codexWriterLocks 只在本机共享 App Server 上存在：SSH 与 Windows 受管模式没有可读的锁目录。
 	codexWriterLocks gatewayWriterLockInspector
 
-	// Last successful authenticated /readyz for this daemon instance.
-	preflightReadyAt atomic.Int64
-	cfg              config.Config
-	configPath       string
-	projects         *projects.Registry
-	doctor           *doctor.Checker
-	auth             auth.Authenticator
-	version          string
-	installationID   string
-	upgrader         websocket.Upgrader
-	monitor          *relayMonitor
-	historyMedia     *appServerHistoryMediaStore
-	historyOutput    *appServerHistoryMediaStore
-	fileUploads      *fileUploadStore
+	cfg            config.Config
+	configPath     string
+	projects       *projects.Registry
+	doctor         *doctor.Checker
+	auth           auth.Authenticator
+	version        string
+	installationID string
+	upgrader       websocket.Upgrader
+	monitor        *relayMonitor
+	historyMedia   *appServerHistoryMediaStore
+	historyOutput  *appServerHistoryMediaStore
+	fileUploads    *fileUploadStore
 	// sessionFileGrants 记录已授权会话里 AI 提到的临时目录文件，供 /api/files/read 精确放行。
 	sessionFileGrants *sessionFileGrantStore
 	capabilities      capabilityRegistry
@@ -56,6 +53,8 @@ type Router struct {
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
 	networkAvailability func(context.Context) (bool, bool)
+	confirmLANPolicy    func(context.Context) string
+	lanPolicyDiagnostic func() string
 	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
 	// 名称变化只会影响下一次候选连接，不会创建或合并 ConnectionProfile。
 	tailscaleHostLookup func(context.Context) tailscaleinfo.Host
@@ -63,7 +62,7 @@ type Router struct {
 	// 没有 Tailscale 名称，客户端据此在用户未自定义名字时显示真实设备名。nil 或空值时
 	// 不宣告该字段，客户端继续按原有回退显示地址。
 	hostDeviceNameLookup func(context.Context) string
-	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
+	// Explicit doctor requests share a bounded upstream probe.
 	upstreamReadiness *appServerReadinessProbe
 	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
 	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
@@ -109,7 +108,7 @@ type Router struct {
 	codexGatewayNextID        uint64
 	codexGateways             map[uint64]*codexGatewayConnection
 	codexGatewayWG            sync.WaitGroup
-	appServerSSH              appServerSSHTransport
+	appServerSSH              AppServerTransport
 	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
 	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
 	// 全部消失，上游请求继续 fail closed。
@@ -180,7 +179,9 @@ type Router struct {
 type RouterOptions struct {
 	ConfigPath             string
 	NetworkAvailability    func(context.Context) (bool, bool)
-	AppServerSSH           appServerSSHTransport
+	ConfirmLANPolicy       func(context.Context) string
+	LANPolicyDiagnostic    func() string
+	AppServerSSH           AppServerTransport
 	DiagnosticLogs         DiagnosticLogController
 	DiagnosticControlToken string
 	tailcat                tailcatSidecar
@@ -190,7 +191,7 @@ type RouterOptions struct {
 	tailcatLocalToken string
 }
 
-type appServerSSHTransport interface {
+type AppServerTransport interface {
 	EnsureReady(context.Context) error
 	WebSocketURL() (string, error)
 	WebSocketHeaders() (http.Header, error)
@@ -252,6 +253,8 @@ func NewRouterWithInstallationIDAndOptions(
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		networkAvailability:         options.NetworkAvailability,
+		confirmLANPolicy:            options.ConfirmLANPolicy,
+		lanPolicyDiagnostic:         options.LANPolicyDiagnostic,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		codexGateways:               map[uint64]*codexGatewayConnection{},
 		managedWorktrees:            map[string]managedWorktree{},
@@ -274,8 +277,6 @@ func NewRouterWithInstallationIDAndOptions(
 			}
 		})
 	}
-	r.refreshClaudeBridgeProbe(false)
-	r.refreshAgyAdapterProbe()
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
 	if cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "local") {
@@ -309,14 +310,15 @@ func NewRouterWithInstallationIDAndOptions(
 	authed := func(handler http.Handler) http.Handler {
 		return r.auth.Middleware(protocolCompatibilityMiddleware(handler))
 	}
-	mux.Handle("/api/readyz", authed(http.HandlerFunc(r.readyz)))
+	coreAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	mux.Handle("/api/readyz", coreAuth.Middleware(protocolCompatibilityMiddleware(http.HandlerFunc(r.readyz))))
 	mux.Handle("/api/version", authed(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", authed(http.HandlerFunc(r.doctorHandler)))
 	mux.Handle("/api/diagnostics/relay", authed(http.HandlerFunc(r.relayDiagnosticsHandler)))
 	mux.Handle("/api/diagnostics/tailscale-path", authed(http.HandlerFunc(r.tailscaleNetworkPathHandler)))
 	mux.Handle("/api/local/tailcat", authed(http.HandlerFunc(r.tailcatLocalHandler)))
 	// 远程启用和免费授权都必须持有电脑的 Bearer，开发免鉴权和 query token 均不适用。
-	tailcatPairingAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	tailcatPairingAuth := coreAuth
 	mux.Handle("/api/local/preflight", tailcatPairingAuth.Middleware(http.HandlerFunc(r.preflightHost)))
 	mux.Handle("/api/tailcat/managed-pairing-link", tailcatPairingAuth.Middleware(
 		protocolCompatibilityMiddleware(http.HandlerFunc(r.tailcatManagedPairingLinkHandler)),
@@ -370,6 +372,7 @@ func NewRouterWithInstallationIDAndOptions(
 	mux.Handle("/api/voice/transcribe", authed(http.HandlerFunc(r.voiceTranscribeHandler)))
 	mux.Handle("/api/runtime/status", authed(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/host/modules", authed(http.HandlerFunc(r.moduleStatusHandler)))
+	mux.Handle("/api/local/lan-policy", coreAuth.Middleware(http.HandlerFunc(r.confirmLANHandler)))
 	mux.Handle("/api/app-server/config", authed(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/history-media/", authed(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/history-output/", authed(http.HandlerFunc(r.appServerHistoryOutputHandler)))
@@ -571,21 +574,10 @@ func (r *Router) healthz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
-	results := r.doctor.RunReadiness(req.Context())
-	results = appendReadinessCheck(results, r.appServerUpstreamReadinessCheck(req.Context()))
-	// 可选 capability 的降级只作为 warning，不把基础会话链路误判为整体不可用。
-	// status --json 读取同一 readyz，因此也能看到服务端本地禁用或依赖失败原因。
-	results = r.capabilities.appendDoctorCheck(results)
+	results := r.capabilities.appendDoctorCheck(r.doctor.RunReadiness(req.Context()))
 	status := http.StatusOK
 	if !results.OK {
-		// liveness 与 readiness 分离：进程仍可通过 /healthz 被守护进程观察，
-		// 但配置、Codex 或敏感文件检查失败时不能对客户端宣称已经可用。
 		status = http.StatusServiceUnavailable
-	}
-	if results.OK {
-		r.preflightReadyAt.Store(time.Now().UnixNano())
-	} else {
-		r.preflightReadyAt.Store(0)
 	}
 	writeJSON(w, status, results)
 }
@@ -611,7 +603,9 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, r.capabilities.appendDoctorCheck(r.doctor.Run(req.Context(), false)))
+	results := r.doctor.Run(req.Context(), false)
+	results = appendReadinessCheck(results, r.appServerUpstreamReadinessCheck(req.Context()))
+	writeJSON(w, http.StatusOK, r.capabilities.appendDoctorCheck(results))
 }
 
 func (r *Router) codexHistoryDebugHandler(w http.ResponseWriter, req *http.Request) {

@@ -65,6 +65,7 @@ func TestOnboardingMigrationFailure(t *testing.T) {
 }
 
 func TestOnboardingUpReadinessFailure(t *testing.T) {
+	fakeCoreManager(t, "homebrew", func(string, string) error { t.Fatal("unexpected start"); return nil })
 	isolateOnboardingCommandEnv(t)
 	prepareBrewSideEffectProbe(t)
 	path := config.PlatformDefaultPath()

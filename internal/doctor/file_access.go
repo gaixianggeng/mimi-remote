@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
@@ -71,7 +72,7 @@ func (c *Checker) StartFileAccessPreflight() {
 			domain, _ := standardFileAccessPermissionDomain(failure.path, userHomeDir())
 			if domain.name != "photos_library" && errors.Is(failure.err, os.ErrPermission) {
 				c.fileAccessMu.Lock()
-				c.folderAccessDenied = true
+				c.folderAccessDeniedAt = time.Now()
 				c.fileAccessMu.Unlock()
 				break
 			}
@@ -131,7 +132,11 @@ func (c *Checker) requestFileAccess(path string, home string, probe func(string)
 	if c.fileAccessRequestedDomains == nil {
 		c.fileAccessRequestedDomains = make(map[string]bool)
 	}
-	if _, exists := c.fileAccessRequestedDomains[domain.name]; exists {
+	if failed, exists := c.fileAccessRequestedDomains[domain.name]; exists {
+		// Each caller arrives after a real OS denial, even when the TCC prompt was deduplicated.
+		if failed && domain.name != "photos_library" {
+			c.folderAccessDeniedAt = time.Now()
+		}
 		c.fileAccessMu.Unlock()
 		return domain.name, true
 	}
@@ -147,7 +152,7 @@ func (c *Checker) requestFileAccess(path string, home string, probe func(string)
 			return
 		}
 		if domain.name != "photos_library" && errors.Is(err, os.ErrPermission) {
-			c.folderAccessDenied = true
+			c.folderAccessDeniedAt = time.Now()
 		}
 		c.fileAccessRequestedDomains[domain.name] = true
 		c.fileAccessPreflightStarted = true
@@ -337,5 +342,6 @@ func (c *Checker) CachedFolderDenied() bool {
 	}
 	c.fileAccessMu.RLock()
 	defer c.fileAccessMu.RUnlock()
-	return c.folderAccessDenied
+	age := time.Since(c.folderAccessDeniedAt)
+	return !c.folderAccessDeniedAt.IsZero() && age >= 0 && age < 15*time.Second
 }

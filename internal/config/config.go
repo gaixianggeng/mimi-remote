@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
-	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -73,6 +74,9 @@ func (c Config) WorkspaceConfirmed() bool {
 	return c.Onboarding.Confirmed == nil || *c.Onboarding.Confirmed
 }
 
+// SourceGeneration identifies the committed document that produced this instance.
+func (c Config) SourceGeneration() string { return c.sourceGeneration }
+
 type Config struct {
 	Onboarding    OnboardingConfig `json:"onboarding"`
 	Listen        string           `json:"listen"`
@@ -95,6 +99,8 @@ type Config struct {
 	WorktreesRoot string           `json:"worktrees_root"`
 	Actions       []ActionConfig   `json:"actions"`
 	DevInsecure   bool             `json:"dev_insecure"`
+
+	sourceGeneration string
 }
 
 type NetworkConfig struct {
@@ -407,6 +413,28 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadForService keeps the authenticated control plane available when a
+// workspace has not been selected. All other configuration checks still apply.
+func LoadForService(path string) (Config, error) {
+	raw, err := ReadPrivatePreflightFile(ExpandPath(path), 4<<20)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Config{}, err
+	}
+	if err == nil {
+		if saved := InspectCommittedDocument(raw); saved.Code != "" {
+			return Config{}, fmt.Errorf("后台服务配置不可用（%s）", saved.Code)
+		}
+	}
+	cfg, err := loadSnapshot(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.validate(false); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 // LoadSnapshot 从调用方已经原子读取的一份配置快照解析完整 Config。共享
 // 配置事务必须让 typed cfg、未知 JSON 字段与 CAS baseline 全部来自
 // 同一组 bytes；不能先 Load(path) 后再 ReadFile(path)，否则并发写入会把两代
@@ -474,6 +502,8 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 func parseConfigDocument(raw []byte, environment bool) (Config, error) {
 	cfg := defaults()
 	if raw != nil {
+		sum := sha256.Sum256(raw)
+		cfg.sourceGeneration = hex.EncodeToString(sum[:])
 		if err := RejectLegacyAppServerConfiguration(raw); err != nil {
 			return Config{}, err
 		}
@@ -848,7 +878,9 @@ func discoverProjects(roots []string) ([]ProjectConfig, error) {
 			return nil, fmt.Errorf("解析扫描根目录失败 %s：%w", root, err)
 		}
 		entries, err := os.ReadDir(abs)
-		if err != nil {
+		// A saved mount may disappear between setup and restart. The registry
+		// keeps the missing root and revalidates it before granting access.
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("读取扫描根目录失败 %s：%w", abs, err)
 		}
 
@@ -969,15 +1001,11 @@ func (c Config) validate(requireProjects bool) error {
 	if c.Codex.IsEnabled() && c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
-	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {
-		return fmt.Errorf("claude.bridge_bin 不能为空")
-	}
+
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
 	}
-	if c.Agy.Enabled && strings.TrimSpace(c.Agy.AdapterBin) == "" && !agybridge.BundledAvailable() {
-		return fmt.Errorf("agy.adapter_bin 不能为空")
-	}
+
 	if c.Agy.Enabled && c.Agy.MaxConcurrentSessions <= 0 {
 		return fmt.Errorf("agy.max_concurrent_sessions 必须大于 0")
 	}
@@ -1004,7 +1032,7 @@ func (c Config) validate(requireProjects bool) error {
 	default:
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
-	if err := c.ValidateSharedCodexHome(); err != nil {
+	if err := c.validateSharedCodexHomePath(); err != nil {
 		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {

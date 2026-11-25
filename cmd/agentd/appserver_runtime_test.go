@@ -54,16 +54,16 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{Codex: config.CodexConfig{Bin: bin, Env: env}, AppServer: config.AppServerConfig{Transport: "local"}}
-	if err := resolveLaunchCodex(&cfg); err != nil {
+	if err := resolveLaunchCodex(context.Background(), &cfg); err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
 	runtime, err := prepareAgentAppServerRuntime(cfg)
-	if err != nil || runtime == nil || runtime.routerOptions.AppServerSSH == nil {
+	if err != nil || runtime == nil || runtime.transport == nil {
 		t.Fatalf("Codex 初始化故障不应阻止 agentd 提供诊断：runtime=%v err=%v", runtime, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := runtime.routerOptions.AppServerSSH.EnsureReady(ctx); err == nil {
+	if err := runtime.transport.EnsureReady(ctx); err == nil {
 		t.Fatal("保留诊断服务不能把 Codex 故障标为成功")
 	}
 	if got, err := os.ReadFile(socket); err != nil || string(got) != "occupied" {

@@ -25,6 +25,7 @@ type pairingNetworkLookups struct {
 	tailscaleIP   func(context.Context) string
 	tailscaleHost func(context.Context) tailscaleinfo.Host
 	lanIP         func() string
+	confirmLAN    func(context.Context, config.Config) error
 }
 
 func defaultPairingNetworkLookups() pairingNetworkLookups {
@@ -32,6 +33,7 @@ func defaultPairingNetworkLookups() pairingNetworkLookups {
 		tailscaleIP:   firstTailscaleIP,
 		tailscaleHost: tailscaleinfo.Discover,
 		lanIP:         firstLANIPv4,
+		confirmLAN:    confirmPlatformPairingLAN,
 	}
 }
 

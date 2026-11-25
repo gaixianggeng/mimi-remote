@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,34 +18,34 @@ const windowsManagedTaskName = "Mimi Remote agentd"
 
 var (
 	windowsLookPath    = exec.LookPath
-	windowsExecCommand = exec.Command
+	windowsExecCommand = exec.CommandContext
 )
 
-func runWindowsManagedService(action string, stdout, stderr io.Writer) error {
+func runWindowsManagedService(ctx context.Context, action string, stdout, stderr io.Writer) error {
 	schtasks, err := windowsLookPath("schtasks")
 	if err != nil {
 		return fmt.Errorf("未找到 schtasks，无法管理 Windows 当前用户计划任务：%w", err)
 	}
 
 	if action == "status" {
-		return queryWindowsManagedTask(schtasks, stdout, stderr)
+		return queryWindowsManagedTask(ctx, schtasks, stdout, stderr)
 	}
-	if err := queryWindowsManagedTask(schtasks, io.Discard, io.Discard); err != nil {
+	if err := queryWindowsManagedTask(ctx, schtasks, io.Discard, io.Discard); err != nil {
 		return err
 	}
 
 	switch action {
 	case "start":
 		removeWindowsManagedStopRequest()
-		return runWindowsTaskAction(schtasks, "Run", stdout, stderr, true)
+		return runWindowsTaskAction(ctx, schtasks, "Run", stdout, stderr, true)
 	case "stop":
-		return stopWindowsManagedTask(schtasks, stdout, stderr)
+		return stopWindowsManagedTask(ctx, schtasks, stdout, stderr)
 	case "restart":
-		if err := stopWindowsManagedTask(schtasks, stdout, stderr); err != nil {
+		if err := stopWindowsManagedTask(ctx, schtasks, stdout, stderr); err != nil {
 			return err
 		}
 		removeWindowsManagedStopRequest()
-		return runWindowsTaskAction(schtasks, "Run", stdout, stderr, true)
+		return runWindowsTaskAction(ctx, schtasks, "Run", stdout, stderr, true)
 	default:
 		return fmt.Errorf("Windows 当前用户计划任务不支持操作 %q", action)
 	}
@@ -80,7 +81,7 @@ func removeWindowsManagedStopRequest() {
 	}
 }
 
-func stopWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
+func stopWindowsManagedTask(ctx context.Context, schtasks string, stdout, stderr io.Writer) error {
 	pidPath, pathErr := windowsManagedPIDPath()
 	stopPath, stopPathErr := windowsManagedStopPath()
 	if pathErr == nil && stopPathErr == nil {
@@ -105,27 +106,31 @@ func stopWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
 								// restart would then be accepted as a no-op and leave the service
 								// offline. Fall through and synchronize the scheduler state before
 								// returning to the caller.
-								return waitForWindowsManagedTaskStopped(schtasks, stdout, stderr, 10*time.Second)
+								return waitForWindowsManagedTaskStopped(ctx, schtasks, stdout, stderr, 10*time.Second)
 							}
-							time.Sleep(100 * time.Millisecond)
+							select {
+							case <-ctx.Done():
+								return ctx.Err()
+							case <-time.After(100 * time.Millisecond):
+							}
 						}
 					}
 				}
-				_ = forceKillWindowsProcessTree(pidText, stdout, stderr)
+				_ = forceKillWindowsProcessTree(ctx, pidText, stdout, stderr)
 				_ = os.Remove(pidPath)
 				_ = os.Remove(stopPath)
 			}
 		}
 	}
-	return waitForWindowsManagedTaskStopped(schtasks, stdout, stderr, 10*time.Second)
+	return waitForWindowsManagedTaskStopped(ctx, schtasks, stdout, stderr, 10*time.Second)
 }
 
-func waitForWindowsManagedTaskStopped(
+func waitForWindowsManagedTaskStopped(ctx context.Context,
 	schtasks string,
 	stdout, stderr io.Writer,
 	timeout time.Duration,
 ) error {
-	if err := runWindowsTaskAction(schtasks, "End", stdout, stderr, true); err != nil {
+	if err := runWindowsTaskAction(ctx, schtasks, "End", stdout, stderr, true); err != nil {
 		return err
 	}
 	powershell, err := windowsLookPath("powershell.exe")
@@ -136,8 +141,9 @@ func waitForWindowsManagedTaskStopped(
 	deadline := time.Now().Add(timeout)
 	for {
 		var commandStdout, commandStderr bytes.Buffer
-		cmd := windowsExecCommand(powershell, "-NoProfile", "-NonInteractive", "-Command", stateScript)
+		cmd := windowsExecCommand(ctx, powershell, "-NoProfile", "-NonInteractive", "-Command", stateScript)
 		cmd.Env = append(cmd.Environ(), "MIMI_REMOTE_WINDOWS_TASK_NAME="+windowsManagedTaskName)
+		cmd.WaitDelay = time.Second
 		cmd.Stdout = &commandStdout
 		cmd.Stderr = &commandStderr
 		err := cmd.Run()
@@ -168,11 +174,15 @@ func waitForWindowsManagedTaskStopped(
 		if timeout <= 0 || time.Now().After(deadline) {
 			return fmt.Errorf("等待 Windows 当前用户计划任务 %q 停止超时", windowsManagedTaskName)
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
-func forceKillWindowsProcessTree(pid string, stdout, stderr io.Writer) error {
+func forceKillWindowsProcessTree(ctx context.Context, pid string, stdout, stderr io.Writer) error {
 	if _, err := strconv.Atoi(pid); err != nil {
 		return fmt.Errorf("Windows 后台服务 PID 无效：%q", pid)
 	}
@@ -180,23 +190,27 @@ func forceKillWindowsProcessTree(pid string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("未找到 taskkill，无法清理 Windows 后台服务进程树：%w", err)
 	}
-	cmd := windowsExecCommand(taskkill, "/PID", pid, "/T", "/F")
+	cmd := windowsExecCommand(ctx, taskkill, "/PID", pid, "/T", "/F")
+	cmd.WaitDelay = time.Second
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
 }
 
 func ensureWindowsManagedTaskInstalled() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
 	schtasks, err := windowsLookPath("schtasks")
 	if err != nil {
 		return fmt.Errorf("未找到 schtasks，无法检查 Windows 当前用户计划任务：%w", err)
 	}
-	return queryWindowsManagedTask(schtasks, io.Discard, io.Discard)
+	return queryWindowsManagedTask(ctx, schtasks, io.Discard, io.Discard)
 }
 
-func queryWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
+func queryWindowsManagedTask(ctx context.Context, schtasks string, stdout, stderr io.Writer) error {
 	var detail bytes.Buffer
-	cmd := windowsExecCommand(schtasks, "/Query", "/TN", windowsManagedTaskName, "/FO", "LIST", "/V")
+	cmd := windowsExecCommand(ctx, schtasks, "/Query", "/TN", windowsManagedTaskName, "/FO", "LIST", "/V")
+	cmd.WaitDelay = time.Second
 	cmd.Stdout = io.MultiWriter(stdout, &detail)
 	cmd.Stderr = io.MultiWriter(stderr, &detail)
 	if err := cmd.Run(); err != nil {
@@ -210,9 +224,10 @@ func queryWindowsManagedTask(schtasks string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func runWindowsTaskAction(schtasks, verb string, stdout, stderr io.Writer, allowIdempotentNoop bool) error {
+func runWindowsTaskAction(ctx context.Context, schtasks, verb string, stdout, stderr io.Writer, allowIdempotentNoop bool) error {
 	var commandStdout, commandStderr bytes.Buffer
-	cmd := windowsExecCommand(schtasks, "/"+verb, "/TN", windowsManagedTaskName)
+	cmd := windowsExecCommand(ctx, schtasks, "/"+verb, "/TN", windowsManagedTaskName)
+	cmd.WaitDelay = time.Second
 	cmd.Stdout = &commandStdout
 	cmd.Stderr = &commandStderr
 	if err := cmd.Run(); err != nil {
@@ -317,7 +332,7 @@ func runWindowsManagedLogs(lineCount int, follow bool, stdout, stderr io.Writer)
 	if err != nil {
 		return err
 	}
-	cmd := windowsExecCommand(powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+	cmd := windowsExecCommand(context.Background(), powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
 		"Get-Content -LiteralPath $args[0] -Tail ([int]$args[1]) -Wait", path, fmt.Sprint(lineCount))
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

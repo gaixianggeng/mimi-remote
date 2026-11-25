@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
@@ -16,11 +15,14 @@ func (r *Router) preflightHost(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	age := time.Since(time.Unix(0, r.preflightReadyAt.Load()))
-	h := setup.PreflightHost{Version: r.version, Ready: age >= 0 && age <= 15*time.Second,
+	h := setup.PreflightHost{Generation: r.cfg.SourceGeneration(), Version: r.version, Ready: r.doctor.RunReadiness(req.Context()).OK,
 		Assistants: map[string]bool{"codex": r.cfg.Codex.IsEnabled(), "claude": r.cfg.Claude.Enabled, "agy": r.cfg.Agy.Enabled, "deepseek": r.cfg.DeepSeek.Enabled},
 		Networks:   map[string]bool{"tailscale": r.cfg.TailscaleAccessEnabled(), "lan": r.cfg.LANAccessEnabled(), "tailcat": r.cfg.Tailcat.Enabled},
 		Accounts:   r.runtimeStatus.preflightAccounts(), FolderDenied: r.doctor.CachedFolderDenied()}
+	if r.lanPolicyDiagnostic != nil {
+		code := r.lanPolicyDiagnostic()
+		h.LANPolicyCode = &code
+	}
 	if s, ok := r.tailcat.(*tailcatSidecarSupervisor); ok && s.mu.TryLock() {
 		h.Networks["tailcat"] = s.config.Enabled
 		h.TailcatRunning = s.config.Enabled && s.cmd != nil && !s.starting && !s.closing && s.stoppingCmd == nil && !s.readyAt.IsZero()

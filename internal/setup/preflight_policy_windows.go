@@ -4,8 +4,10 @@ package setup
 
 import (
 	"context"
+	"net"
 	"os"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/windowslan"
 )
 
@@ -25,4 +27,8 @@ func preflightLANPolicy(ctx context.Context, enabled bool) string {
 		return "lan_firewall_blocked"
 	}
 	return ""
+}
+
+func confirmPlatformPairingLAN(ctx context.Context, cfg config.Config) error {
+	return confirmResidentPairingLAN(ctx, cfg, preflightLANPolicy, func(c context.Context, conn net.Conn) bool { return windowslan.TrustedPeer(c, conn, 0, "") })
 }

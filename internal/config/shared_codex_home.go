@@ -10,6 +10,24 @@ import (
 
 // ValidateSharedCodexHome 也供只加载诊断配置的前门使用，避免绕过平台和 transport 边界。
 func (c Config) ValidateSharedCodexHome() error {
+	if err := c.validateSharedCodexHomePath(); err != nil {
+		return err
+	}
+	home := c.AppServer.SharedCodexHome
+	if home == "" {
+		return nil
+	}
+	info, err := os.Stat(home)
+	if err != nil {
+		return fmt.Errorf("app_server.shared_codex_home 必须是已存在的独立目录：%w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("app_server.shared_codex_home 不是目录")
+	}
+	return nil
+}
+
+func (c Config) validateSharedCodexHomePath() error {
 	home := c.AppServer.SharedCodexHome
 	if home == "" {
 		return nil
@@ -19,13 +37,6 @@ func (c Config) ValidateSharedCodexHome() error {
 	}
 	if !filepath.IsAbs(home) {
 		return fmt.Errorf("app_server.shared_codex_home 必须是绝对路径")
-	}
-	info, err := os.Stat(home)
-	if err != nil {
-		return fmt.Errorf("app_server.shared_codex_home 必须是已存在的独立目录：%w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("app_server.shared_codex_home 不是目录")
 	}
 	return nil
 }

@@ -46,11 +46,16 @@ func (p Policy) Allows(local, remote net.IP) bool {
 
 type policyListener struct {
 	net.Listener
-	policy Policy
+	policy  Policy
+	lanGate *LANGate
 }
 
 func Wrap(listener net.Listener, policy Policy) net.Listener {
-	return &policyListener{Listener: listener, policy: policy}
+	return WrapWithLANGate(listener, policy, nil)
+}
+
+func WrapWithLANGate(listener net.Listener, policy Policy, gate *LANGate) net.Listener {
+	return &policyListener{Listener: listener, policy: policy, lanGate: gate}
 }
 
 func (l *policyListener) Accept() (net.Conn, error) {
@@ -62,7 +67,12 @@ func (l *policyListener) Accept() (net.Conn, error) {
 		local, localOK := conn.LocalAddr().(*net.TCPAddr)
 		remote, remoteOK := conn.RemoteAddr().(*net.TCPAddr)
 		if localOK && remoteOK && l.policy.Allows(local.IP, remote.IP) {
-			return conn, nil
+			if l.lanGate == nil || local.IP.IsLoopback() || isTailscaleAddress(local.IP) {
+				return conn, nil
+			}
+			if tracked := l.lanGate.admit(conn); tracked != nil {
+				return tracked, nil
+			}
 		}
 		_ = conn.Close()
 	}

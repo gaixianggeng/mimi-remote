@@ -72,3 +72,11 @@ func ensureAppServerTransportMigration(ctx context.Context, configPath string, t
 	}
 	return nil
 }
+
+// Reuse the setup transaction's structural validation, ownership checks and
+// CAS migration for the former managed WS format. Starting an existing host
+// does not change a valid SSH transport or probe its remote assistant.
+func prepareSavedCoreConfig(path string) error {
+	_, err := agentsetup.Run(context.Background(), agentsetup.Options{ConfigPath: path, RequireExisting: true, LocalServiceOnly: true})
+	return err
+}

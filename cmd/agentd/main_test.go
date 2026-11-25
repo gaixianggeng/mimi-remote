@@ -1072,7 +1072,7 @@ func TestAgentStatusTextSeparatesProcessAndCodexAndRedactsToken(t *testing.T) {
 	printServiceStatus(&output, status, token)
 
 	text := output.String()
-	for _, want := range []string{"进程存活：是", "Codex 服务可用：否", "<redacted>"} {
+	for _, want := range []string{"进程存活：是", "后台服务就绪：否", "<redacted>"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status 文本缺少 %q：%q", want, text)
 		}
@@ -1283,7 +1283,7 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false)
+	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1293,14 +1293,14 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("runtime status 应只请求一次：requests=%d", requests.Load())
 	}
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true); err != nil {
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true, ""); err != nil {
 		t.Fatal(err)
 	}
 	if refreshRequests.Load() != 1 {
 		t.Fatalf("强制刷新必须请求 refresh=wait：requests=%d", refreshRequests.Load())
 	}
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
 	}
@@ -1330,7 +1330,7 @@ func TestFetchServiceRuntimeStatusReportsRefreshFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(test.handler)
 			defer server.Close()
-			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true)
+			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true, "")
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("refresh failure = %v, want substring %q", err, test.want)
 			}
@@ -1344,7 +1344,7 @@ func TestFetchServiceRuntimeStatusRejectsTrailingJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "多个 JSON 值") {
 		t.Fatalf("runtime status 必须拒绝尾随 JSON：%v", err)
 	}
@@ -1356,7 +1356,7 @@ func TestFetchServiceRuntimeStatusRejectsMissingRequiredShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "缺少 runtimes") {
 		t.Fatalf("runtime status 必须拒绝缺少最小结构的 200 响应：%v", err)
 	}
@@ -1877,6 +1877,14 @@ func TestRunSetupForceRejectsLegacyResidueBeforeMigrationOrPreflight(t *testing.
 	assertPathDoesNotExist(t, sshCalled, "residue rejection must run before setup SSH preflight")
 }
 
+func inspectTestLaunchCodex(path string) error {
+	cfg, err := config.LoadForDoctor(path)
+	if err != nil {
+		return err
+	}
+	return resolveLaunchCodex(context.Background(), &cfg)
+}
+
 func TestEnsureCodexCLIAvailablePreservesPinAndDiscoversWithoutWriting(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	dir := t.TempDir()
@@ -1901,7 +1909,7 @@ func TestEnsureCodexCLIAvailablePreservesPinAndDiscoversWithoutWriting(t *testin
 	}
 	configtest.CreatePrivateFile(t, configPath, append(raw, '\n'))
 
-	if err := ensureCodexCLIAvailable(configPath); err == nil {
+	if err := inspectTestLaunchCodex(configPath); err == nil {
 		t.Fatal("a missing pin must be reported even when PATH has a compatible CLI")
 	}
 	stored, err := os.ReadFile(configPath)
@@ -1909,7 +1917,7 @@ func TestEnsureCodexCLIAvailablePreservesPinAndDiscoversWithoutWriting(t *testin
 		t.Fatal("startup inspection changed the pin, credentials or unknown fields")
 	}
 	t.Setenv("AGENTD_CODEX_BIN", codexPath)
-	if err := ensureCodexCLIAvailable(configPath); err != nil {
+	if err := inspectTestLaunchCodex(configPath); err != nil {
 		t.Fatal(err)
 	}
 	stored, err = os.ReadFile(configPath)
@@ -2108,7 +2116,10 @@ func prepareBrewSideEffectProbe(t *testing.T) string {
 		t.Fatal(err)
 	}
 	launchctlPath := filepath.Join(binDir, "launchctl")
-	launchctlBody := "#!/bin/sh\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
+	oldLaunchctl := coreLaunchctl
+	coreLaunchctl = launchctlPath
+	t.Cleanup(func() { coreLaunchctl = oldLaunchctl })
+	launchctlBody := "#!/bin/sh\nif [ \"$1\" = print ]; then echo 'Could not find service' >&2; exit 113; fi\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
 	if err := os.WriteFile(launchctlPath, []byte(launchctlBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2226,7 +2237,7 @@ func prepareMainLegacyConfigFixture(t *testing.T) mainLegacyConfigFixture {
 	worktreesRoot := filepath.Join(filepath.Dir(source), "worktrees")
 	token := "legacy-command-token-never-rotate-0123456789"
 	document := map[string]any{
-		"listen": "127.0.0.1:8787",
+		"listen": unusedCoreTestAddress(t),
 		"auth":   map[string]any{"token": token},
 		"runtime": map[string]any{
 			"type": "codex_app_server",

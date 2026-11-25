@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +21,10 @@ func (e PreflightHostError) Error() string { return string(e) }
 // The configured listen address contributes only a port. Never send the host
 // credential to a configured remote address, proxy, or redirect destination.
 func FetchPreflightHost(parent context.Context, cfg config.Config) (PreflightHost, error) {
+	return fetchPreflightHost(parent, cfg, nil)
+}
+
+func fetchPreflightHost(parent context.Context, cfg config.Config, dial func(context.Context, string, string) (net.Conn, error)) (PreflightHost, error) {
 	var host PreflightHost
 	_, port, err := net.SplitHostPort(cfg.Listen)
 	number, parseErr := strconv.Atoi(port)
@@ -36,9 +41,17 @@ func FetchPreflightHost(parent context.Context, cfg config.Config) (PreflightHos
 		return host, PreflightHostError("service_not_running")
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Auth.Token)
-	client := http.Client{Transport: &http.Transport{DisableKeepAlives: true, MaxResponseHeaderBytes: 16 << 10}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	transport := &http.Transport{DisableKeepAlives: true, MaxResponseHeaderBytes: 16 << 10}
+	if dial != nil {
+		transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) { return dial(ctx, network, addr) }
+	}
+	client := http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
+		var ownerErr PreflightHostError
+		if errors.As(err, &ownerErr) {
+			return host, ownerErr
+		}
 		if ctx.Err() != nil {
 			return host, PreflightHostError("probe_timeout")
 		}
@@ -60,6 +73,13 @@ func FetchPreflightHost(parent context.Context, cfg config.Config) (PreflightHos
 	}
 	if err != nil || len(raw) > 16<<10 || json.Unmarshal(raw, &host) != nil || host.Version == "" || host.Assistants == nil || host.Networks == nil {
 		return PreflightHost{}, PreflightHostError("service_version_mismatch")
+	}
+	// A healthy owner may still be serving the previous saved configuration.
+	// Its applied module flags are authoritative, but its account and permission
+	// observations do not describe the document currently under inspection.
+	if host.Generation == "" || host.Generation != cfg.SourceGeneration() {
+		host.Accounts = nil
+		host.FolderDenied = false
 	}
 	return host, nil
 }

@@ -239,3 +239,15 @@ func TestFileAccessPreflightFixNamesTheActualTCCOwner(t *testing.T) {
 		t.Fatal("其他标识不能冒充 Mimi Remote Mac 授权主体")
 	}
 }
+
+func TestPassiveFolderDenialExpiresAndRealDeniedReadRefreshesIt(t *testing.T) {
+	home := t.TempDir()
+	checker := &Checker{folderAccessDeniedAt: time.Now().Add(-time.Minute), fileAccessRequestedDomains: map[string]bool{"documents": true}}
+	if checker.CachedFolderDenied() {
+		t.Fatal("passive poll used an expired denial")
+	}
+	checker.requestFileAccess(filepath.Join(home, "Documents", "fixture"), home, func(string) error { t.Error("repeat denial requested another prompt"); return nil })
+	if !checker.CachedFolderDenied() {
+		t.Fatal("new denied read did not refresh the evidence")
+	}
+}

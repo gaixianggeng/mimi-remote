@@ -19,6 +19,10 @@ const staleTailscaleListenWarning = "警告：旧配置中的 Tailscale 监听�
 // Recovery only retains an already planned loopback listener; it never adds an
 // address, rewrites config, or changes the module-control ingress policy.
 func bindServeListeners(cfg config.Config, addresses []string, bind func(config.Config, string) (net.Listener, error)) ([]net.Listener, bool, error) {
+	return bindServeListenersWithPolicy(cfg, addresses, bind, nil)
+}
+
+func bindServeListenersWithPolicy(cfg config.Config, addresses []string, bind func(config.Config, string) (net.Listener, error), gate *networkaccess.LANGate) ([]net.Listener, bool, error) {
 	listeners := make([]net.Listener, 0, len(addresses))
 	complete := false
 	defer func() {
@@ -43,8 +47,8 @@ func bindServeListeners(cfg config.Config, addresses []string, bind func(config.
 		if listener == nil {
 			continue
 		}
-		if cfg.HasNetworkModuleControls() {
-			listener = networkaccess.Wrap(listener, moduleIngressPolicy(cfg))
+		if cfg.HasNetworkModuleControls() || gate != nil {
+			listener = networkaccess.WrapWithLANGate(listener, moduleIngressPolicy(cfg), gate)
 		}
 		listeners = append(listeners, listener)
 		if address == loopback {
@@ -53,6 +57,9 @@ func bindServeListeners(cfg config.Config, addresses []string, bind func(config.
 	}
 	if unavailable != nil && !loopbackBound {
 		return nil, false, fmt.Errorf("Tailscale 地址不可用且本机控制面未能监听：%w", unavailable)
+	}
+	if len(listeners) == 0 {
+		return nil, false, errors.New("未能绑定控制面监听地址")
 	}
 	complete = true
 	return listeners, unavailable != nil, nil

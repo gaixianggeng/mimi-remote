@@ -802,3 +802,21 @@ func runtimeStatusCodexResponder(t *testing.T) func(*websocket.Conn, int, []byte
 		}
 	}
 }
+
+func TestRuntimeRefreshTimeoutCannotPublishLateEvidence(t *testing.T) {
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		if probes.Add(1) > 1 {
+			<-ctx.Done()
+		}
+		now := time.Now().UTC()
+		return runtimeStatusResponse{CheckedAt: &now, Runtimes: []runtimeAccountStatus{{ID: "codex", State: runtimeStateConnected}}}
+	}, func() runtimeStatusResponse { return runtimeStatusResponse{} })
+	cache.timeout = 100 * time.Millisecond
+	t.Cleanup(cache.Close)
+	first := cache.Refresh(t.Context())
+	late := cache.Refresh(t.Context())
+	if first.CheckedAt == nil || late.CheckedAt == nil || !late.Stale || !late.CheckedAt.Equal(*first.CheckedAt) {
+		t.Fatalf("late observation was marked fresh: first=%+v late=%+v", first, late)
+	}
+}

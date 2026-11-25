@@ -57,16 +57,17 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	hasResult   bool
-	snapshot    runtimeStatusResponse
-	refreshing  bool
-	refreshGen  uint64
-	refreshDone map[uint64]chan struct{}
-	forceNext   bool
-	closed      bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	hasResult    bool
+	snapshot     runtimeStatusResponse
+	refreshing   bool
+	refreshGen   uint64
+	publishedGen uint64
+	refreshDone  map[uint64]chan struct{}
+	forceNext    bool
+	closed       bool
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -154,7 +155,7 @@ func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusR
 	if c.hasResult {
 		response := c.snapshot
 		response.Refreshing = c.refreshing
-		response.Stale = c.refreshing && !completed
+		response.Stale = !completed || c.publishedGen < target
 		return response
 	}
 	response := c.placeholder()
@@ -178,12 +179,14 @@ func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
 	response := c.probe(ctx)
+	finishedInBudget := ctx.Err() == nil
 	cancel()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.closed && c.ctx.Err() == nil {
+	if !c.closed && c.ctx.Err() == nil && finishedInBudget {
 		c.snapshot = response
+		c.publishedGen = generation
 		c.hasResult = true
 	}
 	c.closeRefreshDoneLocked(generation)
@@ -379,7 +382,9 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 	case "":
 		response = r.runtimeStatus.Snapshot()
 	case "wait":
-		response = r.runtimeStatus.Refresh(req.Context())
+		ctx, cancel := context.WithTimeout(req.Context(), runtimebudget.ForcedRefreshHTTPTimeout)
+		defer cancel()
+		response = r.runtimeStatus.Refresh(ctx)
 	default:
 		http.Error(w, "invalid refresh mode", http.StatusBadRequest)
 		return
@@ -670,6 +675,9 @@ func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
 		return status
 	case err := <-ensureResult:
 		if err != nil {
+			if errors.Is(err, errAdapterRestartRequired) {
+				status.Reason = "adapter_restart_required"
+			}
 			return status
 		}
 	}
