@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,7 +39,7 @@ func main() {
 		return
 	}
 	if err := run(); err != nil {
-		log.Fatalf("mimi-push-provider 启动失败: %v", err)
+		log.Fatalf("mimi-push-provider 运行失败: %v", err)
 	}
 }
 
@@ -87,8 +88,15 @@ func run() error {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go server.PurgeLoop(ctx, time.Hour)
+	purgeDone := make(chan struct{})
+	go func() {
+		defer close(purgeDone)
+		server.PurgeLoop(ctx, time.Hour)
+	}()
+	defer func() {
+		stop()
+		<-purgeDone
+	}()
 
 	httpServer := &http.Server{
 		Addr:              listen,
@@ -98,15 +106,30 @@ func run() error {
 		WriteTimeout:      20 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-	}()
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	log.Printf("mimi-push-provider listening on %s topic=%s environment=%s", listener.Addr(), topic, environment)
+	return serveUntilStopped(ctx, httpServer, listener, 10*time.Second)
+}
 
-	log.Printf("mimi-push-provider listening on %s topic=%s environment=%s", listen, topic, environment)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+func serveUntilStopped(ctx context.Context, server *http.Server, listener net.Listener, timeout time.Duration) error {
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+
+	select {
+	case err := <-served:
+		return err
+	case <-ctx.Done():
+	}
+	drain, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := server.Shutdown(drain); err != nil {
+		_ = server.Close()
+		return fmt.Errorf("排空推送请求失败: %w", err)
+	}
+	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
