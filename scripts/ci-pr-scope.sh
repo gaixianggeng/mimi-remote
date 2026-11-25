@@ -79,6 +79,7 @@ fi
 temporary_paths=""
 if [[ "$run_all" -eq 1 ]]; then
   go_scope=true
+  darwin_go_scope=true
   ios_scope=true
   rust_scope=true
   macos_scope=true
@@ -102,6 +103,7 @@ else
   fi
 
   go_scope=false
+  darwin_go_scope=false
   ios_scope=false
   rust_scope=false
   macos_scope=false
@@ -117,12 +119,22 @@ else
     case "$changed_path" in
       .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh)
         go_scope=true
+        darwin_go_scope=true
         ios_scope=true
         rust_scope=true
         macos_scope=true
         windows_scope=true
         docs_scope=true
         continue
+        ;;
+    esac
+
+    # 与 Darwin 无关的平台文件仍由各自的 Go runner 验证。共享文件及
+    # 显式 build tag 由 macOS 上的 go list 选择实际可构建的后端包。
+    case "$changed_path" in
+      *_windows.go|*_windows_test.go|*_linux.go|*_linux_test.go) ;;
+      cmd/*.go|internal/*.go|go.mod|go.sum|scripts/test-darwin-go.py)
+        darwin_go_scope=true
         ;;
     esac
 
@@ -198,8 +210,9 @@ else
 fi
 
 output="$(
-  printf 'go=%s\nios=%s\nrust=%s\nmacos=%s\nwindows=%s\ndocs=%s\n' \
+  printf 'go=%s\ndarwin_go=%s\nios=%s\nrust=%s\nmacos=%s\nwindows=%s\ndocs=%s\n' \
     "$go_scope" \
+    "$darwin_go_scope" \
     "$ios_scope" \
     "$rust_scope" \
     "$macos_scope" \
@@ -218,6 +231,7 @@ if [[ -n "$summary_file" ]]; then
     echo
     echo "- Changed paths: \`$path_count\`"
     echo "- Go and release: \`$go_scope\`"
+    echo "- Darwin Go: \`$darwin_go_scope\`"
     echo "- iOS: \`$ios_scope\`"
     echo "- Rust bridge: \`$rust_scope\`"
     echo "- Mac App: \`$macos_scope\`"

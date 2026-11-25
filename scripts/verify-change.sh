@@ -145,6 +145,7 @@ rust_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "rust" { print $2 }
 macos_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "macos" { print $2 }')"
 docs_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "docs" { print $2 }')"
 windows_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "windows" { print $2 }')"
+darwin_go_scope="$(printf '%s\n' "$scope_output" | awk -F= '$1 == "darwin_go" { print $2 }')"
 
 # config.example.json 与 README/示例文档同类：对外发布的配置示例，不是产品源码。
 # 此前它没有映射，改一行也会让 quick 在任何检查前 fail closed；这里按文档路径归口到文档静态门禁。
@@ -422,7 +423,7 @@ for path in "${changed_paths[@]:-}"; do
       ;;
   esac
   case "$path" in
-    .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh)
+    .github/workflows/*|.github/actions/*|scripts/ci-pr-scope.sh|scripts/check-pr-gate.sh|scripts/test-darwin-go.py)
       has_gate_control=true
       ;;
   esac
@@ -763,7 +764,7 @@ print_plan() {
     echo "- 来源计数：committed=${committed_count}, staged=${staged_count}, unstaged=${unstaged_count}, untracked=${untracked_count}"
   fi
   echo "- 去重后路径：${#changed_paths[@]}"
-  echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}, windows=${windows_scope}"
+  echo "- PR Gate scope：go=${go_scope}, ios=${ios_scope}, rust=${rust_scope}, macos=${macos_scope}, docs=${docs_scope}, windows=${windows_scope}, darwin_go=${darwin_go_scope}"
   echo
 
   echo "验证阶段："

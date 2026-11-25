@@ -71,6 +71,8 @@ assert_scope() {
 }
 
 assert_scope go_only true false false false false internal/httpapi/router.go
+assert_scope darwin_only true false false false false internal/appserver/front_door_darwin.go
+assert_scope windows_go_only true false false false false internal/config/path_case_windows.go
 assert_scope ios_only false true false false false ios/MimiRemote/Sources/App/MimiRemoteApp.swift
 assert_scope rust_only false false true false false bridges/claude/crates/claude-bridge/src/main.rs
 assert_scope claude_sdk_adapter false false true false false bridges/claude-sdk/src/main.ts
@@ -115,6 +117,12 @@ assert_scope tailcat_fixture false true false false false scripts/testdata/tailc
 assert_scope docs_only false false false false true CONTRIBUTING.md
 assert_scope config_example false false false false true config.example.json
 assert_scope workflow true true true true true .github/workflows/pr-gate.yml
+for case_name in go_only darwin_only workflow; do
+  grep -Fqx 'darwin_go=true' "$test_root/${case_name}.output" || fail "$case_name 缺少 Darwin Go。"
+done
+for case_name in windows_go_only docs_only tailcat_source ios_only; do
+  grep -Fqx 'darwin_go=false' "$test_root/${case_name}.output" || fail "$case_name 不需要 Darwin Go。"
+done
 assert_scope mixed true true true false true \
   cmd/agentd/main.go \
   ios/MimiRemote/project.yml \
@@ -458,7 +466,7 @@ scope_checkout = Array(scope_job["steps"]).find { |step| step["name"] == "Checko
 unless scope_checkout&.dig("with", "fetch-depth") == 0
   check_fail("Change scope 必须保留 fetch-depth: 0。")
 end
-expected_scope_outputs = %w[go ios rust macos windows docs]
+expected_scope_outputs = %w[go darwin_go ios rust macos windows docs]
 unless scope_job.fetch("outputs").keys.sort == expected_scope_outputs.sort
   check_fail("Change scope 输出集合不完整。")
 end
@@ -545,9 +553,15 @@ unless jobs.dig("docs", "if").to_s.include?("needs.scope.outputs.docs")
 end
 
 final_gate = jobs.fetch("gate")
+darwin_job = jobs.fetch("darwin-go")
+unless darwin_job["runs-on"] == "macos-26" && darwin_job["needs"] == "scope" &&
+       darwin_job["if"] == "needs.scope.outputs.darwin_go == 'true'" &&
+       darwin_job.fetch("steps").any? { |step| step["run"].to_s.include?("python3 scripts/test-darwin-go.py") }
+  check_fail("Darwin Go 必须按受影响路径在 macOS 上运行后端测试。")
+end
 check_fail("最终 check 名称必须为 PR Gate。") unless final_gate["name"] == "PR Gate"
 assert_no_if_or_continue_on_error(final_gate, "最终聚合 job", allow_if: "always()")
-expected_needs = %w[scope codex-protocol repository-safety go ios rust macos windows docs]
+expected_needs = %w[scope codex-protocol repository-safety go darwin-go ios rust macos windows docs]
 unless Array(final_gate["needs"]).sort == expected_needs.sort
   check_fail("最终聚合 job 的 needs 不完整。")
 end
@@ -601,6 +615,13 @@ Dir.mktmpdir("mimi-pr-gate-eval.") do |summary_dir|
   unless status.success?
     abort("PR Gate 自检失败：未命中的 scoped 检查跳过且 safety 成功时 PR Gate 必须通过：#{stderr}")
   end
+
+  stdout, _stderr, status = run_gate_step.call("DARWIN_GO_RESULT" => "failure")
+  if status.success? || !stdout.include?("Darwin Go")
+    abort("PR Gate 自检失败：Darwin 后端检查失败时必须阻止合并并指出 Darwin Go。")
+  end
+  _stdout, _stderr, status = run_gate_step.call("DARWIN_GO_REQUIRED" => "false", "DARWIN_GO_RESULT" => "skipped")
+  abort("PR Gate 自检失败：无需 Darwin 后端检查时允许跳过。") unless status.success?
 
   %w[failure cancelled skipped].push("").each do |bad_safety_result|
     stdout, _stderr, status = run_gate_step.call("SAFETY_RESULT" => bad_safety_result)
