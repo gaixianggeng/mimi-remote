@@ -40,7 +40,7 @@ func configuredModelDiscovery(ctx context.Context, bin string, env map[string]st
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "features", "list")
 	cmd.Dir = directory
-	cmd.Env = buildManagedEnv(env)
+	cmd.Env = ManagedEnvironment(env)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, errors.New("无法读取 Codex 功能设置，请检查 Codex 配置后重试。")

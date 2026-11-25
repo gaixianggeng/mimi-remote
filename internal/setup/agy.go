@@ -4,15 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
-	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -173,11 +171,7 @@ func ConfigureAgy(
 	if err != nil {
 		return AgyConfigurationResult{}, err
 	}
-	targetAgyBin := currentAgyBin
-	if targetEnabled && preflight.AgyBin != "" {
-		targetAgyBin = preflight.AgyBin
-	}
-	if err := encodeAgyDocument(agyDoc, targetEnabled, targetPreference, targetAgyBin); err != nil {
+	if err := encodeAgyDocument(agyDoc, targetEnabled, targetPreference, currentAgyBin); err != nil {
 		return AgyConfigurationResult{}, err
 	}
 	appliedState, err := agyModuleState(agyDoc)
@@ -206,7 +200,7 @@ func ConfigureAgy(
 	result.Preference = targetPreference
 	result.Applied = appliedState
 	result.Changed = changed
-	result.RestartRequired = currentEnabled != targetEnabled || currentAgyBin != targetAgyBin
+	result.RestartRequired = currentEnabled != targetEnabled
 	result.AgyBin = preflight.AgyBin
 	result.AgyVersion = preflight.AgyVersion
 	result.LoggedIn = preflight.LoggedIn
@@ -329,54 +323,15 @@ func preflightAgy(ctx context.Context, cfg config.Config) agyPreflightResult {
 		}
 	}
 
-	configuredAgy := ""
-	if cfg.Agy.Env != nil {
-		configuredAgy = cfg.Agy.Env[agybridge.AgyBinaryEnvKey]
+	candidate, err := ResolveRuntime(ctx, AgyRuntime(cfg.Agy, caps.Agy.MinimumVersion, env))
+	bestBin, bestVersion := candidate.Path, candidate.Version
+	if errors.Is(err, ErrRuntimeIncompatible) {
+		return agyPreflightResult{AgyBin: bestBin, AgyVersion: bestVersion, Reason: "agy_unsupported",
+			Message: agybridge.AgyUpgradeMessage(bestVersion, caps.Agy.MinimumVersion)}
 	}
-	bestBin := ""
-	bestVersion := ""
-	seen := map[string]bool{}
-	for _, candidate := range agyExecutableCandidates(configuredAgy) {
-		trimmed := strings.TrimSpace(candidate)
-		if trimmed == "" {
-			continue
-		}
-		resolved := trimmed
-		if !filepath.IsAbs(resolved) {
-			found, lookErr := exec.LookPath(resolved)
-			if lookErr != nil {
-				continue
-			}
-			resolved = found
-		}
-		if seen[resolved] {
-			continue
-		}
-		seen[resolved] = true
-		version, verErr := agybridge.AgyVersion(ctx, resolved, env)
-		if verErr != nil {
-			continue
-		}
-		if bestVersion == "" || claudebridge.Compare(version, bestVersion) > 0 {
-			bestBin = resolved
-			bestVersion = version
-		}
+	if err != nil {
+		return agyPreflightResult{Reason: "agy_missing", Message: "未检测到可用的 Antigravity CLI (agy)。请检查配置的路径或安装 agy。"}
 	}
-	if bestBin == "" {
-		return agyPreflightResult{
-			Reason:  "agy_missing",
-			Message: "未检测到 Antigravity CLI (agy)。请先在电脑安装 agy 并完成登录。",
-		}
-	}
-	if !caps.AgySupported(bestVersion) {
-		return agyPreflightResult{
-			AgyBin:     bestBin,
-			AgyVersion: bestVersion,
-			Reason:     "agy_unsupported",
-			Message:    agybridge.AgyUpgradeMessage(bestVersion, caps.Agy.MinimumVersion),
-		}
-	}
-
 	authState, authMsg := agybridge.CheckAgyAuthStatus(ctx, bestBin, env)
 	switch authState {
 	case agybridge.AgyAuthSignedOut:

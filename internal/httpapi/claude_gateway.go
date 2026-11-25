@@ -22,8 +22,10 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/debuglog"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 const claudeBridgePolicyErrorCode = -32081
@@ -58,6 +60,7 @@ func claudeBridgeFrameSeq(payload []byte) (uint64, bool) {
 }
 
 type appServerBridgeProbe struct {
+	cliPath   string
 	Status    string
 	Path      string
 	Version   string
@@ -137,6 +140,7 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 		r.setClaudeBridgeProbe(probe)
 		return probe
 	}
+	minimum := ""
 	if isAdapter {
 		capabilities, err := probeClaudeAdapterCapabilities(path, r.cfg.Claude.Args, r.cfg.Claude.Env)
 		if err != nil {
@@ -146,15 +150,19 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 			return probe
 		}
 		probe.Adapter = &capabilities
-		// 适配器声明了 Claude Code 下限：已知过旧时整条通道标为不可用，客户端连接时就能看到
-		// 升级提示，而不是等发出第一条消息才失败。找不到或无法确认版本时不在这里拦。
-		if version, ok := r.claudeCode.version(r.cfg.Claude.Env); ok && !capabilities.ClaudeCodeSupported(version) {
-			probe.Status = "claude_unsupported"
-			probe.Error = claudebridge.ClaudeCodeUpgradeMessage(version, capabilities.ClaudeCode.MinimumVersion)
-			r.setClaudeBridgeProbe(probe)
-			return probe
-		}
+		minimum = capabilities.ClaudeCode.MinimumVersion
 	}
+	cli, err := r.claudeCode.resolve(setup.ClaudeRuntime(r.cfg.Claude, minimum, buildClaudeBridgeEnv(r.cfg.Claude.Env)))
+	if err != nil {
+		probe.Status, probe.Error = "claude_missing", "请检查 Claude Code 安装或配置的路径"
+		if errors.Is(err, setup.ErrRuntimeIncompatible) {
+			probe.Status = "claude_unsupported"
+			probe.Error = claudebridge.ClaudeCodeUpgradeMessage(cli.Version, minimum)
+		}
+		r.setClaudeBridgeProbe(probe)
+		return probe
+	}
+	probe.cliPath = cli.Path
 	probe.Status = "ready"
 	probe.Healthy = true
 	r.setClaudeBridgeProbe(probe)
@@ -221,9 +229,7 @@ func resolveClaudeBridgePath(command string, legacy bool) (string, bool) {
 func probeClaudeBridgeVersion(path string, args []string, env map[string]string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--version")...)
-	cmd.Env = buildClaudeBridgeEnv(env)
-	output, err := cmd.Output()
+	output, err := cliinspect.Stdout(ctx, path, buildClaudeBridgeEnv(env), append(append([]string{}, args...), "--version")...)
 	if err != nil {
 		return "", false
 	}
@@ -290,7 +296,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	if _, err := r.claudeBridge.ensure(
 		bin,
 		r.cfg.Claude.Args,
-		claudeBridgeRuntimeEnv(r.cfg.Claude, probe.Adapter != nil),
+		probe.launchEnv(r.cfg.Claude),
 	); err != nil {
 		log.Printf("claude bridge ensure failed err=%v", err)
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
@@ -771,6 +777,14 @@ func pingClientGateway(ctx context.Context, client *websocket.Conn, clientWriteM
 // claude.env 里显式设置的级别优先。旧 Rust bridge 不认这个变量，没有影响。
 const claudeAdapterLogLevelEnv = "MIMI_CLAUDE_ADAPTER_LOG"
 const claudeAdapterTurnHintsEnv = "MIMI_CLAUDE_TURN_HINTS_ENABLED"
+
+func (p appServerBridgeProbe) launchEnv(cfg config.ClaudeConfig) map[string]string {
+	env := claudeBridgeRuntimeEnv(cfg, p.Adapter != nil)
+	if p.cliPath != "" {
+		env["CLAUDE_BRIDGE_CLAUDE_BIN"] = p.cliPath
+	}
+	return env
+}
 
 func claudeBridgeRuntimeEnv(cfg config.ClaudeConfig, isAdapter bool) map[string]string {
 	env := make(map[string]string, len(cfg.Env)+1)

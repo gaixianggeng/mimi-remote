@@ -62,7 +62,7 @@ func ConfigureCodex(ctx context.Context, path, preference string) (CodexConfigur
 			}
 			_, probeErr = transport.CheckRemoteCodex(ctx)
 		} else {
-			_, probeErr = appserver.CheckLocalCodex(ctx, doc.cfg.Codex.Bin)
+			_, probeErr = ResolveRuntime(ctx, CodexRuntime(doc.cfg.Codex, doc.cfg.AppServer.Transport))
 		}
 		if probeErr != nil {
 			result.Reason = "codex_unavailable"

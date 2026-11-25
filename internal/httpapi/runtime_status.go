@@ -661,7 +661,7 @@ func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
 		_, err := r.claudeBridge.ensure(
 			bin,
 			r.cfg.Claude.Args,
-			claudeBridgeRuntimeEnv(r.cfg.Claude, probe.Adapter != nil),
+			probe.launchEnv(r.cfg.Claude),
 		)
 		ensureResult <- err
 	}()

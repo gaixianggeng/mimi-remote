@@ -1430,3 +1430,21 @@ func TestAgyRuntimeQuotaCacheAndApply(t *testing.T) {
 		t.Fatalf("expected expired cache to return nil, got %+v", expired)
 	}
 }
+
+func TestColdAgyStatusInspectsFailingShimOnce(t *testing.T) {
+	dir := t.TempDir()
+	adapter := writeFakeAgyAdapterScript(t, dir)
+	shim := filepath.Join(dir, "agy")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$0.calls\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &Router{cfg: config.Config{Agy: config.AgyConfig{Enabled: true, AdapterBin: adapter, Env: map[string]string{agybridge.AgyBinaryEnvKey: shim}}}}
+	for range 2 {
+		if got := r.currentAgyAdapterProbe(); got.Status != "agy_missing" || got.Healthy {
+			t.Fatalf("failed shim status: %+v", got)
+		}
+	}
+	if calls, err := os.ReadFile(shim + ".calls"); err != nil || string(calls) != "--version\n" {
+		t.Fatalf("version calls across cold and cached reads: %q, %v", calls, err)
+	}
+}

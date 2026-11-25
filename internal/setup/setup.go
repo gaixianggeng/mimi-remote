@@ -111,8 +111,8 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
 	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
 	codexBin := strings.TrimSpace(options.CodexBin)
-	if codexBin == "" {
-		codexBin = defaultCodexBin()
+	if codexBin == "" || codexBin == "auto" {
+		codexBin = "codex"
 	}
 	appServerConfig := config.DefaultManagedAppServerConfig()
 	if useSharedLocalAppServer {
@@ -143,6 +143,10 @@ func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTrans
 			AutoTitle: true,
 			// 显式给出的 target（即使是 127.0.0.1）是用户选择，后台启动的自动迁移不得改回 local。
 			PinTransport: requestedSSHTarget != "",
+		}
+	} else if useManagedLocalAppServer {
+		if err := NewRuntimeDiscovery().preflightManagedCodex(ctx, options.CodexBin); err != nil {
+			return Result{}, fmt.Errorf("本机 App Server 预检失败，配置未修改：%w", err)
 		}
 	} else if useSharedLocalAppServer {
 		codexEnv := map[string]string{"TERM": "xterm-256color"}
@@ -542,13 +546,6 @@ func defaultAgentDNetworkWithLANFallback(
 		"未检测到 Tailscale 或可用的局域网 IPv4；请先连接 Wi-Fi/以太网，或为本机开发显式传入 --listen 127.0.0.1:%s",
 		defaultAgentDPort,
 	)
-}
-
-func defaultCodexBin() string {
-	if path, err := ResolveCodexBin("codex"); err == nil {
-		return path
-	}
-	return "codex"
 }
 
 func endpointForListen(ctx context.Context, listen string) (string, []string) {

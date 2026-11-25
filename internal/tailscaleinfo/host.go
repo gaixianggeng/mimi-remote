@@ -1,9 +1,9 @@
 package tailscaleinfo
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
 	"net/url"
@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 const (
@@ -39,7 +41,8 @@ type Host struct {
 }
 
 type statusSnapshot struct {
-	Self struct {
+	BackendState string `json:"BackendState"`
+	Self         struct {
 		DNSName string `json:"DNSName"`
 	} `json:"Self"`
 }
@@ -49,7 +52,7 @@ type statusCommand func(context.Context) ([]byte, error)
 // Discover 从本机 Tailscale CLI 读取 MagicDNS 名称。CLI 不可用、MagicDNS
 // 未启用或输出异常时返回空值，让 LAN-only 和旧环境继续使用 IP Endpoint。
 func Discover(ctx context.Context) Host {
-	return inspect(ctx, runStatus)
+	return inspect(ctx, Status)
 }
 
 func inspect(ctx context.Context, command statusCommand) Host {
@@ -145,12 +148,55 @@ func IsTailscaleAddress(ip netip.Addr) bool {
 	return tailscaleIPv4Prefix.Contains(ip) || tailscaleIPv6Prefix.Contains(ip)
 }
 
-func runStatus(ctx context.Context) ([]byte, error) {
-	cmd, err := CommandContext(ctx, "status", "--json")
-	if err != nil {
-		return nil, err
+// IsTunnelInterface reports the interface families used by Tailscale on supported hosts.
+func IsTunnelInterface(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch strings.TrimRight(name, "0123456789") {
+	case "tailscale", "utun", "tun":
+		return true
 	}
-	return cmd.Output()
+	return false
+}
+
+// TunnelAvailable checks an observed, active CGNAT tunnel against the CLI. App
+// Store credential failures and absent CLIs leave the interface evidence usable.
+func TunnelAvailable(ctx context.Context) bool {
+	return tunnelAvailable(ctx, Status, runIPv4Command)
+}
+
+func tunnelAvailable(ctx context.Context, status statusCommand, run func(context.Context) ([]byte, []byte, error)) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	// The module status client gives this entire HTTP request 1.5 seconds.
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	raw, statusErr := status(probeCtx)
+	var snapshot statusSnapshot
+	if len(raw) <= statusOutputLimit && json.Unmarshal(raw, &snapshot) == nil {
+		if isExplicitlyOffline("state: "+snapshot.BackendState, "") {
+			return false
+		}
+		if strings.EqualFold(snapshot.BackendState, "Running") {
+			return ctx.Err() == nil
+		}
+	} else if len(raw) <= statusOutputLimit && isExplicitlyOffline(string(raw), "") {
+		return false
+	}
+	var exitErr *exec.ExitError
+	if errors.As(statusErr, &exitErr) && isExplicitlyOffline("", string(exitErr.Stderr)) {
+		return false
+	}
+	stdout, stderr, _ := run(probeCtx)
+	return ctx.Err() == nil && !isExplicitlyOffline(string(stdout), string(stderr))
+}
+
+// Status reads the local CLI snapshot used for host and peer diagnostics.
+func Status(ctx context.Context) ([]byte, error) {
+	out, _, err := cliinspect.Output(ctx, func() (*exec.Cmd, error) {
+		return CommandContext(ctx, "status", "--json")
+	}, statusOutputLimit)
+	return out, err
 }
 
 // CommandContext 构造本机 Tailscale CLI 命令，并显式设置 TAILSCALE_BE_CLI=true。
@@ -174,10 +220,11 @@ func newCommandContext(ctx context.Context, bin string, args ...string) *exec.Cm
 
 func FindCLI() (string, error) {
 	home, _ := os.UserHomeDir()
-	return findCLI(exec.LookPath, os.Stat, runtime.GOOS, home)
+	return FindCLIForHost(exec.LookPath, os.Stat, runtime.GOOS, home)
 }
 
-func findCLI(
+// FindCLIForHost locates a CLI in a specified host filesystem.
+func FindCLIForHost(
 	lookPath func(string) (string, error),
 	stat func(string) (os.FileInfo, error),
 	goos string,
@@ -223,15 +270,9 @@ func runIPv4CommandWithTimeout(
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd, err := buildCmd(runCtx, "ip", "-4")
-	if err != nil {
-		return nil, nil, err
-	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	return cliinspect.Output(runCtx, func() (*exec.Cmd, error) {
+		return buildCmd(runCtx, "ip", "-4")
+	}, statusOutputLimit)
 }
 
 func firstIPv4(
@@ -376,7 +417,7 @@ func selectInterfaceIPv4(interfaces []interfaceSnapshot) string {
 		// 1) 接口名以 tailscale 开头（大小写不敏感，如 Linux tailscale0、Windows Tailscale）；
 		// 2) 同一接口同时持有 Tailscale 专属 ULA IPv6 前缀（fd7a:115c:a1e0::/48）。
 		// 仅有通用隧道名（utun*/tun*）或仅含子串的网桥名（如 br-tailscale）加 100.64.0.0/10 时必须忽略。
-		if !hasTailscaleV6 && !strings.HasPrefix(lowerName, "tailscale") {
+		if !IsTunnelInterface(lowerName) || (!hasTailscaleV6 && !strings.HasPrefix(lowerName, "tailscale")) {
 			continue
 		}
 		for _, ip := range v4s {

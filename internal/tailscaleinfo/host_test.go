@@ -135,16 +135,16 @@ func TestCommandContextForcesCLIModeAndPreservesOtherEnv(t *testing.T) {
 	}
 	effectiveEnv := cmd.Environ()
 	if !slices.Contains(effectiveEnv, "TAILSCALE_BE_CLI=true") {
-		t.Fatalf("应注入 TAILSCALE_BE_CLI=true：%v", effectiveEnv)
+		t.Fatal("应注入 TAILSCALE_BE_CLI=true")
 	}
 	if slices.Contains(effectiveEnv, "TAILSCALE_BE_CLI=false") {
-		t.Fatalf("应覆盖旧的 TAILSCALE_BE_CLI 值：%v", effectiveEnv)
+		t.Fatal("应覆盖旧的 TAILSCALE_BE_CLI 值")
 	}
 	if !slices.Contains(effectiveEnv, "MIMI_TEST_INHERITED=keep-value") {
-		t.Fatalf("不应丢弃其他环境变量：%v", effectiveEnv)
+		t.Fatal("不应丢弃其他环境变量")
 	}
 	if runtime.GOOS != "windows" && !slices.Contains(effectiveEnv, "tailscale_be_cli=lowercase-value") {
-		t.Fatalf("Unix 下不应删除大小写不同的合法环境键：%v", effectiveEnv)
+		t.Fatal("Unix 下不应删除大小写不同的合法环境键")
 	}
 
 	out, err := cmd.Output()
@@ -153,16 +153,16 @@ func TestCommandContextForcesCLIModeAndPreservesOtherEnv(t *testing.T) {
 	}
 	var got map[string]string
 	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("解析子进程环境输出失败：%v raw=%q", err, string(out))
+		t.Fatalf("解析子进程环境输出失败：%v", err)
 	}
 	if got["TAILSCALE_BE_CLI"] != "true" {
-		t.Fatalf("子进程 TAILSCALE_BE_CLI 必须被强制为 true：got=%+v", got)
+		t.Fatal("子进程 TAILSCALE_BE_CLI 必须被强制为 true")
 	}
 	if got["MIMI_TEST_INHERITED"] != "keep-value" {
-		t.Fatalf("子进程应继承其他环境变量：got=%+v", got)
+		t.Fatal("子进程应继承 MIMI_TEST_INHERITED")
 	}
 	if runtime.GOOS != "windows" && got["tailscale_be_cli"] != "lowercase-value" {
-		t.Fatalf("Unix 子进程应保留独立的 tailscale_be_cli 键：got=%+v", got)
+		t.Fatal("Unix 子进程应保留独立的 tailscale_be_cli 键")
 	}
 	if parentVal := os.Getenv("TAILSCALE_BE_CLI"); parentVal != "false" {
 		t.Fatalf("不得修改父进程环境：got=%q", parentVal)
@@ -185,7 +185,7 @@ func TestFindCLIFallsBackToDarwinAppBundles(t *testing.T) {
 	userBundle := filepath.Join(home, "Applications", "Tailscale.app", "Contents", "MacOS", "Tailscale")
 	missing := errors.New("not found")
 
-	got, err := findCLI(
+	got, err := FindCLIForHost(
 		func(string) (string, error) { return "", missing },
 		func(path string) (os.FileInfo, error) {
 			if path == userBundle {

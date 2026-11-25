@@ -30,6 +30,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	var cleanup func()
 	if config.SupportsSharedLocalAppServer() {
 		dir, err := os.MkdirTemp("", "agentd-main-codex-")
@@ -1767,6 +1770,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 
 func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
+	t.Setenv("AGENTD_CODEX_BIN", writeMainTestCodex(t, filepath.Join(t.TempDir(), "codex")))
 	installMainTestSSH(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1899,7 +1903,7 @@ func TestRunSetupForceRejectsLegacyResidueBeforeMigrationOrPreflight(t *testing.
 	assertPathDoesNotExist(t, sshCalled, "residue rejection must run before setup SSH preflight")
 }
 
-func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T) {
+func TestEnsureCodexCLIAvailablePreservesPinAndDiscoversWithoutWriting(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	dir := t.TempDir()
 	binDir := t.TempDir()
@@ -1909,9 +1913,10 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 	configPath := filepath.Join(dir, "config.json")
 	const authToken = "0123456789abcdef0123456789abcdef"
 	document := map[string]any{
-		"auth": map[string]any{"token": authToken},
+		"auth":       map[string]any{"token": authToken},
+		"app_server": map[string]any{"transport": "local"},
 		"codex": map[string]any{
-			"bin":           "/opt/homebrew/bin/codex",
+			"bin":           filepath.Join(dir, "missing-codex"),
 			"future_option": "keep-codex-option",
 		},
 		"future_root": "keep-root-option",
@@ -1924,23 +1929,20 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 		t.Fatal(err)
 	}
 
+	if err := ensureCodexCLIAvailable(configPath); err == nil {
+		t.Fatal("a missing pin must be reported even when PATH has a compatible CLI")
+	}
+	stored, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(stored, append(raw, '\n')) {
+		t.Fatal("startup inspection changed the pin, credentials or unknown fields")
+	}
+	t.Setenv("AGENTD_CODEX_BIN", codexPath)
 	if err := ensureCodexCLIAvailable(configPath); err != nil {
-		t.Fatalf("启动前应自动恢复 Codex 路径：%v", err)
-	}
-	updated, err := os.ReadFile(configPath)
-	if err != nil {
 		t.Fatal(err)
 	}
-	var after map[string]any
-	if err := json.Unmarshal(updated, &after); err != nil {
-		t.Fatal(err)
-	}
-	afterCodex := after["codex"].(map[string]any)
-	if afterCodex["bin"] != codexPath || afterCodex["future_option"] != "keep-codex-option" {
-		t.Fatalf("只应修复路径并保留 Codex 扩展配置：%+v", afterCodex)
-	}
-	if after["future_root"] != "keep-root-option" || after["auth"].(map[string]any)["token"] != authToken {
-		t.Fatalf("启动前修复不能改写 Token 或未知字段：%+v", after)
+	stored, err = os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(stored, append(raw, '\n')) {
+		t.Fatal("an environment override was persisted")
 	}
 }
 

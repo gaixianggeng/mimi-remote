@@ -13,7 +13,7 @@ func TestBuildManagedEnvFiltersLegacyDesktopTransportAndOverlaysConfiguredValues
 	t.Setenv("MIMI_MANAGED_ENV_TEST", "inherited")
 	t.Setenv("CODEX_HOME", "/inherited/codex")
 
-	env := buildManagedEnv(map[string]string{
+	env := ManagedEnvironment(map[string]string{
 		"CODEX_APP_SERVER_USE_LOCAL_DAEMON":         "1",
 		"CODEX_APP_SERVER_WS_URL":                   "ws://still-blocked.invalid",
 		"MIMI_REMOTE_CODEX_DESKTOP_OWNERSHIP_EPOCH": "still-blocked-owner-token",

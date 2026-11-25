@@ -110,6 +110,7 @@ func pushTestFixtureWith(t *testing.T, upstreamURL string, providerURL string, o
 	if opts.customize != nil {
 		opts.customize(&cfg)
 	}
+	configureTestClaudeCLI(t, &cfg.Claude)
 	configPath := opts.configPath
 	if configPath == "" {
 		configPath = filepath.Join(t.TempDir(), "config.json")

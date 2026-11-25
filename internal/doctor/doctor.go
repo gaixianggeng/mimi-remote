@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,12 +18,17 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/harnessclient"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
+	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
 type Checker struct {
+	resolveRuntime             func(context.Context, setup.RuntimeRequest) (setup.RuntimeCandidate, error)
+	findTailscale              func() (string, error)
 	version                    string
 	cfg                        config.Config
 	registry                   *projects.Registry
@@ -63,6 +69,7 @@ type Check struct {
 
 func NewChecker(version string, cfg config.Config, registry *projects.Registry, configPath ...string) *Checker {
 	checker := &Checker{
+		resolveRuntime: setup.ResolveRuntime, findTailscale: tailscaleinfo.FindCLI,
 		version:  version,
 		cfg:      cfg,
 		registry: registry,
@@ -90,20 +97,29 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 	if !tokenOK {
 		tokenMessage = "Token 未配置"
 	}
-	codexOK := !c.cfg.Codex.IsEnabled() || commandExists(c.cfg.Codex.Bin)
+	inspectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var localCodex setup.RuntimeCandidate
+	var codexErr error
 	codexMessage := "Codex CLI 可执行"
-	if !c.cfg.Codex.IsEnabled() {
+	switch {
+	case !c.cfg.Codex.IsEnabled():
 		codexMessage = "Codex 在 Mimi 中已关闭"
+	case strings.EqualFold(c.cfg.AppServer.Transport, "ssh"):
+		codexMessage = "Codex CLI 由 SSH 远端提供"
+	default:
+		localCodex, codexErr = c.resolveRuntime(inspectCtx, setup.CodexRuntime(c.cfg.Codex, c.cfg.AppServer.Transport))
+		if codexErr != nil {
+			codexMessage = "未找到 Codex CLI 或安装版本不兼容"
+		}
 	}
-	if !codexOK {
-		codexMessage = "未找到 Codex CLI"
-	}
+	_, tailscaleErr := c.findTailscale()
 	checks := []Check{
 		{Name: "token", OK: tokenOK, Message: tokenMessage, Fix: "执行 agentd setup 生成随机 token，或设置 AGENTD_TOKEN"},
 		{Name: "projects", OK: projectsCount > 0, Message: fmt.Sprintf("已加载 %d 个项目", projectsCount), Fix: "在 config.json 配置 projects，或设置 AGENTD_PROJECTS=/path/a,/path/b"},
-		{Name: "codex", OK: codexOK, Message: codexMessage, Fix: "安装 Codex CLI 并确认 codex 在 PATH 中；Homebrew service 推荐先运行 agentd setup 记录绝对路径"},
+		{Name: "codex", OK: codexErr == nil, Message: codexMessage, Fix: "检查配置的 Codex 路径或升级 Codex CLI"},
 		c.runtimeCheck(),
-		{Name: "tailscale", OK: commandExists("tailscale"), Message: "检测到 Tailscale 命令", Fix: "安装并登录 Tailscale：https://tailscale.com/download"},
+		{Name: "tailscale", OK: tailscaleErr == nil, Message: "检测到 Tailscale 命令", Fix: "安装并登录 Tailscale：https://tailscale.com/download"},
 	}
 	if check := macOSCodeSigningCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
@@ -130,10 +146,10 @@ func (c *Checker) Run(ctx context.Context, checkPort bool) Results {
 		checks = append(checks, check)
 	}
 	if c.needsCodexAppServerCheck() {
-		checks = append(checks, c.codexAppServerCheck(ctx))
+		checks = append(checks, c.codexAppServerCheck(ctx, localCodex, codexErr))
 	}
-	checks = append(checks, c.claudeBridgeCheck(ctx))
-	checks = append(checks, c.agyAdapterCheck(ctx))
+	checks = append(checks, c.claudeBridgeCheck(inspectCtx))
+	checks = append(checks, c.agyAdapterCheck(inspectCtx))
 	checks = append(checks, c.deepSeekCheck(ctx))
 	if check := c.appServerGatewayCheck(ctx); check.Name != "" {
 		checks = append(checks, check)
@@ -376,35 +392,13 @@ func (c *Checker) needsCodexAppServerCheck() bool {
 	return true
 }
 
-func (c *Checker) codexAppServerCheck(ctx context.Context) Check {
+func (c *Checker) codexAppServerCheck(ctx context.Context, local setup.RuntimeCandidate, err error) Check {
 	transportName := strings.ToLower(strings.TrimSpace(c.cfg.AppServer.Transport))
-	if transportName == "ws" {
-		version, err := appserver.CheckLocalCodex(ctx, c.cfg.Codex.Bin)
+	if transportName == "ws" || transportName == "local" {
 		if err != nil {
-			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 版本不兼容", Fix: err.Error()}
+			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 版本或传输不兼容", Fix: err.Error()}
 		}
-		codexBin := strings.TrimSpace(c.cfg.Codex.Bin)
-		if codexBin == "" {
-			codexBin = "codex"
-		}
-		runCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		output, err := exec.CommandContext(runCtx, codexBin, "app-server", "--help").CombinedOutput()
-		help := string(output)
-		if err != nil ||
-			!strings.Contains(help, "--listen") ||
-			!strings.Contains(help, "--ws-auth") ||
-			!strings.Contains(help, "--ws-token-file") {
-			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 不支持 app-server WebSocket", Fix: "升级 Codex CLI 后重试"}
-		}
-		return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("本机 Codex %s 支持受管 App Server", version)}
-	}
-	if transportName == "local" {
-		version, err := appserver.CheckLocalCodex(ctx, c.cfg.Codex.Bin)
-		if err != nil {
-			return Check{Name: "codex-app-server", OK: false, Message: "本机 Codex CLI 版本不兼容", Fix: err.Error()}
-		}
-		return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("本机 Codex %s 支持共享 control socket", version)}
+		return Check{Name: "codex-app-server", OK: true, Message: fmt.Sprintf("本机 Codex %s 支持 %s App Server", local.Version, transportName)}
 	}
 	transport, err := newDoctorSSHTransport(appserver.SSHTransportOptions{Target: c.cfg.AppServer.SSHTarget})
 	if err != nil {
@@ -467,7 +461,8 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	environment := claudeenv.Build(c.cfg.Claude.Env)
+	output, err := cliinspect.Stdout(runCtx, bin, environment, append(append([]string{}, c.cfg.Claude.Args...), "--version")...)
 	if err != nil {
 		return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未返回标准 --version", Fix: claudebridge.UpgradeMessage("")}
 	}
@@ -478,31 +473,23 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if !claudebridge.IsSupported(version) {
 		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude bridge %s 低于最低兼容版本 %s", version, claudebridge.MinimumVersion), Fix: claudebridge.UpgradeMessage(version)}
 	}
-	if !claudebridge.IsAdapterVersionOutput(string(output)) {
-		return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude bridge %s 可用", version)}
+	label, minimum := "Claude bridge", ""
+	if claudebridge.IsAdapterVersionOutput(string(output)) {
+		label = "Claude 适配器"
+		capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, environment)
+		if err != nil {
+			return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
+		}
+		minimum = capabilities.ClaudeCode.MinimumVersion
 	}
-	// 与运行时相同的受限环境：claude.env 里的 PATH、代理等都要生效。
-	environment := claudeenv.Build(c.cfg.Claude.Env)
-	capabilities, err := claudebridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Claude.Args, environment)
-	if err != nil {
-		return Check{Name: "claude-bridge", OK: false, Message: "无法读取 Claude 适配器的能力声明", Fix: "重新安装或升级 Mimi Remote"}
-	}
-	claudeBin := strings.TrimSpace(c.cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"])
-	if claudeBin == "" {
-		claudeBin = "claude"
-	}
-	claudeVersion := ""
-	claudePath, err := claudebridge.LookPathIn(claudeBin, environment)
-	if err == nil {
-		claudeVersion, err = claudebridge.ClaudeCodeVersion(ctx, claudePath, environment)
+	candidate, err := c.resolveRuntime(ctx, setup.ClaudeRuntime(c.cfg.Claude, minimum, environment))
+	if errors.Is(err, setup.ErrRuntimeIncompatible) && minimum != "" {
+		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(candidate.Version, minimum), Fix: "在终端运行 claude update"}
 	}
 	if err != nil {
-		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("Claude 适配器 %s 可用，但无法确认 Claude Code 版本", version), Fix: "安装或升级 Claude Code 并登录"}
+		return Check{Name: "claude-bridge", OK: false, Message: fmt.Sprintf("%s %s 可用，但无法确认 Claude Code 版本", label, version), Fix: "检查配置路径，安装或升级 Claude Code"}
 	}
-	if !capabilities.ClaudeCodeSupported(claudeVersion) {
-		return Check{Name: "claude-bridge", OK: false, Message: claudebridge.ClaudeCodeUpgradeMessage(claudeVersion, capabilities.ClaudeCode.MinimumVersion), Fix: "在终端运行 claude update"}
-	}
-	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("Claude 适配器 %s 可用（Claude Code %s）", version, claudeVersion)}
+	return Check{Name: "claude-bridge", OK: true, Message: fmt.Sprintf("%s %s 可用（Claude Code %s）", label, version, candidate.Version)}
 }
 
 func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
@@ -516,7 +503,8 @@ func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(runCtx, bin, "--version").Output()
+	environment := agybridge.BuildEnv(c.cfg.Agy.Env)
+	output, err := cliinspect.Stdout(runCtx, bin, environment, append(append([]string{}, c.cfg.Agy.Args...), "--version")...)
 	if err != nil {
 		return Check{Name: "agy-adapter", OK: false, Message: "mimi-agy-adapter 未返回标准 --version", Fix: agybridge.InstallHint}
 	}
@@ -524,27 +512,18 @@ func (c *Checker) agyAdapterCheck(ctx context.Context) Check {
 	if !ok || !agybridge.IsSupported(version) {
 		return Check{Name: "agy-adapter", OK: false, Message: agybridge.UpgradeMessage(version), Fix: agybridge.InstallHint}
 	}
-	environment := agybridge.BuildEnv(c.cfg.Agy.Env)
 	capabilities, err := agybridge.ReadAdapterCapabilities(ctx, bin, c.cfg.Agy.Args, environment)
 	if err != nil {
 		return Check{Name: "agy-adapter", OK: false, Message: "无法读取 mimi-agy-adapter 的能力声明", Fix: agybridge.InstallHint}
 	}
-	agyBin := strings.TrimSpace(c.cfg.Agy.Env[agybridge.AgyBinaryEnvKey])
-	if agyBin == "" {
-		agyBin = "agy"
-	}
-	agyPath, err := claudebridge.LookPathIn(agyBin, environment)
-	var agyVersion string
-	if err == nil {
-		agyVersion, err = agybridge.AgyVersion(ctx, agyPath, environment)
+	candidate, err := c.resolveRuntime(ctx, setup.AgyRuntime(c.cfg.Agy, capabilities.Agy.MinimumVersion, environment))
+	if errors.Is(err, setup.ErrRuntimeIncompatible) {
+		return Check{Name: "agy-adapter", OK: false, Message: agybridge.AgyUpgradeMessage(candidate.Version, capabilities.Agy.MinimumVersion), Fix: "升级 Antigravity CLI"}
 	}
 	if err != nil {
-		return Check{Name: "agy-adapter", OK: false, Message: fmt.Sprintf("mimi-agy-adapter %s 可用，但未检测到 Antigravity CLI (agy)", version), Fix: "安装 Antigravity CLI 并在终端登录"}
+		return Check{Name: "agy-adapter", OK: false, Message: fmt.Sprintf("mimi-agy-adapter %s 可用，但未检测到 Antigravity CLI (agy)", version), Fix: "检查配置路径并安装 Antigravity CLI"}
 	}
-	if !capabilities.AgySupported(agyVersion) {
-		return Check{Name: "agy-adapter", OK: false, Message: agybridge.AgyUpgradeMessage(agyVersion, capabilities.Agy.MinimumVersion), Fix: "升级 Antigravity CLI"}
-	}
-	return Check{Name: "agy-adapter", OK: true, Message: fmt.Sprintf("mimi-agy-adapter %s 可用（agy %s）", version, agyVersion)}
+	return Check{Name: "agy-adapter", OK: true, Message: fmt.Sprintf("mimi-agy-adapter %s 可用（agy %s）", version, candidate.Version)}
 }
 
 func isLoopbackListen(raw string) bool {
@@ -606,11 +585,6 @@ func tcpAddressFromListen(raw string) (string, error) {
 		return "", fmt.Errorf("监听地址缺少端口：%s", value)
 	}
 	return "", fmt.Errorf("监听地址格式无效：%s", value)
-}
-
-func commandExists(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
 }
 
 func Print(w io.Writer, results Results) {

@@ -327,3 +327,11 @@ func TestConfigPathIdentityMatchesVolumeCaseSemantics(t *testing.T) {
 		t.Fatalf("大小写敏感卷上的不同文件必须取得不同配置锁：left=%q right=%q", left, right)
 	}
 }
+
+func TestLoadEmptyLegacyCodexBinUsesAuto(t *testing.T) {
+	t.Setenv("AGENTD_CODEX_BIN", "")
+	cfg, err := loadRawWithoutProjectDiscovery([]byte(`{"codex":{"bin":""}}`))
+	if err != nil || cfg.Codex.Bin != "codex" {
+		t.Fatalf("legacy empty bin = %q, err = %v", cfg.Codex.Bin, err)
+	}
+}

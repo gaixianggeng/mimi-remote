@@ -23,6 +23,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/diagnosticlog"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	"github.com/gaixianggeng/mimi-remote/internal/hostinfo"
+	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
@@ -51,6 +52,7 @@ type Router struct {
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
+	networkAvailability func(context.Context) (bool, bool)
 	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
 	// 名称变化只会影响下一次候选连接，不会创建或合并 ConnectionProfile。
 	tailscaleHostLookup func(context.Context) tailscaleinfo.Host
@@ -174,6 +176,7 @@ type Router struct {
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
 	ConfigPath             string
+	NetworkAvailability    func(context.Context) (bool, bool)
 	AppServerSSH           appServerSSHTransport
 	DiagnosticLogs         DiagnosticLogController
 	DiagnosticControlToken string
@@ -201,6 +204,9 @@ func NewRouterWithInstallationIDAndOptions(
 	installationID string,
 	options RouterOptions,
 ) (http.Handler, *Router) {
+	if options.NetworkAvailability == nil {
+		options.NetworkAvailability = networkaccess.AvailabilityContext
+	}
 	fileUploads := newFileUploadStore(defaultFileUploadRoot())
 	tailcat := options.tailcat
 	if tailcat == nil {
@@ -242,6 +248,7 @@ func NewRouterWithInstallationIDAndOptions(
 		sessionFileGrants:           newSessionFileGrantStore(),
 		capabilities:                newCapabilityRegistry(cfg, fileUploads),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
+		networkAvailability:         options.NetworkAvailability,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		codexGateways:               map[uint64]*codexGatewayConnection{},
 		managedWorktrees:            map[string]managedWorktree{},

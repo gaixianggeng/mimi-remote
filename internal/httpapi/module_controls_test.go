@@ -41,6 +41,11 @@ func TestDisabledCodexSkipsProbeGatewayAndQuotaButPreservesClaudeChannel(t *test
 func TestModuleStatusIsResidentStateAndRequiresLoopbackAndAuthentication(t *testing.T) {
 	upstream, _, _ := fakeAppServerUpstream(t, runtimeStatusCodexResponder(t))
 	handler, r := appServerGatewayRouterFixtureWithRouter(t, upstream, nil)
+	calls := 0
+	r.networkAvailability = func(context.Context) (bool, bool) {
+		calls++
+		return true, false
+	}
 	off := false
 	r.cfg.Codex.Enabled = &off
 	r.cfg.Claude.Enabled = true
@@ -65,6 +70,9 @@ func TestModuleStatusIsResidentStateAndRequiresLoopbackAndAuthentication(t *test
 	var status config.ModuleStatus
 	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
+	}
+	if calls != 1 || !status.TailscaleAvailable || status.LANAvailable {
+		t.Fatalf("unexpected availability: calls=%d status=%+v", calls, status)
 	}
 	if status.CodexEnabled || !status.ClaudeEnabled || status.TailscaleEnabled || !status.LANEnabled {
 		t.Fatalf("wrong resident flags: %+v", status)
