@@ -150,7 +150,14 @@ func TestUnavailableCodexPreservesHostAndOtherRuntime(t *testing.T) {
 			cfg := config.Config{Codex: config.CodexConfig{Bin: filepath.Join(t.TempDir(), "missing")}, AppServer: config.AppServerConfig{Transport: kind, SSHTarget: "example.invalid"}}
 			if kind == "local" {
 				cfg.AppServer.SSHTarget = ""
-				t.Setenv("CODEX_HOME", "")
+				// Keep the Unix socket within sun_path even when the host or CI
+				// runner uses a long temporary home directory.
+				home, err := os.MkdirTemp("/tmp", "mimi-codex-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(home) })
+				cfg.Codex.Env = map[string]string{"CODEX_HOME": home}
 			}
 			r, err := prepareAgentAppServerRuntime(cfg)
 			if err != nil {
