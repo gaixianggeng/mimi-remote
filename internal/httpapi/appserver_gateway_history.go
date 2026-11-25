@@ -8,6 +8,10 @@ import (
 )
 
 func (p *appServerGatewayPolicy) reserveHistoryRequest(id *json.RawMessage, method string, params map[string]any, requestBytes int) *appServerGatewayPolicyError {
+	if method == "thread/list" {
+		// 与转发给相应 runtime 的字段保持一致，忽略被网关丢弃的筛选条件。
+		params = sanitizedGatewayThreadListParams(p.runtimeID, params)
+	}
 	pending, ok := gatewayHistoryRequestFromParams(method, params)
 	if !ok {
 		return nil
@@ -210,6 +214,7 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 	switch method {
 	case "thread/list":
 		cwd, _ := gatewayStringParam(params, "cwd")
+		query := gatewayThreadListQueryFingerprint(params)
 		return appServerGatewayPendingHistoryRequest{
 			method: method, cwd: cwd, cursor: gatewayOptionalStringParam(params, "cursor"),
 			limit: gatewayOptionalInt64Param(params, "limit"), sortKey: gatewayOptionalStringParam(params, "sortKey"),
@@ -217,7 +222,7 @@ func gatewayHistoryRequestFromParams(method string, params map[string]any) (appS
 			itemsView:         "list",
 			useStateDBOnly:    gatewayOptionalBoolFingerprintParam(params, "useStateDbOnly"),
 			refreshHistory:    gatewayOptionalBoolFingerprintParam(params, "refreshHistory"),
-			continuationQuery: gatewayThreadListContinuationQuery(params),
+			continuationQuery: query, filterFingerprint: query,
 		}, true
 	case "thread/search":
 		// 搜索没有 cwd/threadId，请求指纹必须包含完整的安全参数；预算 subject 则使用固定

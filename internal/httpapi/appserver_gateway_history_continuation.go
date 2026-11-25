@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -36,12 +38,12 @@ func gatewayHistoryContinuationKey(request appServerGatewayPendingHistoryRequest
 	return string(encoded)
 }
 
-// gatewayThreadListContinuationQuery 把决定列表内容的参数（排序、归档、来源、搜索词等）
-// 归一成续页键的一部分：换了查询条件再带旧 cursor 只能按普通请求计数。
+// gatewayThreadListQueryFingerprint 将排序、归档、来源和搜索词等已放行的条件纳入去重和续页键。
+// 摘要限制常驻键的大小，避免在其中保留搜索原文。
 // 排除的字段不改变查询本身：cursor 单独入键，cwd 已是预算 subject；limit 允许续页调整页长；
 // useStateDbOnly / refreshHistory 只选数据来源与是否重扫——Claude 首页走索引并要求重扫，
 // 续页改为扫描且不再重扫，同一条页链里本来就会变化。
-func gatewayThreadListContinuationQuery(params map[string]any) string {
+func gatewayThreadListQueryFingerprint(params map[string]any) string {
 	query := make(map[string]any, len(params))
 	for key, value := range params {
 		switch key {
@@ -51,7 +53,8 @@ func gatewayThreadListContinuationQuery(params map[string]any) string {
 		query[key] = value
 	}
 	encoded, _ := json.Marshal(query)
-	return string(encoded)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 // historyContinuationLocked 只判断不消费：请求随后仍可能被阻断窗口拒绝，
