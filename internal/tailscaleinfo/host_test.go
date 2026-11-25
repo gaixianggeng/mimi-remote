@@ -2,12 +2,17 @@ package tailscaleinfo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,20 +79,93 @@ func TestIsTailscaleEndpoint(t *testing.T) {
 	}
 }
 
-func TestCommandEnvForcesCLIMode(t *testing.T) {
-	env := commandEnv([]string{
-		"PATH=/usr/bin:/bin",
-		"TAILSCALE_BE_CLI=false",
-		"HOME=/tmp/example",
-	})
-	if !slices.Contains(env, "TAILSCALE_BE_CLI=true") {
-		t.Fatalf("应注入 TAILSCALE_BE_CLI=true：%v", env)
+func TestTailscaleHelperProcess(t *testing.T) {
+	mode := os.Getenv("MIMI_TAILSCALE_HELPER_MODE")
+	if mode == "" {
+		return
 	}
-	if slices.Contains(env, "TAILSCALE_BE_CLI=false") {
-		t.Fatalf("应覆盖旧的 TAILSCALE_BE_CLI 值：%v", env)
+	switch mode {
+	case "dump-env":
+		payload := map[string]string{
+			"TAILSCALE_BE_CLI":    os.Getenv("TAILSCALE_BE_CLI"),
+			"tailscale_be_cli":    os.Getenv("tailscale_be_cli"),
+			"MIMI_TEST_INHERITED": os.Getenv("MIMI_TEST_INHERITED"),
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(2)
+		}
+		_, _ = os.Stdout.Write(encoded)
+		os.Exit(0)
+	case "emit":
+		if out := os.Getenv("MIMI_HELPER_STDOUT"); out != "" {
+			_, _ = fmt.Fprint(os.Stdout, out)
+		}
+		if errOut := os.Getenv("MIMI_HELPER_STDERR"); errOut != "" {
+			_, _ = fmt.Fprint(os.Stderr, errOut)
+		}
+		code, _ := strconv.Atoi(os.Getenv("MIMI_HELPER_EXIT"))
+		os.Exit(code)
+	case "sleep":
+		time.Sleep(10 * time.Second)
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown helper mode: %s\n", mode)
+		os.Exit(2)
 	}
-	if !slices.Contains(env, "PATH=/usr/bin:/bin") || !slices.Contains(env, "HOME=/tmp/example") {
-		t.Fatalf("不应丢弃原有环境变量：%v", env)
+}
+
+func helperCommandBuilder(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	helperArgs := append([]string{"-test.run=^TestTailscaleHelperProcess$", "--"}, args...)
+	return newCommandContext(ctx, os.Args[0], helperArgs...), nil
+}
+
+func TestCommandContextForcesCLIModeAndPreservesOtherEnv(t *testing.T) {
+	t.Setenv("TAILSCALE_BE_CLI", "false")
+	t.Setenv("MIMI_TEST_INHERITED", "keep-value")
+	t.Setenv("MIMI_TAILSCALE_HELPER_MODE", "dump-env")
+	if runtime.GOOS != "windows" {
+		t.Setenv("tailscale_be_cli", "lowercase-value")
+	}
+
+	cmd, err := helperCommandBuilder(context.Background(), "ip", "-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectiveEnv := cmd.Environ()
+	if !slices.Contains(effectiveEnv, "TAILSCALE_BE_CLI=true") {
+		t.Fatalf("应注入 TAILSCALE_BE_CLI=true：%v", effectiveEnv)
+	}
+	if slices.Contains(effectiveEnv, "TAILSCALE_BE_CLI=false") {
+		t.Fatalf("应覆盖旧的 TAILSCALE_BE_CLI 值：%v", effectiveEnv)
+	}
+	if !slices.Contains(effectiveEnv, "MIMI_TEST_INHERITED=keep-value") {
+		t.Fatalf("不应丢弃其他环境变量：%v", effectiveEnv)
+	}
+	if runtime.GOOS != "windows" && !slices.Contains(effectiveEnv, "tailscale_be_cli=lowercase-value") {
+		t.Fatalf("Unix 下不应删除大小写不同的合法环境键：%v", effectiveEnv)
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("运行辅助子进程失败：%v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("解析子进程环境输出失败：%v raw=%q", err, string(out))
+	}
+	if got["TAILSCALE_BE_CLI"] != "true" {
+		t.Fatalf("子进程 TAILSCALE_BE_CLI 必须被强制为 true：got=%+v", got)
+	}
+	if got["MIMI_TEST_INHERITED"] != "keep-value" {
+		t.Fatalf("子进程应继承其他环境变量：got=%+v", got)
+	}
+	if runtime.GOOS != "windows" && got["tailscale_be_cli"] != "lowercase-value" {
+		t.Fatalf("Unix 子进程应保留独立的 tailscale_be_cli 键：got=%+v", got)
+	}
+	if parentVal := os.Getenv("TAILSCALE_BE_CLI"); parentVal != "false" {
+		t.Fatalf("不得修改父进程环境：got=%q", parentVal)
 	}
 }
 
@@ -125,68 +203,285 @@ func TestFindCLIFallsBackToDarwinAppBundles(t *testing.T) {
 
 func TestFirstIPv4UsesCLIAndFallsBackSafely(t *testing.T) {
 	tests := []struct {
-		name       string
-		stdout     string
-		stderr     string
-		err        error
-		fallbackIP string
-		want       string
+		name             string
+		stdout           string
+		stderr           string
+		err              error
+		fallbackIP       string
+		want             string
+		wantFallbackCall bool
 	}{
 		{
-			name:       "CLI returns valid IPv4",
-			stdout:     "100.100.20.30\n",
-			fallbackIP: "100.64.0.9",
-			want:       "100.100.20.30",
+			name:             "CLI returns valid IPv4",
+			stdout:           "100.100.20.30\n",
+			fallbackIP:       "100.64.0.9",
+			want:             "100.100.20.30",
+			wantFallbackCall: false,
 		},
 		{
-			name:       "App Store GUI fallback output with exit 0",
-			stdout:     "The Tailscale GUI failed to start: The operation couldn't be completed. (Tailscale.CLIError error 3.)\n",
-			fallbackIP: "100.64.10.20",
-			want:       "100.64.10.20",
+			name:             "App Store GUI fallback output with exit 0",
+			stdout:           "The Tailscale GUI failed to start: The operation couldn't be completed. (Tailscale.CLIError error 3.)\n",
+			fallbackIP:       "100.64.10.20",
+			want:             "100.64.10.20",
+			wantFallbackCall: true,
 		},
 		{
-			name:       "App Store CLI credentials unavailable",
-			stderr:     "Error: CLI credentials are not available\n",
-			err:        errors.New("exit status 1"),
-			fallbackIP: "100.64.10.21",
-			want:       "100.64.10.21",
+			name:             "App Store CLI credentials unavailable",
+			stderr:           "Error: CLI credentials are not available\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.21",
+			want:             "100.64.10.21",
+			wantFallbackCall: true,
 		},
 		{
-			name:       "CLI missing",
-			err:        errors.New("executable file not found"),
-			fallbackIP: "100.64.10.22",
-			want:       "100.64.10.22",
+			name:             "CLI missing",
+			err:              errors.New("executable file not found"),
+			fallbackIP:       "100.64.10.22",
+			want:             "100.64.10.22",
+			wantFallbackCall: true,
 		},
 		{
-			name:       "CLI reports stopped must not fallback",
-			stderr:     "Tailscale is stopped.\n",
-			err:        errors.New("exit status 1"),
-			fallbackIP: "100.64.10.23",
-			want:       "",
+			name:             "CLI reports stopped must not fallback",
+			stderr:           "Tailscale is stopped.\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.23",
+			want:             "",
+			wantFallbackCall: false,
 		},
 		{
-			name:       "CLI reports logged out must not fallback",
-			stderr:     "Logged out.\n",
-			err:        errors.New("exit status 1"),
-			fallbackIP: "100.64.10.24",
-			want:       "",
+			name:             "CLI reports real state Stopped must not fallback",
+			stderr:           "no current Tailscale IPs; state: Stopped\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.23",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "CLI reports real state NeedsLogin must not fallback",
+			stderr:           "no current Tailscale IPs; state: NeedsLogin\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.23",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "CLI reports real state NoState must not fallback",
+			stderr:           "no current Tailscale IPs; state: NoState\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.23",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "CLI reports logged out must not fallback",
+			stderr:           "Logged out.\n",
+			err:              errors.New("exit status 1"),
+			fallbackIP:       "100.64.10.24",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "CLI exit 0 with stdout IPv4 and stderr state Stopped rejects both",
+			stdout:           "100.100.20.30\n",
+			stderr:           "no current Tailscale IPs; state: Stopped\n",
+			fallbackIP:       "100.64.10.25",
+			want:             "",
+			wantFallbackCall: false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			fallbackCalled := false
 			got := firstIPv4(
 				context.Background(),
 				func(context.Context) ([]byte, []byte, error) {
 					return []byte(tc.stdout), []byte(tc.stderr), tc.err
 				},
-				func() string { return tc.fallbackIP },
+				func() string {
+					fallbackCalled = true
+					return tc.fallbackIP
+				},
 			)
 			if got != tc.want {
 				t.Fatalf("FirstIPv4 结果异常：got=%q want=%q", got, tc.want)
 			}
+			if fallbackCalled != tc.wantFallbackCall {
+				t.Fatalf("fallback 调用状态异常：called=%v want=%v", fallbackCalled, tc.wantFallbackCall)
+			}
 		})
 	}
+}
+
+func TestFirstIPv4SubprocessHandling(t *testing.T) {
+	tests := []struct {
+		name             string
+		stdout           string
+		stderr           string
+		exitCode         int
+		fallbackIP       string
+		want             string
+		wantFallbackCall bool
+	}{
+		{
+			name:             "real upstream state Stopped error does not call fallback",
+			stderr:           "no current Tailscale IPs; state: Stopped\n",
+			exitCode:         1,
+			fallbackIP:       "100.64.10.30",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "exit 0 with stderr state Stopped rejects stdout IP and skips fallback",
+			stdout:           "100.100.20.30\n",
+			stderr:           "no current Tailscale IPs; state: Stopped\n",
+			exitCode:         0,
+			fallbackIP:       "100.64.10.31",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "exit 0 with stderr NeedsLogin skips fallback",
+			stderr:           "no current Tailscale IPs; state: NeedsLogin\n",
+			exitCode:         0,
+			fallbackIP:       "100.64.10.32",
+			want:             "",
+			wantFallbackCall: false,
+		},
+		{
+			name:             "exit 0 GUI error allows confirmed fallback",
+			stdout:           "The Tailscale GUI failed to start: The operation couldn't be completed. (Tailscale.CLIError error 3.)\n",
+			exitCode:         0,
+			fallbackIP:       "100.64.10.33",
+			want:             "100.64.10.33",
+			wantFallbackCall: true,
+		},
+		{
+			name:             "CLI credentials unavailable allows confirmed fallback",
+			stderr:           "Error: CLI credentials are not available\n",
+			exitCode:         1,
+			fallbackIP:       "100.64.10.34",
+			want:             "100.64.10.34",
+			wantFallbackCall: true,
+		},
+		{
+			name:             "exit 0 with valid IPv4 returns CLI IP without fallback",
+			stdout:           "100.100.20.30\n",
+			exitCode:         0,
+			fallbackIP:       "100.64.10.35",
+			want:             "100.100.20.30",
+			wantFallbackCall: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MIMI_TAILSCALE_HELPER_MODE", "emit")
+			t.Setenv("MIMI_HELPER_STDOUT", tc.stdout)
+			t.Setenv("MIMI_HELPER_STDERR", tc.stderr)
+			t.Setenv("MIMI_HELPER_EXIT", strconv.Itoa(tc.exitCode))
+
+			fallbackCalled := false
+			got := firstIPv4(
+				context.Background(),
+				func(ctx context.Context) ([]byte, []byte, error) {
+					return runIPv4CommandWithTimeout(ctx, helperCommandBuilder, 5*time.Second)
+				},
+				func() string {
+					fallbackCalled = true
+					return tc.fallbackIP
+				},
+			)
+			if got != tc.want {
+				t.Fatalf("子进程场景 FirstIPv4 结果异常：got=%q want=%q", got, tc.want)
+			}
+			if fallbackCalled != tc.wantFallbackCall {
+				t.Fatalf("子进程场景 fallback 调用状态异常：called=%v want=%v", fallbackCalled, tc.wantFallbackCall)
+			}
+		})
+	}
+}
+
+func TestFirstIPv4RespectsParentContextCancellation(t *testing.T) {
+	t.Run("already canceled parent context skips CLI and fallback", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		cliCalled := false
+		fallbackCalled := false
+		got := firstIPv4(
+			ctx,
+			func(context.Context) ([]byte, []byte, error) {
+				cliCalled = true
+				return nil, nil, errors.New("should not run")
+			},
+			func() string {
+				fallbackCalled = true
+				return "100.64.10.40"
+			},
+		)
+		if got != "" || cliCalled || fallbackCalled {
+			t.Fatalf("父上下文已取消时不得运行 CLI 或回退：got=%q cli=%v fallback=%v", got, cliCalled, fallbackCalled)
+		}
+	})
+
+	t.Run("parent context canceled during CLI execution skips fallback", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		fallbackCalled := false
+		got := firstIPv4(
+			ctx,
+			func(context.Context) ([]byte, []byte, error) {
+				cancel()
+				return nil, nil, context.Canceled
+			},
+			func() string {
+				fallbackCalled = true
+				return "100.64.10.41"
+			},
+		)
+		if got != "" || fallbackCalled {
+			t.Fatalf("CLI 执行期间父上下文取消后不得回退：got=%q fallback=%v", got, fallbackCalled)
+		}
+	})
+
+	t.Run("parent context deadline exceeded on subprocess skips fallback", func(t *testing.T) {
+		t.Setenv("MIMI_TAILSCALE_HELPER_MODE", "sleep")
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		fallbackCalled := false
+		got := firstIPv4(
+			ctx,
+			func(runCtx context.Context) ([]byte, []byte, error) {
+				return runIPv4CommandWithTimeout(runCtx, helperCommandBuilder, 5*time.Second)
+			},
+			func() string {
+				fallbackCalled = true
+				return "100.64.10.42"
+			},
+		)
+		if got != "" || fallbackCalled {
+			t.Fatalf("父上下文超时后不得回退网卡：got=%q fallback=%v", got, fallbackCalled)
+		}
+	})
+
+	t.Run("internal CLI timeout with live parent context allows fallback", func(t *testing.T) {
+		t.Setenv("MIMI_TAILSCALE_HELPER_MODE", "sleep")
+		fallbackCalled := false
+		got := firstIPv4(
+			context.Background(),
+			func(runCtx context.Context) ([]byte, []byte, error) {
+				return runIPv4CommandWithTimeout(runCtx, helperCommandBuilder, 200*time.Millisecond)
+			},
+			func() string {
+				fallbackCalled = true
+				return "100.64.10.43"
+			},
+		)
+		if got != "100.64.10.43" || !fallbackCalled {
+			t.Fatalf("仅内部 CLI 探测超时且父上下文有效时应允许回退：got=%q fallback=%v", got, fallbackCalled)
+		}
+	})
 }
 
 func TestSelectInterfaceIPv4PrefersTailscaleAndIgnoresPhysicalCGNAT(t *testing.T) {
@@ -198,7 +493,7 @@ func TestSelectInterfaceIPv4PrefersTailscaleAndIgnoresPhysicalCGNAT(t *testing.T
 	t.Run("ignores physical interface CGNAT and loopback or down interfaces", func(t *testing.T) {
 		got := selectInterfaceIPv4([]interfaceSnapshot{
 			{name: "en0", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.1.10")}},
-			{name: "lo0", flags: net.FlagUp | net.FlagLoopback, addrs: []netip.Addr{mustAddr("100.64.1.11")}},
+			{name: "lo0", flags: net.FlagUp | net.FlagLoopback, addrs: []netip.Addr{mustAddr("100.64.1.11"), mustAddr("fd7a:115c:a1e0::2")}},
 			{name: "utun4", flags: 0, addrs: []netip.Addr{mustAddr("100.64.1.12"), mustAddr("fd7a:115c:a1e0::1")}},
 		})
 		if got != "" {
@@ -217,12 +512,32 @@ func TestSelectInterfaceIPv4PrefersTailscaleAndIgnoresPhysicalCGNAT(t *testing.T
 		}
 	})
 
-	t.Run("falls back to bare utun tunnel when IPv6 absent", func(t *testing.T) {
+	t.Run("rejects bare utun tunnel without Tailscale ownership evidence", func(t *testing.T) {
 		got := selectInterfaceIPv4([]interfaceSnapshot{
 			{name: "utun4", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.88.77.66")}},
 		})
-		if got != "100.88.77.66" {
-			t.Fatalf("无 IPv6 时应回退到活跃 utun 隧道地址：got=%q", got)
+		if got != "" {
+			t.Fatalf("缺少 Tailscale 归属证据的裸 utun 隧道必须返回空：got=%q", got)
+		}
+	})
+
+	t.Run("rejects single third-party VPN tunnel with CGNAT IPv4", func(t *testing.T) {
+		got := selectInterfaceIPv4([]interfaceSnapshot{
+			{name: "tun0", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.20.10"), mustAddr("fe80::1"), mustAddr("fd12:3456:789a::1")}},
+		})
+		if got != "" {
+			t.Fatalf("单个其他 VPN 隧道的 CGNAT 地址不得被当作 Tailscale：got=%q", got)
+		}
+	})
+
+	t.Run("rejects multiple third-party VPN tunnels with CGNAT IPv4", func(t *testing.T) {
+		got := selectInterfaceIPv4([]interfaceSnapshot{
+			{name: "utun1", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.2.1")}},
+			{name: "utun3", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.3.1"), mustAddr("fd00::1")}},
+			{name: "tun0", flags: net.FlagUp, addrs: []netip.Addr{mustAddr("100.64.4.1"), mustAddr("fe80::2")}},
+		})
+		if got != "" {
+			t.Fatalf("多个其他 VPN 隧道共存且无 Tailscale 归属证据时必须返回空：got=%q", got)
 		}
 	})
 

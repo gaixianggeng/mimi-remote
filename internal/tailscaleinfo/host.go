@@ -1,15 +1,16 @@
 package tailscaleinfo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -17,11 +18,17 @@ import (
 	"time"
 )
 
-const statusOutputLimit = 2 * 1024 * 1024
+const (
+	statusOutputLimit  = 2 * 1024 * 1024
+	ipv4CommandTimeout = 2 * time.Second
+)
 
 var (
 	tailscaleIPv4Prefix = netip.MustParsePrefix("100.64.0.0/10")
 	tailscaleIPv6Prefix = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+
+	explicitOfflineStatePattern = regexp.MustCompile(`(?i)\b(?:backend)?state"?\s*[:=]\s*"?(stopped|needslogin|needsmachineauth|nostate|inuseotheruser)\b`)
+	explicitOfflineTokenPattern = regexp.MustCompile(`(?i)\b(needslogin|needsmachineauth|nostate|inuseotheruser)\b`)
 )
 
 // Host 描述当前 agentd 所在的 Tailscale 设备。DNSName 是可变路由元数据，
@@ -154,21 +161,15 @@ func CommandContext(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Env = commandEnv(os.Environ())
-	return cmd, nil
+	return newCommandContext(ctx, bin, args...), nil
 }
 
-func commandEnv(base []string) []string {
-	env := make([]string, 0, len(base)+1)
-	for _, entry := range base {
-		key, _, found := strings.Cut(entry, "=")
-		if found && strings.EqualFold(key, "TAILSCALE_BE_CLI") {
-			continue
-		}
-		env = append(env, entry)
-	}
-	return append(env, "TAILSCALE_BE_CLI=true")
+func newCommandContext(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	// 直接在 cmd.Environ() 末尾追加，交由 os/exec 按目标平台规则去重：
+	// Unix 保留大小写不同的独立环境键，Windows 按大小写不敏感覆盖。
+	cmd.Env = append(cmd.Environ(), "TAILSCALE_BE_CLI=true")
+	return cmd
 }
 
 func FindCLI() (string, error) {
@@ -202,27 +203,35 @@ func findCLI(
 
 // FirstIPv4 返回本机当前活跃的 Tailscale IPv4（100.64.0.0/10）。优先通过
 // Tailscale CLI（带 TAILSCALE_BE_CLI=true）读取；若 App Store 沙盒未授予 CLI 凭据、
-// CLI 不可用或未返回有效地址（且未明确报告已停止/未登录），则回退到活跃 Tailscale 隧道接口。
+// CLI 不可用或未返回有效地址（且未明确报告已停止/未登录，且调用方上下文未取消），
+// 则仅回退到可确认归属 Tailscale 的活跃接口。
 func FirstIPv4(ctx context.Context) string {
 	return firstIPv4(ctx, runIPv4Command, interfaceIPv4)
 }
 
 func runIPv4Command(ctx context.Context) ([]byte, []byte, error) {
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	return runIPv4CommandWithTimeout(ctx, CommandContext, ipv4CommandTimeout)
+}
+
+func runIPv4CommandWithTimeout(
+	ctx context.Context,
+	buildCmd func(context.Context, ...string) (*exec.Cmd, error),
+	timeout time.Duration,
+) ([]byte, []byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd, err := CommandContext(runCtx, "ip", "-4")
+	cmd, err := buildCmd(runCtx, "ip", "-4")
 	if err != nil {
 		return nil, nil, err
 	}
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return out, exitErr.Stderr, err
-		}
-		return out, nil, err
-	}
-	return out, nil, nil
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
 }
 
 func firstIPv4(
@@ -230,14 +239,23 @@ func firstIPv4(
 	runCLI func(context.Context) (stdout []byte, stderr []byte, err error),
 	fallback func() string,
 ) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return ""
+	}
 	stdout, stderr, err := runCLI(ctx)
+	if isExplicitlyOffline(string(stdout), string(stderr)) {
+		return ""
+	}
+	if ctx.Err() != nil {
+		return ""
+	}
 	if err == nil {
 		if ip := parseFirstTailscaleIPv4(string(stdout)); ip != "" {
 			return ip
 		}
-	}
-	if isExplicitlyStopped(string(stdout) + "\n" + string(stderr)) {
-		return ""
 	}
 	if fallback != nil {
 		return fallback()
@@ -259,13 +277,17 @@ func parseFirstTailscaleIPv4(raw string) string {
 	return ""
 }
 
-func isExplicitlyStopped(output string) bool {
-	lower := strings.ToLower(output)
+func isExplicitlyOffline(stdout, stderr string) bool {
+	combined := stdout + "\n" + stderr
+	if explicitOfflineStatePattern.MatchString(combined) || explicitOfflineTokenPattern.MatchString(combined) {
+		return true
+	}
+	lower := strings.ToLower(combined)
 	for _, marker := range []string{
 		"tailscale is stopped",
 		"logged out",
 		"not logged in",
-		"needslogin",
+		"needs login",
 		"no state",
 	} {
 		if strings.Contains(lower, marker) {
@@ -282,7 +304,6 @@ type interfaceSnapshot struct {
 }
 
 type interfaceIPv4Candidate struct {
-	tier int
 	name string
 	ip   string
 }
@@ -351,19 +372,15 @@ func selectInterfaceIPv4(interfaces []interfaceSnapshot) string {
 			continue
 		}
 		lowerName := strings.ToLower(strings.TrimSpace(iface.name))
-		tier := -1
-		switch {
-		case hasTailscaleV6 || strings.Contains(lowerName, "tailscale"):
-			tier = 0
-		case strings.HasPrefix(lowerName, "utun") || strings.HasPrefix(lowerName, "tun"):
-			tier = 1
-		default:
-			// 普通物理网卡上的 100.64.0.0/10 可能是运营商 CGNAT，不能当成 Tailscale。
+		// 只有具备明确 Tailscale 归属证据的活跃接口才允许回退：
+		// 1) 接口名显式包含 tailscale（如 Linux tailscale0、Windows Tailscale）；
+		// 2) 同一接口同时持有 Tailscale 专属 ULA IPv6 前缀（fd7a:115c:a1e0::/48）。
+		// 仅有通用隧道名（utun*/tun*）与 100.64.0.0/10 可能是其他 VPN，归属不明时必须忽略。
+		if !hasTailscaleV6 && !strings.Contains(lowerName, "tailscale") {
 			continue
 		}
 		for _, ip := range v4s {
 			candidates = append(candidates, interfaceIPv4Candidate{
-				tier: tier,
 				name: lowerName,
 				ip:   ip.String(),
 			})
@@ -373,9 +390,6 @@ func selectInterfaceIPv4(interfaces []interfaceSnapshot) string {
 		return ""
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].tier != candidates[j].tier {
-			return candidates[i].tier < candidates[j].tier
-		}
 		if candidates[i].name != candidates[j].name {
 			return candidates[i].name < candidates[j].name
 		}
