@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,6 +86,7 @@ type agentController struct {
 }
 
 type pairingInfo struct {
+	OK                  *bool    `json:"ok,omitempty"`
 	Endpoint            string   `json:"endpoint"`
 	Network             string   `json:"network,omitempty"`
 	TailscaleDNSName    string   `json:"tailscale_dns_name,omitempty"`
@@ -223,6 +223,9 @@ func parsePairingInfo(payload []byte) (pairingInfo, error) {
 	if err := json.Unmarshal(payload, &result); err != nil {
 		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
 	}
+	if result.OK != nil && !*result.OK {
+		return pairingInfo{}, errors.New("短期配对信息返回失败状态")
+	}
 	if strings.TrimSpace(result.PairURL) == "" {
 		return pairingInfo{}, errors.New("短期配对信息缺少二维码链接")
 	}
@@ -243,10 +246,17 @@ func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedTrayOutput{remaining: 1024 * 1024}
+	stderr := &boundedTrayOutput{remaining: 64 * 1024}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, newTrayUILocalError("command_timeout", "service_daemon", "")
+		}
+		if cliErr := decodeTrayCommandError(stdout.Bytes(), stderr.Bytes(), err, trayValidationContextForArgs("windows", args)); cliErr != nil {
+			return nil, cliErr
+		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
@@ -254,7 +264,10 @@ func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte
 		if detail == "" {
 			detail = err.Error()
 		}
-		return nil, fmt.Errorf("%s", detail)
+		return nil, fmt.Errorf("%s", redactOnboardingFallback(detail))
+	}
+	if stdout.truncated {
+		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	return stdout.Bytes(), nil
 }

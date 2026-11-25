@@ -11,6 +11,7 @@ public sealed record HostStatus
     public bool ProcessOk { get; init; }
     public bool ServiceOk { get; init; }
     public bool DoctorOk { get; init; }
+    public bool? WorkspaceConfirmed { get; init; }
     public string ProcessError { get; init; } = "";
     public string ServiceError { get; init; } = "";
     public RuntimeStatus? RuntimeStatus { get; init; }
@@ -44,10 +45,15 @@ public sealed record TailcatStatus
 }
 public sealed record PairingInfo
 {
-    public string PairUrl { get; init; } = "";
+    public bool? Ok { get; init; }
+    public string? PairUrl { get; init; }
     public string PairExpiresAt { get; init; } = "";
     public string Endpoint { get; init; } = "";
+    public string? Network { get; init; }
+    public string? TailscaleDnsName { get; init; }
+    public string? TailscaleDeviceName { get; init; }
     public string[] Warnings { get; init; } = [];
+    public bool HasTicket => !string.IsNullOrWhiteSpace(PairUrl);
 }
 public static class RelayPolicy
 {

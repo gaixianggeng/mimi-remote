@@ -234,6 +234,85 @@ final class ModuleControlsTests: XCTestCase {
             TailcatRelayPresentation.mimiPairingNote
         )
     }
+
+    func testAgyRuntimeControlErrorUsesDistinctAntigravityCopyInsteadOfClaude() {
+        let agyErrors: [ManagedRuntimeControlError] = [
+            .signedOut(runtimeID: "agy"),
+            .unavailable(runtimeID: "agy"),
+            .disabled(runtimeID: "agy"),
+            .timedOut(runtimeID: "agy", enabled: true),
+            .timedOut(runtimeID: "agy", enabled: false),
+        ]
+        for error in agyErrors {
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("Antigravity"), "agy error must mention Antigravity: \(description)")
+            XCTAssertFalse(description.contains("Claude"), "agy error must never mention Claude: \(description)")
+        }
+        XCTAssertEqual(ManagedRuntimeControlError.signedOut(runtimeID: "claude").localizedDescription, "Claude Code 尚未登录。")
+        XCTAssertEqual(ManagedRuntimeControlError.signedOut(runtimeID: "agy").localizedDescription, "Antigravity 尚未登录。")
+        XCTAssertEqual(ManagedRuntimeControlError.unavailable(runtimeID: "agy").localizedDescription, "Antigravity Runtime 未能连接。")
+        XCTAssertEqual(ManagedRuntimeControlError.disabled(runtimeID: "agy").localizedDescription, "服务重载后 Antigravity 仍处于关闭状态。")
+    }
+
+    func testAgyToggleFailureReportsAntigravityErrorInsteadOfClaude() async {
+        let readyStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: "1.0.0", endpoint: "http://127.0.0.1:8787",
+            configPath: "/fixture/config/config.json", projects: 1, doctorOK: true,
+            doctor: AgentDoctorResults(ok: true, version: "1.0.0", listen: "127.0.0.1:8787", checks: []),
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2030-01-01T00:00:00Z",
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "agy", title: "Antigravity", enabled: true, state: .signedOut,
+                        authMode: nil, planType: nil, reason: "signed_out", rateLimits: nil
+                    ),
+                ]
+            ),
+            moduleStatus: AgentModuleStatus(
+                codexEnabled: true, claudeEnabled: false, agyEnabled: true,
+                tailscaleEnabled: true, lanEnabled: false, tailscaleAvailable: true, lanAvailable: false
+            )
+        )
+        let agyResult = AgyConfigurationResult(
+            enabled: true, available: true, preference: .enabled,
+            previousEnabled: false, previousPreference: .disabled,
+            changed: false, restartRequired: false, reason: "ready", message: "ok",
+            previous: nil, applied: nil
+        )
+        let agent = AgentCommandClient(
+            configExists: { true },
+            setup: { _ in throw ModuleTestError.unexpected },
+            status: { readyStatus },
+            readiness: { readyStatus },
+            statusAt: { _ in readyStatus },
+            doctor: { _ in DoctorFixResults(fixes: [], results: readyStatus.doctor) },
+            configureClaude: { _, _ in throw ModuleTestError.unexpected },
+            configureAgy: { _, _ in agyResult },
+            setLANAccess: { _ in throw ModuleTestError.unexpected },
+            pair: { _ in throw ModuleTestError.unexpected },
+            version: { "1.0.0" }
+        )
+        let services = ServiceManagementClient(
+            agentStatus: { .enabled }, agentConfigurationError: { nil },
+            isAgentRegistrationCurrent: { true }, markAgentRegistrationCurrent: {},
+            registerAgent: {}, unregisterAgent: {}, agentLaunchFailure: { nil },
+            mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
+            openLoginItemsSettings: {}
+        )
+        let store = HostStore(
+            agent: agent, services: services,
+            homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
+            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
+            logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] })
+        )
+        await store.bootstrap()
+        await store.setAgyEnabled(true)
+        let agyError = store.agyError ?? ""
+        XCTAssertTrue(agyError.contains("Antigravity 尚未登录"), "Actual agyError: \(agyError)")
+        XCTAssertFalse(agyError.contains("Claude"), "agyError must not contain Claude: \(agyError)")
+    }
 }
 
 private final class ModuleFixture: @unchecked Sendable {

@@ -36,7 +36,8 @@ actor ProcessExecutor {
         outputLimit: Int = 1_048_576,
         environment: [String: String]? = nil,
         forceKillAfterTimeout: Bool = false,
-        standardInput: Data? = nil
+        standardInput: Data? = nil,
+        onStderrLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> CommandResult {
         guard (standardInput?.count ?? 0) <= 16_384 else {
             throw ProcessExecutorError.inputTooLarge
@@ -76,7 +77,11 @@ actor ProcessExecutor {
         let processIdentifier = process.processIdentifier
 
         async let stdoutRead = Self.readBounded(stdoutPipe.fileHandleForReading, limit: outputLimit)
-        async let stderrRead = Self.readBounded(stderrPipe.fileHandleForReading, limit: outputLimit)
+        async let stderrRead = Self.readBounded(
+            stderrPipe.fileHandleForReading,
+            limit: outputLimit,
+            onLine: onStderrLine
+        )
 
         let timeoutState = LockedFlag()
         let processFinished = LockedFlag()
@@ -167,26 +172,70 @@ actor ProcessExecutor {
         }
     }
 
-    private static func readBounded(_ handle: FileHandle, limit: Int) async throws -> BoundedRead {
+    private static func readBounded(
+        _ handle: FileHandle,
+        limit: Int,
+        onLine: (@Sendable (String) -> Void)? = nil
+    ) async throws -> BoundedRead {
         try await withCheckedThrowingContinuation { continuation in
             // FileHandle.read(upToCount:) 同样是同步阻塞 API；每次命令最多使用
             // stdout/stderr 两条短命专用线程，避免挤占 timeout 所需的异步 worker。
             Thread.detachNewThread {
                 do {
                     var collected = Data()
+                    var lineBuffer = Data()
                     var exceeded = false
                     var total = 0
-                    while true {
-                        let chunk = try handle.read(upToCount: 64 * 1024) ?? Data()
-                        if chunk.isEmpty { break }
-                        total += chunk.count
-                        if collected.count < limit {
-                            let remaining = limit - collected.count
-                            collected.append(chunk.prefix(remaining))
+                    let fd = handle.fileDescriptor
+                    var rawBuffer = [UInt8](repeating: 0, count: 64 * 1024)
+                    try withExtendedLifetime(handle) {
+                        while true {
+                            let chunk: Data
+                            if onLine != nil {
+                                // FileHandle.read(upToCount:) 会攒满缓冲区或等到 EOF 才返回；
+                                // 流式进度必须直接走 POSIX read，让每一行 NDJSON 在子进程
+                                // 刷新后立刻送达前端。
+                                var n: Int
+                                repeat {
+                                    n = Darwin.read(fd, &rawBuffer, rawBuffer.count)
+                                } while n < 0 && errno == EINTR
+                                if n < 0 {
+                                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                                }
+                                if n == 0 { break }
+                                chunk = Data(rawBuffer[0..<n])
+                            } else {
+                                let readChunk = try handle.read(upToCount: 64 * 1024) ?? Data()
+                                if readChunk.isEmpty { break }
+                                chunk = readChunk
+                            }
+                            total += chunk.count
+                            if collected.count < limit {
+                                let remaining = limit - collected.count
+                                collected.append(chunk.prefix(remaining))
+                            }
+                            if total > limit {
+                                exceeded = true
+                            }
+                            if let onLine, !exceeded {
+                                lineBuffer.append(chunk)
+                                while let newlineIndex = lineBuffer.firstIndex(of: 0x0A) {
+                                    var rawLine = lineBuffer[..<newlineIndex]
+                                    if rawLine.last == 0x0D {
+                                        rawLine = rawLine.dropLast()
+                                    }
+                                    onLine(String(decoding: rawLine, as: UTF8.self))
+                                    lineBuffer.removeSubrange(...newlineIndex)
+                                }
+                            }
                         }
-                        if total > limit {
-                            exceeded = true
+                    }
+                    if let onLine, !exceeded, !lineBuffer.isEmpty {
+                        var rawLine = lineBuffer[...]
+                        if rawLine.last == 0x0D {
+                            rawLine = rawLine.dropLast()
                         }
+                        onLine(String(decoding: rawLine, as: UTF8.self))
                     }
                     continuation.resume(
                         returning: BoundedRead(data: collected, exceededLimit: exceeded)

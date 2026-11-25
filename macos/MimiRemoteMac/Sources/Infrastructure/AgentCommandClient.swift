@@ -1,5 +1,64 @@
 import Foundation
 
+enum AgentCommandTimeouts {
+    static let preflight: Duration = .seconds(35)
+    static let setup: Duration = .seconds(60)
+    static let pair: Duration = .seconds(45)
+    static let runtime: Duration = .seconds(60)
+    static let deepSeekRuntime: Duration = .seconds(45)
+    static let network: Duration = .seconds(45)
+    static let workspace: Duration = .seconds(45)
+    static let doctorFix: Duration = .seconds(90)
+    static let tailcatControl: Duration = .seconds(45)
+    static let serviceWait: Duration = .seconds(110)
+
+    static func duration(for command: String) -> Duration {
+        switch command {
+        case "preflight": preflight
+        case "setup": setup
+        case "pair", "tailcat pair": pair
+        case "runtime": runtime
+        case "network": network
+        case "workspace": workspace
+        case "doctor --fix": doctorFix
+        case "up", "start", "restart": serviceWait
+        default: .seconds(45)
+        }
+    }
+}
+
+struct OnboardingPreflightOptions: Equatable, Sendable {
+    var stage: OnboardingStage = .setup
+    var configPath: String? = nil
+    var scanRoot: URL? = nil
+    var browseRoot: URL? = nil
+    var progressJSON: Bool = true
+    var runtimePaths: [(id: String, value: String)] = []
+    var assistants: [(id: String, value: String)] = []
+
+    static func == (lhs: OnboardingPreflightOptions, rhs: OnboardingPreflightOptions) -> Bool {
+        lhs.stage == rhs.stage
+            && lhs.configPath == rhs.configPath
+            && lhs.scanRoot == rhs.scanRoot
+            && lhs.browseRoot == rhs.browseRoot
+            && lhs.progressJSON == rhs.progressJSON
+            && lhs.runtimePaths.map { "\($0.id)=\($0.value)" } == rhs.runtimePaths.map { "\($0.id)=\($0.value)" }
+            && lhs.assistants.map { "\($0.id)=\($0.value)" } == rhs.assistants.map { "\($0.id)=\($0.value)" }
+    }
+}
+
+struct OnboardingSetupOptions: Equatable, Sendable {
+    var browseRoot: URL? = nil
+    var runtimePaths: [(id: String, value: String)] = []
+    var assistants: [(id: String, value: String)] = []
+
+    static func == (lhs: OnboardingSetupOptions, rhs: OnboardingSetupOptions) -> Bool {
+        lhs.browseRoot == rhs.browseRoot
+            && lhs.runtimePaths.map { "\($0.id)=\($0.value)" } == rhs.runtimePaths.map { "\($0.id)=\($0.value)" }
+            && lhs.assistants.map { "\($0.id)=\($0.value)" } == rhs.assistants.map { "\($0.id)=\($0.value)" }
+    }
+}
+
 struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
     let released: Bool
     let message: String
@@ -8,6 +67,21 @@ struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
 struct AgentCommandClient: Sendable {
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
+    var preflight: @Sendable (
+        _ options: OnboardingPreflightOptions,
+        _ onProgress: (@Sendable (OnboardingCheck) -> Void)?
+    ) async throws -> OnboardingPreflightReport = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持预检命令，请更新 App。")
+    }
+    var setupNoPair: @Sendable (
+        _ workspaceRoot: URL,
+        _ options: OnboardingSetupOptions
+    ) async throws -> SetupReceipt = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持无票保存设置，请更新 App。")
+    }
+    var up: @Sendable (_ waitSeconds: Int) async throws -> UpReadinessReceipt = { _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持就绪启动检查，请更新 App。")
+    }
     var status: @Sendable () async throws -> AgentStatus
     var readiness: @Sendable () async throws -> AgentStatus
     var statusAt: @Sendable (_ binary: URL) async throws -> AgentStatus
@@ -108,9 +182,10 @@ struct AgentCommandClient: Sendable {
 extension AgentCommandClient {
     static func live(
         executor: ProcessExecutor = .shared,
-        bundle: Bundle = .main
+        bundle: Bundle = .main,
+        binaryOverride: URL? = nil
     ) -> AgentCommandClient {
-        let embeddedBinary = bundle.url(forResource: "agentd", withExtension: nil)
+        let embeddedBinary = binaryOverride ?? bundle.url(forResource: "agentd", withExtension: nil)
         let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
         let configURL = homeDirectory
             .appending(path: "Library/Application Support/mimi-remote/config.json")
@@ -130,18 +205,42 @@ extension AgentCommandClient {
             timeout: Duration = .seconds(15),
             forceKillAfterTimeout: Bool = false,
             standardInput: Data? = nil,
-            outputLimit: Int = 1_048_576
+            outputLimit: Int = 1_048_576,
+            errorContext: OnboardingValidationContext? = nil,
+            activeStep: OnboardingCheckID = .serviceDaemon,
+            onStderrLine: (@Sendable (String) -> Void)? = nil
         ) async throws -> CommandResult {
-            let result = try await executor.run(
-                executable: binary,
-                arguments: arguments,
-                timeout: timeout,
-                outputLimit: outputLimit,
-                environment: environment,
-                forceKillAfterTimeout: forceKillAfterTimeout,
-                standardInput: standardInput
-            )
+            let result: CommandResult
+            do {
+                result = try await executor.run(
+                    executable: binary,
+                    arguments: arguments,
+                    timeout: timeout,
+                    outputLimit: outputLimit,
+                    environment: environment,
+                    forceKillAfterTimeout: forceKillAfterTimeout,
+                    standardInput: standardInput,
+                    onStderrLine: onStderrLine
+                )
+            } catch ProcessExecutorError.timedOut {
+                throw AgentClientError.onboarding(
+                    OnboardingCopyCatalog.synthesizeLocal(code: "command_timeout", step: activeStep)
+                )
+            }
             if result.status != 0 && !allowFailure {
+                let context = errorContext ?? OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: (arguments.first == "setup" || arguments.first == "preflight") ? .setup : .pair,
+                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                )
+                if let resolved = OnboardingCopyCatalog.resolveCLIError(
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    context: context
+                ) {
+                    throw AgentClientError.onboarding(resolved)
+                }
                 throw AgentClientError.commandFailed(
                     result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
@@ -157,21 +256,132 @@ extension AgentCommandClient {
             }
         }
 
+        @Sendable func runSetup(workspaceRoot: URL) async throws -> PairingInfo {
+            let binary = try requireEmbeddedBinary()
+            let result = try await execute(
+                binary: binary,
+                arguments: setupArguments(
+                    workspaceRoot: workspaceRoot,
+                    browseRoot: homeDirectory
+                ),
+                timeout: AgentCommandTimeouts.setup,
+                errorContext: OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: .setup,
+                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                ),
+                activeStep: .configStore
+            )
+            let receipt = try decode(SetupReceipt.self, from: result)
+            return receipt.asPairingInfo
+        }
+
+        @Sendable func runPreflight(
+            options: OnboardingPreflightOptions,
+            onProgress: (@Sendable (OnboardingCheck) -> Void)?
+        ) async throws -> OnboardingPreflightReport {
+            let binary = try requireEmbeddedBinary()
+            let stderrHandler: (@Sendable (String) -> Void)?
+            if options.progressJSON {
+                stderrHandler = { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty,
+                          let check = try? JSONDecoder().decode(OnboardingCheck.self, from: Data(trimmed.utf8))
+                    else {
+                        return
+                    }
+                    onProgress?(check)
+                }
+            } else {
+                stderrHandler = nil
+            }
+            let result = try await execute(
+                binary: binary,
+                arguments: preflightArguments(options: options),
+                timeout: AgentCommandTimeouts.preflight,
+                forceKillAfterTimeout: true,
+                errorContext: OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: options.stage,
+                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                ),
+                activeStep: .serviceDaemon,
+                onStderrLine: stderrHandler
+            )
+            let report = try decode(OnboardingPreflightReport.self, from: result)
+            switch OnboardingCopyCatalog.validateReport(report, platform: .macos) {
+            case .success:
+                return report
+            case .failure(let error):
+                throw AgentClientError.invalidResponse(error.localizedDescription)
+            }
+        }
+
+        @Sendable func runSetupNoPair(
+            workspaceRoot: URL,
+            options: OnboardingSetupOptions
+        ) async throws -> SetupReceipt {
+            let binary = try requireEmbeddedBinary()
+            let result = try await execute(
+                binary: binary,
+                arguments: setupNoPairArguments(workspaceRoot: workspaceRoot, options: options),
+                timeout: AgentCommandTimeouts.setup,
+                errorContext: OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: .setup,
+                    configured: FileManager.default.fileExists(atPath: configURL.path)
+                ),
+                activeStep: .configStore
+            )
+            return try decode(SetupReceipt.self, from: result)
+        }
+
+        @Sendable func runUp(waitSeconds: Int) async throws -> UpReadinessReceipt {
+            let binary = try requireEmbeddedBinary()
+            let result = try await execute(
+                binary: binary,
+                arguments: upArguments(waitSeconds: waitSeconds),
+                timeout: AgentCommandTimeouts.serviceWait,
+                errorContext: OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: .pair,
+                    configured: true
+                ),
+                activeStep: .serviceDaemon
+            )
+            return try decode(UpReadinessReceipt.self, from: result)
+        }
+
+        @Sendable func runPair(network: PairingNetwork) async throws -> PairingInfo {
+            let binary = try requireEmbeddedBinary()
+            let result = try await execute(
+                binary: binary,
+                arguments: pairArguments(network: network),
+                timeout: AgentCommandTimeouts.pair,
+                errorContext: OnboardingValidationContext(
+                    surface: .cli,
+                    platform: .macos,
+                    stage: .pair,
+                    configured: true
+                ),
+                activeStep: .networkAny
+            )
+            let receipt = try decode(PairingTicketReceipt.self, from: result)
+            return receipt.asPairingInfo
+        }
+
         return AgentCommandClient(
             configExists: {
                 FileManager.default.fileExists(atPath: configURL.path)
             },
-            setup: { workspaceRoot in
-                let binary = try requireEmbeddedBinary()
-                let result = try await execute(
-                    binary: binary,
-                    arguments: setupArguments(
-                        workspaceRoot: workspaceRoot,
-                        browseRoot: homeDirectory
-                    )
-                )
-                return try decode(PairingInfo.self, from: result)
-            },
+            setup: runSetup,
+            preflight: runPreflight,
+            setupNoPair: runSetupNoPair,
+            up: runUp,
             status: {
                 let binary = try requireEmbeddedBinary()
                 return try decode(AgentStatus.self, from: try await execute(
@@ -322,17 +532,11 @@ extension AgentCommandClient {
                         "network",
                         "--lan-enabled=\(enabled)",
                         "--json",
-                    ]
+                    ],
+                    timeout: AgentCommandTimeouts.network
                 ))
             },
-            pair: { network in
-                let binary = try requireEmbeddedBinary()
-                return try decode(PairingInfo.self, from: try await execute(
-                    binary: binary,
-                    arguments: pairArguments(network: network),
-                    timeout: network == .tailcat ? .seconds(25) : .seconds(15)
-                ))
-            },
+            pair: runPair,
             tailcatStatus: {
                 let binary = try requireEmbeddedBinary()
                 return try decode(TailcatStatus.self, from: try await execute(
@@ -346,7 +550,7 @@ extension AgentCommandClient {
                 return try decode(TailcatStatus.self, from: try await execute(
                     binary: binary,
                     arguments: tailcatArguments(action: enabled ? "enable" : "disable"),
-                    timeout: .seconds(25)
+                    timeout: AgentCommandTimeouts.tailcatControl
                 ))
             },
             configureTailcatDERPMap: { derpMapURL in
@@ -388,7 +592,7 @@ extension AgentCommandClient {
                 return try decode(DeepSeekConfigurationResult.self, from: try await execute(
                     binary: binary,
                     arguments: arguments,
-                    timeout: .seconds(20),
+                    timeout: AgentCommandTimeouts.deepSeekRuntime,
                     forceKillAfterTimeout: true,
                     standardInput: startupURL.map { Data($0.utf8) }
                 ))
@@ -402,7 +606,7 @@ extension AgentCommandClient {
                 let binary = try requireEmbeddedBinary()
                 return try decode(CodexConfigurationResult.self, from: try await execute(
                     binary: binary, arguments: ["runtime", "--codex=\(preference)", "--json"],
-                    timeout: .seconds(60)
+                    timeout: AgentCommandTimeouts.runtime
                 ))
             },
             restoreCodex: { previous in
@@ -410,7 +614,7 @@ extension AgentCommandClient {
                 let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
                 return try decode(CodexConfigurationResult.self, from: try await execute(
                     binary: binary, arguments: ["runtime", "--restore-codex", payload, "--json"],
-                    timeout: .seconds(60)
+                    timeout: AgentCommandTimeouts.runtime
                 ))
             },
             configureNetwork: { network, enabled in
@@ -421,7 +625,7 @@ extension AgentCommandClient {
                 let flag = network == .tailscale ? "--tailscale-enabled" : "--lan-enabled"
                 return try decode(NetworkConfigurationResult.self, from: try await execute(
                     binary: binary, arguments: ["network", "\(flag)=\(enabled)", "--json"],
-                    timeout: .seconds(30)
+                    timeout: AgentCommandTimeouts.network
                 ))
             },
             restoreNetwork: { previous in
@@ -432,7 +636,7 @@ extension AgentCommandClient {
                 let payload = String(decoding: try JSONEncoder().encode(previous), as: UTF8.self)
                 return try decode(NetworkConfigurationResult.self, from: try await execute(
                     binary: binary, arguments: ["network", "--restore-state", payload, "--json"],
-                    timeout: .seconds(30)
+                    timeout: AgentCommandTimeouts.network
                 ))
             },
             diagnosticsStatus: {
@@ -484,6 +688,49 @@ extension AgentCommandClient {
             // 文件预览和会话产物可能位于 ~/.codex 等目录，浏览权限默认覆盖当前用户 Home。
             "--browse-root", browseRoot.path,
         ]
+    }
+
+    static func preflightArguments(options: OnboardingPreflightOptions) -> [String] {
+        var args = ["preflight", "--json", "--stage", options.stage.rawValue]
+        if let configPath = options.configPath {
+            args.append(contentsOf: ["--config", configPath])
+        }
+        if let scanRoot = options.scanRoot {
+            args.append(contentsOf: ["--scan-root", scanRoot.path])
+        }
+        if let browseRoot = options.browseRoot {
+            args.append(contentsOf: ["--browse-root", browseRoot.path])
+        }
+        if options.progressJSON {
+            args.append("--progress-json")
+        }
+        for pair in options.runtimePaths {
+            args.append(contentsOf: ["--runtime-path", "\(pair.id)=\(pair.value)"])
+        }
+        for pair in options.assistants {
+            args.append(contentsOf: ["--assistant", "\(pair.id)=\(pair.value)"])
+        }
+        return args
+    }
+
+    static func setupNoPairArguments(workspaceRoot: URL, options: OnboardingSetupOptions = .init()) -> [String] {
+        let browseRoot = options.browseRoot ?? workspaceRoot
+        var args = [
+            "setup", "--no-pair", "--json",
+            "--scan-root", workspaceRoot.path,
+            "--browse-root", browseRoot.path,
+        ]
+        for pair in options.runtimePaths {
+            args.append(contentsOf: ["--runtime-path", "\(pair.id)=\(pair.value)"])
+        }
+        for pair in options.assistants {
+            args.append(contentsOf: ["--assistant", "\(pair.id)=\(pair.value)"])
+        }
+        return args
+    }
+
+    static func upArguments(waitSeconds: Int = 60) -> [String] {
+        ["up", "--no-pair", "--json", "--wait", "\(waitSeconds)s"]
     }
 
     static func statusArguments(includeRuntime: Bool) -> [String] {
@@ -555,10 +802,22 @@ extension AgentCommandClient {
 
 }
 
-enum AgentClientError: LocalizedError {
+enum AgentClientError: LocalizedError, Equatable {
     case embeddedBinaryMissing
     case commandFailed(String)
     case invalidResponse(String)
+    case onboarding(OnboardingResolvedDiagnostic)
+
+    var onboardingDiagnostic: OnboardingResolvedDiagnostic? {
+        switch self {
+        case .onboarding(let diagnostic):
+            diagnostic
+        case .embeddedBinaryMissing:
+            OnboardingCopyCatalog.synthesizeLocal(code: "embedded_binary_missing", step: .serviceDaemon)
+        case .commandFailed, .invalidResponse:
+            nil
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -568,6 +827,8 @@ enum AgentClientError: LocalizedError {
             detail.isEmpty ? "agentd 命令执行失败" : detail
         case .invalidResponse(let detail):
             "无法解析 agentd 返回结果：\(detail)"
+        case .onboarding(let diagnostic):
+            diagnostic.message
         }
     }
 }

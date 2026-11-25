@@ -212,4 +212,67 @@ final class AgentCommandClientTests: XCTestCase {
             XCTFail("超时应保留 timedOut 语义，实际为 \(error)")
         }
     }
+
+    func testOnboardingCommandArgumentsAndTimeouts() {
+        let preflightArgs = AgentCommandClient.preflightArguments(
+            options: OnboardingPreflightOptions(
+                stage: .setup,
+                configPath: "/fixture/config/config.json",
+                scanRoot: URL(filePath: "/fixture/workspace"),
+                browseRoot: URL(filePath: "/fixture/workspace"),
+                progressJSON: true,
+                runtimePaths: [(id: "codex", value: "auto")],
+                assistants: [(id: "claude", value: "enabled")]
+            )
+        )
+        XCTAssertEqual(preflightArgs, [
+            "preflight", "--json", "--stage", "setup",
+            "--config", "/fixture/config/config.json",
+            "--scan-root", "/fixture/workspace",
+            "--browse-root", "/fixture/workspace",
+            "--progress-json",
+            "--runtime-path", "codex=auto",
+            "--assistant", "claude=enabled",
+        ])
+
+        XCTAssertEqual(
+            AgentCommandClient.setupNoPairArguments(workspaceRoot: URL(filePath: "/fixture/workspace")),
+            ["setup", "--no-pair", "--json", "--scan-root", "/fixture/workspace", "--browse-root", "/fixture/workspace"]
+        )
+        XCTAssertEqual(AgentCommandClient.upArguments(waitSeconds: 60), ["up", "--no-pair", "--json", "--wait", "60s"])
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.preflight, .seconds(35))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.setup, .seconds(60))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.pair, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.network, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.runtime, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.deepSeekRuntime, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.workspace, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.doctorFix, .seconds(45))
+        XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.serviceWait, .seconds(110))
+    }
+
+    func testProcessExecutorStreamsStderrLinesBeforeExit() async throws {
+        let executor = ProcessExecutor()
+        let lock = NSLock()
+        var arrivalTimes: [(String, ContinuousClock.Instant)] = []
+        let finishedAt: ContinuousClock.Instant
+        let result = try await executor.run(
+            executable: URL(filePath: "/bin/sh"),
+            arguments: ["-c", "echo first >&2; sleep 0.25; echo second >&2; echo done"],
+            timeout: .seconds(5),
+            onStderrLine: { line in
+                lock.lock()
+                arrivalTimes.append((line, ContinuousClock.now))
+                lock.unlock()
+            }
+        )
+        finishedAt = ContinuousClock.now
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines), "done")
+        lock.lock()
+        let captured = arrivalTimes
+        lock.unlock()
+        XCTAssertEqual(captured.map(\.0), ["first", "second"])
+        XCTAssertGreaterThanOrEqual(captured[0].1.duration(to: finishedAt), .milliseconds(150))
+    }
 }

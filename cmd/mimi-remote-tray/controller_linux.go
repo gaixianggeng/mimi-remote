@@ -63,26 +63,12 @@ func (c *linuxController) run(ctx context.Context, args ...string) ([]byte, erro
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	if err != nil {
+		if cliErr := decodeTrayCommandError(stdout.Bytes(), stderr.Bytes(), err, trayValidationContextForArgs("linux", args)); cliErr != nil {
+			return stdout.Bytes(), cliErr
+		}
 		return stdout.Bytes(), fmt.Errorf("agentd %s 失败：%s", args[0], fallbackText(redactTrayText(stderr.String()), "请运行诊断或查看日志"))
 	}
 	return stdout.Bytes(), nil
-}
-
-type boundedTrayOutput struct {
-	bytes.Buffer
-	remaining int
-	truncated bool
-}
-
-func (b *boundedTrayOutput) Write(p []byte) (int, error) {
-	n := len(p)
-	if len(p) > b.remaining {
-		p = p[:b.remaining]
-		b.truncated = true
-	}
-	_, _ = b.Buffer.Write(p)
-	b.remaining -= len(p)
-	return n, nil
 }
 
 func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus, error) {

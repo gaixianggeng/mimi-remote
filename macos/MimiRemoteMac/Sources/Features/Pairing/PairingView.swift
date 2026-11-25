@@ -33,8 +33,8 @@ struct PairingView: View {
                         isRetrying: isRefreshing || store.isBusy,
                         retry: { Task { await store.refresh(); await store.refreshTailcatStatus(); refreshPairing(network: selectedNetwork) } }
                     )
-                } else if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network) {
-                    pairingContent(pairing)
+                } else if let pairing = store.pairing, let pairURL = pairing.pairURL, !pairURL.isEmpty, store.availablePairingNetworks.contains(pairing.network) {
+                    pairingContent(pairing, pairURL: pairURL)
                 } else if !isRefreshing, let error = store.lastError {
                     PairingUnavailableState(
                         title: "暂时无法生成二维码",
@@ -122,7 +122,7 @@ struct PairingView: View {
         return filtered + [lastError].compactMap { $0 }
     }
 
-    private func pairingContent(_ pairing: PairingInfo) -> some View {
+    private func pairingContent(_ pairing: PairingInfo, pairURL: String) -> some View {
         let visibleWarnings = Self.visibleWarnings(for: pairing, lastError: store.lastError)
         let showsEndpoint = Self.showsEndpoint(for: pairing)
         return ScrollView {
@@ -130,7 +130,7 @@ struct PairingView: View {
                 PairingIntroduction()
                     .padding(.bottom, 14)
 
-                PairingCodeCard(value: pairing.pairURL, isRefreshing: isRefreshing)
+                PairingCodeCard(value: pairURL, isRefreshing: isRefreshing)
                     .padding(.bottom, 12)
 
                 if showsEndpoint {
@@ -183,12 +183,13 @@ struct PairingView: View {
                 .disabled(isRefreshing)
                 .accessibilityElement(children: .contain)
             }
-            if let pairing = store.pairing, store.availablePairingNetworks.contains(pairing.network),
+            if let pairing = store.pairing, let pairURL = pairing.pairURL, !pairURL.isEmpty,
+               store.availablePairingNetworks.contains(pairing.network),
                (store.canPair && !store.isBusy) || isRefreshing {
                 PairingActionBar(
                     didCopy: didCopyPairingLink,
                     isRefreshing: isRefreshing,
-                    copy: { copyPairingLink(pairing.pairURL) },
+                    copy: { copyPairingLink(pairURL) },
                     refresh: { refreshPairing() }
                 )
             }

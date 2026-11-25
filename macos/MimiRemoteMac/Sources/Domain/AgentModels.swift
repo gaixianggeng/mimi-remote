@@ -34,9 +34,16 @@ struct PairingInfo: Codable, Equatable, Sendable {
     let network: PairingNetwork
     let tailscaleDNSName: String?
     let tailscaleDeviceName: String?
-    let pairURL: String
+    let pairURL: String?
     let expiresAt: String
     let warnings: [String]
+
+    var hasTicket: Bool {
+        guard let pairURL = pairURL?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !pairURL.isEmpty
+    }
 
     enum CodingKeys: String, CodingKey {
         case endpoint
@@ -53,7 +60,7 @@ struct PairingInfo: Codable, Equatable, Sendable {
         network: PairingNetwork? = nil,
         tailscaleDNSName: String? = nil,
         tailscaleDeviceName: String? = nil,
-        pairURL: String,
+        pairURL: String?,
         expiresAt: String,
         warnings: [String]
     ) {
@@ -68,13 +75,14 @@ struct PairingInfo: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        endpoint = try container.decode(String.self, forKey: .endpoint)
+        let decodedEndpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+        endpoint = decodedEndpoint
         network = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
-            ?? PairingNetwork.inferred(from: endpoint)
+            ?? (decodedEndpoint.isEmpty ? .automatic : PairingNetwork.inferred(from: decodedEndpoint))
         tailscaleDNSName = try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
         tailscaleDeviceName = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
-        pairURL = try container.decode(String.self, forKey: .pairURL)
-        expiresAt = try container.decode(String.self, forKey: .expiresAt)
+        pairURL = try container.decodeIfPresent(String.self, forKey: .pairURL)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt) ?? ""
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。
         warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
     }
