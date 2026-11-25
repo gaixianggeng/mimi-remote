@@ -1124,10 +1124,14 @@ struct UnifiedWorkbenchShell: View {
         )
     }
 
-    func workspaces(layout: WorkbenchLayout) -> some View {
+    func workspaces(
+        layout: WorkbenchLayout,
+        bottomContentMargin: CGFloat? = nil
+    ) -> some View {
         WorkspaceWorkbenchRootView(
             usesCompactNavigation: layout.usesCompactNavigation,
             isPhone: layout.isPhone,
+            bottomContentMargin: bottomContentMargin,
             onManageConnections: {
                 openConnectionSettings(layout: layout)
             },

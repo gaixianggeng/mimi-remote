@@ -237,6 +237,35 @@ private struct WorkspaceGitInspectionTarget: Identifiable {
     }
 }
 
+/// 统一计算工作区根页（候选项目列表与工作区会话详情）的滚动底部边距（#1108）。
+///
+/// 规则与 `SessionListView` / `SettingsView` 一致：
+/// - 紧凑导航显式传入 `bottomContentMargin` 时直接使用（iPhone 底部 Tab 栏为 118pt，iPadOS 26 顶部 Tab 为 24pt）；
+/// - 未显式传入且处于底部 Tab 栏时回落到环境 `workbenchBottomChromeClearance`；
+/// - 宽屏或顶部 Tab 栏不额外预留底部 Tab 高度，仅在存在右下角浮起新建按钮时补充 FAB 让位高度。
+enum WorkspaceBottomContentMarginPolicy {
+    static func resolvedMargin(
+        explicitMargin: CGFloat?,
+        hasCompactTabBar: Bool,
+        hasBottomTabBar: Bool,
+        environmentClearance: CGFloat,
+        includesFloatingActionButtonAllowance: Bool
+    ) -> CGFloat {
+        let baseMargin: CGFloat
+        if let explicitMargin {
+            baseMargin = explicitMargin
+        } else if hasCompactTabBar && hasBottomTabBar {
+            baseMargin = environmentClearance
+        } else {
+            baseMargin = WorkbenchPageLayout.regularPadding
+        }
+        let fabAllowance: CGFloat = (includesFloatingActionButtonAllowance && !hasBottomTabBar)
+            ? WorkspaceSessionFabMetrics.contentBottomAllowance
+            : 0
+        return baseMargin + fabAllowance
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
     @EnvironmentObject private var appStore: AppStore
@@ -244,6 +273,7 @@ struct WorkspaceRootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -259,6 +289,7 @@ struct WorkspaceRootView: View {
     private let currentDate: () -> Date
     /// 重建前最后浏览的工作区；当前选择失效时优先回到它，而不是列表第一项。
     private let rememberedWorkspaceID: String?
+    private let bottomContentMargin: CGFloat?
     private let onWorkspaceSelectionChange: ((String?) -> Void)?
 
     @State private var selectedWorkspaceID: String?
@@ -273,7 +304,7 @@ struct WorkspaceRootView: View {
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
-    @State private var isPresentingOpenWorkspace = false
+    @State private var openWorkspacePresentation: OpenWorkspaceSheetPresentation?
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
     @State private var workspaceStripViewportWidth: CGFloat = 0
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
@@ -290,6 +321,7 @@ struct WorkspaceRootView: View {
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
         initialWorkspaceID: String? = nil,
+        bottomContentMargin: CGFloat? = nil,
         onWorkspaceSelectionChange: ((String?) -> Void)? = nil,
         onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
@@ -301,6 +333,7 @@ struct WorkspaceRootView: View {
         self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
         self.rememberedWorkspaceID = initialWorkspaceID
+        self.bottomContentMargin = bottomContentMargin
         self.onWorkspaceSelectionChange = onWorkspaceSelectionChange
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
@@ -411,8 +444,8 @@ struct WorkspaceRootView: View {
             pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
-        .sheet(isPresented: $isPresentingOpenWorkspace) {
-            OpenWorkspaceSheet { workspaceID in
+        .sheet(item: $openWorkspacePresentation) { presentation in
+            OpenWorkspaceSheet(model: presentation.model) { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
                 selectWorkspace(id: workspaceID)
@@ -533,7 +566,7 @@ struct WorkspaceRootView: View {
     /// 因此两个加号不会互相冒充——一个添工作区，一个建会话。
     private func addWorkspaceChip(tokens: ThemeTokens) -> some View {
         Button {
-            isPresentingOpenWorkspace = true
+            presentOpenWorkspaceSheet()
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 14, weight: .medium))
@@ -576,12 +609,14 @@ struct WorkspaceRootView: View {
                     WorkspaceSuggestionsView(
                         projects: sessionStore.projects,
                         onOpen: openSuggestedWorkspace,
-                        onBrowseOther: { isPresentingOpenWorkspace = true }
+                        onBrowseOther: presentOpenWorkspaceSheet
                     )
                     .padding(.horizontal, 20)
-                    .padding(.vertical, 24)
+                    .padding(.top, 24)
                 }
+                .contentMargins(.bottom, suggestionsBottomContentMargin, for: .scrollContent)
                 .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+                .workbenchClearBottomScrollEdge()
             } else {
                 workspaceEmptyState(tokens: tokens)
             }
@@ -758,7 +793,7 @@ struct WorkspaceRootView: View {
                     if isFailure {
                         Task { await refreshCatalog() }
                     } else {
-                        isPresentingOpenWorkspace = true
+                        presentOpenWorkspaceSheet()
                     }
                 } label: {
                     Label(isFailure ? L10n.text("ui.reload") : L10n.text("ui.open_directory"), systemImage: isFailure ? "arrow.clockwise" : "folder.badge.plus")
@@ -1122,7 +1157,23 @@ struct WorkspaceRootView: View {
             },
             onOpenSession: { session in
                 onOpenSession(session)
-            }
+            },
+            bottomContentMargin: bottomContentMargin
+        )
+    }
+
+    private func presentOpenWorkspaceSheet() {
+        guard openWorkspacePresentation == nil else { return }
+        openWorkspacePresentation = OpenWorkspaceSheetPresentation()
+    }
+
+    private var suggestionsBottomContentMargin: CGFloat {
+        WorkspaceBottomContentMarginPolicy.resolvedMargin(
+            explicitMargin: bottomContentMargin,
+            hasCompactTabBar: hasCompactTabBar,
+            hasBottomTabBar: hasBottomTabBar,
+            environmentClearance: bottomChromeClearance,
+            includesFloatingActionButtonAllowance: false
         )
     }
 
