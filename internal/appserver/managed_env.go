@@ -9,7 +9,8 @@ import (
 
 // 受管子进程共用的环境与诊断处理：SSH 传输、共享本地 app-server 和
 // Windows 本地 WebSocket app-server 都走这里。
-func buildManagedEnv(extra map[string]string) []string {
+// ManagedEnvironment builds the environment for managed runtime probes and launches.
+func ManagedEnvironment(extra map[string]string) []string {
 	// 受管 App Server 必须保持独立。旧实验版本可能在 launchd 会话中留下
 	// Desktop transport 环境；无论它来自继承环境还是 codex.env，都不能透传。
 	filtered := map[string]struct{}{

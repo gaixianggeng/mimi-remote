@@ -7295,6 +7295,23 @@
         }
       }
     },
+    "ui.command_line_installation_windows_advanced": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PowerShell launch (Advanced)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令行启动（PowerShell，高级）"
+          }
+        }
+      }
+    },
     "ui.command_summary": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -15037,19 +15054,104 @@
         }
       }
     },
+    "ui.first_connection_assistant_agy_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_claude_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_codex_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_deepseek_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek Harness setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek Harness 启动说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_guide_summary": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install and sign in to any 1 of the following coding agents on your computer:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只需在电脑上安装并登录以下任意 1 个助手即可使用："
+          }
+        }
+      }
+    },
     "ui.first_connection_codex_note": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi Remote works through Codex on your computer. Install the Codex CLI and sign in once; on a Mac, the ChatGPT desktop app also works."
+            "value": "Set up any one of Codex, Claude Code, Antigravity, or DeepSeek Harness on your computer to get started; on a Mac, Codex also works with the ChatGPT desktop app."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi Remote 通过电脑上的 Codex 工作。装好 Codex 命令行版并登录一次；Mac 上用 ChatGPT 桌面版也可以。"
+            "value": "只需在电脑上准备好 Codex、Claude Code、Antigravity 或 DeepSeek Harness 中的任意一个即可开始；Mac 上也可以通过 ChatGPT 桌面版使用 Codex。"
           }
         }
       }
@@ -15118,6 +15220,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "扫不了码？在电脑的配对窗口点「复制配对链接」，再回到这里点「粘贴配对链接」。"
+          }
+        }
+      }
+    },
+    "ui.first_connection_prepare_assistant": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set up any coding agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备任意一个 AI 助手"
           }
         }
       }
@@ -16713,13 +16832,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "After installing, open Mimi Remote and finish setup; the pairing QR code appears next."
+            "value": "After installing, open the Mimi Remote icon in the taskbar notification area, finish setup, and choose “Pair Device…” to show the pairing QR code."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "装好后打开 Mimi Remote，按提示完成设置，就会显示配对二维码。"
+            "value": "装好后可在任务栏右下角通知区域打开 Mimi Remote 图标，按提示完成设置并选择「配对设备…」显示配对二维码。"
           }
         }
       }
@@ -23864,6 +23983,23 @@
         }
       }
     },
+    "ui.new_session_runtime_signed_out_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not signed in on this computer. Sign in on your computer, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台电脑上的 %@ 尚未登录。请在电脑上完成登录后再回来重试。"
+          }
+        }
+      }
+    },
     "ui.new_sessions_created_from_a_workspace_appear_here": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24185,6 +24321,91 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无历史"
+          }
+        }
+      }
+    },
+    "ui.no_host_connect_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pair from the Devices tab anytime using a QR code or pairing link."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随时可在「设备」中扫码或粘贴配对链接完成连接。"
+          }
+        }
+      }
+    },
+    "ui.no_host_connected_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No computer connected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未连接电脑"
+          }
+        }
+      }
+    },
+    "ui.no_host_sessions_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to view sessions and start new tasks here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可在这里查看会话并发起新任务。"
+          }
+        }
+      }
+    },
+    "ui.no_host_sidebar_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to browse workspaces and active sessions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可在这里浏览工作区与进行中的会话。"
+          }
+        }
+      }
+    },
+    "ui.no_host_workspaces_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to open authorized directories and browse workspaces."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可打开电脑上的授权目录并浏览工作区。"
           }
         }
       }
@@ -25023,6 +25244,330 @@
           "stringUnit": {
             "state": "translated",
             "value": "离线"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_assistant_agy": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity 助手"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_assistant_any": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Available Agents"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可用助手"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_assistant_claude": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code 助手"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_assistant_codex": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 助手"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_assistant_deepseek": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek Agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek 助手"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_config_store": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration File"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置文件"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_network_any": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手机连接方式"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_network_lan": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Network"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同一局域网"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_network_tailcat": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置连接"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_network_tailscale": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailscale Connection"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tailscale 连接"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_permission_folder_access": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files & Folders"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件与文件夹"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_permission_full_disk": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full Disk Access"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完全磁盘访问"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_permission_local_network": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local Network"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地网络"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_permission_login_item": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Login Items"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "登录项"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_permission_photos": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "照片"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_service_daemon": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background Service"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_service_owner_conflict": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Background Service Ownership"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务归属"
+          }
+        }
+      }
+    },
+    "ui.onboarding_step_workspace_root": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Code Directory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "代码目录"
           }
         }
       }
@@ -25914,6 +26459,401 @@
           "stringUnit": {
             "state": "translated",
             "value": "已读取配对链接"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_command_timeout": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Command timed out. Re-check the current step."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：命令等待超时。请重新检查当前步骤。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_date_time_instructions": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Go to Settings → General → Date & Time, turn on Set Automatically, confirm your computer and phone have the same time, and pair again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请前往系统“设置 → 通用 → 日期与时间”开启自动设置，确认电脑与手机时间一致后重新配对。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_desktop_service_guidance": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm the background service status and reload the configuration on your computer, then scan the QR code again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在电脑端确认后台服务状态并重新加载配置，然后重新扫码。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_desktop_workspace_guidance": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm the code directory to share on your computer first, then scan the QR code again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在电脑端确认要共享的代码目录，然后重新扫码。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_embedded_binary_missing": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The built-in service binary is missing. Reinstall the desktop app."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缺少内置服务程序。请重新安装桌面端。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_fallback": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pairing could not be completed. Check your computer’s status, then scan the QR code again or retry. Existing pairings are unaffected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对未能完成。请确认电脑端状态后重新扫码或重试，已有配对不受影响。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_internal_error": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Could not complete this operation. Please try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：未能完成此项操作。请重试。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_invalid_request": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Invalid request parameters. Check your input and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：请求参数无效。请检查输入后重试。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_no_enabled_assistant": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable at least one available agent, then pair again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请启用至少一个可用助手，然后重新配对。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_open_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开说明"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_clock_skew": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device clocks do not match. Check Date & Time in system settings and pair again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备时间不一致。请检查系统日期与时间后重新配对。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_host_unreachable": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to connect to the computer’s background service. Check your connection and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法连接电脑后台服务。请检查连接后重试。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_local_forbidden": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This request cannot be claimed on the same device. Use your phone to scan the QR code on your computer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此请求无法在本机认领。请使用手机扫描电脑上的二维码。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_managed_entitlement_required": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This managed connection requires an active entitlement. Check your managed connection settings."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此托管连接需要有效的订阅权益。请查看托管连接设置。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_managed_grant_conflict": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The managed connection grant is inactive or expired. Request a new pairing link."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "托管连接授权未生效或已过期。请重新获取配对链接。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_ticket_expired": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The QR code has expired. Click Refresh QR Code in the pairing window on your computer and scan again. Existing pairings are unaffected."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_ticket_invalid": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The pairing link is invalid. Refresh the QR code on your computer and scan again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配对链接无效。请在电脑上刷新二维码后重扫。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_pair_token_mismatch": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The computer’s background service identity is out of sync. Confirm service ownership and reload the configuration on your computer, then retry. You do not need to remove the saved computer from your phone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_probe_timeout": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@: Check timed out. Re-check this item."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@：检查超时。请重新检查此项。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_tailcat_busy": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The built-in connection is busy with another operation. Please try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内置连接正在处理其他操作。请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_tailcat_relay_unreachable": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to reach the relay right now. Please try again later."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂时无法连接中继。请稍后重试。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_workspace_confirmation_required": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm the code directory to share with your phone on your computer first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先在电脑上确认要与手机共享的代码目录。"
           }
         }
       }
@@ -33833,13 +34773,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex isn't available on this computer yet. Install and sign in to Codex on the computer (on a Mac, the ChatGPT desktop app also works), then try again."
+            "value": "No coding agent is currently available on this computer. Make sure at least one working agent is enabled in Mimi Remote on your computer, then try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这台电脑上还没有可用的 Codex。请在电脑上安装并登录 Codex（Mac 上也可以用 ChatGPT 桌面版），再回来重试。"
+            "value": "这台电脑上当前没有可用的 AI 助手。请在电脑上的 Mimi Remote 中确认至少已启用一个可用助手，再回来重试。"
           }
         }
       }
@@ -47251,6 +48191,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "窗口"
+          }
+        }
+      }
+    },
+    "ui.windows_cli_custom_install_dir_note": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If you chose a custom install folder, replace the path above with your install location. When the QR code expires, replace up with pair to generate a new one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果安装时选择了自定义目录，请将上述路径替换为实际安装位置。二维码过期时可将末尾的 up 改为 pair 重新生成。"
+          }
+        }
+      }
+    },
+    "ui.windows_cli_tray_first_note": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After installing, using the Mimi Remote icon in the taskbar notification area (“Pair Device…”) is recommended. To start manually in PowerShell, run:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装后推荐直接点任务栏右下角的 Mimi Remote 图标并选择「配对设备…」。如需在 PowerShell 中手动启动，可运行："
           }
         }
       }

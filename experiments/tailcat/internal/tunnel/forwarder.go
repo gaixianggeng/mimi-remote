@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
@@ -47,6 +49,11 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 	if _, err := tailcat.ParseAddr(tailcat.Addr(config.Address)); err != nil {
 		return nil, fmt.Errorf("解析 Tailcat 地址：%w", err)
 	}
+	if config.EndpointPath != "" {
+		if err := privatefile.Check(config.EndpointPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	privateKey, err := clientPrivateKey(config)
 	if err != nil {
 		return nil, err
@@ -69,7 +76,7 @@ func StartForwarder(ctx context.Context, config ForwarderConfig) (*Forwarder, er
 	}
 	forwarder := newForwarder(listener, client, newClient)
 	if config.EndpointPath != "" {
-		if err := writePrivateFile(config.EndpointPath, []byte(forwarder.Endpoint()+"\n")); err != nil {
+		if err := privatefile.Write(config.EndpointPath, []byte(forwarder.Endpoint()+"\n")); err != nil {
 			forwarder.Close()
 			return nil, fmt.Errorf("写入本地端点：%w", err)
 		}

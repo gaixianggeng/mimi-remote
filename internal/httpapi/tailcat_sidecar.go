@@ -80,18 +80,23 @@ type tailcatSidecar interface {
 }
 
 type tailcatSidecarSupervisor struct {
-	operationMu sync.Mutex
-	mu          sync.Mutex
-	config      config.TailcatConfig
-	configPath  string
-	stateDir    string
-	controlPath string
-	targetAddr  string
-	cmd         *exec.Cmd
-	done        chan struct{}
-	starting    bool
-	closing     bool
-	lastError   string
+	devInsecure    bool
+	operationMu    sync.Mutex
+	mu             sync.Mutex
+	config         config.TailcatConfig
+	configPath     string
+	stateDir       string
+	controlPath    string
+	targetAddr     string
+	forwardHandler http.Handler
+	forwardMu      sync.Mutex
+	forwardServer  *http.Server
+	forwardClosed  bool
+	cmd            *exec.Cmd
+	done           chan struct{}
+	starting       bool
+	closing        bool
+	lastError      string
 	// 零值表示使用上面的默认超时；测试用短超时驱动。
 	controlTimeout time.Duration
 	pairTimeout    time.Duration
@@ -158,6 +163,7 @@ func (w *tailcatSidecarLogWriter) Write(p []byte) (int, error) {
 func newTailcatSidecarSupervisor(cfg config.Config, configPath string) *tailcatSidecarSupervisor {
 	stateDir, _ := tailcatStateDirectory(configPath)
 	supervisor := &tailcatSidecarSupervisor{
+		devInsecure: cfg.DevInsecure,
 		config:      cfg.Tailcat,
 		configPath:  configPath,
 		stateDir:    stateDir,
@@ -184,6 +190,9 @@ func (s *tailcatSidecarSupervisor) Start(ctx context.Context) error {
 func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 	if s == nil {
 		return errors.New("Tailcat 管理器未初始化")
+	}
+	if s.devInsecure {
+		return errors.New("启用 Tailcat 前请关闭 dev_insecure 并重启服务")
 	}
 	s.mu.Lock()
 	if s.closing {
@@ -226,10 +235,15 @@ func (s *tailcatSidecarSupervisor) start(ctx context.Context) error {
 		s.finishStart(nil, err)
 		return err
 	}
+	target, err := s.forwardAddress()
+	if err != nil {
+		s.finishStart(nil, err)
+		return err
+	}
 	_ = os.Remove(s.controlPath)
 	args := []string{
 		"managed-host",
-		"--target", s.targetAddr,
+		"--target", target,
 		"--port", strconv.Itoa(tailcatTargetPort(s.targetAddr)),
 		"--state-dir", s.stateDir,
 		"--control", s.controlPath,
@@ -566,24 +580,14 @@ func (s *tailcatSidecarSupervisor) rollbackDERPMap(
 	return s.Status(ctx), fmt.Errorf("应用 Tailcat 中继失败，已恢复原配置：%w", applyError)
 }
 
-var tailcatIdentityFiles = []string{
-	"host.private.json",
-	"host.address",
-	"clients.json",
-	"pair.private.json",
-	"pair.address",
-	"free.private.json",
-	"free.address",
-	"free-pair.private.json",
-	"free-pair.address",
-}
+var tailcatIdentityFiles = config.TailcatIdentityFiles()
 
 type tailcatIdentitySnapshot map[string][]byte
 
 func snapshotTailcatIdentityState(stateDir string) (tailcatIdentitySnapshot, error) {
 	snapshot := tailcatIdentitySnapshot{}
 	for _, name := range tailcatIdentityFiles {
-		data, err := os.ReadFile(filepath.Join(stateDir, name))
+		data, err := config.ReadPrivatePreflightFile(filepath.Join(stateDir, name), 4<<20)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -605,6 +609,9 @@ func clearTailcatIdentityState(stateDir string) error {
 }
 
 func restoreTailcatIdentityState(stateDir string, snapshot tailcatIdentitySnapshot) error {
+	if err := config.CheckTailcatIdentityPermissions(stateDir); err != nil {
+		return err
+	}
 	if err := clearTailcatIdentityState(stateDir); err != nil {
 		return err
 	}
@@ -624,6 +631,7 @@ func (s *tailcatSidecarSupervisor) Close() {
 	if s == nil {
 		return
 	}
+	s.closeForwarding()
 	s.mu.Lock()
 	s.cancelRestartLocked()
 	s.mu.Unlock()
@@ -638,6 +646,53 @@ func (s *tailcatSidecarSupervisor) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	_ = s.stopProcess(ctx, cmd, done)
+}
+
+// Only the sidecar target uses this listener. Remote peers arrive via a
+// loopback TCP hop but must never inherit the local client's authority.
+// The sidecar continues advertising the original configured service port.
+func (s *tailcatSidecarSupervisor) forwardAddress() (string, error) {
+	s.forwardMu.Lock()
+	defer s.forwardMu.Unlock()
+	if s.forwardClosed {
+		return "", http.ErrServerClosed
+	}
+	if s.forwardServer != nil {
+		return s.forwardServer.Addr, nil
+	}
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	handler := s.forwardHandler
+	if handler == nil {
+		handler = http.NotFoundHandler()
+	}
+	server := &http.Server{
+		Addr: l.Addr().String(), ReadHeaderTimeout: 10 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.RemoteAddr = "tailcat"
+			handler.ServeHTTP(w, req)
+		}),
+	}
+	s.forwardServer = server
+	go server.Serve(l)
+	return server.Addr, nil
+}
+
+func (s *tailcatSidecarSupervisor) closeForwarding() {
+	s.forwardMu.Lock()
+	server := s.forwardServer
+	s.forwardClosed = true
+	s.forwardServer = nil
+	s.forwardMu.Unlock()
+	if server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			_ = server.Close()
+		}
+	}
 }
 
 func (s *tailcatSidecarSupervisor) waitUntilReady(ctx context.Context) error {
@@ -763,7 +818,10 @@ func ensureTailcatLocalControlToken(stateDir string) error {
 		return fmt.Errorf("创建 Tailcat 状态目录：%w", err)
 	}
 	path := filepath.Join(stateDir, "local-control.token")
-	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+	if data, err := config.ReadPrivatePreflightFile(path, 4096); err == nil {
+		if strings.TrimSpace(string(data)) == "" {
+			return errors.New("Tailcat 本机控制凭据为空")
+		}
 		return nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("读取 Tailcat 本机控制凭据：%w", err)
@@ -772,20 +830,27 @@ func ensureTailcatLocalControlToken(stateDir string) error {
 	if _, err := rand.Read(random); err != nil {
 		return fmt.Errorf("生成 Tailcat 本机控制凭据：%w", err)
 	}
-	return writeTailcatPrivateFile(path, []byte(hex.EncodeToString(random)+"\n"))
+	err := writeTailcatPrivateFile(path, []byte(hex.EncodeToString(random)+"\n"))
+	if errors.Is(err, os.ErrExist) {
+		data, err := config.ReadPrivatePreflightFile(path, 4096)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			return errors.New("Tailcat 本机控制凭据为空")
+		}
+		return nil
+	}
+	return err
 }
 
 func writeTailcatPrivateFile(path string, data []byte) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tailcat-token-*")
+	temporary, err := config.CreatePrivateTemp(filepath.Dir(path), ".tailcat-token-")
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
 		return err
@@ -793,7 +858,7 @@ func writeTailcatPrivateFile(path string, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return os.Link(temporaryPath, path)
 }
 
 // ReadTailcatLocalControlToken 只供同机 agentd CLI/Mac App 读取本地控制凭据。
@@ -803,7 +868,7 @@ func ReadTailcatLocalControlToken(configPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(filepath.Join(stateDir, "local-control.token"))
+	data, err := config.ReadPrivatePreflightFile(filepath.Join(stateDir, "local-control.token"), 4096)
 	if err != nil {
 		return "", fmt.Errorf("读取 Tailcat 本机控制凭据：%w", err)
 	}

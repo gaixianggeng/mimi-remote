@@ -46,9 +46,17 @@ struct WorkspaceDetailView<StatusLine: View>: View {
     let onLoadMoreSessions: () async -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
+    var bottomContentMargin: CGFloat? = nil
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let resolvedBottomContentMargin = WorkspaceBottomContentMarginPolicy.resolvedMargin(
+            explicitMargin: bottomContentMargin,
+            hasCompactTabBar: hasCompactTabBar,
+            hasBottomTabBar: hasBottomTabBar,
+            environmentClearance: bottomChromeClearance,
+            includesFloatingActionButtonAllowance: true
+        )
 
         GeometryReader { geometry in
             // 与会话页使用同一条可用宽度规则；工作区不能再按页面身份选择另一套行密度。
@@ -72,18 +80,12 @@ struct WorkspaceDetailView<StatusLine: View>: View {
                 // 手机顶部项目条与 Runtime 筛选器属于同一组，少留一档空白。
                 // 宽屏没有第二条筛选行，仍保留原来的内容起始留白。
                 .padding(.top, hasCompactTabBar ? 8 : 16)
-                // 三个顶层页面消费同一个浮动栏 clearance；宽屏无 Tab Bar 时只保留常规页面留白。
-                // 只有按钮真的浮在内容之上时才追加让位高度；回到行内就不需要了。
-                .padding(
-                    .bottom,
-                    (hasCompactTabBar
-                        ? bottomChromeClearance
-                        : WorkbenchPageLayout.regularPadding)
-                        + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance)
-                )
                 .frame(maxWidth: WorkspaceStripLayout.maxContentWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
+            // 与会话页、设置页共用同一套 scrollContent 底部留白规则（#1108）：
+            // iPhone 底部 Tab 栏按 bottomContentMargin 预留；宽屏与 iPadOS 26 顶部 Tab 仅在浮起 FAB 时让位。
+            .contentMargins(.bottom, resolvedBottomContentMargin, for: .scrollContent)
             .scrollIndicators(.hidden)
             .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
             // 底部浮起的按钮和 Tab 栏自己就是玻璃，只该虚化各自盖住的那一块；

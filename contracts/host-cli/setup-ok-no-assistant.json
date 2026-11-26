@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "configured": true,
+  "created": true,
+  "config_path": "/fixture/config/config.json",
+  "scan_root": "/fixture/workspace",
+  "browse_root": "/fixture/workspace"
+}

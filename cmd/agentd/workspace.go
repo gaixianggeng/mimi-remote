@@ -20,30 +20,65 @@ func runWorkspaceWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	path := fs.String("config", config.DefaultPath(), "配置文件路径")
 	root := fs.String("root", "", "项目扫描与移动设备浏览授权目录")
+	scan := fs.String("scan-root", "", "项目扫描目录")
+	browse := fs.String("browse-root", "", "移动设备浏览授权目录；省略时保留现有授权")
+	primary := fs.Bool("primary", false, "仅更新指定列表的首个目录，保留其他目录")
+	browseOnly := fs.String("set-browse-root", "", "仅替换移动设备浏览授权范围，保留全部扫描目录")
 	restore := fs.String("restore-state", "", "恢复先前目录设置事务 JSON")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 || (*root == "") == (*restore == "") {
-		return fmt.Errorf("必须且只能传入 --root 或 --restore-state，不能带位置参数")
+	hasRoot := flagSetByCaller(fs, "root")
+	hasScan := flagSetByCaller(fs, "scan-root")
+	hasBrowse := flagSetByCaller(fs, "browse-root")
+	hasRestore := flagSetByCaller(fs, "restore-state")
+	hasPrimary := flagSetByCaller(fs, "primary")
+	hasBrowseOnly := flagSetByCaller(fs, "set-browse-root")
+	selection := agentsetup.WorkspaceSelection{}
+	valid := false
+	switch {
+	case hasBrowseOnly:
+		valid = *browseOnly != "" && !hasRoot && !hasScan && !hasBrowse && !hasPrimary && !hasRestore
+		selection.BrowseRoot = *browseOnly
+	case hasPrimary:
+		valid = *primary && !hasRoot && !hasRestore && (hasScan || hasBrowse) && (!hasScan || *scan != "") && (!hasBrowse || *browse != "")
+		selection = agentsetup.WorkspaceSelection{ScanRoot: *scan, BrowseRoot: *browse, PrimaryOnly: true}
+	case hasRestore:
+		valid = *restore != "" && !hasRoot && !hasScan && !hasBrowse
+	case hasRoot:
+		valid = *root != "" && !hasScan && !hasBrowse
+		selection = agentsetup.WorkspaceSelection{ScanRoot: *root, BrowseRoot: *root}
+	case hasScan:
+		valid = *scan != "" && (!hasBrowse || *browse != "")
+		selection = agentsetup.WorkspaceSelection{ScanRoot: *scan, BrowseRoot: *browse}
 	}
-	if err := prepareDefaultConfigMigration(fs, *path, stderr); err != nil {
-		return err
+	if fs.NArg() != 0 || !valid {
+		return invalidOnboardingRequest(fmt.Errorf("请选择 --root、--scan-root [--browse-root]、--primary 配合扫描或浏览目录、--set-browse-root 或 --restore-state 中的一种形式"))
 	}
+	legacy := setupLegacyPath(fs)
 	var result agentsetup.WorkspaceConfigurationResult
 	var err error
 	if *restore != "" {
-		var previous agentsetup.WorkspaceConfigurationResult
-		if err := json.Unmarshal([]byte(*restore), &previous); err != nil {
-			return err
+		var receipt struct {
+			Previous *agentsetup.WorkspaceState `json:"previous"`
+			Applied  *agentsetup.WorkspaceState `json:"applied"`
 		}
-		result, err = agentsetup.RestoreWorkspace(*path, previous)
+		if err := json.Unmarshal([]byte(*restore), &receipt); err != nil {
+			return invalidOnboardingRequest(err)
+		}
+		if receipt.Previous == nil || receipt.Applied == nil {
+			return invalidOnboardingRequest(fmt.Errorf("目录恢复记录不完整"))
+		}
+		result, err = agentsetup.EditWorkspace(*path, legacy, selection, &agentsetup.WorkspaceConfigurationResult{Previous: *receipt.Previous, Applied: *receipt.Applied})
 	} else {
-		result, err = agentsetup.ConfigureWorkspace(*path, *root)
+		result, err = agentsetup.EditWorkspace(*path, legacy, selection, nil)
+		if hasRoot && err != nil {
+			return moduleConfigFailure(*path, workspaceFailure(*root, err))
+		}
 	}
 	if err != nil {
-		return err
+		return moduleConfigFailure(*path, err)
 	}
 	if *asJSON {
 		return printJSONTo(stdout, result)

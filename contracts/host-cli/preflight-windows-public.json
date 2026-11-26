@@ -1,0 +1,158 @@
+{
+  "schema": "mimi.onboarding.preflight/v1",
+  "ok": false,
+  "stage": "pair",
+  "configured": true,
+  "workspace_confirmed": true,
+  "config_path": "C:\\fixture\\config\\config.json",
+  "scan_root": "C:\\fixture\\workspace",
+  "browse_root": "C:\\fixture\\workspace",
+  "scan_root_exists": true,
+  "recommended_next": "network_any",
+  "recommended_transport": null,
+  "checks": [
+    {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "ok",
+      "title": "配置文件",
+      "detail": "配置文件可安全读写。",
+      "blocking": false
+    },
+    {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "ok",
+      "title": "代码目录",
+      "detail": "所选目录可读取。",
+      "blocking": false
+    },
+    {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务",
+      "detail": "后台服务已通过就绪检查。",
+      "blocking": false
+    },
+    {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "ok",
+      "title": "Codex 助手",
+      "detail": "Codex 已就绪。",
+      "blocking": false,
+      "enabled": true,
+      "available": true,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {"path": "C:\\fixture\\bin\\codex.exe", "outcome": "selected", "version": "0.150.0"}
+      ]
+    },
+    {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "ok",
+      "title": "Claude Code 助手",
+      "detail": "Claude Code 已就绪。",
+      "blocking": false,
+      "enabled": true,
+      "available": true,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "C:\\fixture\\bin\\claude.exe", "outcome": "selected", "version": "2.1.300"}
+      ]
+    },
+    {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "ok",
+      "title": "Antigravity 助手",
+      "detail": "Antigravity 已就绪。",
+      "blocking": false,
+      "enabled": true,
+      "available": true,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {"path": "C:\\fixture\\bin\\agy.exe", "outcome": "selected", "version": "1.5.0"}
+      ]
+    },
+    {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "ok",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek 已连接且存在可用模型。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "assistant_any",
+      "group": "assistant",
+      "state": "ok",
+      "title": "可用助手",
+      "detail": "至少有一个已启用的助手可用。",
+      "blocking": false
+    },
+    {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 尚未连接。请连接后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "tailscale_not_connected",
+      "fix": {"kind": "retry"}
+    },
+    {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "error",
+      "title": "内置连接",
+      "detail": "内置连接组件不可用。请重新安装桌面端以修复组件。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "tailcat_unavailable",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    },
+    {
+      "id": "network_lan",
+      "group": "network",
+      "state": "action_needed",
+      "title": "同一局域网",
+      "detail": "当前网络未确认为专用网络。请检查 Windows 网络配置。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "code": "lan_public_network_blocked",
+      "fix": {"kind": "open_settings", "target": "windows_network_profile"}
+    },
+    {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "暂无可用的连接方式。请检查网络后重试。",
+      "blocking": true,
+      "code": "no_network_available",
+      "fix": {"kind": "retry"}
+    },
+    {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "optional",
+      "title": "本地网络",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  ]
+}

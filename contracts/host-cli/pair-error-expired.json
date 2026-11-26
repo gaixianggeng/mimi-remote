@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "error": {
+    "code": "pair_ticket_expired",
+    "step": "network_any",
+    "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+    "fix": {"kind": "retry"}
+  }
+}

@@ -29,6 +29,25 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
     private var previousAppLanguageRawValue: String?
     private var didOverrideAppLanguage = false
 
+    private var snapshotHostWindow: UIWindow?
+
+    override func setUp() async throws {
+        try await super.setUp()
+        // 纯快照测试有时先于 SwiftUI 的根窗口启动；为已连接的 Scene 提供绘图宿主。
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(5)
+        while UIApplication.shared.connectedScenes.isEmpty && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        if scenes.contains(where: { $0.windows.contains(where: \.isKeyWindow) }) { return }
+        let scene = try XCTUnwrap(scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIViewController()
+        window.makeKeyAndVisible()
+        snapshotHostWindow = window
+    }
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         try SnapshotTestEnvironment.requireFixedSimulator()
@@ -40,6 +59,8 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        snapshotHostWindow?.isHidden = true
+        snapshotHostWindow = nil
         if didOverrideAppLanguage {
             let defaults = UserDefaults.standard
             if hadStoredAppLanguage {
@@ -1347,6 +1368,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let project = AgentProject(id: "mimi-remote", name: "mimi-remote", path: "/Users/me/code/mimi-remote")
         let themeStore = makeThemeStore()
         let appStore = makeSnapshotAppStore()
+        appStore.token = "snapshot-token"
         let sessions = [
             makeSnapshotSession(
                 id: "running",
@@ -1771,6 +1793,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
         let appStore = makeSnapshotAppStore()
+        appStore.token = "snapshot-token"
         let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let appearanceDefaults = UserDefaults(
@@ -1782,6 +1805,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             conversationStore: conversationStore,
             logStore: LogStore()
         )
+        sessionStore.lastSessionLibraryIndexRefreshAt = sessionStore.sessionListNow()
         sessionStore.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())

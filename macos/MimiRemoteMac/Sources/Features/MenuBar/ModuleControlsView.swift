@@ -140,6 +140,16 @@ struct ModuleControlsGroup: View {
     }
 }
 
+enum ModuleRowPresentation {
+    static func subtitle(for module: HostModuleID) -> String? {
+        module == .tailcat ? HostStore.tailcatTagline : nil
+    }
+
+    static func badge(for module: HostModuleID) -> String? {
+        nil
+    }
+}
+
 private struct ModuleControlRow: View {
     let store: HostStore
     let module: HostModuleID
@@ -154,15 +164,15 @@ private struct ModuleControlRow: View {
                 HStack(spacing: 10) {
                     ModuleRowIcon(module: module)
                         .frame(width: 24)
-                    Text(module.title)
-                        .font(.callout.weight(.medium))
-                    if module == .tailcat {
-                        Text("实验")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.1), in: Capsule())
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(module.title)
+                            .font(.callout.weight(.medium))
+                        if let subtitle = ModuleRowPresentation.subtitle(for: module) {
+                            Text(subtitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 .contentShape(Rectangle())
@@ -444,9 +454,15 @@ private struct ModuleDetailView: View {
         }
         if let network = module.network, store.canPair, store.availablePairingNetworks.contains(network) {
             Button("通过 \(module.title) 配对…") {
-                Task {
-                    await store.refreshPairing(network: network)
-                    if store.pairing?.network == network { openWindow(id: AppWindow.pairing.rawValue) }
+                switch network {
+                case .tailscale: store.preferredPairingTransport = .tailscale
+                case .tailcat: store.preferredPairingTransport = .tailcat
+                case .localNetwork: store.preferredPairingTransport = .lan
+                case .automatic: store.preferredPairingTransport = nil
+                }
+                openWindow(id: AppWindow.pairing.rawValue)
+                DispatchQueue.main.async {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                 }
             }
             .disabled(store.isBusy)

@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
@@ -21,11 +22,16 @@ var localAppServerPreflight = preflightSharedLocalAppServer
 func preflightSharedLocalAppServer(ctx context.Context, codexBin string, env map[string]string) error {
 	ctx, cancel := context.WithTimeout(ctx, sharedLocalPreflightTimeout)
 	defer cancel()
-	if _, err := appserver.CheckLocalCodex(ctx, codexBin); err != nil {
+	req := CodexRuntime(config.CodexConfig{Env: env}, "local")
+	if codexBin != "codex" {
+		req.Override = codexBin
+	}
+	candidate, err := ResolveRuntime(ctx, req)
+	if err != nil {
 		return err
 	}
 	transport, err := appserver.NewSharedLocalTransport(appserver.SharedLocalOptions{
-		CodexBin: codexBin,
+		CodexBin: candidate.Path,
 		Env:      env,
 	})
 	if err != nil {
@@ -35,6 +41,17 @@ func preflightSharedLocalAppServer(ctx context.Context, codexBin string, env map
 		return nil
 	}
 	return transport.EnsureReady(ctx)
+}
+
+// Windows can save an automatic configuration before a compatible Codex is
+// installed. Launch will discover it then. Only explicit selections gate setup.
+func (d RuntimeDiscovery) preflightManagedCodex(ctx context.Context, override string) error {
+	override = strings.TrimSpace(override)
+	if (override == "" || override == "auto") && strings.TrimSpace(d.getenv("AGENTD_CODEX_BIN")) == "" {
+		return nil
+	}
+	_, err := d.Resolve(ctx, RuntimeRequest{Name: "codex", Transport: "ws", Override: override})
+	return err
 }
 
 func setupUsesManagedLocalAppServer(requestedSSHTarget string) bool {

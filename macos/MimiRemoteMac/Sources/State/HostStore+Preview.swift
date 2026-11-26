@@ -92,9 +92,10 @@ extension HostStore {
                 ]
             )
         )
+        let previewExpiresAt = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5 * 60))
         let agent = AgentCommandClient(
             configExists: { lifecycle != .notConfigured },
-            setup: { _ in PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: "10 分钟后", warnings: []) },
+            setup: { _ in PairingInfo(endpoint: status.endpoint, pairURL: "mimiremote://pair?pair_sig=preview", expiresAt: previewExpiresAt, warnings: []) },
             status: { status },
             readiness: { status },
             statusAt: { _ in status },
@@ -127,7 +128,7 @@ extension HostStore {
                 return PairingInfo(
                     endpoint: endpoint,
                     pairURL: "mimiremote://pair?pair_sig=preview-\(network.rawValue)",
-                    expiresAt: "10 分钟后",
+                    expiresAt: previewExpiresAt,
                     warnings: network == .localNetwork ? ["局域网配对仅适用于与这台 Mac 位于同一局域网的设备"] : []
                 )
             },

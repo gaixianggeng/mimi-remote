@@ -140,9 +140,11 @@ func (p *controlPanel) chooseRelayService() {
 	case 1:
 		p.applyRelay("default", "")
 	case 2:
+		p.clearPairingState()
 		p.relayEditing = true
 		p.pairingView = false
 		setControlPanelVisible(p.dashboardControls, false)
+		setControlPanelVisible([]uintptr{p.firstSetup}, false)
 		setControlPanelVisible(p.pairingControls, false)
 		setControlPanelVisible([]uintptr{p.relayPicker}, false)
 		setControlPanelVisible(p.relayControls, true)

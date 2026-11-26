@@ -114,6 +114,17 @@ else
   /usr/bin/lipo -create "${outputs[@]}" -output "$agentd_output"
 fi
 chmod 0755 "$agentd_output"
+# The UI may offer doctor --fix only when this bundled CLI includes the reviewed
+# identity-preserving implementation. Older, unverified, and shallow builds fail closed.
+capability_file="$bundle_root/Resources/agentd-onboarding-capability"
+: > "$capability_file"
+reviewed_doctor_commit=296e901cbf3325d7291b717074390d36d7afa51e
+if [[ -f "$project_root/cmd/agentd/doctor_permissions.go" ]] &&
+   git -C "$project_root" merge-base --is-ancestor "$reviewed_doctor_commit" HEAD 2>/dev/null &&
+   backend_changes="$(git -C "$project_root" status --porcelain --untracked-files=all -- cmd/agentd internal go.mod go.sum)" &&
+   [[ -z "$backend_changes" ]]; then
+  printf '%s' 'identity_preserving_doctor_fix' > "$capability_file"
+fi
 cp "$launch_agent_source" "$launch_agent_output"
 /usr/bin/plutil -lint "$launch_agent_output" >/dev/null
 log "agentd 已内嵌：archs=${architectures[*]}"

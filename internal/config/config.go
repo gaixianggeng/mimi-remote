@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
-	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -35,13 +36,13 @@ var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing c
 // 但可能由更新版本写入的取值。真正的原因是版本偏旧（配置被新版本写过，之后又运行了
 // 旧的安装包），所以这里把「升级安装包」放在最前面。
 var ErrAppServerTransportUnsupported = errors.New(
-	"需要更新版本的 Mimi Remote；请升级到最新发布包后重试，或执行 agentd setup --force 重置配置",
+	"需要更新版本的 Mimi Remote；请升级到最新发布包后重试，并保留原配置",
 )
 
 // ErrAppServerTransportRemoved 表示配置里是本产品曾经支持、之后被移除的 transport。
 // 这类配置安装最新发布包同样跑不起来，引导升级只会让用户白装一次；正确动作是重置配置。
 var ErrAppServerTransportRemoved = errors.New(
-	"需要执行 agentd setup --force 重置配置；安装最新发布包也不会恢复",
+	"请保留原配置并检查已移除的连接设置",
 )
 
 // removedAppServerTransports 记录已经移除的历史 transport。它们必须与「未来版本写入的
@@ -64,7 +65,20 @@ func AppServerTransportError(name string) error {
 	return ErrAppServerTransportUnsupported
 }
 
+type OnboardingConfig struct {
+	Confirmed *bool `json:"workspace_confirmed,omitempty"`
+}
+
+// Valid configurations written before onboarding have already granted their roots.
+func (c Config) WorkspaceConfirmed() bool {
+	return c.Onboarding.Confirmed == nil || *c.Onboarding.Confirmed
+}
+
+// SourceGeneration identifies the committed document that produced this instance.
+func (c Config) SourceGeneration() string { return c.sourceGeneration }
+
 type Config struct {
+	Onboarding    OnboardingConfig `json:"onboarding"`
 	Listen        string           `json:"listen"`
 	Network       NetworkConfig    `json:"network"`
 	Auth          AuthConfig       `json:"auth"`
@@ -85,6 +99,9 @@ type Config struct {
 	WorktreesRoot string           `json:"worktrees_root"`
 	Actions       []ActionConfig   `json:"actions"`
 	DevInsecure   bool             `json:"dev_insecure"`
+
+	sourceGeneration string
+	pairingSettings  string
 }
 
 type NetworkConfig struct {
@@ -357,10 +374,21 @@ func ConfigPathIdentity(path string) (string, error) {
 	}
 	// 配置文件本身可能尚未创建；目录存在时仍解析目录 symlink，避免同一个
 	// 配置文件经不同路径写法仍必须取得同一把提交锁。
-	if canonicalDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absolute)); evalErr == nil {
-		absolute = filepath.Join(canonicalDir, filepath.Base(absolute))
+	parent := filepath.Dir(absolute)
+	for {
+		if _, e := os.Stat(parent); !errors.Is(e, os.ErrNotExist) || filepath.Dir(parent) == parent {
+			break
+		}
+		parent = filepath.Dir(parent)
 	}
-	caseSensitive, err := configPathCaseSensitive(filepath.Dir(absolute))
+	if resolved, e := filepath.EvalSymlinks(parent); e == nil {
+		relative, e := filepath.Rel(parent, absolute)
+		if e != nil {
+			return "", e
+		}
+		absolute = filepath.Join(resolved, relative)
+	}
+	caseSensitive, err := configPathCaseSensitive(parent)
 	if err == nil && !caseSensitive {
 		absolute = strings.ToLower(absolute)
 	}
@@ -386,6 +414,28 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadForService keeps the authenticated control plane available when a
+// workspace has not been selected. All other configuration checks still apply.
+func LoadForService(path string) (Config, error) {
+	raw, err := ReadPrivatePreflightFile(ExpandPath(path), 4<<20)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Config{}, err
+	}
+	if err == nil {
+		if saved := InspectCommittedDocument(raw); saved.Code != "" {
+			return Config{}, fmt.Errorf("后台服务配置不可用（%s）", saved.Code)
+		}
+	}
+	cfg, err := loadSnapshot(raw)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := cfg.validate(false); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 // LoadSnapshot 从调用方已经原子读取的一份配置快照解析完整 Config。共享
 // 配置事务必须让 typed cfg、未知 JSON 字段与 CAS baseline 全部来自
 // 同一组 bytes；不能先 Load(path) 后再 ReadFile(path)，否则并发写入会把两代
@@ -399,6 +449,17 @@ func LoadSnapshot(raw []byte) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// LoadForLocalControl reads the committed private document and process overrides
+// without scanning projects. Control commands must still reach the daemon when
+// a workspace volume is disconnected or slow.
+func LoadForLocalControl(path string) (Config, error) {
+	raw, err := ReadPrivatePreflightFile(ExpandPath(path), 4<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	return loadRawWithoutProjectDiscovery(raw)
 }
 
 func LoadForDoctor(path string) (Config, error) {
@@ -447,8 +508,15 @@ func loadWithoutProjectDiscovery(path string) (Config, error) {
 }
 
 func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
+	return parseConfigDocument(raw, true)
+}
+
+func parseConfigDocument(raw []byte, environment bool) (Config, error) {
 	cfg := defaults()
 	if raw != nil {
+		sum := sha256.Sum256(raw)
+		cfg.sourceGeneration = hex.EncodeToString(sum[:])
+		cfg.pairingSettings = pairingSettingsDigest(raw)
 		if err := RejectLegacyAppServerConfiguration(raw); err != nil {
 			return Config{}, err
 		}
@@ -467,6 +535,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 				cfg.AppServer.SSHTarget = ""
 			}
 		}
+	}
+	if strings.TrimSpace(cfg.Codex.Bin) == "" {
+		cfg.Codex.Bin = "codex"
 	}
 	if cfg.Claude.MaxConcurrentBridges == 0 {
 		// Older setup versions serialized the disabled Claude section from a
@@ -487,7 +558,9 @@ func loadRawWithoutProjectDiscovery(raw []byte) (Config, error) {
 
 	cfg.Runtime.Type = normalizeRuntimeType(cfg.Runtime.Type)
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
-	applyEnv(&cfg)
+	if environment {
+		applyEnv(&cfg)
+	}
 	cfg.AppServer.Transport = normalizeTransport(cfg.AppServer.Transport)
 	if strings.EqualFold(cfg.AppServer.Transport, "ssh") && cfg.AppServer.SSHTarget == "" {
 		cfg.AppServer.SSHTarget = DefaultAppServerSSHTarget()
@@ -818,7 +891,9 @@ func discoverProjects(roots []string) ([]ProjectConfig, error) {
 			return nil, fmt.Errorf("解析扫描根目录失败 %s：%w", root, err)
 		}
 		entries, err := os.ReadDir(abs)
-		if err != nil {
+		// A saved mount may disappear between setup and restart. The registry
+		// keeps the missing root and revalidates it before granting access.
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("读取扫描根目录失败 %s：%w", abs, err)
 		}
 
@@ -911,6 +986,10 @@ func sanitizeID(raw string) string {
 }
 
 func (c Config) Validate() error {
+	return c.validate(true)
+}
+
+func (c Config) validate(requireProjects bool) error {
 	if c.Listen == "" {
 		return fmt.Errorf("listen 不能为空")
 	}
@@ -920,8 +999,8 @@ func (c Config) Validate() error {
 	if c.Auth.Token == "" && !c.DevInsecure {
 		return fmt.Errorf("AGENTD_TOKEN 或 auth.token 不能为空；开发临时绕过请设置 AGENTD_DEV_INSECURE=true")
 	}
-	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled()) {
-		return fmt.Errorf("dev_insecure 只允许 loopback listen 且不能启用局域网；远程访问必须使用 Bearer Token")
+	if c.DevInsecure && (!isLoopbackListen(c.moduleValidationListen()) || c.LANAccessEnabled() || c.TailscaleAccessEnabled() || c.Tailcat.Enabled) {
+		return fmt.Errorf("dev_insecure 只允许本机 loopback，远程访问必须使用 Bearer Token")
 	}
 	if c.Auth.Token != "" && len(c.Auth.Token) < 16 {
 		return fmt.Errorf("token 太短，建议至少 32 字符")
@@ -935,15 +1014,11 @@ func (c Config) Validate() error {
 	if c.Codex.IsEnabled() && c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
-	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {
-		return fmt.Errorf("claude.bridge_bin 不能为空")
-	}
+
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {
 		return fmt.Errorf("claude.max_concurrent_bridges 必须大于 0")
 	}
-	if c.Agy.Enabled && strings.TrimSpace(c.Agy.AdapterBin) == "" && !agybridge.BundledAvailable() {
-		return fmt.Errorf("agy.adapter_bin 不能为空")
-	}
+
 	if c.Agy.Enabled && c.Agy.MaxConcurrentSessions <= 0 {
 		return fmt.Errorf("agy.max_concurrent_sessions 必须大于 0")
 	}
@@ -970,7 +1045,7 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("runtime.type 只支持 codex_app_server")
 	}
-	if err := c.ValidateSharedCodexHome(); err != nil {
+	if err := c.validateSharedCodexHomePath(); err != nil {
 		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(c.AppServer.Transport)) {
@@ -1015,7 +1090,7 @@ func (c Config) Validate() error {
 			ErrAppServerTransportUnsupported,
 		)
 	}
-	if len(c.Projects) == 0 {
+	if requireProjects && len(c.Projects) == 0 {
 		return fmt.Errorf("projects 不能为空；可在 config.json 配置，或设置 AGENTD_PROJECTS=/path/a,/path/b 或 AGENTD_SCAN_ROOTS=/workspace")
 	}
 	if err := validateActions(c.Actions); err != nil {
@@ -1023,6 +1098,8 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+func IsManagedLoopbackWS(listen string) bool { return validateLoopbackWebSocketListen(listen) == nil }
 
 func validateLoopbackWebSocketListen(raw string) error {
 	value := strings.TrimSpace(raw)

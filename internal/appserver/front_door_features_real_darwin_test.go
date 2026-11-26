@@ -306,7 +306,7 @@ func startRealFeatureCodex(bin string, args []string, env map[string]string) (*r
 	isolatedEnv["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1"
 	isolatedEnv["OPENAI_API_KEY"] = ""
 	isolatedEnv["CODEX_API_KEY"] = ""
-	cmd.Env = buildManagedEnv(isolatedEnv)
+	cmd.Env = ManagedEnvironment(isolatedEnv)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, err
@@ -389,7 +389,7 @@ func requireRealFeatureCodex(t *testing.T) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	version, err := CheckLocalCodex(ctx, bin)
+	version, err := CheckLocalCodex(ctx, bin, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

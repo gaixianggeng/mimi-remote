@@ -94,7 +94,7 @@ func boundIPv6Loopback(host string) bool {
 	return ip != nil && ip.To4() == nil && ip.IsLoopback()
 }
 
-func fetchModuleStatusForCommand(endpoint, token string) (*config.ModuleStatus, moduleStatusFetchState) {
+func fetchModuleStatusForCommand(endpoint, token, configPath string) (*config.ModuleStatus, moduleStatusFetchState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/api/host/modules", nil)
@@ -102,7 +102,7 @@ func fetchModuleStatusForCommand(endpoint, token string) (*config.ModuleStatus, 
 		return nil, moduleStatusUnavailable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := coreHTTPClient(ctx, configPath)
 	defer client.CloseIdleConnections()
 	response, err := client.Do(req)
 	if err != nil {

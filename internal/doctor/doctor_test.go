@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 type fakeDoctorSSHTransport struct {
@@ -30,6 +34,9 @@ func (f fakeDoctorSSHTransport) EnsureReady(context.Context) error { return f.re
 func (fakeDoctorSSHTransport) SSHCheckCommand() string             { return "ssh 127.0.0.1 codex --version" }
 
 func TestMain(m *testing.M) {
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
 	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) {
 		return fakeDoctorSSHTransport{}, nil
 	}
@@ -139,6 +146,25 @@ func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunningReadinessRejectsDamagedPrivateConfigUntilRepaired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := []byte(`{"auth":{"token":"fixture-private-0123456789"},"app_server":{"transport":"ssh","ssh_target":"fixture.invalid"}}`)
+	configtest.CreatePrivateFile(t, path, raw)
+	saved := config.InspectCommittedDocument(raw)
+	if saved.Code != "" {
+		t.Fatal(saved.Code)
+	}
+	c := NewChecker("fixture", saved.Config, nil, path)
+	for _, data := range [][]byte{raw, []byte("{"), raw} {
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if result := c.RunReadiness(t.Context()); result.OK != bytes.Equal(data, raw) {
+			t.Fatal(result)
+		}
+	}
+}
+
 func TestDesignatedRequirementRejectsPerBuildCDHash(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -177,9 +203,10 @@ func TestCheckerFailsOnMissingCodexButIgnoresMissingTailscale(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	checker := newTestChecker(t, config.Config{
-		Listen: "127.0.0.1:8787",
-		Auth:   config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
-		Codex:  config.CodexConfig{Bin: "definitely-missing-codex"},
+		Listen:    "127.0.0.1:8787",
+		AppServer: config.AppServerConfig{Transport: "local"},
+		Auth:      config.AuthConfig{Token: "0123456789abcdef0123456789abcdef"},
+		Codex:     config.CodexConfig{Bin: "definitely-missing-codex"},
 		Projects: []config.ProjectConfig{{
 			ID:   "demo",
 			Name: "Demo",
@@ -311,9 +338,7 @@ func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
 	if config.SupportsManagedAppServer() {
 		appServerConfig = config.DefaultManagedAppServerConfig()
 		appServerConfig.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
-		if err := os.WriteFile(appServerConfig.WSTokenFile, []byte("local-capability-token\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, appServerConfig.WSTokenFile, []byte("local-capability-token\n"))
 	}
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
@@ -365,6 +390,7 @@ func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 			checker := newTestChecker(t, config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridge}})
+			checker.resolveRuntime = fixtureClaudeRuntime
 			check := checker.claudeBridgeCheck(context.Background())
 			if check.OK != test.wantOK || !strings.Contains(check.Message, test.want) {
 				t.Fatalf("Claude bridge 版本检查异常：%+v", check)
@@ -410,6 +436,7 @@ func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
 			BridgeBin: filepath.Join(t.TempDir(), "stale-bridge-path"),
 		},
 	})
+	checker.resolveRuntime = fixtureClaudeRuntime
 	check := checker.claudeBridgeCheck(context.Background())
 	if !check.OK || !strings.Contains(check.Message, "0.2.8 可用") {
 		t.Fatalf("Doctor 应回退检查 Mac App 随包 bridge：%+v", check)
@@ -502,9 +529,7 @@ func TestCheckerFailsWhenRemoteCodexVersionIsUnsupported(t *testing.T) {
 func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 	t.Run("secure regular file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "secret")
-		if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, path, []byte("secret"))
 		check := sensitiveFileCheck("secret", "敏感文件", path)
 		if !check.OK {
 			t.Fatalf("0600 regular file 应通过：%+v", check)
@@ -523,7 +548,7 @@ func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		check := sensitiveFileCheck("secret", "敏感文件", path)
-		if check.OK || !strings.Contains(check.Message, "权限过宽") {
+		if check.OK || !strings.Contains(check.Message, "权限不符合") {
 			t.Fatalf("group/other 有权限时应失败：%+v", check)
 		}
 	})
@@ -564,9 +589,7 @@ func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 
 func TestCheckerChecksConfigFileWithoutLegacyAppServerToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, configPath, []byte("{}"))
 	cfg := config.Config{
 		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 	}
@@ -612,7 +635,25 @@ func newTestChecker(t *testing.T, cfg config.Config) *Checker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewChecker("test-version", cfg, registry)
+	checker := NewChecker("test-version", cfg, registry)
+	discovery := setup.NewRuntimeDiscovery()
+	discovery.Home = t.TempDir()
+	discovery.LookPath = func(path string, _ []string) (string, error) {
+		if filepath.IsAbs(path) && path == cfg.Codex.Bin {
+			return exec.LookPath(path)
+		}
+		return "", exec.ErrNotFound
+	}
+	checker.resolveRuntime = discovery.Resolve
+	checker.findTailscale = func() (string, error) { return exec.LookPath("tailscale") }
+	return checker
+}
+
+func fixtureClaudeRuntime(_ context.Context, req setup.RuntimeRequest) (setup.RuntimeCandidate, error) {
+	if req.Name != "claude" {
+		return setup.RuntimeCandidate{}, exec.ErrNotFound
+	}
+	return setup.RuntimeCandidate{Version: "2.1.100"}, nil
 }
 
 func listenOnFreePort(t *testing.T) net.Listener {

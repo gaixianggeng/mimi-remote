@@ -13,7 +13,7 @@ type Status struct {
 }
 
 func (s Status) Ready() bool {
-	return s.FirewallValid && s.ProfilePrivate
+	return s.FirewallValid && s.ProfilePrivate && len(s.UnsafeRules) == 0
 }
 
 func (s Status) InterfaceLabel() string {

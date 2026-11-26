@@ -75,7 +75,7 @@ func (p *appServerReadinessProbe) Check(ctx context.Context) error {
 		p.inFlight = inFlight
 		p.mu.Unlock()
 
-		// 探测属于所有并发 readyz 的共享 single-flight，不绑定首个 HTTP 请求的取消；
+		// 探测属于所有并发诊断请求 的共享 single-flight，不绑定首个 HTTP 请求的取消；
 		// 即使首个轮询断开，其他等待者仍能在固定短超时内拿到同一结果。
 		probeCtx, cancel := context.WithTimeout(context.Background(), p.timeout)
 		err := p.probe(probeCtx)

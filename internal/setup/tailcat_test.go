@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigureTailcatPreservesUnknownConfiguration(t *testing.T) {
@@ -18,9 +21,7 @@ func TestConfigureTailcatPreservesUnknownConfiguration(t *testing.T) {
   "tailcat": {"enabled": false, "derp_map_url": "https://relay.example/map", "future": 7}
 }
 `)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 	result, err := ConfigureTailcat(configPath, true)
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +59,7 @@ func TestConfigureTailcatDERPMapSupportsCustomAndDefaultModes(t *testing.T) {
   "tailcat": {"enabled": true, "future": 7}
 }
 `)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 
 	configured, err := ConfigureTailcatDERPMap(configPath, "  https://relay.example/derpmap/default  ")
 	if err != nil {
@@ -104,9 +103,7 @@ func TestConfigureTailcatDERPMapSupportsCustomAndDefaultModes(t *testing.T) {
 func TestConfigureTailcatDERPMapRejectsUnsafeURLWithoutChangingConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"tailcat":{"enabled":true,"derp_map_url":"https://relay.example/map"}}`)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 	for _, candidate := range []string{
 		"http://relay.example/map",
 		"https://user:password@relay.example/map",
@@ -128,13 +125,11 @@ func TestConfigureTailcatDERPMapRejectsUnsafeURLWithoutChangingConfig(t *testing
 func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef"
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte(`{
+	configtest.CreatePrivateFile(t, configPath, []byte(`{
   "listen": "127.0.0.1:8787",
   "auth": {"token": "`+token+`"}
-}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := TailcatPairWithManagedHost(configPath, "tailcat-temporary-address", "", "", "", "")
+}`))
+	result, err := TailcatPairWithManagedHost(configPath, "tailcat-temporary-address", "", "", "", "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +144,11 @@ func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 	if query.Get("pair_sig") == "" || query.Get("expires_at") == "" {
 		t.Fatalf("Tailcat 配对链接缺少签名或有效期：%s", result.PairURL)
 	}
+	issued, issueErr := time.Parse(time.RFC3339Nano, query.Get("issued_at"))
+	expires, expiryErr := time.Parse(time.RFC3339Nano, query.Get("expires_at"))
+	if issueErr != nil || expiryErr != nil || expires.Sub(issued) != defaultPairingURLTTL || result.PairExpiresAt != query.Get("expires_at") {
+		t.Fatal("node lifetime exceeded the signed ticket TTL")
+	}
 	if query.Get("token") != "" || result.Token != "" || result.ConnectURL != "" {
 		t.Fatalf("Tailcat 配对不能暴露长期凭据：%+v", result)
 	}
@@ -157,19 +157,17 @@ func TestTailcatPairContainsOnlyShortLivedTicketAndPairAddress(t *testing.T) {
 func TestTailcatPairIncludesOnlyPublicManagedHostMetadata(t *testing.T) {
 	const token = "0123456789abcdef0123456789abcdef"
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte(`{
+	configtest.CreatePrivateFile(t, configPath, []byte(`{
   "listen": "127.0.0.1:8787",
   "auth": {"token": "`+token+`"}
-}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+}`))
 	result, err := TailcatPairWithManagedHost(
 		configPath,
 		"tailcat-temporary-address",
 		"20000000-0000-4000-8000-000000000001",
 		"nodekey:mac-public-key",
 		"nodekey:pair-public-key",
-		"tailcat-free-pair-address",
+		"tailcat-free-pair-address", time.Now().Add(time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -208,10 +206,8 @@ func TestTailcatPairCarriesRelayChoiceWithoutAuthorizingIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			result, err := TailcatPairWithManagedHost(path, "temporary-pair", "", "", "", "")
+			configtest.CreatePrivateFile(t, path, data)
+			result, err := TailcatPairWithManagedHost(path, "temporary-pair", "", "", "", "", time.Now().Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}

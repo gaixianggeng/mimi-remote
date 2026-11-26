@@ -180,11 +180,13 @@ func workspaceSessionLoadFailureDisposition(_ error: Error) -> WorkspaceSessionL
 struct WorkspaceCatalogRefreshScope: Equatable {
     let hostScope: HostScope
     let credentialsSuspended: Bool
+    var hasNoConfiguredHost: Bool = false
 }
 
 struct WorkspaceSessionRefreshScope: Equatable {
     let presentationKey: WorkspaceSessionPresentationKey?
     let needsInitialLoad: Bool
+    var hasNoConfiguredHost: Bool = false
 }
 
 /// Catalog 没有底层 single-flight；这里只隔离 View 调用的提交权，避免旧请求回写或把取消留成永久 loading。
@@ -202,6 +204,11 @@ struct WorkspaceCatalogLoadCoordinator {
 
     func isCurrent(_ invocationID: UUID) -> Bool {
         currentInvocationID == invocationID
+    }
+
+    mutating func reset() {
+        currentInvocationID = nil
+        state = .idle
     }
 
     @discardableResult
@@ -237,6 +244,35 @@ private struct WorkspaceGitInspectionTarget: Identifiable {
     }
 }
 
+/// 统一计算工作区根页（候选项目列表与工作区会话详情）的滚动底部边距（#1108）。
+///
+/// 规则与 `SessionListView` / `SettingsView` 一致：
+/// - 紧凑导航显式传入 `bottomContentMargin` 时直接使用（iPhone 底部 Tab 栏为 118pt，iPadOS 26 顶部 Tab 为 24pt）；
+/// - 未显式传入且处于底部 Tab 栏时回落到环境 `workbenchBottomChromeClearance`；
+/// - 宽屏或顶部 Tab 栏不额外预留底部 Tab 高度，仅在存在右下角浮起新建按钮时补充 FAB 让位高度。
+enum WorkspaceBottomContentMarginPolicy {
+    static func resolvedMargin(
+        explicitMargin: CGFloat?,
+        hasCompactTabBar: Bool,
+        hasBottomTabBar: Bool,
+        environmentClearance: CGFloat,
+        includesFloatingActionButtonAllowance: Bool
+    ) -> CGFloat {
+        let baseMargin: CGFloat
+        if let explicitMargin {
+            baseMargin = explicitMargin
+        } else if hasCompactTabBar && hasBottomTabBar {
+            baseMargin = environmentClearance
+        } else {
+            baseMargin = WorkbenchPageLayout.regularPadding
+        }
+        let fabAllowance: CGFloat = (includesFloatingActionButtonAllowance && !hasBottomTabBar)
+            ? WorkspaceSessionFabMetrics.contentBottomAllowance
+            : 0
+        return baseMargin + fabAllowance
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
     @EnvironmentObject private var appStore: AppStore
@@ -244,21 +280,26 @@ struct WorkspaceRootView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.workbenchBottomChromeClearance) private var bottomChromeClearance
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .callout) private var emptyActionSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .title3) private var emptyTitleSize: CGFloat = 20
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
     @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
     let manageConnections: (() -> Void)?
+    let onConnectComputer: (() -> Void)?
     let embedsNavigationStack: Bool
     // 完整调用边界包含目录发布后的 Git 尾部工作；供确定性测试观察，不影响加载态。
     private let onCatalogRefreshEvent: ((UUID, Bool) -> Void)?
     private let currentDate: () -> Date
     /// 重建前最后浏览的工作区；当前选择失效时优先回到它，而不是列表第一项。
     private let rememberedWorkspaceID: String?
+    private let bottomContentMargin: CGFloat?
     private let onWorkspaceSelectionChange: ((String?) -> Void)?
 
     @State private var selectedWorkspaceID: String?
@@ -273,7 +314,7 @@ struct WorkspaceRootView: View {
     /// canonical Store 可以持有超采样得到的额外 root；这里仅记录每个工作区已经向用户展开多少条。
     /// key 带 HostScope、路径和 Runtime，避免跨 Mac、目录身份或引擎复用旧窗口。
     @State private var workspaceSessionVisibleLimitByKey: [WorkspaceSessionPresentationKey: Int] = [:]
-    @State private var isPresentingOpenWorkspace = false
+    @StateObject private var openWorkspacePresenter: OpenWorkspaceSheetPresenter
     @State private var gitInspectionTarget: WorkspaceGitInspectionTarget?
     @State private var workspaceStripViewportWidth: CGFloat = 0
     /// 整条胶囊行的容器宽。与 `workspaceStripViewportWidth` 不同，它不受行内控件增减影响，
@@ -287,9 +328,12 @@ struct WorkspaceRootView: View {
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
         manageConnections: (() -> Void)? = nil,
+        onConnectComputer: (() -> Void)? = nil,
         embedsNavigationStack: Bool = true,
         appearanceStore: WorkspaceAppearanceStore? = nil,
+        openWorkspacePresenter: OpenWorkspaceSheetPresenter? = nil,
         initialWorkspaceID: String? = nil,
+        bottomContentMargin: CGFloat? = nil,
         onWorkspaceSelectionChange: ((String?) -> Void)? = nil,
         onCatalogRefreshEvent: ((UUID, Bool) -> Void)? = nil,
         currentDate: @escaping () -> Date = Date.init
@@ -297,13 +341,18 @@ struct WorkspaceRootView: View {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.manageConnections = manageConnections
+        self.onConnectComputer = onConnectComputer
         self.embedsNavigationStack = embedsNavigationStack
         self.onCatalogRefreshEvent = onCatalogRefreshEvent
         self.currentDate = currentDate
         self.rememberedWorkspaceID = initialWorkspaceID
+        self.bottomContentMargin = bottomContentMargin
         self.onWorkspaceSelectionChange = onWorkspaceSelectionChange
         _selectedSessionRuntime = selectedSessionRuntime
         _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
+        _openWorkspacePresenter = StateObject(
+            wrappedValue: openWorkspacePresenter ?? OpenWorkspaceSheetPresenter()
+        )
         // 初值来自 Shell 记住的浏览选择（或预览、快照的固定值）：首帧分页就停在该工作区，
         // 不会先渲染第一页再跳转；它不在目录中时由 synchronizeSelection 回落。
         _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
@@ -316,16 +365,19 @@ struct WorkspaceRootView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let isInNoHostEmptyState = appStore.hasNoConfiguredHost
         let catalogRefreshScope = WorkspaceCatalogRefreshScope(
             hostScope: appStore.activeHostScope,
-            credentialsSuspended: appStore.isCredentialMemorySuspended
+            credentialsSuspended: appStore.isCredentialMemorySuspended,
+            hasNoConfiguredHost: isInNoHostEmptyState
         )
         let selectedSessionPresentationKey = selectedProject.map(workspaceSessionPresentationKey(for:))
         let sessionRefreshScope = WorkspaceSessionRefreshScope(
             presentationKey: selectedSessionPresentationKey,
             needsInitialLoad: selectedSessionPresentationKey.map {
                 runtimeSessionPagesByKey[$0]?.hasLoadedFirstPage != true
-            } ?? false
+            } ?? false,
+            hasNoConfiguredHost: isInNoHostEmptyState
         )
 
         Group {
@@ -342,7 +394,8 @@ struct WorkspaceRootView: View {
         .onAppear { sessionRefreshOwner.activate() }
         .task(id: catalogRefreshScope) {
             // 后台会主动清空内存凭据；恢复完成发布 false 后，完整 scope 会确定性触发一次新刷新。
-            guard !catalogRefreshScope.credentialsSuspended else {
+            guard !catalogRefreshScope.credentialsSuspended,
+                  !catalogRefreshScope.hasNoConfiguredHost else {
                 return
             }
             migrateLegacyWorkspaceAppearance()
@@ -355,6 +408,13 @@ struct WorkspaceRootView: View {
         .onChange(of: appStore.activeHostScope) { _, _ in
             sessionRefreshOwner.cancelAll()
             cancelManualCatalogRefresh()
+        }
+        .onChange(of: appStore.hasNoConfiguredHost) { _, hasNoHost in
+            if hasNoHost {
+                sessionRefreshOwner.cancelAll()
+                cancelManualCatalogRefresh()
+                catalogLoad.reset()
+            }
         }
         .onChange(of: appStore.isCredentialMemorySuspended) { _, isSuspended in
             if isSuspended {
@@ -375,13 +435,15 @@ struct WorkspaceRootView: View {
             // 当前 Profile 一旦成为唯一匹配，就应立即恢复旧版自定义图标值。
             migrateLegacyWorkspaceAppearance()
         }
-        .task {
+        .task(id: isInNoHostEmptyState) {
+            guard !isInNoHostEmptyState else { return }
             // 两个新建入口先稳定渲染；Claude 通道能力独立在后台刷新，不能让网络往返
             // 决定按钮何时才出现在布局里。
             await sessionStore.refreshAppServerModelOptions()
         }
         .task(id: sessionRefreshScope) {
-            guard sessionRefreshScope.needsInitialLoad,
+            guard !sessionRefreshScope.hasNoConfiguredHost,
+                  sessionRefreshScope.needsInitialLoad,
                   let presentationKey = sessionRefreshScope.presentationKey,
                   let project = sessionStore.sidebarProjects.first(where: {
                       $0.id == presentationKey.workspaceID && $0.path == presentationKey.workspacePath
@@ -390,6 +452,7 @@ struct WorkspaceRootView: View {
             await refreshWorkspaceSessions(project: project, presentationKey: presentationKey)
         }
         .task(id: neighborPrefetchScope) {
+            guard !isInNoHostEmptyState else { return }
             // 当前页优先：等它自己的 task 先占住 single-flight，再补相邻页。
             for project in neighborWorkspaceProjects {
                 guard !Task.isCancelled else { return }
@@ -411,8 +474,8 @@ struct WorkspaceRootView: View {
             pagerTransitionState.update(pagePosition: nil)
             synchronizeSelection()
         }
-        .sheet(isPresented: $isPresentingOpenWorkspace) {
-            OpenWorkspaceSheet { workspaceID in
+        .sheet(item: $openWorkspacePresenter.presentation) { presentation in
+            OpenWorkspaceSheet(model: presentation.model) { workspaceID in
                 // 工作区页使用本地浏览选择；Sheet 成功打开目录后要显式切到新工作区，
                 // 不能依赖全局 selectedProjectID，否则会破坏浏览选择与会话上下文的解耦。
                 selectWorkspace(id: workspaceID)
@@ -471,7 +534,8 @@ struct WorkspaceRootView: View {
     /// 正文此刻是连接过渡或目录加载态：整块版面中央已经有一处"正在进行"的表达，
     /// 设备入口就不该再叠一枚转圈。判据与 `workspaceBrowser` 的分支完全同源。
     private var showsInPlaceConnectionProgress: Bool {
-        sessionStore.sidebarProjects.isEmpty
+        !appStore.hasNoConfiguredHost
+            && sessionStore.sidebarProjects.isEmpty
             && (sessionStore.isEstablishingConnection || catalogLoad.state == .loading)
     }
 
@@ -533,7 +597,7 @@ struct WorkspaceRootView: View {
     /// 因此两个加号不会互相冒充——一个添工作区，一个建会话。
     private func addWorkspaceChip(tokens: ThemeTokens) -> some View {
         Button {
-            isPresentingOpenWorkspace = true
+            presentOpenWorkspaceSheet()
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 14, weight: .medium))
@@ -564,10 +628,16 @@ struct WorkspaceRootView: View {
 
     @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
-        if sessionStore.sidebarProjects.isEmpty {
-            // 首次连接这台电脑期间，catalog/open 的失败只是本轮尝试的结果；此时展示
-            // "无法加载工作区" 会把仍在建立的连接说成结论。预热窗口结束后再落回原有空态。
+        if appStore.hasNoConfiguredHost {
+            UnpairedHostEmptyStateView(
+                context: .workspaces,
+                bottomContentMargin: suggestionsBottomContentMargin,
+                onConnectComputer: onConnectComputer ?? manageConnections
+            )
+        } else if sessionStore.sidebarProjects.isEmpty {
             if sessionStore.isEstablishingConnection {
+                // 首次连接这台电脑期间，catalog/open 的失败只是本轮尝试的结果；此时展示
+                // "无法加载工作区" 会把仍在建立的连接说成结论。预热窗口结束后再落回原有空态。
                 workspaceConnectingState(tokens: tokens)
             } else if catalogLoad.state == .loading {
                 workspaceLoadingState(tokens: tokens)
@@ -576,12 +646,14 @@ struct WorkspaceRootView: View {
                     WorkspaceSuggestionsView(
                         projects: sessionStore.projects,
                         onOpen: openSuggestedWorkspace,
-                        onBrowseOther: { isPresentingOpenWorkspace = true }
+                        onBrowseOther: presentOpenWorkspaceSheet
                     )
                     .padding(.horizontal, 20)
-                    .padding(.vertical, 24)
+                    .padding(.top, 24)
                 }
+                .contentMargins(.bottom, suggestionsBottomContentMargin, for: .scrollContent)
                 .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+                .workbenchClearBottomScrollEdge()
             } else {
                 workspaceEmptyState(tokens: tokens)
             }
@@ -730,53 +802,89 @@ struct WorkspaceRootView: View {
             isFailure = false
         }
         let tint = isFailure ? tokens.warning : tokens.accentText
+        let actionTitle = isFailure ? L10n.text("ui.reload") : L10n.text("ui.open_directory")
+        let actionSymbol = isFailure ? "arrow.clockwise" : "folder.badge.plus"
+        let actionShape = RoundedRectangle(
+            cornerRadius: dynamicTypeSize.isAccessibilitySize ? 12 : 22,
+            style: .continuous
+        )
+        let cardContent = VStack(spacing: 18) {
+            Image(systemName: emptyWorkspaceSymbol)
+                .font(themeStore.uiFont(size: 28, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+                .frame(width: 64, height: 64)
+                .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .accessibilityHidden(true)
 
-        return VStack(spacing: 0) {
-            Spacer(minLength: 40)
+            VStack(spacing: 7) {
+                Text(emptyWorkspaceTitle)
+                    .font(themeStore.uiFont(size: emptyTitleSize, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
 
-            VStack(spacing: 18) {
-                Image(systemName: emptyWorkspaceSymbol)
-                    .font(themeStore.uiFont(size: 28, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tint)
-                    .frame(width: 64, height: 64)
-                    .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                VStack(spacing: 7) {
-                    Text(emptyWorkspaceTitle)
-                        .font(themeStore.uiFont(.title3, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-
-                    Text(emptyWorkspaceMessage)
-                        .font(themeStore.uiFont(.callout))
-                        .foregroundStyle(tokens.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(2)
-                }
-
-                Button {
-                    if isFailure {
-                        Task { await refreshCatalog() }
-                    } else {
-                        isPresentingOpenWorkspace = true
-                    }
-                } label: {
-                    Label(isFailure ? L10n.text("ui.reload") : L10n.text("ui.open_directory"), systemImage: isFailure ? "arrow.clockwise" : "folder.badge.plus")
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .padding(.horizontal, 4)
-                }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(tokens.primaryActionForeground)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .tint(tokens.primaryAction)
-                .accessibilityIdentifier("workspace.emptyAction")
+                Text(emptyWorkspaceMessage)
+                    .font(themeStore.uiFont(size: emptyActionSize))
+                    .foregroundStyle(tokens.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: 420)
-            .padding(.horizontal, 32)
-            .padding(.vertical, 36)
 
-            Spacer(minLength: 40)
+            Button {
+                if isFailure {
+                    Task { await refreshCatalog() }
+                } else {
+                    presentOpenWorkspaceSheet()
+                }
+            } label: {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        Image(systemName: actionSymbol)
+                            .accessibilityHidden(true)
+                        Text(actionTitle)
+                            .fixedSize(horizontal: true, vertical: true)
+                    }
+                    VStack(spacing: 4) {
+                        Image(systemName: actionSymbol)
+                            .accessibilityHidden(true)
+                        Text(actionTitle)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .font(themeStore.uiFont(size: emptyActionSize, weight: .semibold))
+                .foregroundStyle(tokens.primaryActionForeground)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 11)
+                .frame(minWidth: 44, minHeight: 44)
+                .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil)
+                .background(tokens.primaryAction, in: actionShape)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityIdentifier("workspace.emptyAction")
+        }
+        .frame(maxWidth: 420)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 36)
+
+        return ViewThatFits(in: .vertical) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 40)
+                cardContent
+                Spacer(minLength: 40)
+            }
+            .padding(.bottom, suggestionsBottomContentMargin)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            ScrollView {
+                cardContent
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, suggestionsBottomContentMargin)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
@@ -1122,7 +1230,22 @@ struct WorkspaceRootView: View {
             },
             onOpenSession: { session in
                 onOpenSession(session)
-            }
+            },
+            bottomContentMargin: bottomContentMargin
+        )
+    }
+
+    private func presentOpenWorkspaceSheet() {
+        openWorkspacePresenter.present()
+    }
+
+    private var suggestionsBottomContentMargin: CGFloat {
+        WorkspaceBottomContentMarginPolicy.resolvedMargin(
+            explicitMargin: bottomContentMargin,
+            hasCompactTabBar: hasCompactTabBar,
+            hasBottomTabBar: hasBottomTabBar,
+            environmentClearance: bottomChromeClearance,
+            includesFloatingActionButtonAllowance: false
         )
     }
 
@@ -1201,6 +1324,7 @@ struct WorkspaceRootView: View {
     private var neighborPrefetchScope: String {
         (
             [appStore.activeHostScope.profileID,
+             appStore.hasNoConfiguredHost ? "no-host" : "host",
              selectedSessionRuntime.rawValue,
              selectedWorkspaceID ?? ""]
                 + neighborWorkspaceProjects.map(\.id)
@@ -1270,6 +1394,7 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
+        guard !appStore.hasNoConfiguredHost else { return }
         let invocationID = catalogLoad.begin()
         onCatalogRefreshEvent?(invocationID, false)
         defer { onCatalogRefreshEvent?(invocationID, true) }
@@ -1317,6 +1442,7 @@ struct WorkspaceRootView: View {
             SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
         }
         guard sessionRefreshOwner.isActive,
+              !appStore.hasNoConfiguredHost,
               !appStore.isCredentialMemorySuspended,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
@@ -1345,7 +1471,8 @@ struct WorkspaceRootView: View {
     ) async {
         // 有效手动操作在进入 owner 前也可能被 SwiftUI 取消等待者。
         // 页面 owner 的活动状态与 Store 的 Host/路径 lease 决定它是否还能启动。
-        guard !appStore.isCredentialMemorySuspended,
+        guard !appStore.hasNoConfiguredHost,
+              !appStore.isCredentialMemorySuspended,
               appStore.activeHostScope == presentationKey.hostScope,
               sessionStore.sidebarProjects.contains(where: {
                   $0.id == project.id && $0.path == presentationKey.workspacePath
@@ -1414,6 +1541,7 @@ struct WorkspaceRootView: View {
 
     private func startManualCatalogRefresh(hostScope: HostScope) {
         guard manualCatalogRefreshTask == nil,
+              !appStore.hasNoConfiguredHost,
               !appStore.isCredentialMemorySuspended,
               appStore.activeHostScope == hostScope else {
             return
@@ -1422,6 +1550,7 @@ struct WorkspaceRootView: View {
         manualCatalogRefreshInvocationID = invocationID
         manualCatalogRefreshTask = Task { @MainActor in
             guard !Task.isCancelled,
+                  !appStore.hasNoConfiguredHost,
                   appStore.activeHostScope == hostScope,
                   !appStore.isCredentialMemorySuspended else {
                 guard manualCatalogRefreshInvocationID == invocationID else { return }

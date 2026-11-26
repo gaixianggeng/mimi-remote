@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -54,7 +55,7 @@ func TestWindowsManagedServiceUsesExistingCurrentUserTask(t *testing.T) {
 
 func TestWindowsManagedServiceMissingTaskExplainsInstaller(t *testing.T) {
 	marker := installFakeWindowsCommands(t)
-	t.Setenv("AGENTD_FAKE_TASK_MISSING", "1")
+	t.Setenv("MIMI_TEST_FAKE_TASK_MISSING", "1")
 
 	err := runManagedServiceForPlatform("windows", "start", io.Discard, io.Discard)
 	if err == nil {
@@ -76,7 +77,7 @@ func TestWindowsManagedServiceMissingTaskExplainsInstaller(t *testing.T) {
 
 func TestWindowsManagedStartAlreadyRunningIsIdempotent(t *testing.T) {
 	installFakeWindowsCommands(t)
-	t.Setenv("AGENTD_FAKE_TASK_RUNNING", "1")
+	t.Setenv("MIMI_TEST_FAKE_TASK_RUNNING", "1")
 	var stderr strings.Builder
 	if err := runManagedServiceForPlatform("windows", "start", io.Discard, &stderr); err != nil {
 		t.Fatalf("已经运行的任务再次 start 应保持幂等：%v", err)
@@ -150,7 +151,7 @@ func TestWindowsManagedRestartEndsTaskBeforeStartingReplacement(t *testing.T) {
 
 func TestWindowsManagedStopWaitsForSchedulerToReportStopped(t *testing.T) {
 	marker := installFakeWindowsCommands(t)
-	t.Setenv("AGENTD_FAKE_TASK_STATE_TRANSITION", "1")
+	t.Setenv("MIMI_TEST_FAKE_TASK_STATE_TRANSITION", "1")
 	if err := runManagedServiceForPlatform("windows", "stop", io.Discard, io.Discard); err != nil {
 		t.Fatalf("Windows stop 失败：%v", err)
 	}
@@ -165,7 +166,7 @@ func TestWindowsManagedStopWaitsForSchedulerToReportStopped(t *testing.T) {
 
 func TestWindowsManagedStopDoesNotSwallowUnexpectedSchedulerError(t *testing.T) {
 	installFakeWindowsCommands(t)
-	t.Setenv("AGENTD_FAKE_TASK_END_DENIED", "1")
+	t.Setenv("MIMI_TEST_FAKE_TASK_END_DENIED", "1")
 	var stderr strings.Builder
 	err := runManagedServiceForPlatform("windows", "stop", io.Discard, &stderr)
 	if err == nil {
@@ -178,8 +179,8 @@ func TestWindowsManagedStopDoesNotSwallowUnexpectedSchedulerError(t *testing.T) 
 
 func TestWaitForWindowsManagedTaskStoppedTimesOutDuringPersistentTransition(t *testing.T) {
 	installFakeWindowsCommands(t)
-	t.Setenv("AGENTD_FAKE_TASK_STATE_ALWAYS_PENDING", "1")
-	err := waitForWindowsManagedTaskStopped("schtasks", io.Discard, io.Discard, 50*time.Millisecond)
+	t.Setenv("MIMI_TEST_FAKE_TASK_STATE_ALWAYS_PENDING", "1")
+	err := waitForWindowsManagedTaskStopped(context.Background(), "schtasks", io.Discard, io.Discard, 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "停止超时") {
 		t.Fatalf("Task Scheduler 持续过渡时必须超时失败：%v", err)
 	}
@@ -267,10 +268,10 @@ func installFakeWindowsCommands(t *testing.T) string {
 			return "", exec.ErrNotFound
 		}
 	}
-	windowsExecCommand = func(name string, args ...string) *exec.Cmd {
+	windowsExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		helperArgs := append([]string{"-test.run=TestWindowsCommandProbe", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], helperArgs...)
-		cmd.Env = append(os.Environ(), "AGENTD_WINDOWS_COMMAND_MARKER="+marker)
+		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
+		cmd.Env = append(os.Environ(), "MIMI_TEST_WINDOWS_COMMAND_MARKER="+marker)
 		return cmd
 	}
 	windowsManagedPIDMatchesExecutable = func(int) bool { return true }
@@ -286,7 +287,7 @@ func TestWindowsCommandProbe(t *testing.T) {
 	if len(os.Args) < 4 || os.Args[2] != "--" {
 		return
 	}
-	marker := os.Getenv("AGENTD_WINDOWS_COMMAND_MARKER")
+	marker := os.Getenv("MIMI_TEST_WINDOWS_COMMAND_MARKER")
 	file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -299,18 +300,18 @@ func TestWindowsCommandProbe(t *testing.T) {
 	if os.Args[3] == "schtasks" && len(commandArgs) > 0 {
 		switch commandArgs[0] {
 		case "/Query":
-			if os.Getenv("AGENTD_FAKE_TASK_MISSING") == "1" {
+			if os.Getenv("MIMI_TEST_FAKE_TASK_MISSING") == "1" {
 				fmt.Fprintln(os.Stderr, "ERROR: The system cannot find the file specified.")
 				os.Exit(1)
 			}
 			fmt.Fprintln(os.Stdout, "TaskName: Mimi Remote agentd")
 		case "/Run":
-			if os.Getenv("AGENTD_FAKE_TASK_RUNNING") == "1" {
+			if os.Getenv("MIMI_TEST_FAKE_TASK_RUNNING") == "1" {
 				fmt.Fprintln(os.Stderr, "ERROR: The task is already running.")
 				os.Exit(1)
 			}
 		case "/End":
-			if os.Getenv("AGENTD_FAKE_TASK_END_DENIED") == "1" {
+			if os.Getenv("MIMI_TEST_FAKE_TASK_END_DENIED") == "1" {
 				fmt.Fprintln(os.Stderr, "ERROR: Access is denied.")
 				os.Exit(1)
 			}
@@ -320,11 +321,11 @@ func TestWindowsCommandProbe(t *testing.T) {
 	}
 	if os.Args[3] == "powershell.exe" {
 		if strings.Contains(strings.Join(commandArgs, " "), "Get-ScheduledTask") {
-			if os.Getenv("AGENTD_FAKE_TASK_STATE_ALWAYS_PENDING") == "1" {
+			if os.Getenv("MIMI_TEST_FAKE_TASK_STATE_ALWAYS_PENDING") == "1" {
 				fmt.Fprint(os.Stdout, "Running")
 				os.Exit(0)
 			}
-			if os.Getenv("AGENTD_FAKE_TASK_STATE_TRANSITION") == "1" {
+			if os.Getenv("MIMI_TEST_FAKE_TASK_STATE_TRANSITION") == "1" {
 				raw, _ := os.ReadFile(marker)
 				if strings.Count(string(raw), "Get-ScheduledTask") == 1 {
 					fmt.Fprint(os.Stdout, "Running")

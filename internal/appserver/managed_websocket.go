@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 type ManagedWebSocketOptions struct {
@@ -45,16 +47,31 @@ type ManagedWebSocketProcess struct {
 
 const defaultManagedWebSocketEarlyExitGrace = 2 * time.Second
 
-func CheckLocalCodex(ctx context.Context, configuredBin string) (string, error) {
+// ParseCodexBanner validates the product name before interpreting its version.
+func ParseCodexBanner(output string) (string, bool) {
+	for line := range strings.Lines(output) {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && (strings.EqualFold(fields[0], "codex-cli") || strings.EqualFold(fields[0], "codex")) {
+			if version, ok := ParseCodexVersion(fields[1]); ok {
+				return version, true
+			}
+		}
+	}
+	return "", false
+}
+
+func CheckLocalCodex(ctx context.Context, configuredBin string, env map[string]string) (string, error) {
 	bin := strings.TrimSpace(configuredBin)
 	if bin == "" {
 		bin = "codex"
 	}
-	output, err := exec.CommandContext(ctx, bin, "--version").CombinedOutput()
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	output, err := cliinspect.Run(ctx, bin, ManagedEnvironment(env), "--version")
 	if err != nil {
 		return "", fmt.Errorf("Codex CLI 版本检查失败：%w", err)
 	}
-	version, ok := ParseCodexVersion(string(output))
+	version, ok := ParseCodexBanner(output)
 	if !ok {
 		return "", errors.New("Codex CLI 版本输出无法解析")
 	}
@@ -73,7 +90,7 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := CheckLocalCodex(ctx, bin); err != nil {
+	if _, err := CheckLocalCodex(ctx, bin, options.Env); err != nil {
 		return nil, fmt.Errorf("拒绝启动不兼容的 Codex app-server：%w", err)
 	}
 	tokenFile := strings.TrimSpace(options.WSTokenFile)
@@ -88,7 +105,7 @@ func StartManagedWebSocket(ctx context.Context, options ManagedWebSocketOptions)
 		"--ws-auth", "capability-token", "--ws-token-file", tokenFile,
 	)
 	configureManagedCommand(cmd)
-	cmd.Env = buildManagedEnv(options.Env)
+	cmd.Env = ManagedEnvironment(options.Env)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("创建 app-server stderr 失败：%w", err)

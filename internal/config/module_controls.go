@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net"
 	"strings"
 )
@@ -8,7 +11,7 @@ import (
 func (c CodexConfig) IsEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 func (c Config) HasEnabledAgent() bool {
-	return c.Codex.IsEnabled() || c.Claude.Enabled || c.Agy.Enabled
+	return c.Codex.IsEnabled() || c.Claude.Enabled || c.Agy.Enabled || c.DeepSeek.Enabled
 }
 
 // Independent ingress controls are opt-in, so upgrading does not change an
@@ -62,4 +65,37 @@ type ModuleStatus struct {
 	LANEnabled         bool `json:"lan_enabled"`
 	TailscaleAvailable bool `json:"tailscale_available"`
 	LANAvailable       bool `json:"lan_available"`
+}
+
+// SamePairingSettings compares the committed document apart from the four
+// Tailcat fields the sidecar applies live. The caller checks their live values.
+func (c Config) SamePairingSettings(other Config) bool {
+	return c.pairingSettings != "" && c.pairingSettings == other.pairingSettings
+}
+
+func pairingSettingsDigest(raw []byte) string {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil || doc == nil {
+		return ""
+	}
+	if tail, ok := doc["tailcat"]; ok {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(tail, &fields) != nil {
+			return ""
+		}
+		for _, key := range []string{"enabled", "mode", "derp_map_url", "previous_derp_map_url"} {
+			delete(fields, key)
+		}
+		if len(fields) == 0 {
+			delete(doc, "tailcat")
+		} else {
+			doc["tailcat"], _ = json.Marshal(fields)
+		}
+	}
+	normalized, err := json.Marshal(doc)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(normalized)
+	return hex.EncodeToString(sum[:])
 }

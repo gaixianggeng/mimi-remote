@@ -802,3 +802,55 @@ func runtimeStatusCodexResponder(t *testing.T) func(*websocket.Conn, int, []byte
 		}
 	}
 }
+
+func TestRuntimeRefreshTimeoutCannotPublishLateEvidence(t *testing.T) {
+	var probes atomic.Int32
+	cache := newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		if probes.Add(1) > 1 {
+			<-ctx.Done()
+		}
+		now := time.Now().UTC()
+		return runtimeStatusResponse{CheckedAt: &now, Runtimes: []runtimeAccountStatus{{ID: "codex", State: runtimeStateConnected}}}
+	}, func() runtimeStatusResponse { return runtimeStatusResponse{} })
+	cache.timeout = 100 * time.Millisecond
+	t.Cleanup(cache.Close)
+	first := cache.Refresh(t.Context())
+	late := cache.Refresh(t.Context())
+	if first.CheckedAt == nil || late.CheckedAt == nil || !late.Stale || !late.CheckedAt.Equal(*first.CheckedAt) {
+		t.Fatalf("late observation was marked fresh: first=%+v late=%+v", first, late)
+	}
+}
+
+func TestSlowAssistantCannotDiscardTimelyAccountEvidence(t *testing.T) {
+	var workers runtimeProbeWorkers
+	release := make(chan struct{})
+	var slowCalls atomic.Int32
+	probes := map[string]runtimeMemberProbe{
+		"deepseek": {time.Second, func(context.Context) runtimeAccountStatus {
+			return runtimeAccountStatus{ID: "deepseek", Enabled: true, State: runtimeStateConnected}
+		}},
+		"agy": {time.Second, func(context.Context) runtimeAccountStatus {
+			slowCalls.Add(1)
+			<-release
+			return runtimeAccountStatus{ID: "agy", Enabled: true, State: runtimeStateConnected}
+		}},
+	}
+	placeholder := func() runtimeStatusResponse {
+		return runtimeStatusResponse{Runtimes: []runtimeAccountStatus{
+			{ID: "deepseek", Enabled: true, State: runtimeStateUnavailable},
+			{ID: "agy", Enabled: true, State: runtimeStateUnavailable},
+		}}
+	}
+	cache := newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		return workers.collect(ctx, placeholder(), probes)
+	}, placeholder)
+	defer func() { close(release); cache.Close(); workers.wg.Wait() }()
+	cache.timeout = 150 * time.Millisecond
+	for range 3 {
+		result := cache.Refresh(t.Context())
+		if result.Stale || result.Runtimes[1].State != runtimeStateUnavailable ||
+			cache.preflightAccounts()["deepseek"] != "connected" || slowCalls.Load() != 1 {
+			t.Fatalf("mixed generation %+v, slow workers %d", result, slowCalls.Load())
+		}
+	}
+}

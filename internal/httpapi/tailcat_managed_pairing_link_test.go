@@ -19,6 +19,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -61,7 +62,7 @@ func (s *linkTestSidecar) Pair(ctx context.Context) (tailcatStatus, error) {
 
 func newLinkTestServer(t *testing.T) (testServer, *linkTestSidecar, *managedPairingController) {
 	t.Helper()
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	r := server.router
 	r.configPath = filepath.Join(t.TempDir(), "config.json")
 	r.installationID = testManagedInstallationID
@@ -69,9 +70,7 @@ func newLinkTestServer(t *testing.T) (testServer, *linkTestSidecar, *managedPair
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(r.configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, r.configPath, raw)
 	s := &linkTestSidecar{fakeTailcatSidecar: fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true, Running: true, Mode: config.TailcatModeSelfHosted,
 		Address: "tailcat:test-stable", PublicKey: testManagedMacKey,
@@ -147,9 +146,7 @@ func TestTailcatManagedPairingLinkEnablesAndSwitchesRealSidecar(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", false)
 			if tc.clients {
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 			}
 			if tc.enabled {
 				if _, err := agentsetup.ConfigureTailcat(s.configPath, true); err != nil {
@@ -159,7 +156,7 @@ func TestTailcatManagedPairingLinkEnablesAndSwitchesRealSidecar(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			server := newTestServer(t)
+			server := newPairingTestServer(t)
 			r := server.router
 			r.tailcat, r.managedPairing, r.configPath, r.installationID = s, c, s.configPath, testManagedInstallationID
 			// 免费设备不受影响，所以不再需要确认。
@@ -199,7 +196,7 @@ func assertManagedPairingLink(t *testing.T, response *httptest.ResponseRecorder,
 		t.Fatal(err)
 	}
 	// CLI 使用相同构造器。仅签发时间不同；逐项比较其余字段，再独立验证真实签名。
-	cli, err := agentsetup.TailcatPairWithManagedHost(configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress)
+	cli, err := agentsetup.TailcatPairWithManagedHost(configPath, status.PairAddress, status.MacInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +213,7 @@ func assertManagedPairingLink(t *testing.T, response *httptest.ResponseRecorder,
 	ticketExpiry, _ := time.Parse(time.RFC3339Nano, ticket.ExpiresAt)
 	nodeExpiry, _ := time.Parse(time.RFC3339Nano, status.PairExpiresAt)
 	if body.Mode != config.TailcatModeManaged || parseErr != nil || !expires.After(time.Now()) ||
-		expires.After(ticketExpiry) || expires.After(nodeExpiry) || strings.Contains(body.PairURL, testToken) {
+		!expires.Equal(ticketExpiry) || expires.After(nodeExpiry) || strings.Contains(body.PairURL, testToken) {
 		t.Fatal("链接的模式、过期时间或凭证边界不符")
 	}
 	for _, field := range []string{"issued_at", "expires_at", "pair_sig"} {
@@ -233,9 +230,7 @@ func assertManagedPairingLink(t *testing.T, response *httptest.ResponseRecorder,
 func TestTailcatManagedPairingLinkModeFailureRollsBackRealSidecar(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", false)
-	if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +242,7 @@ func TestTailcatManagedPairingLinkModeFailureRollsBackRealSidecar(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(s.stateDir, "fail-start-url"), []byte(testOfficialRelayURL), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	r := server.router
 	r.tailcat, r.managedPairing, r.configPath = s, c, s.configPath
 	response := requestManagedPairingLink(t, server, true)

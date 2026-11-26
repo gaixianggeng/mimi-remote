@@ -237,7 +237,7 @@ func canGracefullyDrainFrontDoorOrphan(ctx context.Context, process sharedLocalR
 		return errors.New("旧 Codex 启动后可执行文件已更新")
 	}
 	// Codex 0.149.1 起已核对：重复 SIGHUP 不会把 drain 升级成强制退出。
-	_, err = CheckLocalCodex(ctx, path)
+	_, err = CheckLocalCodex(ctx, path, nil)
 	return err
 }
 

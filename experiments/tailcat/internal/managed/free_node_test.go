@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"tailscale.com/types/key"
 )
@@ -168,7 +169,7 @@ func TestPairingStartsBothNodesAndClosesThemTogether(t *testing.T) {
 		t.Fatalf("免费配对节点配置错误：%+v", config)
 	}
 	freePair := starter.host("free-pair")
-	if err := os.WriteFile(filepath.Join(manager.config.StateDir, "free-pair.address"), []byte("x"), 0o600); err != nil {
+	if err := privatefile.Write(filepath.Join(manager.config.StateDir, "free-pair.address"), []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()

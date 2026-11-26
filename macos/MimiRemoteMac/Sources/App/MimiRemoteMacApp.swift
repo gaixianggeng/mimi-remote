@@ -35,9 +35,12 @@ enum MimiRemoteMacMain {
             let alert = NSAlert()
             alert.messageText = "请先安装 Mimi Remote Mac"
             alert.informativeText = error
+            alert.addButton(withTitle: ServiceManagementClient.openApplicationsFolderButtonTitle)
             alert.addButton(withTitle: "退出")
             app.activate(ignoringOtherApps: true)
-            alert.runModal()
+            if alert.runModal() == .alertFirstButtonReturn {
+                ServiceManagementClient.openApplicationsFolder()
+            }
             return
         }
         MimiRemoteMacApp.main()

@@ -36,6 +36,7 @@ func TestClaudeFullAccessRejectsOldBridgeWithUpgradeHint(t *testing.T) {
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{
 		Enabled: true, BridgeBin: writeTestBridgeWithVersion(t, "0.2.12"),
 	}}}
+	configureTestClaudeCLI(t, &router.cfg.Claude)
 	_, err := router.validateGatewayPolicyParams("claude", "thread/start", map[string]any{
 		"approvalPolicy": "never", "sandbox": "danger-full-access",
 	})
@@ -48,6 +49,7 @@ func TestOldClaudeBridgeAcceptsPassiveResumeAndOrdinaryTurns(t *testing.T) {
 	cfg, registry, _, cwd := appServerGatewayBaseFixture(t)
 	cfg.Claude = config.ClaudeConfig{Enabled: true, BridgeBin: writeTestBridgeWithVersion(t, "0.2.12")}
 	router := &Router{cfg: cfg, projects: registry}
+	configureTestClaudeCLI(t, &router.cfg.Claude)
 	_, err := router.validateGatewayPolicyParams("claude", "thread/resume", map[string]any{
 		"threadId": "test-thread", "cwd": cwd, "approvalPolicy": "on-request", "sandbox": "workspace-write",
 	})
