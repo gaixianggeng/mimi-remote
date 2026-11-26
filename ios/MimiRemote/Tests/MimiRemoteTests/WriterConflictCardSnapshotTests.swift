@@ -102,47 +102,80 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         )
     }
 
-    func testSharedGuideSheetCompactLight() {
-        let suiteName = "WriterConflictCardSnapshotTests.Guide.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        let themeStore = ThemeStore(defaults: defaults)
-        themeStore.mode = .light
-
-        let view = WriterConflictSharedGuideSheet(
+    func testSharedGuideSheetCompactLight() async throws {
+        let image = try await renderGuideSheetInWindow(
+            size: CGSize(width: 390, height: 600),
             sourceIsRunning: false,
             availability: .available(lastTurnID: nil)
         )
-        .environmentObject(themeStore)
-        .environment(\.colorScheme, .light)
-        .frame(width: 390, height: 600)
-
-        assertSnapshot(
-            of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 600))
-        )
+        assertSnapshot(of: image, as: .image(precision: 0.98))
     }
 
-    func testSharedGuideSheetNarrowAccessibility3() {
-        let suiteName = "WriterConflictCardSnapshotTests.GuideA11y.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+    func testSharedGuideSheetNarrowAccessibility3() async throws {
+        let image = try await renderGuideSheetInWindow(
+            size: CGSize(width: 320, height: 640),
+            dynamicTypeSize: .accessibility3,
+            sourceIsRunning: true,
+            availability: .available(lastTurnID: "turn-terminal")
+        )
+        assertSnapshot(of: image, as: .image(precision: 0.98))
+    }
+
+    private func renderGuideSheetInWindow(
+        size: CGSize,
+        dynamicTypeSize: DynamicTypeSize = .large,
+        sourceIsRunning: Bool,
+        availability: WriterConflictForkAvailability?
+    ) async throws -> UIImage {
+        let suiteName = "WriterConflictCardSnapshotTests.Guide.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let themeStore = ThemeStore(defaults: defaults)
         themeStore.mode = .light
 
         let view = WriterConflictSharedGuideSheet(
-            sourceIsRunning: true,
-            availability: .available(lastTurnID: "turn-terminal")
+            sourceIsRunning: sourceIsRunning,
+            availability: availability
         )
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
-        .environment(\.dynamicTypeSize, .accessibility3)
-        .frame(width: 320, height: 640)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .environment(\.horizontalSizeClass, .compact)
 
-        assertSnapshot(
-            of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 640))
+        // NavigationStack + Toolbar 在 iOS 26 离屏快照下无法稳定同步导航栏浅色外观与完成按钮；
+        // 放进显式浅色 UIWindow 并以 drawHierarchy 截取，确保 iOS 26/27 导航栏与按钮一致。
+        let host = UIHostingController(rootView: view)
+        host.overrideUserInterfaceStyle = .light
+        host.safeAreaRegions = []
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
         )
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(origin: .zero, size: size)
+        window.overrideUserInterfaceStyle = .light
+        window.traitOverrides.horizontalSizeClass = .compact
+        window.rootViewController = host
+        let animationsWereEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKey()
+            UIView.setAnimationsEnabled(animationsWereEnabled)
+        }
+
+        host.view.frame = window.bounds
+        for _ in 0..<20 {
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+        }
     }
 
     private func makeCard(

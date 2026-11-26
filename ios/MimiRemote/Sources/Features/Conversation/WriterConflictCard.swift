@@ -1,6 +1,23 @@
 import SwiftUI
 
 struct WriterConflictCard: View {
+    struct SharedGuideAccessibilityDescriptor: Equatable {
+        let visibleTitle: String
+        let label: String
+        let hint: String
+        let identifier: String
+    }
+
+    static var sharedGuideAccessibility: SharedGuideAccessibilityDescriptor {
+        let link = L10n.text("ui.writer_conflict_shared_guide_link")
+        return SharedGuideAccessibilityDescriptor(
+            visibleTitle: link,
+            label: link,
+            hint: L10n.text("ui.writer_conflict_shared_guide_title"),
+            identifier: "writerConflict.sharedGuideButton"
+        )
+    }
+
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.themeInterfaceStyle) private var interfaceStyle
@@ -75,6 +92,11 @@ struct WriterConflictCard: View {
             )
         )
         .accessibilityElement(children: .contain)
+        .attachWriterConflictCardBridge(
+            onOpenSharedGuide: openSharedGuideAction,
+            onRetry: onRetry,
+            onPrimary: primaryAction
+        )
         .sheet(isPresented: $showingSharedGuide) {
             WriterConflictSharedGuideSheet(
                 sourceIsRunning: sourceIsRunning,
@@ -136,20 +158,23 @@ struct WriterConflictCard: View {
         }
     }
 
+    private func openSharedGuideAction() {
+        if let onOpenSharedGuide {
+            onOpenSharedGuide()
+        } else {
+            showingSharedGuide = true
+        }
+    }
+
     private func sharedGuideButton(
         tokens: ThemeTokens,
         alignment: Alignment,
         preventsTextWrapping: Bool
     ) -> some View {
-        Button {
-            if let onOpenSharedGuide {
-                onOpenSharedGuide()
-            } else {
-                showingSharedGuide = true
-            }
-        } label: {
+        let accessibility = Self.sharedGuideAccessibility
+        return Button(action: openSharedGuideAction) {
             HStack(spacing: 3) {
-                Text(L10n.text("ui.writer_conflict_shared_guide_link"))
+                Text(accessibility.visibleTitle)
                 Image(systemName: "chevron.right")
                     .writerConflictFont(.caption2, weight: .semibold)
                     .accessibilityHidden(true)
@@ -161,12 +186,13 @@ struct WriterConflictCard: View {
             // 大字号辅助功能模式下保留完整排版高度避免文字重叠。
             .frame(minWidth: 44, minHeight: 44, alignment: alignment)
             .contentShape(Rectangle())
+            .reportWriterConflictHitTarget(accessibility.identifier)
         }
         .buttonStyle(.plain)
         .padding(.vertical, dynamicTypeSize.isAccessibilitySize ? 0 : -10)
-        .accessibilityLabel(L10n.text("ui.writer_conflict_shared_guide_link"))
-        .accessibilityHint(L10n.text("ui.writer_conflict_shared_guide_title"))
-        .accessibilityIdentifier("writerConflict.sharedGuideButton")
+        .accessibilityLabel(accessibility.label)
+        .accessibilityHint(accessibility.hint)
+        .accessibilityIdentifier(accessibility.identifier)
     }
 
     private var messageBody: String {
@@ -261,6 +287,7 @@ struct WriterConflictCard: View {
                 minHeight: 44
             )
             .contentShape(Rectangle())
+            .reportWriterConflictHitTarget("writerConflict.retryButton")
         }
         .buttonStyle(.plain)
         .disabled(isBusy)
@@ -306,6 +333,7 @@ struct WriterConflictCard: View {
                 minHeight: 44
             )
             .contentShape(Rectangle())
+            .reportWriterConflictHitTarget("writerConflict.primaryButton")
         }
         .buttonStyle(.plain)
         .disabled(primaryDisabled)
@@ -382,6 +410,20 @@ private struct WriterConflictCardChromeModifier: ViewModifier {
 }
 
 struct WriterConflictSharedGuideSheet: View {
+    struct SectionModel: Equatable, Identifiable {
+        enum IconTint: Equatable {
+            case warning
+            case primary
+        }
+
+        let id: String
+        let icon: String
+        let iconTint: IconTint
+        let title: String
+        let body: String
+        let isAccessibilityHeader: Bool
+    }
+
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
@@ -424,38 +466,60 @@ struct WriterConflictSharedGuideSheet: View {
         }
     }
 
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let nowBodyKey = Self.nowSectionBodyKey(
+    static func sections(
+        sourceIsRunning: Bool,
+        availability: WriterConflictForkAvailability?,
+        conflictResolved: Bool = false
+    ) -> [SectionModel] {
+        let nowBodyKey = nowSectionBodyKey(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
             conflictResolved: conflictResolved
         )
+        return [
+            SectionModel(
+                id: "why",
+                icon: "lock",
+                iconTint: .warning,
+                title: L10n.text("ui.writer_conflict_shared_guide_why_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_why_body"),
+                isAccessibilityHeader: true
+            ),
+            SectionModel(
+                id: "mac",
+                icon: "arrow.triangle.2.circlepath",
+                iconTint: .primary,
+                title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
+                isAccessibilityHeader: true
+            ),
+            SectionModel(
+                id: "now",
+                icon: "arrow.branch",
+                iconTint: .primary,
+                title: L10n.text("ui.writer_conflict_shared_guide_now_title"),
+                body: L10n.text(nowBodyKey),
+                isAccessibilityHeader: true
+            )
+        ]
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let sections = Self.sections(
+            sourceIsRunning: sourceIsRunning,
+            availability: availability,
+            conflictResolved: conflictResolved
+        )
+        let nowBody = sections.last?.body ?? ""
+        let headerTitles = sections.filter(\.isAccessibilityHeader).map(\.title)
 
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    sectionCard(
-                        icon: "lock",
-                        iconColor: tokens.writerConflictWarningIcon,
-                        title: L10n.text("ui.writer_conflict_shared_guide_why_title"),
-                        body: L10n.text("ui.writer_conflict_shared_guide_why_body"),
-                        tokens: tokens
-                    )
-                    sectionCard(
-                        icon: "arrow.triangle.2.circlepath",
-                        iconColor: tokens.primaryText,
-                        title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
-                        body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
-                        tokens: tokens
-                    )
-                    sectionCard(
-                        icon: "arrow.branch",
-                        iconColor: tokens.primaryText,
-                        title: L10n.text("ui.writer_conflict_shared_guide_now_title"),
-                        body: L10n.text(nowBodyKey),
-                        tokens: tokens
-                    )
+                    ForEach(sections) { section in
+                        sectionCard(section, tokens: tokens)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
@@ -463,6 +527,9 @@ struct WriterConflictSharedGuideSheet: View {
             .background(tokens.background)
             .navigationTitle(L10n.text("ui.writer_conflict_shared_guide_title"))
             .navigationBarTitleDisplayMode(.inline)
+            // 引导弹层单独使用主题画布底色，导航栏标题与完成按钮必须同步跟随该配色，
+            // 避免系统深色/浅色切换或离屏渲染时标题退回白字白底。
+            .toolbarColorScheme(colorScheme, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L10n.text("ui.done")) {
@@ -472,21 +539,25 @@ struct WriterConflictSharedGuideSheet: View {
                 }
             }
         }
+        .preferredColorScheme(themeStore.preferredColorScheme)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .attachWriterConflictGuideBridge(
+            dismiss: { dismiss() },
+            nowBody: nowBody,
+            headerTitles: headerTitles
+        )
     }
 
     private func sectionCard(
-        icon: String,
-        iconColor: Color,
-        title: String,
-        body: String,
+        _ section: SectionModel,
         tokens: ThemeTokens
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let iconColor = section.iconTint == .warning ? tokens.writerConflictWarningIcon : tokens.primaryText
 
         return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
+            Image(systemName: section.icon)
                 .writerConflictFont(.body, weight: .semibold)
                 .foregroundStyle(iconColor)
                 .frame(width: sectionIconSlot, height: sectionIconSlot)
@@ -494,12 +565,12 @@ struct WriterConflictSharedGuideSheet: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(title)
+                Text(section.title)
                     .writerConflictFont(.subheadline, weight: .semibold)
                     .foregroundStyle(tokens.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
-                Text(body)
+                    .accessibilityAddTraits(section.isAccessibilityHeader ? .isHeader : [])
+                Text(section.body)
                     .writerConflictFont(.footnote, weight: .regular)
                     .foregroundStyle(tokens.writerConflictBodyText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -554,4 +625,237 @@ private extension View {
     func writerConflictFont(_ style: Font.TextStyle, weight: Font.Weight = .regular) -> some View {
         modifier(WriterConflictDynamicFontModifier(style: style, weight: weight))
     }
+
+    @ViewBuilder
+    func reportWriterConflictHitTarget(_ identifier: String) -> some View {
+        #if DEBUG
+        modifier(WriterConflictHitTargetReporter(identifier: identifier))
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func attachWriterConflictCardBridge(
+        onOpenSharedGuide: @escaping () -> Void,
+        onRetry: @escaping () -> Void,
+        onPrimary: @escaping () -> Void
+    ) -> some View {
+        #if DEBUG
+        modifier(
+            WriterConflictCardBridgeModifier(
+                onOpenSharedGuide: onOpenSharedGuide,
+                onRetry: onRetry,
+                onPrimary: onPrimary
+            )
+        )
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func attachWriterConflictGuideBridge(
+        dismiss: @escaping () -> Void,
+        nowBody: String,
+        headerTitles: [String]
+    ) -> some View {
+        #if DEBUG
+        modifier(
+            WriterConflictGuideBridgeModifier(
+                dismiss: dismiss,
+                nowBody: nowBody,
+                headerTitles: headerTitles
+            )
+        )
+        #else
+        self
+        #endif
+    }
 }
+
+#if DEBUG
+/// 普通 XCTest 宿主在 iOS 26 上不主动构建 SwiftUI 私有无障碍节点树；测试通过该轻量桥接
+/// 观测真实布局尺寸、渲染文案并触发与界面按钮一致的操作闭包，Release 构建完全不包含。
+@MainActor
+final class WriterConflictInteractionBridge {
+    private(set) var cardIsMounted = false
+    private var cardMountToken: UUID?
+    private(set) var guideIsMounted = false
+    private var guideMountToken: UUID?
+    private(set) var buttonSizes: [String: CGSize] = [:]
+    private(set) var latestGuideNowBody: String?
+    private(set) var latestGuideHeaderTitles: [String] = []
+    private(set) var openSharedGuide: (() -> Void)?
+    private(set) var retry: (() -> Void)?
+    private(set) var primary: (() -> Void)?
+    private(set) var dismissSharedGuide: (() -> Void)?
+
+    func mountCard(
+        token: UUID,
+        onOpenSharedGuide: @escaping () -> Void,
+        onRetry: @escaping () -> Void,
+        onPrimary: @escaping () -> Void
+    ) {
+        cardMountToken = token
+        cardIsMounted = true
+        openSharedGuide = onOpenSharedGuide
+        retry = onRetry
+        primary = onPrimary
+    }
+
+    func updateCardActions(
+        token: UUID,
+        onOpenSharedGuide: @escaping () -> Void,
+        onRetry: @escaping () -> Void,
+        onPrimary: @escaping () -> Void
+    ) {
+        guard cardMountToken == token else { return }
+        openSharedGuide = onOpenSharedGuide
+        retry = onRetry
+        primary = onPrimary
+    }
+
+    func unmountCard(token: UUID) {
+        guard cardMountToken == token else { return }
+        cardIsMounted = false
+        openSharedGuide = nil
+        retry = nil
+        primary = nil
+    }
+
+    func recordButtonSize(_ size: CGSize, for identifier: String) {
+        guard size.width > 0, size.height > 0 else { return }
+        buttonSizes[identifier] = size
+    }
+
+    func mountGuide(
+        token: UUID,
+        dismiss: @escaping () -> Void,
+        nowBody: String,
+        headerTitles: [String]
+    ) {
+        guideMountToken = token
+        guideIsMounted = true
+        dismissSharedGuide = dismiss
+        latestGuideNowBody = nowBody
+        latestGuideHeaderTitles = headerTitles
+    }
+
+    func updateGuide(
+        token: UUID,
+        dismiss: @escaping () -> Void,
+        nowBody: String,
+        headerTitles: [String]
+    ) {
+        guard guideMountToken == token else { return }
+        dismissSharedGuide = dismiss
+        latestGuideNowBody = nowBody
+        latestGuideHeaderTitles = headerTitles
+    }
+
+    func unmountGuide(token: UUID) {
+        guard guideMountToken == token else { return }
+        guideIsMounted = false
+        dismissSharedGuide = nil
+    }
+}
+
+private struct WriterConflictInteractionBridgeKey: EnvironmentKey {
+    static let defaultValue: WriterConflictInteractionBridge? = nil
+}
+
+extension EnvironmentValues {
+    var writerConflictInteractionBridge: WriterConflictInteractionBridge? {
+        get { self[WriterConflictInteractionBridgeKey.self] }
+        set { self[WriterConflictInteractionBridgeKey.self] = newValue }
+    }
+}
+
+private struct WriterConflictHitTargetReporter: ViewModifier {
+    @Environment(\.writerConflictInteractionBridge) private var bridge
+    let identifier: String
+
+    func body(content: Content) -> some View {
+        if let bridge {
+            content.onGeometryChange(for: CGSize.self) { proxy in
+                proxy.size
+            } action: { size in
+                bridge.recordButtonSize(size, for: identifier)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct WriterConflictCardBridgeModifier: ViewModifier {
+    @Environment(\.writerConflictInteractionBridge) private var bridge
+    @State private var token = UUID()
+    let onOpenSharedGuide: () -> Void
+    let onRetry: () -> Void
+    let onPrimary: () -> Void
+
+    func body(content: Content) -> some View {
+        if let bridge {
+            content
+                .onAppear {
+                    bridge.mountCard(
+                        token: token,
+                        onOpenSharedGuide: onOpenSharedGuide,
+                        onRetry: onRetry,
+                        onPrimary: onPrimary
+                    )
+                }
+                .onDisappear {
+                    bridge.unmountCard(token: token)
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private struct WriterConflictGuideBridgeModifier: ViewModifier {
+    @Environment(\.writerConflictInteractionBridge) private var bridge
+    @State private var token = UUID()
+    let dismiss: () -> Void
+    let nowBody: String
+    let headerTitles: [String]
+
+    func body(content: Content) -> some View {
+        if let bridge {
+            content
+                .onAppear {
+                    bridge.mountGuide(
+                        token: token,
+                        dismiss: dismiss,
+                        nowBody: nowBody,
+                        headerTitles: headerTitles
+                    )
+                }
+                .onChange(of: nowBody) { _, updated in
+                    bridge.updateGuide(
+                        token: token,
+                        dismiss: dismiss,
+                        nowBody: updated,
+                        headerTitles: headerTitles
+                    )
+                }
+                .onChange(of: headerTitles) { _, updated in
+                    bridge.updateGuide(
+                        token: token,
+                        dismiss: dismiss,
+                        nowBody: nowBody,
+                        headerTitles: updated
+                    )
+                }
+                .onDisappear {
+                    bridge.unmountGuide(token: token)
+                }
+        } else {
+            content
+        }
+    }
+}
+#endif

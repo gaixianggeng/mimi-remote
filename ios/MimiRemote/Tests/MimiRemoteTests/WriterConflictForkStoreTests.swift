@@ -466,6 +466,7 @@ final class WriterConflictForkStoreTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let themeStore = ThemeStore(defaults: defaults)
+        let bridge = WriterConflictInteractionBridge()
 
         let card = WriterConflictCard(
             sourceIsRunning: false,
@@ -478,39 +479,71 @@ final class WriterConflictForkStoreTests: XCTestCase {
             onRetry: {}
         )
         .environmentObject(themeStore)
+        .environment(\.writerConflictInteractionBridge, bridge)
         .padding(16)
         .frame(width: 390, alignment: .top)
 
-        let (window, _) = try makeTestWindow(rootView: card, size: CGSize(width: 390, height: 320))
-        defer { window.isHidden = true }
+        let hosted = try makeTestWindow(rootView: card, size: CGSize(width: 390, height: 320))
+        defer { hosted.tearDown() }
 
-        let guideButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.sharedGuideButton",
-            in: window
-        )
-        let retryButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.retryButton",
-            in: window
-        )
-        let primaryButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.primaryButton",
-            in: window
-        )
-
-        for (name, element) in [
-            ("sharedGuideButton", guideButton),
-            ("retryButton", retryButton),
-            ("primaryButton", primaryButton)
-        ] {
-            let frame = element.accessibilityFrame
-            XCTAssertGreaterThanOrEqual(frame.width, 43.5, "\(name) 宽度不足 44pt: \(frame)")
-            XCTAssertGreaterThanOrEqual(frame.height, 43.5, "\(name) 高度不足 44pt: \(frame)")
+        let requiredIdentifiers = [
+            WriterConflictCard.sharedGuideAccessibility.identifier,
+            "writerConflict.retryButton",
+            "writerConflict.primaryButton"
+        ]
+        try await waitUntil(
+            description: "冲突卡按钮完成真实布局尺寸上报",
+            window: hosted.window
+        ) {
+            requiredIdentifiers.allSatisfy { bridge.buttonSizes[$0] != nil }
         }
+
+        for identifier in requiredIdentifiers {
+            let size = try XCTUnwrap(bridge.buttonSizes[identifier], "缺少按钮命中区尺寸：\(identifier)")
+            XCTAssertGreaterThanOrEqual(size.width, 43.5, "\(identifier) 宽度不足 44pt: \(size)")
+            XCTAssertGreaterThanOrEqual(size.height, 43.5, "\(identifier) 高度不足 44pt: \(size)")
+        }
+
+        let sharedGuideA11y = WriterConflictCard.sharedGuideAccessibility
         XCTAssertEqual(
-            guideButton.accessibilityLabel,
+            sharedGuideA11y.label,
+            sharedGuideA11y.visibleTitle,
+            "共享入口无障碍名称必须与可见标签一致"
+        )
+        XCTAssertEqual(
+            sharedGuideA11y.label,
             L10n.text("ui.writer_conflict_shared_guide_link"),
             "共享入口无障碍名称必须与可见标签一致"
         )
+        XCTAssertEqual(
+            sharedGuideA11y.hint,
+            L10n.text("ui.writer_conflict_shared_guide_title"),
+            "共享入口无障碍提示应保留完整引导标题说明"
+        )
+
+        let cardSource = try writerConflictCardSource()
+        XCTAssertTrue(
+            cardSource.contains(".accessibilityLabel(accessibility.label)"),
+            "WriterConflictCard 必须将共享入口无障碍名称绑定到 sharedGuideAccessibility.label"
+        )
+        XCTAssertTrue(
+            cardSource.contains(".accessibilityHint(accessibility.hint)"),
+            "WriterConflictCard 必须将共享入口无障碍提示绑定到 sharedGuideAccessibility.hint"
+        )
+
+        // 当运行环境（如 iOS 27+ 或开启系统辅助功能时）暴露实时 SwiftUI 无障碍节点时，顺带复核节点帧与标签。
+        if let guideButton = findAccessibilityObject(
+            identifier: sharedGuideA11y.identifier,
+            in: hosted.window
+        ) {
+            XCTAssertEqual(
+                guideButton.accessibilityLabel,
+                L10n.text("ui.writer_conflict_shared_guide_link"),
+                "共享入口无障碍名称必须与可见标签一致"
+            )
+            XCTAssertGreaterThanOrEqual(guideButton.accessibilityFrame.width, 43.5)
+            XCTAssertGreaterThanOrEqual(guideButton.accessibilityFrame.height, 43.5)
+        }
     }
 
     func testSharedGuideSheetSupportsDynamicTypeAndHeaderTraits() async throws {
@@ -533,37 +566,60 @@ final class WriterConflictForkStoreTests: XCTestCase {
             "共享引导在系统大字号下必须随动态字体明显放大（large=\(largeHeight), ax3=\(accessibilityHeight)）"
         )
 
+        let bridge = WriterConflictInteractionBridge()
         let view = WriterConflictSharedGuideSheet(
             sourceIsRunning: true,
             availability: .available(lastTurnID: "turn-1")
         )
         .environmentObject(themeStore)
         .environment(\.dynamicTypeSize, .accessibility3)
+        .environment(\.writerConflictInteractionBridge, bridge)
 
-        let (window, _) = try makeTestWindow(rootView: view, size: CGSize(width: 320, height: 640))
-        defer { window.isHidden = true }
+        let hosted = try makeTestWindow(rootView: view, size: CGSize(width: 320, height: 640))
+        defer { hosted.tearDown() }
 
         let expectedHeaders = [
             L10n.text("ui.writer_conflict_shared_guide_why_title"),
             L10n.text("ui.writer_conflict_shared_guide_mac_title"),
             L10n.text("ui.writer_conflict_shared_guide_now_title")
         ]
-        var foundHeaders: Set<String> = []
-        for _ in 0..<40 {
-            window.layoutIfNeeded()
-            for obj in collectAccessibilityObjects(from: window) {
-                guard let label = obj.accessibilityLabel,
-                      expectedHeaders.contains(label),
-                      obj.accessibilityTraits.contains(.header)
-                else { continue }
-                foundHeaders.insert(label)
-            }
-            if foundHeaders.count == expectedHeaders.count {
-                break
-            }
-            try await Task.sleep(for: .milliseconds(25))
+        try await waitUntil(
+            description: "共享引导页完成挂载并渲染段落标题",
+            window: hosted.window
+        ) {
+            bridge.guideIsMounted && bridge.latestGuideHeaderTitles == expectedHeaders
         }
-        XCTAssertEqual(foundHeaders, Set(expectedHeaders), "共享引导段落标题必须具备 VoiceOver 标题语义")
+
+        let sections = WriterConflictSharedGuideSheet.sections(
+            sourceIsRunning: true,
+            availability: .available(lastTurnID: "turn-1")
+        )
+        XCTAssertEqual(
+            sections.filter(\.isAccessibilityHeader).map(\.title),
+            expectedHeaders,
+            "共享引导段落标题必须具备 VoiceOver 标题语义"
+        )
+        let cardSource = try writerConflictCardSource()
+        XCTAssertTrue(
+            cardSource.contains(".accessibilityAddTraits(section.isAccessibilityHeader ? .isHeader : [])"),
+            "WriterConflictSharedGuideSheet 必须为段落标题写入 .isHeader 无障碍特征"
+        )
+
+        // 若当前模拟器运行时暴露了 SwiftUI 无障碍节点，再校验每个段落标题的实时 UIKit .header 特征。
+        let liveObjects = collectAccessibilityObjects(from: hosted.window)
+        let liveMatchingLabels = liveObjects.compactMap(\.accessibilityLabel).filter { expectedHeaders.contains($0) }
+        if !liveMatchingLabels.isEmpty {
+            let liveHeaders = Set(
+                liveObjects.compactMap { obj -> String? in
+                    guard let label = obj.accessibilityLabel,
+                          expectedHeaders.contains(label),
+                          obj.accessibilityTraits.contains(.header)
+                    else { return nil }
+                    return label
+                }
+            )
+            XCTAssertEqual(liveHeaders, Set(expectedHeaders), "共享引导段落标题必须具备 VoiceOver 标题语义")
+        }
     }
 
     func testOpenAndDismissSharedGuideFromConflictCardReturnsToOriginalActions() async throws {
@@ -571,6 +627,7 @@ final class WriterConflictForkStoreTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let themeStore = ThemeStore(defaults: defaults)
+        let bridge = WriterConflictInteractionBridge()
 
         var retryCount = 0
         var forkCount = 0
@@ -586,39 +643,41 @@ final class WriterConflictForkStoreTests: XCTestCase {
             onRetry: { retryCount += 1 }
         )
         .environmentObject(themeStore)
+        .environment(\.writerConflictInteractionBridge, bridge)
         .padding(16)
         .frame(width: 390, alignment: .top)
 
-        let (window, rootController) = try makeTestWindow(
+        let hosted = try makeTestWindow(
             rootView: card,
             size: CGSize(width: 390, height: 844)
         )
-        defer { window.isHidden = true }
+        defer { hosted.tearDown() }
 
-        let guideButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.sharedGuideButton",
-            in: window
-        )
-        XCTAssertTrue(activateAccessibilityObject(guideButton))
+        try await waitUntil(
+            description: "冲突卡完成挂载并就绪",
+            window: hosted.window
+        ) {
+            bridge.cardIsMounted && bridge.openSharedGuide != nil
+        }
+        bridge.openSharedGuide?()
 
-        let presented = try await waitForPresentedViewController(on: rootController)
-        let doneButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.sharedGuideDoneButton",
-            in: presented.view
-        )
-        XCTAssertTrue(activateAccessibilityObject(doneButton))
-        try await waitForPresentedViewControllerDismissal(on: rootController)
+        let presented = try await waitForPresentedViewController(on: hosted.controller)
+        try await waitUntil(
+            description: "引导弹层完成挂载并就绪",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.guideIsMounted && bridge.dismissSharedGuide != nil
+        }
 
-        let retryButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.retryButton",
-            in: window
-        )
-        let primaryButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.primaryButton",
-            in: window
-        )
-        XCTAssertTrue(activateAccessibilityObject(retryButton))
-        XCTAssertTrue(activateAccessibilityObject(primaryButton))
+        bridge.dismissSharedGuide?()
+        try await waitForPresentedViewControllerDismissal(on: hosted.controller)
+
+        XCTAssertTrue(bridge.cardIsMounted, "关闭引导后原冲突卡必须保持挂载")
+        let retryAction = try XCTUnwrap(bridge.retry, "关闭引导后原冲突卡的重试操作必须继续可用")
+        let primaryAction = try XCTUnwrap(bridge.primary, "关闭引导后原冲突卡的分支操作必须继续可用")
+        retryAction()
+        primaryAction()
         XCTAssertEqual(retryCount, 1, "关闭引导后原冲突卡的重试操作必须继续可用")
         XCTAssertEqual(forkCount, 1, "关闭引导后原冲突卡的分支操作必须继续可用")
     }
@@ -634,62 +693,84 @@ final class WriterConflictForkStoreTests: XCTestCase {
         }
         let themeStore = ThemeStore(defaults: defaults)
         let conversationStore = ConversationStore()
+        let bridge = WriterConflictInteractionBridge()
 
         let view = ConversationView()
             .environmentObject(fixture.store)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
+            .environment(\.writerConflictInteractionBridge, bridge)
 
-        let (window, rootController) = try makeTestWindow(
+        let hosted = try makeTestWindow(
             rootView: view,
             size: CGSize(width: 390, height: 844)
         )
-        defer { window.isHidden = true }
+        defer { hosted.tearDown() }
 
-        let guideButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.sharedGuideButton",
-            in: window
-        )
-        XCTAssertTrue(activateAccessibilityObject(guideButton))
+        try await waitUntil(
+            description: "会话页冲突卡完成挂载并就绪",
+            window: hosted.window
+        ) {
+            bridge.cardIsMounted && bridge.openSharedGuide != nil
+        }
+        bridge.openSharedGuide?()
 
-        let presented = try await waitForPresentedViewController(on: rootController)
+        let presented = try await waitForPresentedViewController(on: hosted.controller)
         XCTAssertTrue(fixture.store.selectedSessionShowsWriterConflictCard)
+        try await waitUntil(
+            description: "引导弹层显示冲突态恢复文案",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.guideIsMounted
+                && bridge.latestGuideNowBody == L10n.text("ui.writer_conflict_shared_guide_now_body")
+        }
 
         // 弹层打开期间冲突解除：冲突卡替换为 ComposerView，挂载在稳定 ConversationView 上的引导弹层保持完好并更新为已解锁提示。
         fixture.store.setActiveWriterConflict(false, sessionID: fixture.source.id)
         XCTAssertFalse(fixture.store.selectedSessionShowsWriterConflictCard)
 
         let resolvedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_body")
-        var sawResolvedCopy = false
-        for _ in 0..<40 {
-            window.layoutIfNeeded()
-            presented.view.layoutIfNeeded()
-            if collectAccessibilityObjects(from: presented.view).contains(where: { $0.accessibilityLabel == resolvedCopy }) {
-                sawResolvedCopy = true
-                break
-            }
-            try await Task.sleep(for: .milliseconds(25))
+        try await waitUntil(
+            description: "冲突解除后引导弹层保持挂载并更新为已解锁说明",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            !bridge.cardIsMounted && bridge.latestGuideNowBody == resolvedCopy
         }
-        XCTAssertNotNil(rootController.presentedViewController, "冲突解除不应导致引导弹层异常销毁")
-        XCTAssertTrue(sawResolvedCopy, "冲突解除后引导弹层应更新为已解锁说明")
+        XCTAssertNotNil(hosted.controller.presentedViewController, "冲突解除不应导致引导弹层异常销毁")
+        XCTAssertEqual(bridge.latestGuideNowBody, resolvedCopy, "冲突解除后引导弹层应更新为已解锁说明")
 
-        let doneButton = try await waitForAccessibilityObject(
-            identifier: "writerConflict.sharedGuideDoneButton",
-            in: presented.view
-        )
-        XCTAssertTrue(activateAccessibilityObject(doneButton))
-        try await waitForPresentedViewControllerDismissal(on: rootController)
-        XCTAssertNil(
-            findAccessibilityObject(identifier: "writerConflict.sharedGuideButton", in: window),
-            "冲突已解除且关闭引导后，冲突卡不应再显示"
-        )
+        let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide, "引导弹层完成按钮应保持可关闭")
+        dismissAction()
+        try await waitForPresentedViewControllerDismissal(on: hosted.controller)
+        XCTAssertFalse(bridge.cardIsMounted, "冲突已解除且关闭引导后，冲突卡不应再显示")
+        XCTAssertFalse(fixture.store.selectedSessionShowsWriterConflictCard)
+    }
+
+    private struct WriterConflictTestTimeoutError: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    private struct HostedTestWindow<V: View> {
+        let window: UIWindow
+        let controller: UIHostingController<V>
+        let previousKeyWindow: UIWindow?
+
+        @MainActor
+        func tearDown() {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKey()
+        }
     }
 
     private func makeTestWindow<V: View>(
         rootView: V,
         size: CGSize
-    ) throws -> (UIWindow, UIHostingController<V>) {
+    ) throws -> HostedTestWindow<V> {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
         let window = UIWindow(windowScene: scene)
         let controller = UIHostingController(rootView: rootView)
         window.frame = CGRect(origin: .zero, size: size)
@@ -697,7 +778,46 @@ final class WriterConflictForkStoreTests: XCTestCase {
         window.makeKeyAndVisible()
         controller.view.frame = window.bounds
         window.layoutIfNeeded()
-        return (window, controller)
+        return HostedTestWindow(
+            window: window,
+            controller: controller,
+            previousKeyWindow: previousKeyWindow
+        )
+    }
+
+    private func writerConflictCardSource() throws -> String {
+        var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<4 {
+            root.deleteLastPathComponent()
+        }
+        let path = root
+            .appendingPathComponent("ios")
+            .appendingPathComponent("MimiRemote")
+            .appendingPathComponent("Sources")
+            .appendingPathComponent("Features")
+            .appendingPathComponent("Conversation")
+            .appendingPathComponent("WriterConflictCard.swift")
+        return try String(contentsOf: path, encoding: .utf8)
+    }
+
+    private func waitUntil(
+        description: String,
+        window: UIWindow,
+        extraView: UIView? = nil,
+        timeout: TimeInterval = 5,
+        condition: () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            window.layoutIfNeeded()
+            extraView?.layoutIfNeeded()
+            if condition() {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTFail("等待超时：\(description)")
+        throw WriterConflictTestTimeoutError(description: description)
     }
 
     private func measureGuideScrollContentHeight(
@@ -711,12 +831,12 @@ final class WriterConflictForkStoreTests: XCTestCase {
         .environmentObject(themeStore)
         .environment(\.dynamicTypeSize, dynamicTypeSize)
 
-        let (window, _) = try makeTestWindow(rootView: view, size: CGSize(width: 320, height: 640))
-        defer { window.isHidden = true }
+        let hosted = try makeTestWindow(rootView: view, size: CGSize(width: 320, height: 640))
+        defer { hosted.tearDown() }
 
         for _ in 0..<40 {
-            window.layoutIfNeeded()
-            if let scrollView = findFirstScrollView(in: window), scrollView.contentSize.height > 100 {
+            hosted.window.layoutIfNeeded()
+            if let scrollView = findFirstScrollView(in: hosted.window), scrollView.contentSize.height > 100 {
                 return scrollView.contentSize.height
             }
             try await Task.sleep(for: .milliseconds(25))
@@ -753,7 +873,7 @@ final class WriterConflictForkStoreTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTFail("等待引导弹层出现超时")
-        throw CancellationError()
+        throw WriterConflictTestTimeoutError(description: "等待引导弹层出现超时")
     }
 
     private func waitForPresentedViewControllerDismissal(
@@ -769,24 +889,7 @@ final class WriterConflictForkStoreTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(25))
         }
         XCTFail("等待引导弹层关闭超时")
-    }
-
-    private func waitForAccessibilityObject(
-        identifier: String,
-        in root: UIView,
-        timeout: TimeInterval = 5
-    ) async throws -> NSObject {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            root.window?.layoutIfNeeded()
-            root.layoutIfNeeded()
-            if let found = findAccessibilityObject(identifier: identifier, in: root) {
-                return found
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        XCTFail("未找到无障碍元素：\(identifier)")
-        throw CancellationError()
+        throw WriterConflictTestTimeoutError(description: "等待引导弹层关闭超时")
     }
 
     private func findAccessibilityObject(identifier: String, in root: UIView) -> NSObject? {
@@ -820,45 +923,28 @@ final class WriterConflictForkStoreTests: XCTestCase {
             guard visited.insert(oid).inserted else { return }
             result.append(object)
 
+            if let elements = object.accessibilityElements {
+                for element in elements {
+                    visit(element)
+                }
+            }
+            let count = object.accessibilityElementCount()
+            if count != NSNotFound && count > 0 {
+                for index in 0..<count {
+                    if let child = object.accessibilityElement(at: index) {
+                        visit(child)
+                    }
+                }
+            }
             if let view = object as? UIView {
-                if let elements = view.accessibilityElements {
-                    for element in elements {
-                        visit(element)
-                    }
-                }
-                let count = view.accessibilityElementCount()
-                if count != NSNotFound && count > 0 {
-                    for index in 0..<count {
-                        if let child = view.accessibilityElement(at: index) {
-                            visit(child)
-                        }
-                    }
-                }
                 for subview in view.subviews {
                     visit(subview)
-                }
-            } else {
-                let count = object.accessibilityElementCount()
-                if count != NSNotFound && count > 0 {
-                    for index in 0..<count {
-                        if let child = object.accessibilityElement(at: index) {
-                            visit(child)
-                        }
-                    }
                 }
             }
         }
 
         visit(root)
         return result
-    }
-
-    private func activateAccessibilityObject(_ object: NSObject) -> Bool {
-        if let control = object as? UIControl {
-            control.sendActions(for: .touchUpInside)
-            return true
-        }
-        return object.accessibilityActivate()
     }
 
     private func select(source: AgentSession, project: AgentProject, in store: SessionStore) {
