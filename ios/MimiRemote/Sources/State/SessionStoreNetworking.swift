@@ -112,6 +112,8 @@ protocol SessionStoreAPIClient {
     func runtimeChannelDiagnostics() async -> [String: RuntimeChannelDiagnostic]
     /// 该 Runtime 的通道是否声明了目标任务（thread/goal/*）；决定是否展示目标入口（#791）。
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool
+    /// 该 Runtime 的通道是否声明了当前回合引导（turn/steer）；决定是否开放引导入口（#1172）。
+    func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -260,6 +262,11 @@ extension SessionStoreAPIClient {
 
     func runtimeSupportsThreadGoals(runtimeProvider: String) async throws -> Bool {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider) == "codex"
+    }
+
+    func runtimeSupportsTurnSteer(runtimeProvider: String) async throws -> Bool {
+        let normalized = CodexAppServerSessionRuntime.normalizedRuntimeProvider(runtimeProvider)
+        return normalized == "codex" || normalized == "claude"
     }
 
     func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {

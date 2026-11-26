@@ -923,7 +923,9 @@ extension SessionStore {
                 }
             }
         case .guidance:
-            break
+            if wasGuidance, selectedSessionID == sessionID {
+                setStatusMessage(L10n.text("ui.directed_current_reply_immediately"))
+            }
         case .terminal(let turnID):
             queuedTurnAwaitingStartSessionIDs.remove(sessionID)
             queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
@@ -1213,6 +1215,7 @@ extension SessionStore {
         if queuedServerSubmissionAwaitingOutcomeBySessionID[sessionID] == clientMessageID {
             queuedServerSubmissionAwaitingOutcomeBySessionID.removeValue(forKey: sessionID)
         }
+        queuedGuidanceDispatchClientMessageIDs.remove(clientMessageID)
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         _ = mutateAndPersistQueuedTurns {

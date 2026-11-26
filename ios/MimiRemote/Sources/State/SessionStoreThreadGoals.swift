@@ -6,6 +6,10 @@ extension SessionStore {
         RuntimeFeatureSupport.supportsGoals(for: runtimeProvider ?? "codex", declaredBy: threadGoalRuntimeProviders)
     }
 
+    func supportsTurnSteer(runtimeProvider: String?) -> Bool {
+        RuntimeFeatureSupport.supportsTurnSteer(for: runtimeProvider ?? "codex", declaredBy: turnSteerRuntimeProviders)
+    }
+
     func refreshSelectedThreadGoal() async {
         guard let sessionID = selectedSessionID else {
             return

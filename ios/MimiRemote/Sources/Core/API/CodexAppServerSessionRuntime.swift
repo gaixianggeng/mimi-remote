@@ -26,6 +26,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case channelUnavailable(RuntimeChannelDiagnostic)
     case threadSearchUnavailable
     case threadGoalsUnavailable
+    case turnSteerUnavailable
     case projectNotFound(String)
     case projectRequired
     case sessionNotFound(SessionID)
@@ -50,6 +51,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.text("ui.currently_agentd_or_codex_app_server_does_not")
         case .threadGoalsUnavailable:
             return L10n.text("ui.the_current_running_channel_does_not_support_goals")
+        case .turnSteerUnavailable:
+            return L10n.text("ui.the_current_running_channel_does_not_support_steer")
         case .projectNotFound(let projectID):
             return L10n.format("ui.the_project_does_not_exist_or_is_not", projectID)
         case .projectRequired:
@@ -2932,6 +2935,9 @@ actor CodexAppServerSessionRuntime {
         guard context.activeTurnID == expectedTurnID else {
             throw CodexAppServerSessionRuntimeError.missingActiveTurn(sessionID)
         }
+        guard supportsTurnSteer(in: try await ensureConfig()) else {
+            throw CodexAppServerSessionRuntimeError.turnSteerUnavailable
+        }
         turnSteerSubmissionCountsBySessionID[sessionID, default: 0] += 1
         defer { finishTurnSteerSubmission(sessionID: sessionID) }
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projectsIncludingSessionContext(try await projects(), context: context))
@@ -3894,6 +3900,28 @@ actor CodexAppServerSessionRuntime {
 
     func threadGoalsSupported(runtimeProvider: String) async throws -> Bool {
         Self.supportsThreadGoals(runtimeProvider: runtimeProvider, in: try await ensureConfig())
+    }
+
+    /// 当前回合引导（`turn/steer`）按通道声明判断（#1172）。通道返回了 `methods` 时只看它是否包含
+    /// `turn/steer`；旧 agentd 未返回 `channel.methods` 时仅对 Codex 与 Claude 保持原行为。
+    static func supportsTurnSteer(runtimeProvider raw: String, in config: CodexAppServerConfigResponse) -> Bool {
+        let runtime = normalizedRuntimeProvider(raw)
+        let channel = config.channels.first { channel in
+            normalizedRuntimeProvider(channel.runtimeID ?? channel.id) == runtime ||
+                normalizedRuntimeProvider(channel.provider) == runtime
+        }
+        guard let methods = channel?.methods else {
+            return runtime == "codex" || runtime == "claude"
+        }
+        return methods.contains("turn/steer")
+    }
+
+    func supportsTurnSteer(in config: CodexAppServerConfigResponse) -> Bool {
+        Self.supportsTurnSteer(runtimeProvider: runtimeProvider, in: config)
+    }
+
+    func turnSteerSupported(runtimeProvider: String) async throws -> Bool {
+        Self.supportsTurnSteer(runtimeProvider: runtimeProvider, in: try await ensureConfig())
     }
 
     /// 入口已按能力隐藏；这里兜住排队目标、旧草稿等残留路径，确保不支持的通道一条 goal 请求都不发。
