@@ -8,14 +8,14 @@ if (-not (Test-Path -LiteralPath $metadataPath)) { throw "Missing metadata: $met
 $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
 if ($metadata.installer -ne [IO.Path]::GetFileName($installer)) { throw 'Metadata installer name does not match artifact.' }
 if ($ExpectedVersion -and $metadata.version -ne $ExpectedVersion.TrimStart('v')) { throw "Metadata version $($metadata.version) does not match the expected release $ExpectedVersion." }
-foreach ($binary in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe')) {
+foreach ($binary in @('agentd.exe', 'Mimi-Remote-Maintenance.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe')) {
     if ($metadata.binaries -notcontains $binary) { throw "Metadata does not declare embedded binary: $binary" }
 }
 # 安装包只发布由同一提交构建、版本一致的 agentd 与 Tailcat 辅助程序。
 if ($metadata.tailcat_version -ne $metadata.version) { throw "Embedded Tailcat helper version '$($metadata.tailcat_version)' does not match installer version $($metadata.version)." }
 if ($metadata.assets -notcontains 'mimi-remote.ico') { throw 'Metadata does not declare the Windows application icon.' }
 if ($metadata.assets -notcontains 'THIRD_PARTY_NOTICES.md') { throw 'Metadata does not declare the bundled third-party notices.' }
-foreach ($payload in @('agentd.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
+foreach ($payload in @('agentd.exe', 'Mimi-Remote-Maintenance.exe', 'mimi-agent-host.exe', 'mimi-claude-adapter.exe', 'alleycat-claude-bridge.exe', 'mimi-remote-tray.exe', 'mimi-tailcat-experiment.exe', 'mimi-remote.ico', 'THIRD_PARTY_NOTICES.md')) {
     $payloadHash = $metadata.payload_sha256.$payload
     if ($payloadHash -notmatch '^[0-9a-f]{64}$') { throw "Metadata is missing a valid payload SHA-256: $payload" }
 }
@@ -31,6 +31,9 @@ $signature = Get-AuthenticodeSignature -LiteralPath $installer
 if ($metadata.signing -in @('unsigned-snapshot', 'unsigned-release')) {
     if ($signature.Status -ne 'NotSigned') { throw "Unsigned installer must report NotSigned, got $($signature.Status)." }
 } elseif ($metadata.signing -eq 'authenticode-pfx') {
+    if ($metadata.assets -notcontains 'maintenance-identity.p7m' -or $metadata.payload_sha256.'maintenance-identity.p7m' -notmatch '^[0-9a-f]{64}$') {
+        throw 'Signed installer must contain the authenticated maintenance receipt.'
+    }
     if ($signature.Status -ne 'Valid') { throw "Signed installer signature is not valid: $($signature.Status)." }
 } else { throw "Unknown signing mode: $($metadata.signing)" }
 if ($RequireSignature -and $signature.Status -ne 'Valid') { throw 'A valid Authenticode signature is required.' }

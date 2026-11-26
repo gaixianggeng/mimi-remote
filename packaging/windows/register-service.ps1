@@ -21,13 +21,13 @@ if (-not (Test-Path -LiteralPath $HostPath -PathType Leaf)) {
 # and immediately starting during that window can silently discard the start
 # request and leave an upgrade offline. The installer has already stopped and
 # unlocked agentd.exe; synchronize the scheduler before replacing the task.
-$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$existing = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
 if ($existing -and $existing.State -in @('Running', 'Queued')) {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    Stop-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         Start-Sleep -Milliseconds 100
-        $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        $existing = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
     } while ($existing -and $existing.State -in @('Running', 'Queued') -and [DateTime]::UtcNow -lt $deadline)
     if ($existing -and $existing.State -in @('Running', 'Queued')) {
         throw "Scheduled task did not stop within 10 seconds: $TaskName"
@@ -46,7 +46,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask `
-    -TaskName $TaskName `
+    -TaskName $TaskName -TaskPath '\' `
     -Action $action `
     -Trigger $trigger `
     -Principal $principal `
@@ -54,15 +54,21 @@ Register-ScheduledTask `
     -Description 'Mimi Remote current-user backend' `
     -Force | Out-Null
 
-$registered = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-$registeredSid = ([Security.Principal.NTAccount]$registered.Principal.UserId).
-    Translate([Security.Principal.SecurityIdentifier]).Value
-$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-if ($registeredSid -ne $currentSid -or $registered.Principal.RunLevel -ne 'Limited') {
-    throw "Scheduled task principal mismatch: $($registered.Principal.UserId) / $($registered.Principal.RunLevel)"
+$registered = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
+$userId = [string]$registered.Principal.UserId
+$registeredSid = if ($userId -match '^S-1-') {
+    ([Security.Principal.SecurityIdentifier]$userId).Value
+} else {
+    ([Security.Principal.NTAccount]$userId).Translate([Security.Principal.SecurityIdentifier]).Value
 }
-# 回读任务动作：如果写入的仍是旧路径，升级后窗口还会弹，但不报错。
-$registeredAction = @($registered.Actions)[0]
-if ($registeredAction.Execute -ne $HostPath) {
-    throw "Scheduled task action mismatch: $($registeredAction.Execute)"
+$currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if ($registeredSid -ne $currentSid -or $registered.Principal.RunLevel -ne 'Limited' -or
+    $registered.Principal.LogonType -ne 'Interactive') {
+    throw 'Scheduled task principal mismatch.'
+}
+$actions = @($registered.Actions)
+if ($actions.Count -ne 1 -or $actions[0].CimClass.CimClassName -ne 'MSFT_TaskExecAction' -or
+    $actions[0].Execute -ne $HostPath -or $actions[0].Arguments -cne $action.Arguments -or
+    $actions[0].WorkingDirectory) {
+    throw 'Scheduled task action mismatch.'
 }
