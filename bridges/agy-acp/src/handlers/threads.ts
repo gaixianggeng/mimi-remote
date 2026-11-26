@@ -4,13 +4,17 @@ import type { ThreadLoadedListResponse } from "@mimi/appserver-kit/protocol/code
 import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import { RpcError } from "@mimi/appserver-kit/rpc/frames.ts";
 import { decodeCursor, encodeCursor, readDirection, readLimit, type Direction } from "@mimi/appserver-kit/util/cursor.ts";
-import type { AgyCatalog, AgyHistoryStore, SessionRecord } from "../agy/catalog.ts";
+import type { AgyCatalog, AgyHistoryStore, AgyThreadListMeta, SessionRecord } from "../agy/catalog.ts";
 import { USER_AGENT } from "../version.ts";
 
 export type AdapterThread = Thread & {
   canAcceptDirectInput: boolean;
   cwdMissing?: boolean;
   claudeOwner?: Record<string, unknown>;
+};
+
+export type AgyThreadListResponse = ThreadListResponse & {
+  listMeta: AgyThreadListMeta;
 };
 
 export interface LiveState {
@@ -135,7 +139,7 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
   };
 
   return {
-    async list(raw: unknown): Promise<ThreadListResponse> {
+    async list(raw: unknown): Promise<AgyThreadListResponse> {
       const params = asParams(raw);
       const limit = readLimit(params.limit, 25, 200);
       const direction: Direction = readDirection(params.sortDirection, "desc");
@@ -146,7 +150,8 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
 
       const key = (record: SessionRecord): [number, string] => [byCreated ? record.createdAt : record.updatedAt, record.id];
       const sign = direction === "desc" ? -1 : 1;
-      const records = (await catalog.list(readDirs(params.cwd)))
+      const { records: candidates, listMeta } = await catalog.list(readDirs(params.cwd));
+      const records = candidates
         .filter((record) => record.archived === archived)
         .filter((record) => !search || `${record.name ?? ""}\n${record.preview}`.toLowerCase().includes(search))
         .sort((a, b) => sign * compare(key(a), key(b)));
@@ -173,6 +178,7 @@ export function createThreadHandlers(catalog: AgyCatalog, history: AgyHistorySto
         data,
         nextCursor: hasMore && last ? encodeCursor({ v: key(last)[0], id: last.id }) : null,
         backwardsCursor: first ? encodeCursor({ v: key(first)[0], id: first.id, incl: true }) : null,
+        listMeta,
       };
     },
 
