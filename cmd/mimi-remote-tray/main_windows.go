@@ -191,25 +191,25 @@ type notifyIconData struct {
 }
 
 type trayApplication struct {
-	window                uintptr
-	icon                  uintptr
-	ownsIcon              bool
-	taskbarCreated        uint32
-	controller            *agentController
-	mu                    sync.RWMutex
-	status                agentStatus
-	statusErr             error
-	preflightSetupPending bool
-	statusRequest         uint64
-	statusApplied         uint64
-	busy                  bool
-	pairingBusy           bool
-	quitting              bool
-	initialPairing        bool
-	initialShow           bool
-	refreshStop           chan struct{}
-	panel                 *controlPanel
-	tailcat               tailcatTrayStatus
+	window                      uintptr
+	icon                        uintptr
+	ownsIcon                    bool
+	taskbarCreated              uint32
+	controller                  *agentController
+	mu                          sync.RWMutex
+	status                      agentStatus
+	statusErr                   error
+	preflightSetupPending       bool
+	statusRequest               uint64
+	statusApplied               uint64
+	busy                        bool
+	pairingBusy                 bool
+	quitting                    bool
+	initialPairing              bool
+	initialShow                 bool
+	refreshStop                 chan struct{}
+	panel                       *controlPanel
+	tailcat                     tailcatTrayStatus
 	hasTailcat                  bool
 	tailcatErr                  error
 	maintenanceIdentityRejected bool

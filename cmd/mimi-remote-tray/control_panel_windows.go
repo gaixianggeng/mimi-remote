@@ -241,13 +241,13 @@ type controlPanel struct {
 	firstSetup     uintptr
 	lanMaintenance uintptr
 	refresh        uintptr
-	start      uintptr
-	restart    uintptr
-	stop       uintptr
-	pair       uintptr
-	doctor     uintptr
-	doctorFix  uintptr
-	logs       uintptr
+	start          uintptr
+	restart        uintptr
+	stop           uintptr
+	pair           uintptr
+	doctor         uintptr
+	doctorFix      uintptr
+	logs           uintptr
 
 	tailcatToggle      uintptr
 	tailcatToggleLabel string
@@ -286,45 +286,45 @@ type controlPanel struct {
 	lanMaintenanceVisible bool
 	lanMaintenanceLabel   string
 	statusColor           uint32
-	statusBackground    uint32
-	codexStatusColor    uint32
-	claudeStatusColor   uint32
-	agyStatusColor      uint32
-	deepseekStatusColor uint32
-	tailcatStatusColor  uint32
+	statusBackground      uint32
+	codexStatusColor      uint32
+	claudeStatusColor     uint32
+	agyStatusColor        uint32
+	deepseekStatusColor   uint32
+	tailcatStatusColor    uint32
 }
 
 type controlPanelPresentation struct {
-	StateTitle        string
-	StateBadge        string
-	StateSummary      string
-	EndpointValue     string
-	VersionValue      string
-	NetworkValue      string
-	ProjectsValue     string
-	CodexValue        string
-	ClaudeValue       string
-	AgyValue          string
-	DeepSeekValue     string
-	StatusColor       uint32
-	StatusBackground  uint32
-	CodexColor        uint32
-	ClaudeColor       uint32
-	AgyColor          uint32
-	DeepSeekColor     uint32
+	StateTitle            string
+	StateBadge            string
+	StateSummary          string
+	EndpointValue         string
+	VersionValue          string
+	NetworkValue          string
+	ProjectsValue         string
+	CodexValue            string
+	ClaudeValue           string
+	AgyValue              string
+	DeepSeekValue         string
+	StatusColor           uint32
+	StatusBackground      uint32
+	CodexColor            uint32
+	ClaudeColor           uint32
+	AgyColor              uint32
+	DeepSeekColor         uint32
 	FirstSetupVisible     bool
 	FirstSetupEnabled     bool
 	LanMaintenanceVisible bool
 	LanMaintenanceEnabled bool
 	LanMaintenanceLabel   string
 	RefreshEnabled        bool
-	StartEnabled      bool
-	RestartEnabled    bool
-	StopEnabled       bool
-	PairEnabled       bool
-	DoctorEnabled     bool
-	FixEnabled        bool
-	LogsEnabled       bool
+	StartEnabled          bool
+	RestartEnabled        bool
+	StopEnabled           bool
+	PairEnabled           bool
+	DoctorEnabled         bool
+	FixEnabled            bool
+	LogsEnabled           bool
 }
 
 func (a *trayApplication) showControlPanel() {
