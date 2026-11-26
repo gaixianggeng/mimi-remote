@@ -72,7 +72,7 @@ extension SessionStore {
 
     /// 宿主退役时停止观察。**页面切换不调用它。**
     func stopNativeHarnessHostEvents() {
-        guard let client = appStore.nativeHarnessClientForActiveHost() else { return }
+        guard let client = appStore.activeRuntimeBundle?.harness else { return }
         Task { @MainActor in
             await client.stopHostEvents()
         }

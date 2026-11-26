@@ -16,6 +16,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var connectionGeneration = 0
     @Published private(set) var activeHostState: ActiveHostState
     @Published private(set) var isCredentialMemorySuspended = false
+    @Published private(set) var hasLoadedLocalHostState = false
+    @Published private(set) var hasPendingKeychainRecovery = false
     @Published var token: String
     // 每次写入都递增，被取消的探测据此判断期间是否有更新的结论（见 AppStoreConnectionTesting）。
     @Published var connectionStatus: ConnectionStatus = .idle { didSet { connectionStatusRevision &+= 1 } }
@@ -144,59 +146,20 @@ final class AppStore: ObservableObject {
             })
             : routeVersionProbe
 
-        var initialProfiles = Self.loadConnectionProfiles(from: defaults)
-        if defaults.data(forKey: Self.profilesKey) == nil,
-           !initialProfiles.isEmpty,
-           let migratedProfiles = try? JSONEncoder().encode(initialProfiles) {
-            defaults.set(migratedProfiles, forKey: Self.profilesKey)
-        }
-        var initialActiveProfileID = defaults.string(forKey: Self.activeProfileIDKey)
-        var initialEndpoint = defaults.string(forKey: endpointKey) ?? defaultEndpoint
-        var initialToken = ""
-
-        if let activeProfileID = initialActiveProfileID,
-           let activeProfile = initialProfiles.first(where: { $0.id == activeProfileID }),
-           let profileToken = try? tokenStore.load(profileID: activeProfileID),
-           !profileToken.isEmpty {
-            initialEndpoint = activeProfile.endpoint
-            initialToken = profileToken
-        } else if initialProfiles.isEmpty {
-            // 稳定 V2 冷启动只读 active profile account；只有确实没有 Profile 时才读一次 legacy，
-            // 避免保存 5 台 Mac 后把 Keychain 读取次数带进首屏关键路径。
-            initialToken = tokenStore.load()
-            if initialToken.isEmpty {
-                initialActiveProfileID = nil
-            } else {
-                // 旧版本只有一个 endpoint + `agentd-token`。先把 Token 写入新的独立 account，
-                // 成功后才发布档案元数据；任一步失败都继续使用旧内存态和旧 Keychain 项。
-                let normalizedEndpoint = (try? Self.validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
-                let migratedProfile = ConnectionProfile(
-                    id: UUID().uuidString,
-                    displayName: Self.defaultProfileDisplayName(endpoint: normalizedEndpoint),
-                    endpoint: normalizedEndpoint,
-                    lastSuccessfulAt: nil
-                )
-                do {
-                    let encodedProfiles = try JSONEncoder().encode([migratedProfile])
-                    try tokenStore.save(initialToken, profileID: migratedProfile.id)
-                    defaults.set(encodedProfiles, forKey: Self.profilesKey)
-                    defaults.set(encodedProfiles, forKey: Self.legacyProfilesKey)
-                    defaults.set(migratedProfile.id, forKey: Self.activeProfileIDKey)
-                    initialProfiles = [migratedProfile]
-                    initialActiveProfileID = migratedProfile.id
-                    // 新档案已完整可恢复后再清理 legacy；删除失败只会留下冗余 Keychain 项，
-                    // 不会让当前连接或新档案失效。
-                    try? tokenStore.delete(allowMissing: true)
-                } catch {
-                    initialProfiles = []
-                    initialActiveProfileID = nil
-                }
-            }
-        } else {
-            // 已存在档案时，即使 legacy item 因旧迁移清理失败而残留，也绝不能重新迁移并覆盖档案列表。
-            // 当前档案 Token 不可读时先退出 active 状态，让用户显式重试或重新配对。
-            initialActiveProfileID = nil
-        }
+        let resolvedInitial = Self.resolveInitialHostCredentials(
+            defaults: defaults,
+            tokenStore: tokenStore,
+            endpointKey: endpointKey,
+            profilesKey: Self.profilesKey,
+            legacyProfilesKey: Self.legacyProfilesKey,
+            activeProfileIDKey: Self.activeProfileIDKey,
+            defaultEndpoint: defaultEndpoint
+        )
+        var initialProfiles = resolvedInitial.profiles
+        var initialActiveProfileID = resolvedInitial.activeProfileID
+        var initialEndpoint = resolvedInitial.endpoint
+        var initialToken = resolvedInitial.token
+        let initialPendingKeychainRecovery = resolvedInitial.hasPendingKeychainRecovery
 #if DEBUG
         // Debug 启动参数只影响本次内存态，避免把本地调试 token 写进 Keychain 或带进 Release 流程。
         if let debugEndpoint = debugLaunchConfiguration.endpoint,
@@ -264,6 +227,8 @@ final class AppStore: ObservableObject {
         // 启动即清理旧公网备用地址，避免升级后继续保留已下线入口或敏感公网配置。
         defaults.removeObject(forKey: retiredFallbackEndpointKey)
         defaults.removeObject(forKey: retiredConnectionModeKey)
+        hasPendingKeychainRecovery = initialPendingKeychainRecovery
+        hasLoadedLocalHostState = true
     }
 
     var isConfigured: Bool {
@@ -366,12 +331,19 @@ final class AppStore: ObservableObject {
 #if DEBUG
         guard !debugLaunchConfiguration.seedsStoreScreenshotUI else { return }
 #endif
-        if activeConnectionProfileID == ephemeralLocalProfileID {
+        guard !hasNoConfiguredHost else { return }
+        if let activeConnectionProfileID,
+           activeConnectionProfileID == ephemeralLocalProfileID {
             // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
             // 进程退出后自然清空，下一次启动必须重新向 agentd 领取。
             return
         }
         credentialLifecycleGeneration &+= 1
+        if connectionProfiles.isEmpty,
+           !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // 旧单连接在退后台清空内存 Token 后，仍保留 Keychain 恢复路径，避免误跳无主机空态。
+            hasPendingKeychainRecovery = true
+        }
         // 先标记“临时挂起”再清空 Token，让根视图继续保留当前会话；
         // 否则 SwiftUI 会把短暂的空 Token 误判成从未配对并切到初始设置页。
         isCredentialMemorySuspended = true
@@ -401,7 +373,32 @@ final class AppStore: ObservableObject {
         credentialSuspensionTask = nil
         guard let profileID = activeConnectionProfileID,
               connectionProfiles.contains(where: { $0.id == profileID }) else {
-            isCredentialMemorySuspended = false
+            guard connectionProfiles.isEmpty, hasPendingKeychainRecovery else {
+                isCredentialMemorySuspended = false
+                return
+            }
+            do {
+                let restoredLegacyToken = try await credentialVault.legacyToken()
+                guard credentialLifecycleGeneration == lifecycleGeneration,
+                      connectionProfiles.isEmpty else {
+                    throw CancellationError()
+                }
+                let trimmedLegacy = restoredLegacyToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedLegacy.isEmpty {
+                    token = restoredLegacyToken
+                }
+                // Keychain 已可读（无论恢复出旧凭据还是确认无旧凭据），结束本次待恢复标记。
+                hasPendingKeychainRecovery = false
+                isCredentialMemorySuspended = false
+            } catch {
+                if credentialLifecycleGeneration == lifecycleGeneration {
+                    isCredentialMemorySuspended = false
+                    if (error as? TokenStoreError)?.isMissingEntitlement == true {
+                        hasPendingKeychainRecovery = false
+                    }
+                }
+                throw error
+            }
             return
         }
         do {
@@ -415,11 +412,16 @@ final class AppStore: ObservableObject {
                 throw CancellationError()
             }
             token = restoredToken
+            hasPendingKeychainRecovery = false
             isCredentialMemorySuspended = false
         } catch {
             // 真正的凭据读取失败仍应退出工作台；新的后台代次则继续保留挂起状态。
             if credentialLifecycleGeneration == lifecycleGeneration {
                 isCredentialMemorySuspended = false
+                if !(error is CancellationError),
+                   (error as? TokenStoreError)?.isMissingEntitlement != true {
+                    hasPendingKeychainRecovery = true
+                }
             }
             throw error
         }
@@ -443,7 +445,7 @@ final class AppStore: ObservableObject {
         // 后台主动清空的只是敏感内存，不代表配对关系失效。保留根工作台可让
         // App 切换器继续显示离开前的会话，同时不把 Token 留在内存或继续联网。
         if isCredentialMemorySuspended,
-           activeConnectionProfile != nil,
+           (activeConnectionProfile != nil || hasPendingKeychainRecovery),
            !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
@@ -857,6 +859,7 @@ final class AppStore: ObservableObject {
         token = prepared.token
         connectionProfiles = nextProfiles
         activeConnectionProfileID = targetProfile.id
+        hasPendingKeychainRecovery = false
         if let previousEphemeralProfileID,
            previousEphemeralProfileID != targetProfile.id {
             // 旧临时档案没有 Keychain 项，只清理进程内 Token，避免 entitlement 错误扩大失败面。
@@ -943,6 +946,7 @@ final class AppStore: ObservableObject {
         connectionProfiles = nextProfiles
         activeConnectionProfileID = nil
         ephemeralLocalProfileID = nil
+        hasPendingKeychainRecovery = false
         connectionGeneration += 1
         token = ""
         let legacyProfileID = "legacy"
@@ -978,6 +982,7 @@ final class AppStore: ObservableObject {
         try await credentialVault.delete(profileID: id)
         persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
+        if nextProfiles.isEmpty { hasPendingKeychainRecovery = false }
         // 档案删了，它的预览副本也不会再被用到（#918）。
         await MediaWorker.shared.discardPreviews(profileID: id)
     }
@@ -1579,7 +1584,7 @@ final class AppStore: ObservableObject {
         try EndpointTransportPolicy.validatedEndpoint(raw)
     }
 
-    private static func loadConnectionProfiles(from defaults: UserDefaults) -> [ConnectionProfile] {
+    static func loadConnectionProfiles(from defaults: UserDefaults) -> [ConnectionProfile] {
         guard let data = defaults.data(forKey: profilesKey) ?? defaults.data(forKey: legacyProfilesKey),
               let decoded = try? JSONDecoder().decode([ConnectionProfile].self, from: data)
         else {
@@ -1626,7 +1631,7 @@ final class AppStore: ObservableObject {
         return trimmed.isEmpty ? defaultProfileDisplayName(endpoint: endpoint) : trimmed
     }
 
-    private static func defaultProfileDisplayName(endpoint: String) -> String {
+    static func defaultProfileDisplayName(endpoint: String) -> String {
         ConnectionProfile.fallbackDisplayName(endpoint: endpoint)
     }
 

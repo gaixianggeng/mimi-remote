@@ -69,7 +69,11 @@ struct TokenStore {
     }
 
     func load() -> String {
-        (try? load(account: legacyAccount)) ?? ""
+        (try? loadLegacy()) ?? ""
+    }
+
+    func loadLegacy() throws -> String {
+        try load(account: legacyAccount)
     }
 
     func load(profileID: String) throws -> String {

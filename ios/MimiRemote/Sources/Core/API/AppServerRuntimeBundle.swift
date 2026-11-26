@@ -300,6 +300,7 @@ final class AppServerRuntimeBundle {
     private let configLock = NSLock()
     private var sharedConfig: CodexAppServerConfigResponse?
     private var installedGeneration: ConfigGeneration?
+    private var isRetired = false
     private var configRefreshTask: Task<CodexAppServerConfigResponse, Error>?
 
     private func currentConfigGeneration() async -> ConfigGeneration {
@@ -385,12 +386,18 @@ final class AppServerRuntimeBundle {
 
     @discardableResult
     func readConfiguration() async throws -> CodexAppServerConfigResponse {
-        if let inFlight = configLock.withLock({ configRefreshTask }) {
-            return try await inFlight.value
-        }
         let basis = await currentConfigGeneration()
-        let task = Task { try await codex.ensureConfig(forceRefresh: true) }
-        configLock.withLock { configRefreshTask = task }
+        let (task, ownsRefresh) = try configLock.withLock {
+            guard !isRetired, !Task.isCancelled else { throw CancellationError() }
+            if let configRefreshTask { return (configRefreshTask, false) }
+            let task = Task {
+                try Task.checkCancellation()
+                return try await codex.ensureConfig(forceRefresh: true)
+            }
+            configRefreshTask = task
+            return (task, true)
+        }
+        guard ownsRefresh else { return try await task.value }
         let refreshed: CodexAppServerConfigResponse
         do {
             refreshed = try await task.value
@@ -434,6 +441,11 @@ final class AppServerRuntimeBundle {
     }
 
     func shutdownForHostSwitch() async {
+        let refresh = configLock.withLock {
+            isRetired = true
+            return configRefreshTask
+        }
+        refresh?.cancel()
         await harness?.shutdownForHostSwitch()
         for provider in appServerRuntimeOrder {
             if let runtime = appServerRuntimes[provider] {

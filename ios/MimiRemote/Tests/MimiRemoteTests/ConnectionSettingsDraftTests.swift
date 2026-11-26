@@ -261,16 +261,26 @@ final class ConnectionSettingsDraftTests: XCTestCase {
     }
 
     func testInitialSetupWorkbenchExitVisibilityRules() {
-        // 无条件工具栏「稍后连接」在 UI-6 保持关闭，待 UI-7 无主机空态落地后再同步放开。
-        XCTAssertFalse(ConnectionSettingsView.allowsUnconditionalInitialSetupConnectLater)
+        // UI-7 无主机空态已就绪，首次连接页工具栏无条件提供「稍后连接」。
+        XCTAssertTrue(ConnectionSettingsView.allowsUnconditionalInitialSetupConnectLater)
 
-        // 真正全新首次启动（无中转权益、未配对失败）保持干净，不额外增加退出按钮。
-        XCTAssertFalse(
+        // 全新首次启动（无中转权益、未配对失败）即可通过导航栏「稍后连接」进入工作台空态。
+        XCTAssertTrue(
             ConnectionSettingsView.showsInitialSetupWorkbenchExit(
                 isDevicesTab: false,
                 hasSheetDismiss: false,
                 hasActiveMimiEntitlement: false,
                 hasPairingError: false
+            )
+        )
+        // 若显式关闭无条件门控，全新首次启动保持干净，仅在有中转权益或配对失败后显示。
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false,
+                allowsUnconditionalConnectLater: false
             )
         )
         // 已开通 Mimi 中转时，即使无电脑也提供回到工作台的出口。

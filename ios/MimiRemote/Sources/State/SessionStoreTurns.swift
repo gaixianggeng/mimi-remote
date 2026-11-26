@@ -146,7 +146,7 @@ extension SessionStore {
         expectedHostScope: HostScope? = nil
     ) async {
         let hostScope = expectedHostScope ?? appStore.activeHostScope
-        guard appStore.activeHostScope == hostScope else {
+        guard !Task.isCancelled, appStore.activeHostScope == hostScope else {
             return
         }
         if isRefreshingAppServerModels {
@@ -171,8 +171,10 @@ extension SessionStore {
             var threadGoalRuntimeProviders: Set<String> = []
             var unprobedGoalProviders: Set<String> = []
             for provider in RuntimeFeatureSupport.runtimeProviders {
+                guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
                 do {
                     if try await client.runtimeChannelAvailable(runtimeProvider: provider) {
+                        guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
                         availableRuntimeProviders.insert(provider)
                         do {
                             if try await client.runtimeSupportsThreadGoals(runtimeProvider: provider) {
@@ -186,7 +188,7 @@ extension SessionStore {
                     unprobedProviders.insert(provider)
                 }
             }
-            guard appStore.activeHostScope == hostScope else { return }
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             // 探测抛错只说明这次没探成（回前台换代、Harness 健康探测失败），不等于通道关闭：
             // 沿用上一次的结论，只有明确返回 false 才撤下，避免可用通道挂上「点击重新检查」（#777）。
             availableRuntimeProviders.formUnion(self.availableRuntimeProviders.intersection(unprobedProviders))
@@ -195,7 +197,7 @@ extension SessionStore {
                 self.threadGoalRuntimeProviders.intersection(unprobedProviders.union(unprobedGoalProviders))
             )
             let diagnostics = await client.runtimeChannelDiagnostics()
-            guard appStore.activeHostScope == hostScope else { return }
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             self.availableRuntimeProviders = availableRuntimeProviders
             self.runtimeChannelDiagnosticsByProvider = diagnostics
             self.threadGoalRuntimeProviders = threadGoalRuntimeProviders
@@ -216,7 +218,7 @@ extension SessionStore {
                 return
             }
             let options = try await client.modelOptions()
-            guard appStore.activeHostScope == hostScope else { return }
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             appServerModelOptionsLastRefresh = Date()
             // 聚合目录里某个 Runtime 缺席（次要通道这次没拉成）时，不能记成已刷新，也不能清掉
             // 它上一份目录；否则菜单会落到内置兜底，直到强制刷新才变成真实目录（#778）。
@@ -243,7 +245,7 @@ extension SessionStore {
                 setStatusMessage(options.isEmpty ? L10n.text("ui.model_list_empty_using_built_in_options") : L10n.text("ui.model_list_refreshed"))
             }
         } catch {
-            guard appStore.activeHostScope == hostScope else { return }
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return }
             if !didRefreshRuntimeAvailability {
                 availableRuntimeProviders = ["codex"]
                 threadGoalRuntimeProviders = ["codex"]

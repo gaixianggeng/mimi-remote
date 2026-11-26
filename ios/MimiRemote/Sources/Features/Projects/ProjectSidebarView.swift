@@ -2,6 +2,27 @@ import SwiftUI
 
 struct ProjectSidebarView: View {
     @EnvironmentObject private var sessionStore: SessionStore
+    var showsSessions = true
+    var onProjectSelected: (() -> Void)?
+    var onCollapseSidebar: (() -> Void)?
+    var onOpenWorkspaceTab: (() -> Void)?
+    var onConnectComputer: (() -> Void)?
+
+    var body: some View {
+        ProjectSidebarContentView(
+            appStore: sessionStore.appStore,
+            showsSessions: showsSessions,
+            onProjectSelected: onProjectSelected,
+            onCollapseSidebar: onCollapseSidebar,
+            onOpenWorkspaceTab: onOpenWorkspaceTab,
+            onConnectComputer: onConnectComputer
+        )
+    }
+}
+
+private struct ProjectSidebarContentView: View {
+    @ObservedObject var appStore: AppStore
+    @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -15,26 +36,30 @@ struct ProjectSidebarView: View {
     var onProjectSelected: (() -> Void)?
     var onCollapseSidebar: (() -> Void)?
     var onOpenWorkspaceTab: (() -> Void)?
+    var onConnectComputer: (() -> Void)?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let selectedProjectID = sessionStore.selectedProjectID
         let selectedSessionID = sessionStore.selectedSessionID
         let themeRenderKey = SidebarThemeRenderKey(themeVersion: themeStore.themeVersion, colorScheme: colorScheme)
-        let projects = showsSessions ? sessionStore.filteredSessionSidebarProjects : sessionStore.filteredSidebarProjects
+        let hasNoConfiguredHost = appStore.hasNoConfiguredHost
+        let matchingProjects = showsSessions ? sessionStore.filteredSessionSidebarProjects : sessionStore.filteredSidebarProjects
+        let projects = hasNoConfiguredHost ? [] : matchingProjects
         let usesCustomHeader = horizontalSizeClass == .regular || onCollapseSidebar != nil
 
         Group {
             if usesCustomHeader {
                 VStack(spacing: 0) {
-                    sidebarHeader(tokens: tokens, projects: projects)
-                        .frame(height: regularHeaderHeight)
+                    sidebarHeader(tokens: tokens, projects: projects, hasNoConfiguredHost: hasNoConfiguredHost)
+                        .frame(minHeight: regularHeaderHeight(hasNoConfiguredHost: hasNoConfiguredHost))
                     sidebarList(
                         tokens: tokens,
                         selectedProjectID: selectedProjectID,
                         selectedSessionID: selectedSessionID,
                         themeRenderKey: themeRenderKey,
                         projects: projects,
+                        hasNoConfiguredHost: hasNoConfiguredHost,
                         showsInlineHeader: false
                     )
                 }
@@ -45,6 +70,7 @@ struct ProjectSidebarView: View {
                     selectedSessionID: selectedSessionID,
                     themeRenderKey: themeRenderKey,
                     projects: projects,
+                    hasNoConfiguredHost: hasNoConfiguredHost,
                     showsInlineHeader: true
                 )
             }
@@ -60,7 +86,7 @@ struct ProjectSidebarView: View {
             }
         }
         .sidebarSystemSearchable(
-            isEnabled: !usesCustomHeader,
+            isEnabled: !usesCustomHeader && !hasNoConfiguredHost,
             text: $sessionStore.sessionSearchQuery,
             placement: searchPlacement,
             prompt: Text(showsSessions ? L10n.text("ui.search_session") : L10n.text("ui.search_workspace"))
@@ -82,12 +108,13 @@ struct ProjectSidebarView: View {
         selectedSessionID: SessionID?,
         themeRenderKey: SidebarThemeRenderKey,
         projects: [AgentProject],
+        hasNoConfiguredHost: Bool,
         showsInlineHeader: Bool
     ) -> some View {
         List {
             Section {
-                if shouldShowSidebarEmptyRow(projects: projects) {
-                    sidebarEmptyContent()
+                if shouldShowSidebarEmptyRow(projects: projects, hasNoConfiguredHost: hasNoConfiguredHost) {
+                    sidebarEmptyContent(hasNoConfiguredHost: hasNoConfiguredHost)
                         .padding(.top, showsInlineHeader ? 10 : 12)
                         .padding(.bottom, 8)
                         .sidebarListRow()
@@ -155,7 +182,7 @@ struct ProjectSidebarView: View {
                     }
                 }
 
-                if showsSessions && sessionStore.isSessionSearchActive,
+                if !hasNoConfiguredHost && showsSessions && sessionStore.isSessionSearchActive,
                    let notice = sessionStore.remoteSessionSearchNotice {
                     Text(notice)
                         .font(.caption)
@@ -165,12 +192,16 @@ struct ProjectSidebarView: View {
                 }
 
                 // 远端搜索是跨项目分页，只放一个全局入口；0 项目/0 可见命中时也能继续翻页。
-                if showsSessions && sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
+                if !hasNoConfiguredHost && showsSessions && sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
                     sidebarSearchLoadMoreRow(tokens: tokens)
                 }
             } header: {
                 if showsInlineHeader {
-                    sidebarCompactHeaderContent(tokens: tokens, projects: projects)
+                    sidebarCompactHeaderContent(
+                        tokens: tokens,
+                        projects: projects,
+                        hasNoConfiguredHost: hasNoConfiguredHost
+                    )
                 }
             }
         }
@@ -210,7 +241,10 @@ struct ProjectSidebarView: View {
         .sidebarListRow()
     }
 
-    private func shouldShowSidebarEmptyRow(projects: [AgentProject]) -> Bool {
+    private func shouldShowSidebarEmptyRow(projects: [AgentProject], hasNoConfiguredHost: Bool) -> Bool {
+        if hasNoConfiguredHost {
+            return true
+        }
         guard projects.isEmpty, !sessionStore.isLoading else {
             return false
         }
@@ -218,8 +252,13 @@ struct ProjectSidebarView: View {
     }
 
     @ViewBuilder
-    private func sidebarEmptyContent() -> some View {
-        if showsSessions && sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults {
+    private func sidebarEmptyContent(hasNoConfiguredHost: Bool) -> some View {
+        if hasNoConfiguredHost {
+            UnpairedHostEmptyStateView(
+                context: .sidebar,
+                onConnectComputer: onConnectComputer
+            )
+        } else if showsSessions && sessionStore.isSessionSearchActive && sessionStore.isSearchingRemoteSessionResults {
             SidebarSearchLoadingMessage()
         } else if sessionStore.isSessionSearchActive {
             SidebarEmptyMessage(
@@ -246,14 +285,18 @@ struct ProjectSidebarView: View {
         }
     }
 
-    private var regularHeaderHeight: CGFloat {
-        showsSessions ? 112 : 104
+    private func regularHeaderHeight(hasNoConfiguredHost: Bool) -> CGFloat {
+        if hasNoConfiguredHost {
+            return 60
+        }
+        return showsSessions ? 112 : 104
     }
 
-    private func sidebarHeader(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
-        regularSidebarHeaderContent(tokens: tokens, projects: projects)
+    private func sidebarHeader(tokens: ThemeTokens, projects: [AgentProject], hasNoConfiguredHost: Bool) -> some View {
+        regularSidebarHeaderContent(tokens: tokens, projects: projects, hasNoConfiguredHost: hasNoConfiguredHost)
             .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .center)
             .background(tokens.sidebarBackground)
             .overlay(alignment: .bottom) {
                 Rectangle()
@@ -262,56 +305,76 @@ struct ProjectSidebarView: View {
             }
     }
 
-    private func regularSidebarHeaderContent(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+    private func regularSidebarHeaderContent(
+        tokens: ThemeTokens,
+        projects: [AgentProject],
+        hasNoConfiguredHost: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(showsSessions ? L10n.text("ui.session") : L10n.text("ui.workspace"))
                         .font(themeStore.uiFont(size: 13, weight: .semibold))
                         .foregroundStyle(tokens.secondaryText)
-                    Text(sidebarHeaderSubtitle(projects: projects))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(sidebarHeaderSubtitle(projects: projects, hasNoConfiguredHost: hasNoConfiguredHost))
                         .font(themeStore.uiFont(size: 11))
                         .foregroundStyle(tokens.tertiaryText)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                if shouldShowSidebarHeaderActions(projects: projects) {
-                    sidebarHeaderActionGroup(tokens: tokens, projects: projects)
+                if shouldShowSidebarHeaderActions(projects: projects, hasNoConfiguredHost: hasNoConfiguredHost) {
+                    sidebarHeaderActionGroup(tokens: tokens, projects: projects, hasNoConfiguredHost: hasNoConfiguredHost)
                 }
             }
 
-            HStack(spacing: 8) {
-                sidebarSearchField(tokens: tokens)
-                if showsSessions {
-                    sidebarNewSessionMenu(tokens: tokens, projects: projects)
+            if !hasNoConfiguredHost {
+                HStack(spacing: 8) {
+                    sidebarSearchField(tokens: tokens)
+                    if showsSessions {
+                        sidebarNewSessionMenu(tokens: tokens, projects: projects)
+                    }
                 }
             }
         }
     }
 
-    private func sidebarCompactHeaderContent(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+    private func sidebarCompactHeaderContent(
+        tokens: ThemeTokens,
+        projects: [AgentProject],
+        hasNoConfiguredHost: Bool
+    ) -> some View {
         HStack(spacing: 8) {
             Text(showsSessions ? L10n.text("ui.session") : L10n.text("ui.workspace"))
                 .font(themeStore.uiFont(size: 12, weight: .semibold))
                 .foregroundStyle(tokens.tertiaryText)
             Spacer()
-            if shouldShowSidebarHeaderActions(projects: projects) {
-                sidebarHeaderActionGroup(tokens: tokens, projects: projects)
+            if shouldShowSidebarHeaderActions(projects: projects, hasNoConfiguredHost: hasNoConfiguredHost) {
+                sidebarHeaderActionGroup(tokens: tokens, projects: projects, hasNoConfiguredHost: hasNoConfiguredHost)
             }
         }
     }
 
-    private func sidebarHeaderActionGroup(tokens: ThemeTokens, projects: [AgentProject]) -> some View {
+    private func sidebarHeaderActionGroup(
+        tokens: ThemeTokens,
+        projects: [AgentProject],
+        hasNoConfiguredHost: Bool
+    ) -> some View {
         HStack(spacing: 2) {
             if showsSessions, let onCollapseSidebar {
-                sidebarHeaderButton(tokens: tokens, systemImage: "sidebar.left", accessibilityLabel: L10n.text("ui.collapse_conversation_list")) {
+                sidebarHeaderButton(
+                    tokens: tokens, systemImage: "sidebar.left",
+                    accessibilityLabel: L10n.text("ui.collapse_conversation_list"), hitSize: 44
+                ) {
                     onCollapseSidebar()
                 }
             }
-            sidebarHeaderRefresh(tokens: tokens, projects: projects)
-            if !showsSessions {
-                sidebarHeaderButton(tokens: tokens, systemImage: "folder.badge.plus", accessibilityLabel: L10n.text("ui.open_path")) {
-                    presentOpenWorkspaceSheet()
+            if !hasNoConfiguredHost {
+                sidebarHeaderRefresh(tokens: tokens, projects: projects)
+                if !showsSessions {
+                    sidebarHeaderButton(tokens: tokens, systemImage: "folder.badge.plus", accessibilityLabel: L10n.text("ui.open_path")) {
+                        presentOpenWorkspaceSheet()
+                    }
                 }
             }
         }
@@ -443,7 +506,10 @@ struct ProjectSidebarView: View {
         return projects.first
     }
 
-    private func sidebarHeaderSubtitle(projects: [AgentProject]) -> String {
+    private func sidebarHeaderSubtitle(projects: [AgentProject], hasNoConfiguredHost: Bool) -> String {
+        if hasNoConfiguredHost {
+            return L10n.text("ui.no_host_connected_title")
+        }
         if sessionStore.isSessionSearchActive {
             return projects.isEmpty ? L10n.text("ui.no_matching_results") : L10n.plural("ui.matching_results_count", count: projects.count)
         }
@@ -457,7 +523,10 @@ struct ProjectSidebarView: View {
         return projects.isEmpty ? L10n.text("ui.directory_not_yet_opened") : L10n.plural("ui.workspaces_count", count: projects.count)
     }
 
-    private func shouldShowSidebarHeaderActions(projects: [AgentProject]) -> Bool {
+    private func shouldShowSidebarHeaderActions(projects: [AgentProject], hasNoConfiguredHost: Bool) -> Bool {
+        if hasNoConfiguredHost {
+            return showsSessions && onCollapseSidebar != nil
+        }
         if showsSessions, onCollapseSidebar != nil {
             return true
         }
@@ -490,13 +559,15 @@ struct ProjectSidebarView: View {
         tokens: ThemeTokens,
         systemImage: String,
         accessibilityLabel: String,
+        hitSize: CGFloat = 32,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .frame(width: 32, height: 32)
+                .frame(minWidth: hitSize, minHeight: hitSize)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(tokens.secondaryText)

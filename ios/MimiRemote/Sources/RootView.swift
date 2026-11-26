@@ -179,11 +179,21 @@ struct RootView: View {
             // 冷启动时场景可能已经激活而 onChange 不再触发；先把当前前台状态登记进闸门镜像。
             foregroundResume.observeScene(active: scenePhase == .active)
             defer { hasCompletedInitialBootstrap = true }
+#if !targetEnvironment(macCatalyst)
+            guard !appStore.hasNoConfiguredHost else { return }
+#endif
             // 预热窗口必须早于 Tailcat 选路和第一次 preflight：冷启动的首个探测在隧道
             // 建好之前几乎必然失败，而那只是过程，不能让首屏先渲染成运行时不可用。
             // bootstrap 和它内部的退避重试各自再持有一份，窗口一直开到这条启动链路走完。
             let warmUpToken = sessionStore.beginConnectionWarmUp()
             defer { sessionStore.endConnectionWarmUp(warmUpToken) }
+#if targetEnvironment(macCatalyst)
+            if appStore.hasNoConfiguredHost {
+                // Catalyst 允许在未配对时自动发现本机同机 agentd；未发现时立即止步，不触发会话拉取。
+                await appStore.preflightConnection()
+                guard !appStore.hasNoConfiguredHost else { return }
+            }
+#endif
             // Tailcat 本地转发必须先于首批 REST/WebSocket client 建立；关闭实验时此调用立即返回。
             let tailcatReady = await tailcatExperimentController.prepareRoute(appStore: appStore)
             guard !tailcatExperimentController.isEnabled || tailcatReady else { return }
@@ -228,6 +238,7 @@ struct RootView: View {
             )
         }
         .task {
+            guard !appStore.hasNoConfiguredHost else { return }
             // SwiftUI 不保证兄弟 .task 的执行顺序，所以这条 preflight 必须自己持有一份预热窗口，
             // 不能依赖上面的启动任务先抢到令牌；否则它的首次失败仍会抢先发布 .failed。
             // 预热是引用计数的，两条链路各持有一份不会互相提前关窗。
@@ -279,13 +290,13 @@ struct RootView: View {
             }
         }
         .task(id: lockScreenApprovalLifecycleTaskID) {
-            guard scenePhase == .active else { return }
+            guard scenePhase == .active, !appStore.hasNoConfiguredHost else { return }
             // 冷启动不要求用户先打开设置页；失败只保留为可重试状态，
             // 下一次前台恢复仍会再次尝试。
             await refreshLockScreenApprovalLifecycle(markFailure: true)
         }
-        .task(id: scenePhase == .active ? sessionStore.selectedProjectID : nil) {
-            guard scenePhase == .active else {
+        .task(id: sessionListPollingTaskID) {
+            guard scenePhase == .active, !appStore.hasNoConfiguredHost else {
                 return
             }
             await sessionStore.pollSelectedProjectSessionsWhileVisible()
@@ -361,6 +372,13 @@ struct RootView: View {
             if isSwitching {
                 hostStatusStore.cancel()
             }
+        }
+        .onChange(of: appStore.hasNoConfiguredHost) { _, hasNoHost in
+            guard hasNoHost else { return }
+            foregroundResumeTask?.cancel()
+            foregroundResumeTask = nil
+            hostStatusStore.cancel()
+            sessionStore.cancelMimiRelay()
         }
         .environment(\.themeSystemColorScheme, colorScheme)
         .preferredColorScheme(themeStore.preferredColorScheme)
@@ -441,6 +459,10 @@ struct RootView: View {
             return .credentialsUnavailable
         }
         guard !Task.isCancelled else { return .cancelled }
+        if appStore.hasNoConfiguredHost {
+            await sessionStore.resumeFromForeground()
+            return .completed
+        }
         if recoverTailcat {
             let tailcatReady = await tailcatExperimentController
                 .recoverRouteFromForeground(appStore: appStore)
@@ -459,9 +481,20 @@ struct RootView: View {
         return .completed
     }
 
+    private var sessionListPollingTaskID: SessionListPollingTaskID {
+        SessionListPollingTaskID(
+            isSceneActive: scenePhase == .active,
+            hasNoConfiguredHost: appStore.hasNoConfiguredHost,
+            selectedProjectID: scenePhase == .active && !appStore.hasNoConfiguredHost
+                ? sessionStore.selectedProjectID
+                : nil
+        )
+    }
+
     private var lockScreenApprovalLifecycleTaskID: String {
         [
             scenePhase == .active ? "active" : "inactive",
+            appStore.hasNoConfiguredHost ? "no-host" : "host",
             appStore.activeConnectionProfileID ?? "",
             lockScreenApprovalStore.registeredProfileID ?? "",
 			lockScreenApprovalStore.notificationsEnabled ? "on" : "off",
@@ -472,6 +505,7 @@ struct RootView: View {
 
     private func refreshLockScreenApprovalLifecycle(markFailure: Bool) async {
         guard scenePhase == .active, hasCompletedInitialBootstrap,
+			  !appStore.hasNoConfiguredHost,
 			  appStore.canEnterWorkbench,
 			  let profileID = lockScreenApprovalStore.registeredProfileID ?? appStore.activeConnectionProfileID else {
             return
@@ -980,6 +1014,12 @@ private struct NotificationRouteTaskID: Equatable {
 private struct LockScreenApprovalRoutingTaskID: Equatable {
     let closedReason: NotificationRoutingGate.ClosedReason?
     let pending: LockScreenApprovalDelivery?
+}
+
+private struct SessionListPollingTaskID: Equatable {
+    let isSceneActive: Bool
+    let hasNoConfiguredHost: Bool
+    let selectedProjectID: String?
 }
 
 /// SwiftUI 的容器宽度会随 Split View 改变；通过实际 Window Scene 读取物理屏幕，
