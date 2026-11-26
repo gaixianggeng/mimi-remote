@@ -134,12 +134,23 @@ struct CodexSharedSetupView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Button(status.managedAliasReady ? "打开 Codex SSH 设置" : "打开 Codex 连接设置") {
-                    Task { await coordinator.openCodexSSHSettings() }
+                HStack(spacing: 10) {
+                    Button(status.managedAliasReady ? "打开 Codex SSH 设置" : "打开 Codex 连接设置") {
+                        Task { await coordinator.openCodexSSHSettings() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(status.passwordlessLogin != .done || coordinator.isMutating)
+                    .accessibilityIdentifier("codexSetup.openCodexConnectionsButton")
+
+                    if status.managedAliasReady {
+                        Button("打开连接设置") {
+                            Task { await coordinator.openCodexConnectionsSettings() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(status.passwordlessLogin != .done || coordinator.isMutating)
+                        .accessibilityIdentifier("codexSetup.openCodexConnectionsFallbackButton")
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(status.passwordlessLogin != .done || coordinator.isMutating)
-                .accessibilityIdentifier("codexSetup.openCodexConnectionsButton")
             }
 
             Divider()

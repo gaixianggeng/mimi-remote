@@ -41,6 +41,9 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         afterVerifyBeforeCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeDelete: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterStageQuarantineMove: CodexLocalSSHConfigurator.CommitHook? = nil,
+        afterFileQuarantineMove: CodexLocalSSHConfigurator.CommitHook? = nil,
+        simulateUnlinkFailure: (@Sendable (_ label: String) -> Bool)? = nil,
+        injectMetadataPreservationError: (@Sendable (_ label: String) -> String?)? = nil,
         simulateHardCrashPoint: CodexLocalSSHConfigurator.HardCrashSimulationPoint? = nil,
         beforeVerifySSH: (@Sendable () throws -> Void)? = nil
     ) -> CodexLocalSSHConfigurator {
@@ -77,6 +80,9 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             afterVerifyBeforeCommit: afterVerifyBeforeCommit,
             afterVerifyBeforeDelete: afterVerifyBeforeDelete,
             afterStageQuarantineMove: afterStageQuarantineMove,
+            afterFileQuarantineMove: afterFileQuarantineMove,
+            simulateUnlinkFailure: simulateUnlinkFailure,
+            injectMetadataPreservationError: injectMetadataPreservationError,
             simulateHardCrashPoint: simulateHardCrashPoint
         )
     }
@@ -1788,6 +1794,389 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path))
         let managedAfter = await setupCfg.inspect().isManaged
         XCTAssertFalse(managedAfter)
+    }
+
+    // MARK: - PR #1169 r1 P0: OpenSSH Tokenizer Control Bytes, Quoting & Fail-Closed Freezer
+
+    func testR1_P0TokenizerHandlesOpenSSHWhitespaceQuotingControlBytesAndFailsClosedOnUnrecognizedDirectives() async throws {
+        let home = tempHome.appendingPathComponent("r1-p0-tokenizer", isDirectory: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        _ = Darwin.chmod(home.appendingPathComponent(".ssh").path, 0o700)
+
+        let markerFile = tempHome.appendingPathComponent("p0-exec-marker-\(UUID().uuidString)")
+        let extraInclude = home.appendingPathComponent(".ssh/extra.conf")
+        try "Host *\n    User alice\n".write(to: extraInclude, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(extraInclude.path, 0o600)
+
+        let cfg = makeConfigurator(home: home, username: "alice", systemSSHConfigPath: nil)
+
+        // 1. 行内 \r、\v、\f、\0 等控制字节一律标为语法错误并被冻结器拒绝，绝不传给 ssh -G 执行 Match exec 或未冻结 Include。
+        let dangerousLines: [(label: String, content: String)] = [
+            ("inline CR Match exec", "Match\rexec \"touch '\(markerFile.path)'\"\n"),
+            ("leading CR Match exec", "\rMatch exec \"touch '\(markerFile.path)'\"\n"),
+            ("inline CR Include", "Include\r\"\(extraInclude.path)\"\n"),
+            ("vertical tab Include", "\u{000B}Include \"\(extraInclude.path)\"\n"),
+            ("form feed Match", "\u{000C}Match all\n"),
+            ("NUL byte", "Host foo\0bar\n"),
+            ("double-quoted Match exec", "\"Match\" exec \"touch '\(markerFile.path)'\"\n"),
+            ("partial-quoted Match exec", "Ma\"tch\" exec \"touch '\(markerFile.path)'\"\n"),
+            ("quoted exec criterion", "Match \"exec\" \"touch '\(markerFile.path)'\"\n"),
+            ("Match=exec", "Match=exec \"touch '\(markerFile.path)'\"\n"),
+            ("Match unknown criterion", "Match unknownattr foo\n"),
+            ("Match empty equals", "Match host= foo\n"),
+            ("Match bare", "Match\n"),
+            ("unrecognized directive", "UnknownCustomDirective value\n"),
+            ("unrecognized directive with tab", "\tBogusOption=123\n"),
+        ]
+
+        for item in dangerousLines {
+            do {
+                let frozen = try cfg.materializeEvaluationSSHConfig(
+                    userConfigText: item.content,
+                    includeSystemConfig: false
+                )
+                frozen.cleanup()
+                XCTFail("\(item.label) 必须 fail closed 拒绝冻结，不得原样放行")
+            } catch CodexLocalSSHConfigurator.ConfigError.effectiveConfigConflict {
+                // 预期
+            }
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: markerFile.path),
+                "\(item.label) 绝不得触发外部 shell 执行"
+            )
+        }
+
+        // 2. 双引号关键字 "Include" 与 Inc"lude" 按 OpenSSH 规则准确识别并冻结到临时目录，绝不遗漏原路径。
+        let quotedIncludeConfig = """
+        "Include" "\(extraInclude.path)"
+        Host 127.0.0.1
+            HostName=127.0.0.1
+            AddressFamily\tinet
+        """
+        let frozenQuoted = try cfg.materializeEvaluationSSHConfig(
+            userConfigText: quotedIncludeConfig,
+            includeSystemConfig: false
+        )
+        defer { frozenQuoted.cleanup() }
+        let frozenRootText = try String(contentsOf: frozenQuoted.configFileURL, encoding: .utf8)
+        XCTAssertFalse(frozenRootText.contains(extraInclude.path), "双引号关键字 Include 必须被重写为冻结快照路径")
+        XCTAssertTrue(frozenRootText.contains(frozenQuoted.tempDirectory.path))
+    }
+
+    // MARK: - PR #1169 r1 P1-1: Preserve POSIX Mode, ACL, Xattr & Group or Refuse Replacement
+
+    func testR1_P1ReplaceExistingSSHFilePreservesModeACLXattrAndGroupOrRefuses() async throws {
+        let home = tempHome.appendingPathComponent("r1-p1-metadata", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        _ = Darwin.chmod(sshDir.path, 0o700)
+
+        let cfg = makeConfigurator(home: home, username: "alice", systemSSHConfigPath: nil)
+        let originalConfig = "Host prod\n    HostName 10.0.0.5\n"
+        let originalAuth = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMetadataPreservationKey1234567890123456789 user@host\n"
+        try originalConfig.write(to: cfg.sshConfigURL, atomically: true, encoding: .utf8)
+        try originalAuth.write(to: cfg.authorizedKeysURL, atomically: true, encoding: .utf8)
+
+        let xattrName = "com.mimi.test.preserve"
+        let xattrValue = Data("keep-this-xattr-payload".utf8)
+
+        // 若当前用户属于多个辅助组，选一个不同于目录默认属组的 gid 以真实覆盖属组保留逻辑。
+        var groups = [gid_t](repeating: 0, count: 64)
+        let groupCount = Int(Darwin.getgroups(Int32(groups.count), &groups))
+        var dirSt = stat()
+        XCTAssertEqual(Darwin.lstat(sshDir.path, &dirSt), 0)
+        let targetGID: gid_t = {
+            if groupCount > 0 {
+                for g in groups.prefix(groupCount) where g != dirSt.st_gid {
+                    return g
+                }
+            }
+            return dirSt.st_gid
+        }()
+
+        func readACLText(at url: URL) -> String? {
+            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
+            guard fd >= 0 else { return nil }
+            defer { Darwin.close(fd) }
+            guard let acl = Darwin.acl_get_fd_np(fd, ACL_TYPE_EXTENDED) else { return nil }
+            defer { Darwin.acl_free(UnsafeMutableRawPointer(acl)) }
+            var len = 0
+            guard let textPtr = Darwin.acl_to_text(acl, &len) else { return nil }
+            defer { Darwin.acl_free(textPtr) }
+            return String(cString: textPtr)
+        }
+
+        func readXattr(name: String, at url: URL) -> Data? {
+            let size = Darwin.getxattr(url.path, name, nil, 0, 0, XATTR_NOFOLLOW)
+            guard size >= 0 else { return nil }
+            var buf = [UInt8](repeating: 0, count: size)
+            let got = Darwin.getxattr(url.path, name, &buf, buf.count, 0, XATTR_NOFOLLOW)
+            guard got >= 0 else { return nil }
+            return Data(buf.prefix(got))
+        }
+
+        for url in [cfg.sshConfigURL, cfg.authorizedKeysURL] {
+            XCTAssertEqual(Darwin.chown(url.path, Darwin.geteuid(), targetGID), 0)
+            XCTAssertEqual(Darwin.chmod(url.path, 0o640), 0)
+            let rc: Int32 = xattrValue.withUnsafeBytes { raw in
+                Darwin.setxattr(url.path, xattrName, raw.baseAddress, raw.count, 0, XATTR_NOFOLLOW)
+            }
+            XCTAssertEqual(rc, 0)
+            let chmodACL = try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                executable: URL(fileURLWithPath: "/bin/chmod"),
+                arguments: ["+a", "user:\(NSUserName()) allow read", url.path],
+                timeout: .seconds(5)
+            )
+            XCTAssertEqual(chmodACL.status, 0)
+        }
+
+        let initialConfigACL = try XCTUnwrap(readACLText(at: cfg.sshConfigURL))
+        let initialAuthACL = try XCTUnwrap(readACLText(at: cfg.authorizedKeysURL))
+
+        // 1. configure() 替换已有文件后必须完整保留 mode (0640)、gid、xattr 与 ACL。
+        try await cfg.configure(verifyConnection: false)
+
+        for (url, expectedACL) in [(cfg.sshConfigURL, initialConfigACL), (cfg.authorizedKeysURL, initialAuthACL)] {
+            var st = stat()
+            XCTAssertEqual(Darwin.lstat(url.path, &st), 0)
+            XCTAssertEqual(st.st_mode & 0o7777, 0o640, "替换后必须保留原 POSIX 权限")
+            XCTAssertEqual(st.st_gid, targetGID, "替换后必须保留原属组 gid")
+            XCTAssertEqual(readXattr(name: xattrName, at: url), xattrValue, "替换后必须保留原扩展属性")
+            XCTAssertEqual(readACLText(at: url), expectedACL, "替换后必须保留原 ACL")
+        }
+
+        // 2. remove() 写回文件后同样必须保留 mode、gid、xattr 与 ACL。
+        try await cfg.remove()
+        for (url, expectedACL) in [(cfg.sshConfigURL, initialConfigACL), (cfg.authorizedKeysURL, initialAuthACL)] {
+            var st = stat()
+            XCTAssertEqual(Darwin.lstat(url.path, &st), 0)
+            XCTAssertEqual(st.st_mode & 0o7777, 0o640)
+            XCTAssertEqual(st.st_gid, targetGID)
+            XCTAssertEqual(readXattr(name: xattrName, at: url), xattrValue)
+            XCTAssertEqual(readACLText(at: url), expectedACL)
+        }
+
+        // 3. 无法保留元数据时必须拒绝替换、报错并保持原文件（inode/内容/ACL/xattr/权限）零修改！
+        var beforeRefusalSt = stat()
+        XCTAssertEqual(Darwin.lstat(cfg.sshConfigURL.path, &beforeRefusalSt), 0)
+        let refusingCfg = makeConfigurator(
+            home: home,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            injectMetadataPreservationError: { label in
+                label == "~/.ssh/config" ? "模拟 ACL/属组无法保留" : nil
+            }
+        )
+        do {
+            try await refusingCfg.configure(verifyConnection: false)
+            XCTFail("元数据无法保留时必须拒绝替换")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed(let detail) {
+            XCTAssertTrue(detail.contains("拒绝替换"), "错误提示应明确说明已拒绝替换：\(detail)")
+        }
+        var afterRefusalSt = stat()
+        XCTAssertEqual(Darwin.lstat(cfg.sshConfigURL.path, &afterRefusalSt), 0)
+        XCTAssertEqual(afterRefusalSt.st_ino, beforeRefusalSt.st_ino, "拒绝替换后原文件 inode 不得改变")
+        XCTAssertEqual(try String(contentsOf: cfg.sshConfigURL, encoding: .utf8), originalConfig)
+        XCTAssertEqual(readXattr(name: xattrName, at: cfg.sshConfigURL), xattrValue)
+        XCTAssertEqual(readACLText(at: cfg.sshConfigURL), initialConfigACL)
+    }
+
+    // MARK: - PR #1169 r1 P1-2: Journal File Quarantine Move Before Move & Recover Stranded Private Key
+
+    func testR1_P1QuarantineMoveJournaledBeforeMoveAndRecoveredBeforeReportingRemovalComplete() async throws {
+        // 1. 崩溃模拟：remove() 将托管私钥移入隔离目录后立即崩溃，账本必须在移动前已入账，重试 remove() 必须先回收滞留私钥。
+        let crashHome = tempHome.appendingPathComponent("r1-p1-quarantine-crash", isDirectory: true)
+        let setupCfg = makeConfigurator(home: crashHome, username: "alice", systemSSHConfigPath: nil)
+        try await setupCfg.configure(verifyConnection: false)
+
+        let crashRemover = makeConfigurator(
+            home: crashHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            afterFileQuarantineMove: { qDirURL in
+                if qDirURL.deletingLastPathComponent().lastPathComponent == CodexLocalSSHConfigurator.mimiDirectoryName {
+                    throw CodexLocalSSHConfigurator.SimulatedHardCrashError(point: .afterFileQuarantineMove)
+                }
+            }
+        )
+        do {
+            try await crashRemover.remove()
+            XCTFail("应触发文件隔离移动后崩溃")
+        } catch let crash as CodexLocalSSHConfigurator.SimulatedHardCrashError {
+            XCTAssertEqual(crash.point, .afterFileQuarantineMove)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.privateKeyURL.path))
+        let persisted = try XCTUnwrap(try setupCfg.loadManagedState())
+        let journalEntry = try XCTUnwrap(persisted.quarantinedFileArtifacts.first, "隔离移动前必须持久化 quarantinedFileArtifacts")
+        XCTAssertEqual(journalEntry.originalFileName, CodexLocalSSHConfigurator.keyFileName)
+        let strandedKeyURL = setupCfg.mimiSSHDirectory
+            .appendingPathComponent(journalEntry.quarantineDirectoryName, isDirectory: true)
+            .appendingPathComponent("item", isDirectory: false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: strandedKeyURL.path), "崩溃后私钥滞留在隔离目录中")
+
+        let midInspect = await setupCfg.inspect()
+        XCTAssertTrue(midInspect.isManaged, "存在滞留隔离私钥时仍必须保留撤销入口")
+        XCTAssertTrue(midInspect.hasPendingTransaction)
+        XCTAssertFalse(midInspect.isReady)
+
+        // 重试 remove()：回收滞留隔离私钥并完整清理，绝不提前清账本留私钥。
+        try await setupCfg.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: strandedKeyURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.mimiSSHDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path))
+
+        // 2. unlink 失败场景：remove() 必须报错、保留隔离账本与归属记录，重试后完整恢复清理。
+        let unlinkHome = tempHome.appendingPathComponent("r1-p1-quarantine-unlink-fail", isDirectory: true)
+        let unlinkSetup = makeConfigurator(home: unlinkHome, username: "alice", systemSSHConfigPath: nil)
+        try await unlinkSetup.configure(verifyConnection: false)
+        let failingUnlinkRemover = makeConfigurator(
+            home: unlinkHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            simulateUnlinkFailure: { label in label == CodexLocalSSHConfigurator.keyFileName }
+        )
+        do {
+            try await failingUnlinkRemover.remove()
+            XCTFail("unlink 失败时 remove() 不得报告成功")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {}
+        let afterFailState = try XCTUnwrap(try unlinkSetup.loadManagedState())
+        XCTAssertFalse(afterFailState.quarantinedFileArtifacts.isEmpty, "unlink 失败后必须保留隔离账本")
+        XCTAssertNotNil(afterFailState.keyFingerprint, "unlink 失败后不得清除私钥归属记录")
+
+        try await unlinkSetup.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unlinkSetup.mimiSSHDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unlinkSetup.stateFileURL.path))
+
+        // 3. 篡改对抗：隔离目录内文件被替换成无关文件后，恢复 remove() 必须拒绝删除并保留文件与账本！
+        let tamperHome = tempHome.appendingPathComponent("r1-p1-quarantine-tamper", isDirectory: true)
+        let tamperSetup = makeConfigurator(home: tamperHome, username: "alice", systemSSHConfigPath: nil)
+        try await tamperSetup.configure(verifyConnection: false)
+        let tamperCrash = makeConfigurator(
+            home: tamperHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            afterFileQuarantineMove: { _ in
+                throw CodexLocalSSHConfigurator.SimulatedHardCrashError(point: .afterFileQuarantineMove)
+            }
+        )
+        do {
+            try await tamperCrash.remove()
+            XCTFail("应触发崩溃")
+        } catch is CodexLocalSSHConfigurator.SimulatedHardCrashError {}
+
+        let tamperState = try XCTUnwrap(try tamperSetup.loadManagedState())
+        let tamperArtifact = try XCTUnwrap(tamperState.quarantinedFileArtifacts.first)
+        let tamperItem = tamperSetup.mimiSSHDirectory
+            .appendingPathComponent(tamperArtifact.quarantineDirectoryName, isDirectory: true)
+            .appendingPathComponent("item", isDirectory: false)
+        let foreignBytes = Data("FOREIGN-REPLACED-QUARANTINE-FILE".utf8)
+        try FileManager.default.removeItem(at: tamperItem)
+        try foreignBytes.write(to: tamperItem)
+
+        do {
+            try await tamperSetup.remove()
+            XCTFail("隔离目录内文件 inode/指纹不匹配时必须拒绝删除")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {}
+        XCTAssertEqual(try Data(contentsOf: tamperItem), foreignBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tamperSetup.stateFileURL.path))
+    }
+
+    // MARK: - PR #1169 r1 P1-3: Reject Duplicate Managed-Key Entries & Capability-Expanding Duplicates
+
+    func testR1_P1RejectsDuplicateManagedKeyEntriesAndSameKeyWithExtraCapabilities() async throws {
+        let keyBody = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDuplicateManagedKeyCheck1234567890123456789"
+        let managed = CodexLocalSSHConfigurator.formatManagedAuthorizedKeyEntry(publicKeyBody: keyBody)
+
+        // 1. 同公钥附加 pty / port-forwarding / agent-forwarding 等放宽权限选项 -> 即使同时存在精确 Mimi 行也必须拒绝！
+        let withPTYDuplicate = """
+        \(managed)
+        restrict,pty,port-forwarding,from="127.0.0.1,::1" \(keyBody) extra-pty
+        """
+        let ptyEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
+            content: withPTYDuplicate,
+            keyBody: keyBody,
+            recordedEntry: managed
+        )
+        XCTAssertTrue(ptyEval.hasConflict)
+        XCTAssertFalse(ptyEval.hasValidLoopbackEntry)
+
+        let withAgentFwdDuplicate = """
+        \(managed)
+        restrict,agent-forwarding,from="127.0.0.1,::1" \(keyBody) extra-agent
+        """
+        let agentEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
+            content: withAgentFwdDuplicate,
+            keyBody: keyBody,
+            recordedEntry: managed
+        )
+        XCTAssertTrue(agentEval.hasConflict)
+        XCTAssertFalse(agentEval.hasValidLoopbackEntry)
+
+        // 2. 完全相同的托管行重复出现两次 -> 必须拒绝！
+        let identicalDuplicate = "\(managed)\n\(managed)\n"
+        let dupEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
+            content: identicalDuplicate,
+            keyBody: keyBody,
+            recordedEntry: managed
+        )
+        XCTAssertTrue(dupEval.hasConflict)
+        XCTAssertFalse(dupEval.hasValidLoopbackEntry)
+
+        // 3. 端到端：configure 完成后往 authorized_keys 追加放宽能力的同公钥行 -> inspect().isReady 为 false，再次 configure 报冲突！
+        let home = tempHome.appendingPathComponent("r1-p1-dup-auth", isDirectory: true)
+        let cfg = makeConfigurator(home: home, username: "alice", systemSSHConfigPath: nil)
+        try await cfg.configure(verifyConnection: false)
+
+        let currentAuth = try String(contentsOf: cfg.authorizedKeysURL, encoding: .utf8)
+        let actualKeyBody = try XCTUnwrap(cfg.readPublicKeyBody())
+        let widenedAuth = currentAuth + #"restrict,pty,port-forwarding,from="127.0.0.1,::1" "# + actualKeyBody + " widened\n"
+        try widenedAuth.write(to: cfg.authorizedKeysURL, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(cfg.authorizedKeysURL.path, 0o600)
+
+        let inspected = await cfg.inspect()
+        XCTAssertTrue(inspected.hasConflictingAuthorizedKey)
+        XCTAssertFalse(inspected.isReady)
+
+        do {
+            try await cfg.configure(verifyConnection: false)
+            XCTFail("存在放宽能力的同公钥重复行时验收必须失败")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingAuthorizedKey {}
+    }
+
+    // MARK: - PR #1169 r1 P2-2: Verify-Only Retry Must Not Chmod App-Support Dir or Recreate/Chmod Lock File
+
+    func testR1_P2VerifyOnlyRetryDoesNotChmodAppSupportDirOrCreateChmodLockFile() async throws {
+        let home = tempHome.appendingPathComponent("r1-p2-readonly-lock", isDirectory: true)
+        let cfg = makeConfigurator(home: home, username: "alice", systemSSHConfigPath: nil)
+        try await cfg.configure(verifyConnection: false)
+
+        let stateDir = cfg.stateFileURL.deletingLastPathComponent()
+        XCTAssertEqual(Darwin.chmod(stateDir.path, 0o755), 0)
+        try? FileManager.default.removeItem(at: cfg.lockFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.lockFileURL.path))
+
+        // 1. 已有配置的只读重试：不得修改状态目录权限（保持 0755），也不得重新创建锁文件！
+        try await cfg.configure(verifyConnection: false)
+        XCTAssertEqual(try posixPermissions(of: stateDir), 0o755, "只读校验重试不得修改状态目录权限")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.lockFileURL.path), "只读校验重试不得重新创建锁文件")
+
+        // 2. 已有锁文件权限为 0640 时：只读校验重试直接复用该锁且不得 chmod 改权！
+        try Data().write(to: cfg.lockFileURL)
+        XCTAssertEqual(Darwin.chmod(cfg.lockFileURL.path, 0o640), 0)
+        try await cfg.configure(verifyConnection: false)
+        XCTAssertEqual(try posixPermissions(of: cfg.lockFileURL), 0o640, "只读校验重试不得修改现有锁文件权限")
+        XCTAssertEqual(try posixPermissions(of: stateDir), 0o755)
+
+        // 3. 锁文件被替换为符号链接时必须拒绝！
+        try FileManager.default.removeItem(at: cfg.lockFileURL)
+        let decoy = home.appendingPathComponent("decoy-lock")
+        try Data().write(to: decoy)
+        try FileManager.default.createSymbolicLink(at: cfg.lockFileURL, withDestinationURL: decoy)
+        do {
+            try await cfg.configure(verifyConnection: false)
+            XCTFail("锁文件为符号链接时只读校验必须拒绝")
+        } catch CodexLocalSSHConfigurator.ConfigError.unsafeFileSystemTarget {}
     }
 }
 

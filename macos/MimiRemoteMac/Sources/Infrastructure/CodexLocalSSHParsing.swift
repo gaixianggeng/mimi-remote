@@ -281,7 +281,7 @@ extension CodexLocalSSHConfigurator {
         recordedEntry: String?
     ) -> AuthorizedKeysEvaluation {
         let expectedEntry = recordedEntry ?? formatManagedAuthorizedKeyEntry(publicKeyBody: keyBody)
-        var hasExactMimiEntry = false
+        var exactMimiEntryCount = 0
         var hasOtherSameKeyEntry = false
         for slice in rawLineSlices(in: content) {
             let lineText = utf8Substring(content, range: slice.contentRange)
@@ -290,7 +290,7 @@ extension CodexLocalSSHConfigurator {
             }
             if !parsed.isStrictlyLoopbackFrom {
                 return AuthorizedKeysEvaluation(
-                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasExactMimiEntry: exactMimiEntryCount > 0,
                     hasOtherSameKeyEntry: true,
                     hasConflict: true,
                     conflictReason: "发现同一公钥缺少仅限 127.0.0.1/::1 的 from= 限制。"
@@ -298,7 +298,7 @@ extension CodexLocalSSHConfigurator {
             }
             if !parsed.hasRestrictOption {
                 return AuthorizedKeysEvaluation(
-                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasExactMimiEntry: exactMimiEntryCount > 0,
                     hasOtherSameKeyEntry: true,
                     hasConflict: true,
                     conflictReason: "发现同一公钥缺少 restrict 限制选项。"
@@ -306,29 +306,45 @@ extension CodexLocalSSHConfigurator {
             }
             if parsed.hasCommandOption {
                 return AuthorizedKeysEvaluation(
-                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasExactMimiEntry: exactMimiEntryCount > 0,
                     hasOtherSameKeyEntry: true,
                     hasConflict: true,
                     conflictReason: "发现同一公钥带有 command= 限制选项。"
                 )
             }
+            if !parsed.hasOnlyManagedRestrictAndLoopbackFromOptions {
+                return AuthorizedKeysEvaluation(
+                    hasExactMimiEntry: exactMimiEntryCount > 0,
+                    hasOtherSameKeyEntry: true,
+                    hasConflict: true,
+                    conflictReason: "发现同一公钥带有超出 Mimi 最小限制（restrict,from）的额外选项，可能重新开启端口转发或 PTY 访问。"
+                )
+            }
             if lineText == expectedEntry && parsed.isValidMimiManagedEntry(expectedKeyBody: keyBody) {
-                hasExactMimiEntry = true
+                exactMimiEntryCount += 1
             } else {
                 hasOtherSameKeyEntry = true
             }
         }
-        if hasOtherSameKeyEntry && !hasExactMimiEntry {
+        if hasOtherSameKeyEntry {
             return AuthorizedKeysEvaluation(
-                hasExactMimiEntry: false,
+                hasExactMimiEntry: exactMimiEntryCount > 0,
                 hasOtherSameKeyEntry: true,
                 hasConflict: true,
-                conflictReason: "发现同一公钥的外部或已修改授权行（非 Mimi 标记行），已保留记录未覆盖或丢弃。"
+                conflictReason: "发现同一公钥存在额外的外部或已修改授权行（非唯一 Mimi 标记行），已拒绝验收并保留记录未覆盖。"
+            )
+        }
+        if exactMimiEntryCount > 1 {
+            return AuthorizedKeysEvaluation(
+                hasExactMimiEntry: true,
+                hasOtherSameKeyEntry: true,
+                hasConflict: true,
+                conflictReason: "发现同一托管公钥在 authorized_keys 中出现重复条目（共 \(exactMimiEntryCount) 条），已拒绝验收。"
             )
         }
         return AuthorizedKeysEvaluation(
-            hasExactMimiEntry: hasExactMimiEntry,
-            hasOtherSameKeyEntry: hasOtherSameKeyEntry,
+            hasExactMimiEntry: exactMimiEntryCount == 1,
+            hasOtherSameKeyEntry: false,
             hasConflict: false,
             conflictReason: nil
         )
@@ -510,18 +526,154 @@ extension CodexLocalSSHConfigurator {
         return includeLine + "\n" + remaining
     }
 
-    // MARK: - OpenSSH-Compatible Line Tokenizer (Supports Mid-Token Quotes & Escapes)
+    // MARK: - OpenSSH-Compatible Line Tokenizer (Supports Mid-Token Quotes, Escapes & Control-Byte Rejection)
 
     struct ParsedSSHConfigLine: Equatable {
         let tokens: [String]
         let hasSyntaxError: Bool
     }
 
-    /// 严格按 OpenSSH `argv_split` 语义切分配置行：
-    /// - 支持关键字与参数间用空白或 `=` 分隔；
+    /// OpenSSH `ssh_config(5)` 及 macOS Apple OpenSSH 已知客户端配置指令白名单（全小写）。
+    /// 冻结器在调用 `ssh -G` 前对所有非空非注释行执行严格白名单校验，任何无法识别的指令一律 fail closed，绝不原样放行。
+    static let recognizedSSHConfigKeywords: Set<String> = [
+        "addkeystoagent",
+        "addressfamily",
+        "applemultipath",
+        "batchmode",
+        "bindaddress",
+        "bindinterface",
+        "canonicaldomains",
+        "canonicalizefallbacklocal",
+        "canonicalizehostname",
+        "canonicalizemaxdots",
+        "canonicalizepermittedcnames",
+        "casignaturealgorithms",
+        "certificatefile",
+        "challengeresponseauthentication",
+        "channeltimeout",
+        "checkhostip",
+        "cipher",
+        "ciphers",
+        "clearallforwardings",
+        "compression",
+        "compressionlevel",
+        "connectionattempts",
+        "connecttimeout",
+        "controlmaster",
+        "controlpath",
+        "controlpersist",
+        "dynamicforward",
+        "enableescapecommandline",
+        "enablesshkeysign",
+        "escapechar",
+        "exitonforwardfailure",
+        "fallbacktorsh",
+        "fingerprinthash",
+        "forkafterauthentication",
+        "forwardagent",
+        "forwardx11",
+        "forwardx11timeout",
+        "forwardx11trusted",
+        "gatewayports",
+        "globalknownhostsfile",
+        "gssapiauthentication",
+        "gssapiclientidentity",
+        "gssapidelegatecredentials",
+        "gssapikeyexchange",
+        "gssapikexalgorithms",
+        "gssapirenewalforcesrekey",
+        "gssapiserveridentity",
+        "gssapitrustdns",
+        "hashknownhosts",
+        "host",
+        "hostbasedacceptedalgorithms",
+        "hostbasedauthentication",
+        "hostbasedkeytypes",
+        "hostkeyalgorithms",
+        "hostkeyalias",
+        "hostname",
+        "identitiesonly",
+        "identityagent",
+        "identityfile",
+        "ignoreunknown",
+        "include",
+        "ipqos",
+        "kbdinteractiveauthentication",
+        "kbdinteractivedevices",
+        "kexalgorithms",
+        "knownhostscommand",
+        "localcommand",
+        "localforward",
+        "loglevel",
+        "logverbose",
+        "macs",
+        "match",
+        "nohostauthenticationforlocalhost",
+        "nohostauthenticationforproxycommand",
+        "numberofpasswordprompts",
+        "obscurekeystroketiming",
+        "passwordauthentication",
+        "permitlocalcommand",
+        "permitremoteopen",
+        "pkcs11provider",
+        "port",
+        "preferredauthentications",
+        "protocol",
+        "proxycommand",
+        "proxyjump",
+        "proxyusefdpass",
+        "pubkeyacceptedalgorithms",
+        "pubkeyacceptedkeytypes",
+        "pubkeyauthentication",
+        "refuseconnection",
+        "rekeylimit",
+        "remotecommand",
+        "remoteforward",
+        "requesttty",
+        "requiredrsasize",
+        "revokedhostkeys",
+        "rhostsrsaauthentication",
+        "rsaauthentication",
+        "securitykeyprovider",
+        "sendenv",
+        "serveralivecountmax",
+        "serveraliveinterval",
+        "sessiontype",
+        "setenv",
+        "stdinnull",
+        "streamlocalbindmask",
+        "streamlocalbindunlink",
+        "stricthostkeychecking",
+        "syslogfacility",
+        "tag",
+        "tcpkeepalive",
+        "tunnel",
+        "tunneldevice",
+        "updatehostkeys",
+        "usekeychain",
+        "useprivilegedport",
+        "user",
+        "userknownhostsfile",
+        "usersh",
+        "verifyhostkeydns",
+        "versionaddendum",
+        "visualhostkey",
+        "warnweakcrypto",
+        "xauthlocation",
+    ]
+
+    /// 严格按 OpenSSH `strdelim` / `argv_split` 语义切分配置行：
+    /// - 拒绝除水平制表符（0x09）外的全部 ASCII 控制字节（含 `\0`、行内 `\r`、`\v`、`\f`、`\n`、`0x7F`），消除与 OpenSSH `WHITESPACE`/`isspace` 的分歧；
+    /// - 支持关键字与参数间用空格、制表符或 `=` 分隔，并支持关键字内双引号（如 `"Include"`、`Inc"lude"`、`"Match"`）；
     /// - 支持参数任意位置出现 `"..."`、`'...'`（含路径中段引号，如 `Include /tmp/"a b"/inc.conf`）与反斜杠转义（如 `a\ b`）；
-    /// - 未闭合引号或末尾悬空反斜杠标为 `hasSyntaxError = true`，供冻结器显式报错而绝不静默丢弃。
+    /// - 任何控制字节、空关键字、未闭合引号、悬空反斜杠或非法关键字转义一律标为 `hasSyntaxError = true`，供冻结器 fail closed 拒绝。
     static func parseSSHConfigLineStrict(_ rawLine: String) -> ParsedSSHConfigLine {
+        for byte in rawLine.utf8 {
+            if (byte < 0x20 && byte != 0x09) || byte == 0x7F {
+                return ParsedSSHConfigLine(tokens: [], hasSyntaxError: true)
+            }
+        }
+
         var idx = rawLine.startIndex
         while idx < rawLine.endIndex, rawLine[idx] == " " || rawLine[idx] == "\t" {
             idx = rawLine.index(after: idx)
@@ -531,12 +683,53 @@ extension CodexLocalSSHConfigurator {
         }
 
         var tokens: [String] = []
-        // 第一个词为关键字，可用空白或 '=' 分隔
-        let keyStart = idx
-        while idx < rawLine.endIndex, rawLine[idx] != " " && rawLine[idx] != "\t" && rawLine[idx] != "=" {
-            idx = rawLine.index(after: idx)
+        // 第一个词为关键字：按 OpenSSH strdelim 语义支持双引号与空白/'='分隔；不允许空关键字、单引号或反斜杠。
+        var keyword = ""
+        var inKeywordDoubleQuote = false
+        var sawKeywordSegment = false
+        while idx < rawLine.endIndex {
+            let ch = rawLine[idx]
+            if inKeywordDoubleQuote {
+                if ch == "\"" {
+                    inKeywordDoubleQuote = false
+                    idx = rawLine.index(after: idx)
+                } else if ch == "\\" {
+                    let nextIdx = rawLine.index(after: idx)
+                    guard nextIdx < rawLine.endIndex else {
+                        return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+                    }
+                    let nextCh = rawLine[nextIdx]
+                    if nextCh == "\"" || nextCh == "\\" {
+                        keyword.append(nextCh)
+                    } else {
+                        keyword.append(ch)
+                        keyword.append(nextCh)
+                    }
+                    idx = rawLine.index(after: nextIdx)
+                } else {
+                    keyword.append(ch)
+                    idx = rawLine.index(after: idx)
+                }
+            } else {
+                if ch == " " || ch == "\t" || ch == "=" {
+                    break
+                } else if ch == "\"" {
+                    inKeywordDoubleQuote = true
+                    sawKeywordSegment = true
+                    idx = rawLine.index(after: idx)
+                } else if ch == "'" || ch == "\\" {
+                    return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+                } else {
+                    keyword.append(ch)
+                    sawKeywordSegment = true
+                    idx = rawLine.index(after: idx)
+                }
+            }
         }
-        tokens.append(String(rawLine[keyStart..<idx]))
+        if inKeywordDoubleQuote || !sawKeywordSegment || keyword.isEmpty {
+            return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+        }
+        tokens.append(keyword)
 
         while idx < rawLine.endIndex, rawLine[idx] == " " || rawLine[idx] == "\t" {
             idx = rawLine.index(after: idx)
@@ -788,6 +981,77 @@ extension CodexLocalSSHConfigurator {
         return false
     }
 
+    private static let recognizedMatchZeroArgCriteria: Set<String> = [
+        "all", "canonical", "final",
+    ]
+
+    private static let recognizedMatchValueCriteria: Set<String> = [
+        "host", "originalhost", "user", "localuser", "localnetwork", "tagged", "command",
+    ]
+
+    /// 严格校验 OpenSSH `Match` 条件列表：阻断 `exec` / `!exec`，并拒绝空条件、未知条件、缺参或语法不明确的 `=`，fail closed。
+    static func validateMatchCriteria(_ criteria: [String]) -> String? {
+        guard !criteria.isEmpty else {
+            return "SSH 配置包含缺少条件的 Match 指令，拒绝只读评估。"
+        }
+        var idx = 0
+        var sawAll = false
+        var sawOtherThanCanonicalFinal = false
+        while idx < criteria.count {
+            let raw = criteria[idx]
+            let lower = raw.lowercased()
+            let negated = lower.hasPrefix("!")
+            let body = negated ? String(lower.dropFirst()) : lower
+            let name: String
+            let inlineValue: String?
+            if let eq = body.firstIndex(of: "=") {
+                name = String(body[..<eq])
+                inlineValue = String(body[body.index(after: eq)...])
+            } else {
+                name = body
+                inlineValue = nil
+            }
+            if name == "exec" {
+                return "SSH 配置包含 Match exec 条件命令，只读评估拒绝执行外部 shell 命令。"
+            }
+            if recognizedMatchZeroArgCriteria.contains(name) {
+                guard inlineValue == nil else {
+                    return "SSH 配置包含语法不明确的 Match 条件（\(raw)），拒绝只读评估。"
+                }
+                if name == "all" {
+                    if negated {
+                        return "SSH 配置包含无效的 Match !all 条件，拒绝只读评估。"
+                    }
+                    sawAll = true
+                }
+                idx += 1
+            } else if recognizedMatchValueCriteria.contains(name) {
+                sawOtherThanCanonicalFinal = true
+                if let inlineValue {
+                    guard !inlineValue.isEmpty else {
+                        return "SSH 配置包含缺少参数值的 Match 条件（\(raw)），拒绝只读评估。"
+                    }
+                    idx += 1
+                } else {
+                    guard idx + 1 < criteria.count else {
+                        return "SSH 配置包含缺少参数的 Match 条件（\(raw)），拒绝只读评估。"
+                    }
+                    let nextArg = criteria[idx + 1]
+                    guard !nextArg.isEmpty, nextArg != "=" else {
+                        return "SSH 配置包含语法不明确的 Match 参数（\(raw) \(nextArg)），拒绝只读评估。"
+                    }
+                    idx += 2
+                }
+            } else {
+                return "SSH 配置包含无法识别的 Match 条件（\(raw)），拒绝只读评估。"
+            }
+        }
+        if sawAll && sawOtherThanCanonicalFinal {
+            return "SSH 配置包含非法组合的 Match all 条件，拒绝只读评估。"
+        }
+        return nil
+    }
+
     /// 检测 OpenSSH `Match` 条件中是否包含 `exec` 或 `!exec`，用于在被动只读评估（`ssh -G`）前阻断外部 shell 执行。
     static func matchCriteriaContainsExec(_ criteria: [String]) -> Bool {
         var idx = 0
@@ -803,7 +1067,6 @@ extension CodexLocalSSHConfigurator {
             } else if raw.contains("=") {
                 idx += 1
             } else {
-                // 其余带参条件（host、originalhost、user、localuser、tagged、localnetwork、command 等）消费下一个参数。
                 idx += 2
             }
         }

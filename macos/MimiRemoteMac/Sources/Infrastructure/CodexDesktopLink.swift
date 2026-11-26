@@ -24,9 +24,9 @@ enum CodexDesktopLink {
         var feedbackMessage: String? {
             switch self {
             case .openedSSHSettings:
-                nil
+                "已将 SSH 设置页链接发送给 Codex 桌面版；如未自动跳转，可点击「打开连接设置」或手动进入「设置 → 连接 → SSH」。"
             case .openedConnectionsFallback:
-                "已打开 Codex 桌面版的「连接」设置页，请进入 SSH 子页继续添加主机。"
+                "已将「连接」设置页链接发送给 Codex 桌面版，请进入 SSH 子页继续添加主机。"
             case .openedAppFallback:
                 "已打开 Codex 桌面版，请手动进入「设置 → 连接 → SSH」继续添加主机。"
             case .notInstalled:
@@ -408,13 +408,188 @@ enum CodexDesktopLink {
             }
         }
 
+        let listen: String?
         let codex: CodexSection?
         let appServer: AppServerSection?
 
         enum CodingKeys: String, CodingKey {
+            case listen
             case codex
             case appServer = "app_server"
         }
+    }
+
+    /// 经实时进程、LaunchAgent 与监听端口核验确认当前正为 Mimi 服务的 `agentd serve` 实例。
+    struct ActiveMimiAgentd: Equatable, Sendable {
+        let pid: Int32
+        let configURL: URL
+        let listenPort: Int
+    }
+
+    private static let agentdLaunchAgentLabel = "com.gaixianggeng.mimi.mac.agentd"
+
+    static func parseLaunchctlServicePID(from output: String) -> Int32? {
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard let sep = line.range(of: " = ") else { continue }
+            let key = line[..<sep.lowerBound].trimmingCharacters(in: .whitespaces)
+            if key == "pid" {
+                let value = line[sep.upperBound...].trimmingCharacters(in: .whitespaces)
+                if let pid = Int32(value), pid > 1 {
+                    return pid
+                }
+                return nil
+            }
+        }
+        return nil
+    }
+
+    static func parseListeningTCPPorts(lsofOutput: String) -> [Int32: Set<Int>] {
+        var result: [Int32: Set<Int>] = [:]
+        var currentPID: Int32?
+        for line in lsofOutput.split(whereSeparator: \.isNewline) {
+            guard let first = line.first else { continue }
+            let value = String(line.dropFirst())
+            switch first {
+            case "p":
+                currentPID = Int32(value)
+            case "n":
+                guard let pid = currentPID,
+                      let parsed = parseHostPort(value),
+                      let port = Int(parsed.port),
+                      port > 0 else { continue }
+                result[pid, default: []].insert(port)
+            default:
+                break
+            }
+        }
+        return result
+    }
+
+    private static func configuredListenPort(from listen: String?) -> Int {
+        guard let raw = listen?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return LocalGatewayClient.defaultPort
+        }
+        if let parsed = parseHostPort(raw), let port = Int(parsed.port), port > 0 {
+            return port
+        }
+        if raw.hasPrefix(":"), let port = Int(raw.dropFirst()), port > 0 {
+            return port
+        }
+        return LocalGatewayClient.defaultPort
+    }
+
+    private static func isAgentdSupervisorProcess(_ entry: ProcessSnapshotEntry) -> Bool {
+        if let exactArgs = entry.exactArguments {
+            return AgentdSupervisorInvocation.isRequested(exactArgs)
+        }
+        return entry.rawCommand.contains(AgentdSupervisorInvocation.flag)
+    }
+
+    /// 识别 `agentd serve` 进程并返回其有效配置路径（省略 `--config` 时默认 `~/Library/Application Support/mimi-remote/config.json`）。
+    /// 不匹配 `agentd codex-front serve`。
+    static func extractAgentdServeEffectiveConfigURL(
+        from entry: ProcessSnapshotEntry,
+        homeDirectory: URL
+    ) -> URL? {
+        if let exactArgs = entry.exactArguments {
+            guard exactArgs.count >= 2 else { return nil }
+            let base = URL(fileURLWithPath: exactArgs[0]).lastPathComponent
+            guard base == "agentd", exactArgs[1] == "serve" else { return nil }
+            if let explicit = extractAgentdServeConfigPath(from: entry) {
+                return URL(fileURLWithPath: expandHomePrefix(explicit, homeDirectory: homeDirectory), isDirectory: false)
+            }
+            return defaultAgentdConfigURL(homeDirectory: homeDirectory)
+        }
+
+        let raw = entry.rawCommand
+        let serveRange: Range<String.Index>
+        if let matched = raw.range(of: "/agentd serve") {
+            serveRange = matched
+        } else if raw.hasPrefix("agentd serve"),
+                  let matched = raw.range(of: "agentd serve") {
+            serveRange = matched
+        } else {
+            return nil
+        }
+        let afterServe = raw[serveRange.upperBound...]
+        guard afterServe.isEmpty || afterServe.first == " " || afterServe.first == "\t" else {
+            return nil
+        }
+        if let explicit = extractAgentdServeConfigPath(from: entry) {
+            return URL(fileURLWithPath: expandHomePrefix(explicit, homeDirectory: homeDirectory), isDirectory: false)
+        }
+        return defaultAgentdConfigURL(homeDirectory: homeDirectory)
+    }
+
+    /// 唯一识别当前正为 Mimi 服务的活动 `agentd serve` 进程（优先 LaunchAgent supervisor 子进程，其次匹配 Mimi 配置与监听端口的唯一实例）；
+    /// 绝不借用同用户其他 `agentd serve --config ...` 的配置，无法确认或存在歧义时返回 `nil`（判为非共享）。
+    static func resolveActiveMimiAgentd(
+        processes: [Int32: ProcessSnapshotEntry],
+        listeningPortsByPID: [Int32: Set<Int>]? = nil,
+        launchdSupervisorPID: Int32? = nil,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        expectedUID: uid_t = Darwin.geteuid(),
+        expectedConfigURL: URL? = nil
+    ) -> ActiveMimiAgentd? {
+        let serveCandidates: [(entry: ProcessSnapshotEntry, configURL: URL)] = processes.values
+            .sorted(by: { $0.pid < $1.pid })
+            .compactMap { entry in
+                guard entry.uid == expectedUID,
+                      let cfgURL = extractAgentdServeEffectiveConfigURL(from: entry, homeDirectory: homeDirectory) else {
+                    return nil
+                }
+                return (entry, cfgURL)
+            }
+        guard !serveCandidates.isEmpty else { return nil }
+
+        func makeActive(_ candidate: (entry: ProcessSnapshotEntry, configURL: URL)) -> ActiveMimiAgentd? {
+            let loadedPort: Int
+            switch loadAgentdCodexConfig(at: candidate.configURL, expectedUID: expectedUID) {
+            case .loaded(let cfg):
+                loadedPort = configuredListenPort(from: cfg.listen)
+            case .missing, .invalid:
+                return nil
+            }
+            if let listeningPortsByPID {
+                let ports = listeningPortsByPID[candidate.entry.pid] ?? []
+                if !ports.contains(loadedPort) {
+                    return nil
+                }
+            }
+            return ActiveMimiAgentd(
+                pid: candidate.entry.pid,
+                configURL: candidate.configURL,
+                listenPort: loadedPort
+            )
+        }
+
+        // 1. 若 launchd 已报告 Mimi LaunchAgent 的 supervisor PID，严格绑定到其名下唯一的 `agentd serve` 子进程。
+        if let launchdSupervisorPID {
+            let supervised = serveCandidates.filter {
+                $0.entry.ppid == launchdSupervisorPID || $0.entry.pid == launchdSupervisorPID
+            }
+            guard supervised.count == 1 else { return nil }
+            return makeActive(supervised[0])
+        }
+
+        // 2. 若进程表内存在当前用户的 `--agentd-supervisor`，严格绑定到其名下唯一的 `agentd serve` 子进程。
+        let supervisorPIDs = Set(
+            processes.values
+                .filter { $0.uid == expectedUID && isAgentdSupervisorProcess($0) }
+                .map(\.pid)
+        )
+        if !supervisorPIDs.isEmpty {
+            let supervised = serveCandidates.filter { supervisorPIDs.contains($0.entry.ppid) }
+            guard supervised.count == 1 else { return nil }
+            return makeActive(supervised[0])
+        }
+
+        // 3. 无 LaunchAgent supervisor 时（如手动/Homebrew 启动），只匹配 Mimi 目标配置文件对应的唯一活动 `agentd serve`（绝不误用其他 `--config` 的 `agentd`）。
+        let targetConfigURL = expectedConfigURL ?? defaultAgentdConfigURL(homeDirectory: homeDirectory)
+        let matchingTarget = serveCandidates.filter { configURLsMatch($0.configURL, targetConfigURL) }
+        guard matchingTarget.count == 1 else { return nil }
+        return makeActive(matchingTarget[0])
     }
 
     private static func expandHomePrefix(_ path: String, homeDirectory: URL) -> String {
@@ -492,28 +667,63 @@ enum CodexDesktopLink {
         return nil
     }
 
-    /// 定位当前用户运行中的 `agentd serve` 实际使用的配置文件路径（优先运行中进程的 `--config`，其次 `AGENTD_CONFIG`，最后默认配置路径）。
-    static func agentdConfigURL(
+    /// 解析活动 `agentd serve` 的配置文件路径：
+    /// - 存在 `--agentd-supervisor` 子进程时仅采用该受管 `agentd serve` 的配置；
+    /// - 存在多个同用户 `agentd serve` 且配置路径不一致时 fail closed 返回 `nil`（绝不借用另一个 `agentd` 的配置）；
+    /// - 仅当无运行中 `agentd serve` 时回退到 `AGENTD_CONFIG` 或默认配置路径。
+    static func resolveAgentdConfigURL(
         processes: [Int32: ProcessSnapshotEntry] = [:],
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         expectedUID: uid_t = Darwin.geteuid()
-    ) -> URL {
-        for entry in processes.values.sorted(by: { $0.pid < $1.pid }) where entry.uid == expectedUID {
-            if let rawPath = extractAgentdServeConfigPath(from: entry) {
-                return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+    ) -> URL? {
+        let serveEntries: [(entry: ProcessSnapshotEntry, configURL: URL)] = processes.values
+            .sorted(by: { $0.pid < $1.pid })
+            .compactMap { entry in
+                guard entry.uid == expectedUID,
+                      let cfgURL = extractAgentdServeEffectiveConfigURL(from: entry, homeDirectory: homeDirectory) else {
+                    return nil
+                }
+                return (entry, cfgURL)
             }
+
+        if !serveEntries.isEmpty {
+            let supervisorPIDs = Set(
+                processes.values
+                    .filter { $0.uid == expectedUID && isAgentdSupervisorProcess($0) }
+                    .map(\.pid)
+            )
+            if !supervisorPIDs.isEmpty {
+                let supervised = serveEntries.filter { supervisorPIDs.contains($0.entry.ppid) }
+                guard supervised.count == 1 else { return nil }
+                return supervised[0].configURL
+            }
+            let firstURL = serveEntries[0].configURL
+            guard serveEntries.allSatisfy({ configURLsMatch($0.configURL, firstURL) }) else {
+                return nil
+            }
+            return firstURL
         }
 
         if let envConfig = environment["AGENTD_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !envConfig.isEmpty {
             return URL(fileURLWithPath: expandHomePrefix(envConfig, homeDirectory: homeDirectory), isDirectory: false)
         }
-        return homeDirectory
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("mimi-remote", isDirectory: true)
-            .appendingPathComponent("config.json", isDirectory: false)
+        return defaultAgentdConfigURL(homeDirectory: homeDirectory)
+    }
+
+    static func agentdConfigURL(
+        processes: [Int32: ProcessSnapshotEntry] = [:],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        expectedUID: uid_t = Darwin.geteuid()
+    ) -> URL {
+        resolveAgentdConfigURL(
+            processes: processes,
+            homeDirectory: homeDirectory,
+            environment: environment,
+            expectedUID: expectedUID
+        ) ?? defaultAgentdConfigURL(homeDirectory: homeDirectory)
     }
 
     private enum LoadedAgentdConfig {
@@ -799,12 +1009,14 @@ enum CodexDesktopLink {
         agentdConfigURL: URL? = nil,
         processes: [Int32: ProcessSnapshotEntry] = [:]
     ) -> SharedCodexSocketTarget? {
-        let configURL = agentdConfigURL ?? Self.agentdConfigURL(
+        guard let configURL = agentdConfigURL ?? Self.resolveAgentdConfigURL(
             processes: processes,
             homeDirectory: homeDirectory,
             environment: environment,
             expectedUID: expectedUID
-        )
+        ) else {
+            return nil
+        }
 
         let rawPublicHome: String
         let canonicalPublicHome: String
@@ -963,7 +1175,8 @@ enum CodexDesktopLink {
     }
 
     /// 从 `lsof -nP -a -U -u <uid> -F0pcfdtn` 输出解析当前已连接到共享 Codex 控制 socket 的 `codex` 客户端进程 PID 集合。
-    /// 当 `requireManagedFrontDoor == true`（例如配置了 `app_server.shared_codex_home`）时，严格确认监听器属于当前用户的受管前门进程（`agentd codex-front serve`），拒绝独立 `codex` 监听或无法确认身份的进程。
+    /// - 当 `requireManagedFrontDoor == true`（例如配置了 `app_server.shared_codex_home`）时，严格确认监听器属于当前用户的受管前门进程（`agentd codex-front serve`）且已建立到期望 `app-server-backend.sock` 的活动后端连接；
+    /// - 当提供 `activeAgentdPID` 时，严格要求该活动 Mimi `agentd` 进程与桌面 `codex` 代理连接到同一个活动 Unix socket 端点（相同 `(listenerPID, socketPath)`），无法确认即返回空集合。
     static func parseConnectedCodexClientPIDs(
         unixLsofOutput: Data,
         sharedSocketPaths: Set<String>,
@@ -972,6 +1185,7 @@ enum CodexDesktopLink {
         requireManagedFrontDoor: Bool = false,
         expectedConfigURL: URL? = nil,
         expectedBackendSocketPaths: Set<String> = [],
+        activeAgentdPID: Int32? = nil,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Set<Int32> {
         guard !sharedSocketPaths.isEmpty, !unixLsofOutput.isEmpty else { return [] }
@@ -986,6 +1200,20 @@ enum CodexDesktopLink {
             var address: String = ""
             var name: String = ""
         }
+        struct LiveSocketEndpoint: Hashable {
+            let listenerPID: Int32
+            let socketPath: String
+        }
+        func isCodexProcessCommand(_ cmd: String) -> Bool {
+            cmd == "codex" ||
+                cmd.hasPrefix("codex-aarch64") ||
+                cmd.hasPrefix("codex-x86_64") ||
+                cmd == "codex-aar" ||
+                cmd == "codex-x86"
+        }
+
+        let normalizedSharedSockets = Set(sharedSocketPaths.map(normalizePathForComparison))
+        let normalizedExpectedBackendSockets = Set(expectedBackendSocketPaths.map(normalizePathForComparison))
 
         var files: [UnixSocketFile] = []
         var current = UnixSocketFile()
@@ -1033,13 +1261,20 @@ enum CodexDesktopLink {
         }
         flush()
 
-        var addressToName: [String: String] = [:]
+        var addressToFile: [String: UnixSocketFile] = [:]
         for file in files where file.address.hasPrefix("0x") && !file.name.isEmpty && !file.name.hasPrefix("->") {
-            addressToName[file.address] = file.name
+            addressToFile[file.address] = file
         }
 
-        var serverAddresses: Set<String> = []
-        for file in files where file.address.hasPrefix("0x") && sharedSocketPaths.contains(file.name) {
+        var addressToVerifiedEndpoint: [String: LiveSocketEndpoint] = [:]
+        for file in files where file.address.hasPrefix("0x") && !file.name.isEmpty && !file.name.hasPrefix("->") {
+            let normalizedName = normalizePathForComparison(file.name)
+            guard sharedSocketPaths.contains(file.name) || normalizedSharedSockets.contains(normalizedName) else {
+                continue
+            }
+            if let expectedUID, let entry = processes?[file.pid], entry.uid != expectedUID {
+                continue
+            }
             if requireManagedFrontDoor {
                 guard file.command == "agentd",
                       let entry = processes?[file.pid] else {
@@ -1055,32 +1290,57 @@ enum CodexDesktopLink {
                 ) else {
                     continue
                 }
-                if !expectedBackendSocketPaths.isEmpty {
-                    let connectedBackendNames = files
+                if !normalizedExpectedBackendSockets.isEmpty {
+                    let connectedBackendPeers = files
                         .filter { $0.pid == file.pid && $0.name.hasPrefix("->") }
-                        .compactMap { addressToName[String($0.name.dropFirst(2))] }
-                        .filter { $0.hasSuffix("/app-server-backend.sock") }
-                    if !connectedBackendNames.isEmpty,
-                       !connectedBackendNames.contains(where: { expectedBackendSocketPaths.contains(normalizePathForComparison($0)) }) {
+                        .compactMap { addressToFile[String($0.name.dropFirst(2))] }
+                        .filter { $0.name.hasSuffix("/app-server-backend.sock") }
+                    // 受管前门必须确证已连接到期望的私有 backend socket 且对端为当前用户的 codex 后端进程。
+                    guard !connectedBackendPeers.isEmpty,
+                          connectedBackendPeers.allSatisfy({ peer in
+                              let peerPathOK = normalizedExpectedBackendSockets.contains(normalizePathForComparison(peer.name))
+                              let peerCmdOK = isCodexProcessCommand(peer.command)
+                              let peerUIDOK: Bool
+                              if let expectedUID, let peerProc = processes?[peer.pid] {
+                                  peerUIDOK = peerProc.uid == expectedUID
+                              } else {
+                                  peerUIDOK = true
+                              }
+                              return peerPathOK && peerCmdOK && peerUIDOK
+                          }) else {
                         continue
                     }
                 }
             }
-            serverAddresses.insert(file.address)
+            addressToVerifiedEndpoint[file.address] = LiveSocketEndpoint(
+                listenerPID: file.pid,
+                socketPath: normalizedName
+            )
         }
-        guard !serverAddresses.isEmpty else { return [] }
+        guard !addressToVerifiedEndpoint.isEmpty else { return [] }
+
+        // 若指定了活动 Mimi agentd PID，必须确认该 agentd 自己也连接在同一个活动 (listenerPID, socketPath) 端点上。
+        let allowedEndpoints: Set<LiveSocketEndpoint>
+        if let activeAgentdPID {
+            var agentdEndpoints: Set<LiveSocketEndpoint> = []
+            for file in files where file.pid == activeAgentdPID && file.name.hasPrefix("->") {
+                let peerAddress = String(file.name.dropFirst(2))
+                if let endpoint = addressToVerifiedEndpoint[peerAddress] {
+                    agentdEndpoints.insert(endpoint)
+                }
+            }
+            guard !agentdEndpoints.isEmpty else { return [] }
+            allowedEndpoints = agentdEndpoints
+        } else {
+            allowedEndpoints = Set(addressToVerifiedEndpoint.values)
+        }
 
         var connectedCodexPIDs: Set<Int32> = []
         for file in files where file.name.hasPrefix("->") {
             let peerAddress = String(file.name.dropFirst(2))
-            guard serverAddresses.contains(peerAddress) else { continue }
-            let cmd = file.command
-            let isCodexCommand = cmd == "codex" ||
-                cmd.hasPrefix("codex-aarch64") ||
-                cmd.hasPrefix("codex-x86_64") ||
-                cmd == "codex-aar" ||
-                cmd == "codex-x86"
-            if isCodexCommand {
+            guard let endpoint = addressToVerifiedEndpoint[peerAddress],
+                  allowedEndpoints.contains(endpoint) else { continue }
+            if isCodexProcessCommand(file.command) {
                 connectedCodexPIDs.insert(file.pid)
             }
         }
@@ -1149,6 +1409,7 @@ enum CodexDesktopLink {
         requireManagedFrontDoor: Bool = false,
         expectedConfigURL: URL? = nil,
         expectedBackendSocketPaths: Set<String> = [],
+        activeAgentdPID: Int32? = nil,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         let processes = parseProcessesWithUID(psOutput: psWithUIDOutput)
@@ -1177,6 +1438,7 @@ enum CodexDesktopLink {
             requireManagedFrontDoor: requireManagedFrontDoor,
             expectedConfigURL: expectedConfigURL,
             expectedBackendSocketPaths: expectedBackendSocketPaths,
+            activeAgentdPID: activeAgentdPID,
             homeDirectory: homeDirectory
         )
         return hasCorrelatedSSHAuthenticatedCodexSession(
@@ -1197,6 +1459,7 @@ enum CodexDesktopLink {
         tcpLsofOutput: String,
         unixLsofOutput: Data,
         sharedTarget: SharedCodexSocketTarget?,
+        activeAgentdPID: Int32? = nil,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         guard let sharedTarget else { return false }
@@ -1212,6 +1475,7 @@ enum CodexDesktopLink {
             requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
             expectedConfigURL: sharedTarget.expectedConfigURL,
             expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths,
+            activeAgentdPID: activeAgentdPID,
             homeDirectory: homeDirectory
         )
     }
@@ -1480,7 +1744,8 @@ enum CodexDesktopLink {
         let currentUser = NSUserName()
         let currentUID = Darwin.geteuid()
         var processes = parseProcessesWithUID(psOutput: result.stdoutText)
-        for (pid, entry) in processes where entry.uid == currentUID && entry.rawCommand.contains("agentd") {
+        for (pid, entry) in processes where entry.uid == currentUID &&
+            (entry.rawCommand.contains("agentd") || entry.rawCommand.contains(AgentdSupervisorInvocation.flag)) {
             if let exactArgs = processArguments(forPID: pid) {
                 var enriched = entry
                 enriched.exactArguments = exactArgs
@@ -1551,30 +1816,97 @@ enum CodexDesktopLink {
         }
         guard !verifiedClientTuples.isEmpty else { return .separate }
 
-        // 2. 查询当前账号已连 agentd 实际共享 Codex 控制 socket 的 codex 客户端进程，收集其当前用户持有的 sshd/sshd-session 祖先 PID，
-        //    并通过服务端 TCP 四元组与桌面 ssh 客户端四元组精确镜像匹配，确保二者属于同一条已认证 SSH 会话。
-        let unixLsofResult = try? await ProcessExecutor.shared.run(
+        // 2. 先唯一识别当前正为 Mimi 服务的活动 `agentd serve` 实例（绝不借用同用户其他 `agentd` 的配置），
+        //    并确认桌面 `codex` 代理与该活动 Mimi `agentd` 连接到同一个实时后端 socket（相同 listener PID 与路径）。
+        let launchctlResult = try? await ProcessExecutor.shared.run(
+            executable: URL(fileURLWithPath: "/bin/launchctl"),
+            arguments: ["print", "gui/\(currentUID)/\(agentdLaunchAgentLabel)"],
+            timeout: .seconds(3),
+            outputLimit: 262_144
+        )
+        let launchdSupervisorPID: Int32? = {
+            guard let launchctlResult, launchctlResult.status == 0 else { return nil }
+            return parseLaunchctlServicePID(from: launchctlResult.stdoutText)
+        }()
+        let listenLsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
-            arguments: ["-nP", "-a", "-U", "-u", String(currentUID), "-F0pcfdtn"],
+            arguments: ["-nP", "-a", "-u", String(currentUID), "-iTCP", "-sTCP:LISTEN", "-F", "pn"],
             timeout: .seconds(5),
             outputLimit: 1_048_576
         )
-        guard let unixLsofResult, unixLsofResult.status == 0 else { return .separate }
+        guard let listenLsofResult, listenLsofResult.status == 0 else { return .separate }
+        let listeningPortsByPID = parseListeningTCPPorts(lsofOutput: listenLsofResult.stdoutText)
+
+        guard let activeAgentd = resolveActiveMimiAgentd(
+            processes: processes,
+            listeningPortsByPID: listeningPortsByPID,
+            launchdSupervisorPID: launchdSupervisorPID,
+            expectedUID: currentUID
+        ) else {
+            return .separate
+        }
+
         guard let sharedTarget = resolveSharedCodexSocketTarget(
             expectedUID: currentUID,
+            agentdConfigURL: activeAgentd.configURL,
             processes: processes
         ) else {
             return .separate
         }
-        let connectedCodexPIDs = parseConnectedCodexClientPIDs(
-            unixLsofOutput: unixLsofResult.stdout,
+
+        func captureUnixLsof() async -> Data? {
+            let res = try? await ProcessExecutor.shared.run(
+                executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
+                arguments: ["-nP", "-a", "-U", "-u", String(currentUID), "-F0pcfdtn"],
+                timeout: .seconds(5),
+                outputLimit: 1_048_576
+            )
+            guard let res, res.status == 0 else { return nil }
+            return res.stdout
+        }
+
+        guard let initialUnixLsof = await captureUnixLsof() else { return .separate }
+        var connectedCodexPIDs = parseConnectedCodexClientPIDs(
+            unixLsofOutput: initialUnixLsof,
             sharedSocketPaths: sharedTarget.socketPaths,
             processes: processes,
             expectedUID: currentUID,
             requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
             expectedConfigURL: sharedTarget.expectedConfigURL,
-            expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths
+            expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths,
+            activeAgentdPID: activeAgentd.pid
         )
+        if connectedCodexPIDs.isEmpty {
+            // 若桌面端已连上候选共享 socket 但活动 agentd 当前空闲无打开的 Unix socket FD，
+            // 通过一次性只读网关探针让活动 Mimi agentd 真实连接其当前后端，再核验双方命中同一实时端点。
+            let desktopOnlyPIDs = parseConnectedCodexClientPIDs(
+                unixLsofOutput: initialUnixLsof,
+                sharedSocketPaths: sharedTarget.socketPaths,
+                processes: processes,
+                expectedUID: currentUID,
+                requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
+                expectedConfigURL: sharedTarget.expectedConfigURL,
+                expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths
+            )
+            guard !desktopOnlyPIDs.isEmpty else { return .separate }
+            guard let probeChannel = try? await LocalGatewayClient(requestTimeout: 5)
+                .openCodexProbeChannel(port: activeAgentd.listenPort) else {
+                return .separate
+            }
+            defer { probeChannel.close() }
+            guard let liveUnixLsof = await captureUnixLsof() else { return .separate }
+            connectedCodexPIDs = parseConnectedCodexClientPIDs(
+                unixLsofOutput: liveUnixLsof,
+                sharedSocketPaths: sharedTarget.socketPaths,
+                processes: processes,
+                expectedUID: currentUID,
+                requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
+                expectedConfigURL: sharedTarget.expectedConfigURL,
+                expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths,
+                activeAgentdPID: activeAgentd.pid
+            )
+        }
+        guard !connectedCodexPIDs.isEmpty else { return .separate }
         var sshdAncestorSet: Set<Int32> = []
         for codexPID in connectedCodexPIDs {
             let ancestors = sshdAncestorPIDs(for: codexPID, processes: processes, expectedUID: currentUID)

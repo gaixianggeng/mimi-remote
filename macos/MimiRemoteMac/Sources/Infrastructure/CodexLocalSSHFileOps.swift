@@ -7,6 +7,7 @@ extension CodexLocalSSHConfigurator {
     struct LStatInfo: Equatable {
         let mode: mode_t
         let uid: uid_t
+        let gid: gid_t
         let dev: dev_t
         let ino: ino_t
         let size: off_t
@@ -22,6 +23,7 @@ extension CodexLocalSSHConfigurator {
         init(
             mode: mode_t,
             uid: uid_t,
+            gid: gid_t = Darwin.getegid(),
             dev: dev_t,
             ino: ino_t,
             size: off_t,
@@ -30,6 +32,7 @@ extension CodexLocalSSHConfigurator {
         ) {
             self.mode = mode
             self.uid = uid
+            self.gid = gid
             self.dev = dev
             self.ino = ino
             self.size = size
@@ -40,12 +43,21 @@ extension CodexLocalSSHConfigurator {
         init(stat st: stat) {
             self.mode = st.st_mode
             self.uid = st.st_uid
+            self.gid = st.st_gid
             self.dev = st.st_dev
             self.ino = st.st_ino
             self.size = st.st_size
             self.mtimeSec = st.st_mtimespec.tv_sec
             self.mtimeNsec = st.st_mtimespec.tv_nsec
         }
+    }
+
+    /// 文件的扩展访问元数据（ACL 与扩展属性），用于替换已有 SSH 文件时完整保留访问控制或拒绝降级替换。
+    struct FileAccessMetadata: Equatable {
+        let aclExternalData: Data?
+        let xattrs: [String: Data]
+
+        static let empty = FileAccessMetadata(aclExternalData: nil, xattrs: [:])
     }
 
     /// 明确区分「确实缺失（仅 ENOENT）」与「存在」；任何其他 errno（如 EACCES、ENOTDIR、ELOOP）必须显式抛错，绝不静默降级为缺失。
@@ -57,11 +69,24 @@ extension CodexLocalSSHConfigurator {
     struct FileSnapshot: Equatable {
         let exists: Bool
         let info: LStatInfo?
+        let metadata: FileAccessMetadata
         let data: Data
 
         var mode: mode_t? { info?.permissions }
 
-        static let missing = FileSnapshot(exists: false, info: nil, data: Data())
+        init(
+            exists: Bool,
+            info: LStatInfo?,
+            metadata: FileAccessMetadata = .empty,
+            data: Data
+        ) {
+            self.exists = exists
+            self.info = info
+            self.metadata = metadata
+            self.data = data
+        }
+
+        static let missing = FileSnapshot(exists: false, info: nil, metadata: .empty, data: Data())
     }
 
     func probePath(_ url: URL, label: String) throws -> PathProbe {
@@ -214,10 +239,10 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    /// 对已存在且已通过安全校验的用户文件保持其原有权限不变；仅新建文件采用默认权限。
+    /// 对已存在且已通过安全校验的用户文件保持其原有权限位（含特殊位）不变；仅新建文件采用默认权限。
     static func preservedSafeFileMode(existing: mode_t?, defaultMode: mode_t) -> mode_t {
         guard let existing else { return defaultMode }
-        return existing & 0o777
+        return existing & 0o7777
     }
 
     func captureSnapshot(of url: URL, label: String? = nil) throws -> FileSnapshot {
@@ -266,7 +291,204 @@ extension CodexLocalSSHConfigurator {
         }
 
         let data = try readAllBytes(from: fd, label: label)
-        return FileSnapshot(exists: true, info: LStatInfo(stat: st), data: data)
+        let metadata = try captureFileAccessMetadata(fromFD: fd, label: label)
+        return FileSnapshot(exists: true, info: LStatInfo(stat: st), metadata: metadata, data: data)
+    }
+
+    func captureFileAccessMetadata(fromFD fd: Int32, label: String) throws -> FileAccessMetadata {
+        let aclData = try captureExtendedACL(fromFD: fd, label: label)
+        let xattrs = try captureExtendedAttributes(fromFD: fd, label: label)
+        return FileAccessMetadata(aclExternalData: aclData, xattrs: xattrs)
+    }
+
+    private func captureExtendedACL(fromFD fd: Int32, label: String) throws -> Data? {
+        errno = 0
+        guard let acl = Darwin.acl_get_fd_np(fd, ACL_TYPE_EXTENDED) else {
+            let err = errno
+            if err == ENOENT || err == ENOTSUP || err == 0 {
+                return nil
+            }
+            throw ConfigError.fileOperationFailed("无法读取 \(label) 的 ACL 访问控制列表：\(Self.posixErrorMessage(err))")
+        }
+        defer { Darwin.acl_free(UnsafeMutableRawPointer(acl)) }
+
+        let size = Darwin.acl_size(acl)
+        guard size >= 0 else {
+            throw ConfigError.fileOperationFailed("无法计算 \(label) 的 ACL 大小：\(Self.posixErrorMessage())")
+        }
+        if size == 0 {
+            return nil
+        }
+        var buffer = [UInt8](repeating: 0, count: size)
+        let copied = Darwin.acl_copy_ext_native(&buffer, acl, size)
+        guard copied >= 0 else {
+            throw ConfigError.fileOperationFailed("无法序列化 \(label) 的 ACL：\(Self.posixErrorMessage())")
+        }
+        return Data(buffer.prefix(copied))
+    }
+
+    private func captureExtendedAttributes(fromFD fd: Int32, label: String) throws -> [String: Data] {
+        var listSize = Darwin.flistxattr(fd, nil, 0, 0)
+        if listSize < 0 {
+            let err = errno
+            if err == ENOTSUP {
+                return [:]
+            }
+            throw ConfigError.fileOperationFailed("无法列举 \(label) 的扩展属性：\(Self.posixErrorMessage(err))")
+        }
+        if listSize == 0 {
+            return [:]
+        }
+        var nameBuffer = [CChar](repeating: 0, count: listSize)
+        var actualSize = Darwin.flistxattr(fd, &nameBuffer, nameBuffer.count, 0)
+        if actualSize < 0 && errno == ERANGE {
+            listSize = Darwin.flistxattr(fd, nil, 0, 0)
+            guard listSize >= 0 else {
+                throw ConfigError.fileOperationFailed("无法重新列举 \(label) 的扩展属性：\(Self.posixErrorMessage())")
+            }
+            if listSize == 0 { return [:] }
+            nameBuffer = [CChar](repeating: 0, count: listSize)
+            actualSize = Darwin.flistxattr(fd, &nameBuffer, nameBuffer.count, 0)
+        }
+        guard actualSize >= 0 else {
+            throw ConfigError.fileOperationFailed("读取 \(label) 扩展属性列表失败：\(Self.posixErrorMessage())")
+        }
+
+        var names: [String] = []
+        var offset = 0
+        while offset < actualSize {
+            var end = offset
+            while end < actualSize && nameBuffer[end] != 0 {
+                end += 1
+            }
+            if end > offset {
+                let bytes = nameBuffer[offset..<end].map { UInt8(bitPattern: $0) }
+                names.append(String(decoding: bytes, as: UTF8.self))
+            }
+            offset = end + 1
+        }
+
+        var result: [String: Data] = [:]
+        for name in names {
+            let valSize = Darwin.fgetxattr(fd, name, nil, 0, 0, 0)
+            if valSize < 0 {
+                throw ConfigError.fileOperationFailed("无法读取 \(label) 的扩展属性 \(name)：\(Self.posixErrorMessage())")
+            }
+            if valSize == 0 {
+                result[name] = Data()
+                continue
+            }
+            var valBuf = [UInt8](repeating: 0, count: valSize)
+            let readLen = Darwin.fgetxattr(fd, name, &valBuf, valBuf.count, 0, 0)
+            guard readLen >= 0 else {
+                throw ConfigError.fileOperationFailed("读取 \(label) 的扩展属性 \(name) 失败：\(Self.posixErrorMessage())")
+            }
+            result[name] = Data(valBuf.prefix(readLen))
+        }
+        return result
+    }
+
+    private func applyAndVerifyPreservedAccessMetadata(
+        toFD fd: Int32,
+        targetMode: mode_t,
+        existingInfo: LStatInfo,
+        existingMetadata: FileAccessMetadata,
+        label: String
+    ) throws -> (LStatInfo, FileAccessMetadata) {
+        if let injectedError = injectMetadataPreservationError?(label) {
+            throw ConfigError.fileOperationFailed("无法保留 \(label) 的访问元数据（\(injectedError)），已拒绝替换。")
+        }
+
+        var currentSt = stat()
+        guard Darwin.fstat(fd, &currentSt) == 0 else {
+            throw ConfigError.fileOperationFailed("无法检查暂存文件 \(label) 状态：\(Self.posixErrorMessage())")
+        }
+
+        // 1. 保留原属组（gid）
+        if currentSt.st_gid != existingInfo.gid {
+            guard Darwin.fchown(fd, uid_t(bitPattern: -1), existingInfo.gid) == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法保留 \(label) 的原属组（gid=\(existingInfo.gid)）：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        }
+
+        // 2. 保留扩展属性（xattrs），并清除暂存文件上可能意外继承的额外属性
+        let currentXattrs = try captureExtendedAttributes(fromFD: fd, label: label)
+        for existingName in currentXattrs.keys where existingMetadata.xattrs[existingName] == nil {
+            guard Darwin.fremovexattr(fd, existingName, 0) == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法清理暂存文件 \(label) 继承的扩展属性（\(existingName)）：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        }
+        for (name, value) in existingMetadata.xattrs.sorted(by: { $0.key < $1.key }) {
+            let status: Int32 = value.withUnsafeBytes { raw in
+                Darwin.fsetxattr(fd, name, raw.baseAddress, raw.count, 0, 0)
+            }
+            guard status == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法保留 \(label) 的扩展属性（\(name)）：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        }
+
+        // 3. 设置并核验 POSIX 权限位（在 fchown 之后设置，避免 fchown 清除特殊权限位）
+        guard Darwin.fchmod(fd, targetMode) == 0 else {
+            throw ConfigError.fileOperationFailed(
+                "无法保留 \(label) 的 POSIX 权限（\(String(format: "%04o", targetMode))）：\(Self.posixErrorMessage())，已拒绝替换。"
+            )
+        }
+
+        // 4. 保留原 ACL（或清理暂存目录意外继承的 ACL）
+        if let aclData = existingMetadata.aclExternalData {
+            guard let restoredACL = aclData.withUnsafeBytes({ raw -> acl_t? in
+                guard let base = raw.baseAddress else { return nil }
+                return Darwin.acl_copy_int_native(base)
+            }) else {
+                throw ConfigError.fileOperationFailed("无法重建 \(label) 的 ACL 访问控制列表，已拒绝替换。")
+            }
+            defer { Darwin.acl_free(UnsafeMutableRawPointer(restoredACL)) }
+            guard Darwin.acl_set_fd_np(fd, restoredACL, ACL_TYPE_EXTENDED) == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法保留 \(label) 的 ACL 访问控制列表：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        } else if try captureExtendedACL(fromFD: fd, label: label) != nil {
+            guard let emptyACL = Darwin.acl_init(0) else {
+                throw ConfigError.fileOperationFailed("无法清除暂存文件 \(label) 继承的 ACL，已拒绝替换。")
+            }
+            defer { Darwin.acl_free(UnsafeMutableRawPointer(emptyACL)) }
+            guard Darwin.acl_set_fd_np(fd, emptyACL, ACL_TYPE_EXTENDED) == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法清除暂存文件 \(label) 继承的 ACL：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        }
+
+        // 5. 回读核验 mode、gid、xattrs 与 ACL 全部一致，任何偏差一律拒绝替换
+        guard Darwin.fstat(fd, &currentSt) == 0 else {
+            throw ConfigError.fileOperationFailed("无法回读核验暂存文件 \(label) 状态：\(Self.posixErrorMessage())")
+        }
+        let verifiedInfo = LStatInfo(stat: currentSt)
+        guard verifiedInfo.permissions == targetMode else {
+            throw ConfigError.fileOperationFailed(
+                "回读核验 \(label) 的 POSIX 权限不一致（实际 \(String(format: "%04o", verifiedInfo.permissions))，预期 \(String(format: "%04o", targetMode))），已拒绝替换。"
+            )
+        }
+        guard verifiedInfo.gid == existingInfo.gid else {
+            throw ConfigError.fileOperationFailed(
+                "回读核验 \(label) 的文件属组不一致（实际 gid=\(verifiedInfo.gid)，预期 gid=\(existingInfo.gid)），已拒绝替换。"
+            )
+        }
+        let verifiedMetadata = try captureFileAccessMetadata(fromFD: fd, label: label)
+        guard verifiedMetadata.xattrs == existingMetadata.xattrs else {
+            throw ConfigError.fileOperationFailed("回读核验 \(label) 的扩展属性不一致，已拒绝替换。")
+        }
+        guard verifiedMetadata.aclExternalData == existingMetadata.aclExternalData else {
+            throw ConfigError.fileOperationFailed("回读核验 \(label) 的 ACL 访问控制列表不一致，已拒绝替换。")
+        }
+        return (verifiedInfo, verifiedMetadata)
     }
 
     func readRegularFileDataIfPresent(_ url: URL, label: String? = nil) throws -> Data? {
@@ -279,10 +501,12 @@ extension CodexLocalSSHConfigurator {
         guard expected.exists else { return true }
         return expected.info?.dev == current.info?.dev &&
             expected.info?.ino == current.info?.ino &&
+            expected.info?.gid == current.info?.gid &&
             expected.info?.permissions == current.info?.permissions &&
             expected.info?.size == current.info?.size &&
             expected.info?.mtimeSec == current.info?.mtimeSec &&
             expected.info?.mtimeNsec == current.info?.mtimeNsec &&
+            expected.metadata == current.metadata &&
             expected.data == current.data
     }
 
@@ -480,6 +704,7 @@ extension CodexLocalSSHConfigurator {
         inDirectoryFD dirFD: Int32,
         fileName: String,
         mode: mode_t,
+        preserveFrom existingSnapshot: FileSnapshot? = nil,
         label: String
     ) throws -> FileSnapshot {
         let fd = Darwin.openat(dirFD, fileName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
@@ -494,29 +719,55 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.fileOperationFailed("设置 \(label) 权限失败：\(Self.posixErrorMessage())")
         }
         try writeAllBytes(data, to: fd, label: label)
-        if mode != 0o600 {
-            guard Darwin.fchmod(fd, mode) == 0 else {
-                throw ConfigError.fileOperationFailed("设置 \(label) 最终权限失败：\(Self.posixErrorMessage())")
+
+        let stagedInfo: LStatInfo
+        let stagedMetadata: FileAccessMetadata
+        if let existingSnapshot, existingSnapshot.exists, let existingInfo = existingSnapshot.info {
+            let applied = try applyAndVerifyPreservedAccessMetadata(
+                toFD: fd,
+                targetMode: mode,
+                existingInfo: existingInfo,
+                existingMetadata: existingSnapshot.metadata,
+                label: label
+            )
+            _ = Darwin.fsync(fd)
+            var st = stat()
+            guard Darwin.fstat(fd, &st) == 0 else {
+                throw ConfigError.fileOperationFailed("无法记录 \(label) 发布快照：\(Self.posixErrorMessage())")
             }
+            stagedInfo = LStatInfo(stat: st)
+            stagedMetadata = applied.1
+        } else {
+            if mode != 0o600 {
+                guard Darwin.fchmod(fd, mode) == 0 else {
+                    throw ConfigError.fileOperationFailed("设置 \(label) 最终权限失败：\(Self.posixErrorMessage())")
+                }
+            }
+            _ = Darwin.fsync(fd)
+            var st = stat()
+            guard Darwin.fstat(fd, &st) == 0 else {
+                throw ConfigError.fileOperationFailed("无法记录 \(label) 发布快照：\(Self.posixErrorMessage())")
+            }
+            stagedInfo = LStatInfo(stat: st)
+            stagedMetadata = (try? captureFileAccessMetadata(fromFD: fd, label: label)) ?? .empty
         }
-        _ = Darwin.fsync(fd)
-        var st = stat()
-        guard Darwin.fstat(fd, &st) == 0 else {
-            throw ConfigError.fileOperationFailed("无法记录 \(label) 发布快照：\(Self.posixErrorMessage())")
-        }
-        let stagedSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: st), data: data)
+
+        let stagedSnapshot = FileSnapshot(exists: true, info: stagedInfo, metadata: stagedMetadata, data: data)
         Darwin.close(fd)
         closed = true
         return stagedSnapshot
     }
 
-    /// 隔离-核验-删除：先做无破坏预检，再原子移入独占 `0700` 隔离目录，在隔离目录内核验 `(dev, ino, size, mtime, data)` 完全一致后再删除。
-    /// 若隔离后发现不匹配或非普通文件，使用 `RENAME_EXCL` 无覆盖恢复回原路径；若原路径已出现新文件，保留隔离项并报错，绝不误删同名替换文件。
+    /// 隔离-入账-核验-删除：先做无破坏预检，创建独占 `0700` 隔离目录并先持久化隔离账本（如提供），
+    /// 再原子移入隔离目录并在隔离目录内核验 `(dev, ino, gid, mode, acl, xattrs, size, mtime, data)` 完全一致后才删除。
+    /// 若崩溃或 `unlink` 失败导致文件滞留隔离目录，重试删除时会先按账本核验并回收隔离文件，绝不提前清除归属记录。
     func removeFileMatchingSnapshot(
         _ url: URL,
         expectedSnapshot: FileSnapshot,
         label: String,
-        invokeHook: Bool
+        invokeHook: Bool,
+        journalQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil,
+        clearQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil
     ) throws {
         guard expectedSnapshot.exists, let expectedInfo = expectedSnapshot.info else { return }
         if invokeHook, let beforeAtomicCommit {
@@ -526,6 +777,8 @@ extension CodexLocalSSHConfigurator {
         let dirFD = try openVerifiedParentDirectoryFD(for: url, label: label)
         defer { Darwin.close(dirFD) }
 
+        let parentDir = url.deletingLastPathComponent()
+        let parentScope = Self.quarantineParentScope(forParentDirectory: parentDir, mimiDir: mimiSSHDirectory, sshDir: sshDirectory)
         let fileName = url.lastPathComponent
         var preSt = stat()
         if Darwin.fstatat(dirFD, fileName, &preSt, AT_SYMLINK_NOFOLLOW) != 0 {
@@ -550,11 +803,35 @@ extension CodexLocalSSHConfigurator {
             try afterVerifyBeforeDelete(url)
         }
 
+        let fileIdentity = FileIdentity(dev: expectedInfo.dev, ino: expectedInfo.ino)
+        let fileVersion = FileVersionFingerprint.from(data: expectedSnapshot.data)
+        var recordedArtifact: QuarantinedFileArtifact?
+
         try quarantineVerifyAndUnlink(
             inParentFD: dirFD,
-            parentDir: url.deletingLastPathComponent(),
+            parentDir: parentDir,
             fileName: fileName,
             label: label,
+            invokeHook: invokeHook,
+            beforeMoveJournal: { qDirName, qDirIdentity in
+                guard let journalQuarantine, let parentScope else { return }
+                let artifact = QuarantinedFileArtifact(
+                    parentScope: parentScope,
+                    originalFileName: fileName,
+                    quarantineDirectoryName: qDirName,
+                    quarantineDirectoryIdentity: qDirIdentity,
+                    fileIdentity: fileIdentity,
+                    fileVersion: fileVersion
+                )
+                try journalQuarantine(artifact)
+                recordedArtifact = artifact
+            },
+            afterUnlinkOrRestoreClear: {
+                if let artifact = recordedArtifact {
+                    try? clearQuarantine?(artifact)
+                    recordedArtifact = nil
+                }
+            },
             verify: { qDirFD in
                 let isolated = try captureSnapshot(inDirectoryFD: qDirFD, fileName: "item", label: label)
                 guard isolated.exists, Self.snapshotsMatch(expectedSnapshot, isolated) else {
@@ -562,6 +839,142 @@ extension CodexLocalSSHConfigurator {
                 }
             }
         )
+    }
+
+    static func quarantineParentScope(forParentDirectory parentDir: URL, mimiDir: URL, sshDir: URL) -> String? {
+        let stdParent = parentDir.standardizedFileURL.path
+        if stdParent == mimiDir.standardizedFileURL.path {
+            return "mimi"
+        }
+        if stdParent == sshDir.standardizedFileURL.path {
+            return "ssh"
+        }
+        return nil
+    }
+
+    /// 恢复因崩溃或 `unlink` 失败滞留在 `.mimi-quarantine-*` 中的受管文件：
+    /// 逐级校验隔离目录名、属主、隔离目录 `(dev, ino)`、目录内仅含 `item`、文件 `(dev, ino)` 与 SHA256+size 指纹，
+    /// 全部一致才删除并回收空隔离目录；任何不匹配一律拒绝删除并保守保留。
+    func recoverQuarantinedFileArtifact(_ artifact: QuarantinedFileArtifact) throws -> Bool {
+        guard Self.isValidQuarantineDirectoryName(artifact.quarantineDirectoryName) else {
+            throw ConfigError.fileOperationFailed("隔离文件记录的目录名非法（\(artifact.quarantineDirectoryName)），已保守保留。")
+        }
+        let parentDir: URL
+        let parentLabel: String
+        switch artifact.parentScope {
+        case "mimi":
+            parentDir = mimiSSHDirectory
+            parentLabel = "~/.ssh/mimi"
+        case "ssh":
+            parentDir = sshDirectory
+            parentLabel = "~/.ssh"
+        default:
+            throw ConfigError.fileOperationFailed("隔离文件记录的父目录域未知（\(artifact.parentScope)），已保守保留。")
+        }
+
+        switch try probePath(parentDir, label: parentLabel) {
+        case .missing:
+            return true
+        case .present:
+            if let info = try validateDirectoryIfPresent(parentDir, label: parentLabel) {
+                try ensureNotGroupOrWorldWritable(
+                    info,
+                    label: parentLabel,
+                    reason: "请先手工修复目录权限后再重试移除。"
+                )
+            }
+        }
+
+        let parentFD = Darwin.open(parentDir.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        guard parentFD >= 0 else {
+            if errno == ENOENT { return true }
+            throw ConfigError.fileOperationFailed("无法打开 \(parentLabel) 恢复隔离文件：\(Self.posixErrorMessage())")
+        }
+        defer { Darwin.close(parentFD) }
+
+        let currentUID = Darwin.geteuid()
+        var parentSt = stat()
+        guard Darwin.fstat(parentFD, &parentSt) == 0,
+              (parentSt.st_mode & S_IFMT) == S_IFDIR,
+              parentSt.st_uid == currentUID else {
+            throw ConfigError.unsafeFileSystemTarget(parentLabel)
+        }
+
+        let qDirFD = Darwin.openat(parentFD, artifact.quarantineDirectoryName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        if qDirFD < 0 {
+            let err = errno
+            if err == ENOENT {
+                return true
+            }
+            throw ConfigError.fileOperationFailed(
+                "无法打开已登记的隔离目录 \(artifact.quarantineDirectoryName)：\(Self.posixErrorMessage(err))"
+            )
+        }
+        var qDirClosed = false
+        defer {
+            if !qDirClosed { Darwin.close(qDirFD) }
+        }
+
+        var qDirSt = stat()
+        guard Darwin.fstat(qDirFD, &qDirSt) == 0,
+              (qDirSt.st_mode & S_IFMT) == S_IFDIR,
+              qDirSt.st_uid == currentUID,
+              artifact.quarantineDirectoryIdentity.matches(qDirSt) else {
+            throw ConfigError.conflictingKeyFiles(
+                "隔离目录 \(artifact.quarantineDirectoryName) 的属主或 inode 与记录不一致，已保守保留未删除。"
+            )
+        }
+
+        // 检查隔离目录内不允许存在除 item 外的未知条目。
+        let dupFD = Darwin.dup(qDirFD)
+        guard dupFD >= 0, let dirStream = Darwin.fdopendir(dupFD) else {
+            if dupFD >= 0 { Darwin.close(dupFD) }
+            throw ConfigError.fileOperationFailed("无法扫描隔离目录 \(artifact.quarantineDirectoryName)：\(Self.posixErrorMessage())")
+        }
+        var extraEntries: [String] = []
+        while let entryPtr = Darwin.readdir(dirStream) {
+            let name = withUnsafePointer(to: &entryPtr.pointee.d_name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if name == "." || name == ".." || name == "item" { continue }
+            extraEntries.append(name)
+        }
+        Darwin.closedir(dirStream)
+        guard extraEntries.isEmpty else {
+            throw ConfigError.conflictingKeyFiles(
+                "隔离目录 \(artifact.quarantineDirectoryName) 包含未知条目（\(extraEntries.joined(separator: "、"))），已保守保留未删除。"
+            )
+        }
+
+        let itemSnap = try captureSnapshot(inDirectoryFD: qDirFD, fileName: "item", label: artifact.originalFileName)
+        if itemSnap.exists {
+            guard let info = itemSnap.info,
+                  info.isRegularFile,
+                  info.uid == currentUID,
+                  Int64(info.dev) == artifact.fileIdentity.dev,
+                  UInt64(info.ino) == artifact.fileIdentity.ino,
+                  artifact.fileVersion.matches(data: itemSnap.data) else {
+                throw ConfigError.conflictingKeyFiles(
+                    "隔离目录 \(artifact.quarantineDirectoryName) 中的 \(artifact.originalFileName) 与已记录的 inode 或内容指纹不匹配，已保守保留未删除。"
+                )
+            }
+            guard Darwin.unlinkat(qDirFD, "item", 0) == 0 || errno == ENOENT else {
+                throw ConfigError.fileOperationFailed(
+                    "恢复删除隔离文件 \(artifact.originalFileName)（\(artifact.quarantineDirectoryName)）失败：\(Self.posixErrorMessage())"
+                )
+            }
+        }
+
+        Darwin.close(qDirFD)
+        qDirClosed = true
+        guard Darwin.unlinkat(parentFD, artifact.quarantineDirectoryName, AT_REMOVEDIR) == 0 || errno == ENOENT else {
+            throw ConfigError.fileOperationFailed(
+                "移除已清空的隔离目录 \(artifact.quarantineDirectoryName) 失败：\(Self.posixErrorMessage())"
+            )
+        }
+        return true
     }
 
     /// 通过「隔离-核验-删除」清理内部受锁状态文件，绝不直接按名称 `unlink`。
@@ -578,6 +991,9 @@ extension CodexLocalSSHConfigurator {
             parentDir: url.deletingLastPathComponent(),
             fileName: fileName,
             label: effectiveLabel,
+            invokeHook: false,
+            beforeMoveJournal: nil,
+            afterUnlinkOrRestoreClear: nil,
             verify: { qDirFD in
                 var isoSt = stat()
                 guard Darwin.fstatat(qDirFD, "item", &isoSt, AT_SYMLINK_NOFOLLOW) == 0 else {
@@ -597,15 +1013,19 @@ extension CodexLocalSSHConfigurator {
         )
     }
 
-    /// 原子移入独占 `0700` 隔离目录 -> 在隔离目录内执行 `verify(qDirFD)` -> 通过才删除；失败则 `RENAME_EXCL` 无覆盖恢复。
+    /// 原子移入独占 `0700` 隔离目录 -> 移动前先通过 `beforeMoveJournal` 落盘登记隔离目录名与 `(dev, ino)` ->
+    /// 在隔离目录内执行 `verify(qDirFD)` -> 通过才删除并清理账本；失败则 `RENAME_EXCL` 无覆盖恢复。
     private func quarantineVerifyAndUnlink(
         inParentFD dirFD: Int32,
         parentDir: URL,
         fileName: String,
         label: String,
+        invokeHook: Bool,
+        beforeMoveJournal: ((_ qDirName: String, _ qDirIdentity: FileIdentity) throws -> Void)?,
+        afterUnlinkOrRestoreClear: (() -> Void)?,
         verify: (Int32) throws -> Void
     ) throws {
-        let qDirName = ".mimi-quarantine-\(UUID().uuidString)"
+        let qDirName = "\(Self.keyQuarantineDirectoryPrefix)\(UUID().uuidString)"
         guard Darwin.mkdirat(dirFD, qDirName, 0o700) == 0 else {
             throw ConfigError.fileOperationFailed("无法创建独占隔离目录删除 \(label)：\(Self.posixErrorMessage())")
         }
@@ -615,6 +1035,15 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.fileOperationFailed("无法打开隔离目录删除 \(label)：\(Self.posixErrorMessage())")
         }
         _ = Darwin.fchmod(qDirFD, 0o700)
+        var qDirSt = stat()
+        guard Darwin.fstat(qDirFD, &qDirSt) == 0,
+              (qDirSt.st_mode & S_IFMT) == S_IFDIR,
+              qDirSt.st_uid == Darwin.geteuid() else {
+            Darwin.close(qDirFD)
+            _ = Darwin.unlinkat(dirFD, qDirName, AT_REMOVEDIR)
+            throw ConfigError.unsafeFileSystemTarget("隔离目录状态异常：\(qDirName)")
+        }
+        let qDirIdentity = FileIdentity(dev: qDirSt.st_dev, ino: qDirSt.st_ino)
 
         var keepQuarantineDir = false
         defer {
@@ -624,10 +1053,23 @@ extension CodexLocalSSHConfigurator {
             }
         }
 
+        // 先持久化隔离记录，再原子移入隔离目录；若入账失败则终止于移动之前，不产生未登记的滞留隔离文件。
+        if let beforeMoveJournal {
+            try beforeMoveJournal(qDirName, qDirIdentity)
+        }
+
         if Darwin.renameatx_np(dirFD, fileName, qDirFD, "item", UInt32(RENAME_EXCL)) != 0 {
             let err = errno
+            afterUnlinkOrRestoreClear?()
             if err == ENOENT { return }
             throw ConfigError.fileOperationFailed("隔离待删文件 \(label) 失败：\(Self.posixErrorMessage(err))")
+        }
+
+        // 移入隔离目录后立即标记保留目录，直到确认删除或成功恢复原路径，确保测试钩子模拟中断/崩溃时保留隔离现场。
+        keepQuarantineDir = true
+        if invokeHook, let afterFileQuarantineMove {
+            let qDirURL = parentDir.appendingPathComponent(qDirName, isDirectory: true)
+            try afterFileQuarantineMove(qDirURL)
         }
 
         do {
@@ -637,6 +1079,8 @@ extension CodexLocalSSHConfigurator {
             if Darwin.renameatx_np(qDirFD, "item", dirFD, fileName, UInt32(RENAME_EXCL)) != 0 {
                 let restoreErr = errno
                 keepQuarantineDir = true
+                // 隔离目录内的文件核验不匹配（属于外部替换文件），不能作为待自动删除项；清除自动清理账本并明确报告保留路径。
+                afterUnlinkOrRestoreClear?()
                 let preservedPath = parentDir
                     .appendingPathComponent(qDirName, isDirectory: true)
                     .appendingPathComponent("item", isDirectory: false)
@@ -647,15 +1091,28 @@ extension CodexLocalSSHConfigurator {
                 }
                 throw ConfigError.fileOperationFailed(detail)
             }
+            keepQuarantineDir = false
+            afterUnlinkOrRestoreClear?()
             throw error
+        }
+
+        if invokeHook, let simulateUnlinkFailure, simulateUnlinkFailure(label) {
+            keepQuarantineDir = true
+            throw ConfigError.fileOperationFailed("删除已核验的隔离文件 \(label) 失败：模拟 unlink 失败。")
         }
 
         guard Darwin.unlinkat(qDirFD, "item", 0) == 0 else {
             let err = errno
-            if err == ENOENT { return }
+            if err == ENOENT {
+                keepQuarantineDir = false
+                afterUnlinkOrRestoreClear?()
+                return
+            }
             keepQuarantineDir = true
             throw ConfigError.fileOperationFailed("删除已核验的隔离文件 \(label) 失败：\(Self.posixErrorMessage(err))")
         }
+        keepQuarantineDir = false
+        afterUnlinkOrRestoreClear?()
     }
 
     @discardableResult
@@ -683,7 +1140,8 @@ extension CodexLocalSSHConfigurator {
             guard Darwin.fstat(fd, &st) == 0 else {
                 throw ConfigError.fileOperationFailed("读取临时文件快照失败：\(Self.posixErrorMessage())")
             }
-            let snapshot = FileSnapshot(exists: true, info: LStatInfo(stat: st), data: data)
+            let metadata = (try? captureFileAccessMetadata(fromFD: fd, label: url.lastPathComponent)) ?? .empty
+            let snapshot = FileSnapshot(exists: true, info: LStatInfo(stat: st), metadata: metadata, data: data)
             Darwin.close(fd)
             closed = true
             return snapshot
@@ -793,7 +1251,14 @@ extension CodexLocalSSHConfigurator {
             }
         }
 
-        let writtenSnapshot = try writeStagedItem(data, inDirectoryFD: stageDirFD, fileName: "item", mode: mode, label: label)
+        let writtenSnapshot = try writeStagedItem(
+            data,
+            inDirectoryFD: stageDirFD,
+            fileName: "item",
+            mode: mode,
+            preserveFrom: expectedSnapshot,
+            label: label
+        )
         itemPresentInStage = true
 
         if invokeHook, let beforeAtomicCommit {
@@ -1078,20 +1543,30 @@ extension CodexLocalSSHConfigurator {
         for slice in Self.rawLineSlices(in: text) {
             let rawLine = Self.utf8Substring(text, range: slice.contentRange)
             let parsedLine = Self.parseSSHConfigLineStrict(rawLine)
+            if parsedLine.hasSyntaxError {
+                throw ConfigError.effectiveConfigConflict(
+                    "SSH 配置包含非法控制字符、未闭合引号或语法不明确的指令，拒绝冻结并停止只读评估。"
+                )
+            }
             let tokens = parsedLine.tokens
-            if let keyword = tokens.first?.lowercased(), keyword == "match" {
-                guard !parsedLine.hasSyntaxError else {
-                    throw ConfigError.effectiveConfigConflict("SSH 配置 Match 指令引号未闭合或存在悬空转义，无法安全评估。")
-                }
-                if Self.matchCriteriaContainsExec(Array(tokens.dropFirst())) {
-                    throw ConfigError.effectiveConfigConflict("SSH 配置包含 Match exec 条件命令，只读评估拒绝执行外部 shell 命令。")
+            guard let firstToken = tokens.first else {
+                output.append(rawLine)
+                output.append("\n")
+                continue
+            }
+            let keyword = firstToken.lowercased()
+            guard Self.recognizedSSHConfigKeywords.contains(keyword) else {
+                throw ConfigError.effectiveConfigConflict(
+                    "SSH 配置包含无法识别的指令（\(firstToken)），拒绝冻结并停止只读评估。"
+                )
+            }
+            if keyword == "match" {
+                if let matchError = Self.validateMatchCriteria(Array(tokens.dropFirst())) {
+                    throw ConfigError.effectiveConfigConflict(matchError)
                 }
                 output.append(rawLine)
                 output.append("\n")
-            } else if let keyword = tokens.first?.lowercased(), keyword == "include" {
-                guard !parsedLine.hasSyntaxError else {
-                    throw ConfigError.effectiveConfigConflict("SSH 配置 Include 指令引号未闭合或存在悬空转义，无法忠实冻结。")
-                }
+            } else if keyword == "include" {
                 guard tokens.count >= 2 else {
                     throw ConfigError.effectiveConfigConflict("SSH 配置包含缺少路径参数的 Include 指令，无法忠实冻结。")
                 }
@@ -1291,15 +1766,102 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
+    /// 供 `configure()` 使用的只读优先串行锁：
+    /// 先在不创建/不改权状态目录与锁文件的前提下复用已校验的现有共享锁判断是否存在已有配置；
+    /// 仅当确需执行首次写入状态时才升级到独占写锁，确保只读校验重试零文件系统改动。
+    func withReadOnlyFirstSerializedLock<T: Sendable>(
+        tryReadOnly: () async throws -> T?,
+        performWrite: () async throws -> T
+    ) async throws -> T {
+        let key = homeDirectory.standardizedFileURL.path
+        return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
+            var readLockFD = try await acquireExistingValidatedAdvisoryFileLockIfPresent(at: lockFileURL)
+            do {
+                if let result = try await tryReadOnly() {
+                    if let fd = readLockFD {
+                        Darwin.close(fd)
+                        readLockFD = nil
+                    }
+                    return result
+                }
+            } catch {
+                if let fd = readLockFD {
+                    Darwin.close(fd)
+                    readLockFD = nil
+                }
+                throw error
+            }
+            if let fd = readLockFD {
+                Darwin.close(fd)
+                readLockFD = nil
+            }
+            try ensureStateDirectory()
+            let writeLockFD = try await acquireAdvisoryFileLock(at: lockFileURL)
+            defer {
+                Darwin.close(writeLockFD)
+            }
+            return try await performWrite()
+        }
+    }
+
+    private func acquireExistingValidatedAdvisoryFileLockIfPresent(at url: URL) async throws -> Int32? {
+        let stateDir = url.deletingLastPathComponent()
+        guard try validateDirectoryIfPresent(stateDir, label: stateDir.lastPathComponent) != nil else {
+            return nil
+        }
+        guard try validateRegularFileIfPresent(url, label: url.lastPathComponent) != nil else {
+            return nil
+        }
+        let deadline = ContinuousClock.now + .seconds(20)
+        while true {
+            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_SHLOCK | O_NONBLOCK)
+            if fd >= 0 {
+                var st = stat()
+                guard Darwin.fstat(fd, &st) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG,
+                      st.st_uid == Darwin.geteuid() else {
+                    Darwin.close(fd)
+                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
+                }
+                return fd
+            }
+            let err = errno
+            if err == ENOENT {
+                return nil
+            }
+            if err == ELOOP {
+                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
+            }
+            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
+                throw ConfigError.fileOperationFailed("获取只读并发锁失败：\(Self.posixErrorMessage(err))")
+            }
+            if ContinuousClock.now >= deadline {
+                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
     private func acquireAdvisoryFileLock(at url: URL) async throws -> Int32 {
+        try validateRegularFileIfPresent(url, label: url.lastPathComponent)
         let deadline = ContinuousClock.now + .seconds(20)
         while true {
             let fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK, 0o600)
             if fd >= 0 {
+                var st = stat()
+                guard Darwin.fstat(fd, &st) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG,
+                      st.st_uid == Darwin.geteuid() else {
+                    Darwin.close(fd)
+                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
+                }
                 _ = Darwin.fchmod(fd, 0o600)
                 return fd
             }
             let err = errno
+            if err == ELOOP {
+                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
+            }
             if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
                 throw ConfigError.fileOperationFailed("获取并发锁失败：\(Self.posixErrorMessage(err))")
             }

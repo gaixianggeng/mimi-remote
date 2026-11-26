@@ -444,4 +444,11 @@ final class CodexSharedSetupCoordinator {
         desktopOpenFeedback = result.feedbackMessage
         desktopOpenFeedbackIsError = result.isFailure
     }
+
+    /// 显式打开通用「连接」设置页作为回退入口（当 Codex 接受 SSH 子页 URL 但忽略子路由时供用户一键切换）。
+    func openCodexConnectionsSettings() async {
+        let result = await openDesktopSettings(false)
+        desktopOpenFeedback = result.feedbackMessage
+        desktopOpenFeedbackIsError = result.isFailure
+    }
 }

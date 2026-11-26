@@ -474,6 +474,18 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let similarOptionLine = "from=\"10.0.0.1\",command=\"echo \(pubBody) mimi-codex-local\" \(otherKeyBody) ops"
         let userLoopbackSameKey = "restrict,from=\"127.0.0.1\" \(pubBody) user-local-copy"
 
+        let nonDuplicateCombined = [
+            commentLine,
+            similarCommentLine,
+            similarOptionLine,
+            managedLine,
+        ].joined(separator: "\n") + "\n"
+        try nonDuplicateCombined.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
+
+        // 存在相似注释与其他密钥的相似选项（无同公钥重复条目）时，重复 configure 保持只读幂等且保留所有条目。
+        try await configurator.configure(verifyConnection: false)
+        XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), nonDuplicateCombined)
+
         let combined = [
             commentLine,
             similarCommentLine,
@@ -483,8 +495,11 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         ].joined(separator: "\n") + "\n"
         try combined.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
 
-        // 重复 configure 应幂等且保留所有已有条目及 restrict,from= 限制。
-        try await configurator.configure(verifyConnection: false)
+        // 存在同公钥重复条目时，验收校验必须拒绝并保留原文件不覆盖。
+        do {
+            try await configurator.configure(verifyConnection: false)
+            XCTFail("托管公钥存在重复授权行时 configure 验收必须拒绝")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingAuthorizedKey {}
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), combined)
 
         // 测试带 command=、缺少 restrict 或非回环 from= 的同公钥行被识别为冲突。

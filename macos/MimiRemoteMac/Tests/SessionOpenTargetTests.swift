@@ -251,7 +251,9 @@ final class SessionOpenTargetTests: XCTestCase {
         )
         XCTAssertEqual(directSSH, .openedSSHSettings)
         XCTAssertEqual(openedURLs, [CodexDesktopLink.sshSettingsURL])
-        XCTAssertNil(directSSH.feedbackMessage)
+        XCTAssertFalse(directSSH.isFailure)
+        XCTAssertTrue(directSSH.feedbackMessage?.contains("发送") == true, "成功交付 URL 时应准确反馈为已发送并提示连接页回退")
+        XCTAssertTrue(directSSH.feedbackMessage?.contains("打开连接设置") == true)
 
         // 3. SSH 子页失败 -> 回退通用连接页并返回提示
         openedURLs = []
@@ -1427,6 +1429,242 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             ),
             "受管前门、plist、公共 socket 与私有 backend 全部核验通过时应判为共享"
         )
+    }
+
+    // MARK: - PR #1169 r1 P1-4 & P2-1: Active Mimi Agentd Live Backend Verification & Explicit Connections Fallback
+
+    func testR1_P1VerifiesDesktopAndActiveMimiAgentdAgainstSameLiveBackend() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-r1-p1-4-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let fakeHome = tempRoot.appendingPathComponent("home", isDirectory: true)
+        let mimiCodexHome = tempRoot.appendingPathComponent("mimi-codex", isDirectory: true)
+        let otherCodexHome = tempRoot.appendingPathComponent("other-codex", isDirectory: true)
+        let privateBackendHome = tempRoot.appendingPathComponent("private-backend", isDirectory: true)
+        let configDir = fakeHome.appendingPathComponent("Library/Application Support/mimi-remote", isDirectory: true)
+        for dir in [fakeHome, mimiCodexHome, otherCodexHome, privateBackendHome, configDir] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
+        let defaultConfigURL = configDir.appendingPathComponent("config.json")
+        let otherConfigURL = tempRoot.appendingPathComponent("other-agentd.json")
+        let currentUID = Darwin.geteuid()
+
+        // 默认 Mimi 配置使用 ssh transport，但同用户另一个 agentd serve --config other.json 使用 local transport。
+        try #"{"listen":"127.0.0.1:8787","app_server":{"transport":"ssh","ssh_target":"remote"},"codex":{"enabled":true}}"#
+            .write(to: defaultConfigURL, atomically: true, encoding: .utf8)
+        try #"{"listen":"127.0.0.1:9797","app_server":{"transport":"local"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(otherCodexHome.path)"}}}"#
+            .write(to: otherConfigURL, atomically: true, encoding: .utf8)
+
+        // 1. 两个同用户 agentd serve（Mimi 受管 supervisor 子进程 700 + 另一个带 --config 的 888）：
+        //    必须严格绑定到 Mimi 自己的活动守护进程 700（ssh transport -> 返回 nil），绝不借用 888 的配置！
+        let psDualAgentd = """
+          699     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac --agentd-supervisor
+          700   699   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --log-file /tmp/mimi.log
+          888     1   \(currentUID) /opt/homebrew/bin/agentd serve --config \(otherConfigURL.path)
+        """
+        let dualProcesses = CodexDesktopLink.parseProcessesWithUID(psOutput: psDualAgentd)
+        let listenLsof = """
+        p700
+        n127.0.0.1:8787
+        p888
+        n127.0.0.1:9797
+        """
+        let listeningPorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: listenLsof)
+        let activeFromDual = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: dualProcesses,
+            listeningPortsByPID: listeningPorts,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+        XCTAssertEqual(activeFromDual.pid, 700, "必须识别 Mimi 自己的活动 agentd 700，而非其他同用户 agentd 888")
+        XCTAssertNil(
+            CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID,
+                agentdConfigURL: activeFromDual.configURL,
+                processes: dualProcesses
+            ),
+            "Mimi 活动守护进程使用 ssh transport 时，绝不得因另一个 agentd 使用 local 而判为共享"
+        )
+
+        // 无 supervisor 且存在多个不同配置的 agentd serve -> resolveSharedCodexSocketTarget 必须 fail closed 返回 nil！
+        let psAmbiguous = """
+          700     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --log-file /tmp/mimi.log
+          888     1   \(currentUID) /opt/homebrew/bin/agentd serve --config \(otherConfigURL.path)
+        """
+        XCTAssertNil(
+            CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID,
+                processes: CodexDesktopLink.parseProcessesWithUID(psOutput: psAmbiguous)
+            ),
+            "存在多个配置不同的同用户 agentd 且无法确认归属时必须 fail closed"
+        )
+
+        // 2. 即使 Mimi 配置为 local，判定 sharing 仍必须确认活动 Mimi agentd PID 700 与桌面 codex 代理连在同一个实时后端 socket！
+        try #"{"listen":"127.0.0.1:8787","app_server":{"transport":"local"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(mimiCodexHome.path)"}}}"#
+            .write(to: defaultConfigURL, atomically: true, encoding: .utf8)
+        let mimiTarget = try XCTUnwrap(CodexDesktopLink.resolveSharedCodexSocketTarget(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID,
+            agentdConfigURL: defaultConfigURL,
+            processes: dualProcesses
+        ))
+        let mimiSock = mimiCodexHome.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
+        let otherSock = otherCodexHome.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
+
+        func makeUnixLsof(_ entries: [(pid: Int32, cmd: String, fd: String, addr: String, name: String)]) -> Data {
+            var data = Data()
+            for entry in entries {
+                for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                    data.append(contentsOf: field.utf8)
+                    data.append(0)
+                }
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        let psLive = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+           699     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac --agentd-supervisor
+           700   699   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --log-file /tmp/mimi.log
+           888     1   \(currentUID) /opt/homebrew/bin/agentd serve --config \(otherConfigURL.path)
+        """
+        let matchedTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+
+        // 2a. 只有另一个 agentd (888) 连着 mimiSock，而活动 Mimi agentd (700) 连着不同后端 otherSock -> 必须判为 false！
+        let mismatchedAgentdUnix = makeUnixLsof([
+            (pid: 900, cmd: "codex", fd: "5", addr: "0x1111", name: mimiSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+            (pid: 888, cmd: "agentd", fd: "9", addr: "0x3333", name: "->0x1111"),
+            (pid: 901, cmd: "codex", fd: "5", addr: "0x4444", name: otherSock),
+            (pid: 700, cmd: "agentd", fd: "9", addr: "0x5555", name: "->0x4444"),
+        ])
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psLive,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: mismatchedAgentdUnix,
+                sharedTarget: mimiTarget,
+                activeAgentdPID: 700,
+                homeDirectory: fakeHome
+            ),
+            "活动 Mimi agentd (700) 实际连向不同后端时，不得因另一个 agentd (888) 误报为共享"
+        )
+
+        // 2b. 活动 Mimi agentd (700) 与桌面 codex 代理 (502) 连接到同一 listener PID 900 的不同 accepted socket -> 判为 true！
+        let sameBackendUnix = makeUnixLsof([
+            (pid: 900, cmd: "codex", fd: "5", addr: "0x1111", name: mimiSock),
+            (pid: 900, cmd: "codex", fd: "6", addr: "0x1112", name: mimiSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+            (pid: 700, cmd: "agentd", fd: "9", addr: "0x3333", name: "->0x1112"),
+        ])
+        XCTAssertTrue(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psLive,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: sameBackendUnix,
+                sharedTarget: mimiTarget,
+                activeAgentdPID: 700,
+                homeDirectory: fakeHome
+            ),
+            "桌面 codex 代理与活动 Mimi agentd 连接到同一实时监听进程及 socket 时应判为共享"
+        )
+
+        // 2c. 受管前门模式但前门尚未建立任何到 app-server-backend.sock 的活动连接 -> 必须 fail closed 判为 false！
+        try #"{"listen":"127.0.0.1:8787","app_server":{"transport":"local","shared_codex_home":"\#(privateBackendHome.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(mimiCodexHome.path)"}}}"#
+            .write(to: defaultConfigURL, atomically: true, encoding: .utf8)
+        let frontTarget = try XCTUnwrap(CodexDesktopLink.resolveSharedCodexSocketTarget(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID,
+            agentdConfigURL: defaultConfigURL,
+            processes: dualProcesses
+        ))
+        let psFront = psLive + "\n  900     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd codex-front serve --log-file /tmp/front.log\n"
+        let frontNoBackendUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: mimiSock),
+            (pid: 900, cmd: "agentd", fd: "6", addr: "0x1112", name: mimiSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+            (pid: 700, cmd: "agentd", fd: "9", addr: "0x3333", name: "->0x1112"),
+        ])
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psFront,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: frontNoBackendUnix,
+                sharedTarget: frontTarget,
+                activeAgentdPID: 700,
+                homeDirectory: fakeHome
+            ),
+            "受管前门缺少到期望私有 backend socket 的活动连接时必须 fail closed"
+        )
+
+        // 3. launchctl pid 解析辅助核验
+        XCTAssertEqual(
+            CodexDesktopLink.parseLaunchctlServicePID(from: "gui/501/com.gaixianggeng.mimi.mac.agentd = {\n\tstate = running\n\tpid = 699\n}\n"),
+            699
+        )
+        XCTAssertNil(CodexDesktopLink.parseLaunchctlServicePID(from: "state = waiting\npid = 0\n"))
+    }
+
+    @MainActor
+    func testR1_P2CoordinatorExplicitConnectionsFallbackOpensConnectionsURL() async {
+        var recordedPrefers: [Bool] = []
+        let coordinator = CodexSharedSetupCoordinator(
+            checker: {
+                CodexSharedSetupStatus.make(
+                    desktop: .separate,
+                    remoteLogin: true,
+                    passwordless: true,
+                    localSSHManaged: true,
+                    managedAliasReady: true
+                )
+            },
+            openDesktopSettings: { preferSSH in
+                recordedPrefers.append(preferSSH)
+                return preferSSH ? .openedSSHSettings : .openedConnectionsFallback
+            }
+        )
+        await coordinator.refresh()
+        await coordinator.openCodexSSHSettings()
+        XCTAssertEqual(recordedPrefers, [true])
+        XCTAssertFalse(coordinator.desktopOpenFeedbackIsError)
+        XCTAssertTrue(coordinator.desktopOpenFeedback?.contains("发送") == true)
+
+        await coordinator.openCodexConnectionsSettings()
+        XCTAssertEqual(recordedPrefers, [true, false])
+        XCTAssertFalse(coordinator.desktopOpenFeedbackIsError)
+        XCTAssertTrue(coordinator.desktopOpenFeedback?.contains("连接") == true)
     }
 }
 

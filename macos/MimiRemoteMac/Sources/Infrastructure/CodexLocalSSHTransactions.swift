@@ -146,8 +146,9 @@ extension CodexLocalSSHConfigurator {
                 guard !privData.isEmpty else {
                     throw ConfigError.keyGenerationFailed("新建暂存私钥内容为空。")
                 }
+                let privMetadata = try captureFileAccessMetadata(fromFD: privFD, label: Self.keyFileName)
                 privIdentity = FileIdentity(dev: privSt.st_dev, ino: privSt.st_ino)
-                privateSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: privSt), data: privData)
+                privateSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: privSt), metadata: privMetadata, data: privData)
             }
             cleanupArtifact.privateKeyIdentity = privIdentity
 
@@ -173,8 +174,9 @@ extension CodexLocalSSHConfigurator {
                     throw ConfigError.fileOperationFailed("无法读取暂存公钥快照：\(Self.posixErrorMessage())")
                 }
                 let pubData = try readAllBytes(from: pubFD, label: pubFileName)
+                let pubMetadata = try captureFileAccessMetadata(fromFD: pubFD, label: pubFileName)
                 pubIdentity = FileIdentity(dev: pubSt.st_dev, ino: pubSt.st_ino)
-                publicSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: pubSt), data: pubData)
+                publicSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: pubSt), metadata: pubMetadata, data: pubData)
             }
 
             let artifact = StagedKeyArtifact(
@@ -636,7 +638,11 @@ extension CodexLocalSSHConfigurator {
         return true
     }
 
-    func removeOwnedKeyFilesIfVerified(state: ManagedState) async throws -> Bool {
+    func removeOwnedKeyFilesIfVerified(
+        state: ManagedState,
+        journalQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil,
+        clearQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil
+    ) async throws -> Bool {
         let privateProbe = try probePath(privateKeyURL, label: Self.keyFileName)
         let publicProbe = try probePath(publicKeyURL, label: "\(Self.keyFileName).pub")
         let hasPrivate: Bool
@@ -689,7 +695,16 @@ extension CodexLocalSSHConfigurator {
 
         if let privSnapshot = verifiedPrivateSnapshot {
             do {
-                try removeFileMatchingSnapshot(privateKeyURL, expectedSnapshot: privSnapshot, label: Self.keyFileName, invokeHook: true)
+                try removeFileMatchingSnapshot(
+                    privateKeyURL,
+                    expectedSnapshot: privSnapshot,
+                    label: Self.keyFileName,
+                    invokeHook: true,
+                    journalQuarantine: journalQuarantine,
+                    clearQuarantine: clearQuarantine
+                )
+            } catch let crash as SimulatedHardCrashError {
+                throw crash
             } catch ConfigError.conflictingKeyFiles(let detail) {
                 mismatchDetails.append(Self.keyFileName)
                 preservedConflictMessages.append(detail)
@@ -697,7 +712,16 @@ extension CodexLocalSSHConfigurator {
         }
         if let pubSnapshot = verifiedPublicSnapshot {
             do {
-                try removeFileMatchingSnapshot(publicKeyURL, expectedSnapshot: pubSnapshot, label: "\(Self.keyFileName).pub", invokeHook: true)
+                try removeFileMatchingSnapshot(
+                    publicKeyURL,
+                    expectedSnapshot: pubSnapshot,
+                    label: "\(Self.keyFileName).pub",
+                    invokeHook: true,
+                    journalQuarantine: journalQuarantine,
+                    clearQuarantine: clearQuarantine
+                )
+            } catch let crash as SimulatedHardCrashError {
+                throw crash
             } catch ConfigError.conflictingKeyFiles(let detail) {
                 mismatchDetails.append("\(Self.keyFileName).pub")
                 preservedConflictMessages.append(detail)
@@ -892,6 +916,21 @@ extension CodexLocalSSHConfigurator {
         var residualNewKeyManaged = false
         var residualKnownHostsVersion: FileVersionFingerprint?
         var residualKnownHostsConflict = false
+        var residualQuarantinedFiles: [QuarantinedFileArtifact] = []
+
+        let journalRollbackQuarantine: (QuarantinedFileArtifact) throws -> Void = { artifact in
+            if !residualQuarantinedFiles.contains(artifact) {
+                residualQuarantinedFiles.append(artifact)
+            }
+            var persisted = (try? loadManagedState()) ?? ManagedState()
+            if !persisted.quarantinedFileArtifacts.contains(artifact) {
+                persisted.quarantinedFileArtifacts.append(artifact)
+            }
+            try saveManagedState(persisted, invokeHook: false)
+        }
+        let clearRollbackQuarantine: (QuarantinedFileArtifact) throws -> Void = { artifact in
+            residualQuarantinedFiles.removeAll { $0 == artifact }
+        }
 
         // 1. 回滚本次对 authorized_keys 的写入：
         //    - 外部已删除时保留删除，绝不重建；
@@ -1118,11 +1157,18 @@ extension CodexLocalSSHConfigurator {
             }
         }
 
-        // 5. 按发布快照隔离回滚本次新建的密钥文件（绝不删外部替换的同名文件）。
+        // 5. 按发布快照隔离回滚本次新建的密钥文件（绝不删外部替换的同名文件，隔离前先入账）。
         //    遇到快照冲突（例如仅权限被改为 0400）或 I/O 失败时，均保留密钥归属记录，保证 Remove 仍可按密码学指纹核验并清理。
         if rollback.createdPrivateKey, let snapshot = rollback.createdPrivateKeySnapshot {
             do {
-                try removeFileMatchingSnapshot(privateKeyURL, expectedSnapshot: snapshot, label: Self.keyFileName, invokeHook: false)
+                try removeFileMatchingSnapshot(
+                    privateKeyURL,
+                    expectedSnapshot: snapshot,
+                    label: Self.keyFileName,
+                    invokeHook: false,
+                    journalQuarantine: journalRollbackQuarantine,
+                    clearQuarantine: clearRollbackQuarantine
+                )
             } catch ConfigError.conflictingKeyFiles {
                 residualNewKeyManaged = true
                 failures.append("私钥 \(Self.keyFileName) 在回滚前权限或内容发生变化，已保留未删除与归属记录")
@@ -1133,7 +1179,14 @@ extension CodexLocalSSHConfigurator {
         }
         if rollback.createdPublicKey, let snapshot = rollback.createdPublicKeySnapshot {
             do {
-                try removeFileMatchingSnapshot(publicKeyURL, expectedSnapshot: snapshot, label: "\(Self.keyFileName).pub", invokeHook: false)
+                try removeFileMatchingSnapshot(
+                    publicKeyURL,
+                    expectedSnapshot: snapshot,
+                    label: "\(Self.keyFileName).pub",
+                    invokeHook: false,
+                    journalQuarantine: journalRollbackQuarantine,
+                    clearQuarantine: clearRollbackQuarantine
+                )
             } catch ConfigError.conflictingKeyFiles {
                 residualNewKeyManaged = true
                 failures.append("公钥 \(Self.keyFileName).pub 在回滚前权限或内容发生变化，已保留未删除与归属记录")
@@ -1181,6 +1234,10 @@ extension CodexLocalSSHConfigurator {
         for artifact in rollback.residualStagedKeyArtifacts where !fallbackState.stagedKeyArtifacts.contains(artifact) {
             fallbackState.stagedKeyArtifacts.append(artifact)
             failures.append("未能清理密钥暂存目录 ~/.ssh/mimi/\(artifact.directoryName)")
+        }
+        for artifact in residualQuarantinedFiles where !fallbackState.quarantinedFileArtifacts.contains(artifact) {
+            fallbackState.quarantinedFileArtifacts.append(artifact)
+            failures.append("未能清理隔离文件 ~/.ssh/mimi/\(artifact.quarantineDirectoryName)")
         }
 
         do {

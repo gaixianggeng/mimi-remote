@@ -36,6 +36,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         case afterAuthorizedKeysCommit
         case afterKnownHostsCommit
         case afterStageQuarantineMove
+        case afterFileQuarantineMove
     }
 
     struct SimulatedHardCrashError: LocalizedError, Equatable {
@@ -85,6 +86,16 @@ struct CodexLocalSSHConfigurator: Sendable {
         var quarantineDirectoryIdentity: FileIdentity? = nil
     }
 
+    /// 已移入独占隔离目录等待删除的单个托管文件记录：在 `renameatx_np` 之前持久化，确保崩溃或 `unlink` 失败后可复核 inode 与指纹并回收。
+    struct QuarantinedFileArtifact: Codable, Equatable, Sendable {
+        var parentScope: String
+        var originalFileName: String
+        var quarantineDirectoryName: String
+        var quarantineDirectoryIdentity: FileIdentity
+        var fileIdentity: FileIdentity
+        var fileVersion: FileVersionFingerprint
+    }
+
     /// 首次配置写入前落盘的预写事务意图（WAL）：保证首次配置在任意写盘点被强杀后，重启仍能识别归属并安全撤销。
     struct PendingTransaction: Codable, Equatable, Sendable {
         var transactionID: String
@@ -120,6 +131,8 @@ struct CodexLocalSSHConfigurator: Sendable {
         var knownHostsConflict: Bool = false
         /// 本次独占创建并已记录 inode 的 `~/.ssh/mimi/.mimi-keygen-*` 暂存产物。
         var stagedKeyArtifacts: [StagedKeyArtifact] = []
+        /// 隔离删除前已入账的单文件隔离记录，确保崩溃或 `unlink` 失败后重试能回收滞留隔离文件。
+        var quarantinedFileArtifacts: [QuarantinedFileArtifact] = []
         var pendingTransaction: PendingTransaction?
 
         init(
@@ -138,6 +151,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             knownHostsVersion: FileVersionFingerprint? = nil,
             knownHostsConflict: Bool = false,
             stagedKeyArtifacts: [StagedKeyArtifact] = [],
+            quarantinedFileArtifacts: [QuarantinedFileArtifact] = [],
             pendingTransaction: PendingTransaction? = nil
         ) {
             self.version = version
@@ -155,6 +169,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             self.knownHostsVersion = knownHostsVersion
             self.knownHostsConflict = knownHostsConflict
             self.stagedKeyArtifacts = stagedKeyArtifacts
+            self.quarantinedFileArtifacts = quarantinedFileArtifacts
             self.pendingTransaction = pendingTransaction
         }
 
@@ -174,6 +189,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             case knownHostsVersion
             case knownHostsConflict
             case stagedKeyArtifacts
+            case quarantinedFileArtifacts
             case pendingTransaction
         }
 
@@ -194,6 +210,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             knownHostsVersion = try container.decodeIfPresent(FileVersionFingerprint.self, forKey: .knownHostsVersion)
             knownHostsConflict = try container.decodeIfPresent(Bool.self, forKey: .knownHostsConflict) ?? false
             stagedKeyArtifacts = try container.decodeIfPresent([StagedKeyArtifact].self, forKey: .stagedKeyArtifacts) ?? []
+            quarantinedFileArtifacts = try container.decodeIfPresent([QuarantinedFileArtifact].self, forKey: .quarantinedFileArtifacts) ?? []
             pendingTransaction = try container.decodeIfPresent(PendingTransaction.self, forKey: .pendingTransaction)
         }
 
@@ -287,6 +304,7 @@ struct CodexLocalSSHConfigurator: Sendable {
                 knownHostsVersion == nil &&
                 !knownHostsConflict &&
                 stagedKeyArtifacts.isEmpty &&
+                quarantinedFileArtifacts.isEmpty &&
                 pendingTransaction == nil
         }
     }
@@ -404,14 +422,24 @@ struct CodexLocalSSHConfigurator: Sendable {
             options.contains { $0.name == "command" }
         }
 
+        /// 仅允许 `restrict` 与回环 `from="..."` 两个选项，拒绝任何会放宽能力（如 `pty`、`port-forwarding`、`agent-forwarding`、`x11-forwarding`、`user-rc`、`permitopen`、`environment`）的附加选项。
+        var hasOnlyManagedRestrictAndLoopbackFromOptions: Bool {
+            guard options.count == 2, hasRestrictOption, isStrictlyLoopbackFrom else {
+                return false
+            }
+            return options.allSatisfy { opt in
+                (opt.name == "restrict" && opt.value == nil) ||
+                    (opt.name == "from" && opt.value != nil)
+            }
+        }
+
         var isMimiMarked: Bool {
             comment == CodexLocalSSHConfigurator.keyComment
         }
 
         func isValidMimiManagedEntry(expectedKeyBody: String) -> Bool {
             keyBody == expectedKeyBody &&
-                hasRestrictOption &&
-                isStrictlyLoopbackFrom &&
+                hasOnlyManagedRestrictAndLoopbackFromOptions &&
                 !hasCommandOption &&
                 isMimiMarked
         }
@@ -467,6 +495,9 @@ struct CodexLocalSSHConfigurator: Sendable {
     let afterVerifyBeforeCommit: CommitHook?
     let afterVerifyBeforeDelete: CommitHook?
     let afterStageQuarantineMove: CommitHook?
+    let afterFileQuarantineMove: CommitHook?
+    let simulateUnlinkFailure: (@Sendable (_ label: String) -> Bool)?
+    let injectMetadataPreservationError: (@Sendable (_ label: String) -> String?)?
     let simulateHardCrashPoint: HardCrashSimulationPoint?
 
     init(
@@ -479,6 +510,9 @@ struct CodexLocalSSHConfigurator: Sendable {
         afterVerifyBeforeCommit: CommitHook? = nil,
         afterVerifyBeforeDelete: CommitHook? = nil,
         afterStageQuarantineMove: CommitHook? = nil,
+        afterFileQuarantineMove: CommitHook? = nil,
+        simulateUnlinkFailure: (@Sendable (_ label: String) -> Bool)? = nil,
+        injectMetadataPreservationError: (@Sendable (_ label: String) -> String?)? = nil,
         simulateHardCrashPoint: HardCrashSimulationPoint? = nil
     ) {
         self.homeDirectory = homeDirectory
@@ -494,6 +528,9 @@ struct CodexLocalSSHConfigurator: Sendable {
         self.afterVerifyBeforeCommit = afterVerifyBeforeCommit
         self.afterVerifyBeforeDelete = afterVerifyBeforeDelete
         self.afterStageQuarantineMove = afterStageQuarantineMove
+        self.afterFileQuarantineMove = afterFileQuarantineMove
+        self.simulateUnlinkFailure = simulateUnlinkFailure
+        self.injectMetadataPreservationError = injectMetadataPreservationError
         self.simulateHardCrashPoint = simulateHardCrashPoint
     }
 
@@ -550,7 +587,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             if !state.isEmpty {
                 result.hasPersistedManagedState = true
             }
-            if state.pendingTransaction != nil || !state.stagedKeyArtifacts.isEmpty {
+            if state.pendingTransaction != nil || !state.stagedKeyArtifacts.isEmpty || !state.quarantinedFileArtifacts.isEmpty {
                 result.hasPendingTransaction = true
             }
             if state.knownHostsConflict || state.mimiConfigConflict {
@@ -758,11 +795,77 @@ struct CodexLocalSSHConfigurator: Sendable {
         return result
     }
 
-    /// 首次配置本机回环 SSH 并验证免密连通；若已有 Mimi 配置，则仅执行只读校验（不换钥、不改写磁盘文件）。
+    /// 首次配置本机回环 SSH 并验证免密连通；若已有 Mimi 配置，则仅在已校验的现有共享锁下执行纯只读校验（不改状态目录权限、不新建/改权锁文件、不换钥、不改写磁盘文件）。
     func configure(verifyConnection: Bool = true) async throws {
-        try await withSerializedLock {
-            try await configureLocked(verifyConnection: verifyConnection)
-        }
+        try await withReadOnlyFirstSerializedLock(
+            tryReadOnly: {
+                try validateStateDirectoryAndStateFile()
+                guard let existingState = try loadManagedState(), !existingState.isEmpty else {
+                    return nil
+                }
+                let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedUser.isEmpty,
+                      trimmedUser.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+                    throw ConfigError.invalidUsername
+                }
+                for checkedPath in [expectedKnownHostsPath, expectedIdentityFileConfigValue] {
+                    guard !checkedPath.contains("\""),
+                          !checkedPath.contains("\n"),
+                          !checkedPath.contains("\r"),
+                          !checkedPath.contains("%") else {
+                        throw ConfigError.unsafeFileSystemTarget("Mimi SSH 隔离目录路径包含非法字符。")
+                    }
+                }
+                if let sshDirInfo = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh") {
+                    try ensureNotGroupOrWorldWritable(
+                        sshDirInfo,
+                        label: "~/.ssh",
+                        reason: "请先手工核对目录内容并在终端执行 chmod 700 ~/.ssh 后重试。"
+                    )
+                }
+                try validateMimiDirectoryAndFiles()
+                if let mimiDirInfo = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+                    try ensureNotGroupOrWorldWritable(
+                        mimiDirInfo,
+                        label: "~/.ssh/mimi",
+                        reason: "请先手工核对目录内容并在终端执行 chmod 700 ~/.ssh/mimi 后重试。"
+                    )
+                }
+                try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
+                try validateRegularFileIfPresent(sshConfigURL, label: "config")
+                let configSnapshot = try captureSnapshot(of: sshConfigURL, label: "~/.ssh/config")
+                let mimiConfigSnapshot = try captureSnapshot(of: mimiConfigURL, label: "~/.ssh/mimi/config")
+                let authSnapshot = try captureSnapshot(of: authorizedKeysURL, label: "~/.ssh/authorized_keys")
+                let initialKnownHostsSnapshot = try captureSnapshot(of: knownHostsURL, label: "~/.ssh/mimi/\(Self.knownHostsFileName)")
+                if configSnapshot.exists, let info = configSnapshot.info {
+                    try ensureNotGroupOrWorldWritable(
+                        info,
+                        label: "~/.ssh/config",
+                        reason: "请先手工核对文件内容并在终端执行 chmod 600 ~/.ssh/config 后重试。"
+                    )
+                }
+                if authSnapshot.exists, let info = authSnapshot.info {
+                    try ensureNotGroupOrWorldWritable(
+                        info,
+                        label: "~/.ssh/authorized_keys",
+                        reason: "请先手工核对授权条目并在终端执行 chmod 600 ~/.ssh/authorized_keys 后重试。"
+                    )
+                }
+                try await verifyExistingConfigurationLocked(
+                    previousState: existingState,
+                    trimmedUser: trimmedUser,
+                    configSnapshot: configSnapshot,
+                    mimiConfigSnapshot: mimiConfigSnapshot,
+                    authSnapshot: authSnapshot,
+                    knownHostsSnapshot: initialKnownHostsSnapshot,
+                    verifyConnection: verifyConnection
+                )
+                return ()
+            },
+            performWrite: {
+                try await configureLocked(verifyConnection: verifyConnection)
+            }
+        )
     }
 
     /// 撤销由 Mimi 写入的本机 SSH 托管授权、`~/.ssh/mimi/` 专用密钥/配置/信任文件与 `~/.ssh/config` 顶部单行 `Include`。
@@ -1158,9 +1261,9 @@ struct CodexLocalSSHConfigurator: Sendable {
         knownHostsSnapshot: FileSnapshot,
         verifyConnection: Bool
     ) async throws {
-        if previousState.pendingTransaction != nil || !previousState.stagedKeyArtifacts.isEmpty {
+        if previousState.pendingTransaction != nil || !previousState.stagedKeyArtifacts.isEmpty || !previousState.quarantinedFileArtifacts.isEmpty {
             throw ConfigError.conflictingKeyFiles(
-                "检测到上次本机 SSH 配置未完成或存在残留暂存记录，请先点击「移除本机 SSH 配置」清理后再重新配置。"
+                "检测到上次本机 SSH 配置未完成或存在残留暂存/隔离记录，请先点击「移除本机 SSH 配置」清理后再重新配置。"
             )
         }
         if !previousState.residualAuthorizedKeyBodies.isEmpty {
@@ -1377,6 +1480,36 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
 
         if sshDirectorySafe {
+            let persistQuarantinedFile: (QuarantinedFileArtifact) throws -> Void = { artifact in
+                if !state.quarantinedFileArtifacts.contains(artifact) {
+                    state.quarantinedFileArtifacts.append(artifact)
+                }
+                try saveManagedState(state, invokeHook: false)
+            }
+            let clearQuarantinedFile: (QuarantinedFileArtifact) throws -> Void = { artifact in
+                state.quarantinedFileArtifacts.removeAll { $0 == artifact }
+            }
+
+            // 0. 崩溃/unlink 失败恢复：优先按已持久化账本核验并清理所有滞留隔离文件，未恢复完成绝不报告移除成功。
+            if !state.quarantinedFileArtifacts.isEmpty {
+                var remainingQuarantined: [QuarantinedFileArtifact] = []
+                for artifact in state.quarantinedFileArtifacts {
+                    do {
+                        let cleaned = try recoverQuarantinedFileArtifact(artifact)
+                        if !cleaned {
+                            remainingQuarantined.append(artifact)
+                        }
+                    } catch let error as ConfigError {
+                        remainingQuarantined.append(artifact)
+                        errors.append(error)
+                    } catch {
+                        remainingQuarantined.append(artifact)
+                        errors.append(.fileOperationFailed(error.localizedDescription))
+                    }
+                }
+                state.quarantinedFileArtifacts = remainingQuarantined
+            }
+
             // 1. 优先撤销 authorized_keys：仅删带 Mimi 标记的精确行，并检查同公钥残留。
             do {
                 switch try probePath(authorizedKeysURL, label: "authorized_keys") {
@@ -1428,6 +1561,7 @@ struct CodexLocalSSHConfigurator: Sendable {
                     state.keyFingerprint = nil
                     state.publicKeyBody = nil
                     state.stagedKeyArtifacts = []
+                    state.quarantinedFileArtifacts.removeAll { $0.parentScope == "mimi" }
                     state.mimiConfigVersion = nil
                     state.mimiConfigConflict = false
                     state.managedKnownHosts = false
@@ -1452,13 +1586,23 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
 
             if mimiDirSafe && mimiDirPresent {
-                // 2a. 仅删除经 ssh-keygen -y 指纹核验与隔离快照核验确属 Mimi 的专用密钥文件。
+                // 2a. 仅删除经字节密码学指纹核验与隔离快照核验确属 Mimi 的专用密钥文件（隔离移动前先入账，崩溃/unlink 失败不丢归属记录）。
                 do {
-                    let removedKeys = try await removeOwnedKeyFilesIfVerified(state: state)
-                    if removedKeys {
+                    let removedKeys = try await removeOwnedKeyFilesIfVerified(
+                        state: state,
+                        journalQuarantine: persistQuarantinedFile,
+                        clearQuarantine: clearQuarantinedFile
+                    )
+                    let hasStrandedKeyQuarantine = state.quarantinedFileArtifacts.contains {
+                        $0.parentScope == "mimi" &&
+                            ($0.originalFileName == Self.keyFileName || $0.originalFileName == "\(Self.keyFileName).pub")
+                    }
+                    if removedKeys && !hasStrandedKeyQuarantine {
                         state.keyFingerprint = nil
                         state.publicKeyBody = nil
                     }
+                } catch let crash as SimulatedHardCrashError {
+                    throw crash
                 } catch let error as ConfigError {
                     errors.append(error)
                 } catch {
@@ -1541,16 +1685,25 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
 
             if mimiDirSafe && mimiDirPresent {
-                // 4. 按版本指纹核验并清理 ~/.ssh/mimi/config（临时 I/O 错误不置位持久冲突标记）
+                // 4. 按版本指纹核验并清理 ~/.ssh/mimi/config（临时 I/O 错误不置位持久冲突标记，隔离前先入账）
                 do {
                     try removeVersionVerifiedManagedFile(
                         at: mimiConfigURL,
                         label: "~/.ssh/mimi/config",
                         expectedVersion: state.effectiveMimiConfigVersion,
-                        hasConflictFlag: state.mimiConfigConflict
+                        hasConflictFlag: state.mimiConfigConflict,
+                        journalQuarantine: persistQuarantinedFile,
+                        clearQuarantine: clearQuarantinedFile
                     )
-                    state.mimiConfigVersion = nil
-                    state.mimiConfigConflict = false
+                    let hasStrandedMimiConfig = state.quarantinedFileArtifacts.contains {
+                        $0.parentScope == "mimi" && $0.originalFileName == Self.mimiConfigFileName
+                    }
+                    if !hasStrandedMimiConfig {
+                        state.mimiConfigVersion = nil
+                        state.mimiConfigConflict = false
+                    }
+                } catch let crash as SimulatedHardCrashError {
+                    throw crash
                 } catch let error as ConfigError {
                     if case .conflictingKeyFiles = error {
                         state.mimiConfigConflict = true
@@ -1560,17 +1713,26 @@ struct CodexLocalSSHConfigurator: Sendable {
                     errors.append(.fileOperationFailed(error.localizedDescription))
                 }
 
-                // 5. 按版本指纹与冲突标记核验并清理 ~/.ssh/mimi/known_hosts（临时 I/O 错误不置位持久冲突标记）
+                // 5. 按版本指纹与冲突标记核验并清理 ~/.ssh/mimi/known_hosts（临时 I/O 错误不置位持久冲突标记，隔离前先入账）
                 do {
                     try removeVersionVerifiedManagedFile(
                         at: knownHostsURL,
                         label: "~/.ssh/mimi/\(Self.knownHostsFileName)",
                         expectedVersion: state.effectiveKnownHostsVersion,
-                        hasConflictFlag: state.knownHostsConflict
+                        hasConflictFlag: state.knownHostsConflict,
+                        journalQuarantine: persistQuarantinedFile,
+                        clearQuarantine: clearQuarantinedFile
                     )
-                    state.managedKnownHosts = false
-                    state.knownHostsVersion = nil
-                    state.knownHostsConflict = false
+                    let hasStrandedKH = state.quarantinedFileArtifacts.contains {
+                        $0.parentScope == "mimi" && $0.originalFileName == Self.knownHostsFileName
+                    }
+                    if !hasStrandedKH {
+                        state.managedKnownHosts = false
+                        state.knownHostsVersion = nil
+                        state.knownHostsConflict = false
+                    }
+                } catch let crash as SimulatedHardCrashError {
+                    throw crash
                 } catch let error as ConfigError {
                     state.managedKnownHosts = true
                     if case .conflictingKeyFiles = error {
@@ -1609,7 +1771,9 @@ struct CodexLocalSSHConfigurator: Sendable {
         at url: URL,
         label: String,
         expectedVersion: FileVersionFingerprint?,
-        hasConflictFlag: Bool
+        hasConflictFlag: Bool,
+        journalQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil,
+        clearQuarantine: ((QuarantinedFileArtifact) throws -> Void)? = nil
     ) throws {
         switch try probePath(url, label: label) {
         case .missing:
@@ -1625,7 +1789,14 @@ struct CodexLocalSSHConfigurator: Sendable {
                     "\(label) 已被外部修改、替换或缺少已证实的 Mimi 版本归属记录，撤销时已保留未删除，请手工核对。"
                 )
             }
-            try removeFileMatchingSnapshot(url, expectedSnapshot: snapshot, label: label, invokeHook: true)
+            try removeFileMatchingSnapshot(
+                url,
+                expectedSnapshot: snapshot,
+                label: label,
+                invokeHook: true,
+                journalQuarantine: journalQuarantine,
+                clearQuarantine: clearQuarantine
+            )
         }
     }
 }
