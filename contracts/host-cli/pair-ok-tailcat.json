@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "network": "tailcat",
+  "endpoint": "http://127.0.0.1:8787",
+  "pair_url": "mimiremote://pair?endpoint=http%3A%2F%2F127.0.0.1%3A8787&issued_at=2030-01-01T00%3A00%3A00Z&expires_at=2030-01-01T00%3A05%3A00.250Z&pair_sig=fixture-signature&transport=tailcat&tailcat_pair_address=tc%3Afixture&relay_service=default",
+  "pair_expires_at": "2030-01-01T00:05:00.250Z"
+}

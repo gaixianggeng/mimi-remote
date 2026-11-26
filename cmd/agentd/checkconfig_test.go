@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigCheckFailureCodeSeparatesUpgradeFromOtherConfigErrors(t *testing.T) {
@@ -97,9 +98,7 @@ func TestCheckConfigReusesServePipelineForUnsupportedTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, raw)
 
 	// run() 会先剥掉子命令名，这里保持一致，避免 flag 包把子命令当成位置参数后停止解析。
 	asJSON, checkErr := checkConfig([]string{"agentd", "--config", configPath, "--json"})
@@ -131,9 +130,7 @@ func TestCheckConfigAllowsMissingRegisteredProjectDirectoryForReadOnlyHistory(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, raw)
 
 	asJSON, checkErr := checkConfig([]string{"agentd", "--config", configPath, "--json"})
 	if !asJSON {

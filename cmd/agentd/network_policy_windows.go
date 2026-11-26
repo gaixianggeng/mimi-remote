@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 	"github.com/gaixianggeng/mimi-remote/internal/windowslan"
 )
 
@@ -40,4 +42,42 @@ func ensurePlatformLANAccessAllowed() error {
 		)
 	}
 	return nil
+}
+
+// The control plane starts while both change subscriptions and the first
+// policy query are still pending. A lost subscription is a denial.
+func platformServeLANGate(ctx context.Context, cfg config.Config) *networkaccess.LANGate {
+	if !cfg.LANAccessEnabled() {
+		return nil
+	}
+	gate := networkaccess.NewLANGate(func(parent context.Context) string {
+		child, done := context.WithTimeout(parent, windowsLANPolicyCheckTimeout)
+		defer done()
+		exe, err := os.Executable()
+		if err != nil {
+			return "lan_firewall_blocked"
+		}
+		status, err := windowsLANStatusCheck(child, exe)
+		if child.Err() != nil {
+			return "probe_timeout"
+		}
+		if err != nil || !status.ProfilePrivate {
+			return "lan_public_network_blocked"
+		}
+		if !status.Ready() {
+			return "lan_firewall_blocked"
+		}
+		return ""
+	})
+	go func() {
+		for ctx.Err() == nil {
+			watchLANPolicy(ctx, gate, windowslan.WatchChanges)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+	return gate
 }

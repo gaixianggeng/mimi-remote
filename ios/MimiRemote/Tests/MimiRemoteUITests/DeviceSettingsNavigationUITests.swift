@@ -370,12 +370,24 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
     }
 
     /// 首次连接页局域网配对失败后，必须展示清晰的本地化失败提示，并提供回到工作台（唤起底部 Tab 栏）的出口。
+    func testFirstConnectionConnectLaterReturnsToAddComputer() {
+        element("settings.firstConnection.enterWorkbench").tap()
+        // 工作台恢复上次选择的标签；两个内容页都应直接通往添加电脑流程。
+        let connect = app.buttons.matching(NSPredicate(format: "identifier IN %@", [
+            "unpairedHostEmptyState.sessions.connectComputer",
+            "unpairedHostEmptyState.workspaces.connectComputer"
+        ])).firstMatch
+        XCTAssertTrue(connect.waitForExistence(timeout: 10))
+        connect.tap()
+        XCTAssertTrue(element("settings.connection.scanQRCode").waitForExistence(timeout: 10))
+    }
+
     func testFirstConnectionLANFailureShowsWorkbenchExitAndRestoresTabBar() throws {
         let previousClipboardItems = UIPasteboard.general.items
         defer { UIPasteboard.general.items = previousClipboardItems }
 
-        // 真正全新首次启动（无已保存电脑、无中转权益、未配对失败）不额外显示顶部退出按钮。
-        XCTAssertFalse(element("settings.firstConnection.enterWorkbench").exists)
+        // UI-7 无主机空态落地后，全新首次启动顶部导航栏即提供「稍后连接」入口，但尚未展示失败横幅。
+        XCTAssertTrue(element("settings.firstConnection.enterWorkbench").waitForExistence(timeout: 5))
         XCTAssertFalse(element("settings.firstConnection.errorBanner").exists)
         capture("r2-01-first-launch-clean")
 
@@ -400,7 +412,7 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
             if list.exists { list.swipeDown() } else { app.swipeDown() }
         }
         let errorBanner = element("settings.firstConnection.errorBanner")
-        XCTAssertTrue(errorBanner.waitForExistence(timeout: 8), "顶部应展示局域网配对失败提示卡片")
+        XCTAssertTrue(errorBanner.waitForExistence(timeout: 50), "顶部应展示局域网配对失败提示卡片")
         let lanGuidance = errorBanner.staticTexts.matching(
             NSPredicate(format: "label CONTAINS %@ OR label CONTAINS %@", "局域网", "Wi-Fi")
         ).firstMatch

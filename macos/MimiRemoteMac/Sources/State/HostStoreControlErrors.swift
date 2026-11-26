@@ -44,22 +44,53 @@ enum ServiceLifecycleError: LocalizedError {
     }
 }
 
-enum ClaudeRuntimeControlError: LocalizedError {
-    case signedOut
-    case unavailable
-    case disabled
-    case timedOut(enabled: Bool)
+enum ManagedRuntimeControlError: LocalizedError, Equatable, Sendable {
+    case signedOut(runtimeID: String)
+    case unavailable(runtimeID: String)
+    case disabled(runtimeID: String)
+    case timedOut(runtimeID: String, enabled: Bool)
+
+    static func displayName(for runtimeID: String) -> String {
+        switch runtimeID.lowercased() {
+        case "codex": "Codex"
+        case "claude": "Claude Code"
+        case "agy": "Antigravity"
+        case "deepseek": "DeepSeek"
+        default: runtimeID
+        }
+    }
+
+    static func runtimeLabel(for runtimeID: String) -> String {
+        switch runtimeID.lowercased() {
+        case "codex": "Codex Runtime"
+        case "claude": "Claude Runtime"
+        case "agy": "Antigravity Runtime"
+        case "deepseek": "DeepSeek Runtime"
+        default: "\(runtimeID) Runtime"
+        }
+    }
+
+    static func shortName(for runtimeID: String) -> String {
+        switch runtimeID.lowercased() {
+        case "codex": "Codex"
+        case "claude": "Claude"
+        case "agy": "Antigravity"
+        case "deepseek": "DeepSeek"
+        default: runtimeID
+        }
+    }
 
     var errorDescription: String? {
         switch self {
-        case .signedOut:
-            "Claude Code 尚未登录。"
-        case .unavailable:
-            "Claude Runtime 未能连接。"
-        case .disabled:
-            "服务重载后 Claude 仍处于关闭状态。"
-        case .timedOut(let enabled):
-            enabled ? "等待 Claude Runtime 连接超时。" : "等待 Claude Runtime 停止超时。"
+        case .signedOut(let runtimeID):
+            return "\(Self.displayName(for: runtimeID)) 尚未登录。"
+        case .unavailable(let runtimeID):
+            return "\(Self.runtimeLabel(for: runtimeID)) 未能连接。"
+        case .disabled(let runtimeID):
+            return "服务重载后 \(Self.shortName(for: runtimeID)) 仍处于关闭状态。"
+        case .timedOut(let runtimeID, let enabled):
+            let label = Self.runtimeLabel(for: runtimeID)
+            return enabled ? "等待 \(label) 连接超时。" : "等待 \(label) 停止超时。"
         }
     }
 }

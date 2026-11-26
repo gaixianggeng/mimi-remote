@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -84,9 +84,24 @@ type agentController struct {
 	commandRunner      func(context.Context, ...string) ([]byte, error)
 	cachedNetwork      *networkStatus
 	networkLastChecked time.Time
+	stateMu            sync.RWMutex
+	configured         bool
+}
+
+func (c *agentController) setConfigured(value bool) {
+	c.stateMu.Lock()
+	c.configured = value
+	c.stateMu.Unlock()
+}
+
+func (c *agentController) isConfigured() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.configured
 }
 
 type pairingInfo struct {
+	OK                  *bool    `json:"ok,omitempty"`
 	Endpoint            string   `json:"endpoint"`
 	Network             string   `json:"network,omitempty"`
 	TailscaleDNSName    string   `json:"tailscale_dns_name,omitempty"`
@@ -108,7 +123,10 @@ func newAgentController() (*agentController, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("安装目录中缺少 agentd.exe：%s", agentPath)
 	}
-	return &agentController{agentPath: agentPath, statusGate: make(chan struct{}, 1)}, nil
+	return &agentController{
+		agentPath:  agentPath,
+		statusGate: make(chan struct{}, 1),
+	}, nil
 }
 
 func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agentStatus, error) {
@@ -146,6 +164,7 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	if err != nil {
 		return agentStatus{}, err
 	}
+	c.setConfigured(true)
 	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
 		snapshot := *status.NetworkStatus
 		c.cachedNetwork = &snapshot
@@ -176,25 +195,48 @@ func statusArguments(refreshRuntime bool, inspectNetwork bool) []string {
 }
 
 func (c *agentController) action(ctx context.Context, action string) error {
-	_, err := c.runHidden(ctx, actionArguments(action)...)
+	_, err := c.runCommand(ctx, actionArguments(action)...)
 	return err
 }
 
 func actionArguments(action string) []string {
 	arguments := []string{action}
 	if action == "start" || action == "restart" {
-		arguments = append(arguments, "--wait", serviceReadyWait.String(), "--no-pair")
+		arguments = append(arguments, "--wait", serviceReadyWait.String(), "--no-pair", "--json")
 	}
 	return arguments
 }
 
 func (c *agentController) doctor(ctx context.Context, fix bool) (string, error) {
-	payload, err := c.runHidden(ctx, doctorArguments(fix)...)
-	return strings.TrimSpace(string(payload)), err
+	payload, err := c.runCommand(ctx, doctorArguments(fix)...)
+	if err != nil {
+		return "", err
+	}
+	if !fix {
+		return strings.TrimSpace(string(payload)), nil
+	}
+	var receipt struct {
+		Fixes   []string `json:"fixes"`
+		Results struct {
+			OK bool `json:"ok"`
+		} `json:"results"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	if json.Unmarshal(payload, &receipt) != nil || !receipt.Results.OK {
+		return "", errors.New("无法确认诊断修复结果，请重新运行诊断")
+	}
+	lines := []string{"诊断检查已通过。"}
+	for _, fix := range receipt.Fixes {
+		lines = append(lines, sanitizeTrayDiagnostic(fix, 180))
+	}
+	if receipt.RestartRequired {
+		lines = append(lines, "请重启服务使配置生效。")
+	}
+	return strings.Join(lines, "\r\n"), nil
 }
 
 func (c *agentController) pairing(ctx context.Context) (pairingInfo, error) {
-	payload, err := c.runHidden(ctx, pairingArguments()...)
+	payload, err := c.runCommand(ctx, pairingArguments()...)
 	if err != nil {
 		return pairingInfo{}, err
 	}
@@ -219,44 +261,92 @@ func pairingArguments() []string {
 }
 
 func parsePairingInfo(payload []byte) (pairingInfo, error) {
-	var result pairingInfo
-	if err := json.Unmarshal(payload, &result); err != nil {
-		return pairingInfo{}, fmt.Errorf("解析短期配对信息失败：%w", err)
+	receipt, err := decodeOnboardingPairingTicketReceipt(payload, false)
+	if err != nil {
+		return pairingInfo{}, errors.New("解析短期配对信息失败，请重新生成")
 	}
-	if strings.TrimSpace(result.PairURL) == "" {
-		return pairingInfo{}, errors.New("短期配对信息缺少二维码链接")
-	}
-	return result, nil
+	return pairingInfo{
+		OK:                  receipt.OK,
+		Endpoint:            receipt.Endpoint,
+		Network:             receipt.Network,
+		TailscaleDNSName:    receipt.TailscaleDNSName,
+		TailscaleDeviceName: receipt.TailscaleDeviceName,
+		PairURL:             receipt.PairURL,
+		PairExpiresAt:       receipt.PairExpiresAt,
+		Warnings:            receipt.Warnings,
+	}, nil
 }
 
 func doctorArguments(fix bool) []string {
 	arguments := []string{"doctor"}
 	if fix {
-		arguments = append(arguments, "--fix")
+		arguments = append(arguments, "--fix", "--json")
 	}
 	return arguments
 }
 
+func (c *agentController) preflight(
+	ctx context.Context,
+	stage string,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	extraArgs ...string,
+) (onboardingPreflightReport, error) {
+	run := c.runHiddenWithProgress
+	if c.commandRunner != nil {
+		run = func(runCtx context.Context, _ *onboardingProgressAccumulator, _ uint64, _ func(onboardingCheck), args ...string) ([]byte, error) {
+			return c.commandRunner(runCtx, args...)
+		}
+	}
+	report, err := runTrayPreflight(ctx, "windows", stage, progress, generation, onProgress, run, extraArgs...)
+	if err == nil && report.Configured != nil {
+		c.setConfigured(*report.Configured)
+	}
+	return report, err
+}
+
 func (c *agentController) runHidden(ctx context.Context, args ...string) ([]byte, error) {
+	return c.runHiddenWithProgress(ctx, nil, 0, nil, args...)
+}
+
+func (c *agentController) runHiddenWithProgress(
+	ctx context.Context,
+	progress *onboardingProgressAccumulator,
+	generation uint64,
+	onProgress func(onboardingCheck),
+	args ...string,
+) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, trayCommandTimeout("windows", args...))
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, c.agentPath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
-		}
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("%s", detail)
+	stdout, stderr, stdoutTruncated, err := runTrayCommand(cmd, progress, generation, onProgress, 1024*1024, 64*1024)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, context.Canceled
 	}
-	return stdout.Bytes(), nil
+	if ctx.Err() != nil {
+		return nil, newTrayUILocalError("command_timeout", trayActiveStepForArgs(args))
+	}
+	if stdoutTruncated {
+		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
+	}
+	if err != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("windows", args, c.isConfigured()), args...); cliErr != nil {
+			return nil, cliErr
+		}
+		return nil, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
+	}
+	return stdout, nil
 }
 
 func (c *agentController) openLogsTerminal() error {
@@ -330,9 +420,10 @@ const (
 	serviceReadyWait = 60 * time.Second
 	// restart 先停旧实例：等待 PID 退出最多 10 秒、同步计划任务最多 10 秒
 	// （cmd/agentd/windows_service.go），再加上配置检查与提交启动的余量。
-	serviceStopBudget   = 20 * time.Second
-	actionCommandBudget = serviceReadyWait + serviceStopBudget + 30*time.Second
+	serviceStopBudget = 20 * time.Second
 )
+
+var actionCommandBudget = trayCommandTimeout("windows", "start")
 
 func statusContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), statusQueueTimeout)

@@ -41,12 +41,12 @@ func runTailcat(args []string) error {
 
 func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) < 2 {
-		return errors.New("tailcat 需要子命令：status、enable、disable、pair、reset、configure、enter-managed、exit-managed 或 relay-set")
+		return invalidOnboardingRequest(errors.New("tailcat 需要子命令：status、enable、disable、pair、reset、configure、enter-managed、exit-managed 或 relay-set"))
 	}
 	action := strings.ToLower(strings.TrimSpace(args[1]))
 	if action == "relay" {
 		if len(args) < 3 || args[2] != "set" {
-			return errors.New("用法：tailcat relay set --choice default|custom|mimi [--derp-map-url <地址>] --json")
+			return invalidOnboardingRequest(errors.New("用法：tailcat relay set --choice default|custom|mimi [--derp-map-url <地址>] --json"))
 		}
 		// 对外使用分层命令；内部 HTTP action 与早期草稿别名保持兼容。
 		args = append([]string{args[0], "relay-set"}, args[3:]...)
@@ -55,7 +55,7 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	switch action {
 	case "status", "enable", "disable", "pair", "reset", "configure", "enter-managed", "exit-managed", "relay-set":
 	default:
-		return fmt.Errorf("未知 Tailcat 子命令 %q", action)
+		return invalidOnboardingRequest(fmt.Errorf("未知 Tailcat 子命令 %q", action))
 	}
 
 	fs := flag.NewFlagSet("tailcat "+action, flag.ContinueOnError)
@@ -65,11 +65,11 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	qrOnly := fs.Bool("qr-only", false, "配对时只输出短期配对信息")
 	derpMapURL := fs.String("derp-map-url", "", "自定义 DERP Map HTTPS URL；空值恢复 Tailcat 默认中继")
 	choice := fs.String("choice", "", "relay-set 的中转选择：default、custom 或 mimi")
-	if err := fs.Parse(args[2:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[2:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("tailcat 子命令不接受多余的位置参数")
+		return invalidOnboardingRequest(errors.New("tailcat 子命令不接受多余的位置参数"))
 	}
 	derpMapURLSet := false
 	choiceSet := false
@@ -82,21 +82,25 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 		}
 	})
 	if *qrOnly && action != "pair" {
-		return errors.New("--qr-only 只适用于 tailcat pair")
+		return invalidOnboardingRequest(errors.New("--qr-only 只适用于 tailcat pair"))
 	}
 	if action == "configure" && !derpMapURLSet {
-		return errors.New("tailcat configure 必须显式提供 --derp-map-url；使用 --derp-map-url= 恢复默认中继")
+		return invalidOnboardingRequest(errors.New("tailcat configure 必须显式提供 --derp-map-url；使用 --derp-map-url= 恢复默认中继"))
 	}
 	if action != "configure" && action != "relay-set" && derpMapURLSet {
-		return errors.New("--derp-map-url 只适用于 tailcat configure 和 tailcat relay-set")
+		return invalidOnboardingRequest(errors.New("--derp-map-url 只适用于 tailcat configure 和 tailcat relay-set"))
 	}
 	if action != "relay-set" && choiceSet {
-		return errors.New("--choice 只适用于 tailcat relay-set")
+		return invalidOnboardingRequest(errors.New("--choice 只适用于 tailcat relay-set"))
 	}
 	if action == "relay-set" && !choiceSet {
-		return errors.New("tailcat relay-set 必须提供 --choice=default|custom|mimi")
+		return invalidOnboardingRequest(errors.New("tailcat relay-set 必须提供 --choice=default|custom|mimi"))
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
+	prepare := prepareDefaultConfigMigration
+	if action == "pair" || action == "enable" || action == "relay-set" {
+		prepare = prepareRequiredConfig
+	}
+	if err := prepare(fs, *configPath, stderr); err != nil {
 		return err
 	}
 	cfg, err := config.LoadForDoctor(*configPath)
@@ -192,7 +196,7 @@ func requestTailcatControl(
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.Auth.Token))
 	req.Header.Set(httpapi.TailcatLocalControlHeader, localToken)
-	response, err := (&http.Client{Timeout: timeout}).Do(req)
+	response, err := (&http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if err != nil {
 		return tailcatCommandStatus{}, fmt.Errorf("连接本机 agentd 失败：%w", err)
 	}
@@ -200,12 +204,22 @@ func requestTailcatControl(
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		_ = json.NewDecoder(io.LimitReader(response.Body, 32<<10)).Decode(&failure)
 		if strings.TrimSpace(failure.Error) == "" {
 			failure.Error = fmt.Sprintf("agentd 返回 HTTP %d", response.StatusCode)
 		}
-		return tailcatCommandStatus{}, errors.New(failure.Error)
+		cause := errors.New(failure.Error)
+		switch failure.Code {
+		case "tailcat_managed_mode_required", "tailcat_managed_grant_required":
+			return tailcatCommandStatus{}, onboardingFailure("pair_managed_grant_conflict", "network_tailcat", true, cause)
+		case "tailcat_agents_disabled":
+			return tailcatCommandStatus{}, onboardingFailure("no_enabled_assistant", "assistant_any", true, cause)
+		case "tailcat_operation_in_progress":
+			return tailcatCommandStatus{}, onboardingFailure("tailcat_busy", "network_tailcat", true, cause)
+		}
+		return tailcatCommandStatus{}, cause
 	}
 	var status tailcatCommandStatus
 	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&status); err != nil {

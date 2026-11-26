@@ -86,12 +86,11 @@ public sealed class PairingViewModel : ClientPageViewModel
         Clear();
         var request = generation;
         var selected = Network.Id;
-        var info = await Context.Agent.ReadAsync<PairingInfo>(selected == "tailcat" ? ["tailcat", "pair", "--qr-only", "--json"]
-            : ["pair", "--network", selected, "--qr-only", "--json"], Lifetime.Token);
+        var receipt = await Context.Agent.PairAsync(selected, Lifetime.Token);
         if (request != generation || !Active) { return; }
-        if (string.IsNullOrWhiteSpace(info.PairUrl) || !DateTimeOffset.TryParse(info.PairExpiresAt, out var expiry) || expiry <= DateTimeOffset.UtcNow)
+        if (!OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry) || expiry <= DateTimeOffset.UtcNow)
         { throw new InvalidOperationException("配对信息无效或已经过期，请重新生成。"); }
-        using var qr = QRCodeGenerator.GenerateQrCode(info.PairUrl, QRCodeGenerator.ECCLevel.M);
+        using var qr = QRCodeGenerator.GenerateQrCode(receipt.PairUrl, QRCodeGenerator.ECCLevel.M);
         using var png = new PngByteQRCode(qr);
         using var stream = new InMemoryRandomAccessStream();
         using (var writer = new DataWriter(stream.GetOutputStreamAt(0))) { writer.WriteBytes(png.GetGraphic(6)); await writer.StoreAsync(); }
@@ -101,7 +100,7 @@ public sealed class PairingViewModel : ClientPageViewModel
         if (request != generation || !Active) { return; }
         Image = bitmap;
         expires = expiry;
-        Note = $"有效期至 {expiry.ToLocalTime():HH:mm:ss}。" + string.Join("\n", info.Warnings);
+        Note = $"有效期至 {expiry.ToLocalTime():HH:mm:ss}。" + string.Join("\n", receipt.Warnings);
     }
     private void Clear()
     {

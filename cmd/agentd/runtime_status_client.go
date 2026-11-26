@@ -29,6 +29,7 @@ func fetchServiceRuntimeStatus(
 	token string,
 	timeout time.Duration,
 	refresh bool,
+	configPath string,
 ) (map[string]any, error) {
 	target, err := runtimeStatusURL(endpoint)
 	if err != nil {
@@ -46,7 +47,7 @@ func fetchServiceRuntimeStatus(
 	if value := strings.TrimSpace(token); value != "" {
 		req.Header.Set("Authorization", "Bearer "+value)
 	}
-	client := http.Client{Timeout: timeout}
+	client := coreHTTPClient(requestCtx, configPath)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -74,7 +75,7 @@ func fetchServiceRuntimeStatus(
 	return payload, nil
 }
 
-func fetchRuntimeStatusForCommand(endpoint string, token string, refresh bool) runtimeStatusResult {
+func fetchRuntimeStatusForCommand(endpoint string, token string, refresh bool, configPath string) runtimeStatusResult {
 	timeout := runtimebudget.CachedHTTPTimeout
 	if refresh {
 		timeout = runtimebudget.ForcedRefreshHTTPTimeout
@@ -85,6 +86,7 @@ func fetchRuntimeStatusForCommand(endpoint string, token string, refresh bool) r
 		token,
 		timeout,
 		refresh,
+		configPath,
 	)
 	return runtimeStatusResult{payload: payload, err: err}
 }

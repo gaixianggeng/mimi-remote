@@ -32,6 +32,7 @@ const (
 )
 
 type FrontDoor struct {
+	resolveCodex      func(context.Context) (string, error)
 	options           SharedLocalOptions
 	backendHome       string
 	public            string
@@ -45,6 +46,16 @@ type FrontDoor struct {
 }
 
 func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*FrontDoor, error) {
+	return NewFrontDoorWithResolver(options, logf, nil)
+}
+
+// NewFrontDoorWithResolver resolves the executable only when inspecting or
+// starting a backend. Attaching to an existing socket needs no local CLI.
+func NewFrontDoorWithResolver(options SharedLocalOptions, logf func(string, ...any), resolve func(context.Context) (string, error)) (*FrontDoor, error) {
+	if resolve == nil {
+		env := cloneStringMap(options.Env)
+		resolve = func(context.Context) (string, error) { return FrontDoorCodexBin(options.CodexBin, env), nil }
+	}
 	public, err := SharedLocalSocketPath(options.Env)
 	if err != nil {
 		return nil, err
@@ -63,6 +74,7 @@ func NewFrontDoor(options SharedLocalOptions, logf func(string, ...any)) (*Front
 		logf = func(string, ...any) {}
 	}
 	return &FrontDoor{
+		resolveCodex: resolve,
 		options: SharedLocalOptions{
 			CodexBin:         strings.TrimSpace(options.CodexBin),
 			Env:              cloneStringMap(options.Env),
@@ -251,7 +263,10 @@ func (f *FrontDoor) dialBackend(ctx context.Context) (net.Conn, error) {
 	// 残留的 backend socket 文件交给 Codex 自己的探测处理：连接被拒才删除并重新绑定。
 	launchOptions := f.options
 	// 前门可能早于 CLI 安装或升级启动；每次创建 backend 都重新选择当前安装入口。
-	launchOptions.CodexBin = FrontDoorCodexBin(launchOptions.CodexBin, launchOptions.Env)
+	launchOptions.CodexBin, err = f.resolveCodex(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if launchOptions.BackendCodexHome != "" {
 		// 公共 socket 始终由原环境决定；只在启动私有 backend 时切换身份目录。
 		launchOptions.Env = cloneStringMap(f.options.Env)

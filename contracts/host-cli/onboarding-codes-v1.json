@@ -1,0 +1,1722 @@
+{
+  "schema": "mimi.onboarding.codes/v1",
+  "checks": [
+    {
+      "id": "config_store",
+      "group": "workspace",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "workspace_root",
+      "group": "workspace",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "service_owner_conflict",
+      "group": "service",
+      "platforms": ["macos"]
+    },
+    {
+      "id": "service_daemon",
+      "group": "service",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "assistant_any",
+      "group": "assistant",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "network_tailscale",
+      "group": "network",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "network_tailcat",
+      "group": "network",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "network_lan",
+      "group": "network",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "network_any",
+      "group": "network",
+      "platforms": ["macos", "windows", "linux"]
+    },
+    {
+      "id": "permission_login_item",
+      "group": "permission",
+      "platforms": ["macos"]
+    },
+    {
+      "id": "permission_folder_access",
+      "group": "permission",
+      "platforms": ["macos"]
+    },
+    {
+      "id": "permission_local_network",
+      "group": "permission",
+      "platforms": ["macos", "windows"]
+    },
+    {
+      "id": "permission_photos",
+      "group": "permission",
+      "platforms": ["macos"]
+    },
+    {
+      "id": "permission_full_disk",
+      "group": "permission",
+      "platforms": ["macos"]
+    }
+  ],
+  "urls": {
+    "CODEX": "https://learn.chatgpt.com/docs/codex/cli",
+    "CLAUDE": "https://code.claude.com/docs/en/quickstart",
+    "AGY": "https://antigravity.google/",
+    "HARNESS": "https://github.com/deepseek-ai/deepseek-harness",
+    "TS": "https://tailscale.com/download",
+    "DESKTOP": "https://github.com/gaixianggeng/mimi-remote/releases/latest",
+    "GUIDE": "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"
+  },
+  "settings_targets": [
+    "login_items",
+    "files_and_folders",
+    "local_network",
+    "photos",
+    "full_disk_access",
+    "windows_firewall",
+    "windows_network_profile",
+    "assistants",
+    "connections",
+    "host_recovery",
+    "date_time",
+    "managed_connection"
+  ],
+  "path_targets": ["workspace_root", "codex_bin", "claude_bin", "agy_bin"],
+  "run_fix": {
+    "save_setup": {"requires_config": false},
+    "enable_codex": {"requires_config": false, "before_save": "assistant_draft", "after_save": "runtime", "assistant": "codex"},
+    "enable_claude": {"requires_config": false, "before_save": "assistant_draft", "after_save": "runtime", "assistant": "claude"},
+    "enable_agy": {"requires_config": false, "before_save": "assistant_draft", "after_save": "runtime", "assistant": "agy"},
+    "enable_tailscale": {"requires_config": true},
+    "enable_lan": {"requires_config": true},
+    "enable_tailcat": {"requires_config": true},
+    "connect_deepseek": {"requires_config": true},
+    "restart_service": {"requires_config": true},
+    "register_service": {"requires_config": true},
+    "doctor_fix": {
+      "requires_config": true,
+      "requires_capability": "identity_preserving_doctor_fix",
+      "description": "仅在宿主已确认支持 BE-3 或更高版本的保身份修复时启用。"
+    },
+    "takeover_homebrew": {"requires_config": true}
+  },
+  "consumers_by_surface": {
+    "check": ["macos", "winui", "windows_tray", "linux_tray"],
+    "cli": ["macos", "winui", "windows_tray", "linux_tray"],
+    "native": ["macos"],
+    "http": ["ios", "macos", "winui", "windows_tray", "linux_tray"],
+    "ui_local": ["macos", "winui", "ios", "windows_tray", "linux_tray"]
+  },
+  "cli_commands": [
+    "preflight",
+    "setup",
+    "up",
+    "start",
+    "restart",
+    "pair",
+    "tailcat pair",
+    "tailcat enable",
+    "tailcat relay set",
+    "network",
+    "runtime",
+    "workspace",
+    "doctor --fix"
+  ],
+  "http": {
+    "media_type": "application/vnd.mimi.onboarding.v1+json",
+    "vary": "Accept",
+    "paths": [
+      "/api/pair/claim",
+      "/api/pair/local",
+      "/api/tailcat/managed-pairing-link",
+      "/api/tailcat/managed-pairing-operations",
+      "/api/tailcat/free-route"
+    ],
+    "workspace_confirmation_required": {"status": 409, "after": "authentication"}
+  },
+  "variant_matching": "Select the unique variant whose when fields all equal the observation. An omitted condition imposes no restriction. Platforms restrict the producing host and step. Consumers are listed by surface and can run on another OS. UI-local codes are never accepted on the wire.",
+  "signed_out_states": {
+    "setup": {"explicitly_enabled": "action_needed", "otherwise": "optional"},
+    "pair": {"enabled": "action_needed", "otherwise": "optional"},
+    "blocking": false
+  },
+  "native_overlay": {
+    "platform": "macos",
+    "permissions": "Only replace the matching permission row on positive native evidence.",
+    "service_daemon": {
+      "replaces": "service_not_running",
+      "evidence": "SMAppService.agent.status.requiresApproval",
+      "code": "service_requires_approval"
+    },
+    "after": "recompute blocking, ok and recommended_next"
+  },
+  "client_actions": {
+    "connections": "Open the pairing step or tray pairing menu.",
+    "assistants": "Open assistant settings or tray assistant controls.",
+    "host_recovery": "Read-only inspection of scrubbed local recovery paths.",
+    "date_time_ios": "Show system date and time instructions and retry.",
+    "managed_connection": "Open subscription or desktop relay settings upon confirmed entitlement failure.",
+    "host_repairs_ios": "Explain the matching desktop step, then offer rescan.",
+    "unknown_step_ui_local": "service_daemon"
+  },
+  "localization": {
+    "lookup": ["code+step", "code"],
+    "title_parameter": "title"
+  },
+  "progress": {
+    "stream": "stderr",
+    "record": "check",
+    "initial_state": "checking",
+    "final_report_stream": "stdout",
+    "per_candidate_timeout_seconds": 4,
+    "total_timeout_seconds": 20
+  },
+  "timeouts_seconds": [
+    {
+      "commands": ["preflight"],
+      "backend_max": 20,
+      "client_min": 35
+    },
+    {
+      "commands": ["setup"],
+      "backend_max": 20,
+      "client_min": 60
+    },
+    {
+      "commands": ["pair", "tailcat pair"],
+      "backend_max": 25,
+      "client_min": 45
+    },
+    {
+      "commands": ["runtime", "network", "workspace", "doctor --fix"],
+      "backend_max": 30,
+      "client_min": 45
+    },
+    {
+      "commands": ["up", "start", "restart"],
+      "wait": 60,
+      "backend_max": 85,
+      "client_min": 110,
+      "windows_client": 120
+    }
+  ],
+  "exit_status": {"completed_preflight": 0, "cli_error": 1, "cli_error_stream": "stdout"},
+  "wire_codes": [
+    {
+      "code": "codex_not_found",
+      "steps": ["assistant_codex"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未找到 Codex。请打开安装说明，安装完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+        }
+      ]
+    },
+    {
+      "code": "codex_version_too_old",
+      "steps": ["assistant_codex"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "Codex 版本过低。请按说明更新后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+        }
+      ]
+    },
+    {
+      "code": "codex_signed_out",
+      "steps": ["assistant_codex"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "请按说明登录 Codex，完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+        }
+      ],
+      "state_rule": "signed_out_states",
+      "secondary_fix": {"kind": "retry"},
+      "secondary_label_zh": "我已登录，重新检查"
+    },
+    {
+      "code": "codex_upstream_unavailable",
+      "steps": ["assistant_codex"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "无法连接 Codex 服务。请检查服务状态后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "codex_transport_invalid",
+      "steps": ["assistant_codex"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "Codex 连接设置无效。请检查或清除所选连接。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "assistants"}
+        }
+      ]
+    },
+    {
+      "code": "claude_not_found",
+      "steps": ["assistant_claude"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未找到 Claude Code。请打开安装说明，安装完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+        }
+      ]
+    },
+    {
+      "code": "claude_version_too_old",
+      "steps": ["assistant_claude"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "Claude Code 版本过低。请按说明更新后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+        }
+      ]
+    },
+    {
+      "code": "claude_signed_out",
+      "steps": ["assistant_claude"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "请按说明登录 Claude Code，完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+        }
+      ],
+      "state_rule": "signed_out_states",
+      "secondary_fix": {"kind": "retry"},
+      "secondary_label_zh": "我已登录，重新检查"
+    },
+    {
+      "code": "claude_bridge_missing",
+      "steps": ["assistant_claude"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "Claude Code 所需的连接组件不可用。请重新安装桌面端。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    },
+    {
+      "code": "agy_not_found",
+      "steps": ["assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未找到 Antigravity。请打开安装说明，安装完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+        }
+      ]
+    },
+    {
+      "code": "agy_version_too_old",
+      "steps": ["assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "Antigravity 版本过低。请按说明更新后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+        }
+      ]
+    },
+    {
+      "code": "agy_signed_out",
+      "steps": ["assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "请按说明登录 Antigravity，完成后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+        }
+      ],
+      "state_rule": "signed_out_states",
+      "secondary_fix": {"kind": "retry"},
+      "secondary_label_zh": "我已登录，重新检查"
+    },
+    {
+      "code": "agy_adapter_missing",
+      "steps": ["assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "Antigravity 所需的连接组件不可用。请重新安装桌面端。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    },
+    {
+      "code": "runtime_path_invalid",
+      "steps": ["assistant_codex", "assistant_claude", "assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "{title}：所选程序无法使用。请重新选择程序，或恢复自动检测。",
+      "variants": [
+        {
+          "when": {"step": "assistant_codex"},
+          "fix": {"kind": "choose_path", "target": "codex_bin"}
+        },
+        {
+          "when": {"step": "assistant_claude"},
+          "fix": {"kind": "choose_path", "target": "claude_bin"}
+        },
+        {
+          "when": {"step": "assistant_agy"},
+          "fix": {"kind": "choose_path", "target": "agy_bin"}
+        }
+      ]
+    },
+    {
+      "code": "runtime_incompatible",
+      "steps": ["assistant_codex", "assistant_claude", "assistant_agy"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "{title}：检测到的版本不兼容。请按说明安装受支持的版本。",
+      "variants": [
+        {
+          "when": {"step": "assistant_codex"},
+          "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+        },
+        {
+          "when": {"step": "assistant_claude"},
+          "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+        },
+        {
+          "when": {"step": "assistant_agy"},
+          "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+        }
+      ]
+    },
+    {
+      "code": "runtime_probe_failed",
+      "steps": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "{title}：未能确认助手状态。请重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "runtime_unsupported_platform",
+      "steps": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "{title}：当前平台尚不支持此助手，可以跳过。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "skip"}
+        }
+      ]
+    },
+    {
+      "code": "assistant_disabled",
+      "steps": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "{title}：已检测到可用助手。需要使用时可启用。",
+      "variants": [
+        {
+          "when": {"step": "assistant_codex"},
+          "fix": {"kind": "run_fix", "action": "enable_codex"}
+        },
+        {
+          "when": {"step": "assistant_claude"},
+          "fix": {"kind": "run_fix", "action": "enable_claude"}
+        },
+        {
+          "when": {"step": "assistant_agy"},
+          "fix": {"kind": "run_fix", "action": "enable_agy"}
+        },
+        {
+          "when": {"step": "assistant_deepseek", "configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"step": "assistant_deepseek", "configured": true},
+          "fix": {"kind": "run_fix", "action": "connect_deepseek"}
+        }
+      ]
+    },
+    {
+      "code": "deepseek_not_running",
+      "steps": ["assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未检测到正在运行的 DeepSeek Harness。请打开启动说明。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/deepseek-ai/deepseek-harness"}
+        }
+      ]
+    },
+    {
+      "code": "deepseek_auth_failed",
+      "steps": ["assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "DeepSeek Harness 未能验证连接。请重新连接。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "connect_deepseek"}
+        }
+      ]
+    },
+    {
+      "code": "deepseek_no_models",
+      "steps": ["assistant_deepseek"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "DeepSeek Harness 暂无可用模型。请添加模型后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "no_enabled_assistant",
+      "steps": ["assistant_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "请启用至少一个可用助手，然后重新配对。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}
+        }
+      ]
+    },
+    {
+      "code": "workspace_confirmation_required",
+      "steps": ["workspace_root"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "请先在电脑上确认要与手机共享的代码目录。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "choose_path", "target": "workspace_root"}
+        }
+      ]
+    },
+    {
+      "code": "workspace_not_found",
+      "steps": ["workspace_root"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "找不到所选代码目录。请重新选择。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "choose_path", "target": "workspace_root"}
+        }
+      ]
+    },
+    {
+      "code": "workspace_not_directory",
+      "steps": ["workspace_root"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "所选位置是文件。请选择代码目录。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "choose_path", "target": "workspace_root"}
+        }
+      ]
+    },
+    {
+      "code": "workspace_unreadable",
+      "steps": ["workspace_root"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "请选择可读取的代码目录。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "choose_path", "target": "workspace_root"}
+        }
+      ]
+    },
+    {
+      "code": "config_missing",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "请先选择代码目录并保存配置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        }
+      ]
+    },
+    {
+      "code": "config_dir_unwritable",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "无法写入配置目录。请检查访问权限和可用空间后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "config_permissions_unsafe",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "配置文件的访问权限过宽。请在电脑上修复权限。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "doctor_fix"}
+        }
+      ]
+    },
+    {
+      "code": "config_invalid",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "配置无法安全读取。请查看已保留的配置和恢复位置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "host_recovery"}
+        }
+      ]
+    },
+    {
+      "code": "config_requires_newer_version",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "此配置需要较新的桌面端。请更新后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    },
+    {
+      "code": "config_concurrent_change",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "配置已在别处更改。请重新加载并确认选择。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "config_commit_failed",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "本次配置未能保存。原配置已保留，请重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "config_recovery_required",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "配置需要恢复。请在电脑上查看保留的文件。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "host_recovery"}
+        }
+      ]
+    },
+    {
+      "code": "token_rotation_requires_approval",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "此操作会更改电脑的配对身份。请查看保留的配置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "host_recovery"}
+        }
+      ]
+    },
+    {
+      "code": "legacy_codex_residue",
+      "steps": ["config_store"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "检测到旧版 Codex 配置。请在电脑上查看迁移说明。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "host_recovery"}
+        }
+      ]
+    },
+    {
+      "code": "tailscale_not_installed",
+      "steps": ["network_tailscale"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未检测到 Tailscale。需要此连接方式时请按说明安装。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://tailscale.com/download"}
+        }
+      ]
+    },
+    {
+      "code": "tailscale_not_connected",
+      "steps": ["network_tailscale"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "Tailscale 尚未连接。请连接后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "tailscale_disabled",
+      "steps": ["network_tailscale"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "Tailscale 已连接，可在配对设置中启用。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"stage": "setup", "configured": true},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        },
+        {
+          "when": {"stage": "pair", "configured": true},
+          "fix": {"kind": "run_fix", "action": "enable_tailscale"}
+        }
+      ]
+    },
+    {
+      "code": "tailcat_disabled",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "内置连接可用，可在配对设置中启用。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"stage": "setup", "configured": true},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        },
+        {
+          "when": {"stage": "pair", "configured": true},
+          "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+        }
+      ]
+    },
+    {
+      "code": "tailcat_unavailable",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "内置连接组件不可用。请重新安装桌面端以修复组件。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    },
+    {
+      "code": "tailcat_relay_unreachable",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "暂时无法连接中继。请稍后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "tailcat_busy",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "内置连接正在处理其他操作。请稍后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "tailcat_settings_invalid",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "中继设置无效或尚未生效。请检查连接设置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        }
+      ]
+    },
+    {
+      "code": "lan_unavailable",
+      "steps": ["network_lan"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "未检测到可信局域网。请连接专用网络后重新检查。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "lan_disabled",
+      "steps": ["network_lan"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional", "action_needed"],
+        "pair": ["optional", "action_needed"]
+      },
+      "message_zh": "同一局域网连接可用，可在配对设置中启用。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"stage": "setup", "configured": true},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        },
+        {
+          "when": {"stage": "pair", "configured": true},
+          "fix": {"kind": "run_fix", "action": "enable_lan"}
+        }
+      ]
+    },
+    {
+      "code": "lan_public_network_blocked",
+      "steps": ["network_lan"],
+      "platforms": ["windows"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "当前网络未确认为专用网络。请检查 Windows 网络配置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "windows_network_profile"}
+        }
+      ]
+    },
+    {
+      "code": "lan_firewall_blocked",
+      "steps": ["network_lan"],
+      "platforms": ["windows"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "防火墙规则未允许专用网络连接。请在电脑上检查规则。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "windows_firewall"}
+        }
+      ]
+    },
+    {
+      "code": "no_direct_network",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "没有可用的直连通道。可在配对时启用内置连接。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"stage": "setup", "configured": true},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        },
+        {
+          "when": {"stage": "pair", "configured": true},
+          "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+        }
+      ]
+    },
+    {
+      "code": "no_network_available",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "暂无可用的连接方式。请检查网络后重试。",
+      "variants": [
+        {
+          "when": {"configured": false, "stage": "setup"},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "retry"}
+        },
+        {
+          "when": {"stage": "pair", "configured": false},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "network_selection_required",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "请选择要用于配对的连接方式。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true, "stage": "setup"},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        },
+        {
+          "when": {"configured": true, "stage": "pair", "recommended_transport": "tailscale"},
+          "fix": {"kind": "run_fix", "action": "enable_tailscale"}
+        },
+        {
+          "when": {"configured": true, "stage": "pair", "recommended_transport": "tailcat"},
+          "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+        },
+        {
+          "when": {"configured": true, "stage": "pair", "recommended_transport": "lan"},
+          "fix": {"kind": "run_fix", "action": "enable_lan"}
+        },
+        {
+          "when": {"configured": true, "stage": "pair", "recommended_transport": null},
+          "fix": {"kind": "open_settings", "target": "connections"}
+        }
+      ]
+    },
+    {
+      "code": "service_start_timeout",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "等待后台服务就绪超时。请重新检查服务状态。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "service_port_in_use",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "服务端口已被占用。请关闭占用端口的应用后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "service_requires_approval",
+      "steps": ["service_daemon"],
+      "platforms": ["macos"],
+      "surfaces": ["native"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "需要在系统设置中允许后台服务运行。请在“登录项”中允许后重新检查，服务就绪后即可生成二维码。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "login_items"}
+        }
+      ]
+    },
+    {
+      "code": "service_version_mismatch",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "后台服务与客户端版本不一致。请在电脑上重新加载服务。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "restart_service"}
+        }
+      ]
+    },
+    {
+      "code": "service_not_registered",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "后台服务尚未注册。请在电脑上注册并启动服务。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "register_service"}
+        }
+      ]
+    },
+    {
+      "code": "service_install_incomplete",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "后台服务组件不完整。请重新安装桌面端。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    },
+    {
+      "code": "service_not_running",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "后台服务尚未运行。请在电脑上启动服务。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "restart_service"}
+        }
+      ]
+    },
+    {
+      "code": "service_start_failed",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "后台服务启动失败。请检查并重试。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "restart_service"}
+        }
+      ]
+    },
+    {
+      "code": "homebrew_service_active",
+      "steps": ["service_owner_conflict"],
+      "platforms": ["macos"],
+      "surfaces": ["check", "cli"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "Homebrew 正在管理后台服务。可继续使用，或确认后改由桌面端管理。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "takeover_homebrew"}
+        }
+      ]
+    },
+    {
+      "code": "permission_login_item_disabled",
+      "steps": ["permission_login_item"],
+      "platforms": ["macos"],
+      "surfaces": ["native"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "主应用尚未启用登录时启动。可按需在登录项中设置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "login_items"}
+        }
+      ]
+    },
+    {
+      "code": "permission_folder_denied",
+      "steps": ["permission_folder_access"],
+      "platforms": ["macos"],
+      "surfaces": ["check", "native"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "后台服务无法读取所选目录。请检查文件与文件夹权限。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "files_and_folders"}
+        }
+      ]
+    },
+    {
+      "code": "permission_local_network_denied",
+      "steps": ["permission_local_network"],
+      "platforms": ["macos"],
+      "surfaces": ["native"],
+      "states_by_stage": {
+        "setup": ["action_needed"],
+        "pair": ["action_needed"]
+      },
+      "message_zh": "请在系统设置中允许本地网络访问。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "local_network"}
+        }
+      ]
+    },
+    {
+      "code": "permission_photos_denied",
+      "steps": ["permission_photos"],
+      "platforms": ["macos"],
+      "surfaces": ["native"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "照片访问尚未获准。需要使用时可在系统设置中允许。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "photos"}
+        }
+      ]
+    },
+    {
+      "code": "permission_full_disk_optional",
+      "steps": ["permission_full_disk"],
+      "platforms": ["macos"],
+      "surfaces": ["native"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "如需访问更多文件，可在系统设置中允许完全磁盘访问。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "full_disk_access"}
+        }
+      ]
+    },
+    {
+      "code": "permission_unobserved",
+      "steps": ["permission_login_item", "permission_folder_access", "permission_local_network", "permission_photos", "permission_full_disk"],
+      "platforms": ["macos", "windows"],
+      "surfaces": ["check", "native"],
+      "states_by_stage": {
+        "setup": ["optional"],
+        "pair": ["optional"]
+      },
+      "message_zh": "{title}：尚未获得此权限的状态。可以跳过此项。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "skip"}
+        }
+      ]
+    },
+    {
+      "code": "pair_host_unreachable",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "无法连接电脑后台服务。请检查连接后重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "pair_token_mismatch",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。",
+      "variants": [
+        {
+          "when": {"configured": false},
+          "fix": {"kind": "run_fix", "action": "save_setup"}
+        },
+        {
+          "when": {"configured": true},
+          "fix": {"kind": "run_fix", "action": "restart_service"}
+        }
+      ]
+    },
+    {
+      "code": "pair_ticket_expired",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "pair_ticket_invalid",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "配对链接无效。请在电脑上刷新二维码后重扫。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "pair_clock_skew",
+      "steps": ["network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "设备时间不一致。请检查系统日期与时间后重新配对。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "date_time"}
+        }
+      ]
+    },
+    {
+      "code": "pair_local_forbidden",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "此请求无法在本机认领。请使用手机扫描电脑上的二维码。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "pair_managed_entitlement_required",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "此托管连接需要有效的订阅权益。请查看托管连接设置。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_settings", "target": "managed_connection"}
+        }
+      ]
+    },
+    {
+      "code": "pair_managed_grant_conflict",
+      "steps": ["network_tailcat"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "托管连接授权未生效或已过期。请重新获取配对链接。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "invalid_request",
+      "steps": ["config_store", "network_any"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["cli", "http"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "{title}：请求参数无效。请检查输入后重试。",
+      "variants": [
+        {
+          "when": {"step": "config_store", "surface": "cli"},
+          "fix": {"kind": "retry"}
+        },
+        {
+          "when": {"step": "network_any", "surface": "http"},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "probe_timeout",
+      "steps": ["*"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "{title}：检查超时。请重新检查此项。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "internal_error",
+      "steps": ["*"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["check", "cli", "http"],
+      "states_by_stage": {
+        "setup": ["error"],
+        "pair": ["error"]
+      },
+      "message_zh": "{title}：未能完成此项操作。请重试。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    }
+  ],
+  "ui_local_codes": [
+    {
+      "code": "command_timeout",
+      "steps": ["*"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["ui_local"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "{title}：命令等待超时。请重新检查当前步骤。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "retry"}
+        }
+      ]
+    },
+    {
+      "code": "embedded_binary_missing",
+      "steps": ["service_daemon"],
+      "platforms": ["macos", "windows", "linux"],
+      "surfaces": ["ui_local"],
+      "states_by_stage": {
+        "setup": [],
+        "pair": []
+      },
+      "message_zh": "缺少内置服务程序。请重新安装桌面端。",
+      "variants": [
+        {
+          "when": {},
+          "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,9 @@ func TestMenuPairCommandIDIsStable(t *testing.T) {
 	if menuControlPanel != 110 {
 		t.Fatalf("menu control-panel command ID = %d, want 110", menuControlPanel)
 	}
+	if menuFirstSetup != 115 {
+		t.Fatalf("menu first-setup command ID = %d, want 115", menuFirstSetup)
+	}
 }
 
 func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
@@ -36,7 +40,7 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 		t.Fatalf("plain doctor arguments = %#v", plain)
 	}
 	fix := doctorArguments(true)
-	if len(fix) != 2 || fix[0] != "doctor" || fix[1] != "--fix" {
+	if !reflect.DeepEqual(fix, []string{"doctor", "--fix", "--json"}) {
 		t.Fatalf("doctor fix arguments = %#v", fix)
 	}
 }
@@ -44,7 +48,7 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	for _, action := range []string{"start", "restart"} {
 		arguments := actionArguments(action)
-		want := []string{action, "--wait", "1m0s", "--no-pair"}
+		want := []string{action, "--wait", "1m0s", "--no-pair", "--json"}
 		if len(arguments) != len(want) {
 			t.Fatalf("%s arguments = %#v", action, arguments)
 		}
@@ -57,6 +61,53 @@ func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	stop := actionArguments("stop")
 	if len(stop) != 1 || stop[0] != "stop" {
 		t.Fatalf("stop arguments = %#v", stop)
+	}
+}
+
+func TestWindowsServiceAndRepairActionsPreserveTypedHostErrors(t *testing.T) {
+	for _, tc := range []struct{ command, fixture, code string }{
+		{"start", "up-error-service-start-timeout.json", "service_start_timeout"},
+		{"restart", "up-error-service-start-timeout.json", "service_start_timeout"},
+		{"doctor", "setup-error-config-invalid.json", "config_invalid"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			controller := &agentController{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] != tc.command || !slices.Contains(args, "--json") {
+					t.Fatal("command did not request its JSON contract", args)
+				}
+				payload := loadTrayContractFile(t, tc.fixture)
+				return nil, decodeTrayCommandError(payload, nil, errors.New("exit status 1"), trayValidationContextForArgs("windows", args, true), args...)
+			}}
+			var err error
+			if tc.command == "doctor" {
+				var result string
+				result, err = controller.doctor(t.Context(), true)
+				if result != "" {
+					t.Fatal("failed repair returned a success report")
+				}
+			} else {
+				err = controller.action(t.Context(), tc.command)
+			}
+			var typed *onboardingCLIError
+			if !errors.As(err, &typed) || !typed.Diagnostic.Trusted || typed.Diagnostic.Code != tc.code || typed.Diagnostic.AllowedFix == nil {
+				t.Fatalf("lost typed %s diagnostic: %v", tc.code, err)
+			}
+		})
+	}
+}
+
+func TestWindowsDoctorRepairShowsFixesAndRestartInstruction(t *testing.T) {
+	receipt := `{"results":{"ok":true},"fixes":["已修复文件权限"],"restart_required":true}`
+	controller := &agentController{commandRunner: func(context.Context, ...string) ([]byte, error) {
+		return []byte(receipt), nil
+	}}
+	got, err := controller.doctor(t.Context(), true)
+	if err != nil || !strings.Contains(got, "已修复文件权限") || !strings.Contains(got, "重启服务") || strings.Contains(got, "{") {
+		t.Fatalf("unexpected repair summary: %q, %v", got, err)
+	}
+	receipt = `{}`
+	if _, err := controller.doctor(t.Context(), true); err == nil {
+		t.Fatal("invalid repair result was reported as success")
 	}
 }
 
@@ -143,7 +194,7 @@ func TestPairingArgumentsRequestSafeJSONWithoutTerminalOutput(t *testing.T) {
 	}
 }
 
-func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
+func TestParsePairingInfoRequiresValidTicketReceipt(t *testing.T) {
 	payload := []byte(`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2026-08-09T18:00:00+08:00"}`)
 	result, err := parsePairingInfo(payload)
 	if err != nil {
@@ -152,8 +203,24 @@ func TestParsePairingInfoRequiresShortLivedPairURL(t *testing.T) {
 	if result.Endpoint != "http://127.0.0.1:8787" || !strings.Contains(result.PairURL, "pair_sig=short") {
 		t.Fatalf("pairing info = %#v", result)
 	}
-	if _, err := parsePairingInfo([]byte(`{"endpoint":"http://127.0.0.1:8787"}`)); err == nil {
-		t.Fatal("missing short-lived pair URL should fail closed")
+	for _, invalid := range []string{
+		`{"endpoint":"http://127.0.0.1:8787"}`,
+		`{"pair_url":"mimiremote://pair?pair_sig=short"}`,
+		`{"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short"}`,
+		`{"endpoint":"http://127.0.0.1:8787","pair_url":"https://evil.example/pair","pair_expires_at":"2030-01-01T00:05:00Z"}`,
+		`{"ok":false,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2030-01-01T00:05:00Z"}`,
+		`{"ok":true,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"not-a-date","network":"tailscale"}`,
+	} {
+		if _, err := parsePairingInfo([]byte(invalid)); err == nil {
+			t.Fatalf("invalid pairing receipt should fail closed: %s", invalid)
+		}
+	}
+	privateTransport := `{"ok":true,"endpoint":"http://127.0.0.1","pair_url":"mimiremote://pair?pair_sig=short","pair_expires_at":"2030-01-01T00:05:00Z","network":"private-value"}`
+	if _, err := parsePairingInfo([]byte(privateTransport)); err == nil || strings.Contains(err.Error(), "private-value") {
+		t.Fatal("invalid pairing transport leaked into tray diagnostics")
+	}
+	if actionCommandBudget < 120*time.Second {
+		t.Fatalf("Windows actionCommandBudget = %s, want >= 120s", actionCommandBudget)
 	}
 }
 
@@ -162,7 +229,7 @@ func TestPairingOnNetworkPreservesExplicitSelection(t *testing.T) {
 		var received []string
 		controller := &agentController{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
 			received = args
-			return []byte(`{"pair_url":"mimiremote://pair?endpoint=http%3A%2F%2F192.0.2.1%3A8787"}`), nil
+			return []byte(`{"ok":true,"endpoint":"http://192.0.2.1:8787","pair_url":"mimiremote://pair?endpoint=http%3A%2F%2F192.0.2.1%3A8787","pair_expires_at":"2030-01-01T00:05:00Z","network":"` + network + `"}`), nil
 		}}
 		if _, err := controller.pairingOnNetwork(context.Background(), network); err != nil {
 			t.Fatal(err)

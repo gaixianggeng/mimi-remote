@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"tailscale.com/types/key"
 )
@@ -260,7 +261,7 @@ func TestExpiredPairHostRetriesCloseFailure(t *testing.T) {
 
 func TestResetClearsInMemoryClientsBeforeIdentityCleanupFailure(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "clients.json"), []byte(`[]`), 0o600); err != nil {
+	if err := privatefile.Write(filepath.Join(stateDir, "clients.json"), []byte(`[]`)); err != nil {
 		t.Fatal(err)
 	}
 	// 非空目录无法用 os.Remove 删除，用它稳定模拟 clients.json 已清理后
@@ -293,7 +294,7 @@ func TestResetClearsInMemoryClientsBeforeIdentityCleanupFailure(t *testing.T) {
 
 func TestResetContinuesStableRevocationAfterPairingFileCleanupFailure(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "clients.json"), []byte(`[]`), 0o600); err != nil {
+	if err := privatefile.Write(filepath.Join(stateDir, "clients.json"), []byte(`[]`)); err != nil {
 		t.Fatal(err)
 	}
 	pairIdentityDirectory := filepath.Join(stateDir, "pair.private.json")

@@ -567,10 +567,21 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     var runtimeChannelErrors: Set<String> = []
     /// 按 Runtime 定向查询的目录；未设置的 Runtime 沿用聚合目录。
     var modelOptionsByRuntime: [String: [CodexAppServerModelOption]] = [:]
-    private(set) var targetedModelOptionsRequests: [String] = []
+    var targetedModelOptionsRequests: [String] {
+        requestLogLock.withLock { targetedModelOptionsRequestsStorage }
+    }
+    private var targetedModelOptionsRequestsStorage: [String] = []
     /// 各自只拦下一次请求，用来排出聚合与定向目录请求的先后。
-    var modelOptionsGate: PreparedConnectionGate?
-    var targetedModelOptionsGate: PreparedConnectionGate?
+    var modelOptionsGate: PreparedConnectionGate? {
+        get { requestLogLock.withLock { modelOptionsGateStorage } }
+        set { requestLogLock.withLock { modelOptionsGateStorage = newValue } }
+    }
+    private var modelOptionsGateStorage: PreparedConnectionGate?
+    var targetedModelOptionsGate: PreparedConnectionGate? {
+        get { requestLogLock.withLock { targetedModelOptionsGateStorage } }
+        set { requestLogLock.withLock { targetedModelOptionsGateStorage = newValue } }
+    }
+    private var targetedModelOptionsGateStorage: PreparedConnectionGate?
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
@@ -627,13 +638,21 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private(set) var worktreeCleanupPreviewCallCount = 0
     private(set) var requestedWorktreeCleanupPaths: [[String]] = []
     private(set) var requestedWorktreeCleanupPlanIDs: [String] = []
-    var requestedDirectoryPaths: [String] = []
+    var requestedDirectoryPaths: [String] {
+        requestLogLock.withLock { requestedDirectoryPathsStorage }
+    }
+    private var requestedDirectoryPathsStorage: [String] = []
     var requestedFileReadPaths: [String] = []
     var requestedHistoryMediaIDs: [String] = []
     var requestedHistoryOutputIDs: [String] = []
     var requestedCommandActionPaths: [String] = []
     var requestedCommandActionRuns: [RequestedCommandActionRun] = []
-    var requestedGitStatusPaths: [String] = []
+    /// WorkspaceGitStore.refreshWorkspaceGitSummaries 会在 TaskGroup 中并发调用 gitStatus(path:)，
+    /// 必须加锁避免协作线程池并发追加导致堆破坏。
+    var requestedGitStatusPaths: [String] {
+        requestLogLock.withLock { requestedGitStatusPathsStorage }
+    }
+    private var requestedGitStatusPathsStorage: [String] = []
     var requestedGitActions: [RequestedGitAction] = []
     var requestedGitPatchActions: [RequestedGitPatchAction] = []
     var requestedGitCommits: [RequestedGitCommit] = []
@@ -668,7 +687,10 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private var requestedMessageLimitsStorage: [Int?] = []
     var createPayloads: [CreateSessionRequest] = []
     private(set) var worktreeListCallCount = 0
-    private(set) var modelOptionsCallCount = 0
+    var modelOptionsCallCount: Int {
+        requestLogLock.withLock { modelOptionsCallCountStorage }
+    }
+    private var modelOptionsCallCountStorage = 0
     private(set) var requestedRateLimitProviders: [String] = []
 
     init(
@@ -800,9 +822,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        modelOptionsCallCount += 1
-        if let gate = modelOptionsGate {
-            modelOptionsGate = nil
+        let gate = requestLogLock.withLock { () -> PreparedConnectionGate? in
+            modelOptionsCallCountStorage += 1
+            let gate = modelOptionsGateStorage
+            modelOptionsGateStorage = nil
+            return gate
+        }
+        if let gate {
             await gate.wait()
         }
         if let modelOptionsError {
@@ -812,9 +838,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
-        targetedModelOptionsRequests.append(runtimeProvider)
-        if let gate = targetedModelOptionsGate {
-            targetedModelOptionsGate = nil
+        let gate = requestLogLock.withLock { () -> PreparedConnectionGate? in
+            targetedModelOptionsRequestsStorage.append(runtimeProvider)
+            let gate = targetedModelOptionsGateStorage
+            targetedModelOptionsGateStorage = nil
+            return gate
+        }
+        if let gate {
             await gate.wait()
         }
         if let options = modelOptionsByRuntime[runtimeProvider] {
@@ -973,7 +1003,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func listDirectories(path: String) async throws -> DirectoryListResponse {
-        requestedDirectoryPaths.append(path)
+        requestLogLock.withLock { requestedDirectoryPathsStorage.append(path) }
         switch directoryListResults[path] {
         case .success(let response):
             return response
@@ -1046,7 +1076,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
-        requestedGitStatusPaths.append(path)
+        requestLogLock.withLock { requestedGitStatusPathsStorage.append(path) }
         if let gitStatusHandler {
             return try await gitStatusHandler(path)
         }

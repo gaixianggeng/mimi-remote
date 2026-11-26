@@ -9,13 +9,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/managed"
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 )
 
@@ -201,15 +200,7 @@ func waitForSignal() {
 }
 
 func readPrivateText(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("读取 %s：%w", path, err)
-	}
-	// Windows 的权限位不表达访问控制，由用户目录 ACL 保护，见 tunnel.requirePrivateFile。
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("文件 %s 的权限必须为 0600", path)
-	}
-	data, err := os.ReadFile(path)
+	data, err := privatefile.Read(path)
 	if err != nil {
 		return "", fmt.Errorf("读取 %s：%w", path, err)
 	}
@@ -221,20 +212,8 @@ func readPrivateText(path string) (string, error) {
 }
 
 func writePrivateText(path, value string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("创建 %s 的目录：%w", path, err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
+	if err := privatefile.Write(path, []byte(value+"\n")); err != nil {
 		return fmt.Errorf("写入 %s：%w", path, err)
 	}
-	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return fmt.Errorf("设置 %s 权限：%w", path, err)
-	}
-	if _, err := fmt.Fprintln(file, value); err != nil {
-		file.Close()
-		return fmt.Errorf("写入 %s：%w", path, err)
-	}
-	return file.Close()
+	return nil
 }

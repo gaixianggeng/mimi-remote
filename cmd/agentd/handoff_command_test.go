@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,27 +12,33 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 func stubHandoffResolvers(t *testing.T, cfg config.Config) {
 	t.Helper()
-	oldCodex, oldSocket, oldLook, oldLoad := handoffResolveCodexBin, handoffSharedSocketPath, handoffLookPath, handoffLoadConfig
+	oldResolver, oldSocket, oldLoad := handoffResolveRuntime, handoffSharedSocketPath, handoffLoadConfig
 	t.Cleanup(func() {
-		handoffResolveCodexBin, handoffSharedSocketPath, handoffLookPath, handoffLoadConfig = oldCodex, oldSocket, oldLook, oldLoad
+		handoffResolveRuntime, handoffSharedSocketPath, handoffLoadConfig = oldResolver, oldSocket, oldLoad
 	})
-	handoffResolveCodexBin = func(configured string) (string, error) { return "/opt/codex/bin/codex", nil }
+	handoffResolveRuntime = func(_ context.Context, req setup.RuntimeRequest) (setup.RuntimeCandidate, error) {
+		switch {
+		case req.Name == "codex":
+			return setup.RuntimeCandidate{Path: "/opt/codex/bin/codex"}, nil
+		case req.Pin == "/custom/claude":
+			return setup.RuntimeCandidate{Path: req.Pin}, nil
+		case req.Pin == "":
+			return setup.RuntimeCandidate{Path: "claude"}, nil
+		default:
+			return setup.RuntimeCandidate{}, errors.New("missing pin")
+		}
+	}
 	handoffSharedSocketPath = func(env map[string]string) (string, error) {
 		home := env["CODEX_HOME"]
 		if home == "" {
 			home = "/Users/me/.codex"
 		}
 		return filepath.Join(home, "app-server-control", "app-server-control.sock"), nil
-	}
-	handoffLookPath = func(file string) (string, error) {
-		if file == "/custom/claude" || file == "claude" {
-			return file, nil
-		}
-		return "", errors.New("not found")
 	}
 	handoffLoadConfig = func(string) (config.Config, error) { return cfg, nil }
 }
@@ -101,8 +108,14 @@ func TestHandoffCommandClaudePrefersAdapterCLI(t *testing.T) {
 		t.Fatalf("env = %v, want none when CLAUDE_CONFIG_DIR is unset", command.Env)
 	}
 
-	// 配置的路径失效时退回 PATH 里的 claude。
+	// A missing pin must be corrected before using an automatic installation.
 	cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = "/gone/claude"
+	stubHandoffResolvers(t, cfg)
+	command, err = runHandoffForTest(t, "--runtime", "claude", "--thread", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--cwd", dir)
+	if err == nil {
+		t.Fatal("handoff ignored a missing pin")
+	}
+	delete(cfg.Claude.Env, "CLAUDE_BRIDGE_CLAUDE_BIN")
 	stubHandoffResolvers(t, cfg)
 	command, err = runHandoffForTest(t, "--runtime", "claude", "--thread", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "--cwd", dir)
 	if err != nil || command.Argv[0] != "claude" {

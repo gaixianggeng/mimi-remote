@@ -30,7 +30,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             if (!File.Exists(DesktopPreferences.ConfigPath))
             {
-                await Context.Agent.RunAsync(["setup", "--scan-root", selected, "--browse-root", selected, "--json", "--qr-only"], Lifetime.Token);
+                await Context.Agent.SetupAsync(
+                    selected,
+                    new OnboardingSetupOptions { BrowseRoot = selected, NoPair = false },
+                    Lifetime.Token);
                 await Context.Agent.RunAsync(["start", "--wait", "60s", "--no-pair"], Lifetime.Token);
             }
             await new ModuleCommands(Context.Agent).SetWorkspaceAsync(selected, Lifetime.Token);

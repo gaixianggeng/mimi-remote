@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "error": {
+    "code": "config_invalid",
+    "step": "config_store",
+    "message": "配置无法安全读取。请查看已保留的配置和恢复位置。",
+    "fix": {"kind": "open_settings", "target": "host_recovery"},
+    "config_path": "/fixture/config/config.json",
+    "recovery_path": "/fixture/config/config.previous.json"
+  }
+}

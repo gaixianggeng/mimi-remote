@@ -85,7 +85,7 @@ func TestLoadRejectsLegacyStdioTransportOutsideAtomicSetupMigration(t *testing.T
 	if _, err := Load(cfgPath); err == nil ||
 		!errors.Is(err, ErrAppServerTransportRemoved) ||
 		errors.Is(err, ErrAppServerTransportUnsupported) ||
-		!strings.Contains(err.Error(), "setup --force") {
+		!strings.Contains(err.Error(), "保留原配置") {
 		t.Fatalf("历史 stdio 配置不得在普通 Load 中静默改写，且必须引导重置配置：%v", err)
 	}
 }
@@ -202,6 +202,10 @@ func TestValidateAcceptsDevInsecureWithoutToken(t *testing.T) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("开发模式应允许无 token：%v", err)
+	}
+	cfg.Tailcat.Enabled = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Tailcat would forward to an unauthenticated loopback listener")
 	}
 }
 

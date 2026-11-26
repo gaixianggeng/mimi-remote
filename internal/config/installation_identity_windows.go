@@ -9,8 +9,7 @@ import (
 
 // Windows does not expose a writable file as POSIX mode 0600: Go reports it
 // as 0666 and Chmod only maps the owner-write bit to the read-only attribute.
-// The temporary file is created inside the current user's AppData config
-// directory and inherits that directory's ACL.
+// CreatePrivateTemp installs and verifies the protected DACL on new files.
 func prepareInstallationIDFile(_ *os.File) error {
 	return nil
 }

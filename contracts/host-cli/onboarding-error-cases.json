@@ -1,0 +1,3929 @@
+[
+  {
+    "id": "codex_not_found-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "未找到 Codex。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "codex_not_found",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    }
+  },
+  {
+    "id": "codex_version_too_old-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "Codex 版本过低。请按说明更新后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "unsupported", "version": "0.1.0"}
+      ],
+      "code": "codex_version_too_old",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    }
+  },
+  {
+    "id": "codex_signed_out-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "请按说明登录 Codex，完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "selected", "version": "0.150.0"}
+      ],
+      "code": "codex_signed_out",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    }
+  },
+  {
+    "id": "codex_upstream_unavailable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "error",
+      "title": "Codex 助手",
+      "detail": "无法连接 Codex 服务。请检查服务状态后重试。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "codex_upstream_unavailable",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "codex_transport_invalid-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "error",
+      "title": "Codex 助手",
+      "detail": "Codex 连接设置无效。请检查或清除所选连接。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "codex_transport_invalid",
+      "fix": {"kind": "open_settings", "target": "assistants"}
+    }
+  },
+  {
+    "id": "claude_not_found-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "未找到 Claude Code。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "claude_not_found",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "claude_version_too_old-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "Claude Code 版本过低。请按说明更新后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "unsupported", "version": "0.1.0"}
+      ],
+      "code": "claude_version_too_old",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "claude_signed_out-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "claude_bridge_missing-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "error",
+      "title": "Claude Code 助手",
+      "detail": "Claude Code 所需的连接组件不可用。请重新安装桌面端。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "claude_bridge_missing",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    }
+  },
+  {
+    "id": "agy_not_found-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "未找到 Antigravity。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "agy_not_found",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    }
+  },
+  {
+    "id": "agy_version_too_old-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "Antigravity 版本过低。请按说明更新后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "unsupported", "version": "0.1.0"}
+      ],
+      "code": "agy_version_too_old",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    }
+  },
+  {
+    "id": "agy_signed_out-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "请按说明登录 Antigravity，完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "selected", "version": "1.5.0"}
+      ],
+      "code": "agy_signed_out",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    }
+  },
+  {
+    "id": "agy_adapter_missing-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "error",
+      "title": "Antigravity 助手",
+      "detail": "Antigravity 所需的连接组件不可用。请重新安装桌面端。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "agy_adapter_missing",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    }
+  },
+  {
+    "id": "runtime_path_invalid-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "error",
+      "title": "Codex 助手",
+      "detail": "所选程序无法使用。请重新选择程序，或恢复自动检测。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "pin",
+      "candidates": [
+        {"path": "/fixture/pinned/codex", "outcome": "unusable"}
+      ],
+      "code": "runtime_path_invalid",
+      "fix": {"kind": "choose_path", "target": "codex_bin"}
+    }
+  },
+  {
+    "id": "runtime_path_invalid-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "error",
+      "title": "Claude Code 助手",
+      "detail": "所选程序无法使用。请重新选择程序，或恢复自动检测。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "pin",
+      "candidates": [
+        {"path": "/fixture/pinned/claude", "outcome": "unusable"}
+      ],
+      "code": "runtime_path_invalid",
+      "fix": {"kind": "choose_path", "target": "claude_bin"}
+    }
+  },
+  {
+    "id": "runtime_path_invalid-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "error",
+      "title": "Antigravity 助手",
+      "detail": "所选程序无法使用。请重新选择程序，或恢复自动检测。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "pin",
+      "candidates": [
+        {"path": "/fixture/pinned/agy", "outcome": "unusable"}
+      ],
+      "code": "runtime_path_invalid",
+      "fix": {"kind": "choose_path", "target": "agy_bin"}
+    }
+  },
+  {
+    "id": "runtime_incompatible-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "检测到的版本不兼容。请按说明安装受支持的版本。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "unsupported", "version": "99.0.0"}
+      ],
+      "code": "runtime_incompatible",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    }
+  },
+  {
+    "id": "runtime_incompatible-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "检测到的版本不兼容。请按说明安装受支持的版本。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "unsupported", "version": "99.0.0"}
+      ],
+      "code": "runtime_incompatible",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "runtime_incompatible-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "检测到的版本不兼容。请按说明安装受支持的版本。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "unsupported", "version": "99.0.0"}
+      ],
+      "code": "runtime_incompatible",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    }
+  },
+  {
+    "id": "runtime_probe_failed-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "error",
+      "title": "Codex 助手",
+      "detail": "未能确认助手状态。请重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": null,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_probe_failed",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "runtime_probe_failed-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "error",
+      "title": "Claude Code 助手",
+      "detail": "未能确认助手状态。请重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": null,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_probe_failed",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "runtime_probe_failed-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "error",
+      "title": "Antigravity 助手",
+      "detail": "未能确认助手状态。请重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": null,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_probe_failed",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "runtime_probe_failed-4",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "error",
+      "title": "DeepSeek 助手",
+      "detail": "未能确认助手状态。请重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": null,
+      "code": "runtime_probe_failed",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "runtime_unsupported_platform-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "当前平台尚不支持此助手，可以跳过。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_unsupported_platform",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "runtime_unsupported_platform-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "当前平台尚不支持此助手，可以跳过。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_unsupported_platform",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "runtime_unsupported_platform-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "当前平台尚不支持此助手，可以跳过。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "candidates": [],
+      "code": "runtime_unsupported_platform",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "runtime_unsupported_platform-4",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "optional",
+      "title": "DeepSeek 助手",
+      "detail": "当前平台尚不支持此助手，可以跳过。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "runtime_unsupported_platform",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "assistant_disabled-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "selected", "version": "0.150.0"}
+      ],
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_codex"}
+    }
+  },
+  {
+    "id": "assistant_disabled-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_claude"}
+    }
+  },
+  {
+    "id": "assistant_disabled-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "selected", "version": "1.5.0"}
+      ],
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_agy"}
+    }
+  },
+  {
+    "id": "assistant_disabled-4",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "optional",
+      "title": "DeepSeek 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "assistant_disabled-5",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "optional",
+      "title": "DeepSeek 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "assistant_disabled",
+      "fix": {"kind": "run_fix", "action": "connect_deepseek"}
+    }
+  },
+  {
+    "id": "deepseek_not_running-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "optional",
+      "title": "DeepSeek 助手",
+      "detail": "未检测到正在运行的 DeepSeek Harness。请打开启动说明。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "deepseek_not_running",
+      "fix": {"kind": "open_url", "url": "https://github.com/deepseek-ai/deepseek-harness"}
+    }
+  },
+  {
+    "id": "deepseek_auth_failed-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "error",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek Harness 未能验证连接。请重新连接。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "deepseek_auth_failed",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "deepseek_auth_failed-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "error",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek Harness 未能验证连接。请重新连接。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "deepseek_auth_failed",
+      "fix": {"kind": "run_fix", "action": "connect_deepseek"}
+    }
+  },
+  {
+    "id": "deepseek_no_models-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "error",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek Harness 暂无可用模型。请添加模型后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "deepseek_no_models",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "no_enabled_assistant-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_any",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "可用助手",
+      "detail": "请启用至少一个可用助手，然后重新配对。",
+      "blocking": true,
+      "code": "no_enabled_assistant",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}
+    }
+  },
+  {
+    "id": "workspace_confirmation_required-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "action_needed",
+      "title": "代码目录",
+      "detail": "请先在电脑上确认要与手机共享的代码目录。",
+      "blocking": true,
+      "code": "workspace_confirmation_required",
+      "fix": {"kind": "choose_path", "target": "workspace_root"}
+    }
+  },
+  {
+    "id": "workspace_not_found-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "error",
+      "title": "代码目录",
+      "detail": "找不到所选代码目录。请重新选择。",
+      "blocking": true,
+      "code": "workspace_not_found",
+      "fix": {"kind": "choose_path", "target": "workspace_root"}
+    }
+  },
+  {
+    "id": "workspace_not_directory-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "error",
+      "title": "代码目录",
+      "detail": "所选位置是文件。请选择代码目录。",
+      "blocking": true,
+      "code": "workspace_not_directory",
+      "fix": {"kind": "choose_path", "target": "workspace_root"}
+    }
+  },
+  {
+    "id": "workspace_unreadable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "error",
+      "title": "代码目录",
+      "detail": "请选择可读取的代码目录。",
+      "blocking": true,
+      "code": "workspace_unreadable",
+      "fix": {"kind": "choose_path", "target": "workspace_root"}
+    }
+  },
+  {
+    "id": "config_missing-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "action_needed",
+      "title": "配置文件",
+      "detail": "请先选择代码目录并保存配置。",
+      "blocking": true,
+      "code": "config_missing",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "config_dir_unwritable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "无法写入配置目录。请检查访问权限和可用空间后重试。",
+      "blocking": true,
+      "code": "config_dir_unwritable",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "config_permissions_unsafe-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "配置文件的访问权限过宽。请在电脑上修复权限。",
+      "blocking": true,
+      "code": "config_permissions_unsafe",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "config_permissions_unsafe-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale",
+      "verified_capability": "identity_preserving_doctor_fix"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "配置文件的访问权限过宽。请在电脑上修复权限。",
+      "blocking": true,
+      "code": "config_permissions_unsafe",
+      "fix": {"kind": "run_fix", "action": "doctor_fix"}
+    }
+  },
+  {
+    "id": "config_invalid-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "配置无法安全读取。请查看已保留的配置和恢复位置。",
+      "blocking": true,
+      "code": "config_invalid",
+      "fix": {"kind": "open_settings", "target": "host_recovery"}
+    }
+  },
+  {
+    "id": "config_requires_newer_version-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "此配置需要较新的桌面端。请更新后重试。",
+      "blocking": true,
+      "code": "config_requires_newer_version",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    }
+  },
+  {
+    "id": "config_concurrent_change-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_concurrent_change",
+        "step": "config_store",
+        "message": "配置已在别处更改。请重新加载并确认选择。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "config_commit_failed-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_commit_failed",
+        "step": "config_store",
+        "message": "本次配置未能保存。原配置已保留，请重试。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "config_recovery_required-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "配置需要恢复。请在电脑上查看保留的文件。",
+      "blocking": true,
+      "code": "config_recovery_required",
+      "fix": {"kind": "open_settings", "target": "host_recovery"}
+    }
+  },
+  {
+    "id": "token_rotation_requires_approval-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "此操作会更改电脑的配对身份。请查看保留的配置。",
+      "blocking": true,
+      "code": "token_rotation_requires_approval",
+      "fix": {"kind": "open_settings", "target": "host_recovery"}
+    }
+  },
+  {
+    "id": "legacy_codex_residue-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "检测到旧版 Codex 配置。请在电脑上查看迁移说明。",
+      "blocking": true,
+      "code": "legacy_codex_residue",
+      "fix": {"kind": "open_settings", "target": "host_recovery"}
+    }
+  },
+  {
+    "id": "tailscale_not_installed-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "未检测到 Tailscale。需要此连接方式时请按说明安装。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "tailscale_not_installed",
+      "fix": {"kind": "open_url", "url": "https://tailscale.com/download"}
+    }
+  },
+  {
+    "id": "tailscale_not_connected-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 尚未连接。请连接后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "tailscale_not_connected",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "tailscale_disabled-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 已连接，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailscale_disabled",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "tailscale_disabled-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 已连接，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailscale_disabled",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "tailscale_disabled-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "optional",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 已连接，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailscale_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_tailscale"}
+    }
+  },
+  {
+    "id": "tailcat_disabled-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "optional",
+      "title": "内置连接",
+      "detail": "内置连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailcat_disabled",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "tailcat_disabled-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "optional",
+      "title": "内置连接",
+      "detail": "内置连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailcat_disabled",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "tailcat_disabled-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "optional",
+      "title": "内置连接",
+      "detail": "内置连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "tailcat_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+    }
+  },
+  {
+    "id": "tailcat_unavailable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "error",
+      "title": "内置连接",
+      "detail": "内置连接组件不可用。请重新安装桌面端以修复组件。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "tailcat_unavailable",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    }
+  },
+  {
+    "id": "tailcat_relay_unreachable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "error",
+      "title": "内置连接",
+      "detail": "暂时无法连接中继。请稍后重试。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "tailcat_relay_unreachable",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "tailcat_busy-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "tailcat_busy",
+        "step": "network_tailcat",
+        "message": "内置连接正在处理其他操作。请稍后重试。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "tailcat_settings_invalid-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "error",
+      "title": "内置连接",
+      "detail": "中继设置无效或尚未生效。请检查连接设置。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "tailcat_settings_invalid",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "lan_unavailable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "optional",
+      "title": "同一局域网",
+      "detail": "未检测到可信局域网。请连接专用网络后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "lan_unavailable",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "lan_disabled-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "optional",
+      "title": "同一局域网",
+      "detail": "同一局域网连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "lan_disabled",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "lan_disabled-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "optional",
+      "title": "同一局域网",
+      "detail": "同一局域网连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "lan_disabled",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "lan_disabled-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "optional",
+      "title": "同一局域网",
+      "detail": "同一局域网连接可用，可在配对设置中启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "code": "lan_disabled",
+      "fix": {"kind": "run_fix", "action": "enable_lan"}
+    }
+  },
+  {
+    "id": "lan_public_network_blocked-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "windows",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "action_needed",
+      "title": "同一局域网",
+      "detail": "当前网络未确认为专用网络。请检查 Windows 网络配置。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "lan_public_network_blocked",
+      "fix": {"kind": "open_settings", "target": "windows_network_profile"}
+    }
+  },
+  {
+    "id": "lan_firewall_blocked-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "windows",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_lan",
+      "group": "network",
+      "state": "action_needed",
+      "title": "同一局域网",
+      "detail": "防火墙规则未允许专用网络连接。请在电脑上检查规则。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "code": "lan_firewall_blocked",
+      "fix": {"kind": "open_settings", "target": "windows_firewall"}
+    }
+  },
+  {
+    "id": "no_direct_network-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailcat"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "没有可用的直连通道。可在配对时启用内置连接。",
+      "blocking": true,
+      "code": "no_direct_network",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "no_direct_network-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailcat"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "没有可用的直连通道。可在配对时启用内置连接。",
+      "blocking": false,
+      "code": "no_direct_network",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "no_direct_network-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailcat"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "没有可用的直连通道。可在配对时启用内置连接。",
+      "blocking": true,
+      "code": "no_direct_network",
+      "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+    }
+  },
+  {
+    "id": "no_network_available-1",
+    "valid": true,
+    "context": {"surface": "check", "platform": "macos", "stage": "setup", "configured": false, "recommended_transport": null},
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "暂无可用的连接方式。请检查网络后重试。",
+      "blocking": false,
+      "code": "no_network_available",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "no_network_available-2",
+    "valid": true,
+    "context": {"surface": "check", "platform": "macos", "stage": "pair", "configured": true, "recommended_transport": null},
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "暂无可用的连接方式。请检查网络后重试。",
+      "blocking": true,
+      "code": "no_network_available",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "no_network_available-3",
+    "valid": true,
+    "context": {"surface": "check", "platform": "macos", "stage": "pair", "configured": false, "recommended_transport": null},
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "暂无可用的连接方式。请检查网络后重试。",
+      "blocking": true,
+      "code": "no_network_available",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "network_selection_required-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": true,
+      "code": "network_selection_required",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "network_selection_required-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": false,
+      "code": "network_selection_required",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "network_selection_required-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": true,
+      "code": "network_selection_required",
+      "fix": {"kind": "run_fix", "action": "enable_tailscale"}
+    }
+  },
+  {
+    "id": "network_selection_required-4",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailcat"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": true,
+      "code": "network_selection_required",
+      "fix": {"kind": "run_fix", "action": "enable_tailcat"}
+    }
+  },
+  {
+    "id": "network_selection_required-5",
+    "valid": true,
+    "context": {"surface": "check", "platform": "macos", "stage": "pair", "configured": true, "recommended_transport": "lan"},
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": true,
+      "code": "network_selection_required",
+      "fix": {"kind": "run_fix", "action": "enable_lan"}
+    }
+  },
+  {
+    "id": "network_selection_required-6",
+    "valid": true,
+    "context": {"surface": "check", "platform": "macos", "stage": "pair", "configured": true, "recommended_transport": null},
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "action_needed",
+      "title": "手机连接方式",
+      "detail": "请选择要用于配对的连接方式。",
+      "blocking": true,
+      "code": "network_selection_required",
+      "fix": {"kind": "open_settings", "target": "connections"}
+    }
+  },
+  {
+    "id": "service_start_timeout-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "等待后台服务就绪超时。请重新检查服务状态。",
+      "blocking": true,
+      "code": "service_start_timeout",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "service_port_in_use-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "服务端口已被占用。请关闭占用端口的应用后重试。",
+      "blocking": true,
+      "code": "service_port_in_use",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "service_requires_approval-1",
+    "valid": true,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "需要在系统设置中允许后台服务运行。请在“登录项”中允许后重新检查，服务就绪后即可生成二维码。",
+      "blocking": true,
+      "code": "service_requires_approval",
+      "fix": {"kind": "open_settings", "target": "login_items"}
+    }
+  },
+  {
+    "id": "service_version_mismatch-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "后台服务与客户端版本不一致。请在电脑上重新加载服务。",
+      "blocking": true,
+      "code": "service_version_mismatch",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "service_version_mismatch-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "后台服务与客户端版本不一致。请在电脑上重新加载服务。",
+      "blocking": true,
+      "code": "service_version_mismatch",
+      "fix": {"kind": "run_fix", "action": "restart_service"}
+    }
+  },
+  {
+    "id": "service_not_registered-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "后台服务尚未注册。请在电脑上注册并启动服务。",
+      "blocking": true,
+      "code": "service_not_registered",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "service_not_registered-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "后台服务尚未注册。请在电脑上注册并启动服务。",
+      "blocking": true,
+      "code": "service_not_registered",
+      "fix": {"kind": "run_fix", "action": "register_service"}
+    }
+  },
+  {
+    "id": "service_install_incomplete-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "后台服务组件不完整。请重新安装桌面端。",
+      "blocking": true,
+      "code": "service_install_incomplete",
+      "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+    }
+  },
+  {
+    "id": "service_not_running-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "后台服务尚未运行。请在电脑上启动服务。",
+      "blocking": true,
+      "code": "service_not_running",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "service_not_running-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "后台服务尚未运行。请在电脑上启动服务。",
+      "blocking": true,
+      "code": "service_not_running",
+      "fix": {"kind": "run_fix", "action": "restart_service"}
+    }
+  },
+  {
+    "id": "service_start_failed-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "后台服务启动失败。请检查并重试。",
+      "blocking": true,
+      "code": "service_start_failed",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "service_start_failed-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "后台服务启动失败。请检查并重试。",
+      "blocking": true,
+      "code": "service_start_failed",
+      "fix": {"kind": "run_fix", "action": "restart_service"}
+    }
+  },
+  {
+    "id": "homebrew_service_active-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_owner_conflict",
+      "group": "service",
+      "state": "optional",
+      "title": "后台服务归属",
+      "detail": "Homebrew 正在管理后台服务。可继续使用，或确认后改由桌面端管理。",
+      "blocking": false,
+      "code": "homebrew_service_active",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "homebrew_service_active-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_owner_conflict",
+      "group": "service",
+      "state": "optional",
+      "title": "后台服务归属",
+      "detail": "Homebrew 正在管理后台服务。可继续使用，或确认后改由桌面端管理。",
+      "blocking": false,
+      "code": "homebrew_service_active",
+      "fix": {"kind": "run_fix", "action": "takeover_homebrew"}
+    }
+  },
+  {
+    "id": "permission_login_item_disabled-1",
+    "valid": true,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_login_item",
+      "group": "permission",
+      "state": "optional",
+      "title": "登录项",
+      "detail": "主应用尚未启用登录时启动。可按需在登录项中设置。",
+      "blocking": false,
+      "code": "permission_login_item_disabled",
+      "fix": {"kind": "open_settings", "target": "login_items"}
+    }
+  },
+  {
+    "id": "permission_folder_denied-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_folder_access",
+      "group": "permission",
+      "state": "action_needed",
+      "title": "文件与文件夹",
+      "detail": "后台服务无法读取所选目录。请检查文件与文件夹权限。",
+      "blocking": false,
+      "code": "permission_folder_denied",
+      "fix": {"kind": "open_settings", "target": "files_and_folders"}
+    }
+  },
+  {
+    "id": "permission_local_network_denied-1",
+    "valid": true,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "action_needed",
+      "title": "本地网络",
+      "detail": "请在系统设置中允许本地网络访问。",
+      "blocking": false,
+      "code": "permission_local_network_denied",
+      "fix": {"kind": "open_settings", "target": "local_network"}
+    }
+  },
+  {
+    "id": "permission_photos_denied-1",
+    "valid": true,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_photos",
+      "group": "permission",
+      "state": "optional",
+      "title": "照片",
+      "detail": "照片访问尚未获准。需要使用时可在系统设置中允许。",
+      "blocking": false,
+      "code": "permission_photos_denied",
+      "fix": {"kind": "open_settings", "target": "photos"}
+    }
+  },
+  {
+    "id": "permission_full_disk_optional-1",
+    "valid": true,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_full_disk",
+      "group": "permission",
+      "state": "optional",
+      "title": "完全磁盘访问",
+      "detail": "如需访问更多文件，可在系统设置中允许完全磁盘访问。",
+      "blocking": false,
+      "code": "permission_full_disk_optional",
+      "fix": {"kind": "open_settings", "target": "full_disk_access"}
+    }
+  },
+  {
+    "id": "permission_unobserved-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_login_item",
+      "group": "permission",
+      "state": "optional",
+      "title": "登录项",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "permission_unobserved-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_folder_access",
+      "group": "permission",
+      "state": "optional",
+      "title": "文件与文件夹",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "permission_unobserved-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "optional",
+      "title": "本地网络",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "permission_unobserved-4",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_photos",
+      "group": "permission",
+      "state": "optional",
+      "title": "照片",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "permission_unobserved-5",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_full_disk",
+      "group": "permission",
+      "state": "optional",
+      "title": "完全磁盘访问",
+      "detail": "尚未获得此权限的状态。可以跳过此项。",
+      "blocking": false,
+      "code": "permission_unobserved",
+      "fix": {"kind": "skip"}
+    }
+  },
+  {
+    "id": "pair_host_unreachable-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "无法连接电脑后台服务。请检查连接后重试。",
+      "blocking": true,
+      "code": "pair_host_unreachable",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "pair_token_mismatch-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。",
+      "blocking": true,
+      "code": "pair_token_mismatch",
+      "fix": {"kind": "run_fix", "action": "save_setup"}
+    }
+  },
+  {
+    "id": "pair_token_mismatch-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "error",
+      "title": "后台服务",
+      "detail": "电脑后台服务身份未同步。请在电脑端确认服务归属并重新加载配置后重试，无需删除手机上的已保存电脑。",
+      "blocking": true,
+      "code": "pair_token_mismatch",
+      "fix": {"kind": "run_fix", "action": "restart_service"}
+    }
+  },
+  {
+    "id": "pair_ticket_expired-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "pair_ticket_invalid-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_invalid",
+        "step": "network_any",
+        "message": "配对链接无效。请在电脑上刷新二维码后重扫。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "pair_clock_skew-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_clock_skew",
+        "step": "network_any",
+        "message": "设备时间不一致。请检查系统日期与时间后重新配对。",
+        "fix": {"kind": "open_settings", "target": "date_time"}
+      }
+    }
+  },
+  {
+    "id": "pair_local_forbidden-1",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_local_forbidden",
+        "step": "service_daemon",
+        "message": "此请求无法在本机认领。请使用手机扫描电脑上的二维码。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "pair_managed_entitlement_required-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_managed_entitlement_required",
+        "step": "network_tailcat",
+        "message": "此托管连接需要有效的订阅权益。请查看托管连接设置。",
+        "fix": {"kind": "open_settings", "target": "managed_connection"}
+      }
+    }
+  },
+  {
+    "id": "pair_managed_grant_conflict-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_managed_grant_conflict",
+        "step": "network_tailcat",
+        "message": "托管连接授权未生效或已过期。请重新获取配对链接。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "invalid_request-1",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "invalid_request",
+        "step": "config_store",
+        "message": "请求参数无效。请检查输入后重试。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "invalid_request-3",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "invalid_request",
+        "step": "network_any",
+        "message": "请求参数无效。请检查输入后重试。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "probe_timeout-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "检查超时。请重新检查此项。",
+      "blocking": true,
+      "code": "probe_timeout",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "probe_timeout-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "error",
+      "title": "手机连接方式",
+      "detail": "检查超时。请重新检查此项。",
+      "blocking": true,
+      "code": "probe_timeout",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "probe_timeout-3",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "error",
+      "title": "Claude Code 助手",
+      "detail": "检查超时。请重新检查此项。",
+      "blocking": false,
+      "enabled": true,
+      "available": null,
+      "source": "auto",
+      "candidates": [],
+      "code": "probe_timeout",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "internal_error-1",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "未能完成此项操作。请重试。",
+      "blocking": true,
+      "code": "internal_error",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "internal_error-2",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "network_any",
+      "group": "network",
+      "state": "error",
+      "title": "手机连接方式",
+      "detail": "未能完成此项操作。请重试。",
+      "blocking": true,
+      "code": "internal_error",
+      "fix": {"kind": "retry"}
+    }
+  },
+  {
+    "id": "command_timeout-1",
+    "valid": true,
+    "context": {
+      "surface": "ui_local",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "command_timeout",
+        "step": "config_store",
+        "message": "命令等待超时。请重新检查当前步骤。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "command_timeout-2",
+    "valid": true,
+    "context": {
+      "surface": "ui_local",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "command_timeout",
+        "step": "network_any",
+        "message": "命令等待超时。请重新检查当前步骤。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "embedded_binary_missing-1",
+    "valid": true,
+    "context": {
+      "surface": "ui_local",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "embedded_binary_missing",
+        "step": "service_daemon",
+        "message": "缺少内置服务程序。请重新安装桌面端。",
+        "fix": {"kind": "open_url", "url": "https://github.com/gaixianggeng/mimi-remote/releases/latest"}
+      }
+    }
+  },
+  {
+    "id": "signed-out-setup-enabled",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale",
+      "explicitly_enabled": true
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "signed-out-setup-auto",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale",
+      "explicitly_enabled": false
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "signed-out-setup-auto-action",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale",
+      "explicitly_enabled": false
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "signed-out-pair-enabled-optional",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "signed-out-missing-selected",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "cross-assistant-picker",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "error",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "runtime_path_invalid",
+      "fix": {"kind": "choose_path", "target": "codex_bin"}
+    }
+  },
+  {
+    "id": "unknown-state",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "ready",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "unknown-code",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "future_diagnostic",
+        "step": "config_store",
+        "message": "请重新检查。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "mismatched-step",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_invalid",
+        "step": "workspace_root",
+        "message": "请重新检查。",
+        "fix": {"kind": "open_settings", "target": "host_recovery"}
+      }
+    }
+  },
+  {
+    "id": "ui-code-on-wire",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "command_timeout",
+        "step": "service_daemon",
+        "message": "请重新检查。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "host-recovery-on-http",
+    "valid": false,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_invalid",
+        "step": "config_store",
+        "message": "请重新检查。",
+        "fix": {"kind": "open_settings", "target": "host_recovery"}
+      }
+    }
+  },
+  {
+    "id": "http-local-detail",
+    "valid": false,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "请重新检查。",
+        "fix": {"kind": "retry"},
+        "recovery_path": "/fixture/config/recovery.json"
+      }
+    }
+  },
+  {
+    "id": "wrong-allowlisted-url",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "codex_signed_out",
+        "step": "assistant_codex",
+        "message": "请重新检查。",
+        "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+      }
+    }
+  },
+  {
+    "id": "unknown-url",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "codex_signed_out",
+        "step": "assistant_codex",
+        "message": "请重新检查。",
+        "fix": {"kind": "open_url", "url": "https://guide.example.invalid/"}
+      }
+    }
+  },
+  {
+    "id": "unknown-action",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "service_not_running",
+        "step": "service_daemon",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "unknown_action"}
+      }
+    }
+  },
+  {
+    "id": "extra-fix-field",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_missing",
+        "step": "config_store",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "save_setup", "target": "workspace_root"}
+      }
+    }
+  },
+  {
+    "id": "legacy-rotation-parameter",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "verified_capability": "identity_preserving_doctor_fix",
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_permissions_unsafe",
+        "step": "config_store",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "doctor_fix", "rotates_token": true}
+      }
+    }
+  },
+  {
+    "id": "config-required-before-save",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "service_not_running",
+        "step": "service_daemon",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "restart_service"}
+      }
+    }
+  },
+  {
+    "id": "transport-enabled-during-setup",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "tailscale_disabled",
+        "step": "network_tailscale",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "enable_tailscale"}
+      }
+    }
+  },
+  {
+    "id": "mismatched-recommendation",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "network_selection_required",
+        "step": "network_any",
+        "message": "请重新检查。",
+        "fix": {"kind": "run_fix", "action": "enable_lan"}
+      }
+    }
+  },
+  {
+    "id": "missing-fix",
+    "valid": false,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {"code": "config_invalid", "step": "config_store", "message": "配置无法读取。"}
+    }
+  },
+  {
+    "id": "additive-data",
+    "valid": true,
+    "context": {
+      "surface": "cli",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "config_invalid",
+        "step": "config_store",
+        "message": "配置无法安全读取。请查看已保留的配置和恢复位置。",
+        "fix": {"kind": "open_settings", "target": "host_recovery"},
+        "config_path": "/fixture/config/config.json",
+        "recovery_path": "/fixture/config/config.previous.json",
+        "future_detail": "新增提示。"
+      },
+      "future_field": true
+    }
+  },
+  {
+    "id": "negotiated-expiry",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {"kind": "retry"}
+      }
+    }
+  },
+  {
+    "id": "authenticated-workspace-pending",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "workspace_confirmation_required",
+        "step": "workspace_root",
+        "message": "请重新检查。",
+        "fix": {"kind": "choose_path", "target": "workspace_root"}
+      }
+    }
+  },
+  {
+    "id": "signed-out-native-surface",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected", "version": "2.1.300"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "unknown-major",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "replace", "path": "/schema", "value": "mimi.onboarding.preflight/v2"}
+    ]
+  },
+  {
+    "id": "duplicate-row",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/1",
+        "value": {
+          "id": "config_store",
+          "group": "workspace",
+          "state": "ok",
+          "title": "配置文件",
+          "detail": "配置文件可安全读写。",
+          "blocking": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "missing-required-row",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "remove", "path": "/checks/1"}
+    ]
+  },
+  {
+    "id": "missing-required-field",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "remove", "path": "/scan_root_exists"}
+    ]
+  },
+  {
+    "id": "report-additive-field",
+    "valid": true,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "add", "path": "/future_hint", "value": "新增提示。"}
+    ]
+  },
+  {
+    "id": "doctor-fix-without-capability",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "error",
+      "title": "配置文件",
+      "detail": "配置文件的访问权限过宽。请在电脑上修复权限。",
+      "blocking": true,
+      "code": "config_permissions_unsafe",
+      "fix": {"kind": "run_fix", "action": "doctor_fix"}
+    }
+  },
+  {
+    "id": "pair-unconfirmed-workspace",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "replace", "path": "/workspace_confirmed", "value": false}
+    ]
+  },
+  {
+    "id": "pair-missing-workspace",
+    "valid": false,
+    "context": {"surface": "report", "platform": "linux"},
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {"op": "replace", "path": "/scan_root_exists", "value": false}
+    ]
+  },
+  {
+    "id": "approval-without-native-evidence",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "action_needed",
+      "title": "后台服务",
+      "detail": "需要在系统设置中允许后台服务运行。请在“登录项”中允许后重新检查，服务就绪后即可生成二维码。",
+      "blocking": true,
+      "code": "service_requires_approval",
+      "fix": {"kind": "open_settings", "target": "login_items"}
+    }
+  },
+  {
+    "id": "multiple-selected-candidates",
+    "valid": false,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "action_needed",
+      "title": "Claude Code 助手",
+      "detail": "请按说明登录 Claude Code，完成后重新检查。",
+      "blocking": false,
+      "enabled": true,
+      "available": false,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "selected"},
+        {"path": "/fixture/alternate/claude", "outcome": "selected"}
+      ],
+      "code": "claude_signed_out",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    }
+  },
+  {
+    "id": "aggregate-is-not-an-assistant",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/6",
+        "value": {
+          "id": "assistant_deepseek",
+          "group": "assistant",
+          "state": "optional",
+          "title": "DeepSeek 助手",
+          "detail": "已检测到可用助手。需要使用时可启用。",
+          "blocking": false,
+          "enabled": false,
+          "available": true,
+          "code": "assistant_disabled",
+          "fix": {
+            "kind": "run_fix",
+            "action": "connect_deepseek"
+          }
+        }
+      },
+      {
+        "op": "add",
+        "path": "/checks/7/enabled",
+        "value": true
+      },
+      {
+        "op": "add",
+        "path": "/checks/7/available",
+        "value": true
+      }
+    ]
+  },
+  {
+    "id": "aggregate-is-not-a-transport",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-claude-only-no-network.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/11",
+        "value": {
+          "id": "network_any",
+          "group": "network",
+          "state": "ok",
+          "title": "手机连接方式",
+          "detail": "至少有一种已启用的连接方式可用。",
+          "blocking": false,
+          "enabled": true,
+          "available": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-unconfirmed-workspace",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/workspace_confirmed",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-missing-workspace",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/scan_root_exists",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "blocked-pair-missing-config",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "windows"
+    },
+    "fixture": "preflight-windows-public.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/configured",
+        "value": false
+      },
+      {
+        "op": "replace",
+        "path": "/workspace_confirmed",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "setup-missing-root-marked-ready",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-claude-only-no-network.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/scan_root_exists",
+        "value": false
+      }
+    ]
+  },
+  {
+    "id": "unfinished-final-report",
+    "valid": false,
+    "context": {
+      "surface": "report",
+      "platform": "linux"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/0/state",
+        "value": "checking"
+      }
+    ]
+  },
+  {
+    "id": "optional-login-item-blocks-pair",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_login_item",
+      "group": "permission",
+      "state": "optional",
+      "title": "登录项",
+      "detail": "主应用尚未启用登录时启动。可按需在登录项中设置。",
+      "blocking": true,
+      "code": "permission_login_item_disabled",
+      "fix": {
+        "kind": "open_settings",
+        "target": "login_items"
+      }
+    }
+  },
+  {
+    "id": "native-daemon-claims-readiness",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务",
+      "detail": "后台服务已通过就绪检查。",
+      "blocking": false
+    }
+  },
+  {
+    "id": "native-assistant-override",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "ok",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek 已连接且存在可用模型。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    }
+  },
+  {
+    "id": "windows-native-permission-override",
+    "valid": false,
+    "context": {
+      "surface": "native",
+      "platform": "windows",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "permission_local_network",
+      "group": "permission",
+      "state": "ok",
+      "blocking": false,
+      "title": "本地网络",
+      "detail": "允许使用本地网络。"
+    }
+  },
+  {
+    "id": "http-additive-nested-data",
+    "valid": true,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {
+          "kind": "retry"
+        },
+        "context": [
+          {
+            "future_hint": "请重新检查。"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "http-nested-local-detail",
+    "valid": false,
+    "context": {
+      "surface": "http",
+      "platform": "macos",
+      "stage": "pair",
+      "configured": true,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "ok": false,
+      "error": {
+        "code": "pair_ticket_expired",
+        "step": "network_any",
+        "message": "二维码已过期。请在电脑配对窗口点击“刷新二维码”后重扫，已有配对不受影响。",
+        "fix": {
+          "kind": "retry"
+        },
+        "context": [
+          {
+            "future_hint": "请重新检查。",
+            "config_path": "/fixture/config/config.json"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "verified-identity-preserving-repair",
+    "valid": true,
+    "context": {
+      "surface": "report",
+      "platform": "linux",
+      "verified_capability": "identity_preserving_doctor_fix"
+    },
+    "fixture": "preflight-deepseek-only.json",
+    "patch": [
+      {
+        "op": "replace",
+        "path": "/checks/0",
+        "value": {
+          "id": "config_store",
+          "group": "workspace",
+          "state": "error",
+          "title": "配置文件",
+          "detail": "配置文件的访问权限过宽。请在电脑上修复权限。",
+          "blocking": true,
+          "code": "config_permissions_unsafe",
+          "fix": {
+            "kind": "run_fix",
+            "action": "doctor_fix"
+          }
+        }
+      },
+      {
+        "op": "replace",
+        "path": "/ok",
+        "value": false
+      },
+      {
+        "op": "replace",
+        "path": "/recommended_next",
+        "value": "config_store"
+      }
+    ]
+  },
+  {
+    "id": "enable-codex-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "0.150.0",
+      "candidates": [
+        {
+          "path": "/fixture/bin/codex",
+          "outcome": "selected",
+          "version": "0.150.0"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_codex"
+      }
+    }
+  },
+  {
+    "id": "enable-claude-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "2.1.300",
+      "candidates": [
+        {
+          "path": "/fixture/bin/claude",
+          "outcome": "selected",
+          "version": "2.1.300"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_claude"
+      }
+    }
+  },
+  {
+    "id": "enable-agy-in-draft",
+    "valid": true,
+    "context": {
+      "surface": "check",
+      "platform": "macos",
+      "stage": "setup",
+      "configured": false,
+      "recommended_transport": "tailscale"
+    },
+    "payload": {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "已检测到可用助手。需要使用时可启用。",
+      "blocking": false,
+      "enabled": false,
+      "available": true,
+      "source": "auto",
+      "detected_version": "1.5.0",
+      "candidates": [
+        {
+          "path": "/fixture/bin/agy",
+          "outcome": "selected",
+          "version": "1.5.0"
+        }
+      ],
+      "code": "assistant_disabled",
+      "fix": {
+        "kind": "run_fix",
+        "action": "enable_agy"
+      }
+    }
+  }
+]

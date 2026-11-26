@@ -1,8 +1,24 @@
 import SwiftUI
 
+struct HostInstallationCommandLineStep: Equatable, Sendable {
+    let heading: String
+    let command: String
+}
+
+struct HostInstallationCommandLineGuide: Equatable, Sendable {
+    let sectionTitle: String
+    let introNote: String?
+    let steps: [HostInstallationCommandLineStep]
+    let footerNote: String
+}
+
 enum HostInstallationPlatform: String, CaseIterable, Identifiable {
     case mac
     case windows
+
+    static let macHomebrewInstallCommand = "brew install gaixianggeng/tap/mimi-remote"
+    static let macStartCommand = "agentd up"
+    static let windowsPowerShellStartCommand = #"& "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" up"#
 
     var id: String { rawValue }
 
@@ -68,6 +84,65 @@ enum HostInstallationPlatform: String, CaseIterable, Identifiable {
         case .windows:
             AppExternalLinks.windowsRelease
         }
+    }
+
+    /// 高级命令行说明严格按平台区分：Windows 标签从折叠到展开绝不出现 `brew`，
+    /// 优先引导系统托盘入口，并给出默认安装目录的 PowerShell 示例。
+    var commandLineGuide: HostInstallationCommandLineGuide {
+        switch self {
+        case .mac:
+            return HostInstallationCommandLineGuide(
+                sectionTitle: L10n.text("ui.command_line_installation_advanced"),
+                introNote: nil,
+                steps: [
+                    HostInstallationCommandLineStep(
+                        heading: L10n.text("ui.first_time_installation"),
+                        command: Self.macHomebrewInstallCommand
+                    ),
+                    HostInstallationCommandLineStep(
+                        heading: L10n.text("ui.start_the_assistant_and_display_the_qr_code"),
+                        command: Self.macStartCommand
+                    ),
+                ],
+                footerNote: L10n.text("ui.run_agentd_pair_when_the_qr_code_expires")
+            )
+        case .windows:
+            return HostInstallationCommandLineGuide(
+                sectionTitle: L10n.text("ui.command_line_installation_windows_advanced"),
+                introNote: L10n.text("ui.windows_cli_tray_first_note"),
+                steps: [
+                    HostInstallationCommandLineStep(
+                        heading: L10n.text("ui.start_the_assistant_and_display_the_qr_code"),
+                        command: Self.windowsPowerShellStartCommand
+                    ),
+                ],
+                footerNote: L10n.text("ui.windows_cli_custom_install_dir_note")
+            )
+        }
+    }
+
+    /// 汇总该平台从折叠到完全展开后的全部可见文案，供跨平台文案单测断言边界。
+    var allVisibleGuidanceTexts: [String] {
+        let guide = commandLineGuide
+        var texts = [
+            L10n.text("ui.install_on_your_computer"),
+            title,
+            installTitle,
+            installationDetail,
+            L10n.text("ui.view_releases_on_github"),
+            shareTitle,
+            afterInstallNote,
+            guide.sectionTitle,
+        ]
+        if let introNote = guide.introNote {
+            texts.append(introNote)
+        }
+        for step in guide.steps {
+            texts.append(step.heading)
+            texts.append(step.command)
+        }
+        texts.append(guide.footerNote)
+        return texts
     }
 }
 
@@ -196,23 +271,30 @@ struct HostInstallationSetupView: View {
 
     /// 命令行安装是同一件事的高级做法，收在安装指引内部，不在添加流程里另起一个同级入口。
     private func commandLineInstallation(tokens: ThemeTokens) -> some View {
-        DisclosureGroup {
+        let guide = transientPreferences.hostInstallationPlatform.commandLineGuide
+
+        return DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
-                Text(L10n.text("ui.first_time_installation"))
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.secondaryText)
-                Text("brew install gaixianggeng/tap/mimi-remote")
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                Text(L10n.text("ui.start_the_assistant_and_display_the_qr_code"))
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.secondaryText)
-                Text("agentd up")
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                Text(L10n.text("ui.run_agentd_pair_when_the_qr_code_expires"))
+                if let introNote = guide.introNote {
+                    Text(introNote)
+                        .font(themeStore.uiFont(.footnote))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(Array(guide.steps.enumerated()), id: \.offset) { _, step in
+                    Text(step.heading)
+                        .font(themeStore.uiFont(.caption, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(step.command)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text(guide.footerNote)
                     .font(themeStore.uiFont(.footnote))
                     .foregroundStyle(tokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(tokens.primaryText)
             // 展开内容与标题同在一行，底部要自己留出与下一行的距离。
@@ -220,7 +302,7 @@ struct HostInstallationSetupView: View {
             .padding(.bottom, 14)
         } label: {
             ConnectionRowLabel(
-                title: L10n.text("ui.command_line_installation_advanced"),
+                title: guide.sectionTitle,
                 systemImage: "terminal"
             )
         }

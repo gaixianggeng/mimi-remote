@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import Security
@@ -192,6 +193,17 @@ extension ServiceManagementClient {
             detail += "，当前状态 \(state)"
         }
         return detail
+    }
+
+    static let applicationsFolderURL = URL(filePath: "/Applications", directoryHint: .isDirectory)
+    static let openApplicationsFolderButtonTitle = "打开“应用程序”文件夹"
+
+    @MainActor
+    @discardableResult
+    static func openApplicationsFolder(
+        using opener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    ) -> Bool {
+        opener(applicationsFolderURL)
     }
 
     static func installationLocationError(bundleURL: URL = Bundle.main.bundleURL) -> String? {

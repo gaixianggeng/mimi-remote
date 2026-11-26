@@ -5,12 +5,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
+
+func TestMain(m *testing.M) {
+	for _, key := range []string{"AGENTD_CODEX_BIN", "AGENTD_CLAUDE_BRIDGE_BIN", "AGENTD_AGY_ADAPTER_BIN", "CLAUDE_BRIDGE_CLAUDE_BIN", "AGY_ADAPTER_AGY_BIN"} {
+		os.Unsetenv(key)
+	}
+	os.Exit(m.Run())
+}
+
+func configureTestClaudeCLI(t *testing.T, cfg *config.ClaudeConfig) {
+	t.Helper()
+	if !cfg.Enabled || cfg.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] != "" {
+		return
+	}
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
+	}
+	cfg.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = writeTestBridgeWithVersion(t, "2.1.300 (Claude Code)")
+}
 
 func writeTestAdapterBridge(t *testing.T, capabilities string) string {
 	t.Helper()
@@ -77,6 +97,7 @@ func TestClaudeBridgeProbeFailsClosedWithoutAdapterDeclaration(t *testing.T) {
 func TestClaudeAdapterWithoutFullAccessRejectsNoApprovalRequests(t *testing.T) {
 	bridgePath := writeTestAdapterBridge(t, `{"methods":["initialize","thread/start","turn/start"],"fullAccess":false}`)
 	router := &Router{cfg: config.Config{Claude: config.ClaudeConfig{Enabled: true, BridgeBin: bridgePath}}}
+	configureTestClaudeCLI(t, &router.cfg.Claude)
 	probe := router.refreshClaudeBridgeProbe(true)
 	if !probe.Healthy || probe.fullAccessAvailable() {
 		t.Fatalf("未声明完全访问的适配器不应开放完全访问：%+v", probe)
@@ -87,8 +108,7 @@ func TestClaudeAdapterWithoutFullAccessRejectsNoApprovalRequests(t *testing.T) {
 	}
 }
 
-// 适配器声明了 Claude Code 下限：已知过旧时整条通道不可用并提示升级；找不到 claude 时不在
-// 探测里拦，交给适配器起进程前的检查。
+// 适配器声明了 Claude Code 下限：已知过旧时整条通道不可用并提示升级；显式配置的 CLI 消失时提示修正路径。
 func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 	bridgePath := writeTestAdapterBridge(t, `{"methods":["initialize","thread/start","turn/start"],"fullAccess":true,"claudeCode":{"minimumVersion":"2.1.294"}}`)
 	oldClaude := writeTestBridgeWithVersion(t, "2.0.5 (Claude Code)")
@@ -110,8 +130,8 @@ func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 		t.Fatalf("满足下限时通道应可用：%+v", probe)
 	}
 	router.cfg.Claude.Env["CLAUDE_BRIDGE_CLAUDE_BIN"] = filepath.Join(t.TempDir(), "missing-claude")
-	if probe := router.refreshClaudeBridgeProbe(true); !probe.Healthy {
-		t.Fatalf("找不到 claude 时不应在探测里拦：%+v", probe)
+	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_missing" {
+		t.Fatalf("显式配置的 Claude 缺失时应提示修正路径：%+v", probe)
 	}
 
 	// 没有显式路径时按适配器环境里的 PATH 找 claude：claude.env.PATH 指向的旧版本也要拦下。
@@ -120,9 +140,30 @@ func TestClaudeAdapterProbeChecksDeclaredClaudeCodeMinimum(t *testing.T) {
 	if err := os.WriteFile(pathClaude+".version", []byte("2.0.5 (Claude Code)"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	d := setup.NewRuntimeDiscovery()
+	d.Home = t.TempDir()
+	d.Stat = func(path string) (os.FileInfo, error) {
+		if filepath.Dir(path) != pathDir {
+			return nil, os.ErrNotExist
+		}
+		return os.Stat(path)
+	}
+	d.LookPath = func(path string, _ []string) (string, error) {
+		if filepath.Dir(path) != pathDir {
+			return "", exec.ErrNotFound
+		}
+		return exec.LookPath(path)
+	}
+	router.claudeCode.discover = d.Resolve
 	router.cfg.Claude.Env = map[string]string{"PATH": pathDir}
 	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_unsupported" {
 		t.Fatalf("应按 claude.env.PATH 找到并拦下过旧的 claude：%+v", probe)
+	}
+	if err := os.Remove(pathClaude); err != nil {
+		t.Fatal(err)
+	}
+	if probe := router.refreshClaudeBridgeProbe(true); probe.Healthy || probe.Status != "claude_missing" || probe.cliPath != "" {
+		t.Fatalf("SDK adapter with no automatic CLI: %+v", probe)
 	}
 }
 

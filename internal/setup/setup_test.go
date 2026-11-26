@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,9 +16,104 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
+func TestFreshExplicitSSHUsesOnlySuccessfulPreflight(t *testing.T) {
+	if config.SupportsManagedAppServer() {
+		t.Skip("explicit SSH setup requires a non-managed platform")
+	}
+	clearSetupEnv(t)
+	for _, tc := range []struct {
+		name             string
+		saveOnly         bool
+		localServiceOnly bool
+		wantCalls        int
+	}{
+		{name: "verified SSH", wantCalls: 1},
+		{name: "save without preflight", saveOnly: true},
+		{name: "local service without preflight", localServiceOnly: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			opts := Options{
+				ConfigPath: path, ScanRoot: t.TempDir(), Listen: "127.0.0.1:8787",
+				AppServerSSHTarget: "mimi-local", SaveOnly: tc.saveOnly, LocalServiceOnly: tc.localServiceOnly,
+				Assistants:       map[string]string{"claude": "disabled", "agy": "disabled"},
+				ObserveAssistant: inspectPreflightRuntime,
+			}
+			original := sshPreflight
+			t.Cleanup(func() { sshPreflight = original })
+			calls := 0
+			sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+				calls++
+				if transport.Target() != opts.AppServerSSHTarget {
+					t.Fatalf("unexpected SSH target %q", transport.Target())
+				}
+				return nil
+			}
+			result, err := Run(t.Context(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPair := !tc.saveOnly && !tc.localServiceOnly
+			if calls != tc.wantCalls || (result.PairURL != "") != wantPair {
+				t.Fatalf("SSH preflight calls = %d, pairing available = %t", calls, result.PairURL != "")
+			}
+			cfg := config.ParseSetupDocument(readPublicationBytes(t, path)).Config
+			if cfg.AppServer.Transport != "ssh" || cfg.Codex.Enabled == nil || *cfg.Codex.Enabled != (tc.wantCalls == 1) {
+				t.Fatalf("transport = %q, codex enabled = %t", cfg.AppServer.Transport, cfg.Codex.IsEnabled())
+			}
+		})
+	}
+}
+
+func TestLegacyExplicitSSHOnExistingLocalHost(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("legacy macOS local-to-SSH setup")
+	}
+	clearSetupEnv(t)
+	opts := atomicSetupOptions(t, filepath.Join(t.TempDir(), "config.json"), false)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	old := readPublicationBytes(t, opts.ConfigPath)
+	identity := config.ParseSetupDocument(old).Config.Auth
+	opts.SaveOnly, opts.LocalServiceOnly = false, true
+	opts.AppServerSSHTarget = "mimi-local"
+	original := sshPreflight
+	t.Cleanup(func() { sshPreflight = original })
+	injected := errors.New("SSH unavailable")
+	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return injected }
+	if _, err := Run(t.Context(), opts); !errors.Is(err, injected) {
+		t.Fatalf("SSH preflight failure: %v", err)
+	}
+	assertFileBytesAndMode(t, opts.ConfigPath, old, 0600)
+	sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+		if transport.Target() != opts.AppServerSSHTarget {
+			t.Fatal("wrong SSH target")
+		}
+		return nil
+	}
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.ParseSetupDocument(readPublicationBytes(t, opts.ConfigPath)).Config
+	if cfg.Auth != identity || cfg.AppServer.Transport != "ssh" || cfg.AppServer.SSHTarget != opts.AppServerSSHTarget || !cfg.AppServer.PinTransport {
+		t.Fatal("legacy command lost the SSH selection or host identity")
+	}
+}
+
 func TestMain(m *testing.M) {
+	for _, e := range os.Environ() {
+		k, _, _ := strings.Cut(e, "=")
+		if strings.HasPrefix(strings.ToUpper(k), "AGENTD_") || k == "CLAUDE_BRIDGE_CLAUDE_BIN" || k == "AGY_ADAPTER_AGY_BIN" {
+			os.Unsetenv(k)
+		}
+	}
+	observeSetupAssistant = func(_ context.Context, id string, _ config.Config, _ string, _ PreflightHost) PreflightObservation {
+		return PreflightObservation{Available: knownAvailability(id == "codex")}
+	}
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
 	// CI 机器上没有 Codex。迁移与 doctor 修复共用的解析器默认原样返回配置路径，
@@ -84,7 +180,14 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg.Codex.Bin != "codex" {
+		t.Fatal("automatic setup persisted a pin")
+	}
 	assertDefaultSetupConfigAppServer(t, cfg)
+	scanRoot, err = filepath.EvalSymlinks(scanRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("scan root 未写入配置：%+v", cfg.ScanRoots)
 	}
@@ -288,100 +391,74 @@ func pairingTicketFromURL(t *testing.T, rawURL string) auth.PairingTicket {
 	}
 }
 
-func TestDefaultScanRootKeepsExplicitValue(t *testing.T) {
-	explicit := t.TempDir()
-	root, err := defaultScanRoot(explicit)
+func TestSetupUsesSelectedEmptyDirectoryAsOnlyDefaultGrant(t *testing.T) {
+	home := preflightSandbox(t)
+	selected := filepath.Join(home, "selected")
+	sibling := filepath.Join(home, "sibling")
+	for _, d := range []string{selected, sibling} {
+		if err := os.Mkdir(d, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	r, err := Run(t.Context(), Options{ConfigPath: path, ScanRoot: selected, SaveOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root != explicit {
-		t.Fatalf("显式 scan root 不应被改写：got %s want %s", root, explicit)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, roots := range [][]string{cfg.ScanRoots, cfg.BrowseRoots, {r.ScanRoot}, {r.BrowseRoot}} {
+		if len(roots) != 1 {
+			t.Fatalf("unexpected grants %q", roots)
+		}
+		got, err := filepath.EvalSymlinks(roots[0])
+		if err != nil || got != canonical {
+			t.Fatalf("wrong grant %q: %v", roots, err)
+		}
+	}
+	registry, err := projects.NewRegistry(cfg.Projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.FindByPath(selected); !ok {
+		t.Fatal("empty authorized root is not a workspace")
+	}
+	if _, ok := registry.FindByPath(sibling); ok {
+		t.Fatal("sibling accessible outside selected root")
+	}
+	if cfg.Listen != "127.0.0.1:8787" || cfg.TailscaleAccessEnabled() || cfg.LANAccessEnabled() || cfg.Tailcat.Enabled {
+		t.Fatal("fresh install opened an external transport")
 	}
 }
 
-func TestDefaultBrowseRootDefaultsToHome(t *testing.T) {
-	root, err := defaultBrowseRoot("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if root != home {
-		t.Fatalf("默认浏览授权根应是用户 Home：got %s want %s", root, home)
-	}
-}
-
-func TestDefaultAgentDNetworkPrefersTailscaleAndFallsBackToLAN(t *testing.T) {
-	tests := []struct {
-		name         string
-		tailscaleIP  string
-		lanIP        string
-		wantListen   string
-		wantAllowLAN bool
-		wantError    string
-	}{
-		{
-			name:        "tailscale preferred",
-			tailscaleIP: "100.100.20.30",
-			lanIP:       "192.168.31.20",
-			wantListen:  "100.100.20.30:8787",
-		},
-		{
-			name:         "lan fallback",
-			lanIP:        "192.168.31.20",
-			wantListen:   "0.0.0.0:8787",
-			wantAllowLAN: true,
-		},
-		{
-			name:      "no reachable network",
-			wantError: "未检测到 Tailscale 或可用的局域网 IPv4",
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			listen, allowLAN, err := defaultAgentDNetworkWithLANFallback(
-				context.Background(),
-				pairingNetworkLookups{
-					tailscaleIP: func(context.Context) string { return testCase.tailscaleIP },
-					lanIP:       func() string { return testCase.lanIP },
-				},
-				true,
-			)
-			if testCase.wantError != "" {
-				if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
-					t.Fatalf("缺少预期错误 %q：%v", testCase.wantError, err)
+func TestFreshNoPairDoesNotEnableExternalIngress(t *testing.T) {
+	clearSetupEnv(t)
+	for _, listen := range []string{"", "127.0.0.1:9080", "0.0.0.0:9080"} {
+		t.Run(listen, func(t *testing.T) {
+			o := atomicSetupOptions(t, filepath.Join(t.TempDir(), "config.json"), false)
+			o.Listen = listen
+			r, err := Run(t.Context(), o)
+			if listen == "0.0.0.0:9080" {
+				if err == nil {
+					t.Fatal("accepted an external bind")
 				}
+				assertMissingPath(t, o.ConfigPath)
 				return
 			}
-			if err != nil || listen != testCase.wantListen || allowLAN != testCase.wantAllowLAN {
-				t.Fatalf(
-					"默认网络选择错误：listen=%q allow_lan=%v err=%v",
-					listen,
-					allowLAN,
-					err,
-				)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := config.ReadPreflightSnapshot(r.ConfigPath)
+			if saved.Code != "" || saved.Config.TailscaleAccessEnabled() || saved.Config.LANAccessEnabled() || saved.Config.Tailcat.Enabled {
+				t.Fatal("fresh install enabled external access")
 			}
 		})
-	}
-}
-
-func TestDefaultAgentDNetworkCanRequireExplicitLANOptIn(t *testing.T) {
-	listen, allowLAN, err := defaultAgentDNetworkWithLANFallback(
-		context.Background(),
-		pairingNetworkLookups{
-			tailscaleIP: func(context.Context) string { return "" },
-			lanIP:       func() string { return "192.168.31.20" },
-		},
-		false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if listen != "127.0.0.1:8787" || allowLAN {
-		t.Fatalf("未显式允许 LAN 时必须保持 loopback：listen=%s allowLAN=%v", listen, allowLAN)
 	}
 }
 
@@ -400,6 +477,10 @@ func TestRunWritesBrowseRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	browseRoot, err = filepath.EvalSymlinks(browseRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.BrowseRoot != browseRoot {
 		t.Fatalf("setup 结果应包含浏览授权根：%+v", result)
 	}
@@ -409,6 +490,10 @@ func TestRunWritesBrowseRoots(t *testing.T) {
 	}
 	if len(cfg.BrowseRoots) != 1 || cfg.BrowseRoots[0] != browseRoot {
 		t.Fatalf("browse_roots 未写入配置：%+v", cfg.BrowseRoots)
+	}
+	scanRoot, err = filepath.EvalSymlinks(scanRoot)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(cfg.ScanRoots) != 1 || cfg.ScanRoots[0] != scanRoot {
 		t.Fatalf("browse root 不应影响 scan_roots：%+v", cfg.ScanRoots)
@@ -447,27 +532,13 @@ func TestRunKeepsExistingConfigWithoutForce(t *testing.T) {
 }
 
 func TestRunRejectsUnsafeSSHTargetBeforeWriting(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	original := []byte("{\"existing\":true}\n")
-	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
-		t.Fatal(err)
+	clearSetupEnv(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	_, err := Run(t.Context(), Options{SaveOnly: true, ConfigPath: path, ScanRoot: t.TempDir(), AppServerSSHTarget: "-oProxyCommand=bad"})
+	if err == nil {
+		t.Fatal("accepted an unsafe SSH option")
 	}
-
-	_, err := Run(context.Background(), Options{
-		ConfigPath:         cfgPath,
-		ScanRoot:           t.TempDir(),
-		BrowseRoot:         t.TempDir(),
-		AppServerSSHTarget: "-oProxyCommand=bad",
-		Force:              true,
-	})
-	if err == nil || !strings.Contains(err.Error(), "不能以 - 开头") {
-		t.Fatalf("setup 必须在写入前拒绝 SSH option injection：%v", err)
-	}
-	stored, readErr := os.ReadFile(cfgPath)
-	if readErr != nil || !bytes.Equal(stored, original) {
-		t.Fatalf("失败的 setup 不能覆盖现有配置：err=%v raw=%s", readErr, stored)
-	}
+	assertMissingPath(t, path)
 }
 
 func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
@@ -495,7 +566,10 @@ func clearSetupEnv(t *testing.T) {
 	t.Helper()
 	// setup 的并发提交使用用户级配置锁。每个测试使用独立 HOME，避免并行
 	// 用例共享锁文件或碰到开发机配置。
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	for _, key := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(key, home)
+	}
 	for _, key := range []string{
 		"AGENTD_CONFIG",
 		"AGENTD_LISTEN",

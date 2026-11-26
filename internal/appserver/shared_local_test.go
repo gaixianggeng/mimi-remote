@@ -285,10 +285,10 @@ func TestSharedLocalResidentEnvironmentDropsServiceIdentity(t *testing.T) {
 	})
 	if slices.Contains(env, "INVOCATION_ID=old-service") ||
 		slices.Contains(env, "JOURNAL_STREAM=old-journal") {
-		t.Fatalf("resident inherited agentd service identity: %v", env)
+		t.Fatal("resident inherited agentd service identity")
 	}
 	if !slices.Contains(env, "PATH=/usr/bin:/bin") {
-		t.Fatalf("resident lost configured PATH: %v", env)
+		t.Fatal("resident lost configured PATH")
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -105,7 +104,7 @@ func readTailcatConfiguration(configPath string) (
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return "", nil, nil, nil, fmt.Errorf("读取配置文件失败：%w", err)
 	}

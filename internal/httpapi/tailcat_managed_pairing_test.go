@@ -15,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 const (
@@ -1072,5 +1075,34 @@ func TestLoadManagedPairingStateRejectsIncompleteHostIdentity(t *testing.T) {
 	}
 	if _, err := loadManagedPairingState(path); err == nil {
 		t.Fatal("缺少主机身份的孤立策略必须拒绝加载")
+	}
+}
+
+func TestManagedPairingStateRefusesNoncanonicalToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), managedPairingStateFileName)
+	prior := managedPairingState{Version: 1, HostDeviceToken: managedToken('a')}
+	if err := writeManagedPairingState(path, prior); err != nil {
+		t.Fatal(err)
+	}
+	for _, narrow := range []bool{false, true} {
+		if err := config.CheckPrivatePermissions(path); err != nil {
+			t.Fatal(err)
+		}
+		configtest.SetNoncanonicalPermissions(t, path, narrow)
+		next := prior
+		next.HostDeviceToken = managedToken('b')
+		if err := writeManagedPairingState(path, next); config.PrivateFileDiagnostic(err) != "config_permissions_unsafe" {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := loadManagedPairingState(path); config.PrivateFileDiagnostic(err) != "config_permissions_unsafe" {
+			t.Fatalf("read: %v", err)
+		}
+		if changed, err := config.RepairPrivatePermissions(path); err != nil || !changed {
+			t.Fatalf("repair: %v", err)
+		}
+		state, err := loadManagedPairingState(path)
+		if err != nil || state.HostDeviceToken != prior.HostDeviceToken {
+			t.Fatal("token changed on refusal")
+		}
 	}
 }

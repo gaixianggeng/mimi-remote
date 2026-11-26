@@ -384,9 +384,9 @@ struct SettingsView: View {
             hasCompactTabBar ? bottomChromeClearance : WorkbenchPageLayout.regularPadding,
             for: .scrollContent
         )
-        .task(id: appStore.activeHostScope) {
+        .task(id: "\(appStore.activeHostScope.profileID)|\(appStore.activeHostScope.generation)|\(appStore.hasNoConfiguredHost)") {
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
-            guard !appStore.requiresRePairing else {
+            guard !appStore.requiresRePairing, !appStore.hasNoConfiguredHost else {
                 return
             }
             let preflightSucceeded = await appStore.preflightConnection()

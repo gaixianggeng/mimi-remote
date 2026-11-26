@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
@@ -96,6 +97,9 @@ type Manager struct {
 func Start(config Config) (*Manager, error) {
 	if config.StateDir == "" || config.ControlPath == "" {
 		return nil, errors.New("Tailcat 托管服务需要状态目录和控制 socket")
+	}
+	if err := checkIdentityPermissions(config.StateDir); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建 Tailcat 状态目录：%w", err)
@@ -212,6 +216,10 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := checkIdentityPermissions(m.config.StateDir); err != nil {
+		return Status{}, err
+	}
+
 	if err := m.closePairLocked(); err != nil {
 		return Status{}, fmt.Errorf("关闭旧 Tailcat 配对服务：%w", err)
 	}
@@ -306,6 +314,10 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := checkIdentityPermissions(m.config.StateDir); err != nil {
+		return Status{}, err
+	}
+
 	for _, existing := range m.clients {
 		if existing == rawKey {
 			return m.statusLocked(), nil
@@ -681,8 +693,22 @@ func writeJSON(w http.ResponseWriter, code int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// Check all identity files before a sidecar operation can replace or remove any of them.
+func checkIdentityPermissions(dir string) error {
+	for _, name := range []string{
+		"host.private.json", "host.address", "clients.json",
+		"pair.private.json", "pair.address", "free.private.json", "free.address",
+		"free-pair.private.json", "free-pair.address",
+	} {
+		if err := privatefile.Check(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadClients(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
+	data, err := privatefile.Read(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -706,24 +732,7 @@ func saveClients(path string, clients []string) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".clients-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
+	return privatefile.Write(path, data)
 }
 
 func normalizeClientKeys(rawKeys []string) ([]string, error) {

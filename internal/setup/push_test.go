@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -27,7 +28,7 @@ func TestSetupPreservesPushChoices(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			clearSetupEnv(t)
 			path := filepath.Join(t.TempDir(), "config.json")
-			options := Options{ConfigPath: path, ScanRoot: t.TempDir(), BrowseRoot: t.TempDir(), Listen: "127.0.0.1:8787"}
+			options := Options{SaveOnly: true, ConfigPath: path, ScanRoot: t.TempDir(), BrowseRoot: t.TempDir(), Listen: "127.0.0.1:8787"}
 			if _, err := Run(context.Background(), options); err != nil {
 				t.Fatal(err)
 			}
@@ -53,8 +54,35 @@ func TestSetupPreservesPushChoices(t *testing.T) {
 					t.Fatal(err)
 				}
 				options.Force = tt.force
-				if _, err := Run(context.Background(), options); err != nil {
+				options.ScanRoot = t.TempDir()
+				_, saveErr := Run(t.Context(), options)
+				if (saveErr != nil) != tt.force {
+					t.Fatalf("save (force=%v): %v", tt.force, saveErr)
+				}
+				after, err := os.ReadFile(path)
+				if err != nil {
 					t.Fatal(err)
+				}
+				if tt.force && !bytes.Equal(raw, after) {
+					t.Fatal("blocked force changed configuration")
+				}
+				var committed map[string]json.RawMessage
+				if err := json.Unmarshal(after, &committed); err != nil {
+					t.Fatal(err)
+				}
+				var oldPush, newPush bytes.Buffer
+				if beforePush := document["push"]; beforePush != nil {
+					if err := json.Compact(&oldPush, beforePush); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if afterPush := committed["push"]; afterPush != nil {
+					if err := json.Compact(&newPush, afterPush); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !bytes.Equal(oldPush.Bytes(), newPush.Bytes()) {
+					t.Fatal("save changed explicit push preferences")
 				}
 			}
 			loaded, err := config.LoadForDoctor(path)
@@ -64,8 +92,8 @@ func TestSetupPreservesPushChoices(t *testing.T) {
 			if loaded.Push != tt.want {
 				t.Fatalf("setup 未保留通知选择：got=%+v want=%+v", loaded.Push, tt.want)
 			}
-			// 首次安装和强制重建都必须写入正确值，不能靠 Load 的默认值掩盖旧的 false。
-			if tt.original == "" || tt.force {
+			// Verify the fresh document independently of the loader defaults.
+			if tt.original == "" {
 				raw, err := os.ReadFile(path)
 				if err != nil {
 					t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 const (
@@ -74,9 +75,7 @@ func (c AdapterCapabilities) Supports(method string) bool {
 func ReadAdapterCapabilities(ctx context.Context, path string, args []string, env []string) (AdapterCapabilities, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--capabilities")...)
-	cmd.Env = env
-	output, err := cmd.Output()
+	output, err := cliinspect.Stdout(ctx, path, env, append(append([]string{}, args...), "--capabilities")...)
 	if err != nil {
 		return AdapterCapabilities{}, err
 	}
@@ -126,9 +125,7 @@ func BuildEnvMap(custom map[string]string) map[string]string {
 func AgyVersion(ctx context.Context, bin string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = env
-	output, err := cmd.CombinedOutput()
+	output, err := cliinspect.Run(ctx, bin, env, "--version")
 	if err != nil {
 		return "", err
 	}

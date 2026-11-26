@@ -89,6 +89,7 @@ final class HostStatusStore: ObservableObject {
 
     func refreshIfNeeded(appStore: AppStore, sessionStore: SessionStore) {
         guard refreshTask == nil,
+              !appStore.hasNoConfiguredHost,
               !sessionStore.isAppInBackground,
               !sessionStore.isConnectionSwitchInProgress,
               !sessionStore.isNetworkUnavailable,

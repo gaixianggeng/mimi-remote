@@ -903,8 +903,8 @@ func TestReadyzReturns200WhenDoctorPasses(t *testing.T) {
 	if body["ok"] != true || body["version"] != "test" {
 		t.Fatalf("readyz 200 应返回 doctor ok=true：%v", body)
 	}
-	if connections.Load() != 1 {
-		t.Fatalf("readyz 必须完成一次带独立 token 的 upstream WebSocket 握手：%d", connections.Load())
+	if connections.Load() != 0 {
+		t.Fatalf("核心就绪检查不应建立 upstream WebSocket 连接：%d", connections.Load())
 	}
 }
 

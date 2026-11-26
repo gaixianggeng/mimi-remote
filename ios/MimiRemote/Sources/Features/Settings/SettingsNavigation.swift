@@ -131,8 +131,10 @@ final class ConnectionSettingsDraft: ObservableObject {
     @Published var isShowingAdvancedManualConnection = false
     @Published var localError: String?
     @Published var localErrorRoute: ConnectionProfileRoute?
+    @Published var localOnboardingError: MappedPairingError?
     @Published var addComputerError: String?
     @Published var addComputerErrorRoute: ConnectionProfileRoute?
+    @Published var addComputerOnboardingError: MappedPairingError?
     @Published var copyingConnectionProfileID: String?
     @Published var copiedConnectionProfileID: String?
     // 设备首页线路行的探测状态放草稿里，Section 重建或旋转都不丢。
@@ -150,6 +152,7 @@ final class ConnectionSettingsDraft: ObservableObject {
     func beginAddingComputer() {
         addComputerError = nil
         addComputerErrorRoute = nil
+        addComputerOnboardingError = nil
         pendingPairingCompletion = nil
     }
 
@@ -177,8 +180,10 @@ final class ConnectionSettingsDraft: ObservableObject {
         isShowingAdvancedManualConnection = false
         localError = nil
         localErrorRoute = nil
+        localOnboardingError = nil
         addComputerError = nil
         addComputerErrorRoute = nil
+        addComputerOnboardingError = nil
         return true
     }
 }

@@ -217,9 +217,10 @@ struct NewSessionSheet: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("newSession.runtime")
             } else {
-                Label(L10n.text("ui.runtime_unavailable_hint"), systemImage: "exclamationmark.triangle")
+                Label(unavailableRuntimeMessage, systemImage: "exclamationmark.triangle")
                     .font(themeStore.uiFont(.callout, weight: .medium))
                     .foregroundStyle(tokens.warning)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("newSession.runtimeUnavailable")
             }
 
@@ -278,7 +279,47 @@ struct NewSessionSheet: View {
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
+    private static let versionUnsupportedStatuses: Set<String> = [
+        "agy_unsupported",
+        "claude_unsupported",
+    ]
+
+    /// 仅当已验证的运行时诊断明确报告未登录状态时才提示「尚未登录」；
+    /// 未知原因、探测失败或陈旧配额一律展示通用多助手不可用说明，避免误导用户重新登录。
+    static func unavailableRuntimeMessage(
+        diagnosticsByProvider: [String: RuntimeChannelDiagnostic],
+        enabledRuntimes: Set<WorkspaceSessionRuntimeChoice>
+    ) -> String {
+        let orderedChoices = WorkspaceSessionRuntimeChoice.allCases.filter { enabledRuntimes.contains($0) }
+
+        for choice in orderedChoices {
+            guard let diagnostic = diagnosticsByProvider[choice.runtimeProvider] else { continue }
+            guard diagnostic.provider == choice.runtimeProvider else { continue }
+            if diagnostic.status == "signed_out" || diagnostic.status == "\(choice.runtimeProvider)_signed_out" {
+                return L10n.format("ui.new_session_runtime_signed_out_hint", runtimeTitle(for: choice))
+            }
+        }
+        for choice in orderedChoices {
+            guard let diagnostic = diagnosticsByProvider[choice.runtimeProvider] else { continue }
+            if versionUnsupportedStatuses.contains(diagnostic.status) {
+                return diagnostic.localizedMessage
+            }
+        }
+        return L10n.text("ui.runtime_unavailable_hint")
+    }
+
+    private var unavailableRuntimeMessage: String {
+        Self.unavailableRuntimeMessage(
+            diagnosticsByProvider: sessionStore.runtimeChannelDiagnosticsByProvider,
+            enabledRuntimes: WorkspaceSessionRuntimeChoice.enabledRuntimeSet(from: enabledRuntimesRawValue)
+        )
+    }
+
     private func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
+        Self.runtimeTitle(for: choice)
+    }
+
+    static func runtimeTitle(for choice: WorkspaceSessionRuntimeChoice) -> String {
         switch choice {
         case .codex: "Codex"
         case .claude: "Claude Code"

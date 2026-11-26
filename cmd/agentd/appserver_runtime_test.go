@@ -4,15 +4,85 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
+
+func TestOptionalSSHRejectsUnsupportedRemoteBeforePublishingTransport(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\necho 'codex-cli 0.140.0'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	cfg := config.Config{AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}}
+	upstream := startOptionalCodex(context.Background(), cfg, "")
+	defer upstream.Shutdown()
+	<-upstream.done
+	if _, err := upstream.WebSocketURL(); err == nil {
+		t.Fatal("published a transport for an unsupported remote Codex")
+	}
+}
+
+func TestOptionalCodexShutdownWhileSSHHelperHoldsStderr(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	cfg := config.Config{AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}}
+	upstream := startOptionalCodex(t.Context(), cfg, "")
+	defer upstream.Shutdown()
+	<-upstream.done // first attempt fails because ssh is absent
+
+	ssh := filepath.Join(dir, "ssh")
+	if err := syscall.Mkfifo(ssh+".hold", 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the FIFO open until the assertions finish. Closing it lets the
+	// helper's read see EOF even if shutdown failed.
+	hold, err := os.OpenFile(ssh+".hold", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hold.Close()
+	const script = `#!/bin/sh
+(
+	echo ready > "$0.ready"
+	read -r release
+) < "$0.hold" >/dev/null &
+wait
+`
+	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	upstream.mu.Lock()
+	upstream.retryAt = time.Now()
+	upstream.mu.Unlock()
+	if err := upstream.EnsureReady(t.Context()); !errors.Is(err, errCodexUnavailable) {
+		t.Fatalf("readiness during retry = %v", err)
+	}
+	waitForFileContaining(t, ssh+".ready", "ready")
+	stopped := make(chan struct{})
+	go func() {
+		upstream.Shutdown()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(7 * time.Second):
+		t.Fatal("daemon shutdown blocked on the helper's stderr")
+	}
+	select {
+	case <-upstream.done:
+	default:
+		t.Fatal("SSH retry is still waiting for the helper's stderr after shutdown")
+	}
+}
 
 func TestSharedCodexHomeCannotStartAnUnmanagedResident(t *testing.T) {
 	cfg := config.Config{
@@ -32,10 +102,17 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	bin := filepath.Join(home, "codex")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex-cli 0.155.1; exit 0; fi\nexit 99\n"), 0700); err != nil {
+	// The daemon cannot run this shim unless both discovery and startup
+	// give /usr/bin/env the interpreter directory from codex.env.PATH.
+	t.Setenv("AGENTD_CODEX_BIN", "")
+	t.Setenv("PATH", t.TempDir())
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env test-codex-interpreter\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"CODEX_HOME": home}
+	if err := os.WriteFile(filepath.Join(home, "test-codex-interpreter"), []byte("#!/bin/sh\nif [ \"$2\" = --version ]; then echo codex-cli 0.155.1; exit 0; fi\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"CODEX_HOME": home, "PATH": home}
 	socket, err := appserver.SharedLocalSocketPath(env)
 	if err != nil {
 		t.Fatal(err)
@@ -47,13 +124,16 @@ func TestLocalCodexUnavailablePreservesDiagnosticRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{Codex: config.CodexConfig{Bin: bin, Env: env}, AppServer: config.AppServerConfig{Transport: "local"}}
+	if err := resolveLaunchCodex(context.Background(), &cfg); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
 	runtime, err := prepareAgentAppServerRuntime(cfg)
-	if err != nil || runtime == nil || runtime.routerOptions.AppServerSSH == nil {
+	if err != nil || runtime == nil || runtime.transport == nil {
 		t.Fatalf("Codex 初始化故障不应阻止 agentd 提供诊断：runtime=%v err=%v", runtime, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := runtime.routerOptions.AppServerSSH.EnsureReady(ctx); err == nil {
+	if err := runtime.transport.EnsureReady(ctx); err == nil {
 		t.Fatal("保留诊断服务不能把 Codex 故障标为成功")
 	}
 	if got, err := os.ReadFile(socket); err != nil || string(got) != "occupied" {

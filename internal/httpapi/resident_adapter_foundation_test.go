@@ -2,9 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"net"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNormalizeAppServerRuntimeIDReadsSpecAliases(t *testing.T) {
@@ -86,4 +90,66 @@ func TestResidentApprovalObserverIsolatesRuntimesSharingSessionKey(t *testing.T)
 		t.Fatal("closing other runtime observer affected claude observer")
 	}
 	claudeObs.close("test_done")
+}
+
+func TestRouterDefersAssistantDiscoveryUntilRequested(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.Claude.Enabled, cfg.Agy.Enabled = true, true
+	})
+	t.Cleanup(server.router.Shutdown)
+	if !server.router.claudeBridgeProbe().CheckedAt.IsZero() || !server.router.agyAdapterProbeSnapshot().CheckedAt.IsZero() {
+		t.Fatal("router construction ran an assistant probe before serving HTTP")
+	}
+}
+
+func TestResidentAdapterReportsChangedCLIWithoutInterruptingTurns(t *testing.T) {
+	bin := copyFakeBridge(t, t.TempDir(), "resident-adapter")
+	for _, tc := range []struct {
+		name, key     string
+		newSupervisor func() *claudeBridgeSupervisor
+	}{
+		{"claude", "CLAUDE_BRIDGE_CLAUDE_BIN", newClaudeBridgeSupervisor},
+		{"agy", "AGY_ADAPTER_AGY_BIN", newAgyAdapterSupervisor},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			supervisor := tc.newSupervisor()
+			t.Cleanup(supervisor.shutdown)
+			env := map[string]string{tc.key: "fixture-cli-before"}
+			ensure := func() int {
+				t.Helper()
+				if _, err := supervisor.ensure(bin, nil, env); err != nil {
+					t.Fatal(err)
+				}
+				supervisor.mu.Lock()
+				defer supervisor.mu.Unlock()
+				if !slices.Contains(supervisor.cmd.Env, tc.key+"="+env[tc.key]) {
+					t.Fatal("running adapter did not receive the selected CLI")
+				}
+				return supervisor.cmd.Process.Pid
+			}
+			first := ensure()
+			if ensure() != first {
+				t.Fatal("unchanged adapter was replaced")
+			}
+			env[tc.key] = "fixture-cli-after"
+			if _, err := supervisor.ensure(bin, nil, env); !errors.Is(err, errAdapterRestartRequired) {
+				t.Fatalf("changed CLI got %v", err)
+			}
+			supervisor.mu.Lock()
+			child, done := supervisor.cmd.Process, supervisor.done
+			supervisor.mu.Unlock()
+			if child.Pid != first || supervisor.runningSince() == nil {
+				t.Fatal("rediscovery interrupted the previous adapter")
+			}
+			if err := child.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("fixture child did not exit")
+			}
+			ensure()
+		})
+	}
 }

@@ -12,14 +12,13 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestMigrateAppServerToSSHPreflightFailureDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old","future_option":"keep"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := sshPreflight
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return errors.New("initialize failed") }
 	t.Cleanup(func() { sshPreflight = previous })
@@ -41,9 +40,7 @@ func TestMigrateAppServerToSSHPreflightFailureDoesNotWrite(t *testing.T) {
 func TestMigrateAppServerToSSHReportsUnknownTransportAsUpgrade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"shared-local-v2"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 
 	err := MigrateAppServerToSSH(context.Background(), path, "")
 	if !errors.Is(err, config.ErrAppServerTransportUnsupported) {
@@ -66,9 +63,7 @@ func TestMigrateAppServerToSSHReportsUnknownTransportAsUpgrade(t *testing.T) {
 func TestMigrateAppServerToSSHKeepsRemovedTransportOffUpgradePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"stdio"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 
 	err := MigrateAppServerToSSH(context.Background(), path, "")
 	if !errors.Is(err, config.ErrAppServerTransportRemoved) {
@@ -78,7 +73,7 @@ func TestMigrateAppServerToSSHKeepsRemovedTransportOffUpgradePath(t *testing.T) 
 		strings.Contains(err.Error(), "请升级到最新发布包") {
 		t.Fatalf("已移除的 transport 不得引导升级安装包：%v", err)
 	}
-	if !strings.Contains(err.Error(), "setup --force") {
+	if !strings.Contains(err.Error(), "保留原配置") {
 		t.Fatalf("已移除的 transport 必须引导重置配置：%v", err)
 	}
 }
@@ -86,9 +81,7 @@ func TestMigrateAppServerToSSHKeepsRemovedTransportOffUpgradePath(t *testing.T) 
 func TestMigrateAppServerToSSHAtomicallyPreservesUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old","remote_gateway":{"enabled":true},"future_option":"keep"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := sshPreflight
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return nil }
 	t.Cleanup(func() { sshPreflight = previous })
@@ -126,9 +119,7 @@ func TestMigrateAppServerToSharedLocalPreflightFailureDoesNotWrite(t *testing.T)
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return errors.New("initialize failed") }
 	t.Cleanup(func() { localAppServerPreflight = previous })
@@ -151,9 +142,7 @@ func TestMigrateAppServerToSharedLocalPreservesUnknownFields(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"codex":{"bin":"/opt/codex","env":{"TERM":"xterm"}},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222","ws_token_file":"/tmp/old","remote_gateway":{"enabled":true},"future_option":"keep"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previousResolver := resolveMigrationCodexBin
 	resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
 	t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
@@ -197,9 +186,7 @@ func TestMigrateAppServerToSharedLocalAcceptsLegacyManagedConfigWithoutTransport
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"managed":true,"listen":"ws://127.0.0.1:4222"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
 	t.Cleanup(func() { localAppServerPreflight = previous })
@@ -222,9 +209,7 @@ func TestMigrateAppServerToSharedLocalLeavesExplicitSSHUntouched(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"build-host","auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	if err := MigrateAppServerToSharedLocal(context.Background(), path); err != nil {
 		t.Fatal(err)
 	}
@@ -250,9 +235,7 @@ func TestMigrateAppServerToSharedLocalRewritesMacLoopbackSSHDefault(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			original := []byte(`{"future":{"keep":true},"codex":{"bin":"/opt/codex","env":{"TERM":"xterm"}},"app_server":{"transport":"ssh","ssh_target":` + target + `,"auto_title":true,"approval_broker":true}}`)
-			if err := os.WriteFile(path, original, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.WritePrivateFile(t, path, original)
 			previousResolver := resolveMigrationCodexBin
 			resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
 			t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
@@ -306,9 +289,7 @@ func TestMigrateAppServerToSharedLocalKeepsExplicitMacSSHTargets(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"` + target + `","auto_title":true}}`)
-			if err := os.WriteFile(path, original, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.WritePrivateFile(t, path, original)
 			previous := localAppServerPreflight
 			localAppServerPreflight = func(context.Context, string, map[string]string) error {
 				t.Fatal("显式 SSH target 不应触发本机预检")
@@ -335,9 +316,7 @@ func TestMigrateAppServerToSharedLocalLoopbackSSHPreflightFailureKeepsSSH(t *tes
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"127.0.0.1","auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return errors.New("initialize failed") }
 	t.Cleanup(func() { localAppServerPreflight = previous })
@@ -360,9 +339,7 @@ func TestMigrateAppServerToSharedLocalResolvesStaleCodexBinBeforePreflight(t *te
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"codex":{"bin":"/Applications/Old.app/Contents/Resources/codex"},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previousResolver := resolveMigrationCodexBin
 	resolveMigrationCodexBin = func(configured string) (string, error) {
 		if configured != "/Applications/Old.app/Contents/Resources/codex" {
@@ -406,9 +383,7 @@ func TestMigrateAppServerToSharedLocalFailsBeforeWritingWhenNoCodexResolves(t *t
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"codex":{"bin":"/missing/codex"},"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previousResolver := resolveMigrationCodexBin
 	resolveMigrationCodexBin = func(string) (string, error) { return "", errors.New("no codex anywhere") }
 	t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
@@ -433,9 +408,7 @@ func TestMigrateAppServerToSharedLocalFailsBeforeWritingWhenNoCodexResolves(t *t
 func TestMigrateAppServerToSSHConvertsLocalWhenTargetRequested(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"future":{"keep":true},"app_server":{"transport":"local","auto_title":true,"approval_broker":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := sshPreflight
 	var gotTarget string
 	sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
@@ -468,9 +441,7 @@ func TestMigrateAppServerToSSHConvertsLocalWhenTargetRequested(t *testing.T) {
 func TestMigrateAppServerToSSHLeavesLocalWithoutRequestedTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"local","auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := sshPreflight
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error {
 		t.Fatal("没有显式 target 时不应做 SSH 预检")
@@ -492,9 +463,7 @@ func TestMigrateAppServerToSSHLeavesLocalWithoutRequestedTarget(t *testing.T) {
 func TestMigrateAppServerToSSHLocalConversionPreflightFailureKeepsLocal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"local","auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 	previous := sshPreflight
 	sshPreflight = func(context.Context, *appserver.SSHTransport) error { return errors.New("host unreachable") }
 	t.Cleanup(func() { sshPreflight = previous })
@@ -512,9 +481,7 @@ func TestMigrateAppServerToSSHLocalConversionPreflightFailureKeepsLocal(t *testi
 
 func TestMigrateAppServerToSSHPinsOnlyExplicitTargets(t *testing.T) {
 	explicit := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(explicit, []byte(`{"app_server":{"transport":"local","auto_title":true}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, explicit, []byte(`{"app_server":{"transport":"local","auto_title":true}}`))
 	if err := MigrateAppServerToSSH(context.Background(), explicit, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
@@ -524,9 +491,7 @@ func TestMigrateAppServerToSSHPinsOnlyExplicitTargets(t *testing.T) {
 	}
 
 	legacy := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(legacy, []byte(`{"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, legacy, []byte(`{"app_server":{"transport":"ws","managed":true,"listen":"ws://127.0.0.1:4222"}}`))
 	if err := MigrateAppServerToSSH(context.Background(), legacy, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -542,9 +507,7 @@ func TestMigrateAppServerToSharedLocalRespectsPinnedLoopbackSSH(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"127.0.0.1","pin_transport":true,"auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error {
 		t.Fatal("被固定的 SSH 配置不应触发本机预检")
@@ -560,5 +523,60 @@ func TestMigrateAppServerToSharedLocalRespectsPinnedLoopbackSSH(t *testing.T) {
 	}
 	if !bytes.Equal(stored, original) {
 		t.Fatalf("用户显式固定的本机 SSH 不得被自动迁移：%s", stored)
+	}
+}
+
+func TestMigrateAppServerToSSHPreservesManagedDesktopSSHFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	ssh := filepath.Join(home, ".ssh")
+	if err := os.Mkdir(ssh, 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"config": `Host fixture-other
+    HostName host.example.test
+
+# >>> mimi-remote local codex ssh >>>
+Host mimi-local
+    HostName 127.0.0.1
+    User fixture
+    IdentityFile ~/.ssh/mimi_codex_local_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+# <<< mimi-remote local codex ssh <<<
+`,
+		"mimi_codex_local_ed25519":     "synthetic private key fixture\n",
+		"mimi_codex_local_ed25519.pub": "synthetic public key fixture\n",
+		"authorized_keys":              "synthetic authorized entry mimi-codex-local\n",
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(ssh, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(home, "config.json")
+	configtest.CreatePrivateFile(t, path, []byte(`{"app_server":{"transport":"local"}}`))
+	old := sshPreflight
+	sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+		if transport.Target() != "mimi-local" {
+			t.Fatal("incorrect SSH alias")
+		}
+		return nil
+	}
+	t.Cleanup(func() { sshPreflight = old })
+	if err := MigrateAppServerToSSH(t.Context(), path, "mimi-local"); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range files {
+		got, err := os.ReadFile(filepath.Join(ssh, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("unexpected SSH file change %s: %v", name, err)
+		}
+	}
+	entries, err := os.ReadDir(ssh)
+	if err != nil || len(entries) != len(files) {
+		t.Fatalf("SSH entries changed: %v %v", entries, err)
 	}
 }

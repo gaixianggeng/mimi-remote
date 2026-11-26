@@ -38,6 +38,27 @@ struct SystemPrivacySettingsClient {
     var photosAccessState: @MainActor () -> PhotosAccessState
     var requestPhotosAccess: @MainActor () async -> PhotosAccessState
     var openPhotosPrivacySettings: @MainActor () -> Void
+    var openFilesAndFoldersSettings: @MainActor () -> Void
+    var openLocalNetworkSettings: @MainActor () -> Void
+    var openDateTimeSettings: @MainActor () -> Void
+
+    init(
+        openFullDiskAccessSettings: @escaping @MainActor () -> Void,
+        photosAccessState: @escaping @MainActor () -> PhotosAccessState,
+        requestPhotosAccess: @escaping @MainActor () async -> PhotosAccessState,
+        openPhotosPrivacySettings: @escaping @MainActor () -> Void,
+        openFilesAndFoldersSettings: @escaping @MainActor () -> Void = {},
+        openLocalNetworkSettings: @escaping @MainActor () -> Void = {},
+        openDateTimeSettings: @escaping @MainActor () -> Void = {}
+    ) {
+        self.openFullDiskAccessSettings = openFullDiskAccessSettings
+        self.photosAccessState = photosAccessState
+        self.requestPhotosAccess = requestPhotosAccess
+        self.openPhotosPrivacySettings = openPhotosPrivacySettings
+        self.openFilesAndFoldersSettings = openFilesAndFoldersSettings
+        self.openLocalNetworkSettings = openLocalNetworkSettings
+        self.openDateTimeSettings = openDateTimeSettings
+    }
 }
 
 extension SystemPrivacySettingsClient {
@@ -55,6 +76,15 @@ extension SystemPrivacySettingsClient {
         },
         openPhotosPrivacySettings: {
             openPrivacyPane("Privacy_Photos")
+        },
+        openFilesAndFoldersSettings: {
+            openPrivacyPane("Privacy_FilesAndFolders")
+        },
+        openLocalNetworkSettings: {
+            openPrivacyPane("Privacy_LocalNetwork")
+        },
+        openDateTimeSettings: {
+            openSystemSettingsURL("x-apple.systempreferences:com.apple.Date-Time-Settings.extension")
         }
     )
 
@@ -67,9 +97,12 @@ extension SystemPrivacySettingsClient {
 
     @MainActor
     private static func openPrivacyPane(_ anchor: String) {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
-        ) else { return }
+        openSystemSettingsURL("x-apple.systempreferences:com.apple.preference.security?\(anchor)")
+    }
+
+    @MainActor
+    private static func openSystemSettingsURL(_ rawValue: String) {
+        guard let url = URL(string: rawValue) else { return }
         NSWorkspace.shared.open(url)
     }
 }

@@ -443,11 +443,11 @@ func TestClaudeGatewayForcesBypassPermissionsOff(t *testing.T) {
 			foundSafeValue = true
 		}
 		if value == "CLAUDE_BRIDGE_BYPASS_PERMISSIONS=true" {
-			t.Fatalf("危险 bypass 配置不应进入 bridge：%v", env)
+			t.Fatal("危险 bypass 配置不应进入 bridge")
 		}
 	}
 	if !foundSafeValue {
-		t.Fatalf("Claude bridge 环境必须强制关闭 bypass permissions：%v", env)
+		t.Fatal("Claude bridge 环境必须强制关闭 bypass permissions")
 	}
 }
 
@@ -1058,6 +1058,7 @@ func TestClaudeBridgeProbeRefreshesCheapResultWhenStale(t *testing.T) {
 		Enabled:   true,
 		BridgeBin: bridgePath,
 	}}}
+	configureTestClaudeCLI(t, &router.cfg.Claude)
 	first := router.refreshClaudeBridgeProbe(false)
 	if first.Healthy || first.Status != "missing_command" {
 		t.Fatalf("缺失 bridge 应标记为不可用：%+v", first)
@@ -2931,6 +2932,7 @@ func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize fu
 	if customize != nil {
 		customize(&cfg)
 	}
+	configureTestClaudeCLI(t, &cfg.Claude)
 	handler, router := NewRouterWithInstallationIDAndOptions(cfg, registry, checker, "test", "", RouterOptions{
 		AppServerSSH: directWSTestTransport{upstreamURL: upstreamURL},
 	})

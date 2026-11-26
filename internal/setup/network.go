@@ -25,6 +25,7 @@ type pairingNetworkLookups struct {
 	tailscaleIP   func(context.Context) string
 	tailscaleHost func(context.Context) tailscaleinfo.Host
 	lanIP         func() string
+	confirmLAN    func(context.Context, config.Config) error
 }
 
 func defaultPairingNetworkLookups() pairingNetworkLookups {
@@ -32,6 +33,7 @@ func defaultPairingNetworkLookups() pairingNetworkLookups {
 		tailscaleIP:   firstTailscaleIP,
 		tailscaleHost: tailscaleinfo.Discover,
 		lanIP:         firstLANIPv4,
+		confirmLAN:    confirmPlatformPairingLAN,
 	}
 }
 
@@ -77,7 +79,7 @@ func pairingEndpoint(
 			if cfg.Network.AllowLAN {
 				return pairingEndpoint(ctx, cfg, PairingNetworkLAN, lookups)
 			}
-			return "", nil, fmt.Errorf("未检测到 Tailscale IPv4，当前服务也尚未启用局域网访问")
+			return "", nil, &PairingDiagnostic{"tailscale_not_connected", "network_tailscale", "未检测到 Tailscale IPv4，当前服务也尚未启用局域网访问"}
 		case isPrivateLANIPv4(configuredIP):
 			return pairingEndpoint(ctx, cfg, PairingNetworkLAN, lookups)
 		case cfg.Network.AllowLAN || listensEverywhere:
@@ -101,7 +103,7 @@ func pairingEndpoint(
 	switch network {
 	case PairingNetworkTailscale:
 		if !cfg.Network.AllowLAN && !listensEverywhere && !isTailscaleListenIP(configuredIP) {
-			return "", nil, fmt.Errorf("当前服务未监听 Tailscale；请先调整 agentd 网络配置")
+			return "", nil, &PairingDiagnostic{"network_selection_required", "network_any", "当前服务未监听 Tailscale；请先调整 agentd 网络配置"}
 		}
 		host := ""
 		if isTailscaleListenIP(configuredIP) {
@@ -110,13 +112,13 @@ func pairingEndpoint(
 			host = strings.TrimSpace(lookups.tailscaleIP(ctx))
 		}
 		if host == "" {
-			return "", nil, fmt.Errorf("未检测到 Tailscale IPv4，请确认 Tailscale 已连接")
+			return "", nil, &PairingDiagnostic{"tailscale_not_connected", "network_tailscale", "未检测到 Tailscale IPv4，请确认 Tailscale 已连接"}
 		}
 		return httpEndpoint(host, port), nil, nil
 
 	case PairingNetworkLAN:
 		if !cfg.Network.AllowLAN && !listensEverywhere && !isPrivateLANIPv4(configuredIP) {
-			return "", nil, fmt.Errorf("尚未启用局域网访问")
+			return "", nil, &PairingDiagnostic{"network_selection_required", "network_any", "尚未启用局域网访问"}
 		}
 		host := ""
 		if isPrivateLANIPv4(configuredIP) {
@@ -125,7 +127,7 @@ func pairingEndpoint(
 			host = strings.TrimSpace(lookups.lanIP())
 		}
 		if host == "" {
-			return "", nil, fmt.Errorf("未检测到可用的局域网 IPv4，请确认这台电脑已连接 Wi-Fi 或以太网")
+			return "", nil, &PairingDiagnostic{"lan_unavailable", "network_lan", "未检测到可用的局域网 IPv4，请确认这台电脑已连接 Wi-Fi 或以太网"}
 		}
 		return httpEndpoint(host, port), []string{"局域网配对仅适用于与这台电脑位于同一局域网的设备"}, nil
 	}

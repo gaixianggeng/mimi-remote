@@ -1,0 +1,1116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Mimi host onboarding v1",
+  "description": "Validate against the definition for the active surface and use onboarding-codes-v1.json for tuple, platform, stage and action conditions. Unknown non-action data fields are forward compatible. The check definition also describes a progress record and an overlaid native row.",
+  "anyOf": [
+    {"$ref": "#/definitions/report"},
+    {"$ref": "#/definitions/check"},
+    {"$ref": "#/definitions/setup"},
+    {"$ref": "#/definitions/ready"},
+    {"$ref": "#/definitions/submitted"},
+    {"$ref": "#/definitions/ticket"},
+    {"$ref": "#/definitions/cli_error"}
+  ],
+  "definitions": {
+    "check_id": {
+      "enum": [
+        "config_store",
+        "workspace_root",
+        "service_owner_conflict",
+        "service_daemon",
+        "assistant_codex",
+        "assistant_claude",
+        "assistant_agy",
+        "assistant_deepseek",
+        "assistant_any",
+        "network_tailscale",
+        "network_tailcat",
+        "network_lan",
+        "network_any",
+        "permission_login_item",
+        "permission_folder_access",
+        "permission_local_network",
+        "permission_photos",
+        "permission_full_disk"
+      ]
+    },
+    "wire_code": {
+      "enum": [
+        "codex_not_found",
+        "codex_version_too_old",
+        "codex_signed_out",
+        "codex_upstream_unavailable",
+        "codex_transport_invalid",
+        "claude_not_found",
+        "claude_version_too_old",
+        "claude_signed_out",
+        "claude_bridge_missing",
+        "agy_not_found",
+        "agy_version_too_old",
+        "agy_signed_out",
+        "agy_adapter_missing",
+        "runtime_path_invalid",
+        "runtime_incompatible",
+        "runtime_probe_failed",
+        "runtime_unsupported_platform",
+        "assistant_disabled",
+        "deepseek_not_running",
+        "deepseek_auth_failed",
+        "deepseek_no_models",
+        "no_enabled_assistant",
+        "workspace_confirmation_required",
+        "workspace_not_found",
+        "workspace_not_directory",
+        "workspace_unreadable",
+        "config_missing",
+        "config_dir_unwritable",
+        "config_permissions_unsafe",
+        "config_invalid",
+        "config_requires_newer_version",
+        "config_concurrent_change",
+        "config_commit_failed",
+        "config_recovery_required",
+        "token_rotation_requires_approval",
+        "legacy_codex_residue",
+        "tailscale_not_installed",
+        "tailscale_not_connected",
+        "tailscale_disabled",
+        "tailcat_disabled",
+        "tailcat_unavailable",
+        "tailcat_relay_unreachable",
+        "tailcat_busy",
+        "tailcat_settings_invalid",
+        "lan_unavailable",
+        "lan_disabled",
+        "lan_public_network_blocked",
+        "lan_firewall_blocked",
+        "no_direct_network",
+        "no_network_available",
+        "network_selection_required",
+        "service_start_timeout",
+        "service_port_in_use",
+        "service_requires_approval",
+        "service_version_mismatch",
+        "service_not_registered",
+        "service_install_incomplete",
+        "service_not_running",
+        "service_start_failed",
+        "homebrew_service_active",
+        "permission_login_item_disabled",
+        "permission_folder_denied",
+        "permission_local_network_denied",
+        "permission_photos_denied",
+        "permission_full_disk_optional",
+        "permission_unobserved",
+        "pair_host_unreachable",
+        "pair_token_mismatch",
+        "pair_ticket_expired",
+        "pair_ticket_invalid",
+        "pair_clock_skew",
+        "pair_local_forbidden",
+        "pair_managed_entitlement_required",
+        "pair_managed_grant_conflict",
+        "invalid_request",
+        "probe_timeout",
+        "internal_error"
+      ]
+    },
+    "transport": {
+      "enum": ["tailscale", "tailcat", "lan"]
+    },
+    "fix": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": {"const": "open_url"},
+            "url": {
+              "enum": [
+                "https://learn.chatgpt.com/docs/codex/cli",
+                "https://code.claude.com/docs/en/quickstart",
+                "https://antigravity.google/",
+                "https://github.com/deepseek-ai/deepseek-harness",
+                "https://tailscale.com/download",
+                "https://github.com/gaixianggeng/mimi-remote/releases/latest",
+                "https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "target"],
+          "properties": {
+            "kind": {"const": "open_settings"},
+            "target": {
+              "enum": [
+                "login_items",
+                "files_and_folders",
+                "local_network",
+                "photos",
+                "full_disk_access",
+                "windows_firewall",
+                "windows_network_profile",
+                "assistants",
+                "connections",
+                "host_recovery",
+                "date_time",
+                "managed_connection"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "target"],
+          "properties": {
+            "kind": {"const": "choose_path"},
+            "target": {
+              "enum": ["workspace_root", "codex_bin", "claude_bin", "agy_bin"]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "action"],
+          "properties": {
+            "kind": {"const": "run_fix"},
+            "action": {
+              "enum": [
+                "save_setup",
+                "enable_codex",
+                "enable_claude",
+                "enable_agy",
+                "enable_tailscale",
+                "enable_lan",
+                "enable_tailcat",
+                "connect_deepseek",
+                "restart_service",
+                "register_service",
+                "doctor_fix",
+                "takeover_homebrew"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {"const": "retry"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {"const": "skip"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["path", "outcome"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "outcome": {
+          "enum": ["missing", "unusable", "unsupported", "compatible", "selected", "timeout"]
+        },
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "group", "state", "title", "detail", "blocking"],
+      "properties": {
+        "id": {"$ref": "#/definitions/check_id"},
+        "group": {
+          "enum": ["workspace", "service", "assistant", "network", "permission"]
+        },
+        "state": {
+          "enum": ["checking", "ok", "optional", "action_needed", "error"]
+        },
+        "title": {"type": "string", "minLength": 1},
+        "detail": {"type": "string", "minLength": 1},
+        "blocking": {"type": "boolean"},
+        "code": {"$ref": "#/definitions/wire_code"},
+        "fix": {"$ref": "#/definitions/fix"},
+        "config_path": {"type": "string", "minLength": 1},
+        "recovery_path": {"type": "string", "minLength": 1},
+        "enabled": {"type": "boolean"},
+        "available": {
+          "type": ["boolean", "null"]
+        },
+        "candidates": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/candidate"}
+        },
+        "source": {
+          "enum": ["pin", "env", "auto"]
+        },
+        "detected_version": {"type": "string", "minLength": 1},
+        "min_version": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "optional"}}},
+          "then": {"properties": {"blocking": {"const": false}}}
+        },
+        {
+          "if": {
+            "required": ["state"],
+            "properties": {
+              "state": {
+                "enum": ["ok", "checking"]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["code"]
+                },
+                {
+                  "required": ["fix"]
+                }
+              ]
+            },
+            "properties": {
+              "blocking": {"const": false}
+            }
+          },
+          "else": {
+            "required": ["code", "fix"]
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": [
+                  "assistant_codex",
+                  "assistant_claude",
+                  "assistant_agy",
+                  "assistant_deepseek",
+                  "network_tailscale",
+                  "network_tailcat",
+                  "network_lan"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": ["enabled", "available"],
+            "properties": {
+              "blocking": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["assistant_codex", "assistant_claude", "assistant_agy"]
+              }
+            }
+          },
+          "then": {
+            "required": ["candidates"]
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "not": {"const": "config_store"}
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["config_path"]
+                },
+                {
+                  "required": ["recovery_path"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["config_store", "workspace_root"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "group": {"const": "workspace"}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["service_owner_conflict", "service_daemon"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "group": {"const": "service"}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek", "assistant_any"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "group": {"const": "assistant"}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["network_tailscale", "network_tailcat", "network_lan", "network_any"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "group": {"const": "network"}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "enum": ["permission_login_item", "permission_folder_access", "permission_local_network", "permission_photos", "permission_full_disk"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "group": {"const": "permission"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "enum": ["assistant_codex", "assistant_claude", "assistant_agy"]
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "state": {"const": "ok"}
+                }
+              },
+              {
+                "required": ["code"],
+                "properties": {
+                  "code": {
+                    "enum": ["codex_signed_out", "claude_signed_out", "agy_signed_out", "assistant_disabled"]
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "candidates": {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "outcome": {"const": "selected"}
+                  },
+                  "required": ["outcome"]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "schema",
+        "ok",
+        "stage",
+        "configured",
+        "workspace_confirmed",
+        "config_path",
+        "scan_root",
+        "browse_root",
+        "scan_root_exists",
+        "recommended_next",
+        "recommended_transport",
+        "checks"
+      ],
+      "properties": {
+        "schema": {"const": "mimi.onboarding.preflight/v1"},
+        "ok": {"type": "boolean"},
+        "stage": {
+          "enum": ["setup", "pair"]
+        },
+        "configured": {"type": "boolean"},
+        "workspace_confirmed": {"type": "boolean"},
+        "config_path": {"type": "string", "minLength": 1},
+        "scan_root": {"type": "string", "minLength": 1},
+        "browse_root": {"type": "string", "minLength": 1},
+        "scan_root_exists": {"type": "boolean"},
+        "recommended_next": {"$ref": "#/definitions/check_id"},
+        "recommended_transport": {
+          "enum": ["tailscale", "tailcat", "lan", null]
+        },
+        "checks": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/check"},
+          "minItems": 12,
+          "maxItems": 18,
+          "not": {"contains": {"properties": {"state": {"const": "checking"}}}},
+          "allOf": [
+            {
+              "if": {"contains": {"properties": {"id": {"const": "assistant_any"}, "state": {"const": "ok"}}}},
+              "then": {"contains": {"properties": {
+                "id": {"enum": ["assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"]},
+                "state": {"const": "ok"}, "enabled": {"const": true}, "available": {"const": true}
+              }}}
+            },
+            {
+              "if": {"contains": {"properties": {"id": {"const": "network_any"}, "state": {"const": "ok"}}}},
+              "then": {"contains": {"properties": {
+                "id": {"enum": ["network_tailscale", "network_tailcat", "network_lan"]},
+                "state": {"const": "ok"}, "enabled": {"const": true}, "available": {"const": true}
+              }}}
+            }
+          ],
+          "oneOf": [
+            {
+              "description": "linux",
+              "minItems": 12,
+              "maxItems": 12,
+              "items": [
+                {
+                  "properties": {
+                    "id": {"const": "config_store"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "workspace_root"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "service_daemon"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_codex"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_claude"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_agy"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_deepseek"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_any"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailscale"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailcat"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_lan"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_any"}
+                  }
+                }
+              ]
+            },
+            {
+              "description": "windows",
+              "minItems": 13,
+              "maxItems": 13,
+              "items": [
+                {
+                  "properties": {
+                    "id": {"const": "config_store"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "workspace_root"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "service_daemon"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_codex"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_claude"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_agy"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_deepseek"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_any"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailscale"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailcat"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_lan"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_any"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_local_network"}
+                  }
+                }
+              ]
+            },
+            {
+              "description": "macos",
+              "minItems": 18,
+              "maxItems": 18,
+              "items": [
+                {
+                  "properties": {
+                    "id": {"const": "config_store"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "workspace_root"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "service_owner_conflict"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "service_daemon"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_codex"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_claude"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_agy"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_deepseek"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "assistant_any"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailscale"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_tailcat"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_lan"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "network_any"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_login_item"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_folder_access"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_local_network"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_photos"}
+                  }
+                },
+                {
+                  "properties": {
+                    "id": {"const": "permission_full_disk"}
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"scan_root_exists": {"const": false}}},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "workspace_root"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
+          "if": {"properties": {"stage": {"const": "pair"}, "configured": {"const": false}}},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "config_store"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
+          "if": {"properties": {
+            "stage": {"const": "pair"}, "workspace_confirmed": {"const": false},
+            "checks": {"contains": {"properties": {"id": {"const": "config_store"}, "state": {"const": "ok"}}}}
+          }},
+          "then": {"properties": {"checks": {"contains": {"properties": {
+            "id": {"const": "workspace_root"}, "blocking": {"const": true}
+          }}}}}
+        },
+        {
+          "if": {
+            "required": ["configured"],
+            "properties": {
+              "configured": {"const": false}
+            }
+          },
+          "then": {
+            "properties": {
+              "workspace_confirmed": {"const": false}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ok": {"const": true}
+            }
+          },
+          "then": {
+            "properties": {
+              "checks": {
+                "not": {
+                  "contains": {
+                    "properties": {
+                      "blocking": {"const": true}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "checks": {
+                "contains": {
+                  "properties": {
+                    "blocking": {"const": true}
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ok": {"const": true},
+              "stage": {"const": "pair"}
+            }
+          },
+          "then": {
+            "properties": {
+              "configured": {"const": true},
+              "workspace_confirmed": {"const": true},
+              "scan_root_exists": {"const": true}
+            }
+          }
+        }
+      ],
+      "description": "Every platform-applicable check occurs exactly once in catalog order. ok is true exactly when no check blocks. recommended_next is the first blocker, otherwise config_store for an unsaved setup or network_any. A completed report exits 0. Progress is one check per stderr line, initially all checking, then upserts. Final stdout replaces progress."
+    },
+    "ticket": {
+      "type": "object",
+      "required": ["ok", "endpoint", "pair_url", "pair_expires_at", "network"],
+      "properties": {
+        "ok": {"const": true},
+        "endpoint": {"type": "string", "minLength": 1},
+        "pair_url": {"type": "string", "pattern": "^mimiremote://pair\\?"},
+        "pair_expires_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+        "network": {"$ref": "#/definitions/transport"},
+        "tailscale_dns_name": {"type": "string", "minLength": 1},
+        "tailscale_device_name": {"type": "string", "minLength": 1},
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "setup": {
+      "type": "object",
+      "required": ["ok", "configured", "created", "config_path", "scan_root", "browse_root"],
+      "properties": {
+        "ok": {"const": true},
+        "configured": {"const": true},
+        "created": {"type": "boolean"},
+        "config_path": {"type": "string", "minLength": 1},
+        "scan_root": {"type": "string", "minLength": 1},
+        "browse_root": {"type": "string", "minLength": 1},
+        "pairing_deferred": {"type": "boolean"},
+        "endpoint": {"type": "string", "minLength": 1},
+        "pair_url": {"type": "string", "pattern": "^mimiremote://pair\\?"},
+        "pair_expires_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+        "network": {"$ref": "#/definitions/transport"},
+        "tailscale_dns_name": {"type": "string", "minLength": 1},
+        "tailscale_device_name": {"type": "string", "minLength": 1},
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["pairing_deferred"],
+            "properties": {
+              "pairing_deferred": {"const": true}
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["pair_url"]
+                },
+                {
+                  "required": ["pair_expires_at"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["pair_url"],
+            "properties": {
+              "pair_url": {}
+            }
+          },
+          "then": {
+            "required": ["endpoint", "pair_expires_at"]
+          }
+        }
+      ]
+    },
+    "ready": {
+      "type": "object",
+      "required": ["ok", "service_ok", "version"],
+      "properties": {
+        "ok": {"const": true},
+        "service_ok": {"const": true},
+        "version": {"type": "string", "minLength": 1},
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "submitted": {
+      "type": "object",
+      "required": ["ok", "start_submitted"],
+      "properties": {
+        "ok": {"const": true},
+        "start_submitted": {"const": true},
+        "service_ok": {"const": false}
+      }
+    },
+    "diagnostic": {
+      "allOf": [
+        {"$ref": "#/definitions/diagnostic_fields"},
+        {
+          "properties": {
+            "code": {"$ref": "#/definitions/wire_code"}
+          }
+        }
+      ]
+    },
+    "cli_error": {
+      "type": "object",
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": {"const": false},
+        "error": {"$ref": "#/definitions/diagnostic"}
+      }
+    },
+    "http_error": {
+      "allOf": [
+        {"$ref": "#/definitions/cli_error"},
+        {"$ref": "#/definitions/public_fields"}
+      ]
+    },
+    "public_fields": {
+      "description": "Local-only fields remain private inside additive objects and arrays.",
+      "patternProperties": {"^": {"$ref": "#/definitions/public_fields"}},
+      "items": {"$ref": "#/definitions/public_fields"},
+      "not": {
+        "type": "object",
+        "anyOf": [
+          {
+            "required": ["config_path"]
+          },
+          {
+            "required": ["recovery_path"]
+          },
+          {
+            "required": ["candidates"]
+          },
+          {
+            "required": ["detected_version"]
+          },
+          {
+            "required": ["min_version"]
+          },
+          {
+            "required": ["source"]
+          },
+          {
+            "required": ["scan_root"]
+          },
+          {
+            "required": ["browse_root"]
+          },
+          {
+            "required": ["endpoint"]
+          },
+          {
+            "required": ["pair_url"]
+          },
+          {
+            "required": ["stderr"]
+          },
+          {
+            "required": ["path"]
+          },
+          {
+            "required": ["host"]
+          },
+          {
+            "required": ["host_id"]
+          },
+          {
+            "required": ["runtime"]
+          },
+          {
+            "required": ["runtime_status"]
+          },
+          {
+            "required": ["config"]
+          },
+          {
+            "required": ["scan_root_exists"]
+          },
+          {
+            "required": ["tailscale_dns_name"]
+          },
+          {
+            "required": ["tailscale_device_name"]
+          },
+          {
+            "required": ["device_id"]
+          },
+          {
+            "required": ["raw_stderr"]
+          },
+          {
+            "required": ["grant"]
+          },
+          {
+            "required": ["signature"]
+          },
+          {
+            "required": ["token"]
+          },
+          {
+            "required": ["token_file"]
+          },
+          {
+            "required": ["connect_url"]
+          }
+        ]
+      }
+    },
+    "diagnostic_fields": {
+      "type": "object",
+      "required": ["code", "step", "message", "fix"],
+      "properties": {
+        "step": {"$ref": "#/definitions/check_id"},
+        "message": {"type": "string", "minLength": 1},
+        "fix": {"$ref": "#/definitions/fix"},
+        "config_path": {"type": "string", "minLength": 1},
+        "recovery_path": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "fix": {
+                "not": {
+                  "properties": {
+                    "target": {"const": "host_recovery"}
+                  },
+                  "required": ["target"]
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["config_path"]
+                },
+                {
+                  "required": ["recovery_path"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "local_error": {
+      "description": "UI-synthesized diagnostics only. Excluded from wire messages.",
+      "type": "object",
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": {"const": false},
+        "error": {
+          "allOf": [
+            {"$ref": "#/definitions/diagnostic_fields"},
+            {
+              "properties": {
+                "code": {
+                  "enum": ["command_timeout", "embedded_binary_missing"]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
