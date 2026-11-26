@@ -58,6 +58,30 @@ enum OnboardingTransport: String, Codable, CaseIterable, Equatable, Hashable, Se
     case tailscale
     case tailcat
     case lan
+
+    var pairingNetwork: PairingNetwork {
+        switch self {
+        case .tailscale: .tailscale
+        case .tailcat: .tailcat
+        case .lan: .localNetwork
+        }
+    }
+
+    var checkID: OnboardingCheckID {
+        switch self {
+        case .tailscale: .networkTailscale
+        case .tailcat: .networkTailcat
+        case .lan: .networkLAN
+        }
+    }
+
+    var localizedTitle: String {
+        switch self {
+        case .tailscale: "Tailscale"
+        case .tailcat: "内置连接"
+        case .lan: "同一局域网"
+        }
+    }
 }
 
 enum OnboardingCandidateOutcome: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
@@ -410,6 +434,49 @@ struct OnboardingCheck: Decodable, Equatable, Identifiable, Sendable {
     let hasConfigPathKey: Bool
     let hasRecoveryPathKey: Bool
 
+    init(
+        id: OnboardingCheckID,
+        group: OnboardingCheckGroup? = nil,
+        state: OnboardingCheckState,
+        title: String? = nil,
+        detail: String,
+        blocking: Bool,
+        code: String? = nil,
+        fix: OnboardingFix? = nil,
+        configPath: String? = nil,
+        recoveryPath: String? = nil,
+        enabled: Bool? = nil,
+        available: Bool? = nil,
+        hasAvailableKey: Bool? = nil,
+        candidates: [OnboardingCandidate]? = nil,
+        source: OnboardingCandidateSource? = nil,
+        detectedVersion: String? = nil,
+        minVersion: String? = nil
+    ) {
+        self.id = id
+        self.group = group ?? id.group
+        self.state = state
+        self.title = title ?? id.localizedTitle
+        self.detail = detail
+        self.blocking = blocking
+        self.code = code
+        self.fix = fix
+        self.configPath = configPath
+        self.recoveryPath = recoveryPath
+        self.enabled = enabled
+        self.available = available
+        self.candidates = candidates
+        self.source = source
+        self.detectedVersion = detectedVersion
+        self.minVersion = minVersion
+        self.hasAvailableKey = hasAvailableKey ?? (available != nil || id.isIndividualAssistant || id.isIndividualNetwork)
+        self.hasCandidatesKey = candidates != nil
+        self.hasCodeKey = code != nil
+        self.hasFixKey = fix != nil
+        self.hasConfigPathKey = configPath != nil
+        self.hasRecoveryPathKey = recoveryPath != nil
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, group, state, title, detail, blocking, code, fix
         case configPath = "config_path"
@@ -470,6 +537,34 @@ struct OnboardingPreflightReport: Decodable, Equatable, Sendable {
     let recommendedNext: OnboardingCheckID
     let recommendedTransport: OnboardingTransport?
     let checks: [OnboardingCheck]
+
+    init(
+        schema: String = OnboardingSchema.preflightV1,
+        ok: Bool,
+        stage: OnboardingStage,
+        configured: Bool,
+        workspaceConfirmed: Bool,
+        configPath: String,
+        scanRoot: String,
+        browseRoot: String,
+        scanRootExists: Bool,
+        recommendedNext: OnboardingCheckID,
+        recommendedTransport: OnboardingTransport?,
+        checks: [OnboardingCheck]
+    ) {
+        self.schema = schema
+        self.ok = ok
+        self.stage = stage
+        self.configured = configured
+        self.workspaceConfirmed = workspaceConfirmed
+        self.configPath = configPath
+        self.scanRoot = scanRoot
+        self.browseRoot = browseRoot
+        self.scanRootExists = scanRootExists
+        self.recommendedNext = recommendedNext
+        self.recommendedTransport = recommendedTransport
+        self.checks = checks
+    }
 
     enum CodingKeys: String, CodingKey {
         case schema, ok, stage, configured
@@ -808,10 +903,12 @@ struct PairingTicketReceipt: Decodable, Equatable, Sendable {
         )
     }
 
-    var asPairingInfo: PairingInfo {
+    var asPairingInfo: PairingInfo { pairingInfo(for: .automatic) }
+
+    func pairingInfo(for requestedNetwork: PairingNetwork) -> PairingInfo {
         PairingInfo(
             endpoint: endpoint,
-            network: network,
+            network: hasExplicitNetwork || requestedNetwork == .automatic ? network : requestedNetwork,
             tailscaleDNSName: tailscaleDNSName,
             tailscaleDeviceName: tailscaleDeviceName,
             pairURL: pairURL,

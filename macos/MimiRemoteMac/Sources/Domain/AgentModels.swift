@@ -100,6 +100,8 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     /// 旧版 agentd 不返回 mode，按自建模式处理（#885、#896）。
     var mode: String? = nil
 
+    var restartRequired: Bool? = nil
+
     var isManagedMode: Bool { mode == "managed" }
 
     enum CodingKeys: String, CodingKey {
@@ -107,6 +109,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case running
         case version
         case derpMapURL = "derp_map_url"
+        case restartRequired = "restart_required"
         case pairedDeviceCount = "paired_device_count"
         case error
         case mode

@@ -190,6 +190,12 @@ struct AgentCommandClient: Sendable {
     var exportDiagnostics: @Sendable () async throws -> AgentDiagnosticsExport = {
         throw AgentClientError.commandFailed("当前 agentd 不支持诊断日志，请更新 App。")
     }
+    var setRuntimePath: @Sendable (_ runtimeID: String, _ value: String) async throws -> Void = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持运行时路径设置，请更新 App。")
+    }
+    var updateWorkspace: @Sendable (_ scanRoot: URL, _ browseRoot: URL?) async throws -> Void = { _, _ in
+        throw AgentClientError.commandFailed("当前 agentd 不支持目录更新命令，请更新 App。")
+    }
 }
 
 extension AgentCommandClient {
@@ -407,7 +413,7 @@ extension AgentCommandClient {
                 activeStep: .networkAny
             )
             let receipt = try decode(PairingTicketReceipt.self, from: result)
-            return receipt.asPairingInfo
+            return receipt.pairingInfo(for: network)
         }
 
         return AgentCommandClient(
@@ -744,6 +750,36 @@ extension AgentCommandClient {
                     arguments: diagnosticsArguments(action: .export),
                     outputLimit: 24 * 1_048_576
                 ))
+            },
+            setRuntimePath: { runtimeID, value in
+                let binary = try requireEmbeddedBinary()
+                _ = try await execute(
+                    binary: binary,
+                    arguments: runtimePathArguments(runtimeID: runtimeID, value: value),
+                    timeout: AgentCommandTimeouts.runtime,
+                    errorContext: OnboardingValidationContext(
+                        surface: .cli,
+                        platform: .macos,
+                        stage: .pair,
+                        configured: true
+                    ),
+                    activeStep: checkIDForRuntime(runtimeID)
+                )
+            },
+            updateWorkspace: { scanRoot, browseRoot in
+                let binary = try requireEmbeddedBinary()
+                _ = try await execute(
+                    binary: binary,
+                    arguments: workspaceArguments(scanRoot: scanRoot, browseRoot: browseRoot),
+                    timeout: AgentCommandTimeouts.workspace,
+                    errorContext: OnboardingValidationContext(
+                        surface: .cli,
+                        platform: .macos,
+                        stage: .pair,
+                        configured: true
+                    ),
+                    activeStep: .workspaceRoot
+                )
             }
         )
     }
@@ -898,6 +934,29 @@ extension AgentCommandClient {
 
     static func diagnosticsArguments(action: DiagnosticsAction) -> [String] {
         ["diagnostics", action.rawValue, "--json"]
+    }
+
+    static func runtimePathArguments(runtimeID: String, value: String) -> [String] {
+        ["runtime", "--runtime-path", "\(runtimeID)=\(value)", "--json"]
+    }
+
+    static func workspaceArguments(scanRoot: URL, browseRoot: URL? = nil) -> [String] {
+        var args = ["workspace", "--scan-root", scanRoot.path]
+        if let browseRoot {
+            args.append(contentsOf: ["--browse-root", browseRoot.path])
+        }
+        args.append("--json")
+        return args
+    }
+
+    private static func checkIDForRuntime(_ runtimeID: String) -> OnboardingCheckID {
+        switch runtimeID.lowercased() {
+        case "codex": .assistantCodex
+        case "claude": .assistantClaude
+        case "agy": .assistantAgy
+        case "deepseek": .assistantDeepSeek
+        default: .assistantAny
+        }
     }
 
 }

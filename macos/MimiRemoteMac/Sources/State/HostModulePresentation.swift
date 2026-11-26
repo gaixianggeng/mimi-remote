@@ -52,7 +52,8 @@ extension HostStore {
         return status.networkStatus?.mode == "tailscale" || status.networkStatus?.allowLAN == true
     }
     var canPair: Bool {
-        status?.serviceOK == true && (codexEnabled || claudeEnabled || agyEnabled || deepSeekEnabled)
+        guard !isOnboardingInProgress else { return false }
+        return status?.serviceOK == true && (codexEnabled || claudeEnabled || agyEnabled || deepSeekEnabled)
             && (!availablePairingNetworks.isEmpty
                 || (tailcatStatus != nil && canChangeTailcat)
                 || (status?.moduleStatus?.lanAvailable == true && canChangeModule(.lan)))
