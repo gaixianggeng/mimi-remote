@@ -204,16 +204,24 @@ final class LocalizationTests: XCTestCase {
             "ui.writer_conflict_shared_guide_now_no_terminal_turn_body",
             "ui.writer_conflict_shared_guide_now_offline_body",
             "ui.writer_conflict_shared_guide_now_pending_body",
-            "ui.writer_conflict_shared_guide_now_resolved_body",
-            "ui.writer_conflict_shared_guide_now_resolved_non_mac_body",
             "ui.writer_conflict_shared_guide_now_retrying_body",
             "ui.writer_conflict_shared_guide_now_running_body",
             "ui.writer_conflict_shared_guide_now_unavailable_body"
         ] {
-            XCTAssertNotEqual(L10n.text(bodyKey, language: .english), bodyKey)
-            XCTAssertNotEqual(L10n.text(bodyKey, language: .simplifiedChinese), bodyKey)
-            XCTAssertFalse(L10n.text(bodyKey, language: .english).isEmpty)
-            XCTAssertFalse(L10n.text(bodyKey, language: .simplifiedChinese).isEmpty)
+            let english = L10n.text(bodyKey, language: .english)
+            let simplifiedChinese = L10n.text(bodyKey, language: .simplifiedChinese)
+            XCTAssertNotEqual(english, bodyKey)
+            XCTAssertNotEqual(simplifiedChinese, bodyKey)
+            XCTAssertFalse(english.isEmpty)
+            XCTAssertFalse(simplifiedChinese.isEmpty)
+            XCTAssertFalse(
+                english.localizedCaseInsensitiveContains("unlocked"),
+                "\(bodyKey) 英文文案不得断言写入权已解除锁定：\(english)"
+            )
+            XCTAssertFalse(
+                simplifiedChinese.contains("已解除锁定"),
+                "\(bodyKey) 中文文案不得断言写入权已解除锁定：\(simplifiedChinese)"
+            )
         }
         // Mac 端目前仅提供中文界面：中英文引导都必须逐字引用 main 上 Mac 端真实存在的入口与按钮文案，
         // 禁止引用尚未合入（#1115）的按钮文案或不存在的英文 Mac 按钮名。

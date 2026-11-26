@@ -12,7 +12,6 @@ enum WriterConflictSharedGuideStatus: Equatable {
     case retrying
     case duplicating
     case offline
-    case resolvedWritable
     case connectionTerminated(ConnectionTerminationStatus)
     case unavailable
 }
@@ -52,9 +51,9 @@ extension SessionStore {
         return session.isRunning ? .checking : .available(lastTurnID: nil)
     }
 
-    /// 引导弹层打开期间实时判定恢复态：连接终止（例如凭据失效）、断网、正在重试或复制中
-    /// 都不能误报为「可马上分支」或「已解除锁定」；只有确认同一会话已无冲突且前台连接恢复可写（`.live`）后，
-    /// 才提示返回直接输入。
+    /// 引导弹层打开期间实时判定当前引导状态：连接终止（例如凭据失效）、断网、正在重试或复制中
+    /// 都不能误报为「可马上分支」；冲突提示消失后也不断言写入权已恢复，统一退回 `.unavailable`
+    /// 提示返回会话页查看最新连接与锁定状态。
     func writerConflictSharedGuideStatus(
         originLease: HostSessionLease?
     ) -> WriterConflictSharedGuideStatus {
@@ -84,24 +83,10 @@ extension SessionStore {
         guard let session = selectedSession else {
             return .unavailable
         }
-        let currentLease = writerConflictForkLease(for: session.id)
-        if let originLease, currentLease != originLease {
-            return .unavailable
-        }
-        guard !hasActiveWriterConflict(sessionID: session.id),
-              selectedOwnershipNotice == nil,
-              canControlSession(session)
-        else {
-            return .unavailable
-        }
-        switch conversationReadiness(for: session) {
-        case .unavailable(let reason):
+        if case .unavailable(let reason) = conversationReadiness(for: session) {
             return .connectionTerminated(reason)
-        case .live:
-            return .resolvedWritable
-        case .sending, .loadingHistory, .connecting, .observing, .reconnecting, .disconnected, .failed:
-            return .unavailable
         }
+        return .unavailable
     }
 
     var selectedWriterConflictForkErrorMessage: String? {

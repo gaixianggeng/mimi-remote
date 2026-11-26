@@ -484,17 +484,9 @@ struct WriterConflictSharedGuideSheet: View {
     static func nowSectionBodyKey(
         sourceIsRunning: Bool,
         availability: WriterConflictForkAvailability?,
-        status: WriterConflictSharedGuideStatus = .activeConflict,
-        hostPlatform: HostPlatform = .unknown
+        status: WriterConflictSharedGuideStatus = .activeConflict
     ) -> String {
         switch status {
-        case .resolvedWritable:
-            switch hostPlatform {
-            case .apple:
-                return "ui.writer_conflict_shared_guide_now_resolved_body"
-            case .windows, .linux, .unknown:
-                return "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
-            }
         case .connectionTerminated(let termination):
             switch termination {
             case .credentialsInvalid:
@@ -538,8 +530,7 @@ struct WriterConflictSharedGuideSheet: View {
         let nowBodyKey = nowSectionBodyKey(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
-            status: status,
-            hostPlatform: hostPlatform
+            status: status
         )
         let sharingSection: SectionModel
         switch hostPlatform {

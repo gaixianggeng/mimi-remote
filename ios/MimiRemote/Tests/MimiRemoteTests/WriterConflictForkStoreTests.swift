@@ -478,27 +478,6 @@ final class WriterConflictForkStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             WriterConflictSharedGuideSheet.nowSectionBodyKey(
-                sourceIsRunning: true,
-                availability: .available(lastTurnID: "turn-1"),
-                status: .resolvedWritable,
-                hostPlatform: .apple
-            ),
-            "ui.writer_conflict_shared_guide_now_resolved_body"
-        )
-        for nonMacOrUnknown in [HostPlatform.windows, .linux, .unknown] {
-            XCTAssertEqual(
-                WriterConflictSharedGuideSheet.nowSectionBodyKey(
-                    sourceIsRunning: true,
-                    availability: .available(lastTurnID: "turn-1"),
-                    status: .resolvedWritable,
-                    hostPlatform: nonMacOrUnknown
-                ),
-                "ui.writer_conflict_shared_guide_now_resolved_non_mac_body",
-                "\(nonMacOrUnknown.rawValue) 平台恢复可写后不应提示 Mac 配置步骤"
-            )
-        }
-        XCTAssertEqual(
-            WriterConflictSharedGuideSheet.nowSectionBodyKey(
                 sourceIsRunning: false,
                 availability: .available(lastTurnID: nil),
                 status: .offline
@@ -537,6 +516,10 @@ final class WriterConflictForkStoreTests: XCTestCase {
             ),
             "ui.writer_conflict_shared_guide_now_unavailable_body"
         )
+        let unavailableZh = L10n.text("ui.writer_conflict_shared_guide_now_unavailable_body", language: .simplifiedChinese)
+        let unavailableEn = L10n.text("ui.writer_conflict_shared_guide_now_unavailable_body", language: .english)
+        XCTAssertFalse(unavailableZh.contains("已解除锁定"))
+        XCTAssertFalse(unavailableEn.localizedCaseInsensitiveContains("unlocked"))
     }
 
     func testConflictCardMessageBodyOnlyPromisesTurnBoundaryWhenConfirmed() {
@@ -928,41 +911,42 @@ final class WriterConflictForkStoreTests: XCTestCase {
                 && bridge.latestGuideNowBody == L10n.text("ui.writer_conflict_shared_guide_now_body")
         }
 
-        // 仅清除冲突标记但尚未建立可写连接时，不能误报已解除锁定。
+        // 仅清除冲突标记但尚未建立连接时，引导弹层保持状态变化提示，不断言已解除锁定。
         store.setActiveWriterConflict(false, sessionID: source.id)
         XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .unavailable)
         let unavailableCopy = L10n.text("ui.writer_conflict_shared_guide_now_unavailable_body")
         try await waitUntil(
-            description: "尚未恢复可写连接时引导弹层不误报已解锁",
+            description: "冲突标记清除后引导弹层不误报已解锁",
             window: hosted.window,
             extraView: presented.view
         ) {
             !bridge.cardIsMounted && bridge.latestGuideNowBody == unavailableCopy
         }
 
-        // 同一会话的前台 WebSocket 确认连上后（.live），才切换为已解除锁定说明。
+        // 即使前台 WebSocket 进入 .connected（.live），引导弹层也不断言「已解除锁定」，
+        // 统一保持返回会话页查看最新连接与锁定状态的保守提示。
         store.connectWebSocket(source, replayBufferedEvents: false, allowNonRunning: true)
         let socket = try XCTUnwrap(sockets.first)
         socket.emitStatus(.connected)
         try await waitForWebSocketStatus(.connected, store: store)
-        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .resolvedWritable)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .unavailable)
 
-        // 未带平台元数据的旧档案恢复可写时，使用平台中性的已解锁说明，不默认引导 Mac 配置。
-        let resolvedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_non_mac_body")
         try await waitUntil(
-            description: "同一会话恢复可写后引导弹层更新为已解锁说明",
+            description: "前台连接 .connected 后引导弹层仍保持状态变化提示而非断言已解锁",
             window: hosted.window,
             extraView: presented.view
         ) {
-            !bridge.cardIsMounted && bridge.latestGuideNowBody == resolvedCopy
+            !bridge.cardIsMounted && bridge.latestGuideNowBody == unavailableCopy
         }
-        XCTAssertNotNil(hosted.controller.presentedViewController, "冲突解除不应导致引导弹层异常销毁")
-        XCTAssertEqual(bridge.latestGuideNowBody, resolvedCopy, "冲突解除后引导弹层应更新为已解锁说明")
+        XCTAssertNotNil(hosted.controller.presentedViewController, "冲突状态变化不应导致引导弹层异常销毁")
+        XCTAssertEqual(bridge.latestGuideNowBody, unavailableCopy, "引导弹层不断言写入权已恢复")
+        XCTAssertFalse(bridge.latestGuideNowBody?.contains("已解除锁定") == true)
+        XCTAssertFalse(bridge.latestGuideNowBody?.localizedCaseInsensitiveContains("unlocked") == true)
 
         let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide, "引导弹层完成按钮应保持可关闭")
         dismissAction()
         try await waitForPresentedViewControllerDismissal(on: hosted.controller)
-        XCTAssertFalse(bridge.cardIsMounted, "冲突已解除且关闭引导后，冲突卡不应再显示")
+        XCTAssertFalse(bridge.cardIsMounted, "冲突已清除且关闭引导后，冲突卡不应再显示")
         XCTAssertFalse(store.selectedSessionShowsWriterConflictCard)
     }
 
@@ -1041,7 +1025,6 @@ final class WriterConflictForkStoreTests: XCTestCase {
         // 弹层绝不能误报「已解除锁定」，而应显示需要重新配对的恢复提示。
         socket.emitStatus(.terminated(.credentialsInvalid))
         let credInvalidCopy = L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body")
-        let unlockedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_body")
         try await waitUntil(
             description: "凭据失效后引导弹层显示重新配对提示而非已解锁",
             window: hosted.window,
@@ -1056,7 +1039,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
             store.writerConflictSharedGuideStatus(originLease: originLease),
             .connectionTerminated(.credentialsInvalid)
         )
-        XCTAssertNotEqual(bridge.latestGuideNowBody, unlockedCopy)
+        XCTAssertFalse(bridge.latestGuideNowBody?.contains("已解除锁定") == true)
+        XCTAssertFalse(bridge.latestGuideNowBody?.localizedCaseInsensitiveContains("unlocked") == true)
 
         let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide)
         dismissAction()

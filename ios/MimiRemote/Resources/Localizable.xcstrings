@@ -52917,40 +52917,6 @@
         }
       }
     },
-    "ui.writer_conflict_shared_guide_now_resolved_body": {
-      "comment": "Explains what to do when the writer conflict was resolved while the shared guide sheet was open on a confirmed Mac host.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This chat is now unlocked—tap “Done” to return and continue typing. To share live chats between your Mac and phone going forward, complete the one-time Mac setup above."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "当前会话已解除锁定，点「完成」返回即可直接继续输入。如果之后希望电脑和手机实时共用同一条会话，按上方 Mac 配置步骤设置一次即可。"
-          }
-        }
-      }
-    },
-    "ui.writer_conflict_shared_guide_now_resolved_non_mac_body": {
-      "comment": "Explains what to do when the writer conflict was resolved while the shared guide sheet was open on a non-Mac or unknown-platform host.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This chat is now unlocked—tap “Done” to return and continue typing."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "当前会话已解除锁定，点「完成」返回即可直接继续输入。"
-          }
-        }
-      }
-    },
     "ui.writer_conflict_shared_guide_now_retrying_body": {
       "comment": "Explains that Mimi is refreshing messages and retrying write access, so branching is temporarily disabled until the retry finishes.",
       "localizations": {
