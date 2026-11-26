@@ -1,0 +1,138 @@
+{
+  "schema": "mimi.all_runtimes.phase0.live_sample.v1",
+  "sampleId": "gateway-global-unmarked-same-page-retry",
+  "category": "accepted",
+  "baselineCommit": "2c6342fb",
+  "runtimeProvider": "codex",
+  "component": {
+    "gateway": "agentd internal/httpapi/appserver_gateway_global_list.go",
+    "go": "go1.25.14 darwin/arm64",
+    "gitWaitBudgetMs": 300
+  },
+  "provenance": "Current-behavior wire recording matching internal/httpapi/appserver_gateway_global_list.go:58-80,151-271 and appserver_gateway_global_list_git_test.go:190-227 at baseline 2c6342fb; sanitized paths, IDs, and opaque retry cursor.",
+  "observedBehaviors": [
+    "When browse-root Git ownership lookup exceeds 300ms (incomplete=true), agentd omits unsettled worktree rows and returns an opaque mimi_* retry cursor with NO listMeta and NO pageDisposition.",
+    "On round-2 retry with that cursor, agentd resolves the same upstream page without advancing; the newly settled external worktree row (updatedAt=1775815600) appears AFTER round 1 had already returned an older row (updatedAt=1775815200), demonstrating why missing pageDisposition must not advance watermark or trigger cross-page inversion.",
+    "copyGatewayRawFields (appserver_gateway_global_list.go:199-210) currently strips cliVersion from global discovery responses.",
+    "External browse-root worktree rows are forced readOnly=true and canAcceptDirectInput=false in mimiRemote metadata."
+  ],
+  "exchanges": [
+    {
+      "label": "round-1-unmarked-same-page-retry",
+      "note": "External worktree /Users/demo/browse/alpha-wt is unsettled within 300ms Git wait budget; gateway returns only registered-repo row and an unmarked mimi_* retry cursor pointing back to upstream page 1.",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/list",
+        "params": {
+          "limit": 50,
+          "sortKey": "updated_at"
+        }
+      },
+      "response": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "data": [
+            {
+              "canAcceptDirectInput": true,
+              "createdAt": 1775815100,
+              "cwd": "/Users/demo/workspace/alpha",
+              "id": "thr_reg_older",
+              "mimiRemote": {
+                "discovery": "global",
+                "projectId": "proj_alpha",
+                "projectName": "alpha",
+                "projectPath": "/Users/demo/workspace/alpha",
+                "readOnly": false
+              },
+              "modelProvider": "openai",
+              "name": "Registered Workspace Session",
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-older.jsonl",
+              "preview": "Synthetic registered prompt",
+              "recencyAt": null,
+              "sessionId": "thr_reg_older",
+              "source": "cli",
+              "status": {
+                "type": "notLoaded"
+              },
+              "updatedAt": 1775815200
+            }
+          ],
+          "nextCursor": "mimi_demo_retry_cursor_page1"
+        }
+      }
+    },
+    {
+      "label": "round-2-settled-same-page",
+      "note": "After background Git ownership resolution caches /Users/demo/browse/alpha-wt -> proj_alpha, client retries with mimi_demo_retry_cursor_page1 and receives the full settled page (including newer thr_wt_newer) with nextCursor: null and still no listMeta/pageDisposition.",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "thread/list",
+        "params": {
+          "limit": 50,
+          "sortKey": "updated_at",
+          "cursor": "mimi_demo_retry_cursor_page1"
+        }
+      },
+      "response": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "data": [
+            {
+              "canAcceptDirectInput": false,
+              "createdAt": 1775815500,
+              "cwd": "/Users/demo/browse/alpha-wt",
+              "id": "thr_wt_newer",
+              "mimiRemote": {
+                "discovery": "global",
+                "projectId": "proj_alpha",
+                "projectName": "alpha",
+                "projectPath": "/Users/demo/workspace/alpha",
+                "readOnly": true
+              },
+              "modelProvider": "openai",
+              "name": "External Worktree Session",
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-newer.jsonl",
+              "preview": "Synthetic worktree prompt",
+              "recencyAt": 1775815600,
+              "sessionId": "thr_wt_newer",
+              "source": "cli",
+              "status": {
+                "type": "notLoaded"
+              },
+              "updatedAt": 1775815600
+            },
+            {
+              "canAcceptDirectInput": true,
+              "createdAt": 1775815100,
+              "cwd": "/Users/demo/workspace/alpha",
+              "id": "thr_reg_older",
+              "mimiRemote": {
+                "discovery": "global",
+                "projectId": "proj_alpha",
+                "projectName": "alpha",
+                "projectPath": "/Users/demo/workspace/alpha",
+                "readOnly": false
+              },
+              "modelProvider": "openai",
+              "name": "Registered Workspace Session",
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-older.jsonl",
+              "preview": "Synthetic registered prompt",
+              "recencyAt": null,
+              "sessionId": "thr_reg_older",
+              "source": "cli",
+              "status": {
+                "type": "notLoaded"
+              },
+              "updatedAt": 1775815200
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    }
+  ]
+}

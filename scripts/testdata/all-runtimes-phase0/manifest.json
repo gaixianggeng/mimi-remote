@@ -1,0 +1,34 @@
+{
+  "schema": "mimi.all_runtimes.phase0.manifest.v1",
+  "baselineCommit": "2c6342fb",
+  "scope": "live-recordings-only",
+  "futureContractFixturesDeferred": "Per CLOSURE-CHECKLIST.md, future contract fixtures (same_page_retry, 4-state listMeta, etc.) are deferred until P1 revisions are finalized.",
+  "componentVersions": {
+    "go": "go1.25.14 darwin/arm64",
+    "bun": "1.2.22",
+    "node": "v24.22.3",
+    "cargo": "1.100.0",
+    "codexCli": "0.171.0",
+    "codexRepoProtocolSnapshot": "0.162.0",
+    "claudeSdkAdapter": "mimi-claude-adapter/0.3.0",
+    "claudeAgentSdk": "@anthropic-ai/claude-agent-sdk@0.3.296",
+    "claudeLegacyRustBridge": "alleycat-claude-bridge/0.2.15",
+    "agyAcpAdapter": "mimi-agy-adapter/0.1.0",
+    "deepseekHarnessSnapshot": "@deepseek-ai/dsh@0.1.5-rc.2"
+  },
+  "accepted": [
+    "accepted/gateway-global-unmarked-same-page-retry.json",
+    "accepted/claude-sdk-empty-cwd.json",
+    "accepted/claude-legacy-rust-ms.json",
+    "accepted/codex-recency-at-null.json",
+    "accepted/agy-acp-current-list.json",
+    "accepted/deepseek-harness-session-list.json"
+  ],
+  "malformed": [
+    "malformed/missing-next-cursor-key.json",
+    "malformed/non-array-data.json",
+    "malformed/blank-thread-id.json",
+    "malformed/invalid-cwd-type.json",
+    "malformed/mixed-timestamp-units.json"
+  ]
+}
