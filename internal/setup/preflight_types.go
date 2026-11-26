@@ -2,18 +2,23 @@ package setup
 
 import (
 	"context"
+	"net"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type PreflightOptions struct {
+	// The managed CLI verifies the OS owner of this socket before sending its bearer.
+	HostDial                                         func(context.Context, string, string) (net.Conn, error)
 	Stage, ConfigPath, ScanRoot, BrowseRoot, Version string
 	LegacyPath                                       string
 	RuntimePaths, Assistants                         map[string]string
 }
 
 type PreflightHost struct {
+	LANPolicyCode  *string           `json:"lan_policy_code,omitempty"`
+	Generation     string            `json:"generation,omitempty"`
 	Version        string            `json:"version"`
 	Ready          bool              `json:"ready"`
 	Assistants     map[string]bool   `json:"assistants"`

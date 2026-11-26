@@ -106,6 +106,15 @@ func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config)
 	return result
 }
 
+// StatusFromConfig selects the display endpoint without issuing a ticket.
+func StatusFromConfig(ctx context.Context, path string, cfg config.Config) Result {
+	result := localServiceResult(path, cfg)
+	if endpoint, warnings, err := pairingEndpoint(ctx, cfg, PairingNetworkAuto, defaultPairingNetworkLookups()); err == nil {
+		result.Endpoint, result.Warnings = endpoint, warnings
+	}
+	return result
+}
+
 // LocalServiceAccess 只读取本机就绪检查需要的 Token 和 loopback Endpoint，
 // 不探测也不要求 Tailscale 或局域网地址。安装器与托盘的 --no-pair 启停只验证服务本身；
 // 两种连接方式都关闭时，服务仍须能启动和重启，配对提示留给 pair（#874）。
@@ -151,6 +160,11 @@ func resultFromConfigForNetwork(
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
 		return Result{}, err
+	}
+	if pairingNetworkForEndpoint(endpoint) == PairingNetworkLAN && lookups.confirmLAN != nil {
+		if err := lookups.confirmLAN(ctx, cfg); err != nil {
+			return Result{}, err
+		}
 	}
 	host := tailscaleinfo.Host{}
 	if pairingNetworkForEndpoint(endpoint) == PairingNetworkTailscale && lookups.tailscaleHost != nil {

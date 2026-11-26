@@ -25,18 +25,20 @@ func TestFreshExplicitSSHUsesOnlySuccessfulPreflight(t *testing.T) {
 	}
 	clearSetupEnv(t)
 	for _, tc := range []struct {
-		name      string
-		saveOnly  bool
-		wantCalls int
+		name             string
+		saveOnly         bool
+		localServiceOnly bool
+		wantCalls        int
 	}{
-		{"verified SSH", false, 1},
-		{"save without preflight", true, 0},
+		{name: "verified SSH", wantCalls: 1},
+		{name: "save without preflight", saveOnly: true},
+		{name: "local service without preflight", localServiceOnly: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			opts := Options{
 				ConfigPath: path, ScanRoot: t.TempDir(), Listen: "127.0.0.1:8787",
-				AppServerSSHTarget: "mimi-local", SaveOnly: tc.saveOnly,
+				AppServerSSHTarget: "mimi-local", SaveOnly: tc.saveOnly, LocalServiceOnly: tc.localServiceOnly,
 				Assistants:       map[string]string{"claude": "disabled", "agy": "disabled"},
 				ObserveAssistant: inspectPreflightRuntime,
 			}
@@ -54,7 +56,8 @@ func TestFreshExplicitSSHUsesOnlySuccessfulPreflight(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if calls != tc.wantCalls || (!tc.saveOnly && result.PairURL == "") {
+			wantPair := !tc.saveOnly && !tc.localServiceOnly
+			if calls != tc.wantCalls || (result.PairURL != "") != wantPair {
 				t.Fatalf("SSH preflight calls = %d, pairing available = %t", calls, result.PairURL != "")
 			}
 			cfg := config.ParseSetupDocument(readPublicationBytes(t, path)).Config

@@ -186,6 +186,9 @@ func (r *Router) setClaudeBridgeProbe(probe appServerBridgeProbe) {
 func (r *Router) claudeBridgeProbe() appServerBridgeProbe {
 	r.claudeMu.Lock()
 	defer r.claudeMu.Unlock()
+	if !r.cfg.Claude.Enabled {
+		return appServerBridgeProbe{Status: "disabled"}
+	}
 	if r.claudeProbe.CheckedAt.IsZero() {
 		return appServerBridgeProbe{Status: "unknown"}
 	}
@@ -257,6 +260,17 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		writeGatewayRuntimeError(client, "CLAUDE_DISABLED", "Claude Code runtime 未启用")
 		return
 	}
+	// The bridge outlives this connection, so a client that names a session
+	// resumes the one it had; an unnamed client gets an isolated session and
+	// today's semantics.
+	sessionKey := claudeGatewaySessionKey(req)
+	lease, ok := r.claimClaudeForeground(sessionKey, client)
+	if !ok {
+		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_LIMIT_EXCEEDED", "Claude bridge 并发数已达上限，请稍后重试")
+		return
+	}
+	defer r.releaseClaudeForeground(lease)
+
 	// 直连 WS 可能不经过 config 接口；握手前按 TTL 重探，避免复用启动时的旧 probe 状态。
 	r.refreshClaudeBridgeProbeIfStale()
 	probe := r.claudeBridgeProbe()
@@ -278,16 +292,6 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		})
 		return
 	}
-	// The bridge outlives this connection, so a client that names a session
-	// resumes the one it had; an unnamed client gets an isolated session and
-	// today's semantics.
-	sessionKey := claudeGatewaySessionKey(req)
-	lease, ok := r.claimClaudeForeground(sessionKey, client)
-	if !ok {
-		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_LIMIT_EXCEEDED", "Claude bridge 并发数已达上限，请稍后重试")
-		return
-	}
-	defer r.releaseClaudeForeground(lease)
 
 	ctx, cancel := context.WithCancel(req.Context())
 	defer cancel()
@@ -299,7 +303,11 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		probe.launchEnv(r.cfg.Claude),
 	); err != nil {
 		log.Printf("claude bridge ensure failed err=%v", err)
-		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
+		if errors.Is(err, errAdapterRestartRequired) {
+			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", errAdapterRestartRequired.Error())
+		} else {
+			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
+		}
 		return
 	}
 	upstream, bridgeCursorEpoch, err := r.claudeBridge.dial()

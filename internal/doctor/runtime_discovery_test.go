@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
@@ -103,4 +104,30 @@ func TestDoctorLegacyBridgeRequiresConfiguredClaudeCLI(t *testing.T) {
 	}
 	checker.Run(t.Context(), false)
 
+}
+
+type deadlineCheckingSSH struct{ fakeDoctorSSHTransport }
+
+func (deadlineCheckingSSH) CheckRemoteCodex(ctx context.Context) (string, error) {
+	return "0.150.0", ctx.Err()
+}
+
+func TestDoctorChecksRemoteAssistantBeforePlatformDiagnostics(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	checker := newTestChecker(t, config.Config{AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}})
+	previous := newDoctorSSHTransport
+	newDoctorSSHTransport = func(appserver.SSHTransportOptions) (doctorSSHTransport, error) { return deadlineCheckingSSH{}, nil }
+	t.Cleanup(func() { newDoctorSSHTransport = previous })
+	// Model an unrelated diagnostic consuming the outer deadline.
+	checker.findTailscale = func() (string, error) { cancel(); return "", exec.ErrNotFound }
+	for _, check := range checker.Run(ctx, false).Checks {
+		if check.Name == "codex-app-server" {
+			if !check.OK {
+				t.Fatalf("unrelated check consumed remote inspection deadline: %+v", check)
+			}
+			return
+		}
+	}
+	t.Fatal("missing remote inspection")
 }

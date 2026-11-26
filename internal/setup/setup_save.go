@@ -143,10 +143,12 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 			if err != nil {
 				return Result{}, saveFailure("invalid_request", err)
 			}
-			if err := sshPreflight(ctx, transport); err != nil {
-				return Result{}, &SaveError{Code: "codex_upstream_unavailable", Step: "assistant_codex", Cause: err}
+			if !o.LocalServiceOnly || p.source.exists {
+				if err := sshPreflight(ctx, transport); err != nil {
+					return Result{}, &SaveError{Code: "codex_upstream_unavailable", Step: "assistant_codex", Cause: err}
+				}
+				verifiedHost.Accounts = map[string]string{"codex": "connected"}
 			}
-			verifiedHost.Accounts = map[string]string{"codex": "connected"}
 			p.set("ssh", "app_server", "transport")
 			p.set(target, "app_server", "ssh_target")
 			p.set(true, "app_server", "pin_transport")

@@ -16,6 +16,7 @@ import (
 const privateLANFirewallRuleName = "Mimi Remote agentd (Private LAN)"
 
 const policyScript = `
+$ErrorActionPreference = 'Stop'
 $result = [ordered]@{
     firewall_valid = $false
     profile_private = $false
@@ -24,24 +25,28 @@ $result = [ordered]@{
     unsafe_rules = @()
 }
 
-$rules = @(Get-NetFirewallRule -DisplayName $env:MIMI_FIREWALL_RULE_NAME -ErrorAction SilentlyContinue)
+$rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName $env:MIMI_FIREWALL_RULE_NAME -ErrorAction SilentlyContinue)
 if ($rules.Count -eq 1) {
     $rule = $rules[0]
     $application = $rule | Get-NetFirewallApplicationFilter
     $address = $rule | Get-NetFirewallAddressFilter
+    $profile = Get-NetFirewallProfile -PolicyStore ActiveStore -Name Private -ErrorAction Stop
     $result.firewall_valid = (
+        $profile.Enabled -eq 'True' -and
+        $profile.DefaultInboundAction -ne 'Allow' -and
         $rule.Enabled -eq 'True' -and
         $rule.Profile -eq 'Private' -and
         $rule.Direction -eq 'Inbound' -and
         $rule.Action -eq 'Allow' -and
         $application.Program -eq $env:MIMI_FIREWALL_AGENT_PATH -and
+        @($address.RemoteAddress).Count -eq 1 -and
         $address.RemoteAddress -contains 'LocalSubnet'
     )
 }
 $unsafeRules = @(
-    Get-NetFirewallApplicationFilter -Program $env:MIMI_FIREWALL_AGENT_PATH -ErrorAction SilentlyContinue |
+    Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -Program $env:MIMI_FIREWALL_AGENT_PATH -ErrorAction SilentlyContinue -ErrorVariable appFilterErrors |
         ForEach-Object {
-            Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $_ -ErrorAction SilentlyContinue
+            Get-NetFirewallRule -AssociatedNetFirewallApplicationFilter $_ -ErrorAction Stop
         } |
         Where-Object {
             $_.Enabled -eq 'True' -and
@@ -51,7 +56,7 @@ $unsafeRules = @(
         }
 )
 $result.unsafe_rules = @($unsafeRules | ForEach-Object { [string]$_.DisplayName })
-if ($unsafeRules.Count -gt 0) {
+if ($unsafeRules.Count -gt 0 -or $appFilterErrors.Count -gt 0) {
     $result.firewall_valid = $false
 }
 
@@ -81,11 +86,38 @@ if ($routeCandidates.Count -gt 0) {
     }
 }
 
+# A wildcard bind accepts private IPv4 destinations on every connected NIC.
+# A Private default route does not authorize a second Public/unclassified LAN.
+if ($result.profile_private) {
+    $connected = @(Get-NetIPInterface -AddressFamily IPv4 -ConnectionState Connected -ErrorAction Stop | Select-Object -ExpandProperty InterfaceIndex)
+    $lanIndices = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+        $octets = [Net.IPAddress]::Parse($_.IPAddress).GetAddressBytes()
+        $_.InterfaceIndex -in $connected -and ($octets[0] -eq 10 -or
+            ($octets[0] -eq 192 -and $octets[1] -eq 168) -or
+            ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31))
+    } | Select-Object -ExpandProperty InterfaceIndex -Unique)
+    $profiles = @(Get-NetConnectionProfile -ErrorAction Stop)
+    foreach ($index in $lanIndices) {
+        $nicProfiles = @($profiles | Where-Object { $_.InterfaceIndex -eq $index })
+        if ($nicProfiles.Count -eq 0 -or @($nicProfiles | Where-Object { $_.NetworkCategory -ne 'Private' }).Count -gt 0) {
+            $result.profile_private = $false
+            $result.network_category = 'Unknown'
+            foreach ($profile in $nicProfiles) {
+                if ($profile.NetworkCategory -ne 'Private') {
+                    $result.interface_alias = [string]$profile.InterfaceAlias
+                    $result.network_category = [string]$profile.NetworkCategory
+                    break
+                }
+            }
+            break
+        }
+    }
+}
 $result | ConvertTo-Json -Compress
 `
 
 func Check(ctx context.Context, agentPath string) (Status, error) {
-	resolvedPath, err := exec.LookPath("powershell.exe")
+	resolvedPath, err := systemPowerShell()
 	if err != nil {
 		return Status{}, fmt.Errorf("未找到 Windows PowerShell，无法验证局域网安全策略")
 	}

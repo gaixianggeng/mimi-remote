@@ -42,6 +42,7 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 		return invalidOnboardingRequest(errors.New("配对检查使用已保存的配置"))
 	}
 	o.LegacyPath = setupLegacyPath(fs)
+	o.HostDial = coreDialForConfig(o.ConfigPath)
 	var progress func(setup.PreflightCheck)
 	var streamErr error
 	if *stream {

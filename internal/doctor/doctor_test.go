@@ -146,6 +146,25 @@ func TestCheckerRunReadinessSkipsExternalProcessDiagnostics(t *testing.T) {
 	}
 }
 
+func TestRunningReadinessRejectsDamagedPrivateConfigUntilRepaired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := []byte(`{"auth":{"token":"fixture-private-0123456789"},"app_server":{"transport":"ssh","ssh_target":"fixture.invalid"}}`)
+	configtest.CreatePrivateFile(t, path, raw)
+	saved := config.InspectCommittedDocument(raw)
+	if saved.Code != "" {
+		t.Fatal(saved.Code)
+	}
+	c := NewChecker("fixture", saved.Config, nil, path)
+	for _, data := range [][]byte{raw, []byte("{"), raw} {
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if result := c.RunReadiness(t.Context()); result.OK != bytes.Equal(data, raw) {
+			t.Fatal(result)
+		}
+	}
+}
+
 func TestDesignatedRequirementRejectsPerBuildCDHash(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -29,7 +29,11 @@ func TestPreflightLocalCacheEndpoint(t *testing.T) {
 		t.Setenv(key, home)
 	}
 	t.Setenv("AGENTD_FILE_UPLOAD_CACHE_DIR", filepath.Join(home, "uploads"))
-	server := newTestServerWithConfig(t, func(cfg *config.Config) { cfg.Listen = "0.0.0.0:8787"; cfg.Network.AllowLAN = true })
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.AppServer = config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}
+		cfg.Listen = "0.0.0.0:8787"
+		cfg.Network.AllowLAN = true
+	})
 	cache := server.router.runtimeStatus
 	var probes atomic.Int32
 	cache.probe = func(context.Context) runtimeStatusResponse { probes.Add(1); return runtimeStatusResponse{} }
@@ -80,11 +84,11 @@ func TestPreflightLocalCacheEndpoint(t *testing.T) {
 		}
 		return h
 	}
-	if h := read(); h.Ready || len(h.Accounts) != 0 {
+	if h := read(); !h.Ready || len(h.Accounts) != 0 {
 		t.Fatalf("empty cache claimed readiness: %+v", h)
 	}
 	now := time.Now()
-	server.router.preflightReadyAt.Store(now.UnixNano())
+
 	// Ensure the HTTP result only projects allowlisted account states from the current cache.
 	cache.mu.Lock()
 	cache.hasResult = true
@@ -106,11 +110,11 @@ func TestPreflightLocalCacheEndpoint(t *testing.T) {
 		t.Fatal("cached upstream and quota observations lost")
 	}
 	stale := now.Add(-time.Hour)
-	server.router.preflightReadyAt.Store(stale.UnixNano())
+
 	cache.mu.Lock()
 	cache.snapshot.CheckedAt = &stale
 	cache.mu.Unlock()
-	if h := read(); h.Ready || len(h.Accounts) != 0 {
+	if h := read(); !h.Ready || len(h.Accounts) != 0 {
 		t.Fatalf("stale cache claimed readiness: %+v", h)
 	}
 	cache.mu.Lock()

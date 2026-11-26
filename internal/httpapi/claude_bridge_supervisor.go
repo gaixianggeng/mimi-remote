@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,6 +22,8 @@ import (
 // to bind its socket before declaring the start failed. Overridable so tests
 // can exercise the timeout path without a ten-second wait.
 var claudeBridgeStartTimeout = 10 * time.Second
+
+var errAdapterRestartRequired = errors.New("助手程序路径已变更，请在当前任务结束后重新启动 Mimi Remote 后台服务")
 
 // residentAdapterSupervisorConfig parameterizes a resident local JSON-RPC
 // adapter process (e.g. Claude SDK adapter, Antigravity ACP adapter) behind a
@@ -45,16 +50,19 @@ func claudeResidentAdapterSupervisorConfig() residentAdapterSupervisorConfig {
 }
 
 type claudeBridgeSupervisor struct {
-	spec      residentAdapterSupervisorConfig
-	mu        sync.Mutex
-	dir       string
-	network   string
-	address   string
-	cmd       *exec.Cmd
-	startedAt time.Time
-	done      chan struct{}
-	exited    bool
-	stopped   bool
+	spec       residentAdapterSupervisorConfig
+	mu         sync.Mutex
+	dir        string
+	network    string
+	address    string
+	cmd        *exec.Cmd
+	launchBin  string
+	launchArgs []string
+	launchEnv  map[string]string
+	startedAt  time.Time
+	done       chan struct{}
+	exited     bool
+	stopped    bool
 
 	cursorMu    sync.Mutex
 	cursorEpoch uint64
@@ -156,6 +164,10 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 		return "", fmt.Errorf("%s 管理器已停止", spec.DisplayName)
 	}
 	if s.cmd != nil && !s.exited {
+		if s.launchBin != bin || !slices.Equal(s.launchArgs, args) || !maps.Equal(s.launchEnv, env) {
+			// Existing turns may outlive their WebSocket. Only their owner may restart the service.
+			return "", errAdapterRestartRequired
+		}
 		return s.address, nil
 	}
 	if s.cmd != nil {
@@ -205,6 +217,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	go captureResidentAdapterStderr(spec.DebugComponent, spec.DisplayName, stderr, sensitiveValues)
 
 	done := make(chan struct{})
+	s.launchBin, s.launchArgs, s.launchEnv = bin, slices.Clone(args), maps.Clone(env)
 	s.cmd = cmd
 	s.done = done
 	s.network = network
@@ -314,6 +327,7 @@ func terminateResidentAdapter(displayName string, cmd *exec.Cmd, done <-chan str
 
 func (s *claudeBridgeSupervisor) reset() {
 	s.cmd = nil
+	s.launchBin, s.launchArgs, s.launchEnv = "", nil, nil
 	s.done = nil
 	s.network = ""
 	s.address = ""

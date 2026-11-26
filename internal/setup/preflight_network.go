@@ -51,7 +51,20 @@ func observePreflightMember(ctx context.Context, id string, cfg config.Config, o
 		if !applied {
 			enabled = cfg.LANAccessEnabled()
 		}
-		if code := preflightLANPolicy(ctx, enabled); code != "" {
+		var code string
+		if enabled && host.LANPolicyCode != nil {
+			// The resident service already watches the rule for its executable.
+			// Keep passive preflight within budget on PowerShell cold starts.
+			code = *host.LANPolicyCode
+			switch code {
+			case "", "probe_timeout", "lan_public_network_blocked", "lan_firewall_blocked":
+			default:
+				code = "lan_firewall_blocked"
+			}
+		} else {
+			code = preflightLANPolicy(ctx, enabled)
+		}
+		if code != "" {
 			if code == "probe_timeout" {
 				return PreflightObservation{Code: code}
 			}

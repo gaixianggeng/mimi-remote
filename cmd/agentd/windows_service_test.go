@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -179,7 +180,7 @@ func TestWindowsManagedStopDoesNotSwallowUnexpectedSchedulerError(t *testing.T) 
 func TestWaitForWindowsManagedTaskStoppedTimesOutDuringPersistentTransition(t *testing.T) {
 	installFakeWindowsCommands(t)
 	t.Setenv("MIMI_TEST_FAKE_TASK_STATE_ALWAYS_PENDING", "1")
-	err := waitForWindowsManagedTaskStopped("schtasks", io.Discard, io.Discard, 50*time.Millisecond)
+	err := waitForWindowsManagedTaskStopped(context.Background(), "schtasks", io.Discard, io.Discard, 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "停止超时") {
 		t.Fatalf("Task Scheduler 持续过渡时必须超时失败：%v", err)
 	}
@@ -267,9 +268,9 @@ func installFakeWindowsCommands(t *testing.T) string {
 			return "", exec.ErrNotFound
 		}
 	}
-	windowsExecCommand = func(name string, args ...string) *exec.Cmd {
+	windowsExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		helperArgs := append([]string{"-test.run=TestWindowsCommandProbe", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], helperArgs...)
+		cmd := exec.CommandContext(ctx, os.Args[0], helperArgs...)
 		cmd.Env = append(os.Environ(), "MIMI_TEST_WINDOWS_COMMAND_MARKER="+marker)
 		return cmd
 	}

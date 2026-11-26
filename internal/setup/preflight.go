@@ -42,7 +42,9 @@ func boundedPreflight[T any](ctx context.Context, fn func() T) (T, bool) {
 }
 
 func RunPreflight(ctx context.Context, o PreflightOptions, progress func(PreflightCheck)) PreflightReport {
-	return InspectPreflight(cliinspect.WithParentLifetime(ctx), o, PreflightProbes{Platform: runtime.GOOS, Host: FetchPreflightHost, Member: observePreflightMember, HomebrewOwner: preflightHomebrewOwner}, progress)
+	return InspectPreflight(cliinspect.WithParentLifetime(ctx), o, PreflightProbes{Platform: runtime.GOOS, Host: func(ctx context.Context, cfg config.Config) (PreflightHost, error) {
+		return fetchPreflightHost(ctx, cfg, o.HostDial)
+	}, Member: observePreflightMember, HomebrewOwner: preflightHomebrewOwner}, progress)
 }
 
 func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightProbes, progress func(PreflightCheck)) PreflightReport {
@@ -74,7 +76,7 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 		row := &r.Checks[indices[id]]
 		row.finish(&r, code)
 		if row.ID == "service_daemon" && code == "pair_host_unreachable" {
-			row.Detail = "后台服务已响应，尚无近期的就绪检查记录。请在启动完成后重新检查。"
+			row.Detail = "后台服务已响应，但本机就绪检查未通过。请检查后台服务后重试。"
 		}
 		if r.Stage == "setup" && strings.HasSuffix(code, "_signed_out") && !explicitAssistant(o, snapshot, row.ID) {
 			row.State = "optional"

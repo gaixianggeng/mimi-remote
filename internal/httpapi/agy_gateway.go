@@ -261,6 +261,9 @@ func (r *Router) setAgyAdapterProbe(probe agyAdapterProbe) agyAdapterProbe {
 func (r *Router) agyAdapterProbeSnapshot() agyAdapterProbe {
 	r.agyMu.Lock()
 	defer r.agyMu.Unlock()
+	if !r.cfg.Agy.Enabled {
+		return agyAdapterProbe{Status: "disabled"}
+	}
 	if r.agyProbe.CheckedAt.IsZero() {
 		return agyAdapterProbe{Status: "unknown"}
 	}
@@ -582,7 +585,11 @@ func (r *Router) appServerAgyGatewayWS(w http.ResponseWriter, req *http.Request)
 	start := time.Now()
 	if _, err := r.agyAdapter.ensure(bin, r.cfg.Agy.Args, probe.launchEnv(r.cfg.Agy)); err != nil {
 		log.Printf("agy adapter ensure failed err=%v", err)
-		writeGatewayRuntimeError(client, "AGY_ADAPTER_START_FAILED", "启动 Antigravity 适配器失败")
+		if errors.Is(err, errAdapterRestartRequired) {
+			writeGatewayRuntimeError(client, "AGY_ADAPTER_START_FAILED", errAdapterRestartRequired.Error())
+		} else {
+			writeGatewayRuntimeError(client, "AGY_ADAPTER_START_FAILED", "启动 Antigravity 适配器失败")
+		}
 		return
 	}
 	upstream, cursorEpoch, err := r.agyAdapter.dial()
@@ -739,6 +746,9 @@ func (r *Router) probeAgyRuntime(ctx context.Context) runtimeAccountStatus {
 		return status
 	case err := <-ensureDone:
 		if err != nil {
+			if errors.Is(err, errAdapterRestartRequired) {
+				status.Reason = "adapter_restart_required"
+			}
 			return status
 		}
 	}

@@ -66,7 +66,9 @@ func TestOnboardingMigrationFailure(t *testing.T) {
 
 func TestOnboardingUpReadinessFailure(t *testing.T) {
 	isolateOnboardingCommandEnv(t)
-	prepareBrewSideEffectProbe(t)
+	useManagedServicePlatform(t, "windows")
+	installFakeWindowsCommands(t)
+	fakeCoreManager(t, "scheduled-task", func(string, string) error { t.Fatal("unexpected start"); return nil })
 	path := config.PlatformDefaultPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
