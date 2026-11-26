@@ -165,7 +165,7 @@ exec_start_pre="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit 
   || fail "systemd service 的 ExecStartPre 与 BindPaths 目标目录未对齐（${codex_daemon_dir}）。"
 [[ "$codex_stage_link" == "%t/mimi-remote/codex-daemon" && "$exec_start_pre" == *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]] \
   || fail "systemd service 的 ExecStartPre 未管理 BindPaths 暂存链接与不安全标记。"
-for required_fragment in '/bin/rm -rf -- "$$l" "$$u"' '/bin/mkdir -m 0700' '[ -L "$$d" ]' '[ ! -d "$$d" ]' '/usr/bin/stat' '/bin/stat' '%%F:%%u' 'directory:%U' '/bin/chmod 0700' '"$$lnbin" -s -- "$$d" "$$l"'; do
+for required_fragment in '/bin/chmod -R u+rwX -- "$$l"' '/bin/rm -rf -- "$$l"' '/bin/mkdir -m 0700' '[ -L "$$d" ]' '[ ! -d "$$d" ]' '/usr/bin/stat' '/bin/stat' '%%F:%%u' 'directory:%U' '/bin/chmod 0700' '"$$lnbin" -s -- "$$d" "$$l"'; do
   [[ "$exec_start_pre" == *"$required_fragment"* ]] \
     || fail "systemd service 的 ExecStartPre 缺少安全校验片段：${required_fragment}。"
 done

@@ -741,13 +741,15 @@ grep -Fq 'not a directory' <<<"$file_out"
 [[ ! -e "$stage_link" && ! -L "$stage_link" ]]
 [[ -f "$unsafe_marker" ]]
 
-# 6. 暂存路径若被已有目录占位且目标不安全，必须递归移除暂存目录，杜绝 BindPaths 挂载未校验目录。
+# 6. 暂存路径若被非空只读子目录占位且目标不安全，必须先恢复写权限并彻底移除暂存目录，杜绝 BindPaths 挂载未校验目录。
 rm -rf "$stage_link" "$target_codex_dir"
 mkdir -p "$stage_link/nested"
 : >"$stage_link/nested/keep"
+chmod 0444 "$stage_link/nested/keep"
+chmod 0555 "$stage_link/nested" "$stage_link"
 : >"$target_codex_dir"
 if dir_stage_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
-  echo "ExecStartPre 在暂存路径被目录占位且目标非法时未失败。" >&2
+  echo "ExecStartPre 在暂存路径被只读目录占位且目标非法时未失败。" >&2
   exit 1
 fi
 grep -Fq 'not a directory' <<<"$dir_stage_out"

@@ -130,7 +130,8 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
     || [[ "$packaged_exec_pre" != -+/bin/sh\ -c\ * ]] \
     || [[ "$packaged_exec_pre" != *"d=${packaged_codex_dir};"* ]] \
     || [[ "$packaged_exec_pre" != *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]] \
-    || [[ "$packaged_exec_pre" != *'/bin/rm -rf -- "$$l" "$$u"'* ]]; then
+    || [[ "$packaged_exec_pre" != *'/bin/chmod -R u+rwX -- "$$l"'* ]] \
+    || [[ "$packaged_exec_pre" != *'/bin/rm -rf -- "$$l"'* ]]; then
     echo "发布产物门禁失败：$(basename "$archive") 中的 systemd 模板缺少 PrivateTmp=true 或共享 Codex 临时目录安全暂存绑定校验。" >&2
     exit 1
   fi

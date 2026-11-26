@@ -338,9 +338,11 @@ func TestSharedLocalSafetyRejectsSystemdUnsafeMarkerAndIgnoresForegroundRuntimeD
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	// 前台进程未注入 MIMI_SHARED_CODEX_UNSAFE_MARKER，即使同会话 XDG_RUNTIME_DIR 下存在旧标记也不受阻断。
+	// 保留生产 sharedLocalUnsafeMarkerPath 实现，不替换成测试副本，确保真实检验生产读取逻辑。
+	prodMarkerResolver := sharedLocalUnsafeMarkerPath
 	overrideSharedLocalSafetyHooks(t, true, filepath.Join(t.TempDir(), "absent"), uint32(os.Getuid()), defaultSharedLocalLstat)
+	sharedLocalUnsafeMarkerPath = prodMarkerResolver
 	t.Setenv(sharedLocalUnsafeMarkerEnv, "")
-	sharedLocalUnsafeMarkerPath = func() string { return strings.TrimSpace(os.Getenv(sharedLocalUnsafeMarkerEnv)) }
 	if err := CheckSharedLocalCodexHomeSafety(codexHome); err != nil {
 		t.Fatalf("未设置服务专属环境变量的前台进程不应受 XDG_RUNTIME_DIR 标记阻断，got %v", err)
 	}

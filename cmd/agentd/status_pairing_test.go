@@ -213,6 +213,8 @@ func TestStatusPairingReadyAndUnavailableStates(t *testing.T) {
 }
 
 func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.T) {
+	// 在 isolateOnboardingCommandEnv 替换 PATH 前解析宿主 powershell.exe，确保 Windows CI 真实执行原生参数校验。
+	powershellPath, powershellErr := exec.LookPath("powershell.exe")
 	isolateOnboardingCommandEnv(t)
 	useManagedServicePlatform(t, "linux")
 	customDir := filepath.Join(t.TempDir(), "my dir '1'")
@@ -398,16 +400,17 @@ func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.
 			t.Fatalf("PowerShell 参数解析结果不匹配：got=%#v want=%#v", gotArgs, wantArgs)
 		}
 		if runtime.GOOS == "windows" {
-			if ps, err := exec.LookPath("powershell.exe"); err == nil {
-				psArgsPart := strings.TrimPrefix(wantLanCmd, "agentd ")
-				out, err := exec.Command(ps, "-NoProfile", "-NonInteractive", "-Command", "& { $args } "+psArgsPart).CombinedOutput()
-				if err != nil {
-					t.Fatalf("powershell.exe 验证参数失败：%v output=%q", err, string(out))
-				}
-				lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
-				if !reflect.DeepEqual(lines, wantArgs[1:]) {
-					t.Fatalf("powershell.exe 实测参数不匹配：got=%#v want=%#v", lines, wantArgs[1:])
-				}
+			if powershellErr != nil {
+				t.Fatalf("Windows 环境找不到 powershell.exe，无法验证原生参数解析：%v", powershellErr)
+			}
+			psArgsPart := strings.TrimPrefix(wantLanCmd, "agentd ")
+			out, err := exec.Command(powershellPath, "-NoProfile", "-NonInteractive", "-Command", "& { $args } "+psArgsPart).CombinedOutput()
+			if err != nil {
+				t.Fatalf("powershell.exe 验证参数失败：%v output=%q", err, string(out))
+			}
+			lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
+			if !reflect.DeepEqual(lines, wantArgs[1:]) {
+				t.Fatalf("powershell.exe 实测参数不匹配：got=%#v want=%#v", lines, wantArgs[1:])
 			}
 		}
 	})
