@@ -164,12 +164,11 @@ struct ConnectionSettingsView: View {
     }
 
     /// 无条件在首次连接导航栏暴露「稍后连接」的功能门控。
-    /// 须随 UI-7 无主机真实空态一同开放，在此之前保持关闭以防未配对用户落入加载死循环。
-    static let allowsUnconditionalInitialSetupConnectLater = false
+    /// UI-7 无主机真实空态已就绪，允许未配对用户在首次连接页随时选择「稍后连接」进入工作台。
+    static let allowsUnconditionalInitialSetupConnectLater = true
 
-    /// 首次连接根页在已开通 Mimi 中转或配对失败后提供回到工作台的出口，
-    /// 避免用户困在无 Tab 栏的引导页；真正全新首次启动仍保持无冗余返回键，
-    /// 直至 UI-7 真实空态将 `allowsUnconditionalInitialSetupConnectLater` 开启。
+    /// 首次连接根页提供「稍后连接」回到工作台的出口；
+    /// 当调用方显式关闭 `allowsUnconditionalConnectLater` 时仅在已开通 Mimi 中转或配对失败后暴露。
     static func showsInitialSetupWorkbenchExit(
         isDevicesTab: Bool,
         hasSheetDismiss: Bool,

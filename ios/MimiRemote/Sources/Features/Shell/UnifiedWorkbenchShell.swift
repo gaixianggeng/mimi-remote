@@ -131,7 +131,7 @@ struct UnifiedWorkbenchShell: View {
                 restoreFloatingSidebarVisibilityIfNeeded()
                 synchronizeNavigation(for: layout, restoresCompactTab: true)
                 applyDebugLaunchRouteIfNeeded(layout: layout)
-                if !appStore.canEnterWorkbench && !didApplyDebugLaunchRoute {
+                if !appStore.canEnterWorkbench && !appStore.hasNoConfiguredHost && !didApplyDebugLaunchRoute {
                     openConnectionSettings(layout: layout)
                 }
                 synchronizeSidebarLifecycle()
@@ -685,7 +685,8 @@ struct UnifiedWorkbenchShell: View {
         } toolbarHeader: {
             sidebarBrandHeader(tokens: tokens, layout: layout)
         }
-        .task {
+        .task(id: "\(appStore.activeHostScope.profileID)|\(appStore.activeHostScope.generation)|\(appStore.hasNoConfiguredHost)") {
+            guard !appStore.hasNoConfiguredHost else { return }
             await sessionStore.refreshSessionLibraryIndex()
         }
     }
@@ -755,7 +756,19 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
 
-            if WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: renderedKinds) {
+            if appStore.hasNoConfiguredHost && familySections.isEmpty {
+                Section {
+                    UnpairedHostEmptyStateView(
+                        context: .sidebar,
+                        onConnectComputer: {
+                            openConnectionSettings(layout: layout)
+                        }
+                    )
+                    .listRowInsets(.init(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+            } else if WorkbenchSidebarDutyBoardLayout.showsQuietState(sectionKinds: renderedKinds) {
                 Section {
                     WorkbenchSidebarQuietRow()
                 }
@@ -835,6 +848,7 @@ struct UnifiedWorkbenchShell: View {
                 includesAgy: sessionStore.hasAgyRuntimeChannel,
                 usesCondensedVisual: usesFloatingChrome,
                 onRefresh: {
+                    guard !appStore.hasNoConfiguredHost else { return }
                     async let codexQuota: Void = sessionStore.isCodexRuntimeChannelAvailable
                         ? sessionStore.refreshCodexUsage()
                         : ()
@@ -1113,6 +1127,9 @@ struct UnifiedWorkbenchShell: View {
                 open(.workspaces, layout: layout)
             },
             manageConnections: manageConnections,
+            onConnectComputer: {
+                openConnectionSettings(layout: layout)
+            },
             prefersTableDensity: layout.prefersSessionTableDensity,
             usesCompactNavigation: layout.usesCompactNavigation,
             visibleSessionID: navigationState.visibleSessionID(usesCompactNavigation: layout.usesCompactNavigation),

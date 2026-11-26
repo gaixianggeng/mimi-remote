@@ -58,6 +58,8 @@ struct SessionListPartition: Equatable {
 /// 会话页空态必须依赖“已打开工作区”与连接状态，不能用会话数量反推目录是否存在。
 /// 这里集中定义优先级，避免加载或错误被首次使用引导覆盖。
 enum SessionListPresentationState: Equatable {
+    /// 本地无已配对电脑且不存在待恢复凭据路径时的显式空态，优先级高于加载/连接/错误态。
+    case noHostConfigured
     case content
     case loading
     /// 首次连接这台电脑的预热窗口。与 `.loading` 分开：它要压过错误态，并且展示的是
@@ -77,7 +79,7 @@ enum SessionListPresentationState: Equatable {
         switch self {
         case .connecting, .loading:
             return true
-        case .content, .searching, .needsWorkspace, .noSessions, .noMatches,
+        case .noHostConfigured, .content, .searching, .needsWorkspace, .noSessions, .noMatches,
              .networkUnavailable, .runtimeUnavailable, .loadFailed:
             return false
         }
@@ -90,13 +92,14 @@ enum SessionListPresentationState: Equatable {
         switch self {
         case .connecting, .loading, .searching:
             return true
-        case .content, .needsWorkspace, .noSessions, .noMatches,
+        case .noHostConfigured, .content, .needsWorkspace, .noSessions, .noMatches,
              .networkUnavailable, .runtimeUnavailable, .loadFailed:
             return false
         }
     }
 
     static func resolve(
+        hasNoConfiguredHost: Bool = false,
         hasVisibleSessions: Bool,
         hasOpenedWorkspace: Bool,
         isLoading: Bool,
@@ -109,6 +112,9 @@ enum SessionListPresentationState: Equatable {
         isEstablishingConnection: Bool = false,
         awaitsInitialSessionLibrary: Bool = false
     ) -> Self {
+        if hasNoConfiguredHost {
+            return .noHostConfigured
+        }
         // 首次连接主渠道往往先到；短暂等待其余目录首屏，计时器保证三秒内放行。
         if awaitsInitialSessionLibrary, case .connected = connectionStatus,
            !isFiltering, !isNetworkUnavailable,
@@ -197,6 +203,7 @@ struct SessionListView: View {
     var onSelectSession: ((AgentSession) -> Void)?
     var onOpenWorkspaces: (() -> Void)?
     var manageConnections: (() -> Void)?
+    var onConnectComputer: (() -> Void)?
     var prefersTableDensity = false
     var usesCompactNavigation = false
     /// 用户此刻停在详情里的会话。紧凑布局下列表仍在 Tab 里常驻，电脑端的一轮在这个会话结束时照常震动（#905）。
@@ -210,6 +217,7 @@ struct SessionListView: View {
         onSelectSession: ((AgentSession) -> Void)? = nil,
         onOpenWorkspaces: (() -> Void)? = nil,
         manageConnections: (() -> Void)? = nil,
+        onConnectComputer: (() -> Void)? = nil,
         prefersTableDensity: Bool = false,
         usesCompactNavigation: Bool = false,
         visibleSessionID: SessionID? = nil,
@@ -221,6 +229,7 @@ struct SessionListView: View {
         self.onSelectSession = onSelectSession
         self.onOpenWorkspaces = onOpenWorkspaces
         self.manageConnections = manageConnections
+        self.onConnectComputer = onConnectComputer
         self.prefersTableDensity = prefersTableDensity
         self.usesCompactNavigation = usesCompactNavigation
         self.visibleSessionID = visibleSessionID
@@ -243,95 +252,140 @@ struct SessionListView: View {
         let familyPartition = makeFamilyPartition(sessionPartition: sessionPartition)
         let lifecycleInput = makeLifecycleInput(visibleSessions: visibleSessions)
         let presentationState = makePresentationState(hasVisibleSessions: !visibleSessions.isEmpty)
+        let showsSessionChrome = presentationState != .noHostConfigured
         // 宽屏把搜索放进顶栏；iPhone 常规字号将顶栏与搜索合并为单行极简三件式（设备 + 搜索胶囊 + 新建），
         // 移除空导航栏与右上角筛选按钮；AX 超大字号与紧凑 iPad 保留独立搜索行避免挤压输入空间。
-        let showsToolbarSearchField = !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
-        let usesPhoneSingleRowHeader = SessionListTopChromeLayout.usesPhoneSingleRowHeader(
+        let showsToolbarSearchField = showsSessionChrome && !usesCompactNavigation && !dynamicTypeSize.isAccessibilitySize
+        let usesPhoneSingleRowHeader = showsSessionChrome && SessionListTopChromeLayout.usesPhoneSingleRowHeader(
             usesCompactNavigation: usesCompactNavigation,
             hasBottomTabBar: hasBottomTabBar,
             hasHostSwitcher: manageConnections != nil,
             isAccessibilityTextSize: dynamicTypeSize.isAccessibilitySize
         )
 
-        List {
-            if hasActiveFilters {
-                activeFilterChip(tokens: tokens)
-                    .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-            }
-
-            if presentationState == .content {
-                if !familyPartition.active.isEmpty {
-                    sessionSection(
-                        title: L10n.text("ui.in_progress"),
-                        families: familyPartition.active,
-                        tokens: tokens,
-                        projectLabels: projectLabels
-                    )
-                }
-
-                if !familyPartition.pinned.isEmpty {
-                    sessionSection(
-                        title: L10n.text("ui.pinned"),
-                        families: familyPartition.pinned,
-                        tokens: tokens,
-                        projectLabels: projectLabels
-                    )
-                }
-
-                ForEach(familyPartition.historyGroups) { group in
-                    sessionSection(
-                        title: dateBucketTitle(group.bucket),
-                        families: group.families,
-                        tokens: tokens,
-                        projectLabels: projectLabels
-                    )
-                }
-            } else if !presentationState.showsCenteredLoading {
-                sessionListUnavailableContent(state: presentationState, tokens: tokens)
-                    .frame(maxWidth: .infinity)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            }
-
-            if sessionStore.isSessionSearchActive, let notice = sessionStore.remoteSessionSearchNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(tokens.secondaryText)
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .accessibilityIdentifier("sessions.search.partialFailure")
-            }
-
-            // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
-            if sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
-                Button {
-                    Task { await sessionStore.loadMoreSessionSearchResults() }
-                } label: {
-                    HStack(spacing: 8) {
-                        if sessionStore.isLoadingMoreSessionSearchResults {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
+        Group {
+            if presentationState == .noHostConfigured {
+                UnpairedHostEmptyStateView(
+                    context: .sessions,
+                    bottomContentMargin: bottomContentMargin,
+                    onConnectComputer: onConnectComputer ?? manageConnections
+                )
+            } else {
+                List {
+                    if hasActiveFilters {
+                        activeFilterChip(tokens: tokens)
+                            .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                     }
-                    .font(themeStore.uiFont(.footnote, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+
+                    if presentationState == .content {
+                        if !familyPartition.active.isEmpty {
+                            sessionSection(
+                                title: L10n.text("ui.in_progress"),
+                                families: familyPartition.active,
+                                tokens: tokens,
+                                projectLabels: projectLabels
+                            )
+                        }
+
+                        if !familyPartition.pinned.isEmpty {
+                            sessionSection(
+                                title: L10n.text("ui.pinned"),
+                                families: familyPartition.pinned,
+                                tokens: tokens,
+                                projectLabels: projectLabels
+                            )
+                        }
+
+                        ForEach(familyPartition.historyGroups) { group in
+                            sessionSection(
+                                title: dateBucketTitle(group.bucket),
+                                families: group.families,
+                                tokens: tokens,
+                                projectLabels: projectLabels
+                            )
+                        }
+                    } else if !presentationState.showsCenteredLoading {
+                        sessionListUnavailableContent(state: presentationState, tokens: tokens)
+                            .frame(maxWidth: .infinity)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    }
+
+                    if sessionStore.isSessionSearchActive, let notice = sessionStore.remoteSessionSearchNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(tokens.secondaryText)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .accessibilityIdentifier("sessions.search.partialFailure")
+                    }
+
+                    // Gateway 过滤后当前页可能没有可见结果但仍给出 nextCursor，入口必须独立于空态展示。
+                    if sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
+                        Button {
+                            Task { await sessionStore.loadMoreSessionSearchResults() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if sessionStore.isLoadingMoreSessionSearchResults {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "magnifyingglass")
+                                }
+                                Text(sessionStore.isLoadingMoreSessionSearchResults ? L10n.text("ui.searching_continues") : L10n.text("ui.continue_searching"))
+                            }
+                            .font(themeStore.uiFont(.footnote, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(tokens.secondaryText)
+                        .disabled(sessionStore.isLoadingMoreSessionSearchResults)
+                        .accessibilityIdentifier("sessions.search.loadMore")
+                        .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(tokens.secondaryText)
-                .disabled(sessionStore.isLoadingMoreSessionSearchResults)
-                .accessibilityIdentifier("sessions.search.loadMore")
-                .listRowInsets(.init(top: 4, leading: 20, bottom: 8, trailing: 20))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                .listStyle(.plain)
+                .listSectionSpacing(12)
+                // 最新设计把日期恢复成轻量粘性标题，正文保持完全扁平；行距与分隔线由行组件统一控制。
+                .listRowSpacing(0)
+                .scrollContentBackground(.hidden)
+                // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
+                .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
+                .workbenchClearBottomScrollEdge()
+                // 只有按钮真的浮在内容之上时才多让一段，最后一条会话才能滚到按钮之上被读到。
+                .contentMargins(
+                    .bottom,
+                    bottomContentMargin
+                        + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance),
+                    for: .scrollContent
+                )
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        // 紧凑布局的顶部搜索条和宽屏顶栏搜索都位于 List 外；列表内任意点击
+                        // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
+                        dismissSessionSearchKeyboard()
+                    }
+                )
+                .focusable()
+                .focused($hasListKeyboardFocus)
+                .onKeyPress(keys: [.upArrow, .downArrow, .return]) { keyPress in
+                    handleListKeyPress(keyPress)
+                }
+                .onScrollPhaseChange { _, newPhase in
+                    lifecycleCoordinator.setScrollPhase(
+                        newPhase,
+                        latestMembership: lifecycleInput.membership
+                    )
+                }
+                .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
             }
         }
-        .listStyle(.plain)
         .sheet(item: $openWorkspacePresenter.presentation) { presentation in
             OpenWorkspaceSheet(model: presentation.model)
         }
@@ -342,48 +396,14 @@ struct SessionListView: View {
             guard newWidth > 0 else { return }
             measuredContentWidth = newWidth
         }
-        .listSectionSpacing(12)
-        // 最新设计把日期恢复成轻量粘性标题，正文保持完全扁平；行距与分隔线由行组件统一控制。
-        .listRowSpacing(0)
-        .scrollContentBackground(.hidden)
-        // 与侧栏 gutter、会话画布同底，宽屏下三块相邻面不出现同亮度色差。
-        .background(tokens.workbenchCanvasBackground.ignoresSafeArea())
-        .workbenchClearBottomScrollEdge()
-        // 只有按钮真的浮在内容之上时才多让一段，最后一条会话才能滚到按钮之上被读到。
-        .contentMargins(
-            .bottom,
-            bottomContentMargin
-                + (hasBottomTabBar ? 0 : WorkspaceSessionFabMetrics.contentBottomAllowance),
-            for: .scrollContent
-        )
         // 与工作区页同一枚按钮。两条边同样只留 20pt——浮动 Tab 栏的避让由容器 safe area 负责，
         // `bottomContentMargin` 是滚动内容的 inset，叠进浮层会重复计算。
         .overlay(alignment: .bottomTrailing) {
-            if !hasBottomTabBar {
+            if showsSessionChrome && !hasBottomTabBar {
                 newSessionFab(tokens: tokens)
                     .padding(WorkspaceSessionFabMetrics.edgeInset)
             }
         }
-        .scrollDismissesKeyboard(.interactively)
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                // 紧凑布局的顶部搜索条和宽屏顶栏搜索都位于 List 外；列表内任意点击
-                // 都可以安全结束第一响应者，同时不清空查询词或改变当前搜索结果。
-                dismissSessionSearchKeyboard()
-            }
-        )
-        .focusable()
-        .focused($hasListKeyboardFocus)
-        .onKeyPress(keys: [.upArrow, .downArrow, .return]) { keyPress in
-            handleListKeyPress(keyPress)
-        }
-        .onScrollPhaseChange { _, newPhase in
-            lifecycleCoordinator.setScrollPhase(
-                newPhase,
-                latestMembership: lifecycleInput.membership
-            )
-        }
-        .animation(sessionRegroupAnimation, value: lifecycleCoordinator.membership)
         // iPad 紧凑布局的设备入口浮在 TabView 上、归 Shell 所有；它要不要让位只有这里知道。
         .workbenchRootShowsConnectionProgress(presentationState.showsInPlaceConnectionProgress)
         .navigationTitle("")
@@ -404,7 +424,7 @@ struct SessionListView: View {
                     presentationState: presentationState
                 )
                 .background(usesLiquidGlassInset ? Color.clear : tokens.workbenchCanvasBackground)
-            } else if !showsToolbarSearchField {
+            } else if showsSessionChrome && !showsToolbarSearchField {
                 let usesLiquidGlassInset = WorkbenchGlassChromeStyle.resolve(
                     interfaceStyle: interfaceStyle,
                     reduceTransparency: reduceTransparency,
@@ -455,21 +475,24 @@ struct SessionListView: View {
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
                     }
                 }
-                // 筛选、刷新合入同一个菜单。
-                workbenchChromeToolbarItem(placement: .topBarTrailing) {
-                    filterMenu(tokens: tokens)
-                        .simultaneousGesture(
-                            TapGesture().onEnded { dismissSessionSearchKeyboard() }
-                        )
-                }
-                // 底部浮着 Tab 栏时新建留在顶栏——那个角上不该叠第二层浮动材质；
-                // Tab 栏在顶部（iPadOS 26）时右下角是空的，改用浮起按钮。
-                if hasBottomTabBar {
-                    newSessionToolbarItem(tokens: tokens)
+                if showsSessionChrome {
+                    // 筛选、刷新合入同一个菜单。
+                    workbenchChromeToolbarItem(placement: .topBarTrailing) {
+                        filterMenu(tokens: tokens)
+                            .simultaneousGesture(
+                                TapGesture().onEnded { dismissSessionSearchKeyboard() }
+                            )
+                    }
+                    // 底部浮着 Tab 栏时新建留在顶栏——那个角上不该叠第二层浮动材质；
+                    // Tab 栏在顶部（iPadOS 26）时右下角是空的，改用浮起按钮。
+                    if hasBottomTabBar {
+                        newSessionToolbarItem(tokens: tokens)
+                    }
                 }
             }
         }
-        .task {
+        .task(id: SessionListRefreshTaskID(hostScope: appStore.activeHostScope, hasNoConfiguredHost: appStore.hasNoConfiguredHost)) {
+            guard !appStore.hasNoConfiguredHost else { return }
             // 切 Tab 回来也会触发；索引在轮询间隔内刷新过就不再重拉。Host 切换会清空
             // 刷新时间，下拉和菜单刷新仍走强制的权威刷新。
             await sessionStore.refreshSessionLibraryIndexIfStale()
@@ -477,10 +500,14 @@ struct SessionListView: View {
         .onAppear {
             synchronizeLifecycle(lifecycleInput)
             isNativeDirectoryListVisible = true
-            sessionStore.updateNativeHarnessDirectoryVisibility(
-                isListVisible: true,
-                isForeground: scenePhase == .active
-            )
+            if appStore.hasNoConfiguredHost {
+                sessionStore.stopNativeHarnessDirectory()
+            } else {
+                sessionStore.updateNativeHarnessDirectoryVisibility(
+                    isListVisible: true,
+                    isForeground: scenePhase == .active
+                )
+            }
         }
         .onDisappear {
             isNativeDirectoryListVisible = false
@@ -498,10 +525,28 @@ struct SessionListView: View {
             allSessionsRequestID = nil
         }
         .onChange(of: scenePhase) { _, phase in
-            sessionStore.updateNativeHarnessDirectoryVisibility(
-                isListVisible: isNativeDirectoryListVisible,
-                isForeground: isNativeDirectoryListVisible && phase == .active
-            )
+            if appStore.hasNoConfiguredHost {
+                sessionStore.stopNativeHarnessDirectory()
+            } else {
+                sessionStore.updateNativeHarnessDirectoryVisibility(
+                    isListVisible: isNativeDirectoryListVisible,
+                    isForeground: isNativeDirectoryListVisible && phase == .active
+                )
+            }
+        }
+        .onChange(of: appStore.hasNoConfiguredHost) { _, hasNoHost in
+            if hasNoHost {
+                sessionStore.updateNativeHarnessDirectoryVisibility(
+                    isListVisible: false,
+                    isForeground: false
+                )
+                sessionStore.stopNativeHarnessDirectory()
+            } else if isNativeDirectoryListVisible {
+                sessionStore.updateNativeHarnessDirectoryVisibility(
+                    isListVisible: true,
+                    isForeground: scenePhase == .active
+                )
+            }
         }
         .onChange(of: lifecycleInput) { _, newInput in
             synchronizeLifecycle(newInput)
@@ -834,6 +879,7 @@ struct SessionListView: View {
         let skipsInitialLibraryGate = false
 #endif
         return SessionListPresentationState.resolve(
+            hasNoConfiguredHost: appStore.hasNoConfiguredHost,
             hasVisibleSessions: hasVisibleSessions,
             // sidebarProjects 只包含 rememberWorkspace 记录的已打开目录，不包含后端候选项目。
             hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
@@ -865,7 +911,7 @@ struct SessionListView: View {
         case .searching:
             LoadingStateView(message: L10n.text("ui.searching_historical_conversations"))
                 .accessibilityIdentifier("sessions.search.initialLoading")
-        case .content, .needsWorkspace, .noSessions, .noMatches,
+        case .noHostConfigured, .content, .needsWorkspace, .noSessions, .noMatches,
              .networkUnavailable, .runtimeUnavailable, .loadFailed:
             EmptyView()
         }
@@ -877,6 +923,12 @@ struct SessionListView: View {
         tokens: ThemeTokens
     ) -> some View {
         switch state {
+        case .noHostConfigured:
+            UnpairedHostEmptyStateView(
+                context: .sessions,
+                bottomContentMargin: bottomContentMargin,
+                onConnectComputer: onConnectComputer ?? manageConnections
+            )
         case .content, .connecting, .loading, .searching:
             // 等待态由 `sessionListCenteredLoading` 铺在整页上表达。
             EmptyView()
@@ -900,15 +952,62 @@ struct SessionListView: View {
                     .accessibilityIdentifier("sessions.empty.needsWorkspace")
             } description: {
                 Text(L10n.text("ui.open_a_workspace_to_load_its_sessions"))
+                    .fixedSize(horizontal: false, vertical: true)
             } actions: {
-                Button(L10n.text("ui.go_to_work_area")) {
-                    onOpenWorkspaces?()
+                VStack(spacing: 12) {
+                    Button {
+                        openWorkspacePresenter.present()
+                    } label: {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "folder.badge.plus")
+                                    .accessibilityHidden(true)
+                                Text(L10n.text("ui.open_directory"))
+                                    .fixedSize(horizontal: true, vertical: true)
+                            }
+                            VStack(spacing: 4) {
+                                Image(systemName: "folder.badge.plus")
+                                    .accessibilityHidden(true)
+                                Text(L10n.text("ui.open_directory"))
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .foregroundStyle(tokens.primaryActionForeground)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .background(
+                            tokens.primaryAction,
+                            in: RoundedRectangle(
+                                cornerRadius: dynamicTypeSize.isAccessibilitySize ? 12 : 22,
+                                style: .continuous
+                            )
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
+                    .accessibilityIdentifier("sessions.empty.openDirectory")
+
+                    if let onOpenWorkspaces {
+                        Button {
+                            onOpenWorkspaces()
+                        } label: {
+                            Text(L10n.text("ui.go_to_work_area"))
+                                .font(themeStore.uiFont(.callout, weight: .medium))
+                                .foregroundStyle(tokens.accentText)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("sessions.empty.openWorkspaces")
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .foregroundStyle(tokens.primaryActionForeground)
-                .controlSize(.large)
-                .tint(tokens.primaryAction)
-                .accessibilityIdentifier("sessions.empty.openWorkspaces")
             }
         case .noSessions:
             ContentUnavailableView {
@@ -978,6 +1077,7 @@ struct SessionListView: View {
     }
 
     private func retrySessionList() {
+        guard !appStore.hasNoConfiguredHost else { return }
         Task {
             await appStore.preflightConnection()
             await sessionStore.refreshSelectedProjectSessions(showLoading: false)
@@ -1196,6 +1296,7 @@ struct SessionListView: View {
     private func filterMenu(tokens: ThemeTokens) -> some View {
         Menu {
             Button {
+                guard !appStore.hasNoConfiguredHost else { return }
                 Task {
                     // 先刷新用户当前上下文，让可见运行态尽快收敛；跨工作区全局发现随后继续。
                     // 后者可能包含多 Runtime / 多页扫描，不应成为“点刷新后看见变化”的首个门槛。
@@ -1271,6 +1372,11 @@ struct SessionListView: View {
             for: nil
         )
     }
+}
+
+private struct SessionListRefreshTaskID: Equatable {
+    let hostScope: HostScope
+    let hasNoConfiguredHost: Bool
 }
 
 private enum SessionReviewScope: String, CaseIterable, Identifiable {

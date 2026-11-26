@@ -522,6 +522,10 @@ actor HostCredentialVault {
         return token
     }
 
+    func legacyToken() throws -> String {
+        try tokenStore.loadLegacy()
+    }
+
     /// Keychain 写入与内存缓存必须由同一个 actor 串行提交，避免切换成功后
     /// 一个迟到的 remember/remove Task 把另一台 Mac 的凭据缓存覆盖掉。
     func save(

@@ -209,4 +209,131 @@ extension AppStore {
         // nil 仅兼容不携带传输上下文的测试 WebSocket。
         return fingerprint == nil || fingerprint == currentFingerprint
     }
+
+    /// 本地无档案时的旧版单主机凭据（例如升级迁移失败后仍保留在内存中的 endpoint + token）。
+    var hasValidLegacySingleHostCredential: Bool {
+        connectionProfiles.isEmpty &&
+            !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 是否存在待恢复的 Keychain 路径（锁屏/瞬时 Keychain 不可读，或已保存档案在前后台切换期间短暂清空内存凭据）。
+    var hasKeychainRecoveryPath: Bool {
+        hasPendingKeychainRecovery || (isCredentialMemorySuspended && !connectionProfiles.isEmpty)
+    }
+
+    /// 显式“未连接电脑”谓词（禁止使用 `!isConfigured` 替代）。
+    ///
+    /// 仅在本地宿主状态已加载完成、已保存电脑档案为 0、且不存在 Keychain 恢复路径或有效旧版单主机凭据时为 `true`，
+    /// 从而把真正的“无主机空态”与锁屏 Keychain 恢复、重连、前后台凭据挂起严格区分开。
+    var hasNoConfiguredHost: Bool {
+        guard hasLoadedLocalHostState else { return false }
+#if DEBUG
+        if shouldSeedDebugWorkbenchUI {
+            return false
+        }
+#endif
+        return connectionProfiles.isEmpty &&
+            !hasKeychainRecoveryPath &&
+            !hasValidLegacySingleHostCredential
+    }
+
+    struct InitialHostCredentialsResolution {
+        let profiles: [ConnectionProfile]
+        let activeProfileID: String?
+        let endpoint: String
+        let token: String
+        let hasPendingKeychainRecovery: Bool
+    }
+
+    static func resolveInitialHostCredentials(
+        defaults: UserDefaults,
+        tokenStore: TokenStore,
+        endpointKey: String,
+        profilesKey: String,
+        legacyProfilesKey: String,
+        activeProfileIDKey: String,
+        defaultEndpoint: String
+    ) -> InitialHostCredentialsResolution {
+        var initialProfiles = loadConnectionProfiles(from: defaults)
+        if defaults.data(forKey: profilesKey) == nil,
+           !initialProfiles.isEmpty,
+           let migratedProfiles = try? JSONEncoder().encode(initialProfiles) {
+            defaults.set(migratedProfiles, forKey: profilesKey)
+        }
+        var initialActiveProfileID = defaults.string(forKey: activeProfileIDKey)
+        var initialEndpoint = defaults.string(forKey: endpointKey) ?? defaultEndpoint
+        var initialToken = ""
+        var hasPendingKeychainRecovery = false
+
+        if let activeProfileID = initialActiveProfileID,
+           let activeProfile = initialProfiles.first(where: { $0.id == activeProfileID }) {
+            do {
+                let profileToken = try tokenStore.load(profileID: activeProfileID)
+                if !profileToken.isEmpty {
+                    initialEndpoint = activeProfile.endpoint
+                    initialToken = profileToken
+                } else {
+                    initialActiveProfileID = nil
+                }
+            } catch {
+                if (error as? TokenStoreError)?.isMissingEntitlement != true {
+                    hasPendingKeychainRecovery = true
+                }
+                initialActiveProfileID = nil
+            }
+        } else if initialProfiles.isEmpty {
+            // 稳定 V2 冷启动只读 active profile account；只有确实没有 Profile 时才读一次 legacy，
+            // 避免保存 5 台 Mac 后把 Keychain 读取次数带进首屏关键路径。
+            do {
+                let legacyToken = try tokenStore.loadLegacy()
+                if legacyToken.isEmpty {
+                    initialActiveProfileID = nil
+                } else {
+                    initialToken = legacyToken
+                    // 旧版本只有一个 endpoint + `agentd-token`。先把 Token 写入新的独立 account，
+                    // 成功后才发布档案元数据；任一步失败都继续使用旧内存态和旧 Keychain 项。
+                    let normalizedEndpoint = (try? validatedEndpoint(initialEndpoint)) ?? defaultEndpoint
+                    let migratedProfile = ConnectionProfile(
+                        id: UUID().uuidString,
+                        displayName: defaultProfileDisplayName(endpoint: normalizedEndpoint),
+                        endpoint: normalizedEndpoint,
+                        lastSuccessfulAt: nil
+                    )
+                    do {
+                        let encodedProfiles = try JSONEncoder().encode([migratedProfile])
+                        try tokenStore.save(initialToken, profileID: migratedProfile.id)
+                        defaults.set(encodedProfiles, forKey: profilesKey)
+                        defaults.set(encodedProfiles, forKey: legacyProfilesKey)
+                        defaults.set(migratedProfile.id, forKey: activeProfileIDKey)
+                        initialProfiles = [migratedProfile]
+                        initialActiveProfileID = migratedProfile.id
+                        // 新档案已完整可恢复后再清理 legacy；删除失败只会留下冗余 Keychain 项，
+                        // 不会让当前连接或新档案失效。
+                        try? tokenStore.delete(allowMissing: true)
+                    } catch {
+                        initialProfiles = []
+                        initialActiveProfileID = nil
+                    }
+                }
+            } catch {
+                if (error as? TokenStoreError)?.isMissingEntitlement != true {
+                    hasPendingKeychainRecovery = true
+                }
+                initialActiveProfileID = nil
+            }
+        } else {
+            // 已存在档案时，即使 legacy item 因旧迁移清理失败而残留，也绝不能重新迁移并覆盖档案列表。
+            // 当前档案 Token 不可读时退回“未选中当前电脑”，保留所有已有档案待用户重新配对或切换。
+            initialActiveProfileID = nil
+        }
+
+        return InitialHostCredentialsResolution(
+            profiles: initialProfiles,
+            activeProfileID: initialActiveProfileID,
+            endpoint: initialEndpoint,
+            token: initialToken,
+            hasPendingKeychainRecovery: hasPendingKeychainRecovery
+        )
+    }
 }

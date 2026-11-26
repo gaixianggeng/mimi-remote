@@ -99,6 +99,9 @@ extension SessionStore {
         activeWriterConflictLeases.removeAll()
         clearAllWriterConflictForkState()
         if clearData {
+            stopNativeHarnessHostEvents()
+            stopNativeHarnessDirectory()
+            cancelMimiRelay()
             if !appStore.isConfigured, let profileID = currentQueuedTurnProfileID {
                 do {
                     try queuedTurnStore.remove(profileID: profileID)

@@ -89,6 +89,7 @@ struct WorkspaceWorkbenchRootView: View {
             onStartSession: startSession,
             onOpenSession: onOpenSession,
             manageConnections: manageConnections,
+            onConnectComputer: onManageConnections,
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: usesCompactNavigation
             ),

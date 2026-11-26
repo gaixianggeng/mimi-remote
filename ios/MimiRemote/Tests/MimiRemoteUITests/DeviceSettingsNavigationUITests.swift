@@ -374,8 +374,8 @@ final class DeviceSettingsNavigationUITests: XCTestCase {
         let previousClipboardItems = UIPasteboard.general.items
         defer { UIPasteboard.general.items = previousClipboardItems }
 
-        // 真正全新首次启动（无已保存电脑、无中转权益、未配对失败）不额外显示顶部退出按钮。
-        XCTAssertFalse(element("settings.firstConnection.enterWorkbench").exists)
+        // UI-7 无主机空态落地后，全新首次启动顶部导航栏即提供「稍后连接」入口，但尚未展示失败横幅。
+        XCTAssertTrue(element("settings.firstConnection.enterWorkbench").waitForExistence(timeout: 5))
         XCTAssertFalse(element("settings.firstConnection.errorBanner").exists)
         capture("r2-01-first-launch-clean")
 
