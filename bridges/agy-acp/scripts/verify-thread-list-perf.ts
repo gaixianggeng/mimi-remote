@@ -51,14 +51,25 @@ interface BenchBatch {
   };
 }
 
+type ProcessScanMode = "deterministic_ps_shim" | "ambient_unmeasured" | "unknown";
+
+interface ProcessScanMeta {
+  controlled?: boolean;
+  mode?: string;
+  status?: string;
+  note?: string;
+}
+
 interface BenchReport {
   seed: number;
   config?: BenchConfig;
+  processScan?: ProcessScanMeta;
   dataset: {
     uniqueNonOrphanRawCwds: number;
     existingUniqueCwdsEligibleForGitInspect?: number;
   };
   summary: {
+    processScanStatus?: string;
     concurrentColdGitSpawnsMeanPerRun: number;
     sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: number;
     sequentialWarmP95MsMean: number;
@@ -70,8 +81,29 @@ interface BenchReport {
 interface ResolvedBaseline {
   source: "live_measured" | "baseline_json" | "explicit_cli";
   ref?: string;
+  processScanMode: ProcessScanMode;
   coldGitSpawnsMeanPerRun: number;
   warmP95MsMean: number;
+}
+
+interface ProcessScanComparison {
+  controlled: boolean;
+  matched: boolean;
+  candidate: ProcessScanMode;
+  baseline: ProcessScanMode;
+}
+
+function detectReportProcessScanMode(report: BenchReport): ProcessScanMode {
+  if (report.processScan?.controlled === true && report.processScan?.mode === "deterministic_ps_shim") {
+    return "deterministic_ps_shim";
+  }
+  if (report.processScan?.mode === "ambient_unmeasured" || report.processScan?.mode === "ambient") {
+    return "ambient_unmeasured";
+  }
+  if (report.processScan?.status === "unmeasured" || report.summary?.processScanStatus === "unmeasured") {
+    return "ambient_unmeasured";
+  }
+  return "unknown";
 }
 
 function parseIntArg(flag: string, raw: string | undefined, min: number): number {
@@ -333,10 +365,11 @@ function resolveBaseline(
   repoRoot: string,
   opts: CliOptions,
   candidateReport: BenchReport,
+  preloadedBaselineReport?: BenchReport,
   controlledBenchEnv?: NodeJS.ProcessEnv,
 ): ResolvedBaseline {
   if (opts.baselineJson) {
-    const baselineReport = JSON.parse(readFileSync(opts.baselineJson, "utf8")) as BenchReport;
+    const baselineReport = preloadedBaselineReport ?? (JSON.parse(readFileSync(opts.baselineJson, "utf8")) as BenchReport);
     validateBaselineMatchesCandidate(baselineReport, candidateReport);
     const cold = baselineReport.summary?.concurrentColdGitSpawnsMeanPerRun;
     const warm = baselineReport.summary?.sequentialWarmP95MsMean;
@@ -345,6 +378,7 @@ function resolveBaseline(
     }
     return {
       source: "baseline_json",
+      processScanMode: detectReportProcessScanMode(baselineReport),
       coldGitSpawnsMeanPerRun: cold,
       warmP95MsMean: warm,
     };
@@ -353,6 +387,7 @@ function resolveBaseline(
   if (opts.baselineColdSpawns !== undefined && opts.baselineWarmP95Ms !== undefined) {
     return {
       source: "explicit_cli",
+      processScanMode: "unknown",
       coldGitSpawnsMeanPerRun: opts.baselineColdSpawns,
       warmP95MsMean: opts.baselineWarmP95Ms,
     };
@@ -386,6 +421,7 @@ function resolveBaseline(
   return {
     source: "live_measured",
     ref: baselineCommit,
+    processScanMode: "deterministic_ps_shim",
     coldGitSpawnsMeanPerRun: cold,
     warmP95MsMean: warm,
   };
@@ -394,6 +430,7 @@ function resolveBaseline(
 function evaluateReport(
   report: BenchReport,
   baseline: ResolvedBaseline,
+  processScan: ProcessScanComparison,
 ): {
   passed: boolean;
   coldMaxPerRun: number | null;
@@ -490,8 +527,13 @@ function evaluateReport(
   const warmImprovementPct = Number(
     (((baseline.warmP95MsMean - warmP95) / baseline.warmP95MsMean) * 100).toFixed(2),
   );
+  // 延迟门禁要求基线与待测端均处于一致且受控的进程扫描条件下，杜绝单边垫片或非受控环境 ps 翻转结论。
+  const scanGateError = !processScan.controlled || !processScan.matched
+    ? `uncontrolled_or_mismatched_process_scan(candidate=${processScan.candidate},baseline=${processScan.baseline})`
+    : null;
+  const warmLatencyError = warmStructureError ?? scanGateError;
   const warmP95CheckPassed =
-    warmStructureError === null && Number.isFinite(warmP95) && warmP95 >= 0 && warmP95 <= warmP95Max;
+    warmLatencyError === null && Number.isFinite(warmP95) && warmP95 >= 0 && warmP95 <= warmP95Max;
 
   const violationSuffix = coldStructureError
     ? `, error=${coldStructureError}`
@@ -499,6 +541,7 @@ function evaluateReport(
       ? `, violating_rounds=[${violatingRounds.map((v) => `b${v.batch}#${v.run}:${v.spawns}`).join(",")}]`
       : "";
   const warmErrorSuffix = warmStructureError ? `, error=${warmStructureError}` : "";
+  const warmLatencyErrorSuffix = warmLatencyError ? `, error=${warmLatencyError}` : "";
 
   const checks = [
     {
@@ -514,7 +557,7 @@ function evaluateReport(
     {
       name: "sequential_warm_p95_ms",
       passed: warmP95CheckPassed,
-      detail: `mean_of_batch_p95=${warmP95}ms, cap_30pct_improvement=${warmP95Max}ms (baseline_mean_of_batch_p95=${baseline.warmP95MsMean}ms, source=${baseline.source}, improvement=${warmImprovementPct}%${warmErrorSuffix})`,
+      detail: `mean_of_batch_p95=${warmP95}ms, cap_30pct_improvement=${warmP95Max}ms (baseline_mean_of_batch_p95=${baseline.warmP95MsMean}ms, source=${baseline.source}, improvement=${warmImprovementPct}%, scan_candidate=${processScan.candidate}, scan_baseline=${processScan.baseline}${warmLatencyErrorSuffix})`,
     },
   ];
   return {
@@ -528,32 +571,54 @@ function evaluateReport(
 function main(): void {
   const opts = parseArgs(process.argv.slice(2));
   const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
+  const preloadedBaselineReport = opts.baselineJson
+    ? (JSON.parse(readFileSync(opts.baselineJson, "utf8")) as BenchReport)
+    : undefined;
   const needsLiveBaseline = !opts.baselineJson && opts.baselineColdSpawns === undefined;
-  const needsLiveRun = !opts.checkJson || needsLiveBaseline;
+  const expectedBaselineScanMode: ProcessScanMode = needsLiveBaseline
+    ? "deterministic_ps_shim"
+    : preloadedBaselineReport
+      ? detectReportProcessScanMode(preloadedBaselineReport)
+      : "unknown";
+  // 仅当基线端同样运行于确定性 ps 垫片时才对 live candidate 启用垫片；
+  // 若 --baseline-json 为 ambient/unmeasured 或手动 CLI 常数，严禁仅垫片待测端造成失真改善。
+  const shimLiveCandidate = !opts.checkJson && expectedBaselineScanMode === "deterministic_ps_shim";
+  const needsControlledShim = needsLiveBaseline || shimLiveCandidate;
 
   const runEvaluation = (controlledBenchEnv?: NodeJS.ProcessEnv) => {
-    const report = opts.checkJson
-      ? (JSON.parse(readFileSync(opts.checkJson, "utf8")) as BenchReport)
-      : runBenchInRoot(
-          repoRoot,
-          opts.seed,
-          {
-            batches: opts.batches,
-            cold: opts.cold,
-            warm: opts.warm,
-            concurrency: opts.concurrency,
-          },
-          controlledBenchEnv!,
-        );
+    let report: BenchReport;
+    let candidateScanMode: ProcessScanMode;
+    if (opts.checkJson) {
+      report = JSON.parse(readFileSync(opts.checkJson, "utf8")) as BenchReport;
+      candidateScanMode = detectReportProcessScanMode(report);
+    } else {
+      const candidateEnv = shimLiveCandidate ? controlledBenchEnv! : process.env;
+      report = runBenchInRoot(
+        repoRoot,
+        opts.seed,
+        {
+          batches: opts.batches,
+          cold: opts.cold,
+          warm: opts.warm,
+          concurrency: opts.concurrency,
+        },
+        candidateEnv,
+      );
+      candidateScanMode = shimLiveCandidate ? "deterministic_ps_shim" : "ambient_unmeasured";
+    }
 
-    const baseline = resolveBaseline(repoRoot, opts, report, controlledBenchEnv);
-    const evaluation = evaluateReport(report, baseline);
+    const baseline = resolveBaseline(repoRoot, opts, report, preloadedBaselineReport, controlledBenchEnv);
+    const processScan: ProcessScanComparison = {
+      controlled: candidateScanMode === "deterministic_ps_shim" && baseline.processScanMode === "deterministic_ps_shim",
+      matched: candidateScanMode === "deterministic_ps_shim" && baseline.processScanMode === "deterministic_ps_shim",
+      candidate: candidateScanMode,
+      baseline: baseline.processScanMode,
+    };
+    const evaluation = evaluateReport(report, baseline, processScan);
     const output = {
       verifier: "agy-acp-phase1a1-perf",
       seed: report.seed,
-      processScan: needsLiveRun
-        ? { controlled: true, mode: "deterministic_ps_shim" }
-        : { controlled: false, mode: "pre_recorded_json" },
+      processScan,
       baseline: {
         source: baseline.source,
         ...(baseline.ref ? { ref: baseline.ref } : {}),
@@ -578,11 +643,12 @@ function main(): void {
           console.error(`[FAIL] ${item.name}: ${item.detail}`);
         }
       }
-      process.exit(1);
+      // 使用 process.exitCode 而非 process.exit(1)，确保外层 withControlledPsEnv 的 finally 清理临时 ps 垫片目录。
+      process.exitCode = 1;
     }
   };
 
-  if (needsLiveRun) {
+  if (needsControlledShim) {
     withControlledPsEnv((controlledEnv) => runEvaluation(controlledEnv));
   } else {
     runEvaluation();

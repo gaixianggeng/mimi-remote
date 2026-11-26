@@ -47,11 +47,33 @@ export function resolveAgyDataPaths(env: NodeJS.ProcessEnv = process.env): AgyDa
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const ASCII_ONLY = /^[\x00-\x7f]*$/;
-const PURE_ASCII_NON_DB_EXT = /\.[A-Za-z0-9_-]+$/;
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
 
-function foldFilenameCase(name: string): string {
-  // 对齐 APFS/HFS+ 等大小写不敏感卷的 Unicode simple case-folding（例如 U+017F `ſ` -> `s`、U+212A `K` -> `k`、`.DB` -> `.db`）。
-  return name.toUpperCase().toLowerCase();
+function candidateFoldedDbStems(name: string): string[] {
+  if (ASCII_ONLY.test(name)) {
+    const lower = name.toLowerCase();
+    if (!lower.endsWith(".db")) return [];
+    const stem = lower.slice(0, -3);
+    return SAFE_SESSION_ID.test(stem) ? [stem] : [];
+  }
+  // 仅索引可能经 Unicode simple case-folding / NFKC / HFS+ 默认可忽略字符剥离后
+  // 映射到合法 ASCII SAFE_SESSION_ID + `.db` 的条目（如 `ſ-test.db`、`K-test.db`、`s\u200b-test.db`），
+  // 避免无关非 ASCII 文件名（如 `日本語.db`）对所有未命中会话触发逐条 access() 退化。
+  const candidates = new Set<string>();
+  const variants = [
+    name.toUpperCase().toLowerCase(),
+    name.normalize("NFKC").toUpperCase().toLowerCase(),
+    name.replace(DEFAULT_IGNORABLE_RE, "").toUpperCase().toLowerCase(),
+    name.normalize("NFKC").replace(DEFAULT_IGNORABLE_RE, "").toUpperCase().toLowerCase(),
+  ];
+  for (const folded of variants) {
+    if (!folded.endsWith(".db")) continue;
+    const stem = folded.slice(0, -3);
+    if (SAFE_SESSION_ID.test(stem)) {
+      candidates.add(stem);
+    }
+  }
+  return [...candidates];
 }
 
 export function conversationDbPath(
@@ -226,11 +248,10 @@ export async function probeOtherConversations(
       return "present";
     }
     for (const name of entries) {
-      const folded = foldFilenameCase(name);
-      if (!folded.endsWith(".db")) continue;
-      const foldedStem = folded.slice(0, -3);
-      if (SAFE_SESSION_ID.test(foldedStem) && (await fileExists(path.join(dir, `${foldedStem}.db`), ops.access))) {
-        return "present";
+      for (const foldedStem of candidateFoldedDbStems(name)) {
+        if (await fileExists(path.join(dir, `${foldedStem}.db`), ops.access)) {
+          return "present";
+        }
       }
     }
     return "absent_or_empty";
@@ -259,13 +280,12 @@ type DirOriginIndex =
       directDbIds: Set<string>;
       verifyAccessDbIds: Set<string>;
       caseAliasLowerIds: Set<string>;
-      hasUnindexedNonAsciiCandidate: boolean;
     };
 
-async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
+async function buildDirOriginIndex(dir: string, accessFn: typeof access = access): Promise<DirOriginIndex> {
   try {
     // 先校验目录可穿越（X_OK），确保 0444 / 0000 / 悬空目录链接与逐文件 access(path) 完全等价。
-    await access(dir, constants.X_OK);
+    await accessFn(dir, constants.X_OK);
   } catch {
     return { kind: "inaccessible" };
   }
@@ -275,63 +295,50 @@ async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
     const directDbIds = new Set<string>();
     const verifyAccessDbIds = new Set<string>();
     const caseAliasLowerIds = new Set<string>();
-    let hasUnindexedNonAsciiCandidate = false;
     for (const entry of entries) {
-      const folded = foldFilenameCase(entry.name);
-      if (folded.endsWith(".db")) {
-        const foldedStem = folded.slice(0, -3);
-        if (SAFE_SESSION_ID.test(foldedStem)) {
-          // 索引大小写与 Unicode 折叠后的别名（含 `abcd.db`/`upper.DB`/`ſ-test.db`/`K-test.db`），
-          // 命中时由 access(path) 按底层卷规则实时核验，保持与逐文件 lookup 完全一致。
-          caseAliasLowerIds.add(foldedStem);
-          if (entry.name.endsWith(".db")) {
-            const exactStem = entry.name.slice(0, -3);
-            if (SAFE_SESSION_ID.test(exactStem)) {
-              if (entry.isSymbolicLink()) {
-                // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
-                verifyAccessDbIds.add(exactStem);
-              } else if (entry.isFile() || entry.isDirectory()) {
-                directDbIds.add(exactStem);
-              } else {
-                verifyAccessDbIds.add(exactStem);
-              }
-            }
-          }
-          continue;
-        }
-        // 非 ASCII 条目若未折叠为 SAFE_SESSION_ID（如 HFS+ 可忽略字符或其他卷规范化），
-        // 标记未命中时回退 access(path)，避免丢弃真实可访问会话。
-        if (!ASCII_ONLY.test(entry.name)) {
-          hasUnindexedNonAsciiCandidate = true;
-        }
-        continue;
+      const foldedStems = candidateFoldedDbStems(entry.name);
+      if (foldedStems.length === 0) continue;
+      // 索引大小写与 Unicode 折叠/规范化后的别名（含 `abcd.db`/`upper.DB`/`ſ-test.db`/`K-test.db`），
+      // 命中时由 access(path) 按底层卷规则实时核验，保持与逐文件 lookup 完全一致；
+      // 无关非 ASCII 文件名（如 `日本語.db`）不会进入索引，也不触发全量 miss 回退。
+      for (const foldedStem of foldedStems) {
+        caseAliasLowerIds.add(foldedStem);
       }
-      if (!ASCII_ONLY.test(entry.name) && !PURE_ASCII_NON_DB_EXT.test(entry.name)) {
-        hasUnindexedNonAsciiCandidate = true;
+      if (!entry.name.endsWith(".db")) continue;
+      const exactStem = entry.name.slice(0, -3);
+      if (!SAFE_SESSION_ID.test(exactStem)) continue;
+      if (entry.isSymbolicLink()) {
+        // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
+        verifyAccessDbIds.add(exactStem);
+      } else if (entry.isFile() || entry.isDirectory()) {
+        directDbIds.add(exactStem);
+      } else {
+        verifyAccessDbIds.add(exactStem);
       }
     }
-    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds, caseAliasLowerIds, hasUnindexedNonAsciiCandidate };
+    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds, caseAliasLowerIds };
   } catch {
     // 例如 0111 目录允许穿越（X_OK 成功）但禁止 readdir，回退逐文件 access(path) 保持等价。
     return { kind: "fallback_access", dir };
   }
 }
 
-async function hasIndexedConversationDb(index: DirOriginIndex, sessionId: string): Promise<boolean> {
+async function hasIndexedConversationDb(
+  index: DirOriginIndex,
+  sessionId: string,
+  accessFn: typeof access = access,
+): Promise<boolean> {
   if (!SAFE_SESSION_ID.test(sessionId)) return false;
   if (index.kind === "inaccessible") return false;
   if (index.kind === "fallback_access") {
-    return fileExists(path.join(index.dir, `${sessionId}.db`));
+    return fileExists(path.join(index.dir, `${sessionId}.db`), accessFn);
   }
   if (index.directDbIds.has(sessionId)) return true;
   if (index.verifyAccessDbIds.has(sessionId)) {
-    return fileExists(path.join(index.dir, `${sessionId}.db`));
+    return fileExists(path.join(index.dir, `${sessionId}.db`), accessFn);
   }
   if (index.caseAliasLowerIds.has(sessionId.toLowerCase())) {
-    return fileExists(path.join(index.dir, `${sessionId}.db`));
-  }
-  if (index.hasUnindexedNonAsciiCandidate) {
-    return fileExists(path.join(index.dir, `${sessionId}.db`));
+    return fileExists(path.join(index.dir, `${sessionId}.db`), accessFn);
   }
   return false;
 }
@@ -341,22 +348,24 @@ async function hasIndexedConversationDb(index: DirOriginIndex, sessionId: string
  */
 export async function createBatchSessionOriginResolver(
   env: NodeJS.ProcessEnv = process.env,
-  ops: Pick<ProbeFsOps, "stat"> = defaultProbeFsOps,
+  ops: Partial<Pick<ProbeFsOps, "stat" | "access">> = defaultProbeFsOps,
 ): Promise<(sessionId: string) => Promise<AgySessionOrigin | null>> {
+  const statFn = ops.stat ?? stat;
+  const accessFn = ops.access ?? access;
   const paths = resolveAgyDataPaths(env);
   const cliDir = path.join(paths.appDataRoot, "conversations");
   const otherDir = path.join(paths.otherAppDataRoot, "conversations");
-  const sameRoot = await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot, ops.stat);
+  const sameRoot = await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot, statFn);
 
   const [cliIndex, otherIndex] = sameRoot
-    ? [await buildDirOriginIndex(cliDir), { kind: "inaccessible" } as const]
-    : await Promise.all([buildDirOriginIndex(cliDir), buildDirOriginIndex(otherDir)]);
+    ? [await buildDirOriginIndex(cliDir, accessFn), { kind: "inaccessible" } as const]
+    : await Promise.all([buildDirOriginIndex(cliDir, accessFn), buildDirOriginIndex(otherDir, accessFn)]);
 
   return async (sessionId: string): Promise<AgySessionOrigin | null> => {
-    if (await hasIndexedConversationDb(cliIndex, sessionId)) {
+    if (await hasIndexedConversationDb(cliIndex, sessionId, accessFn)) {
       return "cli";
     }
-    if (!sameRoot && (await hasIndexedConversationDb(otherIndex, sessionId))) {
+    if (!sameRoot && (await hasIndexedConversationDb(otherIndex, sessionId, accessFn))) {
       return "other";
     }
     return null;

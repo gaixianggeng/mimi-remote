@@ -548,6 +548,37 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           await Promise.all([cliAcpCase.close(), otherAcpCase.close()]);
         }
       }
+
+      // Case E: unrelated non-ASCII filenames (e.g. `日本語.db`) in CLI dir must NOT trigger per-miss access()
+      // lookups when resolving unrelated Other or orphan ASCII session IDs.
+      const homeNonAscii = path.join(tmp, "home-nonascii-no-fallback");
+      const cliNonAscii = path.join(homeNonAscii, ".gemini", "antigravity-cli", "conversations");
+      const otherNonAscii = path.join(homeNonAscii, ".gemini", "antigravity", "conversations");
+      await mkdir(cliNonAscii, { recursive: true });
+      await mkdir(otherNonAscii, { recursive: true });
+      await writeFile(path.join(cliNonAscii, "日本語.db"), "");
+      await writeFile(path.join(cliNonAscii, "笔记.txt"), "");
+      await writeFile(path.join(otherNonAscii, "other-fast-1.db"), "");
+      await writeFile(path.join(otherNonAscii, "other-fast-2.db"), "");
+
+      const accessedPaths: string[] = [];
+      const spyAccess: typeof access = (async (target: Parameters<typeof access>[0], mode?: number) => {
+        accessedPaths.push(String(target));
+        return access(target, mode);
+      }) as typeof access;
+
+      const resolverNonAscii = await createBatchSessionOriginResolver(envForHome(homeNonAscii), {
+        access: spyAccess,
+      });
+      // Initial index build checks X_OK on cliDir and otherDir only.
+      expect(accessedPaths).toEqual([cliNonAscii, otherNonAscii]);
+      accessedPaths.length = 0;
+
+      expect(await resolverNonAscii("other-fast-1")).toBe("other");
+      expect(await resolverNonAscii("other-fast-2")).toBe("other");
+      expect(await resolverNonAscii("orphan-unrelated-99")).toBeNull();
+      // Zero per-session access() calls despite `日本語.db` in CLI dir!
+      expect(accessedPaths).toEqual([]);
     } finally {
       for (const item of restoreModes.reverse()) {
         await chmod(item.target, item.mode).catch(() => {});
@@ -1319,9 +1350,11 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
     const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-perf-cli-"));
     const scriptPath = path.resolve(import.meta.dir, "..", "scripts", "verify-thread-list-perf.ts");
     try {
+      const controlledScan = { controlled: true, mode: "deterministic_ps_shim" };
       const baselinePayload = {
         seed: 20260410,
         config: { batches: 3, cold: 5, warm: 20, concurrency: 4 },
+        processScan: controlledScan,
         dataset: { uniqueNonOrphanRawCwds: 33 },
         summary: {
           concurrentColdGitSpawnsMeanPerRun: 128,
@@ -1369,6 +1402,7 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const base = {
         seed: 20260410,
         config: { batches: 3, cold: 5, warm: 20, concurrency: 4 },
+        processScan: controlledScan,
         dataset: { uniqueNonOrphanRawCwds: 33 },
         summary: {
           concurrentColdGitSpawnsMeanPerRun: 27,
@@ -1386,6 +1420,15 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const rPass = await runVerifier("pass", base);
       expect(rPass.status).toBe(0);
       expect(rPass.stdout).toContain("mean_of_batch_p95");
+      const passParsed = JSON.parse(rPass.stdout) as {
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+      };
+      expect(passParsed.processScan).toEqual({
+        controlled: true,
+        matched: true,
+        candidate: "deterministic_ps_shim",
+        baseline: "deterministic_ps_shim",
+      });
 
       // Fail 1: single cold round exceeds cap (52 > 32) even though overall mean (28.667) is <= 32!
       const failSingleRoundCold = structuredClone(base);
@@ -1484,8 +1527,105 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const rPartialCli = await runVerifier("fail-partial-cli", base, ["--baseline-cold-spawns", "128"]);
       expect(rPartialCli.status).not.toBe(0);
 
-      // Live local baseline measurement using `--baseline-ref HEAD` (works in shallow detached CI checkouts)
-      // AND proves ambient `ps` on PATH is isolated by the verifier's controlled deterministic `ps` shim.
+      // Fail 6: mismatched or uncontrolled processScan between candidate and baseline JSON must fail closed.
+      const ambientBaselinePayload = {
+        ...baselinePayload,
+        processScan: { status: "unmeasured", note: "Phase 0 ambient" },
+      };
+      const ambientBaselinePath = path.join(tmp, "baseline-ambient.json");
+      await writeFile(ambientBaselinePath, JSON.stringify(ambientBaselinePayload));
+      const rMismatchedScan = await runVerifier("fail-mismatched-scan", base, ["--baseline-json", ambientBaselinePath]);
+      expect(rMismatchedScan.status).toBe(1);
+      const mismatchedScanParsed = JSON.parse(rMismatchedScan.stdout) as {
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+        checks: Array<{ name: string; passed: boolean; detail: string }>;
+      };
+      expect(mismatchedScanParsed.processScan).toEqual({
+        controlled: false,
+        matched: false,
+        candidate: "deterministic_ps_shim",
+        baseline: "ambient_unmeasured",
+      });
+      const mismatchedWarmCheck = mismatchedScanParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
+      expect(mismatchedWarmCheck?.passed).toBe(false);
+      expect(mismatchedWarmCheck?.detail).toContain("uncontrolled_or_mismatched_process_scan");
+
+      // Fail 7: live candidate against an ambient-recorded `--baseline-json` MUST NOT shim only the candidate
+      // or report controlled=true; it runs ambient and fails closed on the latency gate.
+      const ambientLiveBaselinePath = path.join(tmp, "baseline-ambient-live.json");
+      await writeFile(
+        ambientLiveBaselinePath,
+        JSON.stringify({
+          seed: 20260410,
+          config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
+          processScan: { status: "unmeasured", note: "Phase 0 ambient" },
+          dataset: { uniqueNonOrphanRawCwds: 33 },
+          summary: {
+            processScanStatus: "unmeasured",
+            concurrentColdGitSpawnsMeanPerRun: 128,
+            sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
+            sequentialWarmP95MsMean: 500.0,
+          },
+        }),
+      );
+      const ambientLivePsDir = path.join(tmp, "ambient-live-ps");
+      await mkdir(ambientLivePsDir, { recursive: true });
+      const ambientLivePsMarker = path.join(tmp, "ambient-live-ps-invoked.log");
+      const ambientLivePsPath = path.join(ambientLivePsDir, "ps");
+      await writeFile(
+        ambientLivePsPath,
+        `#!/bin/sh\nprintf 'ambient\\n' >> "${ambientLivePsMarker}"\nprintf '1 /sbin/launchd\\n'\n`,
+      );
+      await chmod(ambientLivePsPath, 0o755);
+
+      const rAmbientLive = spawnSync(
+        process.execPath,
+        [
+          scriptPath,
+          "--seed",
+          "20260410",
+          "--batches",
+          "1",
+          "--cold",
+          "1",
+          "--warm",
+          "2",
+          "--concurrency",
+          "2",
+          "--baseline-json",
+          ambientLiveBaselinePath,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${ambientLivePsDir}:${process.env.PATH ?? ""}`,
+          },
+        },
+      );
+      expect(rAmbientLive.status).toBe(1);
+      const ambientLiveParsed = JSON.parse(rAmbientLive.stdout) as {
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+        passed: boolean;
+        checks: Array<{ name: string; passed: boolean; detail: string }>;
+      };
+      expect(ambientLiveParsed.passed).toBe(false);
+      expect(ambientLiveParsed.processScan).toEqual({
+        controlled: false,
+        matched: false,
+        candidate: "ambient_unmeasured",
+        baseline: "ambient_unmeasured",
+      });
+      // Candidate ran under ambient PATH instead of silently applying a one-sided ps shim.
+      expect(await access(ambientLivePsMarker).then(() => true, () => false)).toBe(true);
+      const ambientLiveWarmCheck = ambientLiveParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
+      expect(ambientLiveWarmCheck?.passed).toBe(false);
+      expect(ambientLiveWarmCheck?.detail).toContain("uncontrolled_or_mismatched_process_scan");
+
+      // Live local baseline measurement using `--baseline-ref HEAD` (works in shallow detached CI checkouts):
+      // 1) uses passing cold/warm spawn counts (10 <= 27*0.5=13.5, warm=0) so ONLY sequential_warm_p95_ms fails;
+      // 2) proves ambient slow `ps` on PATH is bypassed by the controlled deterministic `ps` shim;
+      // 3) proves temp shim & scratch directories are cleaned up in TMPDIR even when the live gate exits 1!
       const fakePsDir = path.join(tmp, "ambient-slow-ps");
       await mkdir(fakePsDir, { recursive: true });
       const fakePsMarker = path.join(tmp, "ambient-ps-was-invoked.log");
@@ -1496,35 +1636,55 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       );
       await chmod(fakePsPath, 0o755);
 
+      const isolatedTmp = path.join(tmp, "isolated-tmpdir");
+      await mkdir(isolatedTmp, { recursive: true });
+
       const liveRegressed = {
         seed: 20260410,
         config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
+        processScan: controlledScan,
         dataset: { uniqueNonOrphanRawCwds: 33 },
         summary: {
-          concurrentColdGitSpawnsMeanPerRun: 27,
+          concurrentColdGitSpawnsMeanPerRun: 10,
           sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
           sequentialWarmP95MsMean: 999.0,
         },
-        batches: makeBatches([[27]], [0], { concurrency: 2, warmRuns: 2 }),
+        batches: makeBatches([[10]], [0], { concurrency: 2, warmRuns: 2 }),
       };
       const rLiveFail = await runVerifier("live-regressed", liveRegressed, ["--baseline-ref", "HEAD"], {
         ...process.env,
+        TMPDIR: isolatedTmp,
         PATH: `${fakePsDir}:${process.env.PATH ?? ""}`,
       });
       expect(rLiveFail.status).toBe(1);
       const liveParsed = JSON.parse(rLiveFail.stdout) as {
-        processScan: { controlled: boolean; mode: string };
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
         baseline: { source: string; ref?: string; warmP95MsMean: number };
         passed: boolean;
+        checks: Array<{ name: string; passed: boolean; detail: string }>;
       };
-      expect(liveParsed.processScan).toEqual({ controlled: true, mode: "deterministic_ps_shim" });
+      expect(liveParsed.processScan).toEqual({
+        controlled: true,
+        matched: true,
+        candidate: "deterministic_ps_shim",
+        baseline: "deterministic_ps_shim",
+      });
       expect(liveParsed.baseline.source).toBe("live_measured");
       expect(typeof liveParsed.baseline.ref).toBe("string");
       expect(liveParsed.passed).toBe(false);
+      // Cold and warm git spawn checks MUST pass; ONLY the warm-latency check fails due to 999ms > cap.
+      expect(liveParsed.checks.find((c) => c.name === "concurrent_cold_git_spawns")?.passed).toBe(true);
+      expect(liveParsed.checks.find((c) => c.name === "sequential_warm_git_spawns")?.passed).toBe(true);
+      const liveWarmCheck = liveParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
+      expect(liveWarmCheck?.passed).toBe(false);
+      expect(liveWarmCheck?.detail).not.toContain("uncontrolled_or_mismatched_process_scan");
       // Ambient slow `ps` in PATH must NEVER have been invoked during live baseline measurement.
       const ambientPsInvoked = await access(fakePsMarker).then(() => true, () => false);
       expect(ambientPsInvoked).toBe(false);
       expect(liveParsed.baseline.warmP95MsMean).toBeLessThan(200);
+      // Temp shim and verifier scratch directories must be cleaned up on non-zero exit.
+      const leftoverTmp = (await readdir(isolatedTmp)).filter((name) => name.startsWith("mimi-agy-1a1-"));
+      expect(leftoverTmp).toEqual([]);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
