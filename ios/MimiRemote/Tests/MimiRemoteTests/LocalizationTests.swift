@@ -263,8 +263,16 @@ final class LocalizationTests: XCTestCase {
         }
         let macGuideZh = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .simplifiedChinese)
         XCTAssertTrue(macGuideZh.contains("退出占锁的 Codex 进程"))
+        XCTAssertTrue(macGuideZh.contains("仅适用于 agentd 使用本机后端"))
+        XCTAssertTrue(macGuideZh.contains("同一 SSH 目标和账号"))
+        XCTAssertTrue(macGuideZh.contains("Homebrew"))
+        XCTAssertTrue(macGuideZh.contains("非交互 SSH 认证"))
         let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
         XCTAssertTrue(macGuideEn.contains("quit the lock-holding Codex process"))
+        XCTAssertTrue(macGuideEn.contains("only when agentd uses this Mac’s local backend"))
+        XCTAssertTrue(macGuideEn.contains("same SSH target and account"))
+        XCTAssertTrue(macGuideEn.contains("Homebrew"))
+        XCTAssertTrue(macGuideEn.contains("non-interactive SSH authentication"))
 
         let nonMacGuideZh = L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .simplifiedChinese)
         let nonMacGuideEn = L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .english)

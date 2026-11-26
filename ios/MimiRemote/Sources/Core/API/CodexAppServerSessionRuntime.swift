@@ -2437,6 +2437,14 @@ actor CodexAppServerSessionRuntime {
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
+        _ = try await connectForEvents(sessionID: sessionID, verifyWriterAccess: false)
+    }
+
+    @discardableResult
+    func connectForEvents(
+        sessionID: SessionID,
+        verifyWriterAccess: Bool
+    ) async throws -> Bool {
         try Task.checkCancellation()
         // 必须在第一次 suspension 前登记订阅意图。若页面离开期间 unsubscribe 安装了
         // 更新一代 false lease，旧 connect 恢复后只能退出，不能重新覆盖成 true。
@@ -2446,7 +2454,7 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            return false
         }
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -2454,32 +2462,30 @@ actor CodexAppServerSessionRuntime {
         let connection = try await ensureConnection()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            return false
         }
         let config = try await ensureConfig()
         try Task.checkCancellation()
-        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
-            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout。SSH 共享模式会在这里
-            // resume，以服务端真实结果决定当前入口是否拥有 writer。
-            return
+        guard verifyWriterAccess || shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout，未向服务端确认写入权。
+            // SSH / 本机共享模式或显式 writer 重试会继续 thread/resume，以服务端真实结果决定当前入口是否拥有 writer。
+            return false
         }
         let projects = try await projects()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            return false
         }
         let builder = CodexAppServerRequestBuilder(
             allowlistedProjects: projectsIncludingSessionContext(projects, context: context)
         )
-        if needsPendingInteractionRecovery(for: context.session) {
-            // App 进后台时只取消页面事件泵，底层 gateway 连接可能仍存活，所以这个
-            // thread 仍被记为已 resume。若列表已是等待态、runtime 却没有对应 server request，
-            // 说明请求落在了 iOS 挂起/切会话窗口；清掉本地绑定标记，强制 thread/resume 让
-            // app-server 重放未处理请求。
+        if verifyWriterAccess || needsPendingInteractionRecovery(for: context.session) {
+            // 显式 writer 重试或待处理交互恢复不能复用当前连接的本地 resume 缓存，
+            // 必须重新向服务端发起 thread/resume 确认写入权或重放未处理请求。
             threadsResumedOnConnection.remove(sessionID)
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return
+            return false
         }
         // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
         try await ensureThreadResumedOnConnection(
@@ -2492,20 +2498,21 @@ actor CodexAppServerSessionRuntime {
         if let current = threadSubscriptionLeaseBySessionID[sessionID], current != lease, current.wantsEvents {
             // 同会话的后到订阅接替了租约并复用这次 resume；当前观察者照常接收实时事件，
             // 不能当成取消报连接失败。只有退订（false lease）才表示观察意图已撤销。
-            return
+            return true
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
         }
         // 通道没声明目标能力（如 Claude）时不发 thread/goal/get，否则每次打开都会被网关拒一次（#791）。
         guard supportsThreadGoals(in: config) else {
-            return
+            return true
         }
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
         Task {
             await refreshThreadGoalIfAvailable(sessionID: sessionID, builder: builder, connection: connection)
         }
+        return true
     }
 
     func needsPendingInteractionRecovery(for session: AgentSession) -> Bool {

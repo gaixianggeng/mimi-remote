@@ -322,4 +322,147 @@ final class ForkOnWriterConflictProtocolTests: XCTestCase {
         )
         XCTAssertNil(HistoryMessagesPage(messages: []).latestForkableTurnID)
     }
+
+    func testWindowsManagedWebSocketIdleRetryRequiresServerThreadResumeBeforeClearingConflict() async throws {
+        let project = AgentProject(id: "proj-win-ws-retry", name: "WinWS", path: "C:/repo/win-ws")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "win-ws-token",
+            transportFactory: { transport },
+            configProvider: {
+                makeDirectAppServerConfig(
+                    project: project,
+                    allowedMethods: [
+                        "initialize",
+                        "initialized",
+                        "thread/list",
+                        "thread/read",
+                        "thread/turns/list",
+                        "thread/items/list",
+                        "thread/resume"
+                    ],
+                    transport: "ws"
+                )
+            }
+        )
+        let apiClient = CodexAppServerSessionAPIClient(runtime: runtime)
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "win-ws-token"
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { apiClient },
+            webSocketFactory: { CodexAppServerSessionWebSocketClient(runtime: runtime) }
+        )
+        defer { store.returnToSessionList() }
+
+        let threadID = "thr-win-idle-conflict"
+        let idleThreadJSON = #"{"id":"thr-win-idle-conflict","sessionId":"thr-win-idle-conflict","preview":"Windows idle","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490005,"status":{"type":"idle"},"path":null,"cwd":"C:/repo/win-ws","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Windows idle","turns":[]}"#
+        let pageTask = Task {
+            try await runtime.sessionsPage(projectID: project.id, cursor: nil, limit: 20)
+        }
+        let initialize = try await waitForFakeAppServerRequest(transport, method: "initialize")
+        transportResponse(
+            transport,
+            id: initialize.id,
+            result: #"{"userAgent":"fake-codex","platformFamily":"windows"}"#
+        )
+        let list = try await waitForFakeAppServerRequest(transport, method: "thread/list", after: 1)
+        transportResponse(
+            transport,
+            id: list.id,
+            result: #"{"data":[\#(idleThreadJSON)],"nextCursor":null}"#
+        )
+        let page = try await pageTask.value
+        let source = try XCTUnwrap(page.sessions.first)
+        XCTAssertFalse(source.isRunning)
+
+        store.projects = [project]
+        store.sidebarProjects = [project]
+        store.sessions = [source]
+        store.selectedProjectID = project.id
+        store.selectedSessionID = source.id
+        store.setActiveWriterConflict(true, sessionID: source.id)
+        let originLease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: source.id)
+
+        // 1. 普通空闲连接（非显式重试）：Windows 受管 WS 会跳过 thread/resume，
+        // 不得清除本地冲突，也不得将引导状态切到已解除锁定。
+        let messagesBeforePassiveConnect = await transport.sentMessages().count
+        store.connectWebSocket(source, replayBufferedEvents: false, allowNonRunning: true)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let passiveRequests = await transport.sentMessages().dropFirst(messagesBeforePassiveConnect).compactMap {
+            try? decodeAppServerRequest($0)
+        }
+        XCTAssertFalse(
+            passiveRequests.contains { $0.method == "thread/resume" },
+            "普通 Windows 受管 WS 打开空闲历史仍应保持只读，不主动 thread/resume"
+        )
+        XCTAssertTrue(
+            store.hasActiveWriterConflict(sessionID: source.id),
+            "跳过 thread/resume 的连接不得清除已有写入冲突"
+        )
+        XCTAssertNil(store.writerVerifiedWebSocketLease)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .activeConflict)
+
+        // 2. 用户点「重试」且电脑端仍占锁：必须强制发起 thread/resume；服务端拒绝后保持冲突，
+        // 绝不进入 .live 或显示已解除锁定。
+        let cursorBeforeLockedRetry = await transport.sentMessages().count
+        let lockedRetryTask = Task { await store.retrySelectedSessionWriterAccess() }
+        let lockedTurns = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: cursorBeforeLockedRetry
+        )
+        transportResponse(transport, id: lockedTurns.id, result: #"{"data":[],"nextCursor":null}"#)
+        await lockedRetryTask.value
+
+        let lockedResume = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: cursorBeforeLockedRetry
+        )
+        XCTAssertEqual(lockedResume.params?["threadId"]?.stringValue, threadID)
+        let conflictMessage = "thread thr-win-idle-conflict already has an active writer"
+        transportErrorResponse(
+            transport,
+            id: lockedResume.id,
+            code: -32600,
+            message: conflictMessage
+        )
+        let expectedFailure = CodexAppServerConnectionError.appServer(
+            CodexAppServerError(code: -32600, message: conflictMessage, data: nil)
+        ).localizedDescription
+        try await waitForWebSocketStatus(.failed(expectedFailure), store: store)
+
+        XCTAssertTrue(store.hasActiveWriterConflict(sessionID: source.id))
+        XCTAssertNil(store.writerVerifiedWebSocketLease)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .activeConflict)
+
+        // 3. 电脑端释放锁后再次点「重试」：thread/resume 成功后才清除冲突并显示已解除锁定。
+        let cursorBeforeUnlockedRetry = await transport.sentMessages().count
+        let unlockedRetryTask = Task { await store.retrySelectedSessionWriterAccess() }
+        let unlockedTurns = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/turns/list",
+            after: cursorBeforeUnlockedRetry
+        )
+        transportResponse(transport, id: unlockedTurns.id, result: #"{"data":[],"nextCursor":null}"#)
+        await unlockedRetryTask.value
+
+        let unlockedResume = try await waitForFakeAppServerRequest(
+            transport,
+            method: "thread/resume",
+            after: cursorBeforeUnlockedRetry
+        )
+        transportResponse(transport, id: unlockedResume.id, result: #"{"thread":\#(idleThreadJSON)}"#)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        XCTAssertFalse(store.hasActiveWriterConflict(sessionID: source.id))
+        XCTAssertEqual(store.writerVerifiedWebSocketLease, originLease)
+        XCTAssertEqual(store.conversationReadiness(for: source), .live)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .resolvedWritable)
+    }
 }

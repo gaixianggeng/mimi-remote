@@ -44,7 +44,7 @@ final class WriterConflictSharedGuideUITests: XCTestCase {
         )
         let macSetupPredicate = NSPredicate(format: "label CONTAINS %@", "让 Codex 桌面版和手机同时使用…")
         XCTAssertTrue(
-            app.staticTexts.containing(macSetupPredicate).firstMatch.waitForExistence(timeout: 5),
+            app.staticTexts.matching(macSetupPredicate).firstMatch.waitForExistence(timeout: 5),
             "共享引导正文应对齐 main 上 Mac 端真实存在的「让 Codex 桌面版和手机同时使用…」入口文案"
         )
 

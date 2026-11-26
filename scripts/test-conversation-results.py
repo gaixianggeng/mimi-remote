@@ -37,9 +37,13 @@ bundle = Path(args[args.index("-resultBundlePath") + 1])
 bundle.mkdir(parents=True)
 (bundle / "marker").write_text("synthetic result")
 signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
-Path(os.environ["FAKE_ARGS"]).write_text(json.dumps(args))
+record = {"scheme": os.environ.get("SCHEME", ""), "args": args}
+with Path(os.environ["FAKE_ARGS"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record) + "\\n")
 if os.environ.get("FAKE_WAIT") == "1":
     time.sleep(30)
+if record["scheme"] == "MimiRemotePhysicalUITests":
+    sys.exit(int(os.environ.get("FAKE_UI_STATUS", os.environ.get("FAKE_STATUS", "0"))))
 sys.exit(int(os.environ.get("FAKE_STATUS", "0")))
 ''')
         self.bin = self.root / "bin"
@@ -63,8 +67,15 @@ sys.exit(int(os.environ.get("FAKE_STATUS", "0")))
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               timeout=10)
 
-    def bundle(self):
-        args = json.loads(self.args_file.read_text())
+    def invocations(self):
+        return [
+            json.loads(line)
+            for line in self.args_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def bundle(self, index=0):
+        args = self.invocations()[index]["args"]
         return Path(args[args.index("-resultBundlePath") + 1])
 
     def test_success_removes_only_its_owned_directory_and_keeps_selectors(self):
@@ -73,12 +84,25 @@ sys.exit(int(os.environ.get("FAKE_STATUS", "0")))
         (existing / "marker").write_text("older evidence")
         result = self.run_runner()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(self.bundle().parent.exists(), result.stdout)
+        invocations = self.invocations()
+        self.assertEqual(len(invocations), 2, invocations)
+        self.assertFalse(self.bundle(0).parent.exists(), result.stdout)
+        self.assertEqual(self.bundle(0).parent, self.bundle(1).parent)
         self.assertEqual((existing / "marker").read_text(), "older evidence")
-        args = json.loads(self.args_file.read_text())
+        all_selectors = [
+            arg
+            for call in invocations
+            for arg in call["args"]
+            if arg.startswith("-only-testing:")
+        ]
         expected = re.findall(r"^\s+(-only-testing:\S+)", RUNNER.read_text(), re.M)
-        self.assertEqual([arg for arg in args if arg.startswith("-only-testing:")], expected)
-        self.assertIn("-skip-testing:MimiRemoteTests/Fixture/testQuarantined", args)
+        self.assertEqual(all_selectors, expected)
+        self.assertIn("-skip-testing:MimiRemoteTests/Fixture/testQuarantined", invocations[0]["args"])
+        self.assertEqual(invocations[1]["scheme"], "MimiRemotePhysicalUITests")
+        self.assertIn(
+            "-only-testing:MimiRemoteUITests/WriterConflictSharedGuideUITests",
+            invocations[1]["args"],
+        )
         self.assertIn("已清理", result.stdout)
 
     def test_failure_keeps_summary_and_original_exit_even_if_summary_fails(self):
@@ -88,16 +112,31 @@ sys.exit(int(os.environ.get("FAKE_STATUS", "0")))
         self.assertIn("fixture failure summary", result.stdout)
         self.assertIn(str(self.bundle().parent), result.stdout)
 
+    def test_ui_failure_keeps_summary_and_original_exit(self):
+        result = self.run_runner(FAKE_STATUS="0", FAKE_UI_STATUS="66")
+        self.assertEqual(result.returncode, 66, result.stdout)
+        self.assertEqual(len(self.invocations()), 2)
+        self.assertTrue((self.bundle(0) / "marker").exists())
+        self.assertTrue((self.bundle(1) / "marker").exists())
+        self.assertEqual(self.bundle(1).name, "writer-conflict-shared-guide-ui.xcresult")
+        self.assertIn("fixture failure summary", result.stdout)
+        self.assertIn(str(self.bundle(1).parent), result.stdout)
+
     def test_explicit_directory_keeps_success_and_failure(self):
         for status in [0, 65]:
             with self.subTest(status=status):
+                if self.args_file.exists():
+                    self.args_file.unlink()
                 directory = self.root / ("requested results " + str(status))
                 directory.mkdir()
                 (directory / "unrelated").write_text("keep")
                 result = self.run_runner("--result-dir", str(directory), FAKE_STATUS=str(status))
                 self.assertEqual(result.returncode, status, result.stdout)
-                self.assertEqual(self.bundle(), directory / "core.xcresult")
-                self.assertTrue((self.bundle() / "marker").exists())
+                self.assertEqual(self.bundle(0), directory / "core.xcresult")
+                self.assertTrue((self.bundle(0) / "marker").exists())
+                if status == 0:
+                    self.assertEqual(self.bundle(1), directory / "writer-conflict-shared-guide-ui.xcresult")
+                    self.assertTrue((self.bundle(1) / "marker").exists())
                 self.assertEqual((directory / "unrelated").read_text(), "keep")
                 self.assertIn(str(directory), result.stdout)
 

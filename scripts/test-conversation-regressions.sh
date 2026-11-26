@@ -130,10 +130,13 @@ else
   mkdir -p -- "$result_dir"
 fi
 test_result_bundle="$result_dir/core.xcresult"
-[[ ! -e "$test_result_bundle" && ! -L "$test_result_bundle" ]] || {
-  echo "结果目录里已有 ${test_result_bundle}，请换一个空目录。" >&2
-  exit 2
-}
+ui_result_bundle="$result_dir/writer-conflict-shared-guide-ui.xcresult"
+for existing_bundle in "$test_result_bundle" "$ui_result_bundle"; do
+  [[ ! -e "$existing_bundle" && ! -L "$existing_bundle" ]] || {
+    echo "结果目录里已有 ${existing_bundle}，请换一个空目录。" >&2
+    exit 2
+  }
+done
 
 finish_results() {
   local exit_status=$?
@@ -377,5 +380,20 @@ bash "$ROOT_DIR/scripts/ios-dev.sh" test \
 if [[ "$test_status" -ne 0 && -d "$test_result_bundle" ]]; then
   # quiet 日志可能只列测试名；失败时保留具体断言，诊断失败也不能覆盖原退出码。
   xcrun xcresulttool get test-results summary --path "$test_result_bundle" || true
+fi
+
+if [[ "$test_status" -eq 0 ]]; then
+  echo "==> iOS writer conflict shared guide UI regressions"
+  SCHEME=MimiRemotePhysicalUITests bash "$ROOT_DIR/scripts/ios-dev.sh" test \
+    -quiet \
+    -resultBundlePath "$ui_result_bundle" \
+    -collect-test-diagnostics never \
+    -testLanguage zh-Hans \
+    -testRegion CN \
+    -only-testing:MimiRemoteUITests/WriterConflictSharedGuideUITests || test_status=$?
+
+  if [[ "$test_status" -ne 0 && -d "$ui_result_bundle" ]]; then
+    xcrun xcresulttool get test-results summary --path "$ui_result_bundle" || true
+  fi
 fi
 exit "$test_status"

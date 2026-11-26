@@ -118,7 +118,8 @@ extension SessionStore {
         _ session: AgentSession,
         isReconnectAttempt: Bool = false,
         replayBufferedEvents: Bool = true,
-        allowNonRunning: Bool = false
+        allowNonRunning: Bool = false,
+        verifyWriterAccess: Bool = false
     ) {
         // 本地草稿尚无远端 thread id，任何 history/resume/WebSocket 请求都会把 local: id
         // 误送给 app-server。首条消息创建真实 thread 后再按正常路径连接。
@@ -160,7 +161,8 @@ extension SessionStore {
         if !isReconnectAttempt {
             cancelWebSocketReconnect(resetAttempts: true)
         }
-        if connectedSessionID == session.id,
+        if !verifyWriterAccess,
+           connectedSessionID == session.id,
            connectedHostScope == appStore.activeHostScope,
            case .connected = webSocketStatus {
             return
@@ -426,6 +428,9 @@ extension SessionStore {
         connectedHostScope = hostScope
         connectedCredentialFingerprint = credentialFingerprint
         webSocketStatusLease = eventLease
+        if writerVerifiedWebSocketLease != nil {
+            writerVerifiedWebSocketLease = nil
+        }
         // 先同步发布建连阶段，再启动异步订阅；避免本轮身份已切换而状态还属于旧连接。
         setWebSocketStatus(.connecting)
         conversationStore.resetLiveTranscript(sessionID: session.id)
@@ -436,7 +441,8 @@ extension SessionStore {
             sessionID: session.id,
             replayBufferedEvents: replayBufferedEvents,
             afterSequence: historySnapshotSeqBySessionID[session.id],
-            historyReplayBoundary: historyReplayBoundaryBySessionID[session.id]
+            historyReplayBoundary: historyReplayBoundaryBySessionID[session.id],
+            verifyWriterAccess: verifyWriterAccess
         )
     }
 
@@ -511,17 +517,33 @@ extension SessionStore {
             }
             cancelWebSocketReconnect(resetAttempts: false)
             webSocketReconnectAttemptBySessionID.removeValue(forKey: sessionID)
-            setActiveWriterConflict(false, sessionID: sessionID)
+            let confirmedWriterAccess = webSocket?.hasConfirmedWriterAccess ?? false
+            let verifiedLease: HostSessionLease? = confirmedWriterAccess
+                ? HostSessionLease(hostScope: appStore.activeHostScope, sessionID: sessionID)
+                : nil
+            if writerVerifiedWebSocketLease != verifiedLease {
+                writerVerifiedWebSocketLease = verifiedLease
+            }
+            if confirmedWriterAccess {
+                setActiveWriterConflict(false, sessionID: sessionID)
+            }
             setWebSocketStatus(.connected)
             if selectedSessionID == sessionID {
                 HostSwitchSignpost.event("conversation_realtime_ready")
             }
-            setErrorMessage(nil)
+            if confirmedWriterAccess || !hasActiveWriterConflict(sessionID: sessionID) {
+                setErrorMessage(nil)
+            }
             // 真实会话通道连上了，就是「已连接」的事实；用它覆盖冷启动首个 preflight 遗留的
             // 失败值，设备页不再把过程当结论。
             appStore.markLiveConnectionEstablished()
-            dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+            if confirmedWriterAccess || !hasActiveWriterConflict(sessionID: sessionID) {
+                dispatchNextQueuedRunningTurnIfIdle(sessionID: sessionID)
+            }
         case .failed(let message):
+            if writerVerifiedWebSocketLease != nil {
+                writerVerifiedWebSocketLease = nil
+            }
             if isNetworkUnavailable {
                 AppDiagnostics.record(
                     stage: .connection,
@@ -584,6 +606,9 @@ extension SessionStore {
                 }
             }
         case .terminated(let reason):
+            if writerVerifiedWebSocketLease != nil {
+                writerVerifiedWebSocketLease = nil
+            }
             AppDiagnostics.record(
                 stage: .connection,
                 result: .failed,
@@ -609,6 +634,9 @@ extension SessionStore {
             }
             terminateConnection(reason)
         case .disconnected:
+            if writerVerifiedWebSocketLease != nil {
+                writerVerifiedWebSocketLease = nil
+            }
             if isNetworkUnavailable {
                 AppDiagnostics.record(
                     stage: .connection,
@@ -758,6 +786,9 @@ extension SessionStore {
 
     func disconnectWebSocket(cancelReconnect: Bool = true) {
         webSocketStatusLease = nil
+        if writerVerifiedWebSocketLease != nil {
+            writerVerifiedWebSocketLease = nil
+        }
         if cancelReconnect {
             cancelWebSocketReconnect(resetAttempts: true)
         }

@@ -99,6 +99,9 @@ struct ControlCommandFailure: Equatable {
 
 protocol SessionWebSocketClient: AnyObject {
     var turnDeliveryMode: TurnDeliveryMode { get }
+    /// 本次连接是否已由服务端确认取得写入权（如 `thread/resume` 成功）。
+    /// 普通 Windows 受管 WS 打开空闲历史会跳过 `thread/resume`，此时为 `false`，不得清除写入锁冲突。
+    var hasConfirmedWriterAccess: Bool { get }
     var onEvent: (@MainActor (AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
@@ -118,6 +121,13 @@ protocol SessionWebSocketClient: AnyObject {
     func connect(sessionID: SessionID, replayBufferedEvents: Bool)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?)
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?)
+    func connect(
+        sessionID: SessionID,
+        replayBufferedEvents: Bool,
+        afterSequence: EventSequence?,
+        historyReplayBoundary: HistoryReplayBoundary?,
+        verifyWriterAccess: Bool
+    )
     func disconnect()
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool
     func sendTurn(_ payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?) -> Bool
@@ -130,6 +140,7 @@ protocol SessionWebSocketClient: AnyObject {
 
 extension SessionWebSocketClient {
     var turnDeliveryMode: TurnDeliveryMode { .direct }
+    var hasConfirmedWriterAccess: Bool { true }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
@@ -144,6 +155,21 @@ extension SessionWebSocketClient {
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
         connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents, afterSequence: afterSequence)
+    }
+
+    func connect(
+        sessionID: SessionID,
+        replayBufferedEvents: Bool,
+        afterSequence: EventSequence?,
+        historyReplayBoundary: HistoryReplayBoundary?,
+        verifyWriterAccess: Bool
+    ) {
+        connect(
+            sessionID: sessionID,
+            replayBufferedEvents: replayBufferedEvents,
+            afterSequence: afterSequence,
+            historyReplayBoundary: historyReplayBoundary
+        )
     }
 }
 
