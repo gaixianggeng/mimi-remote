@@ -362,7 +362,10 @@ private struct ProjectSidebarContentView: View {
     ) -> some View {
         HStack(spacing: 2) {
             if showsSessions, let onCollapseSidebar {
-                sidebarHeaderButton(tokens: tokens, systemImage: "sidebar.left", accessibilityLabel: L10n.text("ui.collapse_conversation_list")) {
+                sidebarHeaderButton(
+                    tokens: tokens, systemImage: "sidebar.left",
+                    accessibilityLabel: L10n.text("ui.collapse_conversation_list"), hitSize: 44
+                ) {
                     onCollapseSidebar()
                 }
             }
@@ -556,13 +559,14 @@ private struct ProjectSidebarContentView: View {
         tokens: ThemeTokens,
         systemImage: String,
         accessibilityLabel: String,
+        hitSize: CGFloat = 32,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: hitSize, minHeight: hitSize)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

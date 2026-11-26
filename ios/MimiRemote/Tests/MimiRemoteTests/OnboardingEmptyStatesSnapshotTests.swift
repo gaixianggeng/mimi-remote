@@ -139,7 +139,7 @@ final class OnboardingEmptyStatesSnapshotTests: SimplifiedChineseSnapshotTestCas
     }
 
     /// 实测无主机空态交互按钮在不同画布与动态字号下的真实 UIKit 边界，保证命中区均 ≥ 44×44 pt。
-    func testUnpairedHostEmptyStateInteractiveTargetsMeetMinimum44ptAcrossSizesAndDynamicTypes() throws {
+    func testUnpairedHostEmptyStateInteractiveTargetsMeetMinimum44ptAcrossSizesAndDynamicTypes() async throws {
         let cases: [(UnpairedHostEmptyStateContext, CGSize, DynamicTypeSize)] = [
             (.sessions, CGSize(width: 390, height: 844), .large),
             (.sessions, CGSize(width: 390, height: 844), .accessibility3),
@@ -148,9 +148,8 @@ final class OnboardingEmptyStatesSnapshotTests: SimplifiedChineseSnapshotTestCas
             (.sidebar, CGSize(width: 300, height: 744), .accessibility3),
         ]
 
-        let scene = try XCTUnwrap(
-            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-        )
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = try XCTUnwrap(scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)
         let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
 
         for (context, size, dynamicType) in cases {
@@ -182,10 +181,16 @@ final class OnboardingEmptyStatesSnapshotTests: SimplifiedChineseSnapshotTestCas
             host.view.frame = window.bounds
             host.view.setNeedsLayout()
             host.view.layoutIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 
             let targetID = context.connectActionAccessibilityIdentifier
-            let matchedElement = findAccessibilityElement(identifier: targetID, in: host.view)
+            let deadline = ContinuousClock.now + .seconds(3)
+            var matchedElement: NSObject?
+            repeat {
+                window.layoutIfNeeded()
+                matchedElement = findAccessibilityElement(identifier: targetID, in: window)
+                if let frame = accessibilityFrame(of: matchedElement, in: window), !frame.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(25))
+            } while ContinuousClock.now < deadline
             let buttonFrame = try XCTUnwrap(
                 accessibilityFrame(of: matchedElement, in: window),
                 "应渲染可交互按钮 \(targetID) (\(size), \(dynamicType))"
