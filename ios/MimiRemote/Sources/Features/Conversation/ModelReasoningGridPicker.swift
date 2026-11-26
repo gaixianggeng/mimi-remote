@@ -23,12 +23,432 @@ enum ModelReasoningGridMetrics {
     static let gridSpacing: CGFloat = 8
     static let fastModeHitTarget: CGFloat = 44
     static let fastModeVisualDiameter: CGFloat = 36
+    static let selectionLensDiameter: CGFloat = 26
+    static let selectionLensHaloDiameter: CGFloat = 38
+    /// 选中带内联档位标签（如 Luna `max`）的格子时，选中圆点收紧并上移，彻底避开底部标签文字。
+    static let inlineLabelSelectionLensDiameter: CGFloat = 14
+    static let inlineLabelSelectionLensHaloDiameter: CGFloat = 20
+    static let inlineLabelSelectionLensTopInset: CGFloat = 8
+    static let inlineLabelSelectedBottomPadding: CGFloat = 6
+    static let inlineLabelEstimatedHeight: CGFloat = 14
+    static let dragCancellationMargin: CGFloat = 12
+    /// 与手机底部展开态输入卡保持一致的连续圆角半径。
+    static let panelCornerRadius: CGFloat = 26
+    /// 与 iPad 常规宽档实色输入卡保持一致的连续圆角半径。
+    static let regularPopoverCornerRadius: CGFloat = 20
 
     static func standardContentHeight(modelRowCount: Int) -> CGFloat {
         let visibleRowCount = max(modelRowCount, 0)
         return contentPadding * 2
             + effortHeaderHeight
             + CGFloat(visibleRowCount) * modelRowHeight
+    }
+}
+
+/// 模型切换面板的展示容器形态：紧凑档由 `.popover` 适配为 Sheet，常规档保持 Popover。
+enum ModelReasoningGridPresentationContainer: Equatable {
+    case compactSheet
+    case regularPopover
+
+    static func resolve(
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        verticalSizeClass: UserInterfaceSizeClass?
+    ) -> Self {
+        if horizontalSizeClass == .compact || verticalSizeClass == .compact {
+            return .compactSheet
+        }
+        return .regularPopover
+    }
+}
+
+/// 模型切换面板的表面呈现模式。
+enum ModelReasoningGridSurfaceMode: Equatable {
+    /// 独立嵌入或既有快照基线使用的实色底板（`tokens.surface`）。
+    case standaloneOpaque
+    /// 展示态：按实际输入卡形态（悬浮玻璃或实色输入卡）与容器形态（Sheet 或 Popover）选择表面与承载路径。
+    case presentation(
+        container: ModelReasoningGridPresentationContainer,
+        usesFloatingGlass: Bool
+    )
+
+    /// 紧凑玻璃 Sheet 简写。
+    static var presentationChrome: Self {
+        .presentation(container: .compactSheet, usesFloatingGlass: true)
+    }
+}
+
+/// 生产渲染直接消费的表面材质结果，与 `ComposerCardResolvedSurface` 一一对应。
+enum ModelReasoningGridSurfaceStyle: Equatable {
+    /// 独立嵌入默认实色（`tokens.surface`）。
+    case standaloneSurface
+    /// 与输入卡一致的实色底板（浅色 `tokens.inputBackground`，深色 `tokens.elevatedSurface`）。
+    case solidComposerCard
+    /// iOS 26+ 玻璃模式下与悬浮输入卡一致的原生 Liquid Glass。
+    case liquidGlass
+    /// iOS 26 以下玻璃模式下与悬浮输入卡一致的 `.ultraThinMaterial`。
+    case ultraThinMaterial
+
+    var composerCardSurface: ComposerCardResolvedSurface {
+        switch self {
+        case .liquidGlass:
+            return .liquidGlass
+        case .ultraThinMaterial:
+            return .ultraThinMaterial
+        case .solidComposerCard, .standaloneSurface:
+            return .solidCard
+        }
+    }
+}
+
+/// 共享背景的实际承载者：Sheet 与 Popover 各自明确归属，避免常规 Popover 清除自身底色后依赖宿主材质。
+enum ModelReasoningGridBackgroundOwner: Equatable {
+    /// 独立嵌入，由内容层铺 `tokens.surface`。
+    case standaloneContent
+    /// 紧凑 Sheet 由 `.presentationBackground` 承载共享表面，内容层透明。
+    case sheetPresentationBackground
+    /// 常规 Popover 由内容根背景直接绘制共享表面，并同步 `.presentationBackground` 对齐箭头底色。
+    case popoverContentSurface
+}
+
+/// 生产路径直接消费的完整表面策略。
+struct ModelReasoningGridSurfacePolicy: Equatable {
+    let surfaceStyle: ModelReasoningGridSurfaceStyle
+    let backgroundOwner: ModelReasoningGridBackgroundOwner
+    let usesFloatingGlass: Bool
+    let usesTranslucentInnerChrome: Bool
+    let cornerRadius: CGFloat
+    let borderWidth: CGFloat
+}
+
+/// 模型切换面板与底部输入框共用的表面策略决策，生产视图与测试消费同一套解析结果。
+enum ModelReasoningGridPresentationChrome {
+    static func resolvePolicy(
+        surfaceMode: ModelReasoningGridSurfaceMode,
+        interfaceStyle: ThemeInterfaceStyle = .glass,
+        reduceTransparency: Bool,
+        increasedContrast: Bool = false,
+        supportsLiquidGlass: Bool = WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+    ) -> ModelReasoningGridSurfacePolicy {
+        let borderWidth = Self.borderWidth(increasedContrast: increasedContrast)
+        switch surfaceMode {
+        case .standaloneOpaque:
+            return ModelReasoningGridSurfacePolicy(
+                surfaceStyle: .standaloneSurface,
+                backgroundOwner: .standaloneContent,
+                usesFloatingGlass: false,
+                usesTranslucentInnerChrome: false,
+                cornerRadius: ModelReasoningGridMetrics.regularPopoverCornerRadius,
+                borderWidth: borderWidth
+            )
+        case let .presentation(container, usesFloatingGlass):
+            let backgroundOwner: ModelReasoningGridBackgroundOwner =
+                container == .compactSheet ? .sheetPresentationBackground : .popoverContentSurface
+            let cornerRadius = container == .compactSheet
+                ? ModelReasoningGridMetrics.panelCornerRadius
+                : ModelReasoningGridMetrics.regularPopoverCornerRadius
+            let resolvedCardSurface = ComposerCardResolvedSurface.resolve(
+                usesFloatingGlass: usesFloatingGlass,
+                interfaceStyle: interfaceStyle,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: increasedContrast,
+                supportsLiquidGlass: supportsLiquidGlass
+            )
+            let surfaceStyle: ModelReasoningGridSurfaceStyle = switch resolvedCardSurface {
+            case .liquidGlass: .liquidGlass
+            case .ultraThinMaterial: .ultraThinMaterial
+            case .solidCard: .solidComposerCard
+            }
+            let usesActiveGlass = resolvedCardSurface != .solidCard
+            return ModelReasoningGridSurfacePolicy(
+                surfaceStyle: surfaceStyle,
+                backgroundOwner: backgroundOwner,
+                usesFloatingGlass: usesFloatingGlass,
+                usesTranslucentInnerChrome: usesActiveGlass,
+                cornerRadius: cornerRadius,
+                borderWidth: borderWidth
+            )
+        }
+    }
+
+    /// 与 `ComposerCardSurfaceModifier` / `composerContainerBackground` 完全一致的实色底板。
+    static func solidFillColor(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme
+    ) -> Color {
+        colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
+    }
+
+    /// 与底部输入卡回退实色态一致的描边色，确保经典风格和辅助功能模式下边界清晰。
+    static func solidBorderColor(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme,
+        increasedContrast: Bool
+    ) -> Color {
+        if increasedContrast {
+            return tokens.primaryText.opacity(colorScheme == .light ? 0.5 : 0.68)
+        }
+        if colorScheme == .light {
+            return Color.black.opacity(0.09)
+        }
+        return tokens.border.opacity(0.58)
+    }
+
+    static func borderWidth(increasedContrast: Bool) -> CGFloat {
+        increasedContrast ? 1.25 : 0.75
+    }
+
+    static func presentationDetents(
+        layout: ModelReasoningGridLayout,
+        isAccessibilitySize: Bool
+    ) -> Set<PresentationDetent> {
+        if isAccessibilitySize {
+            return [.large]
+        }
+        return [.height(layout.standardContentHeight)]
+    }
+}
+
+/// 模型切换面板各文本与内层控件的对比度校准色板。
+/// 深色强调小字使用 `tokens.accentText`，浅色在 `elevatedSurface` 上对比度不足的主题
+///（Xcode 浅色、Gruvbox 浅色）提供同色相加深档，保证实色回退与全主题下小字均 ≥ 4.5:1。
+struct ModelReasoningGridPalette {
+    let panelBackground: Color
+    let controlFill: Color
+    let controlBorder: Color
+    let controlBorderWidth: CGFloat
+    let gridFill: Color
+    let gridBorder: Color
+    let gridBorderWidth: CGFloat
+    let gridLine: Color
+    let selectedCellFill: Color
+    let primaryForeground: Color
+    let rowLabelForeground: Color
+    let accentForeground: Color
+    let inlineEffortForeground: Color
+    let disabledInlineEffortForeground: Color
+    let dotForeground: Color
+    let disabledDotForeground: Color
+    let selectedDotForeground: Color
+    let accessibleMenuFill: Color
+    let accessibleEffortFill: Color
+    let accessibleRowBorder: Color?
+    let accessibleRowBorderWidth: CGFloat
+
+    static func accentSmallTextColor(tokens: ThemeTokens) -> Color {
+        if tokens.resolvedScheme == .dark {
+            return tokens.accentText
+        }
+        switch tokens.preset {
+        case .xcode:
+            // Xcode 系统蓝 #007AFF 压在浅灰 elevatedSurface 上仅 3.41:1，
+            // 同色相压暗到 #0057CC，保证面板/胶囊/选中格均 ≥ 5.5:1。
+            return Color(red: 0.00, green: 0.34, blue: 0.80)
+        case .gruvbox:
+            // Gruvbox 暖琥珀压在暖灰 elevatedSurface 上仅 3.21:1，
+            // 同色相压暗到 #80400A，保证面板/胶囊/选中格均 ≥ 5.5:1。
+            return Color(red: 0.50, green: 0.25, blue: 0.04)
+        case .codex, .github, .meadow:
+            return tokens.accentText
+        }
+    }
+
+    static func resolve(
+        tokens: ThemeTokens,
+        colorScheme: ColorScheme,
+        policy: ModelReasoningGridSurfacePolicy,
+        reduceTransparency: Bool,
+        increasedContrast: Bool
+    ) -> Self {
+        let accentForeground = accentSmallTextColor(tokens: tokens)
+        if policy.usesTranslucentInnerChrome {
+            let pillFill = ComposerEmbeddedPillPalette.fill(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+            let pillBorder = ComposerEmbeddedPillPalette.border(
+                tokens: tokens,
+                reduceTransparency: false,
+                increasedContrast: false
+            )
+            let panelBackground = ModelReasoningGridPresentationChrome.solidFillColor(
+                tokens: tokens,
+                colorScheme: colorScheme
+            )
+            return Self(
+                panelBackground: panelBackground,
+                controlFill: pillFill,
+                controlBorder: pillBorder,
+                controlBorderWidth: 0.75,
+                gridFill: pillFill,
+                gridBorder: pillBorder,
+                gridBorderWidth: 0.75,
+                gridLine: (colorScheme == .light ? Color.black : Color.white)
+                    .opacity(colorScheme == .light ? 0.08 : 0.12),
+                selectedCellFill: tokens.accent.opacity(colorScheme == .light ? 0.10 : 0.12),
+                primaryForeground: tokens.primaryText,
+                rowLabelForeground: tokens.primaryText.opacity(colorScheme == .light ? 0.78 : 0.80),
+                accentForeground: accentForeground,
+                inlineEffortForeground: tokens.primaryText.opacity(0.78),
+                disabledInlineEffortForeground: tokens.primaryText.opacity(0.26),
+                dotForeground: (colorScheme == .light ? Color.black : Color.white)
+                    .opacity(colorScheme == .light ? 0.34 : 0.42),
+                disabledDotForeground: (colorScheme == .light ? Color.black : Color.white).opacity(0.14),
+                selectedDotForeground: tokens.accent.opacity(0.36),
+                accessibleMenuFill: pillFill,
+                accessibleEffortFill: pillFill,
+                accessibleRowBorder: pillBorder,
+                accessibleRowBorderWidth: 0.75
+            )
+        }
+
+        if policy.surfaceStyle == .standaloneSurface {
+            let border = increasedContrast
+                ? ModelReasoningGridPresentationChrome.solidBorderColor(
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    increasedContrast: true
+                )
+                : tokens.border.opacity(0.58)
+            let gridBorder = increasedContrast
+                ? border
+                : tokens.border.opacity(0.72)
+            return Self(
+                panelBackground: tokens.surface,
+                controlFill: tokens.elevatedSurface.opacity(0.72),
+                controlBorder: border,
+                controlBorderWidth: increasedContrast ? 1.0 : 0.75,
+                gridFill: tokens.elevatedSurface.opacity(reduceTransparency ? 1 : 0.56),
+                gridBorder: gridBorder,
+                gridBorderWidth: increasedContrast ? 1.0 : 0.75,
+                gridLine: tokens.border.opacity(0.46),
+                selectedCellFill: tokens.accent.opacity(0.055),
+                primaryForeground: tokens.primaryText,
+                rowLabelForeground: increasedContrast ? tokens.primaryText : tokens.secondaryText,
+                accentForeground: accentForeground,
+                inlineEffortForeground: increasedContrast
+                    ? tokens.primaryText
+                    : tokens.tertiaryText.opacity(0.72),
+                disabledInlineEffortForeground: tokens.tertiaryText.opacity(0.24),
+                dotForeground: tokens.tertiaryText.opacity(0.34),
+                disabledDotForeground: tokens.tertiaryText.opacity(0.12),
+                selectedDotForeground: tokens.accent.opacity(0.3),
+                accessibleMenuFill: tokens.elevatedSurface,
+                accessibleEffortFill: tokens.elevatedSurface.opacity(0.72),
+                accessibleRowBorder: increasedContrast ? border : nil,
+                accessibleRowBorderWidth: increasedContrast ? 1.0 : 0.75
+            )
+        }
+
+        // `.solidComposerCard`：常规 iPad Popover、iPad 分屏 Sheet、经典模式或辅助功能实色回退。
+        // 面板底与输入卡一致（浅色 `inputBackground`，深色 `elevatedSurface`）；
+        // 当面板已落到 `elevatedSurface` 时，内层网格与胶囊切回 `tokens.surface` 建立清晰层级并提高对比度。
+        let panelBackground = ModelReasoningGridPresentationChrome.solidFillColor(
+            tokens: tokens,
+            colorScheme: colorScheme
+        )
+        let innerControlFill: Color = (tokens.preset == .codex && colorScheme == .light)
+            ? tokens.elevatedSurface
+            : tokens.surface
+        let controlBorder = increasedContrast
+            ? ModelReasoningGridPresentationChrome.solidBorderColor(
+                tokens: tokens,
+                colorScheme: colorScheme,
+                increasedContrast: true
+            )
+            : tokens.border.opacity(colorScheme == .light ? 0.75 : 0.72)
+        let strokeWidth: CGFloat = increasedContrast ? 1.0 : 0.75
+        let readableSecondary = increasedContrast
+            ? tokens.primaryText
+            : tokens.primaryText.opacity(0.78)
+        return Self(
+            panelBackground: panelBackground,
+            controlFill: innerControlFill,
+            controlBorder: controlBorder,
+            controlBorderWidth: strokeWidth,
+            gridFill: innerControlFill,
+            gridBorder: controlBorder,
+            gridBorderWidth: strokeWidth,
+            gridLine: tokens.border.opacity(increasedContrast ? 0.78 : 0.54),
+            selectedCellFill: tokens.accent.opacity(0.08),
+            primaryForeground: tokens.primaryText,
+            rowLabelForeground: readableSecondary,
+            accentForeground: accentForeground,
+            inlineEffortForeground: readableSecondary,
+            disabledInlineEffortForeground: tokens.primaryText.opacity(0.30),
+            dotForeground: tokens.primaryText.opacity(increasedContrast ? 0.56 : 0.36),
+            disabledDotForeground: tokens.primaryText.opacity(0.16),
+            selectedDotForeground: tokens.accent.opacity(0.36),
+            accessibleMenuFill: innerControlFill,
+            accessibleEffortFill: innerControlFill,
+            accessibleRowBorder: controlBorder,
+            accessibleRowBorderWidth: strokeWidth
+        )
+    }
+}
+
+/// 模型切换面板的展示层背景：复用输入框同源的 `ComposerCardSurfaceModifier` 与实色底板策略。
+/// 紧凑 Sheet 路径走外层 `.presentationBackground`（按当前输入卡是否为悬浮玻璃决定材质）；
+/// 常规 Popover 路径由面板自身根视图绘制，避免清除自身底色后由宿主决定材质或回退行为。
+struct ModelReasoningGridPresentationBackground: View {
+    let policy: ModelReasoningGridSurfacePolicy
+    let tokens: ThemeTokens
+    let colorScheme: ColorScheme
+    let reduceTransparency: Bool
+    let increasedContrast: Bool
+    var usesPopoverSurfaceChrome: Bool = false
+
+    var body: some View {
+        let resolvedSurface = policy.surfaceStyle.composerCardSurface
+        let shape = RoundedRectangle(
+            cornerRadius: policy.cornerRadius,
+            style: .continuous
+        )
+        if usesPopoverSurfaceChrome && resolvedSurface == .solidCard {
+            shape
+                .fill(
+                    ModelReasoningGridPresentationChrome.solidFillColor(
+                        tokens: tokens,
+                        colorScheme: colorScheme
+                    )
+                )
+        } else if usesPopoverSurfaceChrome {
+            Color.clear
+                .modifier(
+                    ComposerCardSurfaceModifier(
+                        shape: shape,
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast,
+                        usesFloatingGlass: policy.usesFloatingGlass,
+                        voiceAccentBorderColor: nil,
+                        solidBorderColor: .clear,
+                        borderWidth: 0,
+                        explicitResolvedSurface: resolvedSurface
+                    )
+                )
+        } else {
+            Color.clear
+                .modifier(
+                    ComposerCardSurfaceModifier(
+                        shape: shape,
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast,
+                        usesFloatingGlass: policy.usesFloatingGlass,
+                        voiceAccentBorderColor: nil,
+                        solidBorderColor: ModelReasoningGridPresentationChrome.solidBorderColor(
+                            tokens: tokens,
+                            colorScheme: colorScheme,
+                            increasedContrast: increasedContrast
+                        ),
+                        borderWidth: policy.borderWidth,
+                        explicitResolvedSurface: resolvedSurface
+                    )
+                )
+        }
     }
 }
 
@@ -114,6 +534,147 @@ struct ModelReasoningGridLayout: Equatable {
         return ModelReasoningGridSelection(
             modelID: models[modelRow].model,
             effort: effort
+        )
+    }
+
+    /// 选中圆点（及外环光晕）的几何位置：普通格居中 26pt；带内联档位标签（如 Luna `max`）的格子
+    /// 收紧至 14pt 并上移到格顶，与格底标签彻底错开，避免不透明圆点遮挡内联文字。
+    func selectionLensGeometry(
+        for selection: ModelReasoningGridSelection,
+        size: CGSize
+    ) -> ModelReasoningGridLensGeometry? {
+        guard let effort = selection.effort,
+              effortColumnCount > 0,
+              modelRowCount > 0,
+              size.width > 0,
+              size.height > 0,
+              let row = models.firstIndex(where: { $0.model == selection.modelID }),
+              let column = effortColumn(for: effort, option: models[row]),
+              ModelReasoningGridCatalog.isStandardEffortAvailable(
+                  effort,
+                  option: models[row],
+                  layout: self
+              )
+        else {
+            return nil
+        }
+        let cellWidth = size.width / CGFloat(effortColumnCount)
+        let cellHeight = size.height / CGFloat(modelRowCount)
+        let cellMinX = CGFloat(column) * cellWidth
+        let cellMinY = CGFloat(row) * cellHeight
+        let avoidsInlineLabel = inlineEffortLabel(for: models[row], column: column) != nil
+        let lensDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensDiameter
+            : ModelReasoningGridMetrics.selectionLensDiameter
+        let haloDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensHaloDiameter
+            : ModelReasoningGridMetrics.selectionLensHaloDiameter
+        let centerY = avoidsInlineLabel
+            ? cellMinY + ModelReasoningGridMetrics.inlineLabelSelectionLensTopInset + lensDiameter / 2
+            : cellMinY + cellHeight / 2
+        return ModelReasoningGridLensGeometry(
+            center: CGPoint(x: cellMinX + cellWidth / 2, y: centerY),
+            lensDiameter: lensDiameter,
+            haloDiameter: haloDiameter,
+            avoidsInlineLabel: avoidsInlineLabel
+        )
+    }
+
+    /// 带内联档位标签的格子中文字占据区域，供生产布局校验与无遮挡测试复用。
+    func inlineEffortLabelFrame(
+        for selection: ModelReasoningGridSelection,
+        isSelected: Bool,
+        size: CGSize
+    ) -> CGRect? {
+        guard let effort = selection.effort,
+              effortColumnCount > 0,
+              modelRowCount > 0,
+              size.width > 0,
+              size.height > 0,
+              let row = models.firstIndex(where: { $0.model == selection.modelID }),
+              let column = effortColumn(for: effort, option: models[row]),
+              inlineEffortLabel(for: models[row], column: column) != nil
+        else {
+            return nil
+        }
+        let cellWidth = size.width / CGFloat(effortColumnCount)
+        let cellHeight = size.height / CGFloat(modelRowCount)
+        let cellMinX = CGFloat(column) * cellWidth
+        let cellMinY = CGFloat(row) * cellHeight
+        let labelHeight = ModelReasoningGridMetrics.inlineLabelEstimatedHeight
+        let labelMinY = isSelected
+            ? cellMinY + cellHeight - ModelReasoningGridMetrics.inlineLabelSelectedBottomPadding - labelHeight
+            : cellMinY + (cellHeight - labelHeight) / 2
+        return CGRect(
+            x: cellMinX + 4,
+            y: labelMinY,
+            width: max(cellWidth - 8, 1),
+            height: labelHeight
+        )
+    }
+
+    func dragCandidate(
+        at point: CGPoint,
+        size: CGSize,
+        cancellationMargin: CGFloat = ModelReasoningGridMetrics.dragCancellationMargin
+    ) -> ModelReasoningGridSelection? {
+        guard !models.isEmpty,
+              !efforts.isEmpty,
+              size.width > 0,
+              size.height > 0,
+              point.x >= -cancellationMargin,
+              point.x <= size.width + cancellationMargin,
+              point.y >= -cancellationMargin,
+              point.y <= size.height + cancellationMargin
+        else {
+            return nil
+        }
+
+        let x = min(max(point.x, 0), size.width - 0.001)
+        let y = min(max(point.y, 0), size.height - 0.001)
+        let column = min(
+            effortColumnCount - 1,
+            max(0, Int(x / (size.width / CGFloat(effortColumnCount))))
+        )
+        let row = min(
+            modelRowCount - 1,
+            max(0, Int(y / (size.height / CGFloat(modelRowCount))))
+        )
+        guard let candidate = selection(modelRow: row, effortColumn: column),
+              let effort = candidate.effort,
+              ModelReasoningGridCatalog.isStandardEffortAvailable(
+                  effort,
+                  option: models[row],
+                  layout: self
+              )
+        else {
+            return nil
+        }
+        return candidate
+    }
+}
+
+struct ModelReasoningGridLensGeometry: Equatable {
+    let center: CGPoint
+    let lensDiameter: CGFloat
+    let haloDiameter: CGFloat
+    let avoidsInlineLabel: Bool
+
+    var lensFrame: CGRect {
+        CGRect(
+            x: center.x - lensDiameter / 2,
+            y: center.y - lensDiameter / 2,
+            width: lensDiameter,
+            height: lensDiameter
+        )
+    }
+
+    var haloFrame: CGRect {
+        CGRect(
+            x: center.x - haloDiameter / 2,
+            y: center.y - haloDiameter / 2,
+            width: haloDiameter,
+            height: haloDiameter
         )
     }
 }
@@ -542,9 +1103,12 @@ enum ModelReasoningGridCatalog {
 struct ModelReasoningGridPicker: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
 
     let options: [CodexAppServerModelOption]
     let layout: ModelReasoningGridLayout
@@ -552,6 +1116,7 @@ struct ModelReasoningGridPicker: View {
     let selectedModelID: String?
     let isRefreshing: Bool
     let selectedServiceTier: String?
+    let surfaceMode: ModelReasoningGridSurfaceMode
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onServiceTierChange: (String?) -> Void
@@ -564,6 +1129,7 @@ struct ModelReasoningGridPicker: View {
         selectedModelID: String?,
         isRefreshing: Bool,
         selectedServiceTier: String?,
+        surfaceMode: ModelReasoningGridSurfaceMode = .standaloneOpaque,
         onSelectModel: @escaping (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void,
         onSelectDefaultModel: @escaping (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void,
         onServiceTierChange: @escaping (String?) -> Void,
@@ -575,32 +1141,53 @@ struct ModelReasoningGridPicker: View {
         self.selectedModelID = selectedModelID
         self.isRefreshing = isRefreshing
         self.selectedServiceTier = selectedServiceTier
+        self.surfaceMode = surfaceMode
         self.onSelectModel = onSelectModel
         self.onSelectDefaultModel = onSelectDefaultModel
         self.onServiceTierChange = onServiceTierChange
         self.onRefresh = onRefresh
     }
 
+    private var surfacePolicy: ModelReasoningGridSurfacePolicy {
+        ModelReasoningGridPresentationChrome.resolvePolicy(
+            surfaceMode: surfaceMode,
+            interfaceStyle: interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: colorSchemeContrast == .increased
+        )
+    }
+
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let increasedContrast = colorSchemeContrast == .increased
+        let policy = surfacePolicy
+        let palette = ModelReasoningGridPalette.resolve(
+            tokens: tokens,
+            colorScheme: colorScheme,
+            policy: policy,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: ModelReasoningGridMetrics.sectionSpacing) {
                 if dynamicTypeSize.isAccessibilitySize {
-                    pickerHeader(isInGridCorner: false)
+                    pickerHeader(isInGridCorner: false, palette: palette)
 
                     ModelReasoningAccessiblePicker(
                         layout: layout,
                         selection: selection,
+                        palette: palette,
                         onSelectModel: onSelectModel
                     )
                 } else {
                     ModelReasoningStandardGrid(
                         layout: layout,
                         selection: selection,
+                        palette: palette,
                         onSelect: { option, effort in
                             onSelectModel(option, effort)
                         },
-                        cornerContent: pickerHeader(isInGridCorner: true)
+                        cornerContent: pickerHeader(isInGridCorner: true, palette: palette)
                     )
                 }
             }
@@ -615,7 +1202,24 @@ struct ModelReasoningGridPicker: View {
         // 标准字号用实际模型行数决定内容高度，避免两行 Claude 仍占用三行 Codex 的空间。
         // 辅助功能字号不锁定高度，由外层 presentation 在可用空间内增长并保留滚动。
         .frame(height: dynamicTypeSize.isAccessibilitySize ? nil : layout.standardContentHeight)
-        .background(tokens.surface)
+        .background {
+            switch policy.backgroundOwner {
+            case .standaloneContent:
+                palette.panelBackground
+            case .sheetPresentationBackground:
+                Color.clear
+            case .popoverContentSurface:
+                ModelReasoningGridPresentationBackground(
+                    policy: policy,
+                    tokens: tokens,
+                    colorScheme: colorScheme,
+                    reduceTransparency: reduceTransparency,
+                    increasedContrast: increasedContrast,
+                    usesPopoverSurfaceChrome: true
+                )
+                .ignoresSafeArea()
+            }
+        }
         .accessibilityIdentifier("composer.modelPicker")
     }
 
@@ -623,7 +1227,10 @@ struct ModelReasoningGridPicker: View {
         options.filter { !$0.hidden }
     }
 
-    private func pickerHeader(isInGridCorner: Bool) -> some View {
+    private func pickerHeader(
+        isInGridCorner: Bool,
+        palette: ModelReasoningGridPalette
+    ) -> some View {
         ModelReasoningPickerHeader(
             options: visibleOptions,
             layout: layout,
@@ -632,6 +1239,7 @@ struct ModelReasoningGridPicker: View {
             isRefreshing: isRefreshing,
             selectedServiceTier: selectedServiceTier,
             isInGridCorner: isInGridCorner,
+            palette: palette,
             onSelectModel: onSelectModel,
             onSelectDefaultModel: onSelectDefaultModel,
             onServiceTierChange: onServiceTierChange,
@@ -652,6 +1260,7 @@ private struct ModelReasoningPickerHeader: View {
     let isRefreshing: Bool
     let selectedServiceTier: String?
     let isInGridCorner: Bool
+    let palette: ModelReasoningGridPalette
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
     let onServiceTierChange: (String?) -> Void
@@ -682,8 +1291,7 @@ private struct ModelReasoningPickerHeader: View {
     }
 
     private func allModelsMenu(isCompact: Bool) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        return Menu {
+        Menu {
             if let defaultOption {
                 modelMenu(option: defaultOption, preservesServerDefault: true)
             }
@@ -719,14 +1327,14 @@ private struct ModelReasoningPickerHeader: View {
             }
             .lineLimit(1)
             .font(themeStore.uiFont(.caption, weight: .semibold))
-            .foregroundStyle(tokens.accent)
+            .foregroundStyle(palette.accentForeground)
             .padding(.horizontal, isCompact ? 0 : 10)
             .frame(width: isCompact ? (showsServiceTierControl ? 64 : 96) : nil)
             .frame(minHeight: 44)
-            .background(tokens.elevatedSurface.opacity(0.72), in: Capsule())
+            .background(palette.controlFill, in: Capsule())
             .overlay {
                 Capsule()
-                    .strokeBorder(tokens.border.opacity(0.58), lineWidth: 0.75)
+                    .strokeBorder(palette.controlBorder, lineWidth: palette.controlBorderWidth)
             }
             .contentShape(Rectangle())
         }
@@ -780,11 +1388,15 @@ private struct ModelReasoningPickerHeader: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(isAccelerated ? tokens.accent : tokens.elevatedSurface.opacity(0.72))
+                    .fill(isAccelerated ? tokens.accent : palette.controlFill)
 
                 Image(systemName: isAccelerated ? "bolt.fill" : "bolt")
                     .font(themeStore.uiFont(size: 14, weight: .semibold))
-                    .foregroundStyle(isAccelerated ? tokens.primaryActionForeground : tokens.accent)
+                    .foregroundStyle(
+                        isAccelerated
+                            ? tokens.primaryActionForeground
+                            : palette.accentForeground
+                    )
             }
             .frame(
                 width: ModelReasoningGridMetrics.fastModeVisualDiameter,
@@ -793,8 +1405,8 @@ private struct ModelReasoningPickerHeader: View {
             .overlay {
                 Circle()
                     .strokeBorder(
-                        isAccelerated ? tokens.accent.opacity(0.88) : tokens.border.opacity(0.58),
-                        lineWidth: 0.75
+                        isAccelerated ? tokens.accent.opacity(0.88) : palette.controlBorder,
+                        lineWidth: palette.controlBorderWidth
                     )
             }
             // 可见控制面收敛为 36pt 圆形，但外层仍保留完整 44pt 触控区域。
@@ -892,10 +1504,10 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let layout: ModelReasoningGridLayout
     let selection: ModelReasoningGridSelection
+    let palette: ModelReasoningGridPalette
     let onSelect: (CodexAppServerModelOption, CodexAppServerReasoningEffort) -> Void
     let cornerContent: CornerContent
 
@@ -939,8 +1551,8 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                         .font(themeStore.uiFont(.caption, weight: .semibold))
                         .foregroundStyle(
                             activeSelection.effort == selectedColumnEffort
-                                ? tokens.accent
-                                : tokens.primaryText
+                                ? palette.accentForeground
+                                : palette.primaryForeground
                         )
                         .lineLimit(effort == .xhigh ? 2 : 1)
                         .minimumScaleFactor(0.8)
@@ -960,7 +1572,11 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
             ForEach(layout.models) { option in
                 Text(ModelReasoningGridCatalog.shortTitle(for: option, kind: layout.kind))
                     .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(activeSelection.modelID == option.model ? tokens.accent : tokens.secondaryText)
+                    .foregroundStyle(
+                        activeSelection.modelID == option.model
+                            ? palette.accentForeground
+                            : palette.rowLabelForeground
+                    )
                     .lineLimit(2)
                     .multilineTextAlignment(.trailing)
                     .frame(width: ModelReasoningGridMetrics.modelLabelWidth, alignment: .trailing)
@@ -979,7 +1595,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
 
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(tokens.elevatedSurface.opacity(reduceTransparency ? 1 : 0.56))
+                    .fill(palette.gridFill)
 
                 gridLines(size: size, tokens: tokens)
 
@@ -1002,15 +1618,17 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                     }
                 }
 
-                if let lensPosition = dragPoint ?? center(for: activeSelection, size: size) {
-                    selectionLens(tokens: tokens)
+                let settledLens = layout.selectionLensGeometry(for: activeSelection, size: size)
+                if let lensPosition = dragPoint ?? settledLens?.center {
+                    let avoidsInlineLabel = !isDragging && (settledLens?.avoidsInlineLabel == true)
+                    selectionLens(tokens: tokens, avoidsInlineLabel: avoidsInlineLabel)
                         .position(lensPosition)
                         .allowsHitTesting(false)
                 }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(tokens.border.opacity(0.72), lineWidth: 0.75)
+                    .strokeBorder(palette.gridBorder, lineWidth: palette.gridBorderWidth)
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -1041,7 +1659,7 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
             ZStack {
                 if selected {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(tokens.accent.opacity(0.055))
+                        .fill(palette.selectedCellFill)
                         .padding(4)
                 }
                 if let inlineEffortLabel {
@@ -1049,17 +1667,28 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                         .font(themeStore.uiFont(.caption2, weight: selected ? .bold : .semibold))
                         .foregroundStyle(
                             selected
-                                ? tokens.accent
-                                : tokens.tertiaryText.opacity(isAvailable ? 0.72 : 0.24)
+                                ? palette.accentForeground
+                                : (isAvailable
+                                    ? palette.inlineEffortForeground
+                                    : palette.disabledInlineEffortForeground)
                         )
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: selected ? .bottom : .center
+                        )
+                        .padding(
+                            .bottom,
+                            selected ? ModelReasoningGridMetrics.inlineLabelSelectedBottomPadding : 0
+                        )
                 } else {
                     Circle()
                         .fill(
                             selected
-                                ? tokens.accent.opacity(0.3)
-                                : tokens.tertiaryText.opacity(isAvailable ? 0.34 : 0.12)
+                                ? palette.selectedDotForeground
+                                : (isAvailable ? palette.dotForeground : palette.disabledDotForeground)
                         )
                         .frame(width: selected ? 8 : 6, height: selected ? 8 : 6)
                 }
@@ -1099,26 +1728,36 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                 }
             }
         }
-        .stroke(tokens.border.opacity(0.46), lineWidth: 0.75)
+        .stroke(palette.gridLine, lineWidth: 0.75)
     }
 
-    private func selectionLens(tokens: ThemeTokens) -> some View {
-        ZStack {
+    private func selectionLens(tokens: ThemeTokens, avoidsInlineLabel: Bool) -> some View {
+        let lensDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensDiameter
+            : ModelReasoningGridMetrics.selectionLensDiameter
+        let haloDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensHaloDiameter
+            : ModelReasoningGridMetrics.selectionLensHaloDiameter
+        let highlightSize: CGFloat = avoidsInlineLabel ? 2.5 : 4
+        let highlightOffset: CGFloat = avoidsInlineLabel ? -2.5 : -5
+        let haloBlur: CGFloat = avoidsInlineLabel ? 2 : 4
+
+        return ZStack {
             Circle()
                 .fill(tokens.accent.opacity(0.13))
-                .frame(width: 38, height: 38)
-                .blur(radius: 4)
+                .frame(width: haloDiameter, height: haloDiameter)
+                .blur(radius: haloBlur)
             Circle()
                 .fill(tokens.accent.gradient)
-                .frame(width: 26, height: 26)
+                .frame(width: lensDiameter, height: lensDiameter)
                 .overlay {
                     Circle().strokeBorder(Color.white.opacity(0.58), lineWidth: 1)
                 }
-                .shadow(color: tokens.accent.opacity(0.28), radius: 5, y: 2)
+                .shadow(color: tokens.accent.opacity(0.28), radius: avoidsInlineLabel ? 3 : 5, y: avoidsInlineLabel ? 1 : 2)
             Circle()
                 .fill(Color.white.opacity(0.48))
-                .frame(width: 4, height: 4)
-                .offset(x: -5, y: -5)
+                .frame(width: highlightSize, height: highlightSize)
+                .offset(x: highlightOffset, y: highlightOffset)
         }
         .scaleEffect(!isDragging || reduceMotion ? 1 : 1.06)
         .animation(
@@ -1195,66 +1834,18 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
         at point: CGPoint,
         size: CGSize
     ) -> ModelReasoningGridSelection? {
-        guard !layout.models.isEmpty,
-              !layout.efforts.isEmpty,
-              size.width > 0,
-              size.height > 0
-        else {
-            return nil
-        }
-        guard point.x >= -dragCancellationMargin,
-              point.x <= size.width + dragCancellationMargin,
-              point.y >= -dragCancellationMargin,
-              point.y <= size.height + dragCancellationMargin
-        else {
-            return nil
-        }
-
-        let x = min(max(point.x, 0), size.width - 0.001)
-        let y = min(max(point.y, 0), size.height - 0.001)
-        let column = min(
-            layout.effortColumnCount - 1,
-            max(0, Int(x / (size.width / CGFloat(layout.effortColumnCount))))
+        layout.dragCandidate(
+            at: point,
+            size: size,
+            cancellationMargin: dragCancellationMargin
         )
-        let row = min(
-            layout.modelRowCount - 1,
-            max(0, Int(y / (size.height / CGFloat(layout.modelRowCount))))
-        )
-        guard let candidate = layout.selection(modelRow: row, effortColumn: column),
-              let effort = candidate.effort
-        else {
-            return nil
-        }
-        let option = layout.models[row]
-        guard ModelReasoningGridCatalog.isStandardEffortAvailable(
-            effort,
-            option: option,
-            layout: layout
-        ) else {
-            return nil
-        }
-        return candidate
     }
 
     private func center(
         for selection: ModelReasoningGridSelection,
         size: CGSize
     ) -> CGPoint? {
-        guard let effort = selection.effort,
-              let row = layout.models.firstIndex(where: { $0.model == selection.modelID }),
-              let column = layout.effortColumn(for: effort, option: layout.models[row]),
-              ModelReasoningGridCatalog.isStandardEffortAvailable(
-                  effort,
-                  option: layout.models[row],
-                  layout: layout
-              )
-        else {
-            return nil
-        }
-        return CGPoint(
-            x: (CGFloat(column) + 0.5) * size.width / CGFloat(layout.effortColumnCount),
-            y: (CGFloat(row) + 0.5) * size.height / CGFloat(layout.modelRowCount)
-        )
+        layout.selectionLensGeometry(for: selection, size: size)?.center
     }
 
     private func commit(
@@ -1301,15 +1892,15 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
 
 private struct ModelReasoningAccessiblePicker: View {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let layout: ModelReasoningGridLayout
     let selection: ModelReasoningGridSelection
+    let palette: ModelReasoningGridPalette
     let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
+        let rowShape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         VStack(alignment: .leading, spacing: 8) {
             Menu {
                 ForEach(layout.models) { option in
@@ -1338,10 +1929,15 @@ private struct ModelReasoningAccessiblePicker: View {
                     Image(systemName: "chevron.up.chevron.down")
                 }
                 .font(themeStore.uiFont(.body, weight: .semibold))
-                .foregroundStyle(tokens.primaryText)
+                .foregroundStyle(palette.primaryForeground)
                 .padding(.horizontal, 12)
                 .frame(minHeight: 44)
-                .background(tokens.elevatedSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(palette.accessibleMenuFill, in: rowShape)
+                .overlay {
+                    if let border = palette.accessibleRowBorder {
+                        rowShape.strokeBorder(border, lineWidth: palette.accessibleRowBorderWidth)
+                    }
+                }
             }
             .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
 
@@ -1360,14 +1956,19 @@ private struct ModelReasoningAccessiblePicker: View {
                         Spacer()
                         if isAvailable && selection.effort == effort {
                             Image(systemName: "checkmark")
-                                .foregroundStyle(tokens.accent)
+                                .foregroundStyle(palette.accentForeground)
                         }
                     }
                     .font(themeStore.uiFont(.body, weight: .medium))
-                    .foregroundStyle(isAvailable ? tokens.primaryText : tokens.tertiaryText)
+                    .foregroundStyle(isAvailable ? palette.primaryForeground : palette.disabledInlineEffortForeground)
                     .padding(.horizontal, 12)
                     .frame(minHeight: 44)
-                    .background(tokens.elevatedSurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 12))
+                    .background(palette.accessibleEffortFill, in: rowShape)
+                    .overlay {
+                        if let border = palette.accessibleRowBorder {
+                            rowShape.strokeBorder(border, lineWidth: palette.accessibleRowBorderWidth)
+                        }
+                    }
                 }
                 .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
                 .disabled(!isAvailable)

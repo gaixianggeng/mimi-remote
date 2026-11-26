@@ -1086,8 +1086,33 @@ struct ComposerStatusTray: View {
     }
 }
 
-/// 输入卡与待发送浮层共用的表面修饰符：iPhone 悬浮态复用顶栏同源 `PhoneFloatingGlassChromeModifier`，
-/// 其余形态保持实色底板与描边，并始终收敛为单层 `ModifiedContent` 以守住真机栈预算。
+/// 输入卡与模型切换面板共用的表面材质解析结果：
+/// 生产渲染直接按此枚举分支绘制，测试与视图共享同一套判定，不再由外层修饰符二次推演。
+enum ComposerCardResolvedSurface: Equatable {
+    case solidCard
+    case liquidGlass
+    case ultraThinMaterial
+
+    static func resolve(
+        usesFloatingGlass: Bool,
+        interfaceStyle: ThemeInterfaceStyle,
+        reduceTransparency: Bool,
+        increasedContrast: Bool,
+        supportsLiquidGlass: Bool = WorkbenchGlassChromeStyle.supportsSystemLiquidGlass
+    ) -> Self {
+        guard usesFloatingGlass,
+              interfaceStyle == .glass,
+              !reduceTransparency,
+              !increasedContrast
+        else {
+            return .solidCard
+        }
+        return supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
+    }
+}
+
+/// 输入卡与待发送浮层共用的表面修饰符：直接消费 `ComposerCardResolvedSurface` 材质判定，
+/// 并始终收敛为单层 `ModifiedContent` 以守住真机栈预算。
 struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
     let shape: CardShape
     let tokens: ThemeTokens
@@ -1098,6 +1123,7 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
     let voiceAccentBorderColor: Color?
     let solidBorderColor: Color
     let borderWidth: CGFloat
+    var explicitResolvedSurface: ComposerCardResolvedSurface? = nil
 
     @Environment(\.themeInterfaceStyle) private var interfaceStyle
 
@@ -1105,37 +1131,76 @@ struct ComposerCardSurfaceModifier<CardShape: InsettableShape>: ViewModifier {
         colorScheme == .light ? tokens.inputBackground : tokens.elevatedSurface
     }
 
+    private var resolvedSurface: ComposerCardResolvedSurface {
+        explicitResolvedSurface ?? ComposerCardResolvedSurface.resolve(
+            usesFloatingGlass: usesFloatingGlass,
+            interfaceStyle: interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
+    }
+
+    private var defaultMaterialBorderColor: Color {
+        colorScheme == .light
+            ? Color.black.opacity(0.08)
+            : Color.white.opacity(0.16)
+    }
+
     func body(content: Content) -> some View {
-        if usesFloatingGlass && interfaceStyle == .glass {
-            content.modifier(
-                PhoneFloatingGlassChromeModifier(
-                    shape: shape,
-                    tokens: tokens,
-                    colorScheme: colorScheme,
-                    reduceTransparency: reduceTransparency,
-                    interactive: false,
-                    increasedContrast: increasedContrast,
-                    opaqueFillColor: solidFillColor,
-                    accentBorderColor: voiceAccentBorderColor,
-                    accentBorderWidth: borderWidth,
-                    opaqueBorderColor: solidBorderColor,
-                    opaqueBorderWidth: borderWidth
-                )
-            )
-        } else {
+        switch resolvedSurface {
+        case .liquidGlass:
+            if #available(iOS 26.0, *) {
+                content
+                    .glassEffect(.regular, in: shape)
+                    .overlay {
+                        if let voiceAccentBorderColor {
+                            shape.strokeBorder(voiceAccentBorderColor, lineWidth: borderWidth)
+                        }
+                    }
+            } else {
+                ultraThinMaterialSurface(content)
+            }
+        case .ultraThinMaterial:
+            ultraThinMaterialSurface(content)
+        case .solidCard:
+            let usesFloatingFallbackShadow = usesFloatingGlass
+                && interfaceStyle == .glass
+                && (reduceTransparency || increasedContrast)
             let shadowOpacity: Double = increasedContrast
                 ? 0.05
-                : (colorScheme == .light ? 0.06 : 0.22)
+                : (usesFloatingFallbackShadow
+                    ? (colorScheme == .light ? 0.10 : 0.30)
+                    : (colorScheme == .light ? 0.06 : 0.22))
+            let shadowRadius: CGFloat = usesFloatingFallbackShadow ? 8 : 6
+            let shadowY: CGFloat = usesFloatingFallbackShadow ? 3 : 2
             content
                 .background {
                     shape
                         .fill(solidFillColor)
-                        .shadow(color: Color.black.opacity(shadowOpacity), radius: 6, y: 2)
+                        .shadow(color: Color.black.opacity(shadowOpacity), radius: shadowRadius, y: shadowY)
                 }
                 .overlay {
-                    shape.strokeBorder(solidBorderColor, lineWidth: borderWidth)
+                    shape.strokeBorder(voiceAccentBorderColor ?? solidBorderColor, lineWidth: borderWidth)
                 }
         }
+    }
+
+    private func ultraThinMaterialSurface(_ content: Content) -> some View {
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .overlay {
+                shape
+                    .strokeBorder(
+                        voiceAccentBorderColor ?? defaultMaterialBorderColor,
+                        lineWidth: voiceAccentBorderColor != nil ? borderWidth : 0.75
+                    )
+            }
+            .shadow(
+                color: Color.black.opacity(colorScheme == .light ? 0.08 : 0.28),
+                radius: 10,
+                x: 0,
+                y: 4
+            )
     }
 }
 
