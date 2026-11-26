@@ -401,7 +401,8 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         }
       }
       // Case D: case-insensitive & Unicode-folded volume aliases (`abcd.db` -> `ABCD`, uppercase `.DB`,
-      // `ſ-test.db` -> `s-test`, `K-test.db` -> `k-test`, dangling alias, same-root case alias)
+      // `ſ-test.db` -> `s-test`, `K-test.db` -> `k-test`, `ẞ.db` -> `ss`, `ß-other.db` -> `ss-other`,
+      // dangling alias, same-root case alias)
       const homeCase = path.join(tmp, "home-case");
       const cliCase = path.join(homeCase, ".gemini", "antigravity-cli", "conversations");
       const otherCase = path.join(homeCase, ".gemini", "antigravity", "conversations");
@@ -410,8 +411,10 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       await writeFile(path.join(cliCase, "abcd.db"), "");
       await writeFile(path.join(cliCase, "upper-ext.DB"), "");
       await writeFile(path.join(cliCase, "\u017f-test.db"), "");
+      await writeFile(path.join(cliCase, "\u1e9e.db"), "");
       await writeFile(path.join(otherCase, "efgh.db"), "");
       await writeFile(path.join(otherCase, "\u212a-test.db"), "");
+      await writeFile(path.join(otherCase, "\u00df-other.db"), "");
       await symlink(path.join(tmp, "missing-case-target.db"), path.join(cliCase, "dangling-case.db"));
       await symlink(path.join(tmp, "missing-longs-target.db"), path.join(cliCase, "\u017f-dangling.db"));
 
@@ -427,6 +430,10 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         "S-TEST",
         "k-test",
         "K-TEST",
+        "ss",
+        "SS",
+        "ss-other",
+        "SS-OTHER",
         "dangling-case",
         "DANGLING-CASE",
         "s-dangling",
@@ -439,6 +446,12 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         .then(() => true)
         .catch(() => false);
       const isUnicodeFoldedKelvin = await access(path.join(otherCase, "k-test.db"))
+        .then(() => true)
+        .catch(() => false);
+      const isUnicodeFoldedCapitalSharpS = await access(path.join(cliCase, "ss.db"))
+        .then(() => true)
+        .catch(() => false);
+      const isUnicodeFoldedSmallSharpS = await access(path.join(otherCase, "ss-other.db"))
         .then(() => true)
         .catch(() => false);
       if (isCaseInsensitiveVolume) {
@@ -462,15 +475,23 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           expect(await batchCase("k-test")).toBe("other");
           expect(await batchCase("K-TEST")).toBe("other");
         }
+        if (isUnicodeFoldedCapitalSharpS) {
+          expect(await batchCase("ss")).toBe("cli");
+          expect(await batchCase("SS")).toBe("cli");
+        }
+        if (isUnicodeFoldedSmallSharpS) {
+          expect(await batchCase("ss-other")).toBe("other");
+          expect(await batchCase("SS-OTHER")).toBe("other");
+        }
 
         // Same-root with different casing on a case-insensitive volume must be recognized as same root.
         const sameRootDiffCaseEnv = envForHome(homeCase, {
           AGY_ADAPTER_OTHER_APP_DATA_DIR: "ANTIGRAVITY-CLI",
         });
         expect(await probeOtherConversations(sameRootDiffCaseEnv)).toBe("absent_or_empty");
-        await checkEquivalence(sameRootDiffCaseEnv, ["ABCD", "abcd", "efgh", "s-test"]);
+        await checkEquivalence(sameRootDiffCaseEnv, ["ABCD", "abcd", "efgh", "s-test", "ss"]);
 
-        // End-to-end catalog.list must keep `ABCD` and Unicode-folded `s-test`/`k-test` sessions (matching thread/read).
+        // End-to-end catalog.list must keep `ABCD` and Unicode-folded `s-test`/`k-test`/`ss` sessions (matching thread/read).
         const wsCase = path.join(tmp, "ws-case");
         await mkdir(wsCase, { recursive: true });
         const caseSessions: FakeStoredSession[] = [
@@ -512,6 +533,19 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
             appDataDirName: "antigravity",
           });
         }
+        if (isUnicodeFoldedCapitalSharpS) {
+          caseSessions.push({
+            sessionId: "ss",
+            cwd: wsCase,
+            title: "Capital Sharp-S Folded Session",
+            updatedAt: "2026-11-22T01:03:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity-cli",
+          });
+        }
         const caseWorld = new FakeAgyWorld({ sessions: caseSessions });
         const cliAcpCase = new SharedReadonlyAcp(
           () => "fake-agy",
@@ -543,6 +577,10 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           if (isUnicodeFoldedKelvin) {
             expect(listed.records.map((r) => r.id)).toContain("k-test");
             expect((await catalogCase.get("k-test"))?.id).toBe("k-test");
+          }
+          if (isUnicodeFoldedCapitalSharpS) {
+            expect(listed.records.map((r) => r.id)).toContain("ss");
+            expect((await catalogCase.get("ss"))?.id).toBe("ss");
           }
         } finally {
           await Promise.all([cliAcpCase.close(), otherAcpCase.close()]);
@@ -1550,8 +1588,201 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       expect(mismatchedWarmCheck?.passed).toBe(false);
       expect(mismatchedWarmCheck?.detail).toContain("uncontrolled_or_mismatched_process_scan");
 
-      // Fail 7: live candidate against an ambient-recorded `--baseline-json` MUST NOT shim only the candidate
-      // or report controlled=true; it runs ambient and fails closed on the latency gate.
+      // Numeric baseline flags require explicit `--baseline-process-scan deterministic_ps_shim` provenance to pass;
+      // omitting it or passing `ambient_unmeasured` fails closed.
+      const rNumericControlled = await runVerifier("numeric-controlled-pass", base, [
+        "--baseline-cold-spawns",
+        "128",
+        "--baseline-warm-p95-ms",
+        "41.228",
+        "--baseline-process-scan",
+        "deterministic_ps_shim",
+      ]);
+      expect(rNumericControlled.status).toBe(0);
+      const numericControlledParsed = JSON.parse(rNumericControlled.stdout) as {
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+        passed: boolean;
+      };
+      expect(numericControlledParsed.passed).toBe(true);
+      expect(numericControlledParsed.processScan).toEqual({
+        controlled: true,
+        matched: true,
+        candidate: "deterministic_ps_shim",
+        baseline: "deterministic_ps_shim",
+      });
+
+      const rNumericOmittedScan = await runVerifier("numeric-omitted-scan-fail", base, [
+        "--baseline-cold-spawns",
+        "128",
+        "--baseline-warm-p95-ms",
+        "41.228",
+      ]);
+      expect(rNumericOmittedScan.status).toBe(1);
+      expect(rNumericOmittedScan.stderr).toContain("uncontrolled_or_mismatched_process_scan");
+
+      const rNumericAmbientScan = await runVerifier("numeric-ambient-scan-fail", base, [
+        "--baseline-cold-spawns",
+        "128",
+        "--baseline-warm-p95-ms",
+        "41.228",
+        "--baseline-process-scan",
+        "ambient_unmeasured",
+      ]);
+      expect(rNumericAmbientScan.status).toBe(1);
+      expect(rNumericAmbientScan.stderr).toContain("uncontrolled_or_mismatched_process_scan");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("verify-thread-list-perf.ts --record-json records controlled reports and live baseline isolates ambient ps with clean temp cleanup", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-perf-live-"));
+    const scriptPath = path.resolve(import.meta.dir, "..", "scripts", "verify-thread-list-perf.ts");
+    try {
+      const fakePsDir = path.join(tmp, "ambient-slow-ps");
+      await mkdir(fakePsDir, { recursive: true });
+      const fakePsMarker = path.join(tmp, "ambient-ps-was-invoked.log");
+      const fakePsPath = path.join(fakePsDir, "ps");
+      await writeFile(
+        fakePsPath,
+        `#!/bin/sh\nprintf 'invoked\\n' >> "${fakePsMarker}"\nsleep 0.25\nprintf '999999 agy\\n'\n`,
+      );
+      await chmod(fakePsPath, 0o755);
+
+      const isolatedTmp = path.join(tmp, "isolated-tmpdir");
+      await mkdir(isolatedTmp, { recursive: true });
+      const testEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        TMPDIR: isolatedTmp,
+        PATH: `${fakePsDir}:${process.env.PATH ?? ""}`,
+      };
+
+      // 1) Record a controlled report via `--record-json` (bypassing ambient slow `ps`) and verify `--check-json` + `--baseline-json`.
+      const recordedCandPath = path.join(tmp, "recorded-candidate.json");
+      const rRecord = spawnSync(
+        process.execPath,
+        [
+          scriptPath,
+          "--record-json",
+          recordedCandPath,
+          "--seed",
+          "20260410",
+          "--batches",
+          "1",
+          "--cold",
+          "1",
+          "--warm",
+          "2",
+          "--concurrency",
+          "2",
+        ],
+        { encoding: "utf8", env: testEnv },
+      );
+      expect(rRecord.status).toBe(0);
+      const recordedCand = JSON.parse(rRecord.stdout) as {
+        processScan: { controlled: boolean; mode: string };
+        summary: { sequentialWarmP95MsMean: number };
+      };
+      expect(recordedCand.processScan.controlled).toBe(true);
+      expect(recordedCand.processScan.mode).toBe("deterministic_ps_shim");
+
+      const recordedBasePath = path.join(tmp, "recorded-baseline.json");
+      await writeFile(
+        recordedBasePath,
+        JSON.stringify({
+          seed: 20260410,
+          config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
+          processScan: { controlled: true, mode: "deterministic_ps_shim" },
+          dataset: { uniqueNonOrphanRawCwds: 33 },
+          summary: {
+            concurrentColdGitSpawnsMeanPerRun: 128,
+            sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
+            sequentialWarmP95MsMean: Math.max(50, recordedCand.summary.sequentialWarmP95MsMean * 4),
+          },
+        }),
+      );
+      const rCompareRecorded = spawnSync(
+        process.execPath,
+        [scriptPath, "--check-json", recordedCandPath, "--baseline-json", recordedBasePath],
+        { encoding: "utf8" },
+      );
+      expect(rCompareRecorded.status).toBe(0);
+      const comparedParsed = JSON.parse(rCompareRecorded.stdout) as {
+        passed: boolean;
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+      };
+      expect(comparedParsed.passed).toBe(true);
+      expect(comparedParsed.processScan).toEqual({
+        controlled: true,
+        matched: true,
+        candidate: "deterministic_ps_shim",
+        baseline: "deterministic_ps_shim",
+      });
+
+      // 2) Live local baseline measurement using `--baseline-ref HEAD` (works in shallow detached CI checkouts):
+      // passing cold/warm spawn counts (10 <= 27*0.5=13.5, warm=0) so ONLY sequential_warm_p95_ms fails,
+      // ambient slow `ps` is bypassed, and temp shim dirs are cleaned up on exit 1.
+      const liveRegressedPath = path.join(tmp, "live-regressed.json");
+      await writeFile(
+        liveRegressedPath,
+        JSON.stringify({
+          seed: 20260410,
+          config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
+          processScan: { controlled: true, mode: "deterministic_ps_shim" },
+          dataset: { uniqueNonOrphanRawCwds: 33 },
+          summary: {
+            concurrentColdGitSpawnsMeanPerRun: 10,
+            sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
+            sequentialWarmP95MsMean: 999.0,
+          },
+          batches: [
+            {
+              batch: 1,
+              concurrentCold: { runs: 1, concurrency: 2, gitSpawnsPerRun: [10], gitSpawnsMean: 10, gitSpawnsTotal: 10 },
+              sequentialWarm: { runs: 2, gitSpawnsAbsoluteTotal: 0 },
+            },
+          ],
+        }),
+      );
+      const rLiveFail = spawnSync(
+        process.execPath,
+        [scriptPath, "--check-json", liveRegressedPath, "--baseline-ref", "HEAD"],
+        { encoding: "utf8", env: testEnv },
+      );
+      expect(rLiveFail.status).toBe(1);
+      const liveParsed = JSON.parse(rLiveFail.stdout) as {
+        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
+        baseline: { source: string; ref?: string; warmP95MsMean: number };
+        passed: boolean;
+        checks: Array<{ name: string; passed: boolean; detail: string }>;
+      };
+      expect(liveParsed.processScan).toEqual({
+        controlled: true,
+        matched: true,
+        candidate: "deterministic_ps_shim",
+        baseline: "deterministic_ps_shim",
+      });
+      expect(liveParsed.baseline.source).toBe("live_measured");
+      expect(typeof liveParsed.baseline.ref).toBe("string");
+      expect(liveParsed.passed).toBe(false);
+      expect(liveParsed.checks.find((c) => c.name === "concurrent_cold_git_spawns")?.passed).toBe(true);
+      expect(liveParsed.checks.find((c) => c.name === "sequential_warm_git_spawns")?.passed).toBe(true);
+      const liveWarmCheck = liveParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
+      expect(liveWarmCheck?.passed).toBe(false);
+      expect(liveWarmCheck?.detail).not.toContain("uncontrolled_or_mismatched_process_scan");
+      expect(await access(fakePsMarker).then(() => true, () => false)).toBe(false);
+      expect(liveParsed.baseline.warmP95MsMean).toBeLessThan(200);
+      const leftoverTmp = (await readdir(isolatedTmp)).filter((name) => name.startsWith("mimi-agy-1a1-"));
+      expect(leftoverTmp).toEqual([]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("verify-thread-list-perf.ts fails closed without one-sided ps shim when live candidate compares against ambient --baseline-json", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-perf-ambient-"));
+    const scriptPath = path.resolve(import.meta.dir, "..", "scripts", "verify-thread-list-perf.ts");
+    try {
       const ambientLiveBaselinePath = path.join(tmp, "baseline-ambient-live.json");
       await writeFile(
         ambientLiveBaselinePath,
@@ -1621,72 +1852,8 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const ambientLiveWarmCheck = ambientLiveParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
       expect(ambientLiveWarmCheck?.passed).toBe(false);
       expect(ambientLiveWarmCheck?.detail).toContain("uncontrolled_or_mismatched_process_scan");
-
-      // Live local baseline measurement using `--baseline-ref HEAD` (works in shallow detached CI checkouts):
-      // 1) uses passing cold/warm spawn counts (10 <= 27*0.5=13.5, warm=0) so ONLY sequential_warm_p95_ms fails;
-      // 2) proves ambient slow `ps` on PATH is bypassed by the controlled deterministic `ps` shim;
-      // 3) proves temp shim & scratch directories are cleaned up in TMPDIR even when the live gate exits 1!
-      const fakePsDir = path.join(tmp, "ambient-slow-ps");
-      await mkdir(fakePsDir, { recursive: true });
-      const fakePsMarker = path.join(tmp, "ambient-ps-was-invoked.log");
-      const fakePsPath = path.join(fakePsDir, "ps");
-      await writeFile(
-        fakePsPath,
-        `#!/bin/sh\nprintf 'invoked\\n' >> "${fakePsMarker}"\nsleep 0.25\nprintf '999999 agy\\n'\n`,
-      );
-      await chmod(fakePsPath, 0o755);
-
-      const isolatedTmp = path.join(tmp, "isolated-tmpdir");
-      await mkdir(isolatedTmp, { recursive: true });
-
-      const liveRegressed = {
-        seed: 20260410,
-        config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
-        processScan: controlledScan,
-        dataset: { uniqueNonOrphanRawCwds: 33 },
-        summary: {
-          concurrentColdGitSpawnsMeanPerRun: 10,
-          sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
-          sequentialWarmP95MsMean: 999.0,
-        },
-        batches: makeBatches([[10]], [0], { concurrency: 2, warmRuns: 2 }),
-      };
-      const rLiveFail = await runVerifier("live-regressed", liveRegressed, ["--baseline-ref", "HEAD"], {
-        ...process.env,
-        TMPDIR: isolatedTmp,
-        PATH: `${fakePsDir}:${process.env.PATH ?? ""}`,
-      });
-      expect(rLiveFail.status).toBe(1);
-      const liveParsed = JSON.parse(rLiveFail.stdout) as {
-        processScan: { controlled: boolean; matched: boolean; candidate: string; baseline: string };
-        baseline: { source: string; ref?: string; warmP95MsMean: number };
-        passed: boolean;
-        checks: Array<{ name: string; passed: boolean; detail: string }>;
-      };
-      expect(liveParsed.processScan).toEqual({
-        controlled: true,
-        matched: true,
-        candidate: "deterministic_ps_shim",
-        baseline: "deterministic_ps_shim",
-      });
-      expect(liveParsed.baseline.source).toBe("live_measured");
-      expect(typeof liveParsed.baseline.ref).toBe("string");
-      expect(liveParsed.passed).toBe(false);
-      // Cold and warm git spawn checks MUST pass; ONLY the warm-latency check fails due to 999ms > cap.
-      expect(liveParsed.checks.find((c) => c.name === "concurrent_cold_git_spawns")?.passed).toBe(true);
-      expect(liveParsed.checks.find((c) => c.name === "sequential_warm_git_spawns")?.passed).toBe(true);
-      const liveWarmCheck = liveParsed.checks.find((c) => c.name === "sequential_warm_p95_ms");
-      expect(liveWarmCheck?.passed).toBe(false);
-      expect(liveWarmCheck?.detail).not.toContain("uncontrolled_or_mismatched_process_scan");
-      // Ambient slow `ps` in PATH must NEVER have been invoked during live baseline measurement.
-      const ambientPsInvoked = await access(fakePsMarker).then(() => true, () => false);
-      expect(ambientPsInvoked).toBe(false);
-      expect(liveParsed.baseline.warmP95MsMean).toBeLessThan(200);
-      // Temp shim and verifier scratch directories must be cleaned up on non-zero exit.
-      const leftoverTmp = (await readdir(isolatedTmp)).filter((name) => name.startsWith("mimi-agy-1a1-"));
-      expect(leftoverTmp).toEqual([]);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

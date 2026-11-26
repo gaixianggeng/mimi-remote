@@ -49,6 +49,12 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
 const ASCII_ONLY = /^[\x00-\x7f]*$/;
 const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu;
 
+function fullUnicodeCaseFold(input: string): string {
+  // 全量 Unicode 大小写折叠：`toLowerCase().toUpperCase().toLowerCase()` 可将
+  // `ẞ` (U+1E9E) -> `ß` -> `SS` -> `ss`，同时覆盖 `ß`/`ſ`/`K`/连字 `ﬀ`..`ﬆ` 等全部可折叠到 ASCII 的码位。
+  return input.toLowerCase().toUpperCase().toLowerCase();
+}
+
 function candidateFoldedDbStems(name: string): string[] {
   if (ASCII_ONLY.test(name)) {
     const lower = name.toLowerCase();
@@ -56,15 +62,16 @@ function candidateFoldedDbStems(name: string): string[] {
     const stem = lower.slice(0, -3);
     return SAFE_SESSION_ID.test(stem) ? [stem] : [];
   }
-  // 仅索引可能经 Unicode simple case-folding / NFKC / HFS+ 默认可忽略字符剥离后
-  // 映射到合法 ASCII SAFE_SESSION_ID + `.db` 的条目（如 `ſ-test.db`、`K-test.db`、`s\u200b-test.db`），
+  // 仅索引可能经全量 Unicode 大小写折叠 / NFKC / HFS+ 默认可忽略字符剥离后
+  // 映射到合法 ASCII SAFE_SESSION_ID + `.db` 的条目（如 `ſ-test.db`、`K-test.db`、`ẞ.db`、`ß.db`、`s\u200b-test.db`），
   // 避免无关非 ASCII 文件名（如 `日本語.db`）对所有未命中会话触发逐条 access() 退化。
   const candidates = new Set<string>();
+  const nfkc = name.normalize("NFKC");
   const variants = [
-    name.toUpperCase().toLowerCase(),
-    name.normalize("NFKC").toUpperCase().toLowerCase(),
-    name.replace(DEFAULT_IGNORABLE_RE, "").toUpperCase().toLowerCase(),
-    name.normalize("NFKC").replace(DEFAULT_IGNORABLE_RE, "").toUpperCase().toLowerCase(),
+    fullUnicodeCaseFold(name),
+    fullUnicodeCaseFold(nfkc),
+    fullUnicodeCaseFold(name.replace(DEFAULT_IGNORABLE_RE, "")),
+    fullUnicodeCaseFold(nfkc.replace(DEFAULT_IGNORABLE_RE, "")),
   ];
   for (const folded of variants) {
     if (!folded.endsWith(".db")) continue;

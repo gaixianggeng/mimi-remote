@@ -33,7 +33,9 @@ interface CliOptions extends BenchConfig {
   baselineJson?: string;
   baselineColdSpawns?: number;
   baselineWarmP95Ms?: number;
+  baselineProcessScan?: ProcessScanMode;
   checkJson?: string;
+  recordJson?: string;
 }
 
 interface BenchBatch {
@@ -128,6 +130,15 @@ function parseFloatArg(flag: string, raw: string | undefined, minExclusive: numb
   return value;
 }
 
+function parseProcessScanModeArg(flag: string, raw: string | undefined): ProcessScanMode {
+  if (raw === "deterministic_ps_shim" || raw === "ambient_unmeasured" || raw === "unknown") {
+    return raw;
+  }
+  throw new Error(
+    `参数 ${flag} 必须是 deterministic_ps_shim | ambient_unmeasured | unknown 之一，收到：${raw ?? "(missing)"}`,
+  );
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
     seed: 20260410,
@@ -168,9 +179,16 @@ function parseArgs(argv: string[]): CliOptions {
     } else if (arg === "--baseline-warm-p95-ms") {
       opts.baselineWarmP95Ms = parseFloatArg(arg, next, 0);
       i += 1;
+    } else if (arg === "--baseline-process-scan") {
+      opts.baselineProcessScan = parseProcessScanModeArg(arg, next);
+      i += 1;
     } else if (arg === "--check-json") {
       if (!next) throw new Error("参数 --check-json 缺少 JSON 文件路径");
       opts.checkJson = next;
+      i += 1;
+    } else if (arg === "--record-json") {
+      if (!next) throw new Error("参数 --record-json 缺少输出 JSON 文件路径");
+      opts.recordJson = next;
       i += 1;
     } else {
       throw new Error(`未知参数：${arg}`);
@@ -182,11 +200,17 @@ function parseArgs(argv: string[]): CliOptions {
   if (hasExplicitCold !== hasExplicitWarm) {
     throw new Error("参数 --baseline-cold-spawns 与 --baseline-warm-p95-ms 必须同时提供，不能仅覆盖单侧基线");
   }
+  if (opts.baselineProcessScan !== undefined && !hasExplicitCold) {
+    throw new Error("参数 --baseline-process-scan 只能与 --baseline-cold-spawns/--baseline-warm-p95-ms 配合使用");
+  }
   if (opts.baselineJson && (hasExplicitCold || opts.baselineRef)) {
     throw new Error("参数 --baseline-json 不能与 --baseline-ref 或手动基线参数混用");
   }
   if (opts.baselineRef && hasExplicitCold) {
     throw new Error("参数 --baseline-ref 不能与 --baseline-cold-spawns/--baseline-warm-p95-ms 混用");
+  }
+  if (opts.recordJson && (opts.checkJson || opts.baselineJson || hasExplicitCold || opts.baselineProcessScan !== undefined)) {
+    throw new Error("参数 --record-json 不能与 --check-json、--baseline-json 或手动基线参数混用");
   }
 
   return opts;
@@ -387,7 +411,7 @@ function resolveBaseline(
   if (opts.baselineColdSpawns !== undefined && opts.baselineWarmP95Ms !== undefined) {
     return {
       source: "explicit_cli",
-      processScanMode: "unknown",
+      processScanMode: opts.baselineProcessScan ?? "unknown",
       coldGitSpawnsMeanPerRun: opts.baselineColdSpawns,
       warmP95MsMean: opts.baselineWarmP95Ms,
     };
@@ -568,9 +592,52 @@ function evaluateReport(
   };
 }
 
+function stampControlledReport(report: BenchReport): BenchReport {
+  return {
+    ...report,
+    processScan: {
+      controlled: true,
+      mode: "deterministic_ps_shim",
+      status: "controlled",
+      note: "recorded via verify-thread-list-perf.ts --record-json under deterministic_ps_shim",
+    },
+    summary: {
+      ...report.summary,
+      processScanStatus: "controlled",
+    },
+  };
+}
+
 function main(): void {
   const opts = parseArgs(process.argv.slice(2));
   const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
+
+  if (opts.recordJson) {
+    const recordConfig: BenchConfig = {
+      batches: opts.batches,
+      cold: opts.cold,
+      warm: opts.warm,
+      concurrency: opts.concurrency,
+    };
+    const recordPath = path.resolve(opts.recordJson);
+    withControlledPsEnv((controlledEnv) => {
+      const rawReport = opts.baselineRef
+        ? measureBaselineLocally(
+            repoRoot,
+            resolveBaselineCommit(repoRoot, opts.baselineRef),
+            opts.seed,
+            recordConfig,
+            controlledEnv,
+          )
+        : runBenchInRoot(repoRoot, opts.seed, recordConfig, controlledEnv);
+      const stamped = stampControlledReport(rawReport);
+      mkdirSync(path.dirname(recordPath), { recursive: true });
+      writeFileSync(recordPath, `${JSON.stringify(stamped, null, 2)}\n`);
+      console.log(JSON.stringify(stamped, null, 2));
+    });
+    return;
+  }
+
   const preloadedBaselineReport = opts.baselineJson
     ? (JSON.parse(readFileSync(opts.baselineJson, "utf8")) as BenchReport)
     : undefined;
@@ -579,9 +646,9 @@ function main(): void {
     ? "deterministic_ps_shim"
     : preloadedBaselineReport
       ? detectReportProcessScanMode(preloadedBaselineReport)
-      : "unknown";
+      : (opts.baselineProcessScan ?? "unknown");
   // 仅当基线端同样运行于确定性 ps 垫片时才对 live candidate 启用垫片；
-  // 若 --baseline-json 为 ambient/unmeasured 或手动 CLI 常数，严禁仅垫片待测端造成失真改善。
+  // 若 --baseline-json 为 ambient/unmeasured 或手动 CLI 常数未声明 deterministic_ps_shim，严禁仅垫片待测端造成失真改善。
   const shimLiveCandidate = !opts.checkJson && expectedBaselineScanMode === "deterministic_ps_shim";
   const needsControlledShim = needsLiveBaseline || shimLiveCandidate;
 
