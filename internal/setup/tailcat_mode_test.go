@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigureTailcatModePreservesUnknownFieldsAndOriginalRelay(t *testing.T) {
@@ -20,9 +21,7 @@ func TestConfigureTailcatModePreservesUnknownFieldsAndOriginalRelay(t *testing.T
 			_ = json.Unmarshal(tailcat, &fields)
 			fields["future"] = 7
 			data, _ := json.Marshal(map[string]any{"tailcat": fields, "future": true})
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.CreatePrivateFile(t, path, data)
 			next := previous
 			next.Mode = config.TailcatModeManaged
 			next.PreviousDERPMapURL = previousURL

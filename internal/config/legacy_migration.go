@@ -2,14 +2,15 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"time"
 )
 
 const legacyAppName = "codex-ipad-agent"
@@ -30,12 +31,12 @@ type legacyMigrationFileOps struct {
 
 func defaultLegacyMigrationFileOps() legacyMigrationFileOps {
 	return legacyMigrationFileOps{
-		lstat:       os.Lstat,
-		readRegular: readUnchangedRegularFile,
+		lstat:       permissionIdentity,
+		readRegular: func(path string, info os.FileInfo) ([]byte, error) { return readPreflightFile(path, info, 4<<20) },
 		stage:       stageLegacyConfig,
 		link:        os.Link,
 		remove:      os.Remove,
-		syncDir:     syncLegacyMigrationDirectory,
+		syncDir:     syncPrivateDirectory,
 	}
 }
 
@@ -69,6 +70,12 @@ func MigrateLegacyDefaultConfig(requestedPath string, explicitlyConfigured bool)
 	if err != nil {
 		return false, fmt.Errorf("解析旧版配置路径失败：%w", err)
 	}
+	if _, err := os.Lstat(requested); !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if _, err := os.Lstat(legacyPath); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	return migrateLegacyDefaultConfig(requested, legacyPath, defaultLegacyMigrationFileOps())
 }
 
@@ -90,11 +97,39 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	if !sourceInfo.Mode().IsRegular() {
 		return false, fmt.Errorf("旧版配置必须是普通文件，不能是目录或符号链接：%s", source)
 	}
+	for _, path := range []string{source, destination} {
+		if _, err := CheckCompanionPermissions(path); err != nil {
+			return false, err
+		}
+	}
 	raw, err := ops.readRegular(source, sourceInfo)
 	if err != nil {
 		return false, fmt.Errorf("读取旧版配置失败：%w", err)
 	}
 
+	if _, err := CheckCredentialPermissions(raw); err != nil {
+		return false, err
+	}
+
+	// Start the lock only after checking the legacy file and its credentials.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var migrated bool
+	err = WithConfigCommitLock(ctx, destination, func() error {
+		if err := CheckSetupWriteAvailable(destination); err != nil {
+			return err
+		}
+		if _, err := ops.lstat(destination); !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		var err error
+		migrated, err = publishLegacyConfig(destination, source, sourceInfo, raw, ops)
+		return err
+	})
+	return migrated, err
+}
+
+func publishLegacyConfig(destination, source string, sourceInfo os.FileInfo, raw []byte, ops legacyMigrationFileOps) (bool, error) {
 	destinationDir := filepath.Dir(destination)
 	createdDirs, err := ensureLegacyMigrationDirectory(destinationDir)
 	if err != nil {
@@ -118,6 +153,22 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 		return false, fmt.Errorf("暂存旧版配置副本失败：缺少完整暂存文件")
 	}
 
+	// Another command can change the historical source while the private copy is staged.
+	current, err := ops.readRegular(source, sourceInfo)
+	if err != nil || !bytes.Equal(current, raw) {
+		return false, errors.New("旧版配置已更改，请重新选择")
+	}
+	if _, err := CheckCredentialPermissions(current); err != nil {
+		return false, err
+	}
+	named, err := permissionIdentity(staged.path)
+	if err != nil || !os.SameFile(named, staged.info) {
+		return false, errors.New("迁移暂存文件已被替换")
+	}
+	stagedRaw, err := readPreflightFile(staged.path, staged.info, 4<<20)
+	if err != nil || !bytes.Equal(stagedRaw, raw) {
+		return false, errors.New("迁移暂存文件已更改")
+	}
 	// hard link 是这里的 no-clobber 提交点：目标并发出现时返回 EEXIST，不会像 rename 一样覆盖新文件。
 	if err := ops.link(staged.path, destination); err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -144,24 +195,8 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	return true, nil
 }
 
-func readUnchangedRegularFile(path string, expected os.FileInfo) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(expected, opened) {
-		return nil, fmt.Errorf("旧版配置在读取前发生变化，拒绝继续迁移")
-	}
-	return io.ReadAll(file)
-}
-
 func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLegacyConfig, resultErr error) {
-	file, err := os.CreateTemp(dir, pattern)
+	file, err := CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return result, err
 	}
@@ -172,11 +207,6 @@ func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLeg
 			_ = os.Remove(result.path)
 		}
 	}()
-	if runtime.GOOS != "windows" {
-		if err := file.Chmod(0o600); err != nil {
-			return result, err
-		}
-	}
 	if _, err := io.Copy(file, bytes.NewReader(raw)); err != nil {
 		return result, err
 	}
@@ -256,18 +286,6 @@ func removeMigrationDestinationIfOwned(path string, staged os.FileInfo, ops lega
 		return err
 	}
 	return nil
-}
-
-func syncLegacyMigrationDirectory(dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	file, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
 }
 
 func absoluteExpandedPath(path string) (string, error) {

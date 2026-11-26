@@ -1,39 +1,42 @@
 package setup
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type setupFileTransactionOps struct {
-	stage   func(dir string, pattern string, raw []byte) (string, error)
-	rename  func(oldPath string, newPath string) error
-	link    func(oldPath string, newPath string) error
-	remove  func(path string) error
-	syncDir func(dir string) error
+	stage     func(dir string, pattern string, raw []byte) (string, error)
+	rename    func(oldPath string, newPath string) error
+	renameNew func(oldPath, newPath string) error
+	link      func(oldPath string, newPath string) error
+	remove    func(path string) error
+	syncDir   func(dir string) error
 }
 
 func writeSetupFilesAtomically(
-	configPath string,
+	beforeConfig configImage,
 	tokenPath string,
 	configRaw []byte,
 	tokenRaw []byte,
 	ops setupFileTransactionOps,
 ) error {
-	configPath = filepath.Clean(configPath)
+	configPath := filepath.Clean(beforeConfig.path)
 	tokenPath = filepath.Clean(tokenPath)
 	if configPath == tokenPath || (runtime.GOOS == "windows" && strings.EqualFold(configPath, tokenPath)) {
 		return fmt.Errorf("配置文件与 app-server token file 不能使用同一路径")
 	}
-	configExisted, err := regularFileOrMissing(configPath, "配置文件")
-	if err != nil {
+	if err := beforeConfig.check(); err != nil {
 		return err
 	}
-	tokenExisted, err := regularFileOrMissing(tokenPath, "app-server token file")
+	beforeToken, err := readImage(tokenPath)
 	if err != nil {
 		return err
 	}
@@ -53,67 +56,67 @@ func writeSetupFilesAtomically(
 	}
 	defer ops.remove(stagedConfig)
 
-	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
+	tokenInfo, err := config.FileIdentity(stagedToken)
+	if err != nil {
+		return err
+	}
+	configInfo, err := config.FileIdentity(stagedConfig)
+	if err != nil {
+		return err
+	}
+	keepBackups := false
+	tokenBackup, err := hardLinkBackup(tokenPath, beforeToken.exists, ops)
 	if err != nil {
 		return fmt.Errorf("创建 app-server token file 恢复点失败：%w", err)
 	}
 	if tokenBackup != "" {
-		defer ops.remove(tokenBackup)
+		defer func() {
+			if !keepBackups {
+				_ = ops.remove(tokenBackup)
+			}
+		}()
 	}
-	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
+	configBackup, err := hardLinkBackup(configPath, beforeConfig.exists, ops)
 	if err != nil {
 		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
 	}
 	if configBackup != "" {
-		defer ops.remove(configBackup)
+		defer func() {
+			if !keepBackups {
+				_ = ops.remove(configBackup)
+			}
+		}()
 	}
 
 	// 先提交上游 token，再提交引用它的配置。第二步失败时恢复旧 token，
 	// 防止运行中的服务看到未配套提交的新凭证。
-	if err := ops.rename(stagedToken, tokenPath); err != nil {
+	publish := func(stage string, id os.FileInfo, raw []byte, before configImage) error {
+		if !sameSetupFile(stage, id, raw) {
+			return saveFailure("config_concurrent_change", errors.New("暂存文件已更改"))
+		}
+		if err := before.check(); err != nil {
+			return err
+		}
+		if !before.exists {
+			return ops.renameNew(stage, before.path)
+		}
+		return ops.rename(stage, before.path)
+	}
+	if err := publish(stagedToken, tokenInfo, tokenRaw, beforeToken); err != nil {
 		return fmt.Errorf("提交 app-server token file 失败：%w", err)
 	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
-		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
+	if err := publish(stagedConfig, configInfo, configRaw, beforeConfig); err != nil {
+		rollbackErr := restoreSetupTarget(beforeToken, tokenBackup, tokenInfo, tokenRaw, ops)
+		keepBackups = rollbackErr != nil
 		syncErr := ops.syncDir(dir)
 		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))
 	}
 	if err := ops.syncDir(dir); err != nil {
 		rollbackErr := errors.Join(
-			restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops),
-			restoreSetupTarget(configPath, configBackup, configExisted, ops),
+			restoreSetupTarget(beforeToken, tokenBackup, tokenInfo, tokenRaw, ops),
+			restoreSetupTarget(beforeConfig, configBackup, configInfo, configRaw, ops),
 		)
-		rollbackSyncErr := ops.syncDir(dir)
-		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
-	}
-	return nil
-}
-
-// writeConfigAtomically 只提交 SSH 配置文件，不创建、轮换或删除旧 app-server token file。
-func writeConfigAtomically(configPath string, configRaw []byte, ops setupFileTransactionOps) error {
-	configPath = filepath.Clean(configPath)
-	configExisted, err := regularFileOrMissing(configPath, "配置文件")
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(configPath)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
-	if err != nil {
-		return fmt.Errorf("暂存配置文件失败：%w", err)
-	}
-	defer ops.remove(stagedConfig)
-	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
-	if err != nil {
-		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
-	}
-	if configBackup != "" {
-		defer ops.remove(configBackup)
-	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
-		return fmt.Errorf("提交配置文件失败：%w", err)
-	}
-	if err := ops.syncDir(dir); err != nil {
-		rollbackErr := restoreSetupTarget(configPath, configBackup, configExisted, ops)
+		keepBackups = rollbackErr != nil
 		rollbackSyncErr := ops.syncDir(dir)
 		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
 	}
@@ -122,24 +125,22 @@ func writeConfigAtomically(configPath string, configRaw []byte, ops setupFileTra
 
 func defaultSetupFileTransactionOps() setupFileTransactionOps {
 	return setupFileTransactionOps{
-		stage:   stagePrivateFile,
-		rename:  os.Rename,
-		link:    os.Link,
-		remove:  os.Remove,
-		syncDir: syncDirectory,
+		stage:     stagePrivateFile,
+		rename:    renameSetupFile,
+		renameNew: renameNewSetupFile,
+		link:      os.Link,
+		remove:    os.Remove,
+		syncDir:   syncDirectory,
 	}
 }
 
 func regularFileOrMissing(path string, label string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("读取%s状态失败：%w", label, err)
+	err := config.CheckPrivatePermissions(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("%s必须是 regular file，不能是目录或符号链接：%s", label, path)
+	if err != nil {
+		return false, saveFailure(config.PrivateFileDiagnostic(err), fmt.Errorf("读取%s权限失败：%w", label, err))
 	}
 	return true, nil
 }
@@ -147,6 +148,9 @@ func regularFileOrMissing(path string, label string) (bool, error) {
 func hardLinkBackup(path string, existed bool, ops setupFileTransactionOps) (string, error) {
 	if !existed {
 		return "", nil
+	}
+	if err := config.CheckPrivatePermissions(path); err != nil {
+		return "", err
 	}
 	for attempt := 0; attempt < 10; attempt++ {
 		suffix, err := randomHex(8)
@@ -160,17 +164,36 @@ func hardLinkBackup(path string, existed bool, ops setupFileTransactionOps) (str
 			}
 			return "", err
 		}
+		if err := config.CheckPrivatePermissions(backup); err != nil {
+			_ = ops.remove(backup)
+			return "", err
+		}
 		return backup, nil
 	}
 	return "", fmt.Errorf("无法分配恢复点文件名")
 }
 
-func restoreSetupTarget(path string, backup string, existed bool, ops setupFileTransactionOps) error {
-	if existed {
+func renamePrivateFile(source, target string, rename func(string, string) error) error {
+	if err := config.CheckPrivatePermissions(source); err != nil {
+		return err
+	}
+	return rename(source, target)
+}
+
+func restoreSetupTarget(before configImage, backup string, published os.FileInfo, raw []byte, ops setupFileTransactionOps) error {
+	path := before.path
+	if !sameSetupFile(path, published, raw) {
+		return errors.New("已发布的文件已被更改，已保留恢复点")
+	}
+	if before.exists {
 		if backup == "" {
 			return fmt.Errorf("%s 缺少恢复点", path)
 		}
-		if err := ops.rename(backup, path); err != nil {
+		prior, err := readImage(backup)
+		if err != nil || !prior.exists || !bytes.Equal(prior.raw, before.raw) {
+			return errors.New("恢复点的内容或权限已更改")
+		}
+		if err := renamePrivateFile(backup, path, ops.rename); err != nil {
 			return fmt.Errorf("恢复 %s 失败：%w", path, err)
 		}
 		return nil

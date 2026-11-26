@@ -15,6 +15,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 const discoveryTestBundle = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
@@ -252,9 +254,7 @@ func TestRepairCodexDoesNotPersistEnvironmentOverride(t *testing.T) {
 	t.Setenv("AGENTD_CODEX_BIN", bin)
 	cfg := filepath.Join(dir, "config.json")
 	original := `{"codex":{"bin":"saved-bin"},"app_server":{"transport":"local"}}`
-	if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, cfg, []byte(original))
 	resolved, changed, err := RepairCodexBin(cfg)
 	if err != nil || changed || resolved != bin {
 		t.Fatalf("temporary override: %q, %t, %v", resolved, changed, err)
@@ -353,9 +353,7 @@ func TestMigrationPreservesCodexPinAfterProbeTimeout(t *testing.T) {
 		f := newDiscoveryFixture(t)
 		const original = `{"codex":{"bin":"pinned-codex"},"app_server":{"transport":"ws","managed":true}}`
 		cfg := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(cfg, []byte(original), 0600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, cfg, []byte(original))
 		f.add(t, "pinned-codex", "hang")
 		f.add(t, discoveryTestBundle, "codex-cli 0.155.0")
 		prev := resolveMigrationCodexBin
@@ -471,9 +469,7 @@ func TestMigrationPreservesInaccessibleCodexPin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg, original, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, cfg, original)
 	prev := resolveMigrationCodexBin
 	t.Cleanup(func() { resolveMigrationCodexBin = prev })
 	resolveMigrationCodexBin = func(pin string) (string, error) {

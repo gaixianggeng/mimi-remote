@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigureTailcatPreservesUnknownConfiguration(t *testing.T) {
@@ -18,9 +20,7 @@ func TestConfigureTailcatPreservesUnknownConfiguration(t *testing.T) {
   "tailcat": {"enabled": false, "derp_map_url": "https://relay.example/map", "future": 7}
 }
 `)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 	result, err := ConfigureTailcat(configPath, true)
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +58,7 @@ func TestConfigureTailcatDERPMapSupportsCustomAndDefaultModes(t *testing.T) {
   "tailcat": {"enabled": true, "future": 7}
 }
 `)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 
 	configured, err := ConfigureTailcatDERPMap(configPath, "  https://relay.example/derpmap/default  ")
 	if err != nil {
@@ -104,9 +102,7 @@ func TestConfigureTailcatDERPMapSupportsCustomAndDefaultModes(t *testing.T) {
 func TestConfigureTailcatDERPMapRejectsUnsafeURLWithoutChangingConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"tailcat":{"enabled":true,"derp_map_url":"https://relay.example/map"}}`)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 	for _, candidate := range []string{
 		"http://relay.example/map",
 		"https://user:password@relay.example/map",

@@ -139,6 +139,13 @@ func invalidOnboardingRequest(cause error) error {
 }
 
 func commandDiagnostic(args []string, err error) setup.OnboardingError {
+	var save *setup.SaveError
+	if errors.As(err, &save) {
+		d := setup.OnboardingDiagnostic(save.Code, save.Step, "setup", save.Code != "config_missing", "")
+		d.ConfigPath = save.ConfigPath
+		d.RecoveryPath = save.RecoveryPath
+		return d
+	}
 	var typed *onboardingCommandError
 	if errors.As(err, &typed) {
 		return setup.OnboardingDiagnostic(typed.code, typed.step, "pair", typed.configured, "")
@@ -146,6 +153,9 @@ func commandDiagnostic(args []string, err error) setup.OnboardingError {
 	var pair *setup.PairingDiagnostic
 	if errors.As(err, &pair) {
 		return setup.OnboardingDiagnostic(pair.Code, pair.Step, "pair", true, "")
+	}
+	if config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+		return setup.OnboardingDiagnostic("config_permissions_unsafe", "config_store", "setup", true, "")
 	}
 	if errors.Is(err, config.ErrLegacyAppServerConfiguration) {
 		return setup.OnboardingDiagnostic("legacy_codex_residue", "config_store", "pair", true, "")
@@ -184,15 +194,12 @@ func onboardingConfigured(path string) bool {
 }
 
 func requireOnboardingConfig(path string) error {
-	info, err := os.Lstat(config.ExpandPath(path))
+	err := config.CheckPrivatePermissions(config.ExpandPath(path))
 	if errors.Is(err, os.ErrNotExist) {
 		return onboardingFailure("config_missing", "config_store", false, err)
 	}
 	if err != nil {
-		return onboardingFailure("config_invalid", "config_store", true, err)
-	}
-	if !info.Mode().IsRegular() {
-		return onboardingFailure("config_invalid", "config_store", true, errors.New("配置必须是普通文件"))
+		return onboardingFailure(config.PrivateFileDiagnostic(err), "config_store", true, err)
 	}
 	return nil
 }

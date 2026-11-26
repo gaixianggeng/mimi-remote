@@ -18,6 +18,8 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 type fakeDoctorSSHTransport struct {
@@ -317,9 +319,7 @@ func TestCheckerReportsSupportedAppServerGateway(t *testing.T) {
 	if config.SupportsManagedAppServer() {
 		appServerConfig = config.DefaultManagedAppServerConfig()
 		appServerConfig.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
-		if err := os.WriteFile(appServerConfig.WSTokenFile, []byte("local-capability-token\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, appServerConfig.WSTokenFile, []byte("local-capability-token\n"))
 	}
 	checker := newTestChecker(t, config.Config{
 		Listen:    "127.0.0.1:8787",
@@ -510,9 +510,7 @@ func TestCheckerFailsWhenRemoteCodexVersionIsUnsupported(t *testing.T) {
 func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 	t.Run("secure regular file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "secret")
-		if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, path, []byte("secret"))
 		check := sensitiveFileCheck("secret", "敏感文件", path)
 		if !check.OK {
 			t.Fatalf("0600 regular file 应通过：%+v", check)
@@ -531,7 +529,7 @@ func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		check := sensitiveFileCheck("secret", "敏感文件", path)
-		if check.OK || !strings.Contains(check.Message, "权限过宽") {
+		if check.OK || !strings.Contains(check.Message, "权限不符合") {
 			t.Fatalf("group/other 有权限时应失败：%+v", check)
 		}
 	})
@@ -572,9 +570,7 @@ func TestSensitiveFileCheckRequiresRegularPrivateFile(t *testing.T) {
 
 func TestCheckerChecksConfigFileWithoutLegacyAppServerToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, configPath, []byte("{}"))
 	cfg := config.Config{
 		AppServer: config.AppServerConfig{Transport: "ssh", SSHTarget: "127.0.0.1"},
 	}

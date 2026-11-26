@@ -19,6 +19,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -69,9 +70,7 @@ func newLinkTestServer(t *testing.T) (testServer, *linkTestSidecar, *managedPair
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(r.configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, r.configPath, raw)
 	s := &linkTestSidecar{fakeTailcatSidecar: fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true, Running: true, Mode: config.TailcatModeSelfHosted,
 		Address: "tailcat:test-stable", PublicKey: testManagedMacKey,
@@ -147,9 +146,7 @@ func TestTailcatManagedPairingLinkEnablesAndSwitchesRealSidecar(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", false)
 			if tc.clients {
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 			}
 			if tc.enabled {
 				if _, err := agentsetup.ConfigureTailcat(s.configPath, true); err != nil {
@@ -233,9 +230,7 @@ func assertManagedPairingLink(t *testing.T, response *httptest.ResponseRecorder,
 func TestTailcatManagedPairingLinkModeFailureRollsBackRealSidecar(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	s, c := newModeTestHost(t, binary, "https://custom.example.invalid/map", false)
-	if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

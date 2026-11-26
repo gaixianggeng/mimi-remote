@@ -406,6 +406,9 @@ struct ManagedConnectionDevicesView: View {
     }
 
     static func pairingErrorMessage(_ error: Error) -> String {
+        if let pairingError = error as? PairingOnboardingAPIError {
+            return pairingError.userFacingMessage
+        }
         // 系统的「网络连接已中断」无法告诉用户下一步，两种接入入口统一给出恢复办法。
         if error is URLError {
             return L10n.text("ui.managed_devices_pairing_network_error")

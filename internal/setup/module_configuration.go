@@ -3,7 +3,6 @@ package setup
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
@@ -21,14 +20,7 @@ func readModuleDocument(path, section string) (moduleDocument, error) {
 	if err != nil {
 		return moduleDocument{}, err
 	}
-	info, err := os.Lstat(resolved)
-	if err != nil {
-		return moduleDocument{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return moduleDocument{}, fmt.Errorf("配置必须是普通文件，不能是符号链接")
-	}
-	raw, err := os.ReadFile(resolved)
+	raw, err := readPrivateConfig(resolved)
 	if err != nil {
 		return moduleDocument{}, err
 	}

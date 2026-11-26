@@ -66,7 +66,7 @@ func loadOrCreateInstallationID(path string, entropy io.Reader) (string, error) 
 
 func publishInstallationID(path string, installationID string) error {
 	dir := filepath.Dir(path)
-	staged, err := os.CreateTemp(dir, ".installation-id-")
+	staged, err := CreatePrivateTemp(dir, ".installation-id-")
 	if err != nil {
 		return fmt.Errorf("创建安装身份暂存文件失败：%w", err)
 	}

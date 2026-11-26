@@ -9,6 +9,7 @@ import (
 
 type PreflightOptions struct {
 	Stage, ConfigPath, ScanRoot, BrowseRoot, Version string
+	LegacyPath                                       string
 	RuntimePaths, Assistants                         map[string]string
 }
 
@@ -59,6 +60,7 @@ type PreflightCheck struct {
 	MinVersion      string                `json:"min_version,omitempty"`
 	Source          string                `json:"source,omitempty"`
 	ConfigPath      string                `json:"config_path,omitempty"`
+	RecoveryPath    string                `json:"recovery_path,omitempty"`
 }
 type PreflightReport struct {
 	Schema               string           `json:"schema"`

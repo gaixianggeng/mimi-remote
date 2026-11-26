@@ -232,7 +232,6 @@ struct InitialConnectionSettingsSections: View {
     @EnvironmentObject private var tailcatController: TailcatExperimentController
     /// 只在托管入口可见时读取；快照测试不注入它，入口也不会显示。
     @EnvironmentObject private var managedConnectionEntitlementStore: ManagedConnectionEntitlementStore
-    @AppStorage("managedConnection.lanHintDismissedAt") private var managedLANHintDismissedAt: Double = 0
     @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
     @ScaledMetric(relativeTo: .body) private var profileTitlePointSize = 17.0
     @ScaledMetric(relativeTo: .subheadline) private var profileDetailPointSize = 15.0
@@ -287,6 +286,7 @@ struct InitialConnectionSettingsSections: View {
             draft.localError = newValue
             if newValue == nil {
                 draft.localErrorRoute = nil
+                draft.localOnboardingError = nil
             }
         }
     }
@@ -295,7 +295,7 @@ struct InitialConnectionSettingsSections: View {
     private var connectionAttemptError: String? {
         get { showsAddComputerError ? draft.addComputerError : draft.localError }
         nonmutating set {
-            setConnectionAttemptError(newValue, route: nil, forAddComputer: showsAddComputerError)
+            setConnectionAttemptError(newValue, route: nil, onboardingError: nil, forAddComputer: showsAddComputerError)
         }
     }
     private var showsAddComputerError: Bool {
@@ -304,14 +304,17 @@ struct InitialConnectionSettingsSections: View {
     private func setConnectionAttemptError(
         _ error: String?,
         route: ConnectionProfileRoute? = nil,
+        onboardingError: MappedPairingError? = nil,
         forAddComputer: Bool
     ) {
         if forAddComputer {
             draft.addComputerError = error
             draft.addComputerErrorRoute = error == nil ? nil : route
+            draft.addComputerOnboardingError = error == nil ? nil : onboardingError
         } else {
             draft.localError = error
             draft.localErrorRoute = error == nil ? nil : route
+            draft.localOnboardingError = error == nil ? nil : onboardingError
         }
     }
     private var copyingConnectionProfileID: String? {
@@ -371,11 +374,12 @@ struct InitialConnectionSettingsSections: View {
             case .idle:
                 return
             case .connecting:
-                setConnectionAttemptError(nil, route: nil, forAddComputer: showsAddComputerError)
+                setConnectionAttemptError(nil, route: nil, onboardingError: nil, forAddComputer: showsAddComputerError)
             case .failed(let message):
                 setConnectionAttemptError(
                     message,
                     route: sessionStore.lastPairingLinkRoute,
+                    onboardingError: sessionStore.lastPairingOnboardingError,
                     forAddComputer: showsAddComputerError
                 )
                 sessionStore.pairingLinkAttempt = .idle
@@ -1076,6 +1080,20 @@ struct InitialConnectionSettingsSections: View {
                     .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
                     .accessibilityIdentifier("settings.firstConnection.errorScanQRCode")
 
+                    if case .openURL(let fixURL) = draft.addComputerOnboardingError?.action {
+                        Link(destination: fixURL.url) {
+                            ConnectionActionLabel(
+                                title: L10n.text("ui.pairing_onboarding_open_guide"),
+                                systemImage: "arrow.up.right"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(tokens.secondaryText)
+                        .foregroundStyle(tokens.primaryText)
+                        .controlSize(.regular)
+                        .accessibilityIdentifier("settings.firstConnection.errorGuide")
+                    }
+
                     if let enterWorkbenchFromInitialSetup {
                         Button(action: enterWorkbenchFromInitialSetup) {
                             ConnectionActionLabel(
@@ -1097,13 +1115,7 @@ struct InitialConnectionSettingsSections: View {
             .settingsGroupRowStyle()
         }
         Section {
-            SettingsExternalLinkRow(
-                title: L10n.text("ui.first_connection_install_codex"),
-                systemImage: "terminal",
-                destination: AppExternalLinks.codexSetup,
-                accessibilityHint: L10n.text("ui.first_connection_codex_note")
-            )
-            .accessibilityIdentifier("settings.firstConnection.codex")
+            FirstConnectionAssistantGuideRow()
 
             HostInstallationSetupView(transientPreferences: transientPreferences)
         } header: {
@@ -1345,8 +1357,9 @@ struct InitialConnectionSettingsSections: View {
         switch appStore.connectionStatus {
         case .testing:
             return L10n.text("ui.automatically_claiming_local_credentials_and_verifying_codex_connection")
-        case .failed:
-            return L10n.text("ui.the_automatic_connection_is_not_completed_please_upgrade")
+        case .failed(let message):
+            return PairingErrorMapper.isUserFacingMessage(message)
+                ? message : L10n.text("ui.the_automatic_connection_is_not_completed_please_upgrade")
         case .idle, .connected:
             return L10n.text("ui.the_local_assistant_will_be_automatically_connected_older")
         }
@@ -1446,63 +1459,6 @@ struct InitialConnectionSettingsSections: View {
                 .settingsRow(.descriptive)
                 .accessibilityIdentifier("settings.connection.error")
         }
-    }
-
-    /// 局域网档案连不上时（常见于出门用流量），提示一次可以开通托管连接（#894）。
-    /// 只按连接失败判断，不探测网络类型；关闭后 7 天内不再出现。
-    @ViewBuilder
-    private func managedConnectionLANHintRows(tokens: ThemeTokens) -> some View {
-        if showsManagedConnectionLANHint {
-            NavigationLink(value: SettingsDestination.managedConnection) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.text("ui.managed_lan_hint_message"))
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(L10n.text("ui.managed_lan_hint_action"))
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                        .foregroundStyle(tokens.accent)
-                }
-                .settingsRow(.descriptive)
-            }
-            .accessibilityIdentifier("settings.connection.managedLANHint")
-
-            Button(L10n.text("ui.managed_lan_hint_dismiss")) {
-                managedLANHintDismissedAt = Date().timeIntervalSince1970
-            }
-            .font(themeStore.uiFont(.footnote))
-            .foregroundStyle(tokens.secondaryText)
-            .settingsRow()
-            .accessibilityIdentifier("settings.connection.managedLANHint.dismiss")
-        }
-    }
-
-    private var showsManagedConnectionLANHint: Bool {
-        // 已开通中转但局域网连接失败时，提示可以改用现有中转权益。
-        let connectionFailed: Bool
-        if case .failed = appStore.connectionStatus, displayErrorMessage != nil {
-            connectionFailed = true
-        } else {
-            connectionFailed = false
-        }
-        // 冷启动和回前台时订阅状态会经过检查中；只有确认未订阅（含已过期、撤销）才提示，
-        // 避免已订阅用户在核验完成前短暂看到开通提示。待批准的购买也不再打扰。
-        let confirmedNotSubscribed: Bool
-        switch managedConnectionEntitlementStore.status {
-        case .available, .expired, .revoked:
-            confirmedNotSubscribed = true
-        case .loading, .resolving, .failed, .pending, .entitled:
-            confirmedNotSubscribed = false
-        }
-        return Self.showsManagedConnectionLANHint(
-            route: appStore.activeConnectionProfile?.connectionRoute,
-            connectionFailed: connectionFailed,
-            confirmedNotSubscribed: confirmedNotSubscribed,
-            dismissedAt: managedLANHintDismissedAt > 0
-                ? Date(timeIntervalSince1970: managedLANHintDismissedAt)
-                : nil,
-            now: Date()
-        )
     }
 
     static let managedConnectionLANHintSnooze: TimeInterval = 7 * 24 * 60 * 60
@@ -1911,6 +1867,33 @@ struct InitialConnectionSettingsSections: View {
             isSavingConnection = false
             setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
+        } catch let pairingError as PairingOnboardingAPIError {
+            isSavingConnection = false
+            let message = connectionAttemptMessage(
+                for: pairingError,
+                route: attemptedRoute,
+                intent: intent
+            )
+            // 401 短票等配对失败绝不破坏已连接的既有档案或触发凭据失效。
+            if !intent.addsConnectionProfile || appStore.activeConnectionProfile == nil {
+                if appStore.activeConnectionProfile == nil || !appStore.connectionStatus.isConnected {
+                    appStore.connectionStatus = .failed(message)
+                }
+                appStore.lastError = message
+            }
+            setConnectionAttemptError(
+                message,
+                route: attemptedRoute,
+                onboardingError: pairingError.mapped,
+                forAddComputer: errorBelongsToAddComputer
+            )
+            if pairingError.action == .openManagedConnection {
+                return .requiresManagedConnection(message)
+            }
+            if message == pairingError.userFacingMessage {
+                return .onboardingFailure(pairingError.mapped)
+            }
+            return .rejected(message)
         } catch {
             isSavingConnection = false
             let message = connectionAttemptMessage(
@@ -1925,6 +1908,7 @@ struct InitialConnectionSettingsSections: View {
             setConnectionAttemptError(
                 message,
                 route: attemptedRoute,
+                onboardingError: nil,
                 forAddComputer: errorBelongsToAddComputer
             )
             // 扫码页失败时仍全屏停留，指引要在这里就能看到，不能等用户关掉扫码页。
