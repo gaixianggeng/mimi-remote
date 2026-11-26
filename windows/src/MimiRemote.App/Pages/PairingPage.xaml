@@ -81,6 +81,8 @@
                     IsEnabled="{x:Bind ViewModel.Session.CanGenerate, Mode=OneWay}"/>
                 <Button Content="复制配对链接" Command="{x:Bind ViewModel.CopyLinkCommand}"
                     IsEnabled="{x:Bind ViewModel.Session.CanCopyLink, Mode=OneWay}"/>
+                <Button Content="下载正式安装包" Command="{x:Bind ViewModel.OpenFallbackDownloadCommand}"
+                    Visibility="{x:Bind ViewModel.Session.HasFallbackDownload, Mode=OneWay}"/>
                 <Button Content="查看通道说明" Command="{x:Bind ViewModel.OpenHelpCommand}"/>
             </StackPanel>
 

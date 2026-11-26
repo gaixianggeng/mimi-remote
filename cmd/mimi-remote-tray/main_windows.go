@@ -210,6 +210,7 @@ type trayApplication struct {
 	tailcat               tailcatTrayStatus
 	hasTailcat            bool
 	tailcatErr            error
+	maintenanceOverride   *maintenanceRunner
 }
 
 var currentTray *trayApplication
@@ -734,7 +735,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuControlPanel:
 		a.showControlPanel()
 	case menuFirstSetup:
-		a.showFirstSetupInstructions(showMessage)
+		a.runFirstSetupMaintenance()
 	case menuRefresh:
 		a.refreshStatusInteractive()
 	case menuStart:
@@ -814,15 +815,6 @@ func (a *trayApplication) runDoctor(fix bool) {
 		}
 		showMessage(a.window, title, fallbackText(result, fallback), mbOK|mbIconInfo)
 	}()
-}
-
-// BE-6 must identify the single authenticated Inno maintenance image before
-// the tray can launch it. Any future launcher must start the exact file it
-// verified. Until then this action only displays local instructions.
-func (a *trayApplication) showFirstSetupInstructions(show func(uintptr, string, string, uint32) int) {
-	if a.firstSetupRequired() {
-		show(a.window, "完成首次设置", "请手动运行 Mimi Remote 安装程序，选择“修改”，按提示确认代码目录。完成后，回到托盘并点击“刷新状态”。", mbOK|mbIconInfo)
-	}
 }
 
 func (a *trayApplication) requestPairing() {

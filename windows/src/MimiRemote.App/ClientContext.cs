@@ -30,8 +30,7 @@ public sealed class ClientContext : IDisposable
     public Action<string> OpenUrl { get; set; } = _ => { };
     public Action<string> OpenSettings { get; set; } = _ => { };
     public Func<string, bool> CopyToClipboard { get; set; } = _ => false;
-    // A verified, restricted installer maintenance entry point is required before LAN elevation is available.
-    public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
+    public Func<MaintenancePurpose, CancellationToken, Task<MaintenanceRunResult>>? RunInstallerMaintenance { get; init; }
     public Action<string, string> Notify { get; set; } = (_, _) => { };
     public HostStatus? LastStatus => cached;
     public OnboardingPreflightReport? LastPreflight { get; private set; }
@@ -50,6 +49,7 @@ public sealed class ClientContext : IDisposable
         gateInitialized = preview;
         if (!preview)
         {
+            RunInstallerMaintenance = RunTrustedInstallerMaintenanceAsync;
             try
             {
                 agent = new AgentClient(AgentClient.FindExecutable());
@@ -58,6 +58,28 @@ public sealed class ClientContext : IDisposable
             {
             }
         }
+    }
+
+    private async Task<MaintenanceRunResult> RunTrustedInstallerMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token)
+    {
+        var native = new WindowsMaintenanceNative(ct =>
+            Agent.ReadAsync<HostStatus>(["status", "--json", "--runtime", "--network-policy"], ct));
+        var client = new WindowsMaintenanceClient(
+            WindowsMaintenanceNative.ResolveTrustedInstallDirectory,
+            () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
+            () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
+            native);
+        var result = await Task.Run(() => client.RunModifyAsync(purpose, token), token);
+        Invalidate();
+        if (result.PostRunStatus is { } refreshed)
+        {
+            cached = refreshed;
+            hasRuntime = true;
+            statusAt = DateTimeOffset.UtcNow;
+        }
+        await RefreshGateAsync(token);
+        StatusChanged?.Invoke(this, EventArgs.Empty);
+        return result;
     }
 
     public AgentClient Agent => agent ?? throw new InvalidOperationException(Preview

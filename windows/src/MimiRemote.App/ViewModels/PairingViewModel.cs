@@ -34,6 +34,7 @@ public sealed class PairingViewModel : ClientPageViewModel
     public IRelayCommand CopyLinkCommand { get; }
     public IAsyncRelayCommand ApplyRelayCommand { get; }
     public IRelayCommand OpenHelpCommand { get; }
+    public IRelayCommand OpenFallbackDownloadCommand { get; }
     public IRelayCommand OpenConnectionCommand { get; }
 
     public PairingViewModel(ClientContext context) : base(context)
@@ -60,6 +61,7 @@ public sealed class PairingViewModel : ClientPageViewModel
         });
         ApplyRelayCommand = new AsyncRelayCommand(() => RunAsync(() => session.ApplyRelayAsync(Lifetime.Token)));
         OpenHelpCommand = new RelayCommand(() => session.OpenTransportHelp());
+        OpenFallbackDownloadCommand = new RelayCommand(() => session.OpenFallbackDownload());
         OpenConnectionCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteConnection));
     }
 
@@ -151,7 +153,10 @@ public sealed class PairingViewModel : ClientPageViewModel
                 }
             });
 
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => context.RunLanFirewallMaintenance;
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance =>
+            context.RunInstallerMaintenance is { } run
+                ? ct => run(MaintenancePurpose.LanFirewall, ct)
+                : null;
 
         public Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken) =>
             context.Agent.ReadAsync<TailcatStatus>(["tailcat", "status", "--json"], cancellationToken);

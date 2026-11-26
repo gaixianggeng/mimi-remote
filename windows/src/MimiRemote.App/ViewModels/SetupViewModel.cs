@@ -9,8 +9,17 @@ public sealed class SetupViewModel : ClientPageViewModel
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly OnboardingWizardStateMachine wizard;
     private string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "code");
+    private string? maintenanceFallbackDownloadUrl;
 
     public OnboardingWizardStateMachine Wizard => wizard;
+
+    public bool IsPendingWorkspaceConfirmation =>
+        Context.GateState == OnboardingGateState.PendingConfirmation
+        && Context.RunInstallerMaintenance is not null
+        && !Context.Preview;
+
+    public bool HasMaintenanceDownloadFallback =>
+        !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl) || wizard.HasMaintenanceFallbackDownload;
 
     public string Root
     {
@@ -34,6 +43,8 @@ public sealed class SetupViewModel : ClientPageViewModel
     public IAsyncRelayCommand<string> RowPrimaryActionCommand { get; }
     public IAsyncRelayCommand<string> RowSecondaryActionCommand { get; }
     public IAsyncRelayCommand<string> ResetRuntimePinCommand { get; }
+    public IAsyncRelayCommand ConfirmWorkspaceViaMaintenanceCommand { get; }
+    public IRelayCommand OpenMaintenanceDownloadCommand { get; }
     public IRelayCommand OpenDiagnosticsCommand { get; }
 
     public SetupViewModel(ClientContext context) : base(context)
@@ -131,6 +142,19 @@ public sealed class SetupViewModel : ClientPageViewModel
                 await wizard.ResetRuntimePathToAutoAsync(runtimeId, Lifetime.Token);
             }
         }));
+        ConfirmWorkspaceViaMaintenanceCommand = new AsyncRelayCommand(
+            () => RunAsync(ConfirmWorkspaceViaMaintenanceAsync),
+            () => IsPendingWorkspaceConfirmation);
+        OpenMaintenanceDownloadCommand = new RelayCommand(
+            () =>
+            {
+                var url = maintenanceFallbackDownloadUrl ?? wizard.MaintenanceFallbackDownloadUrl;
+                if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
+                {
+                    Context.OpenUrl(url);
+                }
+            },
+            () => HasMaintenanceDownloadFallback);
         OpenDiagnosticsCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteDiagnostics));
     }
 
@@ -232,13 +256,48 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
     }
 
-    private void OnGateStateChanged(object? sender, OnboardingGateState state) => CompleteWizardCommand.NotifyCanExecuteChanged();
+    private async Task ConfirmWorkspaceViaMaintenanceAsync()
+    {
+        if (!IsPendingWorkspaceConfirmation || Context.RunInstallerMaintenance is not { } runMaintenance)
+        {
+            return;
+        }
+        SetMaintenanceFallbackUrl(null);
+        var result = await runMaintenance(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
+        SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
+        await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
+        if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
+        {
+            Root = wizard.SelectedScanRoot;
+        }
+        Report(result.Message, error: !result.Succeeded);
+    }
+
+    private void SetMaintenanceFallbackUrl(string? url)
+    {
+        if (SetProperty(ref maintenanceFallbackDownloadUrl, url, nameof(HasMaintenanceDownloadFallback)))
+        {
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    private void OnGateStateChanged(object? sender, OnboardingGateState state)
+    {
+        OnPropertyChanged(nameof(IsPendingWorkspaceConfirmation));
+        ConfirmWorkspaceViaMaintenanceCommand.NotifyCanExecuteChanged();
+        CompleteWizardCommand.NotifyCanExecuteChanged();
+    }
 
     private void OnWizardPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
     {
         if (args.PropertyName == nameof(OnboardingWizardStateMachine.CanCompleteWizard))
         {
             CompleteWizardCommand.NotifyCanExecuteChanged();
+        }
+        if (args.PropertyName == nameof(OnboardingWizardStateMachine.HasMaintenanceFallbackDownload))
+        {
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
         }
         if (string.Equals(args.PropertyName, nameof(OnboardingWizardStateMachine.SelectedScanRoot), StringComparison.Ordinal)
             && !string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
@@ -329,7 +388,10 @@ public sealed class SetupViewModel : ClientPageViewModel
                 : throw new InvalidDataException("后台服务尚未确认就绪。");
         }
 
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => context.RunLanFirewallMaintenance;
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance =>
+            context.RunInstallerMaintenance is { } run
+                ? ct => run(MaintenancePurpose.LanFirewall, ct)
+                : null;
 
         public bool DirectoryExists(string path) => Directory.Exists(path);
         public void CreateDirectory(string path) => Directory.CreateDirectory(path);

@@ -15,8 +15,22 @@ public sealed record HostStatus
     public string ProcessError { get; init; } = "";
     public string ServiceError { get; init; } = "";
     public RuntimeStatus? RuntimeStatus { get; init; }
+    public HostNetworkStatus? NetworkStatus { get; init; }
     public ModuleStatus? ModuleStatus { get; init; }
     public string Title => ServiceOk ? "电脑已就绪" : ProcessOk ? "服务需要处理" : "服务已停止";
+}
+
+public sealed record HostNetworkStatus
+{
+    public string Mode { get; init; } = "";
+    public bool AllowLan { get; init; }
+    public bool PolicyChecked { get; init; }
+    public bool PolicyOk { get; init; }
+    public bool FirewallValid { get; init; }
+    public string InterfaceAlias { get; init; } = "";
+    public string NetworkCategory { get; init; } = "";
+    public int UnsafeRuleCount { get; init; }
+    public bool PolicyInspectionError { get; init; }
 }
 
 public sealed record RuntimeStatus

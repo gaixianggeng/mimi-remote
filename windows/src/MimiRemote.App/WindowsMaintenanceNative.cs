@@ -1,0 +1,801 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+using MimiRemote.Core;
+
+namespace MimiRemote.App;
+
+/// <summary>
+/// Windows native verification and pinning implementation for the trusted
+/// maintenance contract (mimi.windows.maintenance/v1). Never consults PATH,
+/// registry uninstall keys, uninstaller executables, Downloads, or diagnostics.
+/// </summary>
+internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<HostStatus>> readStatusAsync) : IWindowsMaintenancePlatform
+{
+    private const uint TokenQuery = 0x0008;
+    private const int TokenElevationInfoClass = 20;
+
+    private const uint GenericRead = 0x80000000;
+    private const uint FileListDirectory = 0x00000001;
+    private const uint FileReadAttributes = 0x00000080;
+    private const uint FileShareRead = 0x00000001;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+    private const uint FileFlagOpenReparsePoint = 0x00200000;
+
+    private const uint FileAttributeDirectory = 0x00000010;
+    private const uint FileAttributeDevice = 0x00000040;
+    private const uint FileAttributeReparsePoint = 0x00000400;
+
+    private const int ErrorFileNotFound = 2;
+    private const int ErrorPathNotFound = 3;
+    private const int ErrorCancelled = 1223;
+
+    private const uint X509AsnEncoding = 0x00000001;
+    private const uint Pkcs7AsnEncoding = 0x00010000;
+    private const uint CertMsgEncoding = X509AsnEncoding | Pkcs7AsnEncoding;
+    private const uint CmsgSigned = 2;
+    private const uint CmsgTypeParam = 1;
+    private const uint CmsgContentParam = 2;
+    private const uint CmsgSignerCountParam = 5;
+    private const uint CmsgSignerCertInfoParam = 7;
+    private const uint CmsgCtrlVerifySignature = 1;
+    private const int CertStoreProvMsg = 1;
+    private const string CodeSigningOid = "1.3.6.1.5.5.7.3.3";
+
+    private const uint WtdUiNone = 2;
+    private const uint WtdRevokeNone = 0;
+    private const uint WtdChoiceFile = 1;
+    private const uint WtdStateActionVerify = 1;
+    private const uint WtdStateActionClose = 2;
+    private const uint WtdCacheOnlyUrlRetrieval = 0x00000004;
+
+    private static readonly Guid WinTrustActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+    internal static string ResolveTrustedInstallDirectory() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
+
+    internal static string? ResolveExpectedVersion(ClientBuild build) =>
+        build.Release is not null ? build.Display : null;
+
+    internal static string? ResolvePreTrustedPublisherSha256(ClientBuild build, Assembly assembly)
+    {
+        if (build.Release is null)
+        {
+            return null;
+        }
+        var pinned = assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attr => string.Equals(attr.Key, "MimiReleasePublisherSha256", StringComparison.Ordinal))
+            ?.Value;
+        if (!string.IsNullOrWhiteSpace(pinned))
+        {
+            return pinned.Trim();
+        }
+        var selfPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(selfPath))
+        {
+            return null;
+        }
+        return TryExtractVerifiedSelfPublisherSha256(selfPath);
+    }
+
+    public bool IsElevated()
+    {
+        if (!OpenProcessToken(GetCurrentProcess(), TokenQuery, out var tokenHandle))
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ElevatedSession);
+        }
+        try
+        {
+            uint elevated = 0;
+            uint returned = 0;
+            if (!GetTokenInformation(tokenHandle, TokenElevationInfoClass, ref elevated, sizeof(uint), out returned)
+                || returned < sizeof(uint))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ElevatedSession);
+            }
+            return elevated != 0;
+        }
+        finally
+        {
+            _ = CloseHandle(tokenHandle);
+        }
+    }
+
+    public async Task WithPinnedInstallAsync(
+        string installDirectory,
+        Func<IPinnedMaintenanceDirectory, Task> action,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var cleaned = installDirectory.Trim().TrimEnd('\\');
+        if (string.IsNullOrEmpty(cleaned) || !Path.IsPathFullyQualified(cleaned))
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+        }
+        if (cleaned.StartsWith(@"\\", StringComparison.Ordinal)
+            && !cleaned.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+        }
+
+        var (volumeRoot, remainder) = SplitVolumeAndRemainder(cleaned);
+        var current = ResolveVolumeGuidRoot(volumeRoot);
+        var parts = remainder.Split('\\');
+        using var pinned = new PinnedDirectoryScope();
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part) || part is "." or ".." || part.Contains(':', StringComparison.Ordinal) || part.Contains('/', StringComparison.Ordinal))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+            current = current.TrimEnd('\\') + "\\" + part;
+            var handle = CreateFileW(
+                current,
+                FileListDirectory | FileReadAttributes,
+                FileShareRead,
+                0,
+                OpenExisting,
+                FileFlagOpenReparsePoint | FileFlagBackupSemantics,
+                0);
+            if (handle.IsInvalid)
+            {
+                var err = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new MaintenanceFailureException(err is ErrorFileNotFound or ErrorPathNotFound
+                    ? MaintenanceFailureKind.ReceiptMissing
+                    : MaintenanceFailureKind.ReparsePointRejected);
+            }
+            pinned.AddHandle(handle);
+            if (!GetFileInformationByHandle(handle, out var info)
+                || (info.FileAttributes & (FileAttributeReparsePoint | FileAttributeDevice)) != 0
+                || (info.FileAttributes & FileAttributeDirectory) == 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+        }
+        pinned.VolumeDirectory = current;
+        await action(pinned).ConfigureAwait(false);
+    }
+
+    public byte[] VerifyCmsReceipt(byte[] rawReceipt, ReadOnlySpan<byte> expectedPublisher)
+    {
+        if (rawReceipt.Length == 0 || rawReceipt.Length > WindowsMaintenanceClient.ReceiptMaxBytes || expectedPublisher.Length != SHA256.HashSizeInBytes)
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+        }
+        var hMsg = CryptMsgOpenToDecode(CertMsgEncoding, 0, 0, 0, 0, 0);
+        if (hMsg == 0)
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+        }
+        var hStore = (nint)0;
+        var signerCertPtr = (nint)0;
+        try
+        {
+            if (!CryptMsgUpdate(hMsg, rawReceipt, (uint)rawReceipt.Length, true))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            uint msgType = 0;
+            uint msgTypeSize = sizeof(uint);
+            if (!CryptMsgGetParamUInt(hMsg, CmsgTypeParam, 0, ref msgType, ref msgTypeSize) || msgType != CmsgSigned)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            uint signerCount = 0;
+            uint signerCountSize = sizeof(uint);
+            if (!CryptMsgGetParamUInt(hMsg, CmsgSignerCountParam, 0, ref signerCount, ref signerCountSize) || signerCount != 1)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            var content = GetCmsBytesParam(hMsg, CmsgContentParam, 0, WindowsMaintenanceClient.ReceiptMaxBytes);
+            if (content.Length == 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            var signerInfoBytes = GetCmsBytesParam(hMsg, CmsgSignerCertInfoParam, 0, 65_536);
+            hStore = CertOpenStore(CertStoreProvMsg, CertMsgEncoding, 0, 0, hMsg);
+            if (hStore == 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            var signerInfoHandle = GCHandle.Alloc(signerInfoBytes, GCHandleType.Pinned);
+            try
+            {
+                signerCertPtr = CertGetSubjectCertificateFromStore(hStore, CertMsgEncoding, signerInfoHandle.AddrOfPinnedObject());
+            }
+            finally
+            {
+                signerInfoHandle.Free();
+            }
+
+            if (signerCertPtr == 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+            var signerContext = Marshal.PtrToStructure<CertContextNative>(signerCertPtr);
+            if (signerContext.CertInfo == 0 || signerContext.EncodedCert == 0 || signerContext.EncodedLength == 0 || signerContext.EncodedLength > 1_048_576)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            if (!CryptMsgControl(hMsg, 0, CmsgCtrlVerifySignature, signerContext.CertInfo))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            var signerDer = new byte[signerContext.EncodedLength];
+            Marshal.Copy(signerContext.EncodedCert, signerDer, 0, signerDer.Length);
+            var signerHash = SHA256.HashData(signerDer);
+            if (!CryptographicOperations.FixedTimeEquals(signerHash, expectedPublisher))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
+            VerifyCodeSigningChain(signerDer, hStore);
+            return content;
+        }
+        finally
+        {
+            if (signerCertPtr != 0)
+            {
+                _ = CertFreeCertificateContext(signerCertPtr);
+            }
+            if (hStore != 0)
+            {
+                _ = CertCloseStore(hStore, 0);
+            }
+            _ = CryptMsgClose(hMsg);
+        }
+    }
+
+    public async Task<MaintenanceBrokerProcessResult> RunBrokerAsync(
+        string pinnedBrokerPath,
+        string[] arguments,
+        CancellationToken cancellationToken)
+    {
+        var start = new ProcessStartInfo(pinnedBrokerPath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Environment.SystemDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false),
+            StandardErrorEncoding = new UTF8Encoding(false),
+        };
+        foreach (var arg in arguments)
+        {
+            start.ArgumentList.Add(arg);
+        }
+        using var process = new Process { StartInfo = start };
+        try
+        {
+            if (!process.Start())
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
+            }
+        }
+        catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == ErrorCancelled)
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.UacCancelled, error);
+        }
+
+        var stdoutTask = ReadBoundedTextAsync(process.StandardOutput, 262_144, cancellationToken);
+        var stderrTask = ReadBoundedTextAsync(process.StandardError, 65_536, cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            var stdout = await stdoutTask.ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            return new MaintenanceBrokerProcessResult(stdout, stderr, process.ExitCode);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            try
+            {
+                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            throw;
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+    }
+
+    public Task<HostStatus> ReadStatusAsync(CancellationToken cancellationToken) =>
+        readStatusAsync(cancellationToken);
+
+    private static string? TryExtractVerifiedSelfPublisherSha256(string selfPath)
+    {
+        using var handle = CreateFileW(
+            selfPath,
+            GenericRead,
+            FileShareRead,
+            0,
+            OpenExisting,
+            FileFlagOpenReparsePoint,
+            0);
+        if (handle.IsInvalid)
+        {
+            return null;
+        }
+        if (!GetFileInformationByHandle(handle, out var info)
+            || (info.FileAttributes & (FileAttributeReparsePoint | FileAttributeDevice | FileAttributeDirectory)) != 0)
+        {
+            return null;
+        }
+        var digest = VerifyAuthenticodeAndExtractSignerSha256(handle, selfPath);
+        return digest is null ? null : Convert.ToHexStringLower(digest);
+    }
+
+    private static void VerifyCodeSigningChain(byte[] signerDer, nint hStore)
+    {
+        using var signerCert = X509CertificateLoader.LoadCertificate(signerDer);
+        var extraCerts = new List<X509Certificate2>();
+        var prev = (nint)0;
+        try
+        {
+            while ((prev = CertEnumCertificatesInStore(hStore, prev)) != 0)
+            {
+                var ctx = Marshal.PtrToStructure<CertContextNative>(prev);
+                if (ctx.EncodedCert != 0 && ctx.EncodedLength > 0 && ctx.EncodedLength <= 1_048_576)
+                {
+                    var der = new byte[ctx.EncodedLength];
+                    Marshal.Copy(ctx.EncodedCert, der, 0, der.Length);
+                    extraCerts.Add(X509CertificateLoader.LoadCertificate(der));
+                }
+            }
+            using var chain = new X509Chain();
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.DisableCertificateDownloads = true;
+            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+            chain.ChainPolicy.ApplicationPolicy.Add(new Oid(CodeSigningOid));
+            foreach (var extra in extraCerts)
+            {
+                chain.ChainPolicy.ExtraStore.Add(extra);
+            }
+            if (!chain.Build(signerCert))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+        }
+        finally
+        {
+            if (prev != 0)
+            {
+                _ = CertFreeCertificateContext(prev);
+            }
+            foreach (var cert in extraCerts)
+            {
+                cert.Dispose();
+            }
+        }
+    }
+
+    private static byte[] GetCmsBytesParam(nint hMsg, uint paramType, uint index, int maxBytes)
+    {
+        uint size = 0;
+        if (!CryptMsgGetParamBytes(hMsg, paramType, index, null, ref size) || size == 0 || size > maxBytes)
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+        }
+        var buffer = new byte[size];
+        if (!CryptMsgGetParamBytes(hMsg, paramType, index, buffer, ref size))
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+        }
+        return size == buffer.Length ? buffer : buffer[..(int)size];
+    }
+
+    private static (string VolumeRoot, string Remainder) SplitVolumeAndRemainder(string cleaned)
+    {
+        if (cleaned.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase))
+        {
+            var slash = cleaned.IndexOf('\\', 4);
+            if (slash < 0 || slash + 1 >= cleaned.Length)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+            return (cleaned[..slash], cleaned[(slash + 1)..]);
+        }
+        if (cleaned.Length < 4 || cleaned[1] != ':' || cleaned[2] != '\\')
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+        }
+        return (cleaned[..2], cleaned[3..]);
+    }
+
+    private static string ResolveVolumeGuidRoot(string volume)
+    {
+        if (volume.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase))
+        {
+            var inner = volume[@"\\?\".Length..];
+            if (inner.Length != "Volume{00000000-0000-0000-0000-000000000000}".Length
+                || !Guid.TryParse(inner[6..], out _))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+            return volume;
+        }
+        if (volume.Length != 2 || volume[1] != ':')
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+        }
+        var buffer = new char[64];
+        if (!GetVolumeNameForVolumeMountPointW(volume + @"\", buffer, (uint)buffer.Length))
+        {
+            throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+        }
+        var end = Array.IndexOf(buffer, '\0');
+        var resolved = end >= 0 ? new string(buffer, 0, end) : new string(buffer);
+        return string.IsNullOrEmpty(resolved)
+            ? throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected)
+            : resolved;
+    }
+
+    private static byte[]? VerifyAuthenticodeAndExtractSignerSha256(SafeFileHandle handle, string path)
+    {
+        var addedRef = false;
+        handle.DangerousAddRef(ref addedRef);
+        var filePtr = (nint)0;
+        try
+        {
+            var fileInfo = new WinTrustFileInfo
+            {
+                Size = (uint)Marshal.SizeOf<WinTrustFileInfo>(),
+                FilePath = path,
+                FileHandle = handle.DangerousGetHandle(),
+            };
+            filePtr = Marshal.AllocHGlobal(Marshal.SizeOf<WinTrustFileInfo>());
+            Marshal.StructureToPtr(fileInfo, filePtr, false);
+            var data = new WinTrustData
+            {
+                Size = (uint)Marshal.SizeOf<WinTrustData>(),
+                UiChoice = WtdUiNone,
+                RevocationChecks = WtdRevokeNone,
+                UnionChoice = WtdChoiceFile,
+                File = filePtr,
+                StateAction = WtdStateActionVerify,
+                ProviderFlags = WtdCacheOnlyUrlRetrieval,
+            };
+            var action = WinTrustActionGenericVerifyV2;
+            var verifyResult = WinVerifyTrust(new nint(-1), ref action, ref data);
+            byte[]? signerSha256 = null;
+            if (verifyResult == 0 && data.StateData != 0)
+            {
+                signerSha256 = ExtractSignerSha256FromStateData(data.StateData);
+            }
+            data.StateAction = WtdStateActionClose;
+            var closeResult = WinVerifyTrust(new nint(-1), ref action, ref data);
+            return verifyResult == 0 && closeResult == 0 ? signerSha256 : null;
+        }
+        finally
+        {
+            if (filePtr != 0)
+            {
+                Marshal.DestroyStructure<WinTrustFileInfo>(filePtr);
+                Marshal.FreeHGlobal(filePtr);
+            }
+            if (addedRef)
+            {
+                handle.DangerousRelease();
+            }
+        }
+    }
+
+    private static byte[]? ExtractSignerSha256FromStateData(nint stateData)
+    {
+        var provData = WTHelperProvDataFromStateData(stateData);
+        if (provData == 0)
+        {
+            return null;
+        }
+        var signer = WTHelperGetProvSignerFromChain(provData, 0, false, 0);
+        if (signer == 0)
+        {
+            return null;
+        }
+        var certPtr = WTHelperGetProvCertFromChain(signer, 0);
+        if (certPtr == 0)
+        {
+            return null;
+        }
+        var provCert = Marshal.PtrToStructure<CryptProviderCert>(certPtr);
+        if (provCert.CertContext == 0)
+        {
+            return null;
+        }
+        var certCtx = Marshal.PtrToStructure<CertContextNative>(provCert.CertContext);
+        if (certCtx.EncodedCert == 0 || certCtx.EncodedLength == 0 || certCtx.EncodedLength > 1_048_576)
+        {
+            return null;
+        }
+        var der = new byte[certCtx.EncodedLength];
+        Marshal.Copy(certCtx.EncodedCert, der, 0, der.Length);
+        return SHA256.HashData(der);
+    }
+
+    private static async Task<string> ReadBoundedTextAsync(StreamReader reader, int limit, CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        var buffer = new char[4096];
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) != 0)
+        {
+            var keep = Math.Min(count, limit - builder.Length);
+            if (keep > 0)
+            {
+                builder.Append(buffer, 0, keep);
+            }
+        }
+        return builder.ToString();
+    }
+
+    private sealed class PinnedDirectoryScope : IPinnedMaintenanceDirectory, IDisposable
+    {
+        private readonly List<SafeFileHandle> handles = [];
+
+        public string VolumeDirectory { get; set; } = "";
+
+        public void AddHandle(SafeFileHandle handle) => handles.Add(handle);
+
+        public byte[] ReadReceipt(string fileName, int maxBytes)
+        {
+            var (handle, _) = OpenPinnedRegularFile(fileName, MaintenanceFailureKind.ReceiptMissing);
+            var length = RandomAccess.GetLength(handle);
+            if (length <= 0 || length > maxBytes)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+            var result = new byte[(int)length];
+            var total = 0;
+            while (total < result.Length)
+            {
+                var read = RandomAccess.Read(handle, result.AsSpan(total), total);
+                if (read == 0)
+                {
+                    break;
+                }
+                total += read;
+            }
+            return total == result.Length
+                ? result
+                : throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+        }
+
+        public string VerifyPinnedImage(string fileName, ReadOnlySpan<byte> expectedDigest, ReadOnlySpan<byte> expectedPublisher)
+        {
+            var (handle, fullPath) = OpenPinnedRegularFile(fileName, MaintenanceFailureKind.MaintenanceImageMissing);
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = new byte[65_536];
+            long offset = 0;
+            int read;
+            while ((read = RandomAccess.Read(handle, buffer, offset)) > 0)
+            {
+                hasher.AppendData(buffer, 0, read);
+                offset += read;
+            }
+            var actualDigest = hasher.GetHashAndReset();
+            if (!CryptographicOperations.FixedTimeEquals(actualDigest, expectedDigest))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.DigestMismatch);
+            }
+            var signerSha256 = VerifyAuthenticodeAndExtractSignerSha256(handle, fullPath);
+            if (signerSha256 is null || !CryptographicOperations.FixedTimeEquals(signerSha256, expectedPublisher))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.AuthenticodeFailed);
+            }
+            return fullPath;
+        }
+
+        private (SafeFileHandle Handle, string FullPath) OpenPinnedRegularFile(string fileName, MaintenanceFailureKind missingKind)
+        {
+            if (string.IsNullOrEmpty(fileName) || fileName is "." or ".."
+                || fileName.Contains('\\', StringComparison.Ordinal)
+                || fileName.Contains('/', StringComparison.Ordinal)
+                || fileName.Contains(':', StringComparison.Ordinal))
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+            var fullPath = VolumeDirectory.TrimEnd('\\') + "\\" + fileName;
+            var handle = CreateFileW(
+                fullPath,
+                GenericRead,
+                FileShareRead,
+                0,
+                OpenExisting,
+                FileFlagOpenReparsePoint,
+                0);
+            if (handle.IsInvalid)
+            {
+                var err = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new MaintenanceFailureException(err is ErrorFileNotFound or ErrorPathNotFound
+                    ? missingKind
+                    : MaintenanceFailureKind.IdentityMismatch);
+            }
+            handles.Add(handle);
+            if (!GetFileInformationByHandle(handle, out var info)
+                || (info.FileAttributes & (FileAttributeReparsePoint | FileAttributeDevice | FileAttributeDirectory)) != 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.ReparsePointRejected);
+            }
+            return (handle, fullPath);
+        }
+
+        public void Dispose()
+        {
+            for (var i = handles.Count - 1; i >= 0; i--)
+            {
+                handles[i].Dispose();
+            }
+            handles.Clear();
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public ulong CreationTime;
+        public ulong LastAccessTime;
+        public ulong LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CertContextNative
+    {
+        public uint EncodingType;
+        public nint EncodedCert;
+        public uint EncodedLength;
+        public nint CertInfo;
+        public nint CertStore;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CryptProviderCert
+    {
+        public uint Size;
+        public nint CertContext;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WinTrustFileInfo
+    {
+        public uint Size;
+        [MarshalAs(UnmanagedType.LPWStr)] public string FilePath;
+        public nint FileHandle;
+        public nint KnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinTrustData
+    {
+        public uint Size;
+        public nint PolicyCallback;
+        public nint SipClient;
+        public uint UiChoice;
+        public uint RevocationChecks;
+        public uint UnionChoice;
+        public nint File;
+        public uint StateAction;
+        public nint StateData;
+        public nint UrlReference;
+        public uint ProviderFlags;
+        public uint UiContext;
+        public nint SignatureSettings;
+    }
+
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern nint GetCurrentProcess();
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
+
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(nint processHandle, uint desiredAccess, out nint tokenHandle);
+
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(nint tokenHandle, int tokenInformationClass, ref uint tokenInformation, uint tokenInformationLength, out uint returnLength);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        nint securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        nint templateFile);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle fileHandle, out ByHandleFileInformation fileInformation);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetVolumeNameForVolumeMountPointW(string volumeMountPoint, [Out] char[] volumeName, uint bufferLength);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint CryptMsgOpenToDecode(uint msgEncodingType, uint flags, uint msgType, nint cryptProv, nint recipientInfo, nint streamInfo);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgUpdate(nint cryptMsg, byte[] data, uint dataLength, [MarshalAs(UnmanagedType.Bool)] bool final);
+
+    [DllImport("crypt32.dll", EntryPoint = "CryptMsgGetParam", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgGetParamUInt(nint cryptMsg, uint paramType, uint index, ref uint data, ref uint dataLength);
+
+    [DllImport("crypt32.dll", EntryPoint = "CryptMsgGetParam", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgGetParamBytes(nint cryptMsg, uint paramType, uint index, [Out] byte[]? data, ref uint dataLength);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgControl(nint cryptMsg, uint flags, uint ctrlType, nint ctrlPara);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgClose(nint cryptMsg);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint CertOpenStore(nint storeProvider, uint encodingType, nint cryptProv, uint flags, nint para);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint CertGetSubjectCertificateFromStore(nint certStore, uint certEncodingType, nint certId);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint CertEnumCertificatesInStore(nint certStore, nint prevCertContext);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertFreeCertificateContext(nint certContext);
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertCloseStore(nint certStore, uint flags);
+
+    [DllImport("wintrust.dll", ExactSpelling = true, PreserveSig = true)]
+    private static extern int WinVerifyTrust(nint window, ref Guid action, ref WinTrustData data);
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern nint WTHelperProvDataFromStateData(nint stateData);
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern nint WTHelperGetProvSignerFromChain(nint provData, uint signerIndex, [MarshalAs(UnmanagedType.Bool)] bool counterSigner, uint counterSignerIndex);
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern nint WTHelperGetProvCertFromChain(nint signer, uint certIndex);
+}

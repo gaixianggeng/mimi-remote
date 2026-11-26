@@ -89,6 +89,13 @@ func formatTrayUserError(err error) string {
 	if err == nil {
 		return ""
 	}
+	var maintErr *maintenanceError
+	if errors.As(err, &maintErr) {
+		if msg := strings.TrimSpace(maintErr.Message); msg != "" {
+			return msg
+		}
+		return onboardingSafeFallbackCopy
+	}
 	var cliErr *onboardingCLIError
 	if errors.As(err, &cliErr) {
 		message := strings.TrimSpace(cliErr.Diagnostic.Message)

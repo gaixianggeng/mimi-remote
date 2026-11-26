@@ -318,7 +318,7 @@ public sealed class OnboardingViewModelTests
             RunLanFirewallMaintenance = _ =>
             {
                 maintenanceCalls++;
-                return Task.FromResult(false);
+                return Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.UacCancelled));
             },
             Report = BuildWindowsReport(
                 stage: "pair",
@@ -340,10 +340,98 @@ public sealed class OnboardingViewModelTests
         Assert.Equal(1, maintenanceCalls);
         Assert.Empty(backend.EnabledTransports);
         Assert.Contains("同一局域网保持关闭", controller.Note, StringComparison.Ordinal);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, controller.FallbackDownloadUrl);
 
         // Other ready transport (tailcat) remains fully usable.
         controller.SelectTransport("tailcat");
         Assert.True(controller.CanGenerate);
+    }
+
+    [Fact]
+    public async Task 局域网维护成功后刷新状态并生成二维码且失败暴露正式下载入口()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var lanEnabled = false;
+        var openedUrls = new List<string>();
+        var blockedReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanFirewallBlocked: true);
+        var backend = new FakePairingBackend(() => now)
+        {
+            OnOpenUrl = url => openedUrls.Add(url),
+            RunLanFirewallMaintenance = _ =>
+            {
+                if (!lanEnabled)
+                {
+                    return Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.OldHostUnsupported));
+                }
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。"));
+            },
+            Report = blockedReport,
+        };
+
+        using var controller = new PairingSessionController(backend);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+
+        controller.SelectTransport("lan");
+        Assert.Contains("受信任的安装维护向导", controller.Note, StringComparison.Ordinal);
+        await controller.EnableSelectedTransportAsync();
+        Assert.True(controller.HasFallbackDownload);
+        controller.OpenFallbackDownload();
+        Assert.Equal([OnboardingCopyCatalog.UrlDesktop], openedUrls);
+
+        // Once maintenance succeeds and preflight refreshes with LAN ready, ticket is issued.
+        lanEnabled = true;
+        var readyLanReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true);
+        readyLanReport = readyLanReport with
+        {
+            Checks =
+            [
+                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+        backend.Report = readyLanReport;
+        await controller.EnableSelectedTransportAsync();
+        Assert.False(controller.HasFallbackDownload);
+        Assert.True(controller.HasActiveTicket);
+
+        // Wizard Step 4 also surfaces typed fallback download on maintenance failure.
+        var wizardBackend = new FakeWizardBackend
+        {
+            RunLanFirewallMaintenance = _ => Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.DigestMismatch)),
+            OnPreflight = (_, _, _) => Task.FromResult(blockedReport),
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        Assert.True(wizard.CanEnableSelectedTransport);
+        await wizard.EnableSelectedTransportAsync();
+        Assert.True(wizard.HasMaintenanceFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, wizard.MaintenanceFallbackDownloadUrl);
+        Assert.Equal(OnboardingFix.OpenUrl(OnboardingCopyCatalog.UrlDesktop), wizard.PairingError?.AllowedFix);
     }
 
     [Fact]
@@ -1384,7 +1472,7 @@ public sealed class OnboardingViewModelTests
             RestartCalls++;
             return OnRestart?.Invoke() ?? Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => null;
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; init; }
         public bool DirectoryExists(string path) => ExistingDirs.Contains(path);
         public void CreateDirectory(string path) => ExistingDirs.Add(path);
         public void OpenUrl(string url) { }
@@ -1401,9 +1489,10 @@ public sealed class OnboardingViewModelTests
         public List<string> EnabledTransports { get; } = [];
         public List<string> OpenedSettings { get; } = [];
         public string? LastCopiedText { get; private set; }
-        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
+        public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; init; }
         public Task<TailcatStatus>? PendingTailcatStatus { get; set; }
         public Func<string, Task>? OnEnableTransport { get; set; }
+        public Action<string>? OnOpenUrl { get; init; }
 
         public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Report);
@@ -1430,7 +1519,7 @@ public sealed class OnboardingViewModelTests
         public Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> ConfirmAsync(string title, string message) => Task.FromResult(true);
         public void OpenSettings(string target) => OpenedSettings.Add(target);
-        public void OpenUrl(string url) { }
+        public void OpenUrl(string url) => OnOpenUrl?.Invoke(url);
         public bool CopyToClipboard(string text)
         {
             LastCopiedText = text;

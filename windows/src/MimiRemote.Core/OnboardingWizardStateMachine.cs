@@ -189,7 +189,7 @@ public interface IOnboardingWizardBackend
     Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
     Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken);
-    Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; }
+    Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; }
     bool DirectoryExists(string path);
     void CreateDirectory(string path);
     void OpenUrl(string url);
@@ -251,6 +251,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     private string? issuedNetwork;
     private IReadOnlyList<string> issuedWarnings = [];
     private OnboardingResolvedDiagnostic? pairingError;
+    private string? maintenanceFallbackDownloadUrl;
     private string countdownText = "";
     private bool didCopyPairingLink;
 
@@ -512,6 +513,8 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     public DateTimeOffset? IssuedExpiresAt => issuedExpiresAt;
     public IReadOnlyList<string> IssuedWarnings => issuedWarnings;
     public OnboardingResolvedDiagnostic? PairingError { get => pairingError; private set => SetProperty(ref pairingError, value); }
+    public string? MaintenanceFallbackDownloadUrl { get => maintenanceFallbackDownloadUrl; private set { if (SetProperty(ref maintenanceFallbackDownloadUrl, value)) { OnPropertyChanged(nameof(HasMaintenanceFallbackDownload)); } } }
+    public bool HasMaintenanceFallbackDownload => !string.IsNullOrWhiteSpace(MaintenanceFallbackDownloadUrl);
     public string CountdownText { get => countdownText; private set => SetProperty(ref countdownText, value); }
     public bool DidCopyPairingLink { get => didCopyPairingLink; private set => SetProperty(ref didCopyPairingLink, value); }
 
@@ -1157,35 +1160,40 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                     return;
                 }
                 IsEnablingTransport = true;
+                MaintenanceFallbackDownloadUrl = null;
+                MaintenanceRunResult maintenanceResult;
                 try
                 {
-                    var configured = await repair(cancellationToken);
-                    if (!configured)
-                    {
-                        PairingError = GetDiagnostic("network_lan") ?? new OnboardingResolvedDiagnostic
-                        {
-                            Code = "lan_firewall_blocked",
-                            Step = "network_lan",
-                            Message = OnboardingCopyCatalog.LocalizedMessage("lan_firewall_blocked", "network_lan"),
-                            AllowedFix = OnboardingFix.OpenSettings("windows_firewall"),
-                            Trusted = true,
-                        };
-                        return;
-                    }
+                    maintenanceResult = await repair(cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                     return;
                 }
-                catch (Exception error) when (error is OnboardingCliException or InvalidOperationException or InvalidDataException
+                catch (Exception error) when (error is OnboardingCliException or MaintenanceFailureException or InvalidOperationException or InvalidDataException
                     or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
                 {
-                    PairingError = DiagnosticFromException(error, "network_lan");
+                    if (error is MaintenanceFailureException maint)
+                    {
+                        var failed = MaintenanceRunResult.Failure(maint.FailureKind);
+                        MaintenanceFallbackDownloadUrl = failed.FallbackToDownload ? failed.DownloadUrl : null;
+                        PairingError = BuildLanMaintenanceDiagnostic(failed);
+                    }
+                    else
+                    {
+                        PairingError = DiagnosticFromException(error, "network_lan");
+                    }
                     return;
                 }
                 finally
                 {
                     IsEnablingTransport = false;
+                }
+                if (!maintenanceResult.Succeeded)
+                {
+                    MaintenanceFallbackDownloadUrl = maintenanceResult.FallbackToDownload ? maintenanceResult.DownloadUrl : null;
+                    PairingError = BuildLanMaintenanceDiagnostic(maintenanceResult);
+                    return;
                 }
                 await RunPreflightAsync("pair", cancellationToken);
                 if (selection == pairingGeneration && IsTransportReady("lan"))
@@ -1949,6 +1957,17 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
         return string.Join("\n", lines);
     }
+
+    private static OnboardingResolvedDiagnostic BuildLanMaintenanceDiagnostic(MaintenanceRunResult result) => new()
+    {
+        Code = "lan_firewall_blocked",
+        Step = "network_lan",
+        Message = result.Message,
+        AllowedFix = result.FallbackToDownload && result.DownloadUrl is { } url
+            ? OnboardingFix.OpenUrl(url)
+            : OnboardingFix.OpenSettings("windows_firewall"),
+        Trusted = true,
+    };
 
     public void Dispose()
     {

@@ -17,6 +17,10 @@
                     <TextBlock Text="只读设置模式" Style="{StaticResource BodyStrongTextBlockStyle}"/>
                     <TextBlock Text="{x:Bind ViewModel.GateNotice, Mode=OneWay}" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Content="通过维护向导确认目录…" Command="{x:Bind ViewModel.ConfirmWorkspaceViaMaintenanceCommand}"
+                            Visibility="{x:Bind ViewModel.IsPendingConfirmation, Mode=OneWay}"/>
+                        <Button Content="下载正式安装包" Command="{x:Bind ViewModel.OpenMaintenanceDownloadCommand}"
+                            Visibility="{x:Bind ViewModel.HasMaintenanceDownloadFallback, Mode=OneWay}"/>
                         <Button Content="前往首次设置" Command="{x:Bind ViewModel.OpenSetupCommand}"/>
                         <Button Content="查看诊断与恢复" Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"/>
                     </StackPanel>

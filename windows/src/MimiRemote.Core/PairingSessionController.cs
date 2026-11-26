@@ -7,7 +7,7 @@ public interface IPairingSessionBackend
     Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken);
     Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
-    Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; }
+    Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; }
     Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken);
     Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken);
     Task<bool> ConfirmAsync(string title, string message);
@@ -50,8 +50,23 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     private string relayNotice = "";
     private bool relayNoticeOpen;
     private bool relayFailed;
+    private string? fallbackDownloadUrl;
     private bool active;
     private bool disposed;
+
+    public string? FallbackDownloadUrl
+    {
+        get => fallbackDownloadUrl;
+        private set
+        {
+            if (SetProperty(ref fallbackDownloadUrl, value))
+            {
+                OnPropertyChanged(nameof(HasFallbackDownload));
+            }
+        }
+    }
+
+    public bool HasFallbackDownload => !string.IsNullOrWhiteSpace(FallbackDownloadUrl);
 
     public event EventHandler<string?>? TicketChanged;
 
@@ -279,6 +294,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         Clear();
+        FallbackDownloadUrl = null;
         var selection = generation;
         if (string.Equals(target, "lan", StringComparison.Ordinal))
         {
@@ -295,30 +311,32 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                     return;
                 }
                 IsEnablingTransport = true;
+                MaintenanceRunResult maintenanceResult;
                 try
                 {
-                    var ok = await repair(cancellationToken);
-                    if (!ok)
-                    {
-                        Note = "未完成专用网络防火墙规则配置，同一局域网保持关闭。你仍可使用其他连接方式。";
-                        return;
-                    }
+                    maintenanceResult = await repair(cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                     return;
                 }
-                catch (Exception error) when (error is OnboardingCliException or InvalidOperationException or InvalidDataException
+                catch (Exception error) when (error is OnboardingCliException or MaintenanceFailureException or InvalidOperationException or InvalidDataException
                     or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
                 {
-                    Note = error is OnboardingCliException { Diagnostic: { } diag }
-                        ? diag.Message
-                        : "防火墙规则配置未完成，同一局域网保持关闭。";
+                    var fallback = MaintenanceRunResult.Failure(error is MaintenanceFailureException maint ? maint.FailureKind : MaintenanceFailureKind.LaunchFailed);
+                    Note = error is OnboardingCliException { Diagnostic: { } diag } ? diag.Message : fallback.Message;
+                    FallbackDownloadUrl = error is OnboardingCliException ? null : fallback.DownloadUrl;
                     return;
                 }
                 finally
                 {
                     IsEnablingTransport = false;
+                }
+                if (!maintenanceResult.Succeeded)
+                {
+                    Note = maintenanceResult.Message;
+                    FallbackDownloadUrl = maintenanceResult.FallbackToDownload ? maintenanceResult.DownloadUrl : null;
+                    return;
                 }
                 await RefreshAsync(cancellationToken);
                 if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
@@ -514,8 +532,21 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         }
     }
 
+    public void OpenFallbackDownload()
+    {
+        if (FallbackDownloadUrl is { } url && OnboardingCopyCatalog.IsAllowedUrl(url))
+        {
+            backend.OpenUrl(url);
+        }
+    }
+
     public void OpenTransportHelp()
     {
+        if (FallbackDownloadUrl is { } fallbackUrl && OnboardingCopyCatalog.IsAllowedUrl(fallbackUrl))
+        {
+            backend.OpenUrl(fallbackUrl);
+            return;
+        }
         var item = SelectedTransportItem;
         if (item?.Fix is null)
         {
@@ -706,6 +737,11 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         if (selected is { Ready: true } && Report.Ok)
         {
             Note = DefaultPrompt;
+            return;
+        }
+        if (selected is { CanEnableInPlace: true, NeedsFirewallMaintenance: true })
+        {
+            Note = "同一局域网需要配置专用网络防火墙规则。点击“启用此连接方式”以启动受信任的安装维护向导。";
             return;
         }
         if (selected is { CanEnableInPlace: true, NeedsFirewallMaintenance: false })
