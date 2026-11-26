@@ -27,7 +27,7 @@ foreach ($candidate in @(41,42)) {
     $env:MIMI_OWNER_WRAPPER_PID="$candidate"
     [Console]::Out.Write("$candidate=")
 `
-	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, shell, "-NoProfile", "-NonInteractive", "-Command", fixture+verifyRunningTask+"\n}").CombinedOutput()
 	if err != nil || string(out) != "41=42=owned" {

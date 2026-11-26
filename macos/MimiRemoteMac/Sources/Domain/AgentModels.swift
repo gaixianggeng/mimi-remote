@@ -100,6 +100,8 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     /// 旧版 agentd 不返回 mode，按自建模式处理（#885、#896）。
     var mode: String? = nil
 
+    var restartRequired: Bool? = nil
+
     var isManagedMode: Bool { mode == "managed" }
 
     enum CodingKeys: String, CodingKey {
@@ -107,6 +109,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case running
         case version
         case derpMapURL = "derp_map_url"
+        case restartRequired = "restart_required"
         case pairedDeviceCount = "paired_device_count"
         case error
         case mode
@@ -604,6 +607,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let networkStatus: AgentNetworkStatus?
     let moduleStatus: AgentModuleStatus?
     let moduleStatusState: AgentModuleStatusState?
+    let workspaceConfirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -622,6 +626,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case networkStatus = "network_status"
         case moduleStatus = "module_status"
         case moduleStatusState = "module_status_state"
+        case workspaceConfirmed = "workspace_confirmed"
     }
 
     init(
@@ -640,7 +645,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
         runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
         networkStatus: AgentNetworkStatus? = nil,
         moduleStatus: AgentModuleStatus? = nil,
-        moduleStatusState: AgentModuleStatusState? = nil
+        moduleStatusState: AgentModuleStatusState? = nil,
+        workspaceConfirmed: Bool? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -658,6 +664,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.networkStatus = networkStatus
         self.moduleStatus = moduleStatus
         self.moduleStatusState = moduleStatusState
+        self.workspaceConfirmed = workspaceConfirmed
     }
 
     init(from decoder: Decoder) throws {
@@ -687,6 +694,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
         moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
         moduleStatusState = try? container.decodeIfPresent(AgentModuleStatusState.self, forKey: .moduleStatusState)
+        workspaceConfirmed = try? container.decodeIfPresent(Bool.self, forKey: .workspaceConfirmed)
     }
 
     var hasAgentVersionMismatch: Bool {

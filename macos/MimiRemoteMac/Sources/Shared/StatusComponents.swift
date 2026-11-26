@@ -3,6 +3,7 @@ import SwiftUI
 struct HostStatusHeader: View {
     let lifecycle: HostLifecycleState
     var compact = false
+    var showsDetail = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -18,7 +19,7 @@ struct HostStatusHeader: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(lifecycle.title)
                     .font(compact ? .headline : .title2.weight(.semibold))
-                if let detail = lifecycle.detail {
+                if showsDetail, let detail = lifecycle.detail {
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)

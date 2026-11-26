@@ -289,6 +289,21 @@ final class AgentCommandClientTests: XCTestCase {
             ["setup", "--no-pair", "--json", "--scan-root", "/fixture/workspace", "--browse-root", "/fixture/workspace"]
         )
         XCTAssertEqual(AgentCommandClient.upArguments(waitSeconds: 60), ["up", "--no-pair", "--json", "--wait", "60s"])
+        XCTAssertEqual(
+            AgentCommandClient.runtimePathArguments(runtimeID: "codex", value: "auto"),
+            ["runtime", "--runtime-path", "codex=auto", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.workspaceArguments(
+                scanRoot: URL(filePath: "/fixture/workspace"),
+                browseRoot: URL(filePath: "/fixture/workspace")
+            ),
+            ["workspace", "--scan-root", "/fixture/workspace", "--browse-root", "/fixture/workspace", "--json"]
+        )
+        XCTAssertEqual(
+            AgentCommandClient.workspaceArguments(scanRoot: URL(filePath: "/fixture/workspace")),
+            ["workspace", "--scan-root", "/fixture/workspace", "--json"]
+        )
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.preflight, .seconds(35))
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.setup, .seconds(60))
         XCTAssertGreaterThanOrEqual(AgentCommandTimeouts.pair, .seconds(45))
