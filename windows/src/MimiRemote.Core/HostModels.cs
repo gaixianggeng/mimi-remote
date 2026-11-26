@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace MimiRemote.Core;
 
@@ -76,4 +76,81 @@ public static class RelayPolicy
         return ["tailcat", "relay", "set", "--choice", choice, "--derp-map-url",
             choice == "custom" ? url : "", "--json"];
     }
+}
+
+public sealed record DoctorReport
+{
+    public bool Ok { get; init; }
+    public string Version { get; init; } = "";
+    public string Listen { get; init; } = "";
+    public DoctorCheck[] Checks { get; init; } = [];
+}
+
+public sealed record DoctorCheck
+{
+    public string Name { get; init; } = "";
+    public bool Ok { get; init; }
+    public string Level { get; init; } = "";
+    public string Message { get; init; } = "";
+    public string Fix { get; init; } = "";
+    public string Capability { get; init; } = "";
+    public string State { get; init; } = "";
+    public string Reason { get; init; } = "";
+}
+
+public static partial class DiagnosticSanitizer
+{
+    private static readonly Dictionary<string, string> DoctorCheckTitles = new(StringComparer.Ordinal)
+    {
+        ["token"] = "本地访问凭据",
+        ["config"] = "配置文件",
+        ["config_permissions"] = "配置文件权限",
+        ["workspace"] = "代码目录",
+        ["projects"] = "项目发现",
+        ["codex"] = "Codex 运行时",
+        ["claude"] = "Claude Code 运行时",
+        ["agy"] = "Antigravity 运行时",
+        ["deepseek"] = "DeepSeek Harness",
+        ["tailscale"] = "Tailscale 网络",
+        ["tailcat"] = "内置连接（Tailcat）",
+        ["lan"] = "同一局域网",
+        ["port"] = "服务监听端口",
+        ["service"] = "后台服务",
+        ["file_access"] = "目录访问权限",
+    };
+
+    public static string LocalizeDoctorCheckName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "环境检查";
+        }
+        var trimmed = name.Trim();
+        return DoctorCheckTitles.TryGetValue(trimmed, out var title) ? title : $"诊断项（{trimmed}）";
+    }
+
+    public static string ScrubLogText(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "";
+        }
+        var scrubbed = PairUrlRegex().Replace(raw, "mimiremote://pair?<已隐藏>");
+        scrubbed = BearerRegex().Replace(scrubbed, "Bearer <已隐藏>");
+        scrubbed = JwtRegex().Replace(scrubbed, "<已隐藏凭据>");
+        scrubbed = PairSigRegex().Replace(scrubbed, "$1=<已隐藏>");
+        return scrubbed;
+    }
+
+    [GeneratedRegex(@"mimiremote://pair\?[^\s""'<>]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PairUrlRegex();
+
+    [GeneratedRegex(@"Bearer\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BearerRegex();
+
+    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", RegexOptions.CultureInvariant)]
+    private static partial Regex JwtRegex();
+
+    [GeneratedRegex(@"(pair_sig|token|authorization|grant|signature)=[^\s&""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PairSigRegex();
 }

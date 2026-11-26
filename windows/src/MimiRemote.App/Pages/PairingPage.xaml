@@ -1,21 +1,94 @@
 <local:ClientPage x:Class="MimiRemote.App.Pages.PairingPage"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App"
+    xmlns:core="using:MimiRemote.Core"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="14" Padding="0,0,0,20">
-            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
-            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
-            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
-            <TextBlock Text="在手机端添加电脑时扫描二维码。这里只显示已就绪的连接方式。" TextWrapping="Wrap"/>
-            <ComboBox Header="连接方式" ItemsSource="{x:Bind ViewModel.Networks}" DisplayMemberPath="Title"
-                SelectedItem="{x:Bind ViewModel.Network, Mode=TwoWay}" HorizontalAlignment="Stretch"/>
+        <StackPanel Spacing="14" Padding="0,0,0,24">
             <StackPanel Orientation="Horizontal" Spacing="10">
-                <Button Content="生成二维码" Command="{x:Bind ViewModel.GenerateCommand}"/>
-                <Button Content="管理连接方式" Command="{x:Bind ViewModel.OpenConnectionCommand}"/>
+                <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+                <Button Content="打开连接详情" Command="{x:Bind ViewModel.OpenConnectionCommand}"/>
             </StackPanel>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.Session.IsBusy, Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+
+            <TextBlock Text="按推荐顺序选择连接方式：Tailscale ＞ 内置连接（Tailcat）＞ 同一局域网。选中通道不会自动写入或启用网络。" TextWrapping="Wrap"/>
+
+            <ItemsControl ItemsSource="{x:Bind ViewModel.Session.Transports, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="core:OnboardingTransportItem">
+                        <Border Margin="0,0,0,8" Padding="12" CornerRadius="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="4">
+                                    <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                                    <TextBlock Text="{x:Bind Badge}" Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    <TextBlock Text="{x:Bind Detail}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="选择" Tag="{x:Bind Id}" Click="SelectTransportClicked" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <ItemsControl ItemsSource="{x:Bind ViewModel.Session.BlockingRows, Mode=OneWay}"
+                Visibility="{x:Bind ViewModel.Session.HasBlockingRows, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="core:OnboardingWizardRow">
+                        <InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
+                            Title="{x:Bind Check.Title}" Message="{x:Bind Message}" Margin="0,0,0,8"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- 内联中继选择（选中内置连接 Tailcat 时显示） -->
+            <toolkit:SettingsExpander Header="内置连接中继设置" Description="无需离开配对页即可切换中转线路。"
+                IsExpanded="False" Visibility="{x:Bind ViewModel.Session.IsTailcatSelected, Mode=OneWay}">
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="10">
+                            <ComboBox Header="中转线路" SelectedIndex="{x:Bind ViewModel.Session.RelayChoice, Mode=TwoWay}" HorizontalAlignment="Stretch">
+                                <x:String>默认 Tailcat 自带</x:String>
+                                <x:String>自建中转</x:String>
+                                <x:String>Mimi 中转</x:String>
+                            </ComboBox>
+                            <TextBox Header="DERP Map HTTPS 地址" Text="{x:Bind ViewModel.Session.RelayAddress, Mode=TwoWay}"
+                                Visibility="{x:Bind ViewModel.Session.IsCustomRelay, Mode=OneWay}"
+                                PlaceholderText="https://relay.example.com/derpmap.json"/>
+                            <Button Content="应用中转设置" Command="{x:Bind ViewModel.ApplyRelayCommand}"/>
+                            <InfoBar IsOpen="{x:Bind ViewModel.Session.RelayNoticeOpen, Mode=TwoWay}"
+                                Message="{x:Bind ViewModel.Session.RelayNotice, Mode=OneWay}"
+                                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Session.RelayFailed), Mode=OneWay}"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
+
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="启用此连接方式" Command="{x:Bind ViewModel.EnableTransportCommand}"
+                    Visibility="{x:Bind ViewModel.Session.CanEnableSelectedTransport, Mode=OneWay}"/>
+                <Button Content="生成 / 刷新二维码" Command="{x:Bind ViewModel.GenerateCommand}"
+                    IsEnabled="{x:Bind ViewModel.Session.CanGenerate, Mode=OneWay}"/>
+                <Button Content="复制配对链接" Command="{x:Bind ViewModel.CopyLinkCommand}"
+                    IsEnabled="{x:Bind ViewModel.Session.CanCopyLink, Mode=OneWay}"/>
+                <Button Content="查看通道说明" Command="{x:Bind ViewModel.OpenHelpCommand}"/>
+            </StackPanel>
+
             <Image Source="{x:Bind ViewModel.Image, Mode=OneWay}" Width="280" Height="280" HorizontalAlignment="Center"
                 Visibility="{x:Bind ViewModel.HasImage, Mode=OneWay}" AutomationProperties.Name="短期配对二维码"/>
-            <TextBlock Text="{x:Bind ViewModel.Note, Mode=OneWay}" TextWrapping="Wrap"/>
+            <TextBlock Text="{x:Bind ViewModel.Session.CountdownText, Mode=OneWay}" Style="{StaticResource BodyStrongTextBlockStyle}"
+                HorizontalAlignment="Center" TextWrapping="Wrap"/>
+            <TextBlock Text="{x:Bind ViewModel.Session.Note, Mode=OneWay}" TextWrapping="Wrap"/>
         </StackPanel>
     </ScrollViewer>
 </local:ClientPage>

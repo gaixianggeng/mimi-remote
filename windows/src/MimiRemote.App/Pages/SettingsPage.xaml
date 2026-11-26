@@ -1,36 +1,73 @@
 <local:ClientPage x:Class="MimiRemote.App.Pages.SettingsPage"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="14" Padding="0,0,0,20">
-        <StackPanel Spacing="8">
-            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
-            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
-            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
-        </StackPanel>
-        <toolkit:SettingsCard Header="登录后在托盘运行" Description="后台服务由系统独立管理。">
-            <ToggleSwitch IsOn="{x:Bind ViewModel.Login, Mode=TwoWay}" AutomationProperties.Name="登录后在托盘运行"/>
-        </toolkit:SettingsCard>
-        <toolkit:SettingsCard Header="允许系统通知" Description="服务异常与软件更新时通知你。">
-            <ToggleSwitch IsOn="{x:Bind ViewModel.Notifications, Mode=TwoWay}" AutomationProperties.Name="允许系统通知"/>
-        </toolkit:SettingsCard>
-        <StackPanel Orientation="Horizontal" Spacing="10">
-            <Button Content="保存设置" Command="{x:Bind ViewModel.SaveCommand}"/>
-            <Button Content="发送测试通知" Command="{x:Bind ViewModel.NotifyCommand}"/>
-        </StackPanel>
-        <toolkit:SettingsExpander Header="软件更新" Description="{x:Bind ViewModel.UpdateNote}" IsExpanded="True">
-            <toolkit:SettingsExpander.Items>
-                <toolkit:SettingsCard Header="客户端版本" Description="{x:Bind ViewModel.ClientVersion}"/>
-                <toolkit:SettingsCard Header="服务版本" Description="{x:Bind ViewModel.ServiceVersion, Mode=OneWay}"/>
-                <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
-                <StackPanel Spacing="12">
-                <Button Content="检查更新" Command="{x:Bind ViewModel.CheckCommand}"/>
-                <TextBlock Text="{x:Bind ViewModel.AvailableVersion, Mode=OneWay}"/>
-                <Button Content="下载并安装更新" Command="{x:Bind ViewModel.InstallCommand}" IsEnabled="{x:Bind ViewModel.CanInstall, Mode=OneWay}"/>
+        <StackPanel Spacing="14" Padding="0,0,0,24">
+            <StackPanel Spacing="8">
+                <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+                <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
+                <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
+                    Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+            </StackPanel>
+
+            <Border Style="{StaticResource NativeCardStyle}" Visibility="{x:Bind ViewModel.IsReadOnlyMode, Mode=OneWay}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="只读设置模式" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.GateNotice, Mode=OneWay}" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Content="前往首次设置" Command="{x:Bind ViewModel.OpenSetupCommand}"/>
+                        <Button Content="查看诊断与恢复" Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"/>
+                    </StackPanel>
                 </StackPanel>
-                </toolkit:SettingsCard>
-                    </toolkit:SettingsExpander.Items>
-        </toolkit:SettingsExpander>
+            </Border>
+
+            <toolkit:SettingsCard Header="登录后在托盘运行" Description="后台服务由系统独立管理。"
+                IsEnabled="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}">
+                <ToggleSwitch IsOn="{x:Bind ViewModel.Login, Mode=TwoWay}"
+                    IsEnabled="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}" AutomationProperties.Name="登录后在托盘运行"/>
+            </toolkit:SettingsCard>
+            <toolkit:SettingsCard Header="允许系统通知" Description="服务异常与软件更新时通知你。"
+                IsEnabled="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}">
+                <ToggleSwitch IsOn="{x:Bind ViewModel.Notifications, Mode=TwoWay}"
+                    IsEnabled="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}" AutomationProperties.Name="允许系统通知"/>
+            </toolkit:SettingsCard>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Content="保存设置" Command="{x:Bind ViewModel.SaveCommand}"/>
+                <Button Content="发送测试通知" Command="{x:Bind ViewModel.NotifyCommand}"/>
+            </StackPanel>
+
+            <toolkit:SettingsExpander Header="代码目录与浏览范围（可选）"
+                Description="默认仅允许手机浏览代码目录本身；如需扩大浏览范围，将在确认前展示完整授权目录。"
+                IsExpanded="True" Visibility="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}">
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard Header="代码扫描目录" Description="{x:Bind ViewModel.ScanRoot, Mode=OneWay}"/>
+                    <toolkit:SettingsCard Header="手机可浏览目录" Description="{x:Bind ViewModel.BrowseRoot, Mode=OneWay}"/>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button Content="扩大代码浏览范围（可选）…" Command="{x:Bind ViewModel.WidenBrowseRootCommand}"/>
+                            <Button Content="恢复仅限代码目录" Command="{x:Bind ViewModel.TightenBrowseRootCommand}"
+                                Visibility="{x:Bind ViewModel.HasWidenedBrowseRoot, Mode=OneWay}"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
+
+            <toolkit:SettingsExpander Header="软件更新" Description="{x:Bind ViewModel.UpdateNote}" IsExpanded="True">
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard Header="客户端版本" Description="{x:Bind ViewModel.ClientVersion}"/>
+                    <toolkit:SettingsCard Header="服务版本" Description="{x:Bind ViewModel.ServiceVersion, Mode=OneWay}"/>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="12">
+                            <Button Content="检查更新" Command="{x:Bind ViewModel.CheckCommand}"/>
+                            <TextBlock Text="{x:Bind ViewModel.AvailableVersion, Mode=OneWay}"/>
+                            <Button Content="下载并安装更新" Command="{x:Bind ViewModel.InstallCommand}"
+                                IsEnabled="{x:Bind ViewModel.CanInstall, Mode=OneWay}"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
         </StackPanel>
     </ScrollViewer>
 </local:ClientPage>

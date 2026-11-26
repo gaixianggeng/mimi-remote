@@ -482,7 +482,7 @@ public sealed class HostCliContractTests
         {
             DesktopPreferences.ConfigPath = Path.Combine(tempRoot, "missing-config.json");
 
-            // Invalid setup stdout (ok:false) MUST fail and NEVER call start or workspace
+            // Invalid setup stdout (ok:false) MUST fail and NEVER call up or workspace
             var badContext = new ClientContext
             {
                 Confirm = (_, _) => Task.FromResult(true),
@@ -493,30 +493,35 @@ public sealed class HostCliContractTests
             using var badVm = new SetupViewModel(badContext) { Root = tempRoot };
             await badVm.FinishCommand.ExecuteAsync(null);
             Assert.True(badVm.Failed);
-            Assert.Single(badContext.Agent.Calls);
             Assert.Equal("setup", badContext.Agent.Calls[0][0]);
+            Assert.DoesNotContain(badContext.Agent.Calls, call => call[0] is "up" or "start" or "workspace");
 
-            // Valid no-ticket setup receipt succeeds and proceeds to start + workspace
-            Type? navigated = null;
+            // Valid no-ticket setup receipt saves once with --no-pair and --browse-root == scan_root, then calls up (no scary dialog, no redundant workspace)
+            var confirmCalls = 0;
             var goodContext = new ClientContext
             {
-                Confirm = (_, _) => Task.FromResult(true),
-                Navigate = page => navigated = page,
+                Confirm = (_, _) => { confirmCalls++; return Task.FromResult(true); },
             };
             var deferredJson = ReadFixture("setup-ok-pairing-deferred.json");
+            var upReadyJson = ReadFixture("up-ok-ready.json");
+            var pairReportJson = ReadFixture("preflight-windows-public.json");
             goodContext.Agent.RunHandler = (args, _) => Task.FromResult(args[0] switch
             {
                 "setup" => deferredJson,
-                "workspace" => """{"restart_required":false}""",
-                "status" => """{"service_ok":true}""",
+                "up" => upReadyJson,
+                "preflight" => pairReportJson,
                 _ => "{}",
             });
             using var goodVm = new SetupViewModel(goodContext) { Root = tempRoot };
             await goodVm.FinishCommand.ExecuteAsync(null);
             Assert.False(goodVm.Failed);
-            Assert.Equal(typeof(PairingPage), navigated);
+            Assert.Equal(0, confirmCalls);
+            Assert.Equal(OnboardingWizardStep.ServiceAndPermissions, goodVm.Wizard.CurrentStep);
             Assert.Equal("setup", goodContext.Agent.Calls[0][0]);
-            Assert.Equal("start", goodContext.Agent.Calls[1][0]);
+            Assert.Contains("--no-pair", goodContext.Agent.Calls[0], StringComparer.Ordinal);
+            Assert.Contains("--browse-root", goodContext.Agent.Calls[0], StringComparer.Ordinal);
+            Assert.Equal("up", goodContext.Agent.Calls[1][0]);
+            Assert.DoesNotContain(goodContext.Agent.Calls, call => string.Equals(call[0], "workspace", StringComparison.Ordinal));
         }
         finally
         {

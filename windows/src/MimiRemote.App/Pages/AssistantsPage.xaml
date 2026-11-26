@@ -1,38 +1,82 @@
-<local:ClientPage xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls" x:Class="MimiRemote.App.Pages.AssistantsPage">
+<local:ClientPage xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls"
+    x:Class="MimiRemote.App.Pages.AssistantsPage">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="14" Padding="0,0,0,20">
+        <StackPanel Spacing="14" Padding="0,0,0,24">
             <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
             <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
-            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
-            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Codex.IsIdle, Mode=OneWay}" Header="Codex" Description="{x:Bind ViewModel.Codex.Detail, Mode=OneWay}" IsExpanded="True">
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Codex.IsIdle, Mode=OneWay}"
+                Header="Codex" Description="{x:Bind ViewModel.Codex.Detail, Mode=OneWay}" IsExpanded="True">
+                <TextBlock Text="{x:Bind ViewModel.Codex.Badge, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <toolkit:SettingsExpander.Items>
                     <toolkit:SettingsCard Header="启用 Codex">
-                        <ToggleSwitch IsOn="{x:Bind ViewModel.Codex.Enabled, Mode=TwoWay}" IsEnabled="{x:Bind ViewModel.Codex.Available, Mode=OneWay}" AutomationProperties.Name="启用 Codex"/>
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.Codex.Enabled, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.Codex.CanToggle, Mode=OneWay}" AutomationProperties.Name="启用 Codex"/>
                     </toolkit:SettingsCard>
                     <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
                         <StackPanel Spacing="12" Padding="0">
-                            <Button Content="应用 Codex 设置" Command="{x:Bind ViewModel.Codex.ApplyCommand}" IsEnabled="{x:Bind ViewModel.Codex.Available, Mode=OneWay}"/>
+                            <Button Content="应用 Codex 设置" Command="{x:Bind ViewModel.Codex.ApplyCommand}"
+                                IsEnabled="{x:Bind ViewModel.Codex.CanToggle, Mode=OneWay}"/>
                             <TextBlock Text="{x:Bind ViewModel.Codex.QuotaText, Mode=OneWay}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </toolkit:SettingsCard>
                 </toolkit:SettingsExpander.Items>
             </toolkit:SettingsExpander>
-            <InfoBar IsOpen="{x:Bind ViewModel.Codex.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Codex.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Codex.Failed), Mode=OneWay}"/>
-            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Claude.IsIdle, Mode=OneWay}" Header="Claude" Description="{x:Bind ViewModel.Claude.Detail, Mode=OneWay}" IsExpanded="True">
+            <InfoBar IsOpen="{x:Bind ViewModel.Codex.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Codex.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Codex.Failed), Mode=OneWay}"/>
+
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Claude.IsIdle, Mode=OneWay}"
+                Header="Claude Code" Description="{x:Bind ViewModel.Claude.Detail, Mode=OneWay}" IsExpanded="True">
+                <TextBlock Text="{x:Bind ViewModel.Claude.Badge, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <toolkit:SettingsExpander.Items>
-                    <toolkit:SettingsCard Header="启用 Claude">
-                        <ToggleSwitch IsOn="{x:Bind ViewModel.Claude.Enabled, Mode=TwoWay}" IsEnabled="{x:Bind ViewModel.Claude.Available, Mode=OneWay}" AutomationProperties.Name="启用 Claude"/>
+                    <toolkit:SettingsCard Header="启用 Claude Code">
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.Claude.Enabled, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.Claude.CanToggle, Mode=OneWay}" AutomationProperties.Name="启用 Claude Code"/>
                     </toolkit:SettingsCard>
                     <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
                         <StackPanel Spacing="12" Padding="0">
-                            <Button Content="应用 Claude 设置" Command="{x:Bind ViewModel.Claude.ApplyCommand}" IsEnabled="{x:Bind ViewModel.Claude.Available, Mode=OneWay}"/>
+                            <Button Content="应用 Claude Code 设置" Command="{x:Bind ViewModel.Claude.ApplyCommand}"
+                                IsEnabled="{x:Bind ViewModel.Claude.CanToggle, Mode=OneWay}"/>
                             <TextBlock Text="{x:Bind ViewModel.Claude.QuotaText, Mode=OneWay}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </toolkit:SettingsCard>
                 </toolkit:SettingsExpander.Items>
             </toolkit:SettingsExpander>
-            <InfoBar IsOpen="{x:Bind ViewModel.Claude.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Claude.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Claude.Failed), Mode=OneWay}"/>
-            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Harness.IsIdle, Mode=OneWay}" Header="DeepSeek Harness" Description="{x:Bind ViewModel.HarnessStatus, Mode=OneWay}" IsExpanded="True">
+            <InfoBar IsOpen="{x:Bind ViewModel.Claude.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Claude.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Claude.Failed), Mode=OneWay}"/>
+
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Agy.IsIdle, Mode=OneWay}"
+                Header="Antigravity" Description="{x:Bind ViewModel.Agy.Detail, Mode=OneWay}" IsExpanded="True">
+                <TextBlock Text="{x:Bind ViewModel.Agy.Badge, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <toolkit:SettingsExpander.Items>
+                    <toolkit:SettingsCard Header="启用 Antigravity">
+                        <ToggleSwitch IsOn="{x:Bind ViewModel.Agy.Enabled, Mode=TwoWay}"
+                            IsEnabled="{x:Bind ViewModel.Agy.CanToggle, Mode=OneWay}" AutomationProperties.Name="启用 Antigravity"/>
+                    </toolkit:SettingsCard>
+                    <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
+                        <StackPanel Spacing="12" Padding="0">
+                            <Button Content="应用 Antigravity 设置" Command="{x:Bind ViewModel.Agy.ApplyCommand}"
+                                IsEnabled="{x:Bind ViewModel.Agy.CanToggle, Mode=OneWay}"/>
+                            <TextBlock Text="{x:Bind ViewModel.Agy.QuotaText, Mode=OneWay}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </toolkit:SettingsCard>
+                </toolkit:SettingsExpander.Items>
+            </toolkit:SettingsExpander>
+            <InfoBar IsOpen="{x:Bind ViewModel.Agy.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Agy.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Agy.Failed), Mode=OneWay}"/>
+
+            <toolkit:SettingsExpander IsEnabled="{x:Bind ViewModel.Harness.IsIdle, Mode=OneWay}"
+                Header="DeepSeek Harness" Description="{x:Bind ViewModel.HarnessStatus, Mode=OneWay}" IsExpanded="True">
+                <TextBlock Text="{x:Bind ViewModel.HarnessBadge, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <toolkit:SettingsExpander.Items>
                     <toolkit:SettingsCard ContentAlignment="Vertical" HorizontalContentAlignment="Stretch">
                         <StackPanel Spacing="12" Padding="0">
@@ -43,11 +87,13 @@
                                 <Button Content="检测并重新连接" Command="{x:Bind ViewModel.ReconnectCommand}"/>
                                 <Button Content="停用 DeepSeek" Command="{x:Bind ViewModel.DisableCommand}"/>
                             </StackPanel>
+                            <TextBlock Text="{x:Bind ViewModel.HarnessQuota, Mode=OneWay}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </toolkit:SettingsCard>
                 </toolkit:SettingsExpander.Items>
             </toolkit:SettingsExpander>
-            <InfoBar IsOpen="{x:Bind ViewModel.Harness.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Harness.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Harness.Failed), Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.Harness.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Harness.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Harness.Failed), Mode=OneWay}"/>
         </StackPanel>
     </ScrollViewer>
 </local:ClientPage>
