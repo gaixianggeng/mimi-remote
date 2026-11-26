@@ -222,3 +222,30 @@ func TestFormatTrayUserErrorUsesTypedCopyAndScrubsSecrets(t *testing.T) {
 		}
 	}
 }
+
+func windowsPendingSetupFixture(t *testing.T) []byte {
+	t.Helper()
+	return applyTrayReportPatch(t, "preflight-windows-public.json", []trayReportPatch{
+		{Op: "replace", Path: "/stage", Value: "setup"},
+		{Op: "replace", Path: "/ok", Value: true},
+		{Op: "replace", Path: "/workspace_confirmed", Value: false},
+		{Op: "replace", Path: "/checks/11/blocking", Value: false},
+	})
+}
+
+func TestSetupPreflightRequiresReadableConfiguration(t *testing.T) {
+	report, err := decodeAndValidatePreflightReportForStage(windowsPendingSetupFixture(t), "windows", "setup", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := pendingFromSetupReport(report); !pending || err != nil {
+		t.Fatalf("readable pending configuration: pending=%t err=%v", pending, err)
+	}
+	for _, code := range []string{"config_invalid", "config_recovery_required", "config_permissions_unsafe", "probe_timeout"} {
+		report.Checks[0].State, report.Checks[0].Code = "error", code
+		pending, err := pendingFromSetupReport(report)
+		if pending || err == nil || needsFirstSetup(agentStatus{WorkspaceConfirmed: report.WorkspaceConfirmed}, err, pending) {
+			t.Fatalf("%s incorrectly enabled first setup", code)
+		}
+	}
+}

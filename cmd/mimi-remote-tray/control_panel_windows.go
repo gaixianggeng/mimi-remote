@@ -808,6 +808,9 @@ func (p *controlPanel) syncFromApplication() {
 		pairingBusy,
 	)
 	p.firstSetupVisible = presentation.FirstSetupVisible
+	if p.pairingView && (statusErr != nil || !status.ServiceOK || p.firstSetupVisible) {
+		p.showDashboardView()
+	}
 	p.syncTailcatRow(makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy))
 	if p.pairingView {
 		setControlPanelEnabled(p.pairNetwork, p.pairNetworkEnabled())
@@ -933,7 +936,7 @@ func (p *controlPanel) showPairingView(preferTailcat bool) {
 	}
 	p.app.mu.RLock()
 	status := p.app.status
-	ready := status.ServiceOK
+	ready := p.app.statusErr == nil && status.ServiceOK
 	tailcat, hasTailcat := p.app.tailcat, p.app.hasTailcat
 	p.app.mu.RUnlock()
 	if !ready {
@@ -957,7 +960,7 @@ func (p *controlPanel) refreshPairing() {
 		return
 	}
 	p.app.mu.Lock()
-	if p.app.pairingBusy {
+	if p.app.pairingBusy || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
 		p.app.mu.Unlock()
 		return
 	}
@@ -1153,7 +1156,7 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		StartEnabled:      !busy && !status.ProcessOK,
 		RestartEnabled:    !busy && status.ProcessOK,
 		StopEnabled:       !busy && status.ProcessOK,
-		PairEnabled:       !busy && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
+		PairEnabled:       !busy && statusErr == nil && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
 		DoctorEnabled:     !busy,
 		FixEnabled:        !busy,
 		LogsEnabled:       !busy,

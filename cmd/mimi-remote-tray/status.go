@@ -35,7 +35,7 @@ func (s agentStatus) workspaceConfirmedKnownTrue() bool {
 
 func isFirstSetupError(err error) bool {
 	var cliErr *onboardingCLIError
-	if !errors.As(err, &cliErr) {
+	if !errors.As(err, &cliErr) || !cliErr.Diagnostic.Trusted {
 		return false
 	}
 	return cliErr.Diagnostic.Code == "config_missing" ||
@@ -50,16 +50,36 @@ func needsFirstSetup(status agentStatus, statusErr error, preflightPending bool)
 	if status.workspaceConfirmedKnownTrue() {
 		return false
 	}
-	if status.workspacePendingConfirmation() {
-		return true
+	if statusErr != nil {
+		return preflightPending || isFirstSetupError(statusErr)
 	}
-	if status.Version != "" {
-		return false
+	return status.workspacePendingConfirmation()
+}
+
+// A false confirmation bit can also accompany an unreadable configuration.
+func pendingFromSetupReport(report onboardingPreflightReport) (bool, error) {
+	for _, row := range report.Checks {
+		if row.ID != "config_store" || report.Configured == nil || report.WorkspaceConfirmed == nil {
+			continue
+		}
+		if row.State == "ok" && row.Code == "" {
+			return !*report.WorkspaceConfirmed, nil
+		}
+		if row.Code == "config_missing" {
+			if !*report.Configured {
+				return true, nil
+			}
+			break
+		}
+		if row.Code != "" {
+			return false, &onboardingCLIError{Diagnostic: onboardingResolvedDiagnostic{
+				Step: row.ID, Code: row.Code, Message: formatOnboardingMessage(row.Code, row.ID, ""),
+				AllowedFix: row.Fix, ConfigPath: trayDiagnosticPath(row.ConfigPath),
+				RecoveryPath: trayDiagnosticPath(row.RecoveryPath), Trusted: true,
+			}}
+		}
 	}
-	if isFirstSetupError(statusErr) {
-		return true
-	}
-	return preflightPending
+	return false, errors.New("无法安全确认配置状态，请重新检查")
 }
 
 // formatTrayUserError renders typed onboarding CLI errors using their validated

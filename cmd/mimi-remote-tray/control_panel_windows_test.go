@@ -254,6 +254,11 @@ func TestControlPanelPresentationShowsAllFourAssistantsAndFirstSetupGate(t *test
 		t.Fatalf("pending workspace must show 完成首次设置… and disable pairing: %+v", pPending)
 	}
 
+	recovery := makeControlPanelPresentation(status, errors.New("configuration requires recovery"), false, false)
+	if recovery.FirstSetupEnabled || recovery.PairEnabled {
+		t.Fatal("failed configuration refresh allowed setup or pairing from cached status")
+	}
+
 	status.WorkspaceConfirmed = &confirmed
 	pConfirmed := makeControlPanelPresentation(status, nil, false, false)
 	if pConfirmed.FirstSetupVisible || pConfirmed.FirstSetupEnabled || !pConfirmed.PairEnabled {

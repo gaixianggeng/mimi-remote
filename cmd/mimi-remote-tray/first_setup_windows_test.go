@@ -62,19 +62,28 @@ func TestFirstSetupLaunchesVerifiedInnoModifyOnlyWhenNeededAndRereadsStatus(t *t
 	trayExe := filepath.Join(installDir, "mimi-remote-tray.exe")
 	modifyExe := filepath.Join(installDir, "mimi-remote-setup.exe")
 
+	pendingReport := windowsPendingSetupFixture(t)
 	confirmedVal := false
+	readbackFails := false
 	var events []string
 	controller := &agentController{
 		trayPath:   trayExe,
 		statusGate: make(chan struct{}, 1),
 		statusRunner: func(_ context.Context, _ ...string) ([]byte, error) {
 			events = append(events, "status")
+			if readbackFails && confirmedVal {
+				return nil, errors.New("status unavailable")
+			}
 			if confirmedVal {
 				return []byte(`{"version":"1.2.3","process_ok":true,"service_ok":true,"doctor_ok":true,"workspace_confirmed":true}`), nil
 			}
 			return []byte(`{"version":"1.2.3","process_ok":true,"service_ok":true,"doctor_ok":true,"workspace_confirmed":false}`), nil
 		},
 		commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) > 0 && args[0] == "preflight" && !(confirmedVal && readbackFails) {
+				events = append(events, "preflight")
+				return pendingReport, nil
+			}
 			if len(args) > 0 && args[0] == "tailcat" {
 				return []byte(`{"enabled":false,"running":false}`), nil
 			}
@@ -112,7 +121,7 @@ func TestFirstSetupLaunchesVerifiedInnoModifyOnlyWhenNeededAndRereadsStatus(t *t
 	if app.firstSetupRequired() {
 		t.Fatal("first setup remained required after Modify confirmed workspace")
 	}
-	wantOrder := []string{"status", "resolve", "verify", "run:/MODIFY", "status"}
+	wantOrder := []string{"status", "preflight", "status", "preflight", "resolve", "verify", "run:/MODIFY", "status"}
 	if !reflect.DeepEqual(events, wantOrder) {
 		t.Fatalf("event order = %v, want %v", events, wantOrder)
 	}
@@ -124,6 +133,22 @@ func TestFirstSetupLaunchesVerifiedInnoModifyOnlyWhenNeededAndRereadsStatus(t *t
 	}
 	if len(events) != 0 {
 		t.Fatalf("confirmed workspace invoked first setup: %v", events)
+	}
+
+	// A different settings surface can confirm after the menu was rendered.
+	confirmedVal = false
+	app.refreshStatus()
+	confirmedVal = true
+	events = nil
+	if err := app.executeFirstSetup(); err != nil || !reflect.DeepEqual(events, []string{"status"}) {
+		t.Fatalf("stale pending click: events=%v err=%v", events, err)
+	}
+
+	confirmedVal = false
+	app.refreshStatus()
+	readbackFails = true
+	if err := app.executeFirstSetup(); err == nil {
+		t.Fatal("failed read-back reported a successful setup")
 	}
 }
 
@@ -145,5 +170,31 @@ func TestFirstSetupFailsClosedWhenSignatureVerificationFails(t *testing.T) {
 	err := controller.launchFirstSetup(context.Background())
 	if err == nil || ran || !isFirstSetupRecoverableViaDesktop(err) {
 		t.Fatalf("unsigned modify must fail closed with DESKTOP recovery: err=%v ran=%v", err, ran)
+	}
+}
+
+func TestPassiveTrayBootstrapOnlyReadsStatus(t *testing.T) {
+	t.Setenv("LocalAppData", t.TempDir())
+	reads := 0
+	controller := &agentController{
+		statusGate: make(chan struct{}, 1),
+		statusRunner: func(context.Context, ...string) ([]byte, error) {
+			reads++
+			if reads == 1 {
+				return []byte(`{"version":"fixture","process_ok":false,"service_ok":false,"workspace_confirmed":true}`), nil
+			}
+			return []byte(`{"version":"fixture","process_ok":true,"service_ok":true,"workspace_confirmed":true}`), nil
+		},
+		commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+			if strings.Join(args, " ") != "tailcat status --json" {
+				t.Fatalf("passive launch ran %v", args)
+			}
+			return []byte(`{"enabled":false}`), nil
+		},
+	}
+	app := &trayApplication{controller: controller}
+	app.bootstrap()
+	if reads != 2 || !app.status.ServiceOK {
+		t.Fatal("bootstrap did not observe the later ready state")
 	}
 }
