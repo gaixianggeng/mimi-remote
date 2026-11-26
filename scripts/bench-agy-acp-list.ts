@@ -189,6 +189,8 @@ fi
 exec "$MIMI_BENCH_REAL_GIT" "$@"
 `;
 
+const PS_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+
 const STATIC_PS_WRAPPER = `#!/bin/sh
 set -u
 if [ -z "\${MIMI_BENCH_PS_LOG_FILE:-}" ] || [ -z "\${MIMI_BENCH_REAL_PS:-}" ]; then
@@ -209,12 +211,65 @@ if ! printf 'start\\n' >> "$MIMI_BENCH_PS_LOG_FILE"; then
   echo "bench ps wrapper: failed to write log file" >&2
   exit 125
 fi
-"$MIMI_BENCH_REAL_PS" "$@"
+tmp_dir="\${MIMI_BENCH_PS_TMP_DIR:-\${TMPDIR:-/tmp}}"
+out_file="$(mktemp "$tmp_dir/ps-out.XXXXXX")" || {
+  if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+    printf 'tmp_create_failed\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench ps wrapper: failed to create stdout temp file" >&2
+  exit 125
+}
+err_file="$(mktemp "$tmp_dir/ps-err.XXXXXX")" || {
+  rm -f "$out_file" 2>/dev/null || true
+  if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+    printf 'tmp_create_failed\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench ps wrapper: failed to create stderr temp file" >&2
+  exit 125
+}
+cleanup() {
+  rm -f "$out_file" "$err_file" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+"$MIMI_BENCH_REAL_PS" "$@" >"$out_file" 2>"$err_file"
 rc=$?
-if [ "$rc" -eq 0 ]; then
-  status_line="ok"
-else
-  status_line="fail:$rc"
+
+max_buf="\${MIMI_BENCH_PS_MAX_BUFFER:-2097152}"
+out_bytes="$(wc -c < "$out_file" | tr -d '[:space:]')"
+err_bytes="$(wc -c < "$err_file" | tr -d '[:space:]')"
+
+status_line="ok"
+if [ "$rc" -ne 0 ]; then
+  status_line="fail:exit:$rc"
+elif [ "$out_bytes" -gt "$max_buf" ] || [ "$err_bytes" -gt "$max_buf" ]; then
+  status_line="fail:maxbuffer"
+elif ! LC_ALL=C grep -aEq '^[[:space:]]*0*[1-9][0-9]*[[:space:]]+[^[:space:]]' "$out_file"; then
+  status_line="fail:empty"
+fi
+
+if [ "$status_line" != "ok" ]; then
+  if ! printf '%s\\n' "$status_line" >> "$MIMI_BENCH_PS_LOG_FILE"; then
+    if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+      printf 'log_append_failed\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+    fi
+    echo "bench ps wrapper: failed to write log file" >&2
+    exit 125
+  fi
+  cat "$err_file" >&2 || true
+  cat "$out_file" || true
+  exit "$rc"
+fi
+
+cat "$err_file" >&2
+err_cat_rc=$?
+cat "$out_file"
+out_cat_rc=$?
+if [ "$err_cat_rc" -ne 0 ] || [ "$out_cat_rc" -ne 0 ]; then
+  status_line="fail:io"
 fi
 if ! printf '%s\\n' "$status_line" >> "$MIMI_BENCH_PS_LOG_FILE"; then
   if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
@@ -232,6 +287,7 @@ interface ProcessScanStats {
   failed: number;
   incomplete: number;
   exitCodes: number[];
+  failureReasons: string[];
 }
 
 type ProcessScanStatus = "ok" | "degraded";
@@ -265,12 +321,13 @@ function readPsLog(logFile: string, errorFile: string): ProcessScanStats {
   assertNoWrapperError(errorFile, "ps");
   const content = readFileSync(logFile, "utf8");
   if (!content) {
-    return { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [] };
+    return { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [], failureReasons: [] };
   }
   let attempts = 0;
   let succeeded = 0;
   let failed = 0;
   const exitCodes: number[] = [];
+  const failureReasons: string[] = [];
   for (const line of content.split("\n").filter((item) => item.length > 0)) {
     if (line === "start") {
       attempts += 1;
@@ -278,14 +335,32 @@ function readPsLog(logFile: string, errorFile: string): ProcessScanStats {
       succeeded += 1;
     } else if (line.startsWith("fail:")) {
       failed += 1;
-      const code = Number(line.slice("fail:".length));
-      if (Number.isInteger(code)) exitCodes.push(code);
+      const detail = line.slice("fail:".length);
+      if (detail.startsWith("exit:")) {
+        const code = Number(detail.slice("exit:".length));
+        if (Number.isInteger(code)) {
+          exitCodes.push(code);
+          failureReasons.push(`exit_${code}`);
+        } else {
+          failureReasons.push(detail);
+        }
+      } else {
+        const code = Number(detail);
+        if (detail.length > 0 && Number.isInteger(code)) {
+          exitCodes.push(code);
+          failureReasons.push(`exit_${code}`);
+        } else if (detail.length > 0) {
+          failureReasons.push(detail);
+        } else {
+          failureReasons.push("unknown");
+        }
+      }
     } else {
       throw new Error(`ps 日志文件内容异常：${JSON.stringify(line)}`);
     }
   }
   const incomplete = Math.max(0, attempts - succeeded - failed);
-  return { attempts, succeeded, failed, incomplete, exitCodes };
+  return { attempts, succeeded, failed, incomplete, exitCodes, failureReasons };
 }
 
 function resetPsLog(logFile: string, errorFile: string): void {
@@ -300,6 +375,7 @@ function mergePsStats(items: ProcessScanStats[]): ProcessScanStats {
     failed: items.reduce((acc, s) => acc + s.failed, 0),
     incomplete: items.reduce((acc, s) => acc + s.incomplete, 0),
     exitCodes: items.flatMap((s) => s.exitCodes),
+    failureReasons: items.flatMap((s) => s.failureReasons),
   };
 }
 
@@ -333,6 +409,8 @@ const prevRealGitEnv = process.env.MIMI_BENCH_REAL_GIT;
 const prevPsLogEnv = process.env.MIMI_BENCH_PS_LOG_FILE;
 const prevPsErrorEnv = process.env.MIMI_BENCH_PS_ERROR_FILE;
 const prevRealPsEnv = process.env.MIMI_BENCH_REAL_PS;
+const prevPsTmpDirEnv = process.env.MIMI_BENCH_PS_TMP_DIR;
+const prevPsMaxBufferEnv = process.env.MIMI_BENCH_PS_MAX_BUFFER;
 
 try {
   // 1. 构造静态真实 git 与 ps 包装器（路径仅通过环境变量按数据传递，避免 shell 展开特殊字符）
@@ -347,6 +425,8 @@ try {
 
   const psLogFile = path.join(sandbox, "ps-scans.log");
   const psErrorFile = path.join(sandbox, "ps-wrapper.err");
+  const psTmpDir = path.join(sandbox, "ps-tmp");
+  mkdirSync(psTmpDir, { recursive: true });
   resetPsLog(psLogFile, psErrorFile);
   if (realPs) {
     const psWrapper = path.join(binDir, "ps");
@@ -545,6 +625,8 @@ try {
   process.env.MIMI_BENCH_REAL_GIT = realGit;
   process.env.MIMI_BENCH_PS_LOG_FILE = psLogFile;
   process.env.MIMI_BENCH_PS_ERROR_FILE = psErrorFile;
+  process.env.MIMI_BENCH_PS_TMP_DIR = psTmpDir;
+  process.env.MIMI_BENCH_PS_MAX_BUFFER = String(PS_MAX_BUFFER_BYTES);
   if (realPs) {
     process.env.MIMI_BENCH_REAL_PS = realPs;
   } else {
@@ -584,23 +666,34 @@ try {
       const stdout = execFileSync("ps", ["-eo", "pid=,args="], {
         env: process.env,
         timeout: 1_000,
-        maxBuffer: 2 * 1024 * 1024,
+        maxBuffer: PS_MAX_BUFFER_BYTES,
         encoding: "utf8",
       });
       const probeStats = readPsLog(psLogFile, psErrorFile);
-      if (probeStats.attempts !== 1 || probeStats.succeeded !== 1 || probeStats.failed !== 0 || probeStats.incomplete !== 0) {
+      const accounted = probeStats.succeeded + probeStats.failed + probeStats.incomplete;
+      if (probeStats.attempts !== 1 || accounted !== 1) {
         throw new Error(`ps 包装器自检计数异常：${JSON.stringify(probeStats)}`);
       }
       const parsedCount = countValidPsLines(stdout);
       psSelfTest.parsedProcessCount = parsedCount;
       psSelfTest.exitCode = 0;
-      if (parsedCount > 0) {
+      if (parsedCount === 0) {
+        if (probeStats.succeeded !== 0 || probeStats.failed !== 1) {
+          throw new Error(`ps 包装器空快照自检未记为失败：${JSON.stringify(probeStats)}`);
+        }
+        psSelfTest.reason = "ps_empty_process_list";
+      } else if (probeStats.succeeded === 1 && probeStats.failed === 0 && probeStats.incomplete === 0) {
         psSelfTest.status = "ok";
       } else {
-        psSelfTest.reason = "ps_empty_process_list";
+        const failReason = probeStats.failureReasons[0] ?? (probeStats.incomplete > 0 ? "incomplete" : "wrapper_failed");
+        psSelfTest.reason = `ps_self_test_failed:${failReason}`;
       }
     } catch (error) {
       assertNoWrapperError(psErrorFile, "ps");
+      const probeStats = readPsLog(psLogFile, psErrorFile);
+      if (probeStats.succeeded > 0) {
+        throw new Error(`ps 自检失败但包装器误记为成功：${JSON.stringify(probeStats)}`);
+      }
       const errObj = error as { status?: unknown; code?: unknown; signal?: unknown };
       const exitCode = typeof errObj.status === "number" ? errObj.status : null;
       const errorCode = typeof errObj.code === "string" ? errObj.code : null;
@@ -622,7 +715,7 @@ try {
 
   // 计时循环外验证完整目标仓集合（全部 30 条，覆盖主仓、2 个 worktree、symlink 与编码 URI）
   const sanityStack = createStack();
-  let sanityPsStats: ProcessScanStats = { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [] };
+  let sanityPsStats: ProcessScanStats = { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [], failureReasons: [] };
   try {
     resetPsLog(psLogFile, psErrorFile);
     const seenIds = new Set<string>();
@@ -861,7 +954,9 @@ try {
   if (psSelfTest.status !== "ok") {
     exclusionReason = psSelfTest.reason ?? "ps_self_test_degraded";
   } else if (totalPsStats.failed > 0 || totalPsStats.incomplete > 0) {
-    exclusionReason = `ps_scan_failed_during_benchmark:failed=${totalPsStats.failed},incomplete=${totalPsStats.incomplete}`;
+    const uniqueReasons = [...new Set(totalPsStats.failureReasons)];
+    const reasonSuffix = uniqueReasons.length > 0 ? `,reasons=${uniqueReasons.join("|")}` : "";
+    exclusionReason = `ps_scan_failed_during_benchmark:failed=${totalPsStats.failed},incomplete=${totalPsStats.incomplete}${reasonSuffix}`;
   } else if (totalPsStats.succeeded === 0) {
     exclusionReason = "ps_scan_never_succeeded_during_benchmark";
   }
@@ -982,6 +1077,10 @@ try {
   else process.env.MIMI_BENCH_PS_ERROR_FILE = prevPsErrorEnv;
   if (prevRealPsEnv === undefined) delete process.env.MIMI_BENCH_REAL_PS;
   else process.env.MIMI_BENCH_REAL_PS = prevRealPsEnv;
+  if (prevPsTmpDirEnv === undefined) delete process.env.MIMI_BENCH_PS_TMP_DIR;
+  else process.env.MIMI_BENCH_PS_TMP_DIR = prevPsTmpDirEnv;
+  if (prevPsMaxBufferEnv === undefined) delete process.env.MIMI_BENCH_PS_MAX_BUFFER;
+  else process.env.MIMI_BENCH_PS_MAX_BUFFER = prevPsMaxBufferEnv;
   restoreGitEnv();
   rmSync(sandbox, { recursive: true, force: true });
 }

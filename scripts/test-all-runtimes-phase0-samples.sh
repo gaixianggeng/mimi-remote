@@ -66,7 +66,7 @@ home_re = re.compile(
 TAILSCALE_IPV4_NET = ipaddress.ip_network("100.64.0.0/10")
 TAILSCALE_IPV6_NET = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 ipv4_candidate_re = re.compile(
-    r"(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2})(?![0-9A-Za-z/]))?(?![0-9.])"
+    r"(?<![0-9])(?<!\d\.)(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2})(?![0-9A-Za-z/]))?(?![0-9]|\.[0-9])"
 )
 bracketed_ipv6_re = re.compile(
     r"\[([0-9A-Fa-f:.]+)(?:%[A-Za-z0-9._-]+)?\](?::(\d{1,5}))?"
@@ -223,6 +223,15 @@ def run_sanitization_selftest() -> None:
     ts_v6_prefix = "fd7a" + ":115c:" + "a1e0"
     ts_cases = [
         ("v4-plain", ts_v4_prefix + "12.34"),
+        ("v4-trailing-period", "Connected to " + ts_v4_prefix + "12.34."),
+        ("v4-sentence-period-space", "Peer " + ts_v4_prefix + "12.34. Next hop ready"),
+        ("v4-ellipsis", "Peer " + ts_v4_prefix + "12.34..."),
+        ("v4-trailing-comma", "peer=" + ts_v4_prefix + "12.34, ok"),
+        ("v4-trailing-semicolon", "peer=" + ts_v4_prefix + "12.34;"),
+        ("v4-trailing-excl", "reachable at " + ts_v4_prefix + "12.34!"),
+        ("v4-trailing-question", "is it " + ts_v4_prefix + "12.34?"),
+        ("v4-trailing-paren-period", "(via " + ts_v4_prefix + "12.34.)"),
+        ("v4-leading-non-digit-period", "node." + ts_v4_prefix + "12.34."),
         ("v4-port", "http://" + ts_v4_prefix + "12.34:8080/ws"),
         ("v4-urlencoded", urllib.parse.quote("http://" + ts_v4_prefix + "12.34:8080/ws", safe="")),
         ("v6-compressed", ts_v6_prefix + "::1"),
@@ -256,12 +265,34 @@ def run_sanitization_selftest() -> None:
             f"脱敏自检失败：Tailscale 错误信息回显输入（{case_name}）",
         )
 
-    # 4) 验证非 Tailscale 地址与文档网段字面量不误报
+    # 3b) 回归测试：未转义 JSON 夹具中紧跟句点的 Tailnet IPv4 地址（589f1946 拒绝、b6abef12 误报 clean）必须被拒绝且不回显
+    plain_period_ip = ts_v4_prefix + "12.34"
+    plain_period_fixture = json.dumps(
+        {"notes": f"Connected via {plain_period_ip}.", "category": "accepted"},
+        ensure_ascii=False,
+    )
+    err_msg = None
+    try:
+        scan_document(plain_period_fixture, "selftest/v4-plain-trailing-period.json", is_json=True)
+    except SanitizationError as exc:
+        err_msg = str(exc)
+    require(err_msg is not None, "脱敏自检失败：未拦截未转义夹具中紧跟句点的 Tailnet IPv4")
+    require("Tailscale" in err_msg and "selftest/v4-plain-trailing-period.json" in err_msg, f"脱敏自检失败：定位异常：{err_msg}")
+    require(plain_period_ip not in err_msg and "notes" not in err_msg, "脱敏自检失败：句点回归报错回显了输入")
+
+    # 4) 验证非 Tailscale 地址、多余数字 octet 与文档网段字面量（含句末句点）不误报
     safe_samples = [
         "100." + "64.0.0/10",
+        "Tailscale uses 100." + "64.0.0/10.",
         ts_v6_prefix + "::/48",
         "100." + "63.255.255",
         "100." + "128.0.1",
+        ts_v4_prefix + "12.34.5",
+        ts_v4_prefix + "12.34.5.",
+        "1." + ts_v4_prefix + "12.34",
+        "0." + ts_v4_prefix + "12.34.5",
+        ts_v4_prefix + "12.345",
+        ts_v4_prefix + "12.345.",
         "fd7a" + ":115c:a1e1::1",
         "[2001:db8::1]:8080",
         "[::ffff:192.0.2.1]:443",
