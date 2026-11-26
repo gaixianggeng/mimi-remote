@@ -1,0 +1,112 @@
+{
+  "schema": "mimi.all_runtimes.phase0.live_sample.v1",
+  "sampleId": "claude-sdk-empty-cwd",
+  "category": "accepted",
+  "baselineCommit": "2c6342fb",
+  "runtimeProvider": "claude",
+  "component": {
+    "adapter": "mimi-claude-adapter/0.3.0",
+    "sdk": "@anthropic-ai/claude-agent-sdk@0.3.296",
+    "runtime": "bun 1.2.22"
+  },
+  "provenance": "Live capture from bridges/claude-sdk (Catalog + sdkSessions + createThreadHandlers) against isolated synthetic CLAUDE_CONFIG_DIR; sanitized paths and prompts.",
+  "observedBehaviors": [
+    "Legitimately emits cwd: \"\" when neither SDK session metadata nor transcript top-level lines contain cwd (bridges/claude-sdk/src/claude/catalog.ts:8-11,70-73).",
+    "Outputs Unix second timestamps (< 1e10) for createdAt/updatedAt and recencyAt: null.",
+    "Orders desc ties on equal second by id DESC.",
+    "Includes cliVersion: \"mimi-claude-adapter/0.3.0\" and omits listMeta."
+  ],
+  "handshake": {
+    "userAgent": "mimi-claude-adapter/0.3.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "thread/list",
+    "params": {
+      "limit": 20,
+      "sortKey": "updated_at",
+      "sortDirection": "desc"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "data": [
+        {
+          "id": "22222222-2222-4222-8222-222222222222",
+          "sessionId": "22222222-2222-4222-8222-222222222222",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "Synthetic task without cwd",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "anthropic",
+          "model": null,
+          "reasoningEffort": null,
+          "createdAt": 1775815320,
+          "updatedAt": 1775815325,
+          "recencyAt": null,
+          "status": {
+            "type": "notLoaded"
+          },
+          "path": "/Users/demo/.claude/projects/-Users-demo-workspace-alpha/22222222-2222-4222-8222-222222222222.jsonl",
+          "cwd": "",
+          "cliVersion": "mimi-claude-adapter/0.3.0",
+          "originator": null,
+          "source": "appServer",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": [],
+          "canAcceptDirectInput": false
+        },
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "sessionId": "11111111-1111-4111-8111-111111111111",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "Synthetic task alpha",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "anthropic",
+          "model": null,
+          "reasoningEffort": null,
+          "createdAt": 1775815201,
+          "updatedAt": 1775815202,
+          "recencyAt": null,
+          "status": {
+            "type": "notLoaded"
+          },
+          "path": "/Users/demo/.claude/projects/-Users-demo-workspace-alpha/11111111-1111-4111-8111-111111111111.jsonl",
+          "cwd": "/Users/demo/workspace/alpha",
+          "cliVersion": "mimi-claude-adapter/0.3.0",
+          "originator": null,
+          "source": "appServer",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": {
+            "sha": null,
+            "branch": "main",
+            "originUrl": null
+          },
+          "name": "Demo Session Alpha",
+          "turns": [],
+          "canAcceptDirectInput": false
+        }
+      ],
+      "nextCursor": null,
+      "backwardsCursor": "eyJ2IjoxNzc1ODE1MzI1LCJpZCI6IjIyMjIyMjIyLTIyMjItNDIyMi04MjIyLTIyMjIyMjIyMjIyMiIsImluY2wiOnRydWV9"
+    }
+  }
+}
