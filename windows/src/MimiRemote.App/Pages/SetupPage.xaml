@@ -141,8 +141,7 @@
                 <Image x:Name="Step4QrImage" Width="260" Height="260" HorizontalAlignment="Center"
                     Visibility="{x:Bind ViewModel.Wizard.HasIssuedTicket, Mode=OneWay}" AutomationProperties.Name="短期配对二维码"/>
                 <TextBlock Text="{x:Bind ViewModel.Wizard.CountdownText, Mode=OneWay}" TextWrapping="Wrap"/>
-                <Button Content="完成首次设置" Command="{x:Bind ViewModel.CompleteWizardCommand}"
-                    IsEnabled="{x:Bind ViewModel.Wizard.CanCompleteWizard, Mode=OneWay}"/>
+                <Button Content="完成首次设置" Command="{x:Bind ViewModel.CompleteWizardCommand}"/>
             </StackPanel>
         </StackPanel>
     </ScrollViewer>

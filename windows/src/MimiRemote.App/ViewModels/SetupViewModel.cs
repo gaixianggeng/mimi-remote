@@ -43,7 +43,14 @@ public sealed class SetupViewModel : ClientPageViewModel
             RequestPathAsync = HandlePathPickerAsync,
         };
         wizard.PropertyChanged += OnWizardPropertyChanged;
-        wizard.GateEvaluated += (_, _) => Context.UpdateGateFromPreflight(wizard.Report, wizard.PreflightError);
+        wizard.GateEvaluated += (_, state) =>
+        {
+            // The shared reader publishes preflight results. A save may also discover a recovery lock.
+            if (wizard.IsSavingSetup && state == OnboardingGateState.RecoveryLocked && wizard.PreflightError is { } error)
+            {
+                Context.UpdateGateFromPreflight(null, error);
+            }
+        };
         wizard.DeepSeekConnectRequested += (_, _) =>
         {
             if (Context.GateState == OnboardingGateState.Confirmed)
@@ -56,11 +63,6 @@ public sealed class SetupViewModel : ClientPageViewModel
             }
         };
         wizard.IssuedTicketChanged += (_, payload) => QrPayloadChanged?.Invoke(this, payload);
-        wizard.WizardCompleted += (_, _) =>
-        {
-            Context.UpdateGateFromPreflight(wizard.Report, null);
-            Context.NavigateRoute(OnboardingNavigationGate.RouteSessions);
-        };
 
         timer.Tick += (_, _) => wizard.TickCountdown();
 
@@ -93,7 +95,14 @@ public sealed class SetupViewModel : ClientPageViewModel
                 Report("已复制短期配对链接。请勿发送给他人。");
             }
         });
-        CompleteWizardCommand = new RelayCommand(() => wizard.CompleteWizard());
+        CompleteWizardCommand = new RelayCommand(() =>
+        {
+            if (Context.GateState == OnboardingGateState.Confirmed && wizard.CompleteWizard())
+            {
+                Context.NavigateRoute(OnboardingNavigationGate.RouteSessions);
+            }
+        }, () => Context.GateState == OnboardingGateState.Confirmed && wizard.CanCompleteWizard);
+        context.GateStateChanged += OnGateStateChanged;
         RowPrimaryActionCommand = new AsyncRelayCommand<string>(id => RunAsync(async () =>
         {
             if (!string.IsNullOrWhiteSpace(id))
@@ -223,8 +232,14 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
     }
 
+    private void OnGateStateChanged(object? sender, OnboardingGateState state) => CompleteWizardCommand.NotifyCanExecuteChanged();
+
     private void OnWizardPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
     {
+        if (args.PropertyName == nameof(OnboardingWizardStateMachine.CanCompleteWizard))
+        {
+            CompleteWizardCommand.NotifyCanExecuteChanged();
+        }
         if (string.Equals(args.PropertyName, nameof(OnboardingWizardStateMachine.SelectedScanRoot), StringComparison.Ordinal)
             && !string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
         {
@@ -245,6 +260,7 @@ public sealed class SetupViewModel : ClientPageViewModel
     public override void Dispose()
     {
         timer.Stop();
+        Context.GateStateChanged -= OnGateStateChanged;
         wizard.PropertyChanged -= OnWizardPropertyChanged;
         wizard.Dispose();
         base.Dispose();
@@ -313,8 +329,7 @@ public sealed class SetupViewModel : ClientPageViewModel
                 : throw new InvalidDataException("后台服务尚未确认就绪。");
         }
 
-        public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken) =>
-            context.RunLanFirewallMaintenance(cancellationToken);
+        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => context.RunLanFirewallMaintenance;
 
         public bool DirectoryExists(string path) => Directory.Exists(path);
         public void CreateDirectory(string path) => Directory.CreateDirectory(path);

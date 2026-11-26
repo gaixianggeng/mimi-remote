@@ -54,7 +54,7 @@ namespace MimiRemote.App
         public Action<string> OpenUrl { get; set; } = _ => { };
         public Action<string> OpenSettings { get; set; } = _ => { };
         public Func<string, bool> CopyToClipboard { get; set; } = _ => true;
-        public Func<CancellationToken, Task<bool>> RunLanFirewallMaintenance { get; set; } = _ => Task.FromResult(false);
+        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
 
         public void SetVerifiedCapability(string? capability)
         {

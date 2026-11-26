@@ -91,6 +91,18 @@ public static class AssistantRuntimePresentation
         var versionSuffix = string.IsNullOrWhiteSpace(entry.Version) ? "" : $"（版本 {entry.Version.Trim()}）";
         switch (entry.State)
         {
+            case "available" when id == "codex" && entry.Reason == "account_unavailable":
+                return new AssistantPresentation(
+                    id,
+                    title,
+                    Enabled: true,
+                    Supported: true,
+                    Available: true,
+                    BadgeText: "暂不可用",
+                    DetailText: OnboardingCopyCatalog.LocalizedMessage("runtime_probe_failed", checkId, title),
+                    QuotaText: FormatQuota(entry.RateLimits, entry.Reason),
+                    DiagnosticCode: "runtime_probe_failed");
+
             case "ready":
             case "available":
             case "connected":

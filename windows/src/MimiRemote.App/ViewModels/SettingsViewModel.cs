@@ -157,26 +157,27 @@ public sealed class SettingsViewModel : ClientPageViewModel
         {
             return;
         }
-        await Context.ChangeAsync(() => new ModuleCommands(Context.Agent).SetWorkspaceAsync(ScanRoot, fullCandidate, Lifetime.Token));
+        await Context.ChangeAsync(() => new ModuleCommands(Context.Agent).SetBrowseRootAsync(fullCandidate, preserveAdditionalRoots: true, Lifetime.Token));
         BrowseRoot = fullCandidate;
         Report("浏览目录范围已更新，已有配对保持有效。");
     }
 
     private async Task TightenBrowseRootAsync()
     {
-        if (!IsGateConfirmed || string.IsNullOrWhiteSpace(ScanRoot))
+        var selected = ScanRoot;
+        if (!IsGateConfirmed || string.IsNullOrWhiteSpace(selected))
         {
             return;
         }
         var confirmed = await Context.Confirm(
             "恢复最小浏览范围？",
-            $"将把手机浏览范围收紧为仅限代码目录：{ScanRoot}。已有配对保持有效。");
+            $"将把手机浏览范围收紧为仅限代码目录：{selected}。已有配对保持有效。");
         if (!confirmed || !IsGateConfirmed)
         {
             return;
         }
-        await Context.ChangeAsync(() => new ModuleCommands(Context.Agent).SetWorkspaceAsync(ScanRoot, ScanRoot, Lifetime.Token));
-        BrowseRoot = ScanRoot;
+        await Context.ChangeAsync(() => new ModuleCommands(Context.Agent).SetBrowseRootAsync(selected, preserveAdditionalRoots: false, Lifetime.Token));
+        BrowseRoot = selected;
         Report("已恢复为仅允许浏览所选代码目录。");
     }
 

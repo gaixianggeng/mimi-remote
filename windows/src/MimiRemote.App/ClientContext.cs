@@ -31,7 +31,7 @@ public sealed class ClientContext : IDisposable
     public Action<string> OpenSettings { get; set; } = _ => { };
     public Func<string, bool> CopyToClipboard { get; set; } = _ => false;
     // A verified, restricted installer maintenance entry point is required before LAN elevation is available.
-    public Func<CancellationToken, Task<bool>> RunLanFirewallMaintenance { get; } = _ => Task.FromResult(false);
+    public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
     public Action<string, string> Notify { get; set; } = (_, _) => { };
     public HostStatus? LastStatus => cached;
     public OnboardingPreflightReport? LastPreflight { get; private set; }

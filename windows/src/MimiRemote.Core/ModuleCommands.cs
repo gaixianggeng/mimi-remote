@@ -85,47 +85,63 @@ public sealed class ModuleCommands(IAgentCommand agent)
     public Task<HostStatus> SetWorkspaceAsync(string root, CancellationToken token = default) =>
         SetWorkspaceAsync(root, root, token);
 
-    public Task<HostStatus> SetWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken token = default)
+    public Task<HostStatus> SetWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken token = default) =>
+        ApplyAsync(WorkspaceArguments(scanRoot, browseRoot, primaryOnly: false), ["workspace", "--restore-state"], _ => true, token);
+
+    public Task<HostStatus> SetBrowseRootAsync(string browseRoot, bool preserveAdditionalRoots, CancellationToken token = default)
+    {
+        var path = FullBrowseRoot(browseRoot);
+        string[] arguments = preserveAdditionalRoots
+            ? ["workspace", "--primary", "--browse-root", path, "--json"]
+            : ["workspace", "--set-browse-root", path, "--json"];
+        return ApplyAsync(arguments, ["workspace", "--restore-state"], _ => true, token);
+    }
+
+    private static string FullBrowseRoot(string browseRoot) =>
+        Path.IsPathFullyQualified(browseRoot)
+            ? Path.GetFullPath(browseRoot)
+            : throw new ArgumentException("请选择完整的浏览目录路径。", nameof(browseRoot));
+
+    private static string[] WorkspaceArguments(string scanRoot, string? browseRoot, bool primaryOnly)
     {
         if (!Path.IsPathFullyQualified(scanRoot))
         {
             throw new ArgumentException("请选择完整的代码目录路径。", nameof(scanRoot));
         }
-        var arguments = new List<string> { "workspace", "--scan-root", Path.GetFullPath(scanRoot) };
+        var arguments = new List<string> { "workspace" };
+        if (primaryOnly)
+        {
+            arguments.Add("--primary");
+        }
+        arguments.Add("--scan-root");
+        arguments.Add(Path.GetFullPath(scanRoot));
         if (!string.IsNullOrWhiteSpace(browseRoot))
         {
-            if (!Path.IsPathFullyQualified(browseRoot))
-            {
-                throw new ArgumentException("请选择完整的浏览目录路径。", nameof(browseRoot));
-            }
             arguments.Add("--browse-root");
-            arguments.Add(Path.GetFullPath(browseRoot));
+            arguments.Add(FullBrowseRoot(browseRoot));
         }
         arguments.Add("--json");
-        return ApplyAsync([.. arguments], ["workspace", "--restore-state"], _ => true, token);
+        return [.. arguments];
     }
 
     public async Task<bool> UpdateWorkspaceConfigAsync(string scanRoot, string? browseRoot, CancellationToken token = default)
     {
-        if (!Path.IsPathFullyQualified(scanRoot))
+        var result = await agent.RunAsync(WorkspaceArguments(scanRoot, browseRoot, primaryOnly: true), token).ConfigureAwait(false);
+        try
         {
-            throw new ArgumentException("请选择完整的代码目录路径。", nameof(scanRoot));
-        }
-        var arguments = new List<string> { "workspace", "--scan-root", Path.GetFullPath(scanRoot) };
-        if (!string.IsNullOrWhiteSpace(browseRoot))
-        {
-            if (!Path.IsPathFullyQualified(browseRoot))
+            using var document = JsonDocument.Parse(result);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("restart_required", out var prop)
+                && prop.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
-                throw new ArgumentException("请选择完整的浏览目录路径。", nameof(browseRoot));
+                return prop.GetBoolean();
             }
-            arguments.Add("--browse-root");
-            arguments.Add(Path.GetFullPath(browseRoot));
         }
-        arguments.Add("--json");
-        var result = await agent.RunAsync([.. arguments], token).ConfigureAwait(false);
-        using var document = JsonDocument.Parse(result);
-        return document.RootElement.TryGetProperty("restart_required", out var prop)
-            && prop.ValueKind == JsonValueKind.True;
+        catch (JsonException error)
+        {
+            throw new InvalidDataException("无法确认代码目录更新结果。", error);
+        }
+        throw new InvalidDataException("目录更新结果缺少有效的重启标记。");
     }
 
     private async Task<HostStatus> ApplyAsync(string[] arguments, string[] restore, Func<HostStatus, bool> verify, CancellationToken token)

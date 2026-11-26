@@ -7,7 +7,7 @@ public interface IPairingSessionBackend
     Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken);
     Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
-    Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken);
+    Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; }
     Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken);
     Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken);
     Task<bool> ConfirmAsync(string title, string message);
@@ -234,15 +234,16 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 return;
             }
             ApplyReport(latest);
-            if (latest.Configured)
-            {
-                await RefreshTailcatRelayAsync(cancellationToken);
-            }
             if (!RouteReady || IsExpired)
             {
                 Clear();
             }
             UpdateIdleNote();
+            if (latest.Configured)
+            {
+                await RefreshTailcatRelayAsync(cancellationToken);
+                TickCountdown();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -289,10 +290,14 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             }
             if (item.NeedsFirewallMaintenance)
             {
+                if (backend.RunLanFirewallMaintenance is not { } repair)
+                {
+                    return;
+                }
                 IsEnablingTransport = true;
                 try
                 {
-                    var ok = await backend.RunLanFirewallMaintenanceAsync(cancellationToken);
+                    var ok = await repair(cancellationToken);
                     if (!ok)
                     {
                         Note = "未完成专用网络防火墙规则配置，同一局域网保持关闭。你仍可使用其他连接方式。";
@@ -652,7 +657,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
-            var canEnable = !ready && diag is { Trusted: true } && (firewallBlocked || (!enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}")));
+            var canEnable = diag is { Trusted: true } && (firewallBlocked
+                ? backend.RunLanFirewallMaintenance is not null
+                : !enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}"));
             var badge = ready
                 ? "已就绪"
                 : check is null
@@ -701,11 +708,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             Note = DefaultPrompt;
             return;
         }
-        if (selected is { CanEnableInPlace: true })
+        if (selected is { CanEnableInPlace: true, NeedsFirewallMaintenance: false })
         {
-            Note = selected.NeedsFirewallMaintenance
-                ? "同一局域网需要通过签名安装程序配置专用网络防火墙规则。点击“启用此连接方式”继续。"
-                : $"{selected.Title} 可用但尚未启用。点击“启用此连接方式”即可就地开启并生成二维码。";
+            Note = $"{selected.Title} 可用但尚未启用。点击“启用此连接方式”即可就地开启并生成二维码。";
             return;
         }
         Note = selected?.Detail ?? DefaultPrompt;

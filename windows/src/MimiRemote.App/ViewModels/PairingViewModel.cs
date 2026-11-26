@@ -151,8 +151,7 @@ public sealed class PairingViewModel : ClientPageViewModel
                 }
             });
 
-        public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken) =>
-            context.RunLanFirewallMaintenance(cancellationToken);
+        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => context.RunLanFirewallMaintenance;
 
         public Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken) =>
             context.Agent.ReadAsync<TailcatStatus>(["tailcat", "status", "--json"], cancellationToken);

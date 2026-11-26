@@ -189,7 +189,7 @@ public interface IOnboardingWizardBackend
     Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
     Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken);
-    Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken);
+    Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; }
     bool DirectoryExists(string path);
     void CreateDirectory(string path);
     void OpenUrl(string url);
@@ -464,7 +464,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
     }
 
-    public bool CanRetryServiceStart => IsConfigured && WorkspaceConfirmed && PreflightError is null && GateState != OnboardingGateState.RecoveryLocked && !IsStartingService && !IsSavingSetup && ServicePhase != OnboardingServicePhase.Ready;
+    public bool CanRetryServiceStart => IsConfigured && WorkspaceConfirmed && !pendingSaveReadback && PreflightError is null && GateState != OnboardingGateState.RecoveryLocked && !IsStartingService && !IsSavingSetup && ServicePhase != OnboardingServicePhase.Ready;
 
     public string SelectedTransport
     {
@@ -859,6 +859,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         CancelPreflight();
 
         var saved = false;
+        var updatingWorkspace = false;
         try
         {
             // Already saved this exact workspace in this wizard session: skip saving and go straight to service start.
@@ -869,17 +870,18 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             }
             else if (HasCommittedConfig || IsConfigured)
             {
-                // Existing or pending-confirmation config: update via `workspace --scan-root [--browse-root]`, never replay `setup --no-pair`.
+                // Edit the primary workspace roots. An independent browse scope stays untouched.
                 var preserveDistinctBrowse = !string.IsNullOrWhiteSpace(PersistedBrowseRoot);
                 var needsWorkspaceUpdate = !WorkspaceConfirmed
                     || !string.Equals(committedScanRoot, scanRoot, StringComparison.OrdinalIgnoreCase);
                 if (needsWorkspaceUpdate)
                 {
-                    var changed = await backend.UpdateWorkspaceAsync(
+                    updatingWorkspace = true;
+                    var restartRequired = await backend.UpdateWorkspaceAsync(
                         scanRoot,
                         preserveDistinctBrowse ? null : scanRoot,
                         cancellationToken);
-                    pendingRestart |= changed && GetCheck("service_daemon")?.State == "ok";
+                    pendingRestart |= restartRequired;
                 }
                 HasCommittedConfig = true;
                 committedScanRoot = scanRoot;
@@ -945,6 +947,8 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
         finally
         {
+            // A lost receipt can hide a committed change. Readback confirms disk state only.
+            pendingRestart |= pendingSaveReadback && updatingWorkspace;
             IsSavingSetup = false;
         }
 
@@ -963,7 +967,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
 
     public async Task EnsureServiceReadyAsync(CancellationToken cancellationToken = default)
     {
-        if (disposed || IsStartingService || !WorkspaceConfirmed || PreflightError is not null || GateState == OnboardingGateState.RecoveryLocked)
+        if (disposed || IsStartingService || pendingSaveReadback || !WorkspaceConfirmed || PreflightError is not null || GateState == OnboardingGateState.RecoveryLocked)
         {
             return;
         }
@@ -1148,10 +1152,14 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             }
             if (item.NeedsFirewallMaintenance)
             {
+                if (backend.RunLanFirewallMaintenance is not { } repair)
+                {
+                    return;
+                }
                 IsEnablingTransport = true;
                 try
                 {
-                    var configured = await backend.RunLanFirewallMaintenanceAsync(cancellationToken);
+                    var configured = await repair(cancellationToken);
                     if (!configured)
                     {
                         PairingError = GetDiagnostic("network_lan") ?? new OnboardingResolvedDiagnostic
@@ -1776,7 +1784,9 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
-            var canEnable = !ready && diag is { Trusted: true } && (firewallBlocked || (!enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}")));
+            var canEnable = diag is { Trusted: true } && (firewallBlocked
+                ? backend.RunLanFirewallMaintenance is not null
+                : !enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}"));
             var badge = ready
                 ? "已就绪"
                 : check is null

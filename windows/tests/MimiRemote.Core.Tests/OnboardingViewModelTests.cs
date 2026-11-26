@@ -123,8 +123,10 @@ public sealed class OnboardingViewModelTests
         Assert.Equal(2, upAttempts);
     }
 
-    [Fact]
-    public async Task 待确认状态更新目录调用Workspace而非重放Setup且已有独立浏览目录得以保留()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task 待确认状态更新目录调用Workspace而非重放Setup且已有独立浏览目录得以保留(bool restartRequired)
     {
         var oldScan = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "mimi-ui4-old-scan"));
         var newScan = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "mimi-ui4-new-scan"));
@@ -132,6 +134,7 @@ public sealed class OnboardingViewModelTests
         var backend = new FakeWizardBackend
         {
             ExistingDirs = { oldScan, newScan },
+            OnWorkspaceUpdate = () => Task.FromResult(restartRequired),
         };
         backend.OnPreflight = (opts, _, _) => Task.FromResult(
             string.Equals(opts.Stage, "setup", StringComparison.Ordinal)
@@ -152,7 +155,8 @@ public sealed class OnboardingViewModelTests
         var wsCall = Assert.Single(backend.WorkspaceCalls);
         Assert.Equal(newScan, wsCall.ScanRoot);
         Assert.Null(wsCall.BrowseRoot);
-        Assert.Equal(1, backend.UpCallCount);
+        Assert.Equal(restartRequired ? 1 : 0, backend.RestartCalls);
+        Assert.Equal(restartRequired ? 0 : 1, backend.UpCallCount);
         Assert.Equal(OnboardingGateState.Confirmed, sm.GateState);
     }
 
@@ -308,9 +312,14 @@ public sealed class OnboardingViewModelTests
     public async Task 局域网防火墙提权取消保持LAN关闭且不影响其他通道()
     {
         var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var maintenanceCalls = 0;
         var backend = new FakePairingBackend(() => now)
         {
-            LanMaintenanceResult = false,
+            RunLanFirewallMaintenance = _ =>
+            {
+                maintenanceCalls++;
+                return Task.FromResult(false);
+            },
             Report = BuildWindowsReport(
                 stage: "pair",
                 configured: true,
@@ -328,13 +337,87 @@ public sealed class OnboardingViewModelTests
         Assert.True(controller.CanEnableSelectedTransport);
         await controller.EnableSelectedTransportAsync();
 
-        Assert.Equal(1, backend.LanMaintenanceCalls);
+        Assert.Equal(1, maintenanceCalls);
         Assert.Empty(backend.EnabledTransports);
         Assert.Contains("同一局域网保持关闭", controller.Note, StringComparison.Ordinal);
 
         // Other ready transport (tailcat) remains fully usable.
         controller.SelectTransport("tailcat");
         Assert.True(controller.CanGenerate);
+    }
+
+    [Fact]
+    public async Task BlockedPrivateLanShowsGuidanceOnBothPagesWhenMaintenanceIsUnavailable()
+    {
+        var report = BuildWindowsReport("pair", true, true, serviceOk: true, tailcatReady: true, lanFirewallBlocked: true);
+        var guidance = OnboardingCopyCatalog.LocalizedMessage("lan_firewall_blocked", "network_lan");
+        var backend = new FakePairingBackend(() => DateTimeOffset.UtcNow) { Report = report };
+        using var session = new PairingSessionController(backend);
+        session.SetActive(true);
+        await session.RefreshAsync();
+        session.SelectTransport("lan");
+        Assert.False(session.CanEnableSelectedTransport);
+        Assert.Equal(guidance, session.Note);
+        await session.EnableSelectedTransportAsync();
+        Assert.Empty(backend.EnabledTransports);
+        Assert.Empty(backend.OpenedSettings);
+        Assert.False(session.CanGenerate);
+        session.OpenTransportHelp();
+        Assert.Equal(["windows_firewall"], backend.OpenedSettings);
+
+        var wizardBackend = new FakeWizardBackend { OnPreflight = (_, _, _) => Task.FromResult(report) };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        Assert.False(wizard.CanEnableSelectedTransport);
+        Assert.Equal(guidance, wizard.SelectedTransportItem!.Detail);
+        await wizard.EnableSelectedTransportAsync();
+        Assert.False(wizard.CanIssuePairingQr);
+        Assert.Empty(wizardBackend.EnabledTransports);
+    }
+
+    [Fact]
+    public async Task IneligibleSelectedRouteClearsItsVisibleTicketBeforeRelayStatusReturns()
+    {
+        var backend = new FakePairingBackend(() => DateTimeOffset.UtcNow)
+        {
+            Report = BuildWindowsReport("pair", true, true, serviceOk: true, tailscaleReady: true),
+        };
+        using var session = new PairingSessionController(backend);
+        var tickets = new List<string?>();
+        session.TicketChanged += (_, url) => tickets.Add(url);
+        session.SetActive(true);
+        session.SelectTransport("tailscale");
+        await session.RefreshAsync();
+        await session.GenerateAsync();
+        Assert.True(session.HasActiveTicket);
+
+        backend.Report = BuildWindowsReport("pair", true, true, serviceOk: true, tailcatReady: true);
+        var relay = new TaskCompletionSource<TailcatStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        backend.PendingTailcatStatus = relay.Task;
+        var refresh = session.RefreshAsync();
+        Assert.False(refresh.IsCompleted);
+        Assert.False(session.HasActiveTicket);
+        Assert.False(session.CopyPairingLink());
+        Assert.Empty(session.CountdownText);
+        Assert.Collection(tickets, url => Assert.NotNull(url), url => Assert.Null(url));
+
+        relay.SetResult(new TailcatStatus());
+        await refresh;
+        Assert.False(session.HasActiveTicket);
+    }
+
+    [Fact]
+    public void AvailableCodexWithFailedAccountProbeShowsTheProbeDiagnostic()
+    {
+        var preflight = BuildWindowsReport("pair", true, true, codexReady: true);
+        var card = AssistantRuntimePresentation.Describe(
+            "codex", "Codex", true,
+            new RuntimeEntry { Id = "codex", State = "available", Reason = "account_unavailable" },
+            preflight.Checks.Single(check => check.Id == "assistant_codex"));
+        Assert.Equal("暂不可用", card.BadgeText);
+        Assert.Equal("runtime_probe_failed", card.DiagnosticCode);
+        Assert.Equal(OnboardingCopyCatalog.LocalizedMessage("runtime_probe_failed", "assistant_codex", "Codex"), card.DetailText);
     }
 
     [Fact]
@@ -507,6 +590,92 @@ public sealed class OnboardingViewModelTests
         Assert.Equal(1, backend.RestartCalls);
         Assert.Equal(0, backend.UpCallCount);
         Assert.Empty(backend.SetupCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LostWorkspaceReceiptStillRequiresSuccessfulRestartAfterReadback(bool canceled)
+    {
+        var oldRoot = Path.Combine(Path.GetTempPath(), "previous-workspace");
+        var nextRoot = Path.Combine(Path.GetTempPath(), "selected-workspace");
+        var storedRoot = oldRoot;
+        var backend = new FakeWizardBackend { ExistingDirs = { oldRoot, nextRoot } };
+        backend.OnWorkspaceUpdate = () =>
+        {
+            storedRoot = nextRoot;
+            if (canceled)
+            {
+                throw new OperationCanceledException();
+            }
+            throw new TimeoutException();
+        };
+        backend.OnPreflight = (options, _, _) => Task.FromResult(BuildWindowsReport(
+            options.Stage, true, true, options.ScanRoot ?? storedRoot, serviceOk: true, tailscaleReady: true));
+        backend.OnRestart = () => throw new TimeoutException();
+        using var wizard = new OnboardingWizardStateMachine(backend);
+        await wizard.StartAsync();
+        await wizard.ProceedToWorkspaceStepAsync();
+        await wizard.SelectWorkspaceRootAsync(nextRoot);
+        await wizard.SaveWorkspaceAndContinueAsync();
+
+        Assert.Equal(nextRoot, wizard.Report!.ScanRoot);
+        Assert.Equal(OnboardingWizardStep.WorkspaceSelection, wizard.CurrentStep);
+        Assert.False(wizard.CanCompleteWizard);
+        await wizard.SaveWorkspaceAndContinueAsync();
+        Assert.Equal(OnboardingServicePhase.Failed, wizard.ServicePhase);
+        Assert.True(wizard.CanRetryServiceStart);
+        Assert.False(wizard.CanIssuePairingQr);
+        Assert.False(wizard.CanCompleteWizard);
+
+        backend.OnRestart = null;
+        await wizard.EnsureServiceReadyAsync();
+        Assert.Equal(OnboardingServicePhase.Ready, wizard.ServicePhase);
+        Assert.Equal(2, backend.RestartCalls);
+        Assert.Equal(0, backend.UpCallCount);
+        Assert.Single(backend.WorkspaceCalls);
+        Assert.Empty(backend.SetupCalls);
+    }
+
+    [Fact]
+    public async Task CompletingStepFourHonorsTheLatestSharedGate()
+    {
+        var routes = new List<string>();
+        var context = new ClientContext { NavigateRoute = routes.Add };
+        context.Agent.PreflightHandler = (options, _, _) => Task.FromResult(BuildWindowsReport(
+            options.Stage, true, true, serviceOk: true, tailscaleReady: true));
+        using var vm = new SetupViewModel(context);
+        await vm.Wizard.ProceedToConnectStepAsync();
+        Assert.True(vm.CompleteWizardCommand.CanExecute(null));
+
+        var recovery = BuildWindowsReport("setup", true, false, configCode: "config_invalid");
+        context.UpdateGateFromPreflight(recovery);
+        Assert.False(vm.CompleteWizardCommand.CanExecute(null));
+        vm.CompleteWizardCommand.Execute(null);
+        Assert.Same(recovery, context.LastPreflight);
+        Assert.Equal(OnboardingGateState.RecoveryLocked, context.GateState);
+        Assert.False(vm.Wizard.IsCompleted);
+        Assert.Empty(routes);
+
+        // A secondary activation can also finish between the shared read and the wizard applying its copy.
+        vm.Wizard.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(OnboardingWizardStateMachine.Report))
+            {
+                context.UpdateGateFromPreflight(recovery);
+            }
+        };
+        await vm.RefreshCommand.ExecuteAsync(null);
+        Assert.Same(recovery, context.LastPreflight);
+        Assert.False(vm.CompleteWizardCommand.CanExecute(null));
+
+        var current = BuildWindowsReport("setup", true, true, serviceOk: true);
+        context.UpdateGateFromPreflight(current);
+        Assert.True(vm.CompleteWizardCommand.CanExecute(null));
+        vm.CompleteWizardCommand.Execute(null);
+        Assert.True(vm.Wizard.IsCompleted);
+        Assert.Same(current, context.LastPreflight);
+        Assert.Equal([OnboardingNavigationGate.RouteSessions], routes);
     }
 
     [Fact]
@@ -1139,11 +1308,14 @@ public sealed class OnboardingViewModelTests
         public List<(string ScanRoot, OnboardingSetupOptions Options)> SetupCalls { get; } = [];
         public List<(string ScanRoot, string? BrowseRoot)> WorkspaceCalls { get; } = [];
         public List<string> EnabledAssistants { get; } = [];
+        public List<string> EnabledTransports { get; } = [];
         public List<(string Id, string Value)> RuntimePathCalls { get; } = [];
         public int UpCallCount { get; private set; }
 
         public Func<OnboardingPreflightOptions, Action<OnboardingCheck>?, CancellationToken, Task<OnboardingPreflightReport>>? OnPreflight { get; set; }
         public Func<int, CancellationToken, Task<UpReadinessReceipt>>? OnUp { get; set; }
+        public Func<Task<bool>>? OnWorkspaceUpdate { get; set; }
+        public Func<Task<UpReadinessReceipt>>? OnRestart { get; set; }
 
         public Task<OnboardingPreflightReport> PreflightAsync(
             OnboardingPreflightOptions options,
@@ -1192,7 +1364,7 @@ public sealed class OnboardingViewModelTests
         public Task<bool> UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken)
         {
             WorkspaceCalls.Add((scanRoot, browseRoot));
-            return Task.FromResult(true);
+            return OnWorkspaceUpdate?.Invoke() ?? Task.FromResult(true);
         }
 
         public Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken)
@@ -1201,14 +1373,18 @@ public sealed class OnboardingViewModelTests
             return Task.CompletedTask;
         }
 
-        public Task EnableTransportAsync(string transport, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task EnableTransportAsync(string transport, CancellationToken cancellationToken)
+        {
+            EnabledTransports.Add(transport);
+            return Task.CompletedTask;
+        }
         public int RestartCalls { get; private set; }
         public Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken)
         {
             RestartCalls++;
-            return Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
+            return OnRestart?.Invoke() ?? Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
-        public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance => null;
         public bool DirectoryExists(string path) => ExistingDirs.Contains(path);
         public void CreateDirectory(string path) => ExistingDirs.Add(path);
         public void OpenUrl(string url) { }
@@ -1225,8 +1401,8 @@ public sealed class OnboardingViewModelTests
         public List<string> EnabledTransports { get; } = [];
         public List<string> OpenedSettings { get; } = [];
         public string? LastCopiedText { get; private set; }
-        public int LanMaintenanceCalls { get; private set; }
-        public bool LanMaintenanceResult { get; set; }
+        public Func<CancellationToken, Task<bool>>? RunLanFirewallMaintenance { get; init; }
+        public Task<TailcatStatus>? PendingTailcatStatus { get; set; }
         public Func<string, Task>? OnEnableTransport { get; set; }
 
         public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
@@ -1248,14 +1424,8 @@ public sealed class OnboardingViewModelTests
             return OnEnableTransport is not null ? OnEnableTransport(transport) : Task.CompletedTask;
         }
 
-        public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken)
-        {
-            LanMaintenanceCalls++;
-            return Task.FromResult(LanMaintenanceResult);
-        }
-
         public Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(new TailcatStatus { Enabled = true, Running = true });
+            PendingTailcatStatus ?? Task.FromResult(new TailcatStatus { Enabled = true, Running = true });
 
         public Task SetTailcatRelayAsync(string[] arguments, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> ConfirmAsync(string title, string message) => Task.FromResult(true);

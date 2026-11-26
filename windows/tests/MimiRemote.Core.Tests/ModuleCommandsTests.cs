@@ -112,6 +112,35 @@ public sealed class ModuleCommandsTests
         Assert.Equal(["workspace", "--scan-root", scan, "--browse-root", wider, "--json"], agent.Calls[4]);
     }
 
+    [Fact]
+    public async Task WizardConfirmationAndBrowseChangesSendOnlyTheirIntendedRootEdits()
+    {
+        var root = Path.GetFullPath(Path.GetTempPath());
+        var agent = new FakeAgent((args, _) => args[0] == "status"
+            ? """{"service_ok":true}"""
+            : """{"restart_required":true}""");
+        var commands = new ModuleCommands(agent);
+        Assert.True(await commands.UpdateWorkspaceConfigAsync(root, root));
+        Assert.Equal(["workspace", "--primary", "--scan-root", root, "--browse-root", root, "--json"], agent.Calls[0]);
+        Assert.True(await commands.UpdateWorkspaceConfigAsync(root, null));
+        Assert.Equal(["workspace", "--primary", "--scan-root", root, "--json"], agent.Calls[1]);
+
+        await commands.SetBrowseRootAsync(root, preserveAdditionalRoots: true);
+        Assert.Equal(["workspace", "--primary", "--browse-root", root, "--json"], agent.Calls[2]);
+        await commands.SetBrowseRootAsync(root, preserveAdditionalRoots: false);
+        Assert.Equal(["workspace", "--set-browse-root", root, "--json"], agent.Calls[5]);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"restart_required":"false"}""")]
+    [InlineData("{")]
+    public async Task IncompleteWorkspaceReceiptRequiresReadback(string receipt)
+    {
+        var commands = new ModuleCommands(new FakeAgent((_, _) => receipt));
+        await Assert.ThrowsAsync<InvalidDataException>(() => commands.UpdateWorkspaceConfigAsync(Path.GetTempPath(), null));
+    }
+
     private sealed class FakeAgent(Func<string[], string?, string> respond) : IAgentCommand
     {
         public List<string[]> Calls { get; } = [];
