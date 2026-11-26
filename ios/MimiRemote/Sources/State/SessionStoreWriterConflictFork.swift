@@ -98,9 +98,6 @@ extension SessionStore {
         case .unavailable(let reason):
             return .connectionTerminated(reason)
         case .live:
-            guard writerVerifiedWebSocketLease == currentLease else {
-                return .unavailable
-            }
             return .resolvedWritable
         case .sending, .loadingHistory, .connecting, .observing, .reconnecting, .disconnected, .failed:
             return .unavailable
@@ -168,13 +165,12 @@ extension SessionStore {
         }
 
         // thread/resume 是公开协议中唯一可信的 writer 检查。必须强制建立新连接，
-        // 不能复用曾在发送阶段返回冲突的 connected socket；Windows 受管 WS 空闲会话也必须强制 resume 校验写入权。
+        // 不能复用曾在发送阶段返回冲突的 connected socket。
         let refreshedSession = sessionsByID[session.id] ?? session
         connectWebSocket(
             refreshedSession,
             replayBufferedEvents: false,
-            allowNonRunning: true,
-            verifyWriterAccess: true
+            allowNonRunning: true
         )
     }
 

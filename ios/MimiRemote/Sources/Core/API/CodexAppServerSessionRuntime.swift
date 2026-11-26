@@ -125,16 +125,10 @@ struct CodexMimiTaskExpectedDelivery {
     let clientMessageID: ClientMessageID
 }
 
-enum CodexAppServerThreadResumeOutcome: Equatable {
-    case resumedByServer
-    case noRolloutFallback
-}
-
 struct CodexAppServerThreadResumeTask {
     let connection: CodexAppServerConnection
     let token: UUID
-    let allowsNoRolloutFallback: Bool
-    let task: Task<CodexAppServerThreadResumeOutcome, Error>
+    let task: Task<Void, Error>
 }
 
 struct CodexAppServerThreadSubscriptionLease: Equatable {
@@ -232,14 +226,7 @@ actor CodexAppServerSessionRuntime {
     var threadRuntimeOwnerLookup: (@Sendable (SessionID) -> String?)?
     // app-server 只向「在当前 gateway 连接上 resume/start 过」的 thread 推送 turn 事件；记录本连接已
     // 经绑定的 thread，断线重连后这个集合随新连接清空，确保再次发送时会先补一次 thread/resume。
-    var threadsResumedOnConnection: Set<SessionID> = [] {
-        didSet {
-            threadsWithNoRolloutFallbackOnConnection.formIntersection(threadsResumedOnConnection)
-        }
-    }
-    // 记录仅因新建空线程命中 "no rollout found" 而良性放行的 thread。这类放行仅用于避免空会话
-    // 开屏重连死循环，绝不代表服务端已确认写入权，也不得被显式 writer 校验复用。
-    var threadsWithNoRolloutFallbackOnConnection: Set<SessionID> = []
+    var threadsResumedOnConnection: Set<SessionID> = []
     // thread/resume 等待响应时 actor 会继续处理 settings/updated。每次权威模式更新都换代，
     // 防止迟到的恢复快照覆盖恢复期间已经到达的新共享模式。
     var collaborationModeGenerationBySessionID: [SessionID: UInt64] = [:]
@@ -1040,7 +1027,6 @@ actor CodexAppServerSessionRuntime {
         if !turnPayload.isEmpty {
             // thread/start 后立刻 turn/start 仍沿用当前连接；但空会话没有立即 turn，
             // 后续监听/发送前必须补 thread/resume，否则真实 app-server 可能不回推事件。
-            threadsWithNoRolloutFallbackOnConnection.remove(session.id)
             threadsResumedOnConnection.insert(session.id)
         }
 
@@ -2451,14 +2437,6 @@ actor CodexAppServerSessionRuntime {
     }
 
     func connectForEvents(sessionID: SessionID) async throws {
-        _ = try await connectForEvents(sessionID: sessionID, verifyWriterAccess: false)
-    }
-
-    @discardableResult
-    func connectForEvents(
-        sessionID: SessionID,
-        verifyWriterAccess: Bool
-    ) async throws -> Bool {
         try Task.checkCancellation()
         // 必须在第一次 suspension 前登记订阅意图。若页面离开期间 unsubscribe 安装了
         // 更新一代 false lease，旧 connect 恢复后只能退出，不能重新覆盖成 true。
@@ -2468,7 +2446,7 @@ actor CodexAppServerSessionRuntime {
         }
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return false
+            return
         }
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
@@ -2476,61 +2454,58 @@ actor CodexAppServerSessionRuntime {
         let connection = try await ensureConnection()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return false
+            return
         }
         let config = try await ensureConfig()
         try Task.checkCancellation()
-        guard verifyWriterAccess || shouldResumeThreadForEventSubscription(context.session, config: config) else {
-            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout，未向服务端确认写入权。
-            // SSH / 本机共享模式或显式 writer 重试会继续 thread/resume，以服务端真实结果决定当前入口是否拥有 writer。
-            return false
+        guard shouldResumeThreadForEventSubscription(context.session, config: config) else {
+            // 普通 WS 模式打开空闲历史时只读取 state DB / rollout。SSH 共享模式会在这里
+            // resume，以服务端真实结果决定当前入口是否拥有 writer。
+            return
         }
         let projects = try await projects()
         try Task.checkCancellation()
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return false
+            return
         }
         let builder = CodexAppServerRequestBuilder(
             allowlistedProjects: projectsIncludingSessionContext(projects, context: context)
         )
-        if verifyWriterAccess || needsPendingInteractionRecovery(for: context.session) {
-            // 显式 writer 重试或待处理交互恢复不能复用当前连接的本地 resume 缓存，
-            // 必须重新向服务端发起 thread/resume 确认写入权或重放未处理请求。
+        if needsPendingInteractionRecovery(for: context.session) {
+            // App 进后台时只取消页面事件泵，底层 gateway 连接可能仍存活，所以这个
+            // thread 仍被记为已 resume。若列表已是等待态、runtime 却没有对应 server request，
+            // 说明请求落在了 iOS 挂起/切会话窗口；清掉本地绑定标记，强制 thread/resume 让
+            // app-server 重放未处理请求。
             threadsResumedOnConnection.remove(sessionID)
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
-            return false
+            return
         }
         // 运行中的 thread 需要 resume 建立 live listener；thread/read/list 只能做 hydration。
-        // 显式写入权校验（verifyWriterAccess == true）禁用 no rollout found 良性放行，
-        // 服务端拒绝 resume 必须抛错；被动订阅即使命中 no rollout found 放行也未获得写入权确认。
-        let resumeOutcome = try await ensureThreadResumedOnConnection(
+        try await ensureThreadResumedOnConnection(
             sessionID: sessionID,
             cwd: context.cwd,
             builder: builder,
-            connection: connection,
-            allowNoRolloutFallback: !verifyWriterAccess
+            connection: connection
         )
-        let confirmedWriterAccess = resumeOutcome == .resumedByServer
         try Task.checkCancellation()
         if let current = threadSubscriptionLeaseBySessionID[sessionID], current != lease, current.wantsEvents {
             // 同会话的后到订阅接替了租约并复用这次 resume；当前观察者照常接收实时事件，
             // 不能当成取消报连接失败。只有退订（false lease）才表示观察意图已撤销。
-            return confirmedWriterAccess
+            return
         }
         guard threadSubscriptionLeaseBySessionID[sessionID] == lease else {
             throw CancellationError()
         }
         // 通道没声明目标能力（如 Claude）时不发 thread/goal/get，否则每次打开都会被网关拒一次（#791）。
         guard supportsThreadGoals(in: config) else {
-            return confirmedWriterAccess
+            return
         }
         // 目标状态是增强信息，不应该卡住实时事件连接。旧 app-server 可能不支持 thread/goal/get，
         // 慢链路也可能延迟响应；后台刷新即可，连接状态先进入 connected。
         Task {
             await refreshThreadGoalIfAvailable(sessionID: sessionID, builder: builder, connection: connection)
         }
-        return confirmedWriterAccess
     }
 
     func needsPendingInteractionRecovery(for session: AgentSession) -> Bool {
@@ -3059,85 +3034,28 @@ actor CodexAppServerSessionRuntime {
     // 直连发送路径下，thread 可能只在 thread/list 或 thread/start 里出现过，但没有在当前 gateway
     // 连接上执行过 thread/resume。真实 app-server 只有 resume 后才稳定建立 live listener；
     // 否则 turn/start 虽然被接受，iPad 也可能收不到 turn/started、delta 和 completed，界面就会一直等待。
-    @discardableResult
     func ensureThreadResumedOnConnection(
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection,
-        allowNoRolloutFallback: Bool = true
-    ) async throws -> CodexAppServerThreadResumeOutcome {
-        if threadsResumedOnConnection.contains(sessionID) {
-            if threadsWithNoRolloutFallbackOnConnection.contains(sessionID) {
-                if allowNoRolloutFallback {
-                    return .noRolloutFallback
-                }
-                // 之前仅靠 no rollout found 放行，未获得服务端写入权确认；
-                // 显式写入权校验必须重新向服务端发 thread/resume，不得复用放行缓存。
-                threadsResumedOnConnection.remove(sessionID)
-            } else {
-                return .resumedByServer
-            }
+        connection: CodexAppServerConnection
+    ) async throws {
+        guard !threadsResumedOnConnection.contains(sessionID) else {
+            return
         }
         if let existing = threadResumeTasksBySessionID[sessionID] {
             if existing.connection === connection {
-                if existing.allowsNoRolloutFallback == allowNoRolloutFallback {
-                    let outcome = try await existing.task.value
-                    clearThreadResumeTask(
-                        sessionID: sessionID,
-                        connection: connection,
-                        token: existing.token
-                    )
-                    return outcome
-                }
-                if allowNoRolloutFallback {
-                    do {
-                        let outcome = try await existing.task.value
-                        clearThreadResumeTask(
-                            sessionID: sessionID,
-                            connection: connection,
-                            token: existing.token
-                        )
-                        return outcome
-                    } catch {
-                        clearThreadResumeTask(
-                            sessionID: sessionID,
-                            connection: connection,
-                            token: existing.token
-                        )
-                        if isNoRolloutFoundError(error) {
-                            try Task.checkCancellation()
-                            threadsResumedOnConnection.insert(sessionID)
-                            threadsWithNoRolloutFallbackOnConnection.insert(sessionID)
-                            return .noRolloutFallback
-                        }
-                        throw error
-                    }
-                }
-                // 当前调用要求严格服务端确认，但进行中的任务允许 no rollout 回退：
-                // 等旧任务完成后，仅当服务端真实成功才复用，否则清掉回退缓存并重新发起严格 resume。
-                if let outcome = try? await existing.task.value {
-                    clearThreadResumeTask(
-                        sessionID: sessionID,
-                        connection: connection,
-                        token: existing.token
-                    )
-                    if outcome == .resumedByServer {
-                        return .resumedByServer
-                    }
-                    threadsResumedOnConnection.remove(sessionID)
-                } else {
-                    clearThreadResumeTask(
-                        sessionID: sessionID,
-                        connection: connection,
-                        token: existing.token
-                    )
-                }
-            } else {
-                // 理论上连接替换路径会统一清理；这里再做代次防线，避免旧任务迟到后把新连接误标为已 resume。
-                existing.task.cancel()
-                threadResumeTasksBySessionID.removeValue(forKey: sessionID)
+                try await existing.task.value
+                clearThreadResumeTask(
+                    sessionID: sessionID,
+                    connection: connection,
+                    token: existing.token
+                )
+                return
             }
+            // 理论上连接替换路径会统一清理；这里再做代次防线，避免旧任务迟到后把新连接误标为已 resume。
+            existing.task.cancel()
+            threadResumeTasksBySessionID.removeValue(forKey: sessionID)
         }
 
         let token = UUID()
@@ -3146,20 +3064,17 @@ actor CodexAppServerSessionRuntime {
                 sessionID: sessionID,
                 cwd: cwd,
                 builder: builder,
-                connection: connection,
-                allowNoRolloutFallback: allowNoRolloutFallback
+                connection: connection
             )
         }
         threadResumeTasksBySessionID[sessionID] = CodexAppServerThreadResumeTask(
             connection: connection,
             token: token,
-            allowsNoRolloutFallback: allowNoRolloutFallback,
             task: task
         )
         do {
-            let outcome = try await task.value
+            try await task.value
             clearThreadResumeTask(sessionID: sessionID, connection: connection, token: token)
-            return outcome
         } catch {
             clearThreadResumeTask(sessionID: sessionID, connection: connection, token: token)
             throw error
@@ -3170,9 +3085,8 @@ actor CodexAppServerSessionRuntime {
         sessionID: SessionID,
         cwd: String,
         builder: CodexAppServerRequestBuilder,
-        connection: CodexAppServerConnection,
-        allowNoRolloutFallback: Bool = true
-    ) async throws -> CodexAppServerThreadResumeOutcome {
+        connection: CodexAppServerConnection
+    ) async throws {
         let usesSharedServerQueue = try await turnDeliveryMode() == .sharedServerQueue
         let collaborationModeGeneration = collaborationModeGenerationBySessionID[sessionID, default: 0]
         var passiveResumeOptions = CodexAppServerTurnOptions.default
@@ -3215,15 +3129,14 @@ actor CodexAppServerSessionRuntime {
                         includeInitialTurnsPage: false
                     )
                 result = try await connection.send(request, timeout: longRunningRequestTimeout)
-            } else if allowNoRolloutFallback, isNoRolloutFoundError(error) {
+            } else if isNoRolloutFoundError(error) {
                 // 刚 thread/start、还没跑过任何 turn 的新线程在上游没有 rollout 文件，thread/resume 会返回
                 // -32600 "no rollout found"。这类线程已经在本连接上被 thread/start 绑定，resume 只是冗余；
-                // 仅在非写入权校验路径下标记为回退放行，等首个 turn/start 落盘 rollout 后事件自然回流。
-                // 显式写入权校验（allowNoRolloutFallback == false）必须向上抛错，绝不得误清写入冲突。
+                // 标记为已 resume 并放行，等首个 turn/start 落盘 rollout 后事件自然回流。否则空会话开屏即
+                // 因 connectForEvents 抛错进入“WebSocket 断开，正在自动重连”的死循环。
                 try Task.checkCancellation()
                 threadsResumedOnConnection.insert(sessionID)
-                threadsWithNoRolloutFallbackOnConnection.insert(sessionID)
-                return .noRolloutFallback
+                return
             } else {
                 throw error
             }
@@ -3254,9 +3167,7 @@ actor CodexAppServerSessionRuntime {
             }
         }
         try Task.checkCancellation()
-        threadsWithNoRolloutFallbackOnConnection.remove(sessionID)
         threadsResumedOnConnection.insert(sessionID)
-        return .resumedByServer
     }
 
     func emitActivePermissionProfile(from result: CodexAppServerJSONValue?, threadID: SessionID) {

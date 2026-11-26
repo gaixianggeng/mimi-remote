@@ -469,10 +469,9 @@ extension SessionStore {
                 case .connected:
                     self?.queuedSessionReadyIDs.insert(sessionID)
                     self?.queuedSessionReconnectAttemptBySessionID.removeValue(forKey: sessionID)
-                    // 与前台 .connected 一致：只有服务端已确认写入权才清除冲突标记，避免 Windows 受管 WS
-                    // 跳过 thread/resume 的空闲连接误清冲突。只在确有冲突时清，避免用户停在别的页面时空发布。
-                    if self?.hasActiveWriterConflict(sessionID: sessionID) == true,
-                       self?.queuedSessionSockets[sessionID]?.hasConfirmedWriterAccess == true {
+                    // 与前台 .connected 一致：连上即说明 writer 已可用，否则确认重试后仍被冲突挡住派发。
+                    // 只在确有冲突时清，避免用户停在别的页面时空发布。
+                    if self?.hasActiveWriterConflict(sessionID: sessionID) == true {
                         self?.setActiveWriterConflict(false, sessionID: sessionID)
                     }
                     if let self, let currentSocket = self.queuedSessionSockets[sessionID] {

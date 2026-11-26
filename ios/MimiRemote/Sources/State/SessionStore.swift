@@ -246,8 +246,6 @@ final class SessionStore: ObservableObject {
     /// 仅记录 App Server 明确返回的单 writer 冲突。不能从 thread/list 的 idle/notLoaded
     /// 推断写权限，否则只读打开历史也会被误判为可写或被另一端占用。
     @Published var activeWriterConflictLeases: Set<HostSessionLease> = []
-    /// 当前前台 WebSocket 已通过服务端 `thread/resume` 确认取得写入权的会话租约。
-    @Published var writerVerifiedWebSocketLease: HostSessionLease?
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
     /// 同一 Session 可连续提交多次权限变更；必须按提交顺序逐条等待精确 turn/started。
     @Published var pendingPermissionTurnBoundariesBySessionID: [SessionID: [PendingPermissionTurnBoundary]] = [:]

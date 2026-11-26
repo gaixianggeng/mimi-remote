@@ -65,7 +65,6 @@ actor ReconnectDelayRecorder {
 
 final class MockWebSocketClient: SessionWebSocketClient {
     var turnDeliveryMode: TurnDeliveryMode = .direct
-    var hasConfirmedWriterAccess = true
     var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
@@ -80,7 +79,6 @@ final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var replayBufferedEventsByConnect: [Bool] = []
     private(set) var historyReplayBoundariesByConnect: [HistoryReplayBoundary?] = []
     private(set) var afterSequencesByConnect: [EventSequence?] = []
-    private(set) var verifyWriterAccessByConnect: [Bool] = []
     private(set) var sentInputs: [(text: String, clientMessageID: ClientMessageID?)] = []
     private(set) var sentTurns: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?)] = []
     private(set) var sentGuidance: [(payload: CodexAppServerTurnPayload, clientMessageID: ClientMessageID?, expectedTurnID: TurnID)] = []
@@ -110,22 +108,6 @@ final class MockWebSocketClient: SessionWebSocketClient {
         afterSequencesByConnect.append(afterSequence)
         historyReplayBoundariesByConnect.append(historyReplayBoundary)
         connect(sessionID: sessionID, replayBufferedEvents: replayBufferedEvents)
-    }
-
-    func connect(
-        sessionID: SessionID,
-        replayBufferedEvents: Bool,
-        afterSequence: EventSequence?,
-        historyReplayBoundary: HistoryReplayBoundary?,
-        verifyWriterAccess: Bool
-    ) {
-        verifyWriterAccessByConnect.append(verifyWriterAccess)
-        connect(
-            sessionID: sessionID,
-            replayBufferedEvents: replayBufferedEvents,
-            afterSequence: afterSequence,
-            historyReplayBoundary: historyReplayBoundary
-        )
     }
 
     func disconnect() {

@@ -97,7 +97,6 @@ extension SessionStore {
         networkSuspendedSessionID = nil
         disconnectWebSocket()
         activeWriterConflictLeases.removeAll()
-        writerVerifiedWebSocketLease = nil
         clearAllWriterConflictForkState()
         if clearData {
             stopNativeHarnessHostEvents()

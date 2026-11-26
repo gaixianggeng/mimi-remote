@@ -906,10 +906,6 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         self.bundle = bundle
     }
 
-    var hasConfirmedWriterAccess: Bool {
-        activeClient?.hasConfirmedWriterAccess ?? false
-    }
-
     func connect(sessionID: SessionID) {
         connect(sessionID: sessionID, replayBufferedEvents: true)
     }
@@ -923,22 +919,6 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
-        connect(
-            sessionID: sessionID,
-            replayBufferedEvents: replayBufferedEvents,
-            afterSequence: afterSequence,
-            historyReplayBoundary: historyReplayBoundary,
-            verifyWriterAccess: false
-        )
-    }
-
-    func connect(
-        sessionID: SessionID,
-        replayBufferedEvents: Bool,
-        afterSequence: EventSequence?,
-        historyReplayBoundary: HistoryReplayBoundary?,
-        verifyWriterAccess: Bool
-    ) {
         // 先让旧观察失效，再断开它。disconnect 与已排队的读回调都不能改写新页面。
         observationGeneration &+= 1
         let generation = observationGeneration
@@ -967,8 +947,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
             sessionID: sessionID,
             replayBufferedEvents: replayBufferedEvents,
             afterSequence: afterSequence,
-            historyReplayBoundary: historyReplayBoundary,
-            verifyWriterAccess: verifyWriterAccess
+            historyReplayBoundary: historyReplayBoundary
         )
     }
 
@@ -1082,25 +1061,8 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     }
 }
 
-private final class WriterAccessConfirmationBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var confirmed = false
-
-    var isConfirmed: Bool {
-        lock.withLock { confirmed }
-    }
-
-    func set(_ value: Bool) {
-        lock.withLock { confirmed = value }
-    }
-}
-
 final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     private(set) var turnDeliveryMode: TurnDeliveryMode = .direct
-    private let writerAccessState = WriterAccessConfirmationBox()
-    var hasConfirmedWriterAccess: Bool {
-        writerAccessState.isConfirmed
-    }
     var onEvent: (@MainActor (AgentEvent) -> Void)?
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
@@ -1128,29 +1090,11 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     func connect(sessionID threadID: SessionID, replayBufferedEvents: Bool, afterSequence: EventSequence?, historyReplayBoundary: HistoryReplayBoundary?) {
-        connect(
-            sessionID: threadID,
-            replayBufferedEvents: replayBufferedEvents,
-            afterSequence: afterSequence,
-            historyReplayBoundary: historyReplayBoundary,
-            verifyWriterAccess: false
-        )
-    }
-
-    func connect(
-        sessionID threadID: SessionID,
-        replayBufferedEvents: Bool,
-        afterSequence: EventSequence?,
-        historyReplayBoundary: HistoryReplayBoundary?,
-        verifyWriterAccess: Bool
-    ) {
         sessionID = threadID
-        writerAccessState.set(false)
         onStatus?(.connecting)
         eventPumpTask?.cancel()
         let statusHandler = onStatus
         let eventHandler = onEvent
-        let writerAccessState = self.writerAccessState
         let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
         eventPumpTask = Task { [runtime] in
             guard !Task.isCancelled else { return }
@@ -1170,10 +1114,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
             }
             do {
                 try Task.checkCancellation()
-                let writerConfirmed = try await runtime.connectForEvents(
-                    sessionID: threadID,
-                    verifyWriterAccess: verifyWriterAccess
-                )
+                try await runtime.connectForEvents(sessionID: threadID)
                 guard !Task.isCancelled else {
                     return
                 }
@@ -1187,7 +1128,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     return
                 }
                 await MainActor.run {
-                    writerAccessState.set(writerConfirmed)
                     statusHandler?(.connected)
                 }
                 for await event in events {
@@ -1202,7 +1142,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     return
                 }
                 await MainActor.run {
-                    writerAccessState.set(false)
                     statusHandler?(.disconnected)
                 }
             } catch {
@@ -1210,7 +1149,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
                     return
                 }
                 await MainActor.run {
-                    writerAccessState.set(false)
                     if isCredentialInvalidatingError(error) {
                         statusHandler?(.terminated(.credentialsInvalid))
                     } else {
@@ -1224,7 +1162,6 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     func disconnect() {
         eventPumpTask?.cancel()
         eventPumpTask = nil
-        writerAccessState.set(false)
         onStatus?(.disconnected)
     }
 
