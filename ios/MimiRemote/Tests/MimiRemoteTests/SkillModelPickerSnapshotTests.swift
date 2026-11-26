@@ -1541,7 +1541,9 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         // 面板纯内边距区横跨竖向条纹边界 `stripeSplitX`：
         // 左侧背后是深色条纹、右侧背后是亮色条纹，一次采样同时测得面板底色、左右透光差和竖向边界模糊度。
-        let sampleY = isAdaptedSheet ? (frame.maxY - 6) : (frame.minY + 6)
+        // 紧凑 Sheet 底部紧贴真实的 `ComposerView` 输入卡，背后条纹会被输入卡自身遮挡；
+        // 因此改在拖动手柄下方、顶部控件上方的纯留白带（`frame.minY + 18`）采样未被遮挡的背景条纹。
+        let sampleY = isAdaptedSheet ? (frame.minY + 18) : (frame.minY + 6)
         let leftSampleX = max(frame.minX + 52, min(stripeSplitX - 48, frame.midX - 36))
         let rightSampleX = min(frame.maxX - 52, max(stripeSplitX + 48, frame.midX + 36))
         let panelLeftRGB = try XCTUnwrap(sampleRGB(in: presentedImage, at: CGPoint(x: leftSampleX, y: sampleY)))
