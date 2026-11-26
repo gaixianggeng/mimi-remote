@@ -170,6 +170,8 @@ func (t *SSHTransport) CheckRemoteCodex(ctx context.Context) (string, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, sshCodexVersionRemoteCommand)...)
+	// A surviving ProxyCommand can keep the output pipe open after ssh exits.
+	cmd.WaitDelay = time.Second
 	cmd.Env = ManagedEnvironment(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

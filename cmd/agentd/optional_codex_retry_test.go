@@ -106,3 +106,32 @@ func TestOptionalCodexShutdownCancelsSSHRetry(t *testing.T) {
 		}
 	})
 }
+
+func TestOptionalCodexShutdownCleansUpLatePreparation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		transport, err := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: "fixture.invalid"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		release := make(chan struct{})
+		s := newOptionalCodex(t.Context(), true, func(context.Context) (*agentAppServerRuntime, error) {
+			<-release // simulate a preparation step that ignores cancellation
+			return &agentAppServerRuntime{transport: transport}, nil
+		})
+		stopped := make(chan struct{})
+		go func() {
+			s.Shutdown()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			t.Error("shutdown waited for the stuck preparation")
+		}
+		close(release)
+		synctest.Wait()
+		if _, err := transport.WebSocketDialer(time.Second); err == nil {
+			t.Error("runtime prepared after shutdown was left open")
+		}
+	})
+}

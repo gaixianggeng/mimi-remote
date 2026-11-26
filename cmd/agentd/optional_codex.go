@@ -14,7 +14,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const codexSSHRetryDelay = 5 * time.Second
+const (
+	codexSSHRetryDelay   = 5 * time.Second
+	codexShutdownTimeout = 5 * time.Second
+)
 
 var errCodexUnavailable = errors.New("Codex app-server 暂不可用")
 
@@ -145,14 +148,25 @@ func (s *optionalCodex) Shutdown() {
 		s.mu.Lock()
 		done := s.done
 		s.mu.Unlock()
-		<-done
-		if r := s.runtime; r != nil {
-			if t, ok := r.transport.(interface{ Shutdown() }); ok {
-				t.Shutdown()
+		stopped := make(chan struct{})
+		// Keep ownership of the last attempt, even if it returns a runtime
+		// after the daemon's shutdown deadline.
+		go func() {
+			defer close(stopped)
+			<-done
+			if r := s.runtime; r != nil {
+				if t, ok := r.transport.(interface{ Shutdown() }); ok {
+					t.Shutdown()
+				}
+				if err := r.shutdown(); err != nil {
+					log.Print("Codex app-server shutdown failed")
+				}
 			}
-			if err := r.shutdown(); err != nil {
-				log.Print("Codex app-server shutdown failed")
-			}
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(codexShutdownTimeout):
+			log.Print("Codex app-server shutdown timed out")
 		}
 	})
 }
