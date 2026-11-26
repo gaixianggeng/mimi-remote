@@ -795,7 +795,7 @@ func TestDefaultPathCommandsReuseLegacyConfigWithoutRotatingToken(t *testing.T) 
 				if err != nil {
 					t.Fatalf("%s 在配对失败时应降级为警告而不是返回错误：%v stderr=%q", testCase.name, err, stderr)
 				}
-				if !strings.Contains(stderr, "警告：服务已启动，但暂时无法生成配对信息：") {
+				if !strings.Contains(stderr, "警告：已提交启动请求，尚未确认就绪，暂时无法生成配对信息：") {
 					t.Fatalf("%s 缺少配对失败警告：%q", testCase.name, stderr)
 				}
 			default:

@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=+/bin/sh -c 'd=/tmp/codex-daemon-%U; umask 077; if /bin/mkdir -m 0700 -- "$$d" 2>/dev/null; then exit 0; fi; if [ -L "$$d" ]; then echo "mimi-remote: refusing symlink $$d" >&2; exit 1; fi; if [ ! -d "$$d" ]; then echo "mimi-remote: $$d is not a directory or could not be created" >&2; exit 1; fi; if [ -x /usr/bin/stat ]; then s=/usr/bin/stat; elif [ -x /bin/stat ]; then s=/bin/stat; else echo "mimi-remote: stat command not found" >&2; exit 1; fi; info=$$(LC_ALL=C "$$s" -c %%F:%%u -- "$$d") || exit 1; if [ "$$info" != "directory:%U" ]; then echo "mimi-remote: refusing unsafe $$d ($$info, expected directory:%U)" >&2; exit 1; fi; /bin/chmod 0700 "$$d"'
+ExecStartPre=-+/bin/sh -c 'd=/tmp/codex-daemon-%U; umask 077; if /bin/mkdir -m 0700 -- "$$d" 2>/dev/null; then exit 0; fi; if [ -L "$$d" ]; then echo "mimi-remote: warning: ignoring unsafe symlink $$d; local shared Codex will be unavailable" >&2; exit 1; fi; if [ ! -d "$$d" ]; then echo "mimi-remote: warning: $$d is not a directory or could not be created; local shared Codex will be unavailable" >&2; exit 1; fi; if [ -x /usr/bin/stat ]; then s=/usr/bin/stat; elif [ -x /bin/stat ]; then s=/bin/stat; else echo "mimi-remote: warning: stat command not found; skipping $$d ownership check" >&2; exit 1; fi; info=$$(LC_ALL=C "$$s" -c %%F:%%u -- "$$d") || exit 1; if [ "$$info" != "directory:%U" ]; then echo "mimi-remote: warning: ignoring unsafe $$d ($$info, expected directory:%U); local shared Codex will be unavailable" >&2; exit 1; fi; /bin/chmod 0700 "$$d"'
 ExecStart=%h/.local/bin/agentd serve --config %h/.config/mimi-remote/config.json
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:%h/.local/share/mise/shims:%h/.local/share/mise/installs/codex/latest/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
@@ -13,7 +13,7 @@ RestartSec=3
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-BindPaths=/tmp/codex-daemon-%U
+BindPaths=-/tmp/codex-daemon-%U
 
 [Install]
 WantedBy=default.target

@@ -138,6 +138,9 @@ case "$1" in
         ready)
           echo "配对：可用，运行 agentd pair --qr-only"
           ;;
+        tailcat_ready)
+          echo "配对：可用，运行 agentd tailcat pair --qr-only"
+          ;;
         *)
           cat <<'EOF'
 配对：暂不可用
@@ -161,6 +164,11 @@ EOF
     [[ "$*" == 'pair --qr-only' ]]
     if [[ "${FAKE_PAIR_FAIL:-0}" == 1 ]]; then exit 9; fi
     echo "短期配对二维码已就绪（${version}）"
+    ;;
+  tailcat)
+    [[ "$*" == 'tailcat pair --qr-only' ]]
+    if [[ "${FAKE_TAILCAT_PAIR_FAIL:-0}" == 1 ]]; then exit 11; fi
+    echo "Tailcat 短期配对二维码已就绪（${version}）"
     ;;
   *) echo "fake agentd 不支持：$1" >&2; exit 2 ;;
 esac
@@ -332,6 +340,40 @@ success_pair="$(HOME="$pair_failure_home" FAKE_AGENTD_LOG="$pair_failure_state/a
   bash "$release_123/scripts/install-linux.sh" install --pair 2>&1)"
 grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$success_pair"
 [[ "$success_pair" != *"$TEST_SECRET"* ]]
+
+# 仅 Tailcat 可用时，--pair 必须调用 tailcat pair --qr-only，且失败重试提示也指向 tailcat pair。
+: >"$pair_failure_state/agentd.log"
+tailcat_pair_ok="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=tailcat_ready \
+    bash "$release_123/scripts/install-linux.sh" upgrade --pair 2>&1
+)"
+grep -Fq '配对：可用，运行 agentd tailcat pair --qr-only' <<<"$tailcat_pair_ok"
+grep -Fq 'Tailcat 短期配对二维码已就绪（1.2.3）' <<<"$tailcat_pair_ok"
+grep -Fq '1.2.3 tailcat pair --qr-only' "$pair_failure_state/agentd.log"
+if grep -Fq '1.2.3 pair --qr-only' "$pair_failure_state/agentd.log"; then
+  echo "仅 Tailcat 可用时 --pair 不应调用直连 pair --qr-only。" >&2
+  exit 1
+fi
+
+: >"$pair_failure_state/agentd.log"
+tailcat_pair_fail="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=tailcat_ready \
+    FAKE_TAILCAT_PAIR_FAIL=1 \
+    bash "$release_123/scripts/install-linux.sh" upgrade --pair 2>&1
+)"
+grep -Fq "请重试：\"$pair_failure_home/.local/bin/agentd\" tailcat pair --qr-only" <<<"$tailcat_pair_fail"
+if grep -Fq "请重试：\"$pair_failure_home/.local/bin/agentd\" pair --qr-only" <<<"$tailcat_pair_fail"; then
+  echo "Tailcat --pair 失败时重试提示不应指向直连 pair --qr-only。" >&2
+  exit 1
+fi
 
 bash "$release_124/scripts/install-linux.sh" upgrade >/dev/null
 assert_version "$HOME/.local/bin/agentd" "1.2.4"
@@ -590,14 +632,18 @@ grep -Fq "已保留配置和 Token：$HOME/.config/mimi-remote" <<<"$second_unin
 [[ -f "$HOME/.config/mimi-remote/config.json" ]]
 [[ "$(<"$HOME/.config/mimi-remote/app-server-ws-token")" == "$TEST_SECRET" ]]
 
-# 验证 packaging/systemd/mimi-remote.service 中 ExecStartPre 的 POSIX 语法与目录安全校验（#1163）。
+# 验证 packaging/systemd/mimi-remote.service 中 ExecStartPre 的 POSIX 语法与非阻断目录安全校验（#1163）。
 service_template="$ROOT_DIR/packaging/systemd/mimi-remote.service"
-exec_pre_raw="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_template")"
-[[ "$exec_pre_raw" == "+/bin/sh -c '"*"'" ]] || {
-  echo "systemd ExecStartPre 未使用 +/bin/sh -c 单引号形式：$exec_pre_raw" >&2
+grep -Fqx 'BindPaths=-/tmp/codex-daemon-%U' "$service_template" || {
+  echo "systemd unit 缺少忽略缺失路径的 BindPaths=-/tmp/codex-daemon-%U。" >&2
   exit 1
 }
-exec_pre_script="${exec_pre_raw#"+/bin/sh -c '"}"
+exec_pre_raw="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_template")"
+[[ "$exec_pre_raw" == "-+/bin/sh -c '"*"'" ]] || {
+  echo "systemd ExecStartPre 未使用不阻断启动的 -+/bin/sh -c 单引号形式：$exec_pre_raw" >&2
+  exit 1
+}
+exec_pre_script="${exec_pre_raw#"-+/bin/sh -c '"}"
 exec_pre_script="${exec_pre_script%"'"}"
 # 还原 systemd 的 specifier 与环境变量转义（%U -> UID，%% -> %，$$ -> $）。
 exec_pre_expanded="$(python3 - "$exec_pre_script" <<'PY'
@@ -669,7 +715,7 @@ if symlink_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
   echo "ExecStartPre 未拒绝符号链接。" >&2
   exit 1
 fi
-grep -Fq 'refusing symlink' <<<"$symlink_out"
+grep -Fq 'ignoring unsafe symlink' <<<"$symlink_out"
 rm "$target_codex_dir"
 
 # 5. 非目录（普通文件）必须被拒绝。

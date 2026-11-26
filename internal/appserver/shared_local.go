@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -50,6 +51,8 @@ type SharedLocalTransport struct {
 	expectedBackendHome string
 	requireBackendHome  bool
 	ensureMu            sync.Mutex
+	unsafeLogMu         sync.Mutex
+	lastUnsafeLog       string
 	startOnce           func(context.Context, SharedLocalOptions) error
 }
 
@@ -211,6 +214,23 @@ func (t *SharedLocalTransport) WebSocketDialer(timeout time.Duration) (websocket
 	return dialer, nil
 }
 
+func (t *SharedLocalTransport) ensureSafeSocketDir() error {
+	if err := validateSharedLocalSocketSafety(t.socket); err != nil {
+		msg := err.Error()
+		t.unsafeLogMu.Lock()
+		if t.lastUnsafeLog != msg {
+			t.lastUnsafeLog = msg
+			log.Printf("mimi-remote: %s", msg)
+		}
+		t.unsafeLogMu.Unlock()
+		return err
+	}
+	t.unsafeLogMu.Lock()
+	t.lastUnsafeLog = ""
+	t.unsafeLogMu.Unlock()
+	return nil
+}
+
 // rawWebSocketDialer 仅供登录环境探针和显式修复使用，业务连接不得绕过校验。
 func (t *SharedLocalTransport) rawWebSocketDialer(timeout time.Duration) (websocket.Dialer, error) {
 	if _, err := t.WebSocketURL(); err != nil {
@@ -223,6 +243,9 @@ func (t *SharedLocalTransport) rawWebSocketDialer(timeout time.Duration) (websoc
 	return websocket.Dialer{
 		HandshakeTimeout: timeout,
 		NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if err := t.ensureSafeSocketDir(); err != nil {
+				return nil, err
+			}
 			return netDialer.DialContext(ctx, "unix", t.socket)
 		},
 	}, nil
@@ -242,6 +265,10 @@ func (t *SharedLocalTransport) EnsureReady(ctx context.Context) error {
 	}
 	t.ensureMu.Lock()
 	defer t.ensureMu.Unlock()
+
+	if err := t.ensureSafeSocketDir(); err != nil {
+		return err
+	}
 
 	probeErr := t.probe(ctx)
 	if probeErr == nil {
@@ -328,6 +355,10 @@ func startSharedLocalAppServer(ctx context.Context, options SharedLocalOptions) 
 // startSharedLocalAppServerListening 沿用 Desktop 的启动方式；macOS 还保留 CLI 的模型发现设置。
 // 前门使用私有 backend socket；标准 control socket 由 launchd 持有。
 func startSharedLocalAppServerListening(ctx context.Context, options SharedLocalOptions, listen string) error {
+	socketPath, _ := SharedLocalSocketPath(options.Env)
+	if err := validateSharedLocalSocketSafety(socketPath); err != nil {
+		return err
+	}
 	if err := validateSharedLocalLaunchSession(ctx); err != nil {
 		return err
 	}

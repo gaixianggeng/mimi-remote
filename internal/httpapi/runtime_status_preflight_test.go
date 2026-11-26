@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -122,5 +123,70 @@ func TestPreflightLocalCacheEndpoint(t *testing.T) {
 	cache.mu.Unlock()
 	if generation != 0 || probes.Load() != 0 {
 		t.Fatalf("reading preflight initiated a refresh: generation=%d probes=%d", generation, probes.Load())
+	}
+}
+
+func TestPreflightLocalEndpointReportsAppliedGeneration(t *testing.T) {
+	root := t.TempDir()
+	document := map[string]any{
+		"listen":     "127.0.0.1:8787",
+		"auth":       map[string]string{"token": testToken},
+		"network":    map[string]bool{"allow_lan": true, "allow_tailscale": false},
+		"scan_roots": []string{root}, "browse_roots": []string{root},
+		"codex": map[string]bool{"enabled": false},
+	}
+	server := newFileBackedPairingServer(t, document, nil)
+	r := server.router
+	readHost := func() setup.PreflightHost {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8787/api/local/preflight", nil)
+		req.RemoteAddr = "127.0.0.1:39002"
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("preflight status=%d body=%s", w.Code, w.Body.String())
+		}
+		var host setup.PreflightHost
+		if err := json.Unmarshal(w.Body.Bytes(), &host); err != nil {
+			t.Fatal(err)
+		}
+		return host
+	}
+
+	initial := readHost()
+	wantGen := r.cfg.SourceGeneration()
+	if wantGen == "" || initial.AppliedGeneration == nil || *initial.AppliedGeneration != wantGen {
+		t.Fatalf("未修改配置时应返回当前已应用 generation %q，got=%+v", wantGen, initial.AppliedGeneration)
+	}
+
+	// 仅修改内存热生效的 Tailcat 字段且 live supervisor 同步后，applied_generation 应跟随新配置代次。
+	document["tailcat"] = map[string]any{"enabled": true}
+	liveTailcatBytes, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configtest.WritePrivateFile(t, r.configPath, liveTailcatBytes)
+	if sup, ok := r.tailcat.(*tailcatSidecarSupervisor); ok {
+		sup.mu.Lock()
+		sup.config.Enabled = true
+		sup.mu.Unlock()
+	}
+	liveTailcatGen := config.ReadPreflightSnapshot(r.configPath).Config.SourceGeneration()
+	liveHost := readHost()
+	if liveHost.AppliedGeneration == nil || *liveHost.AppliedGeneration != liveTailcatGen {
+		t.Fatalf("热生效 Tailcat 后 applied_generation 应等于最新配置代次 %q，got=%v", liveTailcatGen, liveHost.AppliedGeneration)
+	}
+
+	// 修改需要重启的字段后，applied_generation 应为空字符串（与 /api/local/pair/issue 门禁一致）。
+	document["browse_roots"] = []string{t.TempDir()}
+	editedBytes, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configtest.WritePrivateFile(t, r.configPath, editedBytes)
+	editedHost := readHost()
+	if editedHost.AppliedGeneration == nil || *editedHost.AppliedGeneration != "" {
+		t.Fatalf("未重启应用配置改动时 applied_generation 应为空字符串，got=%v", editedHost.AppliedGeneration)
 	}
 }

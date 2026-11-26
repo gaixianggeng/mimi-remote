@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -20,6 +21,79 @@ type pairingReadiness struct {
 	Blockers    []pairingBlocker
 }
 
+type pairingCommandContext struct {
+	platform       string
+	configPath     string
+	managedService bool
+	includeConfig  bool
+}
+
+func newPairingCommandContext(configPath, platform string) pairingCommandContext {
+	trimmed := strings.TrimSpace(configPath)
+	if trimmed == "" {
+		return pairingCommandContext{
+			platform:       platform,
+			managedService: true,
+		}
+	}
+	expanded := config.ExpandPath(trimmed)
+	managed := isManagedCoreConfig(expanded)
+	includeConfig := !managed
+	if managed && !samePairingConfigPath(expanded, config.DefaultPath()) {
+		// 即使选中的是平台默认配置，只要当前环境里 AGENTD_CONFIG 指向别处，仍显式带上 --config。
+		includeConfig = true
+	}
+	return pairingCommandContext{
+		platform:       platform,
+		configPath:     expanded,
+		managedService: managed,
+		includeConfig:  includeConfig,
+	}
+}
+
+func samePairingConfigPath(a, b string) bool {
+	idA, errA := config.ConfigPathIdentity(a)
+	idB, errB := config.ConfigPathIdentity(b)
+	if errA == nil && errB == nil {
+		return idA == idB
+	}
+	absA, errA := absoluteConfigPath(a)
+	absB, errB := absoluteConfigPath(b)
+	return errA == nil && errB == nil && absA == absB
+}
+
+func (c pairingCommandContext) configFlag() string {
+	if !c.includeConfig || strings.TrimSpace(c.configPath) == "" {
+		return ""
+	}
+	return "--config " + shellQuoteArgument(c.configPath)
+}
+
+func (c pairingCommandContext) cmd(subcommand string, extraArgs ...string) string {
+	parts := []string{"agentd", subcommand}
+	if flag := c.configFlag(); flag != "" {
+		parts = append(parts, flag)
+	}
+	for _, arg := range extraArgs {
+		if strings.TrimSpace(arg) != "" {
+			parts = append(parts, arg)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func (c pairingCommandContext) startNoPair() string {
+	return c.cmd("start", "--no-pair")
+}
+
+func (c pairingCommandContext) restartNoPair() string {
+	return c.cmd("restart", "--no-pair")
+}
+
+func (c pairingCommandContext) serve() string {
+	return c.cmd("serve")
+}
+
 // inspectPairingReadiness 复用 internal/setup 的本机配对预检，不新增平行检测，也不发起外部联网。
 func inspectPairingReadiness(ctx context.Context, configPath, legacyPath, platform string) pairingReadiness {
 	report := runHostPreflight(ctx, agentsetup.PreflightOptions{
@@ -29,31 +103,35 @@ func inspectPairingReadiness(ctx context.Context, configPath, legacyPath, platfo
 		Version:    version,
 		HostDial:   coreDialForConfig(configPath),
 	}, nil)
-	return summarizePairingReadiness(report, platform)
+	return summarizePairingReadiness(report, configPath, platform)
 }
 
-func summarizePairingReadiness(report agentsetup.PreflightReport, platform string) pairingReadiness {
+func summarizePairingReadiness(report agentsetup.PreflightReport, configPath, platform string) pairingReadiness {
+	cmds := newPairingCommandContext(configPath, platform)
 	checksByID := make(map[string]agentsetup.PreflightCheck, len(report.Checks))
 	for _, check := range report.Checks {
 		checksByID[check.ID] = check
 	}
-	if report.OK {
+	if report.OK && !report.ConfigRestartRequired {
 		return pairingReadiness{
 			Ready:       true,
-			PairCommand: readyPairCommand(checksByID),
+			PairCommand: readyPairCommand(checksByID, cmds),
 		}
 	}
-	blockers := make([]pairingBlocker, 0, 5)
+	blockers := make([]pairingBlocker, 0, 6)
 	for _, check := range report.Checks {
 		if !check.Blocking {
 			continue
 		}
-		blockers = append(blockers, describePairingBlocker(check, checksByID, platform))
+		blockers = append(blockers, describePairingBlocker(check, checksByID, cmds))
+	}
+	if report.ConfigRestartRequired {
+		blockers = append(blockers, describeConfigRestartBlocker(cmds))
 	}
 	if len(blockers) == 0 {
 		blockers = append(blockers, pairingBlocker{
 			Summary: "配对条件尚未满足",
-			Fix:     "运行 agentd doctor 和 agentd status 检查详细状态",
+			Fix:     fmt.Sprintf("运行 %s 和 %s 检查详细状态", cmds.cmd("doctor"), cmds.cmd("status")),
 		})
 	}
 	return pairingReadiness{
@@ -62,48 +140,65 @@ func summarizePairingReadiness(report agentsetup.PreflightReport, platform strin
 	}
 }
 
-func readyPairCommand(checksByID map[string]agentsetup.PreflightCheck) string {
+func readyPairCommand(checksByID map[string]agentsetup.PreflightCheck, cmds pairingCommandContext) string {
 	// Tailscale 或局域网任一直连通道已就绪时使用 agentd pair --qr-only；
 	// 仅 Tailcat 已就绪时给出实际可用的 agentd tailcat pair --qr-only，避免推荐会报错的命令。
 	if checksByID["network_tailscale"].State == "ok" || checksByID["network_lan"].State == "ok" {
-		return "agentd pair --qr-only"
+		return cmds.cmd("pair", "--qr-only")
 	}
 	if checksByID["network_tailcat"].State == "ok" {
-		return "agentd tailcat pair --qr-only"
+		return cmds.cmd("tailcat pair", "--qr-only")
 	}
-	return "agentd pair --qr-only"
+	return cmds.cmd("pair", "--qr-only")
 }
 
-func describePairingBlocker(check agentsetup.PreflightCheck, checksByID map[string]agentsetup.PreflightCheck, platform string) pairingBlocker {
+func describeConfigRestartBlocker(cmds pairingCommandContext) pairingBlocker {
+	if !cmds.managedService {
+		return pairingBlocker{
+			Summary: "已保存的配置尚未应用到运行中的服务进程",
+			Fix:     fmt.Sprintf("重启匹配该配置的前台进程（%s）使最新配置生效", cmds.serve()),
+		}
+	}
+	return pairingBlocker{
+		Summary: "已保存的配置尚未应用到运行中的后台服务",
+		Fix:     fmt.Sprintf("运行 %s 使最新配置生效", cmds.restartNoPair()),
+	}
+}
+
+func describePairingBlocker(check agentsetup.PreflightCheck, checksByID map[string]agentsetup.PreflightCheck, cmds pairingCommandContext) pairingBlocker {
 	switch check.ID {
 	case "config_store":
-		return describeConfigStoreBlocker(check)
+		return describeConfigStoreBlocker(check, cmds)
 	case "workspace_root":
+		fix := fmt.Sprintf("运行 %s 后执行 %s", cmds.cmd("workspace", "--root <代码目录路径>"), cmds.restartNoPair())
+		if !cmds.managedService {
+			fix = fmt.Sprintf("运行 %s，然后重启匹配该配置的前台进程（%s）", cmds.cmd("workspace", "--root <代码目录路径>"), cmds.serve())
+		}
 		return pairingBlocker{
 			Summary: pairingDetailSummary("代码目录未就绪", check.Detail),
-			Fix:     "运行 agentd workspace --root <代码目录路径> 后执行 agentd restart --no-pair",
+			Fix:     fix,
 		}
 	case "service_daemon":
-		return describeServiceDaemonBlocker(check, platform)
+		return describeServiceDaemonBlocker(check, cmds)
 	case "assistant_any":
-		return describeAssistantBlocker(checksByID)
+		return describeAssistantBlocker(checksByID, cmds)
 	case "network_any":
-		return describeNetworkBlocker(checksByID, platform)
+		return describeNetworkBlocker(checksByID, cmds)
 	default:
 		return pairingBlocker{
 			Summary: pairingDetailSummary(check.Title, check.Detail),
-			Fix:     "运行 agentd doctor 检查详细状态",
+			Fix:     fmt.Sprintf("运行 %s 检查详细状态", cmds.cmd("doctor")),
 		}
 	}
 }
 
-func describeConfigStoreBlocker(check agentsetup.PreflightCheck) pairingBlocker {
-	fix := "运行 agentd check-config --json 和 agentd doctor"
+func describeConfigStoreBlocker(check agentsetup.PreflightCheck, cmds pairingCommandContext) pairingBlocker {
+	fix := fmt.Sprintf("运行 %s 和 %s", cmds.cmd("check-config", "--json"), cmds.cmd("doctor"))
 	switch check.Code {
 	case "config_missing":
-		fix = "运行 agentd setup --no-pair"
+		fix = "运行 " + cmds.cmd("setup", "--no-pair")
 	case "config_permissions_unsafe":
-		fix = "运行 agentd doctor --fix"
+		fix = "运行 " + cmds.cmd("doctor", "--fix")
 	case "config_requires_newer_version":
 		fix = "升级到最新版本的 Mimi Remote 后重试"
 	}
@@ -113,15 +208,28 @@ func describeConfigStoreBlocker(check agentsetup.PreflightCheck) pairingBlocker 
 	}
 }
 
-func describeServiceDaemonBlocker(check agentsetup.PreflightCheck, platform string) pairingBlocker {
-	fix := "运行 agentd logs -n 200 和 agentd doctor"
+func describeServiceDaemonBlocker(check agentsetup.PreflightCheck, cmds pairingCommandContext) pairingBlocker {
+	if !cmds.managedService {
+		fix := fmt.Sprintf("检查匹配该配置的前台服务日志，并运行 %s", cmds.cmd("doctor"))
+		switch check.Code {
+		case "service_not_running", "service_not_registered":
+			fix = fmt.Sprintf("运行 %s 启动匹配该配置的前台进程", cmds.serve())
+		case "service_version_mismatch", "pair_token_mismatch":
+			fix = fmt.Sprintf("重启匹配该配置的前台进程（%s）", cmds.serve())
+		}
+		return pairingBlocker{
+			Summary: pairingDetailSummary("后台服务未就绪", check.Detail),
+			Fix:     fix,
+		}
+	}
+	fix := fmt.Sprintf("运行 agentd logs -n 200 和 %s", cmds.cmd("doctor"))
 	switch check.Code {
 	case "service_not_running":
-		fix = "运行 agentd start --no-pair"
+		fix = "运行 " + cmds.startNoPair()
 	case "service_version_mismatch", "pair_token_mismatch":
-		fix = "运行 agentd restart --no-pair"
+		fix = "运行 " + cmds.restartNoPair()
 	case "service_not_registered":
-		if platform == "linux" {
+		if cmds.platform == "linux" {
 			fix = "从正式 Release 解压目录运行 bash ./scripts/install-linux.sh install"
 		} else {
 			fix = "先注册并启动后台服务"
@@ -133,7 +241,7 @@ func describeServiceDaemonBlocker(check agentsetup.PreflightCheck, platform stri
 	}
 }
 
-func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck) pairingBlocker {
+func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck, cmds pairingCommandContext) pairingBlocker {
 	type assistantMeta struct {
 		id         string
 		label      string
@@ -142,10 +250,10 @@ func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck) p
 		cliEnabled bool
 	}
 	members := []assistantMeta{
-		{id: "assistant_codex", label: "Codex", enableCmd: "agentd runtime --codex=enabled", loginHint: "codex login", cliEnabled: true},
-		{id: "assistant_claude", label: "Claude Code", enableCmd: "agentd runtime --claude=enabled", loginHint: "claude login", cliEnabled: true},
-		{id: "assistant_agy", label: "Antigravity", enableCmd: "agentd runtime --agy=enabled", loginHint: "登录 agy CLI", cliEnabled: true},
-		{id: "assistant_deepseek", label: "DeepSeek", enableCmd: "agentd runtime --deepseek=connect", cliEnabled: false},
+		{id: "assistant_codex", label: "Codex", enableCmd: cmds.cmd("runtime", "--codex=enabled"), loginHint: "codex login", cliEnabled: true},
+		{id: "assistant_claude", label: "Claude Code", enableCmd: cmds.cmd("runtime", "--claude=enabled"), loginHint: "claude login", cliEnabled: true},
+		{id: "assistant_agy", label: "Antigravity", enableCmd: cmds.cmd("runtime", "--agy=enabled"), loginHint: "登录 agy CLI", cliEnabled: true},
+		{id: "assistant_deepseek", label: "DeepSeek", enableCmd: cmds.cmd("runtime", "--deepseek=connect"), cliEnabled: false},
 	}
 
 	var availableEnable []string
@@ -167,32 +275,64 @@ func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck) p
 		}
 	}
 
+	restartSuffix := fmt.Sprintf("，然后执行 %s", cmds.restartNoPair())
+	if !cmds.managedService {
+		restartSuffix = fmt.Sprintf("，然后重启匹配该配置的前台进程（%s）", cmds.serve())
+	}
+
 	if len(availableEnable) > 0 {
 		return pairingBlocker{
 			Summary: "没有可用助手（已检测到可用助手但尚未启用）",
-			Fix:     fmt.Sprintf("运行 %s，然后执行 agentd restart --no-pair", strings.Join(availableEnable, " 或 ")),
+			Fix:     fmt.Sprintf("运行 %s%s", strings.Join(availableEnable, " 或 "), restartSuffix),
 		}
 	}
 	if codexUpstreamUnavailable {
+		fix := fmt.Sprintf("运行 %s 和 agentd logs -n 200 检查 Codex 服务状态", cmds.cmd("doctor"))
+		if !cmds.managedService {
+			fix = fmt.Sprintf("运行 %s 并检查前台服务日志，排查 Codex 服务状态", cmds.cmd("doctor"))
+		}
 		return pairingBlocker{
 			Summary: "没有可用助手（Codex 服务暂不可用）",
-			Fix:     "运行 agentd doctor 和 agentd logs -n 200 检查 Codex 服务状态",
+			Fix:     fix,
 		}
 	}
-	if len(signedOut) > 0 {
+	if len(signedOut) == 1 {
 		first := signedOut[0]
+		fix := fmt.Sprintf("先完成 %s 登录（%s），再运行 %s && %s", first.label, first.loginHint, first.enableCmd, cmds.restartNoPair())
+		if !cmds.managedService {
+			fix = fmt.Sprintf("先完成 %s 登录（%s），再运行 %s%s", first.label, first.loginHint, first.enableCmd, restartSuffix)
+		}
 		return pairingBlocker{
 			Summary: fmt.Sprintf("没有可用助手（已检测到 %s，但尚未登录）", first.label),
-			Fix:     fmt.Sprintf("先完成 %s 登录（%s），再运行 %s && agentd restart --no-pair", first.label, first.loginHint, first.enableCmd),
+			Fix:     fix,
 		}
 	}
+	if len(signedOut) > 1 {
+		labels := make([]string, 0, len(signedOut))
+		steps := make([]string, 0, len(signedOut))
+		for _, member := range signedOut {
+			labels = append(labels, member.label)
+			steps = append(steps, fmt.Sprintf("%s（%s 后运行 %s）", member.label, member.loginHint, member.enableCmd))
+		}
+		return pairingBlocker{
+			Summary: fmt.Sprintf("没有可用助手（已检测到 %s，但尚未登录）", strings.Join(labels, " / ")),
+			Fix:     fmt.Sprintf("完成任一助手登录并启用：%s%s", strings.Join(steps, "；"), restartSuffix),
+		}
+	}
+	assistantOptions := fmt.Sprintf(
+		"Codex（codex login 后运行 %s）、Claude Code（claude login 后运行 %s）、Antigravity（登录 agy 后运行 %s）或 DeepSeek（%s）",
+		cmds.cmd("runtime", "--codex=enabled"),
+		cmds.cmd("runtime", "--claude=enabled"),
+		cmds.cmd("runtime", "--agy=enabled"),
+		cmds.cmd("runtime", "--deepseek=connect"),
+	)
 	return pairingBlocker{
 		Summary: "没有可用助手（至少需要一个已安装并登录的助手，例如 Codex 或 Claude Code）",
-		Fix:     "安装并登录 Codex（codex login）或 Claude Code 后，运行 agentd runtime --codex=enabled && agentd restart --no-pair",
+		Fix:     fmt.Sprintf("安装并登录后启用任一助手：%s%s", assistantOptions, restartSuffix),
 	}
 }
 
-func describeNetworkBlocker(checksByID map[string]agentsetup.PreflightCheck, platform string) pairingBlocker {
+func describeNetworkBlocker(checksByID map[string]agentsetup.PreflightCheck, cmds pairingCommandContext) pairingBlocker {
 	summary := "没有可达的手机连接方式"
 	var reasons []string
 	if row, ok := checksByID["network_tailscale"]; ok && checkEnabled(row) && row.Code == "tailscale_not_connected" {
@@ -215,15 +355,30 @@ func describeNetworkBlocker(checksByID map[string]agentsetup.PreflightCheck, pla
 		summary = fmt.Sprintf("%s（%s）", summary, strings.Join(reasons, "；"))
 	}
 
-	if platform == "windows" {
+	tailscaleCmd := cmds.cmd("network", "--tailscale-enabled=true")
+	lanCmd := cmds.cmd("network", "--lan-enabled=true")
+	tailcatEnableCmd := cmds.cmd("tailcat enable")
+	tailcatPairCmd := cmds.cmd("tailcat pair")
+
+	if cmds.platform == "windows" {
+		tailscaleStep := fmt.Sprintf("%s && %s", tailscaleCmd, cmds.restartNoPair())
+		if !cmds.managedService {
+			tailscaleStep = fmt.Sprintf("%s，然后重启匹配该配置的前台进程（%s）", tailscaleCmd, cmds.serve())
+		}
 		return pairingBlocker{
 			Summary: summary,
-			Fix:     "Tailscale：agentd network --tailscale-enabled=true && agentd restart --no-pair；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：agentd tailcat enable 后运行 agentd tailcat pair",
+			Fix:     fmt.Sprintf("Tailscale：%s；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：%s 后运行 %s", tailscaleStep, tailcatEnableCmd, tailcatPairCmd),
+		}
+	}
+	if !cmds.managedService {
+		return pairingBlocker{
+			Summary: summary,
+			Fix:     fmt.Sprintf("同一局域网：%s；Tailscale：%s（修改后重启匹配该配置的前台进程：%s）；联网时也可用 Tailcat：%s 后运行 %s", lanCmd, tailscaleCmd, cmds.serve(), tailcatEnableCmd, tailcatPairCmd),
 		}
 	}
 	return pairingBlocker{
 		Summary: summary,
-		Fix:     "同一局域网：agentd network --lan-enabled=true && agentd restart --no-pair；Tailscale：agentd network --tailscale-enabled=true && agentd restart --no-pair；联网时也可用 Tailcat：agentd tailcat enable 后运行 agentd tailcat pair",
+		Fix:     fmt.Sprintf("同一局域网：%s && %s；Tailscale：%s && %s；联网时也可用 Tailcat：%s 后运行 %s", lanCmd, cmds.restartNoPair(), tailscaleCmd, cmds.restartNoPair(), tailcatEnableCmd, tailcatPairCmd),
 	}
 }
 
@@ -261,16 +416,21 @@ func printPairingReadiness(w io.Writer, r pairingReadiness) {
 	}
 }
 
-func printManagedServicePairingFailure(stderr io.Writer, configPath, legacyPath, platform, safePairError string) {
-	fmt.Fprintf(stderr, "警告：服务已启动，但暂时无法生成配对信息：%s\n", safePairError)
+func printManagedServicePairingFailure(stderr io.Writer, configPath, legacyPath, platform, safePairError string, waitedReady bool) {
+	if waitedReady {
+		fmt.Fprintf(stderr, "警告：服务已启动，但暂时无法生成配对信息：%s\n", safePairError)
+	} else {
+		fmt.Fprintf(stderr, "警告：已提交启动请求，尚未确认就绪，暂时无法生成配对信息：%s\n", safePairError)
+	}
 	readiness := inspectPairingReadiness(context.Background(), configPath, legacyPath, platform)
 	if !readiness.Ready {
 		printPairingReadiness(stderr, readiness)
 		return
 	}
+	cmds := newPairingCommandContext(configPath, platform)
 	cmd := readiness.PairCommand
 	if cmd == "" {
-		cmd = "agentd pair --qr-only"
+		cmd = cmds.cmd("pair", "--qr-only")
 	}
-	fmt.Fprintf(stderr, "下一步：稍后运行 %s，或运行 agentd status --pairing 检查配对前提\n", cmd)
+	fmt.Fprintf(stderr, "下一步：稍后运行 %s，或运行 %s 检查配对前提\n", cmd, cmds.cmd("status", "--pairing"))
 }

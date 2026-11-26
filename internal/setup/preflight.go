@@ -174,6 +174,8 @@ func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightPro
 			host, serviceCode = result.h, ""
 			if !host.Ready {
 				serviceCode = "pair_host_unreachable"
+			} else if cfg.SourceGeneration() != "" && !preflightHostGenerationApplied(host, cfg.SourceGeneration()) {
+				r.ConfigRestartRequired = true
 			}
 		}
 	}

@@ -15,7 +15,13 @@ func (r *Router) preflightHost(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	h := setup.PreflightHost{Generation: r.cfg.SourceGeneration(), Version: r.version, Ready: r.doctor.RunReadiness(req.Context()).OK,
+	appliedGeneration := ""
+	if r.pairingGeneration != nil {
+		// 复用与 /api/local/pair/issue 同一套已应用代次检查（含内存热生效的 Tailcat 配置），
+		// 让配对前提检查与真实票据签发门禁保持一致。
+		appliedGeneration = r.currentPairingGeneration(req.Context())
+	}
+	h := setup.PreflightHost{Generation: r.cfg.SourceGeneration(), AppliedGeneration: &appliedGeneration, Version: r.version, Ready: r.doctor.RunReadiness(req.Context()).OK,
 		Assistants: map[string]bool{"codex": r.cfg.Codex.IsEnabled(), "claude": r.cfg.Claude.Enabled, "agy": r.cfg.Agy.Enabled, "deepseek": r.cfg.DeepSeek.Enabled},
 		Networks:   map[string]bool{"tailscale": r.cfg.TailscaleAccessEnabled(), "lan": r.cfg.LANAccessEnabled(), "tailcat": r.cfg.Tailcat.Enabled},
 		Accounts:   r.runtimeStatus.preflightAccounts(), FolderDenied: r.doctor.CachedFolderDenied()}

@@ -18,15 +18,16 @@ type PreflightOptions struct {
 }
 
 type PreflightHost struct {
-	LANPolicyCode  *string           `json:"lan_policy_code,omitempty"`
-	Generation     string            `json:"generation,omitempty"`
-	Version        string            `json:"version"`
-	Ready          bool              `json:"ready"`
-	Assistants     map[string]bool   `json:"assistants"`
-	Networks       map[string]bool   `json:"networks"`
-	Accounts       map[string]string `json:"accounts"`
-	FolderDenied   bool              `json:"folder_denied"`
-	TailcatRunning bool              `json:"tailcat_running"`
+	LANPolicyCode     *string           `json:"lan_policy_code,omitempty"`
+	Generation        string            `json:"generation,omitempty"`
+	AppliedGeneration *string           `json:"applied_generation,omitempty"`
+	Version           string            `json:"version"`
+	Ready             bool              `json:"ready"`
+	Assistants        map[string]bool   `json:"assistants"`
+	Networks          map[string]bool   `json:"networks"`
+	Accounts          map[string]string `json:"accounts"`
+	FolderDenied      bool              `json:"folder_denied"`
+	TailcatRunning    bool              `json:"tailcat_running"`
 }
 
 type PreflightCandidate struct {
@@ -81,6 +82,9 @@ type PreflightReport struct {
 	RecommendedNext      string           `json:"recommended_next"`
 	RecommendedTransport *string          `json:"recommended_transport"`
 	Checks               []PreflightCheck `json:"checks"`
+	// ConfigRestartRequired 表示运行中的后台服务尚未应用当前已保存的配置代次；
+	// 不序列化到 JSON 以保持 mimi.onboarding.preflight/v1 契约兼容，供 CLI 配对诊断复用。
+	ConfigRestartRequired bool `json:"-"`
 }
 
 var preflightTitles = map[string]string{

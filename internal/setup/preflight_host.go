@@ -77,11 +77,23 @@ func fetchPreflightHost(parent context.Context, cfg config.Config, dial func(con
 	// A healthy owner may still be serving the previous saved configuration.
 	// Its applied module flags are authoritative, but its account and permission
 	// observations do not describe the document currently under inspection.
-	if host.Generation == "" || host.Generation != cfg.SourceGeneration() {
+	if !preflightHostGenerationApplied(host, cfg.SourceGeneration()) {
 		host.Accounts = nil
 		host.FolderDenied = false
 	}
 	return host, nil
+}
+
+// preflightHostGenerationApplied 与 httpapi 的配对门禁保持一致：优先使用服务端返回的
+// applied_generation（包含免重启热生效的 Tailcat 配置），旧版服务端缺失该字段时回退比较 generation。
+func preflightHostGenerationApplied(host PreflightHost, savedGeneration string) bool {
+	if savedGeneration == "" {
+		return false
+	}
+	if host.AppliedGeneration != nil {
+		return *host.AppliedGeneration == savedGeneration
+	}
+	return host.Generation != "" && host.Generation == savedGeneration
 }
 
 // AgentVersionsCompatible applies the same version policy to active and passive readiness checks.

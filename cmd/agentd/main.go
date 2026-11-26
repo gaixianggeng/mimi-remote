@@ -426,7 +426,7 @@ func runManagedServiceCommand(args []string, stdout, stderr io.Writer, copy mana
 	if !*noPair {
 		if pairErr != nil {
 			safePairError := publicStatusError(pairErr, result.ConnectURL, result.PairURL, result.Token, result.Endpoint)
-			printManagedServicePairingFailure(stderr, *configPath, setupLegacyPath(fs), managedServicePlatform, safePairError)
+			printManagedServicePairingFailure(stderr, *configPath, setupLegacyPath(fs), managedServicePlatform, safePairError, *waitTimeout > 0)
 		} else {
 			printServeConnection(stdout, result)
 		}
@@ -476,9 +476,7 @@ func runStatusWithWriters(args []string, stdout, stderr io.Writer) error {
 		if *asJSON || *includeRuntime || *refreshRuntime || *inspectNetworkPolicy {
 			return errors.New("status --pairing 仅支持人类可读输出，不能与 --json、--runtime 或 --network-policy 同时使用")
 		}
-		if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
-			return err
-		}
+		// 诊断命令保持只读：交由 preflight 的只读 legacy 预览读取旧配置，避免复制迁移或在旧配置异常时提前退出。
 		readiness := inspectPairingReadiness(context.Background(), *configPath, setupLegacyPath(fs), managedServicePlatform)
 		printPairingReadiness(stdout, readiness)
 		return nil
@@ -634,14 +632,15 @@ func runStatusWithWriters(args []string, stdout, stderr io.Writer) error {
 	fmt.Fprintln(stdout, "\n配对前提：")
 	printPairingReadiness(stdout, readiness)
 	fmt.Fprintln(stdout, "\n下一步：")
+	pairingCmds := newPairingCommandContext(*configPath, managedServicePlatform)
 	if readiness.Ready {
 		pairCmd := readiness.PairCommand
 		if pairCmd == "" {
-			pairCmd = "agentd pair --qr-only"
+			pairCmd = pairingCmds.cmd("pair", "--qr-only")
 		}
 		fmt.Fprintf(stdout, "  %-23s 显示短期配对二维码\n", pairCmd)
 	} else {
-		fmt.Fprintln(stdout, "  agentd status --pairing 查看配对前提与修复命令")
+		fmt.Fprintf(stdout, "  %-23s 查看配对前提与修复命令\n", pairingCmds.cmd("status", "--pairing"))
 	}
 	fmt.Fprintln(stdout, "  agentd doctor --fix     自动检查并修复常见问题")
 	fmt.Fprintln(stdout, "  agentd logs             查看最近日志")

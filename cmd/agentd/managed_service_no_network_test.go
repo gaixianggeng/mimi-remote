@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
@@ -98,7 +99,7 @@ func TestManagedServiceStartAndRestartWarnOnPairingFailure(t *testing.T) {
 				t.Fatalf("%s 在服务已启动但配对失败时应退出 0，实际=%d stdout=%q stderr=%q", command, status, stdout.String(), stderr.String())
 			}
 			for _, want := range []string{
-				"警告：服务已启动，但暂时无法生成配对信息：",
+				"警告：已提交启动请求，尚未确认就绪，暂时无法生成配对信息：",
 				"没有可用的 Tailscale 或局域网连接",
 				"配对：暂不可用",
 				"没有可用助手",
@@ -107,6 +108,9 @@ func TestManagedServiceStartAndRestartWarnOnPairingFailure(t *testing.T) {
 				if !strings.Contains(stderr.String(), want) {
 					t.Fatalf("%s stderr 缺少 %q：stderr=%q", command, want, stderr.String())
 				}
+			}
+			if strings.Contains(stderr.String(), "警告：服务已启动") {
+				t.Fatalf("%s --wait 0 跳过就绪检查时不应宣称服务已启动：stderr=%q", command, stderr.String())
 			}
 			if strings.Contains(stdout.String(), fixture.token) || strings.Contains(stderr.String(), fixture.token) {
 				t.Fatalf("%s 泄漏了长期 Token：stdout=%q stderr=%q", command, stdout.String(), stderr.String())
@@ -151,8 +155,10 @@ func TestManagedServiceStartAndRestartWarnOnPairingFailure(t *testing.T) {
 
 func TestManagedServiceJSONSuccessBackwardCompatibleAndReadyWaitPairFailure(t *testing.T) {
 	fixture := prepareMainLegacyConfigFixture(t)
+	var readyzCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/readyz" {
+			readyzCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(doctor.Results{OK: true, Version: version})
 			return
 		}
@@ -173,13 +179,17 @@ func TestManagedServiceJSONSuccessBackwardCompatibleAndReadyWaitPairFailure(t *t
 	if err := os.WriteFile(fixture.source, append(raw, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// 与下方的 homebrew owner mock 配套，避免在 Linux/Windows CI 因缺少宿主注册项提前退出。
+	useManagedServicePlatform(t, "darwin")
 	fakeCoreManager(t, "homebrew", func(string, string) error { return nil })
 
 	origIssue := issuePairingForCommand
 	t.Cleanup(func() { issuePairingForCommand = origIssue })
+	var issueCalls atomic.Int32
 
 	// 成功路径保持原有字段集合，不额外附带 pair_ok / pair_error。
 	issuePairingForCommand = func(context.Context, string, agentsetup.PairingNetwork) (agentsetup.Result, error) {
+		issueCalls.Add(1)
 		return agentsetup.Result{Endpoint: "http://192.168.1.10:8787", Token: fixture.token}, nil
 	}
 	var stdout, stderr bytes.Buffer
@@ -202,6 +212,7 @@ func TestManagedServiceJSONSuccessBackwardCompatibleAndReadyWaitPairFailure(t *t
 
 	// 服务已就绪但可选配对失败时，返回 service_ok:true + pair_ok:false + pair_error。
 	issuePairingForCommand = func(context.Context, string, agentsetup.PairingNetwork) (agentsetup.Result, error) {
+		issueCalls.Add(1)
 		return agentsetup.Result{}, agentsetup.NoPairingNetworkError("linux")
 	}
 	stdout.Reset()
@@ -218,6 +229,20 @@ func TestManagedServiceJSONSuccessBackwardCompatibleAndReadyWaitPairFailure(t *t
 	}
 	if pairErr, _ := warnPayload["pair_error"].(string); !strings.Contains(pairErr, "agentd network --lan-enabled=true") {
 		t.Fatalf("pair_error 缺少可执行步骤：%q", pairErr)
+	}
+
+	// --wait > 0 且已确认就绪后配对失败时，人类输出才提示“服务已启动”。
+	stubPairingUnavailablePreflight(t)
+	stdout.Reset()
+	stderr.Reset()
+	if status := commandExit([]string{"agentd", "start", "--wait", "2s"}, &stdout, &stderr); status != 0 {
+		t.Fatalf("start 人类输出就绪后配对失败应退出 0，实际=%d stdout=%q stderr=%q", status, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "警告：服务已启动，但暂时无法生成配对信息：") {
+		t.Fatalf("确认就绪后的配对警告应说明服务已启动：stderr=%q", stderr.String())
+	}
+	if readyzCalls.Load() < 3 || issueCalls.Load() != 3 {
+		t.Fatalf("测试必须真实经过 readyz 与配对签发路径：readyz=%d issue=%d", readyzCalls.Load(), issueCalls.Load())
 	}
 }
 
