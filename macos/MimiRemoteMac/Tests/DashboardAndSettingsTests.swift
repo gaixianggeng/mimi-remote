@@ -518,6 +518,13 @@ final class DashboardAndSettingsTests: XCTestCase {
         XCTAssertEqual(mutatingCalls.values, [])
         XCTAssertEqual(AgentCommandClient.statusArguments(includeRuntime: false), ["status", "--json"])
 
+        // 菜单先前发起的重试也属于旧代，即使本次观察没有改变 owner。
+        store.scheduleRuntimeStatusFollowUp()
+        XCTAssertTrue(store.hasScheduledRuntimeStatusFollowUp)
+        await store.observeServiceStatePassively()
+        XCTAssertFalse(store.hasScheduledRuntimeStatusFollowUp)
+        XCTAssertEqual(readinessCalls.current, 2)
+
         // 2. 登记变为 .notFound 后再次重新检查：仅切回未托管停止态，不注册、不启动、不重启。
         agentState = .notFound
         await store.observeServiceStatePassively()
@@ -528,7 +535,7 @@ final class DashboardAndSettingsTests: XCTestCase {
         XCTAssertNil(store.doctor)
         XCTAssertNil(store.lastError)
         XCTAssertFalse(store.hasScheduledRuntimeStatusFollowUp)
-        XCTAssertEqual(readinessCalls.current, 1)
+        XCTAssertEqual(readinessCalls.current, 2)
         XCTAssertEqual(fullStatusCalls.current, 0)
         XCTAssertEqual(mutatingCalls.values, [])
     }
@@ -615,6 +622,70 @@ final class DashboardAndSettingsTests: XCTestCase {
             XCTAssertNil(store.status)
             XCTAssertEqual(mutatingCalls.values, [])
         }
+    }
+
+    func testFullMonitoringTickDuringRecheckCannotRegisterMissingAgent() async {
+        let brewProbe = SuspendedStatusGate()
+        let calls = EventRecorder()
+        let ready = Self.makeAgentStatus(processOK: true, serviceOK: true)
+        let store = makeRecheckHostStore(
+            agentStatus: { .notFound },
+            homebrewLoaded: { await brewProbe.suspendReturning(false) },
+            status: {
+                calls.append("agent.status(--runtime)")
+                return ready
+            },
+            mutatingCalls: calls
+        )
+        store.owner = .macApp
+        store.status = ready
+        store.lifecycle = .degraded("服务需要检查")
+
+        let recheck = Task { await store.observeServiceStatePassively() }
+        await brewProbe.waitUntilSuspended()
+        await store.performMonitoringTick(30, now: Date())
+        brewProbe.resume()
+        await recheck.value
+
+        XCTAssertEqual(calls.values, [])
+        XCTAssertEqual(store.lifecycle, .stopped)
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertNil(store.status)
+    }
+
+    func testRecheckCannotResetOwnerWhileRestartWaitsForOldListener() async {
+        let brewProbe = SuspendedStatusGate()
+        let stopProbe = SuspendedStatusGate()
+        let calls = EventRecorder()
+        let ready = Self.makeAgentStatus(processOK: true, serviceOK: true)
+        var registration: ServiceRegistrationState = .enabled
+        let store = makeRecheckHostStore(
+            agentStatus: { registration },
+            homebrewLoaded: { await brewProbe.suspendReturning(false) },
+            status: { ready },
+            healthCheck: { _ in await stopProbe.suspendReturning(false) },
+            mutatingCalls: calls
+        )
+        store.owner = .macApp
+        store.status = ready
+        store.lifecycle = .degraded("服务需要检查")
+
+        let recheck = Task { await store.observeServiceStatePassively() }
+        await brewProbe.waitUntilSuspended()
+        registration = .notRegistered
+        let restart = Task { await store.restartService() }
+        await stopProbe.waitUntilSuspended()
+        brewProbe.resume()
+        await recheck.value
+        XCTAssertEqual(store.lifecycle, .starting)
+        XCTAssertEqual(store.owner, .macApp)
+
+        registration = .enabled
+        stopProbe.resume()
+        await restart.value
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(calls.values, ["services.unregisterAgent", "services.registerAgent"])
     }
 
     func testStaleRecheckResponseIsIgnoredWhenOwnerChangesMidRecheck() async {

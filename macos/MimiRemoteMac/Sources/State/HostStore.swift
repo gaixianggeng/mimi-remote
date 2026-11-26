@@ -16,7 +16,14 @@ enum DiagnosticsFocus: Equatable, Hashable, Sendable {
 @MainActor
 @Observable
 final class HostStore {
-    var lifecycle: HostLifecycleState = .loading
+    var lifecycle: HostLifecycleState = .loading {
+        didSet {
+            // 重启期间会暂时没有登记。此前发出的观察不能把这次换代当成服务已停止。
+            if lifecycle == .starting, oldValue != .starting {
+                invalidateInFlightObservations()
+            }
+        }
+    }
     var owner: ServiceOwner = .none {
         didSet {
             guard owner != oldValue else { return }
@@ -84,7 +91,7 @@ final class HostStore {
     var verifiedOnboardingCapability: String? { agent.verifiedOnboardingCapability() }
     @ObservationIgnored var pairingRefreshGeneration = 0
     @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
-    /// 单调递增的状态代次：在 owner 变更、进入首次设置向导或发起被动观察时递增，
+    /// 在服务启动、owner 变更、进入首次设置向导或发起被动观察时递增，
     /// 防止挂起恢复的旧监控 tick、readiness 或 recheck 覆盖新状态或误入启动服务的 `refresh()`。
     @ObservationIgnored var stateGeneration: UInt64 = 0
     @ObservationIgnored private var runtimeStatusFollowUpGeneration: UInt64 = 0
@@ -681,10 +688,8 @@ final class HostStore {
     private func invalidateInFlightObservations() {
         stateGeneration &+= 1
         statusRequestSequence &+= 1
-        if owner != .macApp || isOnboardingInProgress {
-            runtimeStatusFollowUpTask?.cancel()
-            runtimeStatusFollowUpTask = nil
-        }
+        runtimeStatusFollowUpTask?.cancel()
+        runtimeStatusFollowUpTask = nil
     }
 
     /// MenuBarExtra 每次展开都会重建内容视图。短时间重复打开直接复用 Store
@@ -1731,13 +1736,15 @@ final class HostStore {
     /// 保持该入口为 internal，测试可以直接推进 tick，无需真实等待五分钟。
     func performMonitoringTick(_ tick: Int, now: Date) async {
         // 启动闭环或向导未完成期间不让常驻监控改写生命周期或自动拉起服务。
-        guard !isAwaitingServiceStart, !isOnboardingInProgress else { return }
+        guard !isRefreshingStatus, !isBusy, !isAwaitingServiceStart, !isOnboardingInProgress else { return }
         guard owner != .none, let endpoint = status?.endpoint else { return }
         let observedOwner = owner
         let generation = stateGeneration
         let healthy = await health.check(endpoint)
         guard generation == stateGeneration,
               owner == observedOwner,
+              !isRefreshingStatus,
+              !isBusy,
               !isAwaitingServiceStart,
               !isOnboardingInProgress
         else { return }
@@ -1753,6 +1760,9 @@ final class HostStore {
         }
         if tick.isMultiple(of: 30) {
             // 完整 status 已包含 readyz，本轮不再重复执行轻量 readiness。
+            // 这条路径也可能重新登记服务，需要与仪表板的被动检查互斥。
+            isRefreshingStatus = true
+            defer { isRefreshingStatus = false }
             await refreshMacAgentStatus(preserveStateOnCommandFailure: true, now: now)
             guard generation == stateGeneration,
                   owner == .macApp,
