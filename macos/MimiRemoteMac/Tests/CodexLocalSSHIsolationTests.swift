@@ -983,6 +983,14 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             username: "alice",
             systemSSHConfigPath: nil,
             runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
                 if executable.lastPathComponent == "ssh", arguments.first == "-G" {
                     await sshGArgsBox.record(arguments)
                     return try await CodexLocalSSHConfigurator.defaultCommandRunner(
@@ -1022,39 +1030,76 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         }
     }
 
-    func testInMemoryKeyGenerationIsOpenSSHCompatibleAndStagingCleanupOnlyDeletesRecordedInodes() async throws {
-        // 1. 内存生成的 OpenSSH Ed25519 私钥能被系统真实 /usr/bin/ssh-keygen -y 与 -lf 识别且公钥、指纹完全一致。
-        let generated = try CodexLocalSSHConfigurator.generateEd25519OpenSSHKeyPair()
-        XCTAssertEqual(
-            CodexLocalSSHConfigurator.derivePublicKeyBody(fromOpenSSHPrivateKeyData: generated.privateKeyData),
-            generated.publicKeyBody
+    func testSystemSSHKeygenZeroCopyAndStagingQuarantineCleanupOnlyDeletesRecordedInodes() async throws {
+        // 1. 首次配置调用系统 /usr/bin/ssh-keygen 在 ~/.ssh/mimi/ 内生成 Ed25519 密钥对，ssh-keygen -y/-lf 与记录完全一致，不写额外临时私钥副本。
+        let compatHome = tempHome.appendingPathComponent("openssh-keygen-compat", isDirectory: true)
+        try FileManager.default.createDirectory(at: compatHome, withIntermediateDirectories: true)
+        let keygenCallsBox = IsolatedArgsRecorder()
+        let compatCfg = CodexLocalSSHConfigurator(
+            homeDirectory: compatHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" {
+                    await keygenCallsBox.record(arguments)
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                if executable.lastPathComponent == "ssh", arguments.first == "-G" {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
         )
-        let compatDir = tempHome.appendingPathComponent("openssh-compat", isDirectory: true)
-        try FileManager.default.createDirectory(at: compatDir, withIntermediateDirectories: true)
-        let compatPriv = compatDir.appendingPathComponent("id_ed25519")
-        try generated.privateKeyData.write(to: compatPriv)
-        XCTAssertEqual(Darwin.chmod(compatPriv.path, 0o600), 0)
+        try await compatCfg.configure(verifyConnection: false)
+
+        let recordedKeygen = await keygenCallsBox.all
+        XCTAssertTrue(
+            recordedKeygen.contains(where: { $0.contains("-t") && $0.contains("ed25519") }),
+            "首次配置应通过系统 /usr/bin/ssh-keygen -t ed25519 生成密钥：\(recordedKeygen)"
+        )
+        for args in recordedKeygen {
+            if let fIdx = args.firstIndex(of: "-f"), fIdx + 1 < args.count {
+                XCTAssertTrue(
+                    args[fIdx + 1].hasPrefix(compatCfg.mimiSSHDirectory.path + "/"),
+                    "ssh-keygen 目标路径必须位于 ~/.ssh/mimi/ 内，不得产生临时目录副本：\(args)"
+                )
+            }
+        }
+
+        let pubText = try String(contentsOf: compatCfg.publicKeyURL, encoding: .utf8)
+        let expectedPubBody = try XCTUnwrap(CodexLocalSSHConfigurator.extractPublicKeyBody(from: pubText))
+        let expectedFP = try XCTUnwrap(CodexLocalSSHConfigurator.computeOpenSSHSHA256Fingerprint(fromKeyBody: expectedPubBody))
 
         let derivedResult = try await CodexLocalSSHConfigurator.defaultCommandRunner(
             executable: URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
-            arguments: ["-y", "-P", "", "-f", compatPriv.path],
+            arguments: ["-y", "-P", "", "-f", compatCfg.privateKeyURL.path],
             timeout: .seconds(10)
         )
         XCTAssertEqual(derivedResult.status, 0, derivedResult.stderrText)
         XCTAssertEqual(
             CodexLocalSSHConfigurator.extractPublicKeyBody(from: derivedResult.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)),
-            generated.publicKeyBody
+            expectedPubBody
         )
 
         let fpResult = try await CodexLocalSSHConfigurator.defaultCommandRunner(
             executable: URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
-            arguments: ["-lf", compatPriv.path],
+            arguments: ["-lf", compatCfg.privateKeyURL.path],
             timeout: .seconds(10)
         )
         XCTAssertEqual(fpResult.status, 0, fpResult.stderrText)
-        XCTAssertTrue(fpResult.stdoutText.contains(generated.fingerprint), "ssh-keygen -lf 指纹必须与内存计算一致：\(fpResult.stdoutText)")
+        XCTAssertTrue(fpResult.stdoutText.contains(expectedFP), "ssh-keygen -lf 指纹必须与计算一致：\(fpResult.stdoutText)")
 
-        // 2. staging 清理必须严格核验目录与文件 inode：若目录或其中文件被同用户替换为不同 inode，绝不误删！
+        // 2. staging 隔离清理必须严格核验目录与文件 inode：若目录或其中文件被同用户替换为不同 inode，或存在未知文件，绝不误删！
         let stageHome = tempHome.appendingPathComponent("inode-staging-guard", isDirectory: true)
         let cfg = makeConfigurator(home: stageHome, username: "alice", systemSSHConfigPath: nil)
         try FileManager.default.createDirectory(at: cfg.mimiSSHDirectory, withIntermediateDirectories: true)
@@ -1097,7 +1142,7 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertFalse(cfg.cleanupStagedKeyArtifact(wrongDirArtifact), "目录 inode 不匹配时 staging 清理必须拒绝")
         XCTAssertEqual(try Data(contentsOf: privFile), replacementPriv)
 
-        // 记录当前真实 inode 时，清理精准删除并移除目录。
+        // 目录中出现未知文件时：拒绝删除任何文件并完整保留目录。
         var curPrivSt = stat()
         var curPubSt = stat()
         XCTAssertEqual(Darwin.lstat(privFile.path, &curPrivSt), 0)
@@ -1108,8 +1153,92 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: curPrivSt.st_dev, ino: curPrivSt.st_ino),
             publicKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: curPubSt.st_dev, ino: curPubSt.st_ino)
         )
+        let unexpectedFile = stageDir.appendingPathComponent("user-note.txt")
+        try Data("keep".utf8).write(to: unexpectedFile)
+        XCTAssertFalse(cfg.cleanupStagedKeyArtifact(matchingArtifact), "目录中存在未知文件时必须拒绝清理")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: privFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unexpectedFile.path))
+        try FileManager.default.removeItem(at: unexpectedFile)
+
+        // 记录当前真实 inode 且目录无未知条目时，隔离核验后精准删除并移除目录。
         XCTAssertTrue(cfg.cleanupStagedKeyArtifact(matchingArtifact))
         XCTAssertFalse(FileManager.default.fileExists(atPath: stageDir.path))
+    }
+
+    func testRollbackRetainsKeyOwnershipRecordAfterPermissionsOnlyChangeSoRemoveCanCleanUp() async throws {
+        // 1. 生成密钥发布后仅被 chmod 0400，随后后续写入失败触发回滚：
+        //    回滚不得删掉所有权记录而留下密钥；inspect 保留撤销入口，Remove 必须按指纹识别并彻底清理 0400 密钥与状态文件！
+        let permHome = tempHome.appendingPathComponent("p1-rollback-chmod-0400", isDirectory: true)
+        try FileManager.default.createDirectory(at: permHome, withIntermediateDirectories: true)
+        let privURL = permHome.appendingPathComponent(".ssh/mimi/\(CodexLocalSSHConfigurator.keyFileName)")
+        let pubURL = permHome.appendingPathComponent(".ssh/mimi/\(CodexLocalSSHConfigurator.keyFileName).pub")
+
+        let failingCfg = makeConfigurator(
+            home: permHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            beforeAtomicCommit: { targetURL in
+                if targetURL.lastPathComponent == CodexLocalSSHConfigurator.mimiConfigFileName {
+                    _ = Darwin.chmod(privURL.path, 0o400)
+                    _ = Darwin.chmod(pubURL.path, 0o400)
+                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟 mimi/config 写入失败")
+                }
+            }
+        )
+        do {
+            try await failingCfg.configure(verifyConnection: false)
+            XCTFail("后续写入失败且密钥权限变化阻断回滚时必须报错")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {
+            // 预期：回滚未能删掉已改权的密钥并保留状态记录
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: privURL.path), "已改权私钥在回滚期间应被保全")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pubURL.path), "已改权公钥在回滚期间应被保全")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: failingCfg.stateFileURL.path), "回滚保留密钥时绝不得删除所有权记录")
+
+        let inspected = await failingCfg.inspect()
+        XCTAssertTrue(inspected.isManaged, "保留所有权记录后 inspect 必须保持已托管以暴露撤销入口")
+        XCTAssertTrue(inspected.keyExists, "仅权限变为 0400 的 Mimi 密钥仍应通过指纹归属核验")
+
+        let cleanRemover = makeConfigurator(home: permHome, username: "alice", systemSSHConfigPath: nil)
+        try await cleanRemover.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: privURL.path), "Remove 必须识别并清理仅改权的 Mimi 私钥")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pubURL.path), "Remove 必须识别并清理仅改权的 Mimi 公钥")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cleanRemover.mimiSSHDirectory.path), "清理后空 ~/.ssh/mimi 应被移除")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cleanRemover.stateFileURL.path), "清理完成后状态文件应被移除")
+        let managedAfterRemove = await cleanRemover.inspect().isManaged
+        XCTAssertFalse(managedAfterRemove)
+
+        // 2. 对照：若私钥在回滚前被替换为外部不同密钥，回滚同样保留记录，但 Remove 核验指纹不匹配时仍绝不误删外部替换私钥！
+        let replacedHome = tempHome.appendingPathComponent("p1-rollback-replaced-key", isDirectory: true)
+        try FileManager.default.createDirectory(at: replacedHome, withIntermediateDirectories: true)
+        let replacedPrivURL = replacedHome.appendingPathComponent(".ssh/mimi/\(CodexLocalSSHConfigurator.keyFileName)")
+        let replacementSentinel = Data("EXTERNAL-USER-KEY-MUST-NOT-BE-DELETED\n".utf8)
+
+        let replacedCfg = makeConfigurator(
+            home: replacedHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            beforeAtomicCommit: { targetURL in
+                if targetURL.lastPathComponent == CodexLocalSSHConfigurator.mimiConfigFileName {
+                    try FileManager.default.removeItem(at: replacedPrivURL)
+                    try replacementSentinel.write(to: replacedPrivURL)
+                    _ = Darwin.chmod(replacedPrivURL.path, 0o600)
+                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟后续写入失败")
+                }
+            }
+        )
+        do {
+            try await replacedCfg.configure(verifyConnection: false)
+            XCTFail("后续写入失败必须报错")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {}
+
+        let replacedRemover = makeConfigurator(home: replacedHome, username: "alice", systemSSHConfigPath: nil)
+        do {
+            try await replacedRemover.remove()
+            XCTFail("指纹不匹配的外部替换私钥在 Remove 时必须报错并保留")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {}
+        XCTAssertEqual(try Data(contentsOf: replacedPrivURL), replacementSentinel, "外部替换的异指纹私钥绝不得被 Remove 误删")
     }
 
     func testTransientIOErrorDuringRemoveDoesNotSetPersistentConflictFlagBlockingRetry() async throws {
@@ -1239,8 +1368,9 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertEqual(process.terminationReason, .uncaughtSignal, "子进程应由真实信号终止而非正常退出")
         XCTAssertEqual(process.terminationStatus, SIGKILL, "子进程应由 SIGKILL 终止以跳过所有 Swift defer")
 
-        let configurator = makeConfigurator(home: crashHome, username: "alice")
-        // 验证：1) 密钥写入前已落盘登记 staging 目录与文件 inode；2) SIGKILL 确实在 ~/.ssh/mimi/.mimi-keygen-* 遗留了真实私钥。
+        let configurator = makeConfigurator(home: crashHome, username: "alice", systemSSHConfigPath: nil)
+        // 验证：1) 密钥写入前已落盘登记 staging 目录与文件 inode；2) SIGKILL 确实在 ~/.ssh/mimi/.mimi-keygen-* 遗留了真实私钥且尚未发布。
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.privateKeyURL.path), "SIGKILL 发生在发布前，最终路径不应出现私钥")
         let mimiEntries = try FileManager.default.contentsOfDirectory(atPath: configurator.mimiSSHDirectory.path)
         let stagingDirs = mimiEntries.filter { $0.hasPrefix(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix) }
         XCTAssertEqual(stagingDirs.count, 1, "真实 SIGKILL 后应遗留 1 个密钥暂存目录")

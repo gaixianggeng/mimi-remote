@@ -192,8 +192,21 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertEqual(privStatSecond.st_ino, privStatFirst.st_ino, "再次配置不得重生成或轮换密钥")
         XCTAssertEqual(try Data(contentsOf: configurator.privateKeyURL), privDataFirst)
         let calls = await recorder.calls
-        let keygenCalls = calls.filter { $0.executable == "/usr/bin/ssh-keygen" }
-        XCTAssertTrue(keygenCalls.isEmpty, "内存生成与校验私钥，不应调用 ssh-keygen 或写入额外私钥副本")
+        let keyCreateCalls = calls.filter {
+            $0.executable == "/usr/bin/ssh-keygen" && $0.arguments.contains("-t")
+        }
+        XCTAssertEqual(keyCreateCalls.count, 1, "首次配置仅应调用一次 ssh-keygen -t ed25519，再次配置不得重生成或轮换密钥")
+        let keyDeriveCalls = calls.filter {
+            $0.executable == "/usr/bin/ssh-keygen" && $0.arguments.contains("-y")
+        }
+        for deriveCall in keyDeriveCalls {
+            if let fIndex = deriveCall.arguments.firstIndex(of: "-f"), fIndex + 1 < deriveCall.arguments.count {
+                XCTAssertTrue(
+                    deriveCall.arguments[fIndex + 1].hasPrefix(configurator.mimiSSHDirectory.path + "/"),
+                    "ssh-keygen -y 必须直接读取 ~/.ssh/mimi/ 内密钥，不得写入临时私钥副本：\(deriveCall.arguments)"
+                )
+            }
+        }
     }
 
     func testConfigureRefusesConflictingUnmanagedHostAliasWithoutTouchingExistingFiles() async throws {
@@ -789,8 +802,18 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertEqual(authLines.count, 1, "并发调用不得重复写入多条授权行")
 
         let calls = await recorder.calls
-        let keygenCalls = calls.filter { $0.executable == "/usr/bin/ssh-keygen" }
-        XCTAssertTrue(keygenCalls.isEmpty, "内存生成与校验私钥，不应调用 ssh-keygen 写额外私钥副本")
+        let keyCreateCalls = calls.filter {
+            $0.executable == "/usr/bin/ssh-keygen" && $0.arguments.contains("-t")
+        }
+        XCTAssertEqual(keyCreateCalls.count, 1, "4 次并发调用串行化后仅应调用一次 ssh-keygen -t ed25519 生成密钥")
+        for call in calls where call.executable == "/usr/bin/ssh-keygen" {
+            if let fIndex = call.arguments.firstIndex(of: "-f"), fIndex + 1 < call.arguments.count {
+                XCTAssertTrue(
+                    call.arguments[fIndex + 1].hasPrefix(configurator.mimiSSHDirectory.path + "/"),
+                    "ssh-keygen 目标路径必须位于 ~/.ssh/mimi/ 内，不得写入额外临时私钥副本：\(call.arguments)"
+                )
+            }
+        }
         XCTAssertTrue(FileManager.default.fileExists(atPath: configurator.privateKeyURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: configurator.publicKeyURL.path))
     }

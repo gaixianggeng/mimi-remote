@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -73,12 +72,12 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
     }
 
-    /// 本次首次配置独占创建的密钥暂存目录及文件 inode 记录，写入私钥字节前先落盘。
+    /// 本次首次配置独占创建的密钥暂存目录及文件 inode 记录，调用 ssh-keygen 前先登记目录 inode，生成后补全文件 inode。
     struct StagedKeyArtifact: Codable, Equatable, Sendable {
         var directoryName: String
         var directoryIdentity: FileIdentity
-        var privateKeyIdentity: FileIdentity
-        var publicKeyIdentity: FileIdentity
+        var privateKeyIdentity: FileIdentity?
+        var publicKeyIdentity: FileIdentity?
     }
 
     /// 首次配置写入前落盘的预写事务意图（WAL）：保证首次配置在任意写盘点被强杀后，重启仍能识别归属并安全撤销。
@@ -606,7 +605,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
         }
 
-        // 2. 独立三态探测并核验 ~/.ssh/mimi/ 内的密钥归属与公私钥匹配（纯内存验证，不写临时私钥副本）
+        // 2. 独立三态探测并核验 ~/.ssh/mimi/ 内的密钥归属与公私钥匹配（直接调用 ssh-keygen -y，不写临时私钥副本）
         if mimiDirSafe && mimiDirExists {
             var privateSafe = true
             var publicSafe = true
@@ -629,13 +628,13 @@ struct CodexLocalSSHConfigurator: Sendable {
                 if let expectedBody = state?.effectiveKeyBody,
                    let expectedFP = state?.effectiveKeyFingerprint {
                     if privateExists && publicExists {
-                        if verifyOwnedKeyPair(expectedBody: expectedBody, expectedFingerprint: expectedFP) {
+                        if await verifyOwnedKeyPair(expectedBody: expectedBody, expectedFingerprint: expectedFP) {
                             result.keyExists = true
                         } else {
                             result.hasConflictingKeyFiles = true
                         }
                     } else if privateExists || publicExists {
-                        if verifyPartialOwnedKey(
+                        if await verifyPartialOwnedKey(
                             privateExists: privateExists,
                             publicExists: publicExists,
                             expectedBody: expectedBody,
@@ -892,15 +891,13 @@ struct CodexLocalSSHConfigurator: Sendable {
 
         // =========================================================================
         // Phase 1 · Exclusive Inode-Tracked Staging & Write-Ahead Intent (WAL)
-        // 先在内存生成 Ed25519 密钥对，再独占创建 0700 暂存目录与 0600 空文件并把 inode + WAL 落盘，
-        // 随后向已打开的独占描述符写入唯一一份私钥，绝不产生任何额外私钥副本。
+        // 在 ~/.ssh/mimi/ 内独占创建 0700 暂存目录并先登记 inode，再调用系统 /usr/bin/ssh-keygen
+        // 生成 Ed25519 密钥对，校验后把文件 inode 与完整 WAL 落盘，绝不产生任何额外私钥副本。
         // =========================================================================
         let createdSSHDirectory = try ensureSSHDirectory()
         let createdMimiDirectory = try ensureMimiSSHDirectory()
         try ensureStateDirectory()
 
-        let generatedKey = try Self.generateEd25519OpenSSHKeyPair()
-        let plannedAuthEntry = Self.formatManagedAuthorizedKeyEntry(publicKeyBody: generatedKey.publicKeyBody)
         let plannedMimiConfigData = Data(candidateMimiConfigText.utf8)
         let plannedMimiConfigVersion = FileVersionFingerprint.from(data: plannedMimiConfigData)
         let plannedAuthAddedLeadingNewline = !existingAuthText.isEmpty && existingAuthText.utf8.last != 0x0A
@@ -908,9 +905,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         let stagedKeyBundle: StagedKeyPairBundle
         var intentState: ManagedState
         do {
-            let staged = try stageFreshKeyPairAndPersistWAL(
-                generatedKey: generatedKey,
-                plannedAuthorizedKeyEntry: plannedAuthEntry,
+            let staged = try await stageFreshKeyPairAndPersistWAL(
                 plannedAuthorizedKeyAddedLeadingNewline: plannedAuthAddedLeadingNewline,
                 plannedUsername: trimmedUser,
                 plannedMimiConfigVersion: plannedMimiConfigVersion
@@ -923,6 +918,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
             throw error
         }
+        let plannedAuthEntry = Self.formatManagedAuthorizedKeyEntry(publicKeyBody: stagedKeyBundle.publicKeyBody)
 
         // =========================================================================
         // Phase 2 · Atomic Commit（首次配置原子发布并记录 RollbackRecord）
@@ -1167,8 +1163,13 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
         let hasPrivate = try validateRegularFileIfPresent(privateKeyURL, label: Self.keyFileName) != nil
         let hasPublic = try validateRegularFileIfPresent(publicKeyURL, label: "\(Self.keyFileName).pub") != nil
-        guard hasPrivate && hasPublic,
-              verifyOwnedKeyPair(expectedBody: expectedKeyBody, expectedFingerprint: expectedKeyFP) else {
+        let ownedKeyVerified: Bool
+        if hasPrivate && hasPublic {
+            ownedKeyVerified = await verifyOwnedKeyPair(expectedBody: expectedKeyBody, expectedFingerprint: expectedKeyFP)
+        } else {
+            ownedKeyVerified = false
+        }
+        guard ownedKeyVerified else {
             throw ConfigError.conflictingKeyFiles(
                 "现有 Mimi 专用密钥缺失、损坏或与记录指纹不一致（本向导不会自动轮换密钥），请先点击「移除本机 SSH 配置」后再重新配置。"
             )
@@ -1422,9 +1423,9 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
 
             if mimiDirSafe && mimiDirPresent {
-                // 2a. 仅删除经纯内存指纹核验与隔离快照核验确属 Mimi 的专用密钥文件。
+                // 2a. 仅删除经 ssh-keygen -y 指纹核验与隔离快照核验确属 Mimi 的专用密钥文件。
                 do {
-                    let removedKeys = try removeOwnedKeyFilesIfVerified(state: state)
+                    let removedKeys = try await removeOwnedKeyFilesIfVerified(state: state)
                     if removedKeys {
                         state.keyFingerprint = nil
                         state.publicKeyBody = nil

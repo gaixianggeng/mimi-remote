@@ -60,9 +60,14 @@ enum MimiRemoteMacMain {
             let configurator = CodexLocalSSHConfigurator(
                 homeDirectory: homeURL,
                 username: "alice",
+                systemSSHConfigPath: nil,
                 beforeAtomicCommit: { targetURL in
                     if targetURL.lastPathComponent == CodexLocalSSHConfigurator.keyFileName {
-                        Darwin.kill(Darwin.getpid(), SIGKILL)
+                        _ = Darwin.kill(Darwin.getpid(), SIGKILL)
+                        // 阻塞当前线程，防止多核环境下 SIGKILL 投递前闭包返回并继续执行 renameatx_np 移走暂存私钥。
+                        while true {
+                            _ = Darwin.pause()
+                        }
                     }
                 }
             )

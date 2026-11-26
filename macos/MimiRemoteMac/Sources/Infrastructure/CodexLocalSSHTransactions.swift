@@ -1,16 +1,8 @@
-import CryptoKit
 import Darwin
 import Foundation
 
 extension CodexLocalSSHConfigurator {
-    // MARK: - In-Memory OpenSSH Ed25519 Generation & Verification (Zero Extra Private Key Copies)
-
-    struct GeneratedEd25519KeyPair {
-        let privateKeyData: Data
-        let publicKeyData: Data
-        let publicKeyBody: String
-        let fingerprint: String
-    }
+    // MARK: - System ssh-keygen Staging & Zero-Copy Verification
 
     struct KeyMaterial {
         let publicKeyBody: String
@@ -19,200 +11,23 @@ extension CodexLocalSSHConfigurator {
 
     struct StagedKeyPairBundle {
         let artifact: StagedKeyArtifact
+        let privateKeyIdentity: FileIdentity
+        let publicKeyIdentity: FileIdentity
         let privateSnapshot: FileSnapshot
         let publicSnapshot: FileSnapshot
         let publicKeyBody: String
         let fingerprint: String
     }
 
-    /// 纯内存生成标准 OpenSSH v1 Ed25519 密钥对（`openssh-key-v1` 格式），不产生额外临时私钥副本。
-    static func generateEd25519OpenSSHKeyPair(comment: String = keyComment) throws -> GeneratedEd25519KeyPair {
-        let signingKey = Curve25519.Signing.PrivateKey()
-        let seed32 = signingKey.rawRepresentation
-        let pub32 = signingKey.publicKey.rawRepresentation
-
-        var pubWireBlob = Data()
-        appendSSHString(Data("ssh-ed25519".utf8), to: &pubWireBlob)
-        appendSSHString(pub32, to: &pubWireBlob)
-
-        let publicKeyBody = "ssh-ed25519 \(pubWireBlob.base64EncodedString())"
-        guard let fingerprint = computeOpenSSHSHA256Fingerprint(fromKeyBody: publicKeyBody) else {
-            throw ConfigError.keyGenerationFailed("无法计算新建 Ed25519 公钥指纹。")
-        }
-
-        var checkInt: UInt32 = 0
-        withUnsafeMutableBytes(of: &checkInt) { raw in
-            arc4random_buf(raw.baseAddress, raw.count)
-        }
-
-        var privSection = Data()
-        appendSSHUInt32(checkInt, to: &privSection)
-        appendSSHUInt32(checkInt, to: &privSection)
-        appendSSHString(Data("ssh-ed25519".utf8), to: &privSection)
-        appendSSHString(pub32, to: &privSection)
-        var priv64 = Data()
-        priv64.append(seed32)
-        priv64.append(pub32)
-        appendSSHString(priv64, to: &privSection)
-        appendSSHString(Data(comment.utf8), to: &privSection)
-        var padByte: UInt8 = 1
-        while privSection.count % 8 != 0 {
-            privSection.append(padByte)
-            padByte &+= 1
-        }
-
-        var payload = Data("openssh-key-v1\0".utf8)
-        appendSSHString(Data("none".utf8), to: &payload) // ciphername
-        appendSSHString(Data("none".utf8), to: &payload) // kdfname
-        appendSSHString(Data(), to: &payload)            // kdfoptions
-        appendSSHUInt32(1, to: &payload)                 // number of keys
-        appendSSHString(pubWireBlob, to: &payload)       // public key blob
-        appendSSHString(privSection, to: &payload)       // private section
-
-        let base64 = payload.base64EncodedString()
-        var pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-        var index = base64.startIndex
-        while index < base64.endIndex {
-            let next = base64.index(index, offsetBy: 70, limitedBy: base64.endIndex) ?? base64.endIndex
-            pem.append(contentsOf: base64[index..<next])
-            pem.append("\n")
-            index = next
-        }
-        pem.append("-----END OPENSSH PRIVATE KEY-----\n")
-
-        let privateKeyData = Data(pem.utf8)
-        let publicKeyData = Data("\(publicKeyBody) \(comment)\n".utf8)
-        return GeneratedEd25519KeyPair(
-            privateKeyData: privateKeyData,
-            publicKeyData: publicKeyData,
-            publicKeyBody: publicKeyBody,
-            fingerprint: fingerprint
-        )
-    }
-
-    /// 纯内存解析并密码学验证 OpenSSH v1 未加密 Ed25519 私钥，推导对应的 `ssh-ed25519 <base64>` 公钥主体，绝不落盘任何临时私钥副本。
-    static func derivePublicKeyBody(fromOpenSSHPrivateKeyData data: Data) -> String? {
-        guard !data.isEmpty,
-              let pem = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        let lines = pem
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        guard lines.count >= 3,
-              lines.first == "-----BEGIN OPENSSH PRIVATE KEY-----",
-              lines.last == "-----END OPENSSH PRIVATE KEY-----" else {
-            return nil
-        }
-        let bodyBase64 = lines.dropFirst().dropLast().joined()
-        guard let payload = Data(base64Encoded: bodyBase64) else {
-            return nil
-        }
-
-        let magic = Data("openssh-key-v1\0".utf8)
-        guard payload.starts(with: magic) else { return nil }
-        var offset = magic.count
-
-        guard let cipherName = readSSHString(from: payload, offset: &offset),
-              cipherName == Data("none".utf8),
-              let kdfName = readSSHString(from: payload, offset: &offset),
-              kdfName == Data("none".utf8),
-              let kdfOptions = readSSHString(from: payload, offset: &offset),
-              kdfOptions.isEmpty,
-              let keyCount = readSSHUInt32(from: payload, offset: &offset),
-              keyCount == 1,
-              let pubWireBlob = readSSHString(from: payload, offset: &offset),
-              let privSection = readSSHString(from: payload, offset: &offset),
-              offset == payload.count,
-              privSection.count % 8 == 0 else {
-            return nil
-        }
-
-        var pubOffset = 0
-        guard let pubKeyType = readSSHString(from: pubWireBlob, offset: &pubOffset),
-              pubKeyType == Data("ssh-ed25519".utf8),
-              let headerPub32 = readSSHString(from: pubWireBlob, offset: &pubOffset),
-              headerPub32.count == 32,
-              pubOffset == pubWireBlob.count else {
-            return nil
-        }
-
-        var privOffset = 0
-        guard let check1 = readSSHUInt32(from: privSection, offset: &privOffset),
-              let check2 = readSSHUInt32(from: privSection, offset: &privOffset),
-              check1 == check2,
-              let privKeyType = readSSHString(from: privSection, offset: &privOffset),
-              privKeyType == Data("ssh-ed25519".utf8),
-              let privPub32 = readSSHString(from: privSection, offset: &privOffset),
-              privPub32 == headerPub32,
-              let priv64 = readSSHString(from: privSection, offset: &privOffset),
-              priv64.count == 64,
-              readSSHString(from: privSection, offset: &privOffset) != nil else {
-            return nil
-        }
-
-        // 核验剩余填充字节严格遵循 OpenSSH 1, 2, 3... 规则。
-        let remaining = privSection.count - privOffset
-        guard remaining < 8 else { return nil }
-        for idx in 0..<remaining {
-            if privSection[privOffset + idx] != UInt8(idx + 1) {
-                return nil
-            }
-        }
-
-        let seed32 = priv64.prefix(32)
-        let embeddedPub32 = priv64.suffix(32)
-        guard embeddedPub32 == headerPub32,
-              let signingKey = try? Curve25519.Signing.PrivateKey(rawRepresentation: seed32),
-              signingKey.publicKey.rawRepresentation == headerPub32 else {
-            return nil
-        }
-
-        return "ssh-ed25519 \(pubWireBlob.base64EncodedString())"
-    }
-
-    private static func appendSSHUInt32(_ value: UInt32, to data: inout Data) {
-        var big = value.bigEndian
-        withUnsafeBytes(of: &big) { data.append(contentsOf: $0) }
-    }
-
-    private static func appendSSHString(_ bytes: Data, to data: inout Data) {
-        appendSSHUInt32(UInt32(bytes.count), to: &data)
-        data.append(bytes)
-    }
-
-    private static func readSSHUInt32(from data: Data, offset: inout Int) -> UInt32? {
-        guard offset + 4 <= data.count else { return nil }
-        let b0 = UInt32(data[offset])
-        let b1 = UInt32(data[offset + 1])
-        let b2 = UInt32(data[offset + 2])
-        let b3 = UInt32(data[offset + 3])
-        offset += 4
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    }
-
-    private static func readSSHString(from data: Data, offset: inout Int) -> Data? {
-        guard let len = readSSHUInt32(from: data, offset: &offset) else { return nil }
-        let length = Int(len)
-        guard length >= 0, offset + length <= data.count else { return nil }
-        let slice = data.subdata(in: offset..<(offset + length))
-        offset += length
-        return slice
-    }
-
     // MARK: - Exclusive Inode-Tracked Key Staging & Publication
 
-    /// 独占创建 `~/.ssh/mimi/.mimi-keygen-*`（`0700`）与独占空密钥文件（`O_CREAT|O_EXCL|O_NOFOLLOW`, `0600`），
-    /// 在写入私钥字节前先把目录与文件的 `(dev, ino)` 及 WAL 持久化到 `stateFileURL`，随后写入唯一一份私钥材料。
+    /// 在 `~/.ssh/mimi/` 内独占创建 `0700` 暂存目录并先持久化其 `(dev, ino)`，再调用系统 `/usr/bin/ssh-keygen`
+    /// 直接在 Mimi 目录内生成 Ed25519 密钥对（零额外私钥副本），校验 `.pub` 与 `ssh-keygen -y` 一致后持久化完整 WAL。
     func stageFreshKeyPairAndPersistWAL(
-        generatedKey: GeneratedEd25519KeyPair,
-        plannedAuthorizedKeyEntry: String,
         plannedAuthorizedKeyAddedLeadingNewline: Bool,
         plannedUsername: String,
         plannedMimiConfigVersion: FileVersionFingerprint
-    ) throws -> (bundle: StagedKeyPairBundle, intentState: ManagedState) {
+    ) async throws -> (bundle: StagedKeyPairBundle, intentState: ManagedState) {
         let dirName = "\(Self.keyStagingDirectoryPrefix)\(UUID().uuidString)"
         guard Self.isValidStagedKeyDirectoryName(dirName) else {
             throw ConfigError.unsafeFileSystemTarget("非法的密钥暂存目录名称。")
@@ -244,167 +59,173 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.unsafeFileSystemTarget("密钥临时目录属主或类型异常。")
         }
         let dirIdentity = FileIdentity(dev: stageSt.st_dev, ino: stageSt.st_ino)
-
-        // 2. 在独占目录内独占创建空私钥与空公钥文件，获取确切 inode（写入私钥字节前）。
-        let privFD = Darwin.openat(stageFD, Self.keyFileName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard privFD >= 0 else {
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("无法独占创建暂存私钥文件：\(Self.posixErrorMessage())")
-        }
-        var privClosed = false
-        defer {
-            if !privClosed { Darwin.close(privFD) }
-        }
-        guard Darwin.fchmod(privFD, 0o600) == 0 else {
-            Darwin.close(privFD)
-            privClosed = true
-            _ = Darwin.unlinkat(stageFD, Self.keyFileName, 0)
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("设置暂存私钥权限失败：\(Self.posixErrorMessage())")
-        }
-        var privInitSt = stat()
-        guard Darwin.fstat(privFD, &privInitSt) == 0 else {
-            Darwin.close(privFD)
-            privClosed = true
-            _ = Darwin.unlinkat(stageFD, Self.keyFileName, 0)
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("无法记录暂存私钥 inode：\(Self.posixErrorMessage())")
-        }
-        let privIdentity = FileIdentity(dev: privInitSt.st_dev, ino: privInitSt.st_ino)
-
-        let pubFileName = "\(Self.keyFileName).pub"
-        let pubFD = Darwin.openat(stageFD, pubFileName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        guard pubFD >= 0 else {
-            Darwin.close(privFD)
-            privClosed = true
-            _ = Darwin.unlinkat(stageFD, Self.keyFileName, 0)
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("无法独占创建暂存公钥文件：\(Self.posixErrorMessage())")
-        }
-        var pubClosed = false
-        defer {
-            if !pubClosed { Darwin.close(pubFD) }
-        }
-        guard Darwin.fchmod(pubFD, 0o600) == 0 else {
-            Darwin.close(privFD)
-            privClosed = true
-            Darwin.close(pubFD)
-            pubClosed = true
-            _ = Darwin.unlinkat(stageFD, Self.keyFileName, 0)
-            _ = Darwin.unlinkat(stageFD, pubFileName, 0)
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("设置暂存公钥权限失败：\(Self.posixErrorMessage())")
-        }
-        var pubInitSt = stat()
-        guard Darwin.fstat(pubFD, &pubInitSt) == 0 else {
-            Darwin.close(privFD)
-            privClosed = true
-            Darwin.close(pubFD)
-            pubClosed = true
-            _ = Darwin.unlinkat(stageFD, Self.keyFileName, 0)
-            _ = Darwin.unlinkat(stageFD, pubFileName, 0)
-            _ = Darwin.unlinkat(mimiDirFD, dirName, AT_REMOVEDIR)
-            throw ConfigError.fileOperationFailed("无法记录暂存公钥 inode：\(Self.posixErrorMessage())")
-        }
-        let pubIdentity = FileIdentity(dev: pubInitSt.st_dev, ino: pubInitSt.st_ino)
-
-        let artifact = StagedKeyArtifact(
+        let preKeygenArtifact = StagedKeyArtifact(
             directoryName: dirName,
             directoryIdentity: dirIdentity,
-            privateKeyIdentity: privIdentity,
-            publicKeyIdentity: pubIdentity
+            privateKeyIdentity: nil,
+            publicKeyIdentity: nil
         )
 
-        // 3. 在写入私钥内容前，先将目录与文件 inode 及完整 WAL 意图持久化落盘。
-        let intentState = ManagedState(
-            stagedKeyArtifacts: [artifact],
-            pendingTransaction: PendingTransaction(
-                transactionID: UUID().uuidString,
-                keyFingerprint: generatedKey.fingerprint,
-                publicKeyBody: generatedKey.publicKeyBody,
-                plannedAuthorizedKeyEntry: plannedAuthorizedKeyEntry,
-                plannedAuthorizedKeyBody: generatedKey.publicKeyBody,
-                authorizedKeyAddedLeadingNewline: plannedAuthorizedKeyAddedLeadingNewline,
-                plannedHostAlias: Self.hostAlias,
-                plannedUsername: plannedUsername,
-                plannedMimiConfigVersion: plannedMimiConfigVersion,
-                plannedKnownHostsVersion: nil,
-                stagedKeyArtifact: artifact
-            )
-        )
-
+        // 2. 调用 ssh-keygen 写盘前，先把独占创建的 staging 目录 inode 落盘登记。
         do {
-            try saveManagedState(intentState, invokeHook: false)
+            try saveManagedState(ManagedState(stagedKeyArtifacts: [preKeygenArtifact]), invokeHook: false)
         } catch {
-            Darwin.close(privFD)
-            privClosed = true
-            Darwin.close(pubFD)
-            pubClosed = true
             Darwin.close(stageFD)
             stageClosed = true
-            _ = cleanupStagedKeyArtifact(artifact)
+            _ = cleanupStagedKeyArtifact(preKeygenArtifact)
             throw error
         }
 
-        // 4. 向已打开的独占文件描述符写入唯一一份私钥与公钥内容并抓取最终快照。
-        do {
-            try writeAllBytes(generatedKey.privateKeyData, to: privFD, label: Self.keyFileName)
-            _ = Darwin.fsync(privFD)
-            var privAfterSt = stat()
-            guard Darwin.fstat(privFD, &privAfterSt) == 0, privIdentity.matches(privAfterSt) else {
-                throw ConfigError.fileOperationFailed("无法确认暂存私钥快照。")
-            }
-            let privateSnapshot = FileSnapshot(
-                exists: true,
-                info: LStatInfo(stat: privAfterSt),
-                data: generatedKey.privateKeyData
-            )
-            Darwin.close(privFD)
-            privClosed = true
+        let stagingDirURL = mimiSSHDirectory.appendingPathComponent(dirName, isDirectory: true)
+        let stagedPrivateURL = stagingDirURL.appendingPathComponent(Self.keyFileName, isDirectory: false)
+        let pubFileName = "\(Self.keyFileName).pub"
+        var cleanupArtifact = preKeygenArtifact
 
-            try writeAllBytes(generatedKey.publicKeyData, to: pubFD, label: pubFileName)
-            _ = Darwin.fsync(pubFD)
-            var pubAfterSt = stat()
-            guard Darwin.fstat(pubFD, &pubAfterSt) == 0, pubIdentity.matches(pubAfterSt) else {
-                throw ConfigError.fileOperationFailed("无法确认暂存公钥快照。")
+        do {
+            // 确认暂存目录内不存在同名残留，拒绝覆盖任何已有文件。
+            var existingSt = stat()
+            if Darwin.fstatat(stageFD, Self.keyFileName, &existingSt, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT {
+                throw ConfigError.conflictingKeyFiles("暂存目录中已存在同名私钥或无法检查目标路径。")
             }
-            let publicSnapshot = FileSnapshot(
-                exists: true,
-                info: LStatInfo(stat: pubAfterSt),
-                data: generatedKey.publicKeyData
+            if Darwin.fstatat(stageFD, pubFileName, &existingSt, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT {
+                throw ConfigError.conflictingKeyFiles("暂存目录中已存在同名公钥或无法检查目标路径。")
+            }
+
+            // 3. 调用系统 /usr/bin/ssh-keygen 在 Mimi 目录内的独占路径生成 Ed25519 密钥对（空 stdin 拒绝交互覆盖）。
+            let keygenResult: CommandResult
+            do {
+                keygenResult = try await runCommand(
+                    URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
+                    ["-q", "-t", "ed25519", "-N", "", "-C", Self.keyComment, "-f", stagedPrivateURL.path],
+                    .seconds(15),
+                    Data()
+                )
+            } catch {
+                throw ConfigError.keyGenerationFailed(error.localizedDescription)
+            }
+            guard keygenResult.status == 0 else {
+                throw ConfigError.keyGenerationFailed(keygenResult.stderrText.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+
+            // 4. 在独占目录描述符下校验并收紧为 0600，记录确切 inode 与快照。
+            let privFD = Darwin.openat(stageFD, Self.keyFileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+            guard privFD >= 0 else {
+                throw ConfigError.keyGenerationFailed("未能在暂存目录打开新建私钥：\(Self.posixErrorMessage())")
+            }
+            let privateSnapshot: FileSnapshot
+            let privIdentity: FileIdentity
+            do {
+                defer { Darwin.close(privFD) }
+                var privSt = stat()
+                guard Darwin.fstat(privFD, &privSt) == 0,
+                      (privSt.st_mode & S_IFMT) == S_IFREG,
+                      privSt.st_uid == Darwin.geteuid() else {
+                    throw ConfigError.unsafeFileSystemTarget("新建暂存私钥类型或属主异常。")
+                }
+                guard Darwin.fchmod(privFD, 0o600) == 0 else {
+                    throw ConfigError.fileOperationFailed("设置暂存私钥权限失败：\(Self.posixErrorMessage())")
+                }
+                guard Darwin.fstat(privFD, &privSt) == 0 else {
+                    throw ConfigError.fileOperationFailed("无法读取暂存私钥快照：\(Self.posixErrorMessage())")
+                }
+                let privData = try readAllBytes(from: privFD, label: Self.keyFileName)
+                guard !privData.isEmpty else {
+                    throw ConfigError.keyGenerationFailed("新建暂存私钥内容为空。")
+                }
+                privIdentity = FileIdentity(dev: privSt.st_dev, ino: privSt.st_ino)
+                privateSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: privSt), data: privData)
+            }
+
+            let pubFD = Darwin.openat(stageFD, pubFileName, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+            guard pubFD >= 0 else {
+                cleanupArtifact = StagedKeyArtifact(
+                    directoryName: dirName,
+                    directoryIdentity: dirIdentity,
+                    privateKeyIdentity: privIdentity,
+                    publicKeyIdentity: nil
+                )
+                throw ConfigError.keyGenerationFailed("未能在暂存目录打开新建公钥：\(Self.posixErrorMessage())")
+            }
+            let publicSnapshot: FileSnapshot
+            let pubIdentity: FileIdentity
+            do {
+                defer { Darwin.close(pubFD) }
+                var pubSt = stat()
+                guard Darwin.fstat(pubFD, &pubSt) == 0,
+                      (pubSt.st_mode & S_IFMT) == S_IFREG,
+                      pubSt.st_uid == Darwin.geteuid() else {
+                    throw ConfigError.unsafeFileSystemTarget("新建暂存公钥类型或属主异常。")
+                }
+                guard Darwin.fchmod(pubFD, 0o600) == 0 else {
+                    throw ConfigError.fileOperationFailed("设置暂存公钥权限失败：\(Self.posixErrorMessage())")
+                }
+                guard Darwin.fstat(pubFD, &pubSt) == 0 else {
+                    throw ConfigError.fileOperationFailed("无法读取暂存公钥快照：\(Self.posixErrorMessage())")
+                }
+                let pubData = try readAllBytes(from: pubFD, label: pubFileName)
+                pubIdentity = FileIdentity(dev: pubSt.st_dev, ino: pubSt.st_ino)
+                publicSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: pubSt), data: pubData)
+            }
+
+            let artifact = StagedKeyArtifact(
+                directoryName: dirName,
+                directoryIdentity: dirIdentity,
+                privateKeyIdentity: privIdentity,
+                publicKeyIdentity: pubIdentity
             )
-            Darwin.close(pubFD)
-            pubClosed = true
+            cleanupArtifact = artifact
 
             Darwin.close(stageFD)
             stageClosed = true
 
-            guard Self.derivePublicKeyBody(fromOpenSSHPrivateKeyData: privateSnapshot.data) == generatedKey.publicKeyBody else {
+            guard let pubText = String(data: publicSnapshot.data, encoding: .utf8),
+                  let publicKeyBody = Self.extractPublicKeyBody(from: pubText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let fingerprint = Self.computeOpenSSHSHA256Fingerprint(fromKeyBody: publicKeyBody) else {
+                throw ConfigError.keyGenerationFailed("未读取到有效公钥内容。")
+            }
+
+            // 直接对暂存私钥路径调用 ssh-keygen -y 核验公私钥匹配，不写任何额外私钥副本。
+            guard let derivedBody = await derivePublicKeyBody(at: stagedPrivateURL, expectedSnapshot: privateSnapshot),
+                  derivedBody == publicKeyBody else {
                 throw ConfigError.keyGenerationFailed("生成的私钥与公钥不匹配。")
             }
 
+            // 5. 将确切目录/文件 inode 及完整 WAL 意图持久化落盘。
+            let plannedAuthorizedKeyEntry = Self.formatManagedAuthorizedKeyEntry(publicKeyBody: publicKeyBody)
+            let intentState = ManagedState(
+                stagedKeyArtifacts: [artifact],
+                pendingTransaction: PendingTransaction(
+                    transactionID: UUID().uuidString,
+                    keyFingerprint: fingerprint,
+                    publicKeyBody: publicKeyBody,
+                    plannedAuthorizedKeyEntry: plannedAuthorizedKeyEntry,
+                    plannedAuthorizedKeyBody: publicKeyBody,
+                    authorizedKeyAddedLeadingNewline: plannedAuthorizedKeyAddedLeadingNewline,
+                    plannedHostAlias: Self.hostAlias,
+                    plannedUsername: plannedUsername,
+                    plannedMimiConfigVersion: plannedMimiConfigVersion,
+                    plannedKnownHostsVersion: nil,
+                    stagedKeyArtifact: artifact
+                )
+            )
+            try saveManagedState(intentState, invokeHook: false)
+
             let bundle = StagedKeyPairBundle(
                 artifact: artifact,
+                privateKeyIdentity: privIdentity,
+                publicKeyIdentity: pubIdentity,
                 privateSnapshot: privateSnapshot,
                 publicSnapshot: publicSnapshot,
-                publicKeyBody: generatedKey.publicKeyBody,
-                fingerprint: generatedKey.fingerprint
+                publicKeyBody: publicKeyBody,
+                fingerprint: fingerprint
             )
             return (bundle, intentState)
         } catch {
-            if !privClosed {
-                Darwin.close(privFD)
-                privClosed = true
-            }
-            if !pubClosed {
-                Darwin.close(pubFD)
-                pubClosed = true
-            }
             if !stageClosed {
                 Darwin.close(stageFD)
                 stageClosed = true
             }
-            if cleanupStagedKeyArtifact(artifact) {
+            if cleanupStagedKeyArtifact(cleanupArtifact) {
                 try? removeRegularFileIfPresent(stateFileURL, label: stateFileURL.lastPathComponent)
             }
             throw error
@@ -419,9 +240,49 @@ extension CodexLocalSSHConfigurator {
             !name.contains("..")
     }
 
-    /// 严格按 inode 清理本次独占创建的 `~/.ssh/mimi/.mimi-keygen-*` 暂存目录与文件：
-    /// - 目录 `(dev, ino)` 不匹配 `artifact.directoryIdentity` 时直接拒绝，绝不触碰其中任何文件；
-    /// - 暂存私钥/公钥 `(dev, ino)` 不匹配已记录的 `privateKeyIdentity` / `publicKeyIdentity` 时拒绝删除，绝不误删同名替换文件；
+    /// 核验暂存目录内的全部条目：仅允许本次生成的密钥/公钥普通文件，且属主与已记录 inode 完全匹配。
+    private func verifyStagedDirectoryContents(stageFD: Int32, artifact: StagedKeyArtifact) -> Bool {
+        let dupFD = Darwin.dup(stageFD)
+        guard dupFD >= 0 else { return false }
+        guard let dir = Darwin.fdopendir(dupFD) else {
+            Darwin.close(dupFD)
+            return false
+        }
+        defer { Darwin.closedir(dir) }
+
+        let expectedIdentities: [String: FileIdentity?] = [
+            Self.keyFileName: artifact.privateKeyIdentity,
+            "\(Self.keyFileName).pub": artifact.publicKeyIdentity,
+        ]
+        let currentUID = Darwin.geteuid()
+
+        while let entryPtr = Darwin.readdir(dir) {
+            let name = withUnsafePointer(to: &entryPtr.pointee.d_name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if name == "." || name == ".." { continue }
+            guard let expectedIdentityOptional = expectedIdentities[name] else {
+                return false
+            }
+            var fileSt = stat()
+            guard Darwin.fstatat(stageFD, name, &fileSt, AT_SYMLINK_NOFOLLOW) == 0,
+                  (fileSt.st_mode & S_IFMT) == S_IFREG,
+                  fileSt.st_uid == currentUID else {
+                return false
+            }
+            if let expectedIdentity = expectedIdentityOptional, !expectedIdentity.matches(fileSt) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// 隔离-核验-清理本次独占创建的 `~/.ssh/mimi/.mimi-keygen-*` 暂存目录与文件：
+    /// - 先做无破坏预检，再通过 `RENAME_EXCL` 将整个暂存目录原子移入独占 `0700` 隔离目录；
+    /// - 在隔离目录内复核目录 `(dev, ino)` 与其中全部文件的 `(dev, ino)` 后才 `unlinkat` + `rmdir`，彻底消除 check-then-unlink 竞态；
+    /// - 任一核验失败时通过 `RENAME_EXCL` 原子恢复回原路径（冲突则保留在隔离目录内），绝不误删同名替换目录或文件；
     /// - 返回 `true` 仅表示该独占目录已确认不存在。
     func cleanupStagedKeyArtifact(_ artifact: StagedKeyArtifact) -> Bool {
         let dirName = artifact.directoryName
@@ -443,58 +304,89 @@ extension CodexLocalSSHConfigurator {
             return false
         }
 
-        let stageFD = Darwin.openat(parentFD, dirName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
-        if stageFD < 0 {
+        // 1. 无破坏预检：目录或文件 inode 不匹配时直接返回，不移动外部替换目录。
+        let preStageFD = Darwin.openat(parentFD, dirName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        if preStageFD < 0 {
+            return errno == ENOENT
+        }
+        var preStageSt = stat()
+        let preOK: Bool = {
+            defer { Darwin.close(preStageFD) }
+            guard Darwin.fstat(preStageFD, &preStageSt) == 0,
+                  (preStageSt.st_mode & S_IFMT) == S_IFDIR,
+                  preStageSt.st_uid == Darwin.geteuid(),
+                  artifact.directoryIdentity.matches(preStageSt) else {
+                return false
+            }
+            return verifyStagedDirectoryContents(stageFD: preStageFD, artifact: artifact)
+        }()
+        guard preOK else { return false }
+
+        // 2. 创建独占 0700 隔离目录并将暂存目录原子移入，阻断按路径并发替换窗口。
+        let qDirName = ".mimi-quarantine-\(UUID().uuidString)"
+        guard Darwin.mkdirat(parentFD, qDirName, 0o700) == 0 else {
+            return false
+        }
+        let qDirFD = Darwin.openat(parentFD, qDirName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        guard qDirFD >= 0 else {
+            _ = Darwin.unlinkat(parentFD, qDirName, AT_REMOVEDIR)
+            return false
+        }
+        _ = Darwin.fchmod(qDirFD, 0o700)
+
+        var keepQuarantineDir = false
+        defer {
+            Darwin.close(qDirFD)
+            if !keepQuarantineDir {
+                _ = Darwin.unlinkat(parentFD, qDirName, AT_REMOVEDIR)
+            }
+        }
+
+        if Darwin.renameatx_np(parentFD, dirName, qDirFD, "dir", UInt32(RENAME_EXCL)) != 0 {
             return errno == ENOENT
         }
 
-        var stageSt = stat()
-        guard Darwin.fstat(stageFD, &stageSt) == 0,
-              (stageSt.st_mode & S_IFMT) == S_IFDIR,
-              stageSt.st_uid == Darwin.geteuid(),
-              artifact.directoryIdentity.matches(stageSt) else {
-            Darwin.close(stageFD)
+        // 3. 在隔离目录内复核目录与全部文件的 inode 及属主；不匹配时原子无覆盖恢复。
+        let isoStageFD = Darwin.openat(qDirFD, "dir", O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        let verifiedInQuarantine: Bool
+        if isoStageFD >= 0 {
+            var isoStageSt = stat()
+            verifiedInQuarantine = Darwin.fstat(isoStageFD, &isoStageSt) == 0 &&
+                (isoStageSt.st_mode & S_IFMT) == S_IFDIR &&
+                isoStageSt.st_uid == Darwin.geteuid() &&
+                artifact.directoryIdentity.matches(isoStageSt) &&
+                verifyStagedDirectoryContents(stageFD: isoStageFD, artifact: artifact)
+        } else {
+            verifiedInQuarantine = false
+        }
+
+        guard verifiedInQuarantine else {
+            if isoStageFD >= 0 {
+                Darwin.close(isoStageFD)
+            }
+            if Darwin.renameatx_np(qDirFD, "dir", parentFD, dirName, UInt32(RENAME_EXCL)) != 0 {
+                keepQuarantineDir = true
+            }
             return false
         }
 
-        let targets: [(String, FileIdentity)] = [
-            (Self.keyFileName, artifact.privateKeyIdentity),
-            ("\(Self.keyFileName).pub", artifact.publicKeyIdentity),
-        ]
-        for (fileName, expectedIdentity) in targets {
-            var fileSt = stat()
-            if Darwin.fstatat(stageFD, fileName, &fileSt, AT_SYMLINK_NOFOLLOW) == 0 {
-                guard (fileSt.st_mode & S_IFMT) == S_IFREG,
-                      fileSt.st_uid == Darwin.geteuid(),
-                      expectedIdentity.matches(fileSt) else {
-                    Darwin.close(stageFD)
-                    return false
+        // 4. 在隔离目录内安全删除已核验的暂存文件并移除空目录。
+        for fileName in [Self.keyFileName, "\(Self.keyFileName).pub"] {
+            if Darwin.unlinkat(isoStageFD, fileName, 0) != 0 && errno != ENOENT {
+                Darwin.close(isoStageFD)
+                if Darwin.renameatx_np(qDirFD, "dir", parentFD, dirName, UInt32(RENAME_EXCL)) != 0 {
+                    keepQuarantineDir = true
                 }
-                if Darwin.unlinkat(stageFD, fileName, 0) != 0 && errno != ENOENT {
-                    Darwin.close(stageFD)
-                    return false
-                }
-            } else if errno != ENOENT {
-                Darwin.close(stageFD)
                 return false
             }
         }
-        Darwin.close(stageFD)
+        Darwin.close(isoStageFD)
 
-        // 再次确认父目录中的该条目仍匹配本次独占创建的目录 inode 后执行 rmdir。
-        var recheckSt = stat()
-        if Darwin.fstatat(parentFD, dirName, &recheckSt, AT_SYMLINK_NOFOLLOW) == 0 {
-            guard (recheckSt.st_mode & S_IFMT) == S_IFDIR,
-                  recheckSt.st_uid == Darwin.geteuid(),
-                  artifact.directoryIdentity.matches(recheckSt) else {
-                return false
-            }
-        } else {
-            return errno == ENOENT
-        }
-
-        if Darwin.unlinkat(parentFD, dirName, AT_REMOVEDIR) == 0 || errno == ENOENT {
+        if Darwin.unlinkat(qDirFD, "dir", AT_REMOVEDIR) == 0 || errno == ENOENT {
             return true
+        }
+        if Darwin.renameatx_np(qDirFD, "dir", parentFD, dirName, UInt32(RENAME_EXCL)) != 0 {
+            keepQuarantineDir = true
         }
         return false
     }
@@ -507,7 +399,7 @@ extension CodexLocalSSHConfigurator {
             inStagingDirectory: bundle.artifact.directoryName,
             expectedDirectoryIdentity: bundle.artifact.directoryIdentity,
             fileName: Self.keyFileName,
-            expectedFileIdentity: bundle.artifact.privateKeyIdentity,
+            expectedFileIdentity: bundle.privateKeyIdentity,
             stagedSnapshot: bundle.privateSnapshot,
             to: privateKeyURL,
             label: Self.keyFileName
@@ -521,7 +413,7 @@ extension CodexLocalSSHConfigurator {
             inStagingDirectory: bundle.artifact.directoryName,
             expectedDirectoryIdentity: bundle.artifact.directoryIdentity,
             fileName: "\(Self.keyFileName).pub",
-            expectedFileIdentity: bundle.artifact.publicKeyIdentity,
+            expectedFileIdentity: bundle.publicKeyIdentity,
             stagedSnapshot: bundle.publicSnapshot,
             to: publicKeyURL,
             label: "\(Self.keyFileName).pub"
@@ -532,13 +424,13 @@ extension CodexLocalSSHConfigurator {
         return KeyMaterial(publicKeyBody: bundle.publicKeyBody, fingerprint: bundle.fingerprint)
     }
 
-    func verifyOwnedKeyPair(expectedBody: String, expectedFingerprint: String) -> Bool {
+    func verifyOwnedKeyPair(expectedBody: String, expectedFingerprint: String) async -> Bool {
         guard let pubBody = readPublicKeyBody(),
               pubBody == expectedBody,
               Self.computeOpenSSHSHA256Fingerprint(fromKeyBody: pubBody) == expectedFingerprint else {
             return false
         }
-        guard let derivedBody = derivePublicKeyBodyFromPrivateKey(),
+        guard let derivedBody = await derivePublicKeyBodyFromPrivateKey(),
               derivedBody == expectedBody else {
             return false
         }
@@ -550,9 +442,9 @@ extension CodexLocalSSHConfigurator {
         publicExists: Bool,
         expectedBody: String,
         expectedFingerprint: String
-    ) -> Bool {
+    ) async -> Bool {
         if privateExists {
-            guard let derived = derivePublicKeyBodyFromPrivateKey(),
+            guard let derived = await derivePublicKeyBodyFromPrivateKey(),
                   derived == expectedBody,
                   Self.computeOpenSSHSHA256Fingerprint(fromKeyBody: derived) == expectedFingerprint else {
                 return false
@@ -570,7 +462,7 @@ extension CodexLocalSSHConfigurator {
         return true
     }
 
-    func removeOwnedKeyFilesIfVerified(state: ManagedState) throws -> Bool {
+    func removeOwnedKeyFilesIfVerified(state: ManagedState) async throws -> Bool {
         let privateProbe = try probePath(privateKeyURL, label: Self.keyFileName)
         let publicProbe = try probePath(publicKeyURL, label: "\(Self.keyFileName).pub")
         let hasPrivate: Bool
@@ -599,7 +491,7 @@ extension CodexLocalSSHConfigurator {
             try validateRegularFileIfPresent(privateKeyURL, label: Self.keyFileName)
             let snapshot = try captureSnapshot(of: privateKeyURL, label: Self.keyFileName)
             if snapshot.exists,
-               let derived = Self.derivePublicKeyBody(fromOpenSSHPrivateKeyData: snapshot.data),
+               let derived = await derivePublicKeyBody(at: privateKeyURL, expectedSnapshot: snapshot),
                let derivedFP = Self.computeOpenSSHSHA256Fingerprint(fromKeyBody: derived),
                derived == expectedBody, derivedFP == expectedFP {
                 verifiedPrivateSnapshot = snapshot
@@ -645,11 +537,35 @@ extension CodexLocalSSHConfigurator {
         return true
     }
 
-    private func derivePublicKeyBodyFromPrivateKey() -> String? {
+    private func derivePublicKeyBodyFromPrivateKey() async -> String? {
         guard let snapshot = try? captureSnapshot(of: privateKeyURL, label: Self.keyFileName), snapshot.exists else {
             return nil
         }
-        return Self.derivePublicKeyBody(fromOpenSSHPrivateKeyData: snapshot.data)
+        return await derivePublicKeyBody(at: privateKeyURL, expectedSnapshot: snapshot)
+    }
+
+    /// 直接对已有私钥文件调用系统 `/usr/bin/ssh-keygen -y -P "" -f <path>` 推导公钥主体，绝不写入任何额外私钥副本；
+    /// 调用前后校验文件类型、属主与快照一致，防止路径替换竞态。
+    func derivePublicKeyBody(at keyURL: URL, expectedSnapshot: FileSnapshot) async -> String? {
+        guard expectedSnapshot.exists, !expectedSnapshot.data.isEmpty else { return nil }
+        guard let preSnapshot = try? captureSnapshot(of: keyURL, label: keyURL.lastPathComponent),
+              Self.snapshotsMatch(expectedSnapshot, preSnapshot) else {
+            return nil
+        }
+        guard let result = try? await runCommand(
+            URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
+            ["-y", "-P", "", "-f", keyURL.path],
+            .seconds(10),
+            Data()
+        ), result.status == 0 else {
+            return nil
+        }
+        guard let postSnapshot = try? captureSnapshot(of: keyURL, label: keyURL.lastPathComponent),
+              Self.snapshotsMatch(expectedSnapshot, postSnapshot) else {
+            return nil
+        }
+        let line = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.extractPublicKeyBody(from: line)
     }
 
     // MARK: - Transactional Rollback (First-Time Setup Only)
@@ -929,11 +845,13 @@ extension CodexLocalSSHConfigurator {
         }
 
         // 5. 按发布快照隔离回滚本次新建的密钥文件（绝不删外部替换的同名文件）。
+        //    遇到快照冲突（例如仅权限被改为 0400）或 I/O 失败时，均保留密钥归属记录，保证 Remove 仍可按密码学指纹核验并清理。
         if rollback.createdPrivateKey, let snapshot = rollback.createdPrivateKeySnapshot {
             do {
                 try removeFileMatchingSnapshot(privateKeyURL, expectedSnapshot: snapshot, label: Self.keyFileName, invokeHook: false)
             } catch ConfigError.conflictingKeyFiles {
-                failures.append("私钥 \(Self.keyFileName) 在回滚前已被外部替换，已保留未删除")
+                residualNewKeyManaged = true
+                failures.append("私钥 \(Self.keyFileName) 在回滚前权限或内容发生变化，已保留未删除与归属记录")
             } catch {
                 residualNewKeyManaged = true
                 failures.append("未能回滚新建私钥 \(Self.keyFileName)（\(error.localizedDescription)）")
@@ -943,7 +861,8 @@ extension CodexLocalSSHConfigurator {
             do {
                 try removeFileMatchingSnapshot(publicKeyURL, expectedSnapshot: snapshot, label: "\(Self.keyFileName).pub", invokeHook: false)
             } catch ConfigError.conflictingKeyFiles {
-                failures.append("公钥 \(Self.keyFileName).pub 在回滚前已被外部替换，已保留未删除")
+                residualNewKeyManaged = true
+                failures.append("公钥 \(Self.keyFileName).pub 在回滚前权限或内容发生变化，已保留未删除与归属记录")
             } catch {
                 residualNewKeyManaged = true
                 failures.append("未能回滚新建公钥 \(Self.keyFileName).pub（\(error.localizedDescription)）")

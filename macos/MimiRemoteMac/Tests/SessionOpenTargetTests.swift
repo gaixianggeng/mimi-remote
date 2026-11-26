@@ -949,9 +949,13 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertTrue(altSockets.contains(customSock), "含空格的 --config 路径必须完整保留并命中自定义 CODEX_HOME")
         XCTAssertFalse(altSockets.contains(defaultSock))
 
-        // 5. 显式配置 app_server.shared_codex_home（transport=local）时优先匹配该共享目录。
+        // 5. 显式配置 app_server.shared_codex_home（私有后端目录）时，公共控制 socket 仍与前门一致按 codex.env.CODEX_HOME（缺失时 ~/.codex）定位。
         let sharedHomeDir = tempRoot.appendingPathComponent("shared-codex-home", isDirectory: true)
         try FileManager.default.createDirectory(at: sharedHomeDir, withIntermediateDirectories: true)
+        let privateBackendControlSock = sharedHomeDir
+            .appendingPathComponent("app-server-control/app-server-control.sock")
+            .standardizedFileURL.path
+
         let sharedHomeCfg = """
         {
           "app_server": { "transport": "local", "shared_codex_home": "\(sharedHomeDir.path)" },
@@ -964,9 +968,44 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             environment: [:],
             expectedUID: currentUID
         )
-        let expectedSharedHomeSock = sharedHomeDir.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
-        XCTAssertTrue(sharedHomeSockets.contains(expectedSharedHomeSock))
-        XCTAssertFalse(sharedHomeSockets.contains(customSock))
+        XCTAssertTrue(sharedHomeSockets.contains(customSock), "设置 shared_codex_home 时公共控制 socket 仍应按 codex.env.CODEX_HOME 解析")
+        XCTAssertFalse(sharedHomeSockets.contains(privateBackendControlSock), "不得把私有后端 shared_codex_home 当成公共控制 socket 目录")
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psOutput,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: currentUID,
+            tcpLsofOutput: matchedTCP,
+            unixLsofOutput: customBackendUnix,
+            sharedSocketPaths: sharedHomeSockets
+        ), "设置 shared_codex_home 时连接到前门公共控制 socket 的桌面连接必须正确识别为共享")
+
+        // 5b. 仅配置 app_server.shared_codex_home 且未覆写 codex.env.CODEX_HOME 时，公共控制 socket 回退到默认 ~/.codex。
+        let sharedHomeDefaultPublicCfg = """
+        {
+          "app_server": { "transport": "local", "shared_codex_home": "\(sharedHomeDir.path)" },
+          "codex": { "enabled": true }
+        }
+        """
+        try sharedHomeDefaultPublicCfg.write(to: configURL, atomically: true, encoding: .utf8)
+        let defaultPublicSockets = CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        )
+        XCTAssertTrue(defaultPublicSockets.contains(defaultSock), "未覆写 codex.env.CODEX_HOME 时公共控制 socket 应回退到 ~/.codex")
+        XCTAssertFalse(defaultPublicSockets.contains(privateBackendControlSock))
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psOutput,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: currentUID,
+            tcpLsofOutput: matchedTCP,
+            unixLsofOutput: defaultBackendUnix,
+            sharedSocketPaths: defaultPublicSockets
+        ))
     }
 
     // MARK: - Final Round P1-6: Active Connection Check Accepts localhost

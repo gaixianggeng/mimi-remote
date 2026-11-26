@@ -591,13 +591,15 @@ enum CodexDesktopLink {
             guard effectiveTransport == "local" else {
                 return []
             }
-            // 与 Go `EffectiveLocalCodexHome` 一致：优先 app_server.shared_codex_home，其次 codex.env.CODEX_HOME，最后默认 ~/.codex；保留原样空格且要求绝对路径。
+            // 与前门（internal/appserver/front_door_darwin.go）一致：
+            // app_server.shared_codex_home 仅隔离私有后端历史（app-server-backend.sock），
+            // 公共控制 socket（app-server-control.sock）始终按 codex.env.CODEX_HOME（缺失时回退 ~/.codex）定位。
             if let sharedHome = cfg.appServer?.sharedCodexHome, !sharedHome.isEmpty {
                 guard sharedHome.hasPrefix("/") else {
                     return []
                 }
-                effectiveCodexHome = URL(fileURLWithPath: sharedHome, isDirectory: true)
-            } else if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
+            }
+            if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
                 guard configuredHome.hasPrefix("/") else {
                     return []
                 }
