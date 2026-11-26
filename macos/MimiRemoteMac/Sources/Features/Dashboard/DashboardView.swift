@@ -124,6 +124,17 @@ enum DashboardPresentation {
         await reloadPassivePreflight()
     }
 
+    static func connectionOwnerLabel(owner: ServiceOwner) -> String? {
+        switch owner {
+        case .macApp:
+            return "Mimi Remote Mac"
+        case .homebrew:
+            return "Homebrew"
+        case .none:
+            return nil
+        }
+    }
+
     private static func typedRemediation(
         fallbackTitle: String,
         fallbackMessage: String,
@@ -208,13 +219,166 @@ enum DashboardPresentation {
     }
 }
 
+/// 统一协调仪表板被动预检与「重新检查 / 修复并启动」触发：
+/// - 单次点击无论是否触发生命周期变化（如 `.degraded -> .stopped`），都只发起一次被动预检，
+///   不与 `.task(id:)` 形成双触发；
+/// - 通过单调序号与任务取消隔离重叠响应，防止慢响应回写覆盖更新的诊断结果。
+@MainActor
+@Observable
+final class DashboardPreflightCoordinator {
+    struct TriggerKey: Equatable {
+        let lifecycle: HostLifecycleState
+        let isOnboardingInProgress: Bool
+    }
+
+    private(set) var report: OnboardingPreflightReport?
+    private(set) var diagnostics: [OnboardingCheckID: OnboardingResolvedDiagnostic] = [:]
+    @ObservationIgnored private var requestSequence: UInt64 = 0
+    @ObservationIgnored private var inFlightTask: Task<Void, Never>?
+    @ObservationIgnored private var handledKey: TriggerKey?
+    @ObservationIgnored private var isExecutingAction = false
+
+    func handleLifecycleTask(store: HostStore) async {
+        guard !isExecutingAction else { return }
+        let currentKey = Self.triggerKey(for: store)
+        guard handledKey != currentKey else { return }
+        handledKey = currentKey
+        await reloadPreflight(store: store)
+    }
+
+    func performRecheck(store: HostStore) async {
+        guard !isExecutingAction,
+              !store.isBusy,
+              !store.isRefreshingStatus,
+              !store.isOnboardingInProgress
+        else { return }
+        cancelInFlightPreflight()
+        isExecutingAction = true
+        var completedObservation = false
+        defer {
+            isExecutingAction = false
+            if !completedObservation {
+                handledKey = nil
+            }
+        }
+        await DashboardPresentation.performRecheck(store: store) {
+            completedObservation = true
+            self.handledKey = Self.triggerKey(for: store)
+            self.isExecutingAction = false
+            await self.reloadPreflight(store: store)
+        }
+    }
+
+    func performRepairAndStart(store: HostStore) async {
+        guard !isExecutingAction, !store.isBusy else { return }
+        cancelInFlightPreflight()
+        isExecutingAction = true
+        var completedRepair = false
+        defer {
+            isExecutingAction = false
+            if !completedRepair {
+                handledKey = nil
+            }
+        }
+        await store.repairAndStartService()
+        completedRepair = true
+        handledKey = Self.triggerKey(for: store)
+        isExecutingAction = false
+        await reloadPreflight(store: store)
+    }
+
+    func reloadPreflight(store: HostStore) async {
+        cancelInFlightPreflight()
+        let sequence = requestSequence
+        let keyAtStart = Self.triggerKey(for: store)
+        let generationAtStart = store.stateGeneration
+
+        report = nil
+        diagnostics = [:]
+
+        guard Self.shouldLoadPreflight(for: store) else { return }
+
+        let stage: OnboardingStage = store.hasConfiguration() ? .pair : .setup
+        let options = OnboardingPreflightOptions(
+            stage: stage,
+            progressJSON: false,
+            verifiedConfigured: store.hasConfiguration(),
+            verifiedCapability: store.verifiedOnboardingCapability
+        )
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let raw = try? await store.agent.preflight(options, nil),
+                  !Task.isCancelled,
+                  self.requestSequence == sequence,
+                  Self.triggerKey(for: store) == keyAtStart,
+                  store.stateGeneration == generationAtStart,
+                  Self.shouldLoadPreflight(for: store)
+            else { return }
+
+            let evidence = MacNativePreflightEvidence(
+                agentRegistrationState: store.agentRegistrationState,
+                mainAppRegistrationState: store.mainAppRegistrationState,
+                photosAccessState: store.currentPhotosAccessState,
+                localNetworkAccessDenied: false
+            )
+            let overlaid = MacNativePreflightOverlay.apply(to: raw, evidence: evidence)
+            if case .success(let resolved) = OnboardingCopyCatalog.validateReport(
+                overlaid,
+                platform: .macos,
+                expectedStage: stage,
+                nativeOverlay: true,
+                verifiedCapability: store.verifiedOnboardingCapability
+            ) {
+                guard self.requestSequence == sequence,
+                      Self.triggerKey(for: store) == keyAtStart,
+                      store.stateGeneration == generationAtStart,
+                      Self.shouldLoadPreflight(for: store)
+                else { return }
+                self.report = overlaid
+                self.diagnostics = resolved
+            }
+        }
+        inFlightTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        if requestSequence == sequence {
+            inFlightTask = nil
+        }
+    }
+
+    private func cancelInFlightPreflight() {
+        inFlightTask?.cancel()
+        inFlightTask = nil
+        requestSequence &+= 1
+    }
+
+    static func triggerKey(for store: HostStore) -> TriggerKey {
+        TriggerKey(lifecycle: store.lifecycle, isOnboardingInProgress: store.isOnboardingInProgress)
+    }
+
+    private static func shouldLoadPreflight(for store: HostStore) -> Bool {
+        guard !store.isOnboardingInProgress, store.lifecycle != .notConfigured else {
+            return false
+        }
+        switch store.lifecycle {
+        case .degraded, .stopped, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct DashboardView: View {
     let store: HostStore
     /// 首次启动时由系统直接弹出这个窗口；菜单栏 App 不会自动切到前台，窗口会落在别的 App 后面。
     var activatesOnAppear = false
 
-    @State private var preflightReport: OnboardingPreflightReport?
-    @State private var preflightDiagnostics: [OnboardingCheckID: OnboardingResolvedDiagnostic] = [:]
+    @State private var preflight = DashboardPreflightCoordinator()
 
     var body: some View {
         let remediation = showsOnboardingWizard ? nil : DashboardPresentation.remediation(
@@ -222,8 +386,8 @@ struct DashboardView: View {
             owner: store.owner,
             agentRegistrationState: store.agentRegistrationState,
             hasConfiguration: store.hasConfiguration(),
-            preflightReport: preflightReport,
-            preflightDiagnostics: preflightDiagnostics
+            preflightReport: preflight.report,
+            preflightDiagnostics: preflight.diagnostics
         )
         let extraError = showsOnboardingWizard ? nil : DashboardPresentation.additionalErrorBanner(
             lifecycle: store.lifecycle,
@@ -245,12 +409,8 @@ struct DashboardView: View {
                     ServiceOverviewView(
                         store: store,
                         remediation: remediation,
-                        reloadPreflight: { await loadPassivePreflightIfNeeded() },
-                        recheckRecovery: {
-                            await DashboardPresentation.performRecheck(store: store) {
-                                await loadPassivePreflightIfNeeded()
-                            }
-                        }
+                        repairAndStart: { await preflight.performRepairAndStart(store: store) },
+                        recheckRecovery: { await preflight.performRecheck(store: store) }
                     )
                 }
 
@@ -277,63 +437,20 @@ struct DashboardView: View {
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
         }
-        .task(id: store.lifecycle) {
-            await loadPassivePreflightIfNeeded()
+        .task(id: DashboardPreflightCoordinator.triggerKey(for: store)) {
+            await preflight.handleLifecycleTask(store: store)
         }
     }
 
     private var showsOnboardingWizard: Bool {
         store.lifecycle == .notConfigured || store.isOnboardingInProgress
     }
-
-    private func loadPassivePreflightIfNeeded() async {
-        guard !showsOnboardingWizard else {
-            preflightReport = nil
-            preflightDiagnostics = [:]
-            return
-        }
-        switch store.lifecycle {
-        case .degraded, .stopped, .failed:
-            break
-        default:
-            preflightReport = nil
-            preflightDiagnostics = [:]
-            return
-        }
-        let stage: OnboardingStage = store.hasConfiguration() ? .pair : .setup
-        let options = OnboardingPreflightOptions(
-            stage: stage,
-            progressJSON: false,
-            verifiedConfigured: store.hasConfiguration(),
-            verifiedCapability: store.verifiedOnboardingCapability
-        )
-        preflightReport = nil
-        preflightDiagnostics = [:]
-        guard let raw = try? await store.agent.preflight(options, nil), !Task.isCancelled else { return }
-        let evidence = MacNativePreflightEvidence(
-            agentRegistrationState: store.agentRegistrationState,
-            mainAppRegistrationState: store.mainAppRegistrationState,
-            photosAccessState: store.currentPhotosAccessState,
-            localNetworkAccessDenied: false
-        )
-        let overlaid = MacNativePreflightOverlay.apply(to: raw, evidence: evidence)
-        if case .success(let resolved) = OnboardingCopyCatalog.validateReport(
-            overlaid,
-            platform: .macos,
-            expectedStage: stage,
-            nativeOverlay: true,
-            verifiedCapability: store.verifiedOnboardingCapability
-        ) {
-            preflightReport = overlaid
-            preflightDiagnostics = resolved
-        }
-    }
 }
 
 private struct ServiceOverviewView: View {
     let store: HostStore
     let remediation: DashboardRemediation?
-    let reloadPreflight: () async -> Void
+    let repairAndStart: () async -> Void
     let recheckRecovery: () async -> Void
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
@@ -365,12 +482,13 @@ private struct ServiceOverviewView: View {
                 }
             }
 
-            if let status = store.status {
+            if let ownerLabel = DashboardPresentation.connectionOwnerLabel(owner: store.owner),
+               let status = store.status {
                 InfoCard("连接") {
                     KeyValueRow(key: "Endpoint", value: status.endpoint)
                     KeyValueRow(key: "版本", value: status.version)
                     KeyValueRow(key: "已授权项目", value: "\(status.projects)")
-                    KeyValueRow(key: "运行方式", value: store.owner == .macApp ? "Mimi Remote Mac" : "Homebrew")
+                    KeyValueRow(key: "运行方式", value: ownerLabel)
                 }
             }
 
@@ -416,8 +534,7 @@ private struct ServiceOverviewView: View {
             NSWorkspace.shared.open(OnboardingFixURL.desktop.url)
         case .repairAndStartService:
             Task {
-                await store.repairAndStartService()
-                await reloadPreflight()
+                await repairAndStart()
             }
         case .recheck:
             Task {

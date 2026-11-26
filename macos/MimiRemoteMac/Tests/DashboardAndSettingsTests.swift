@@ -454,6 +454,450 @@ final class DashboardAndSettingsTests: XCTestCase {
         XCTAssertEqual(mutatingCalls.values, [])
     }
 
+    func testDashboardRecheckUsesReadinessWithoutRuntimeAndNeverSchedulesFollowUpOrStartsService() async {
+        let mutatingCalls = EventRecorder()
+        let fullStatusCalls = CallCounter()
+        let readinessCalls = CallCounter()
+        var agentState: ServiceRegistrationState = .requiresApproval
+
+        let retryableRuntime = AgentRuntimeStatusSnapshot(
+            checkedAt: "2026-11-26T00:00:00Z",
+            runtimes: [
+                AgentRuntimeStatus(
+                    id: "claude",
+                    title: "Claude",
+                    enabled: true,
+                    state: .unavailable,
+                    version: nil,
+                    startedAt: nil,
+                    authMode: nil,
+                    planType: nil,
+                    reason: "bridge_unavailable",
+                    rateLimits: nil
+                ),
+            ],
+            refreshing: true,
+            stale: false
+        )
+        let retryRequestedStatus = Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: true,
+            runtimeStatus: retryableRuntime
+        )
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            status: {
+                _ = fullStatusCalls.increment()
+                mutatingCalls.append("agent.status(--runtime)")
+                return retryRequestedStatus
+            },
+            readiness: {
+                _ = readinessCalls.increment()
+                return retryRequestedStatus
+            },
+            mutatingCalls: mutatingCalls
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(fullStatusCalls.current, 0)
+        XCTAssertEqual(readinessCalls.current, 0)
+
+        // 1. 批准后重新检查：只走不含 --runtime 的 readiness，即使返回需要重试的 runtime 状态也不调度后台 follow-up。
+        agentState = .enabled
+        await store.observeServiceStatePassively()
+
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertTrue(store.runtimeStatusNeedsFollowUp)
+        XCTAssertFalse(
+            store.hasScheduledRuntimeStatusFollowUp,
+            "被动重新检查绝不能调度会调用 refreshMacAgentStatus / startMacAgentIfNeeded 的 follow-up"
+        )
+        XCTAssertEqual(readinessCalls.current, 1)
+        XCTAssertEqual(fullStatusCalls.current, 0, "被动重新检查不得调用会拉起 Claude bridge 的 --runtime status")
+        XCTAssertEqual(mutatingCalls.values, [])
+        XCTAssertEqual(AgentCommandClient.statusArguments(includeRuntime: false), ["status", "--json"])
+
+        // 2. 登记变为 .notFound 后再次重新检查：仅切回未托管停止态，不注册、不启动、不重启。
+        agentState = .notFound
+        await store.observeServiceStatePassively()
+
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .stopped)
+        XCTAssertNil(store.status)
+        XCTAssertNil(store.doctor)
+        XCTAssertNil(store.lastError)
+        XCTAssertFalse(store.hasScheduledRuntimeStatusFollowUp)
+        XCTAssertEqual(readinessCalls.current, 1)
+        XCTAssertEqual(fullStatusCalls.current, 0)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    func testInFlightMonitoringTickCannotStartServiceOrOverwriteRecheckAfterOwnerReset() async {
+        // 场景 A：monitoring tick 挂起在 health.check，期间 recheck 观察到 .notRegistered 将 owner 归零。
+        // 恢复后 health.check 返回 false 时，旧 tick 不得回退调用 HostStore.refresh() 起服。
+        do {
+            let mutatingCalls = EventRecorder()
+            let healthGate = SuspendedStatusGate()
+            var agentState: ServiceRegistrationState = .enabled
+            let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+
+            let store = makeRecheckHostStore(
+                agentStatus: { agentState },
+                status: { readyStatus },
+                readiness: { readyStatus },
+                healthCheck: { _ in
+                    await healthGate.suspendReturning(false)
+                },
+                mutatingCalls: mutatingCalls
+            )
+            await store.bootstrap()
+            XCTAssertEqual(store.owner, .macApp)
+            XCTAssertEqual(store.lifecycle, .ready)
+
+            let tickTask = Task { @MainActor in
+                await store.performMonitoringTick(1, now: Date())
+            }
+            await healthGate.waitUntilSuspended()
+
+            agentState = .notRegistered
+            await store.observeServiceStatePassively()
+            XCTAssertEqual(store.owner, .none)
+            XCTAssertEqual(store.lifecycle, .stopped)
+            XCTAssertNil(store.status)
+
+            healthGate.resume()
+            await tickTask.value
+
+            XCTAssertEqual(store.owner, .none)
+            XCTAssertEqual(store.lifecycle, .stopped)
+            XCTAssertNil(store.status)
+            XCTAssertEqual(mutatingCalls.values, [], "挂起恢复的旧监控 tick 绝不能在 owner 变更后回退启动服务")
+        }
+
+        // 场景 B：monitoring tick 挂起在 readiness，期间 recheck 观察到 .notRegistered 将状态置为 .stopped。
+        // 恢复后旧 readiness 返回 .ready，不得覆盖 .stopped。
+        do {
+            let mutatingCalls = EventRecorder()
+            let readinessGate = SuspendedStatusGate()
+            var agentState: ServiceRegistrationState = .enabled
+            let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+
+            let store = makeRecheckHostStore(
+                agentStatus: { agentState },
+                status: { readyStatus },
+                readiness: {
+                    await readinessGate.suspendReturning(readyStatus)
+                },
+                healthCheck: { _ in true },
+                mutatingCalls: mutatingCalls
+            )
+            await store.bootstrap()
+            XCTAssertEqual(store.owner, .macApp)
+            XCTAssertEqual(store.lifecycle, .ready)
+
+            let tickTask = Task { @MainActor in
+                await store.performMonitoringTick(6, now: Date().addingTimeInterval(60))
+            }
+            await readinessGate.waitUntilSuspended()
+
+            agentState = .notRegistered
+            await store.observeServiceStatePassively()
+            XCTAssertEqual(store.owner, .none)
+            XCTAssertEqual(store.lifecycle, .stopped)
+            XCTAssertNil(store.status)
+
+            readinessGate.resume()
+            await tickTask.value
+
+            XCTAssertEqual(store.owner, .none)
+            XCTAssertEqual(store.lifecycle, .stopped)
+            XCTAssertNil(store.status)
+            XCTAssertEqual(mutatingCalls.values, [])
+        }
+    }
+
+    func testStaleRecheckResponseIsIgnoredWhenOwnerChangesMidRecheck() async {
+        let mutatingCalls = EventRecorder()
+        let readinessGate = SuspendedStatusGate()
+        var agentState: ServiceRegistrationState = .requiresApproval
+        let staleDegraded = Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: false,
+            serviceError: "旧的就绪失败"
+        )
+
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            status: { staleDegraded },
+            readiness: {
+                await readinessGate.suspendReturning(staleDegraded)
+            },
+            mutatingCalls: mutatingCalls
+        )
+        await store.bootstrap()
+
+        agentState = .enabled
+        let recheckTask = Task { @MainActor in
+            await store.observeServiceStatePassively()
+        }
+        await readinessGate.waitUntilSuspended()
+
+        // 模拟 recheck 挂起期间发生了更新的所有权切换。
+        store.owner = .homebrew
+        store.lifecycle = .migrationRequired
+
+        readinessGate.resume()
+        await recheckTask.value
+
+        XCTAssertEqual(store.owner, .homebrew)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+        XCTAssertNil(store.status)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    func testOnboardingStartedMidRecheckIsNotOverwritten() async {
+        // 场景 A：挂起在 homebrew.isLoaded() 时用户进入向导，恢复后无论是否检测到 Homebrew 都不得覆写向导态。
+        do {
+            let mutatingCalls = EventRecorder()
+            let homebrewGate = SuspendedStatusGate()
+            let readinessCalls = CallCounter()
+            let statusAtCalls = CallCounter()
+            let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+
+            let store = makeRecheckHostStore(
+                agentStatus: { .notRegistered },
+                homebrewLoaded: {
+                    await homebrewGate.suspendReturning(true)
+                },
+                status: { readyStatus },
+                readiness: {
+                    _ = readinessCalls.increment()
+                    return readyStatus
+                },
+                statusAt: { _ in
+                    _ = statusAtCalls.increment()
+                    return readyStatus
+                },
+                mutatingCalls: mutatingCalls
+            )
+            store.lifecycle = .stopped
+
+            let recheckTask = Task { @MainActor in
+                await store.observeServiceStatePassively()
+            }
+            await homebrewGate.waitUntilSuspended()
+
+            store.beginOnboarding()
+            XCTAssertTrue(store.isOnboardingInProgress)
+            XCTAssertEqual(store.lifecycle, .notConfigured)
+
+            homebrewGate.resume()
+            await recheckTask.value
+
+            XCTAssertTrue(store.isOnboardingInProgress)
+            XCTAssertEqual(store.lifecycle, .notConfigured)
+            XCTAssertEqual(store.owner, .none)
+            XCTAssertFalse(store.homebrewLoaded)
+            XCTAssertEqual(readinessCalls.current, 0)
+            XCTAssertEqual(statusAtCalls.current, 0)
+            XCTAssertEqual(mutatingCalls.values, [])
+        }
+
+        // 场景 B：挂起在 agent.readiness() 时用户进入向导，恢复后不得覆盖 .notConfigured。
+        do {
+            let mutatingCalls = EventRecorder()
+            let readinessGate = SuspendedStatusGate()
+            let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+
+            let store = makeRecheckHostStore(
+                agentStatus: { .enabled },
+                status: { readyStatus },
+                readiness: {
+                    await readinessGate.suspendReturning(readyStatus)
+                },
+                mutatingCalls: mutatingCalls
+            )
+            store.lifecycle = .degraded("此前失败")
+
+            let recheckTask = Task { @MainActor in
+                await store.observeServiceStatePassively()
+            }
+            await readinessGate.waitUntilSuspended()
+
+            store.beginOnboarding()
+            readinessGate.resume()
+            await recheckTask.value
+
+            XCTAssertTrue(store.isOnboardingInProgress)
+            XCTAssertEqual(store.lifecycle, .notConfigured)
+            XCTAssertNil(store.status)
+            XCTAssertNil(store.lastError)
+            XCTAssertEqual(mutatingCalls.values, [])
+        }
+    }
+
+    func testDashboardRecheckClearsStaleStatusAndCommandErrorOnOwnerResetOrNewDiagnosis() async {
+        let mutatingCalls = EventRecorder()
+        var agentState: ServiceRegistrationState = .enabled
+        let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+        let readinessResult = LockedValue<Result<AgentStatus, Error>>(.success(readyStatus))
+
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            status: { readyStatus },
+            readiness: { try readinessResult.value.get() },
+            mutatingCalls: mutatingCalls
+        )
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertNotNil(store.status)
+        XCTAssertEqual(DashboardPresentation.connectionOwnerLabel(owner: .macApp), "Mimi Remote Mac")
+        XCTAssertEqual(DashboardPresentation.connectionOwnerLabel(owner: .homebrew), "Homebrew")
+        XCTAssertNil(DashboardPresentation.connectionOwnerLabel(owner: .none))
+
+        // 1. 观测到 .notRegistered 将 owner 归零：必须清空旧 status/doctor/lastError，避免连接卡误标为 Homebrew。
+        store.lastError = "旧的命令错误"
+        agentState = .notRegistered
+        await store.observeServiceStatePassively()
+
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .stopped)
+        XCTAssertNil(store.status)
+        XCTAssertNil(store.doctor)
+        XCTAssertNil(store.lastError)
+
+        // 2. 先遇到命令错误，再由成功的 readiness 返回新的就绪失败：必须清掉旧命令错误，只展示最新诊断。
+        agentState = .enabled
+        readinessResult.value = .failure(AgentClientError.commandFailed("无法连接后台服务"))
+        await store.observeServiceStatePassively()
+        XCTAssertEqual(store.lifecycle, .degraded("无法连接后台服务"))
+        XCTAssertEqual(store.lastError, "无法连接后台服务")
+
+        readinessResult.value = .success(Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: false,
+            serviceError: "readyz 不可用"
+        ))
+        await store.observeServiceStatePassively()
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .degraded("readyz 不可用"))
+        XCTAssertNil(store.lastError, "新的只读诊断返回后必须清空上一轮命令错误，不能同时显示两套诊断")
+        let remediation = DashboardPresentation.remediation(
+            lifecycle: store.lifecycle,
+            owner: store.owner,
+            agentRegistrationState: store.agentRegistrationState,
+            hasConfiguration: store.hasConfiguration()
+        )
+        XCTAssertNil(
+            DashboardPresentation.additionalErrorBanner(
+                lifecycle: store.lifecycle,
+                lastError: store.lastError,
+                remediation: remediation
+            )
+        )
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    func testSingleDashboardPreflightPerRecheckClickAndStalePreflightIgnored() async throws {
+        let mutatingCalls = EventRecorder()
+        let preflightCalls = CallCounter()
+        var agentState: ServiceRegistrationState = .enabled
+        let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+        let degradedStatus = Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: false,
+            serviceError: "readyz 不可用"
+        )
+        let readinessResult = LockedValue<Result<AgentStatus, Error>>(.success(degradedStatus))
+        let serviceNotRunningReport = try Self.makeValidMacPairPreflightReport(
+            serviceCode: "service_not_running"
+        )
+        let configInvalidReport = try Self.makeValidMacPairPreflightReport(
+            configCode: "config_invalid"
+        )
+        let preflightGate = LockedValue<SuspendedStatusGate?>(nil)
+        let currentReport = LockedValue(serviceNotRunningReport)
+
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            status: { degradedStatus },
+            readiness: { try readinessResult.value.get() },
+            preflight: { _, _ in
+                _ = preflightCalls.increment()
+                let report = currentReport.value
+                if let gate = preflightGate.value {
+                    preflightGate.value = nil
+                    return await gate.suspendReturning(report)
+                }
+                return report
+            },
+            mutatingCalls: mutatingCalls
+        )
+        store.owner = .macApp
+        store.lifecycle = .degraded("readyz 不可用")
+
+        let coordinator = DashboardPreflightCoordinator()
+        // 初始视图挂载触发一次预检。
+        await coordinator.handleLifecycleTask(store: store)
+        XCTAssertEqual(preflightCalls.current, 1)
+        XCTAssertNotNil(coordinator.report)
+
+        // 1. 单次点击「重新检查」引发 .degraded -> .stopped，同时模拟 SwiftUI .task(id:) 回调：
+        // 整个点击过程必须只触发一次预检，不能双触发。
+        agentState = .notRegistered
+        await coordinator.performRecheck(store: store)
+        await coordinator.handleLifecycleTask(store: store)
+        XCTAssertEqual(store.lifecycle, .stopped)
+        XCTAssertEqual(preflightCalls.current, 2, "从 .degraded 切到 .stopped 的单次重新检查只能触发一次预检")
+        XCTAssertNotNil(coordinator.report)
+
+        // 2. 生命周期未变化（.stopped -> .stopped）的再次点击也只触发一次预检。
+        await coordinator.performRecheck(store: store)
+        await coordinator.handleLifecycleTask(store: store)
+        XCTAssertEqual(preflightCalls.current, 3)
+
+        // 3. 较慢的旧预检响应恢复后不能覆盖较新一次重新检查写入的诊断。
+        let slowGate = SuspendedStatusGate()
+        currentReport.value = configInvalidReport
+        preflightGate.value = slowGate
+        let slowReload = Task { @MainActor in
+            await coordinator.reloadPreflight(store: store)
+        }
+        await slowGate.waitUntilSuspended()
+        XCTAssertEqual(preflightCalls.current, 4)
+
+        currentReport.value = serviceNotRunningReport
+        await coordinator.performRecheck(store: store)
+        XCTAssertEqual(preflightCalls.current, 5)
+        XCTAssertEqual(
+            coordinator.report?.checks.first(where: { $0.id == .serviceDaemon })?.code,
+            "service_not_running"
+        )
+        XCTAssertNil(coordinator.report?.checks.first(where: { $0.id == .configStore })?.code)
+
+        slowGate.resume()
+        await slowReload.value
+        XCTAssertEqual(
+            coordinator.report?.checks.first(where: { $0.id == .serviceDaemon })?.code,
+            "service_not_running",
+            "挂起恢复的旧预检不能覆盖更新的诊断报告"
+        )
+        XCTAssertNil(coordinator.report?.checks.first(where: { $0.id == .configStore })?.code)
+
+        // 4. 服务恢复为 .ready 时重新检查清空预检报告且不再发起新预检。
+        agentState = .enabled
+        readinessResult.value = .success(readyStatus)
+        await coordinator.performRecheck(store: store)
+        await coordinator.handleLifecycleTask(store: store)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(preflightCalls.current, 5)
+        XCTAssertNil(coordinator.report)
+        XCTAssertTrue(coordinator.diagnostics.isEmpty)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
     private func makeRecheckHostStore(
         configExists: Bool = true,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState,
@@ -461,9 +905,15 @@ final class DashboardAndSettingsTests: XCTestCase {
         isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
         homebrewLoaded: @escaping @Sendable () async -> Bool = { false },
         status: @escaping @Sendable () async throws -> AgentStatus,
+        readiness: (@Sendable () async throws -> AgentStatus)? = nil,
         statusAt: @escaping @Sendable (URL) async throws -> AgentStatus = { _ in
             DashboardAndSettingsTests.makeAgentStatus(processOK: true, serviceOK: true)
         },
+        preflight: (@Sendable (
+            OnboardingPreflightOptions,
+            (@Sendable (OnboardingCheck) -> Void)?
+        ) async throws -> OnboardingPreflightReport)? = nil,
+        healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
         mutatingCalls: EventRecorder
     ) -> HostStore {
         HostStore(
@@ -472,6 +922,9 @@ final class DashboardAndSettingsTests: XCTestCase {
                 setup: { _ in
                     mutatingCalls.append("agent.setup")
                     throw AgentClientError.commandFailed("unexpected setup")
+                },
+                preflight: preflight ?? { _, _ in
+                    throw AgentClientError.commandFailed("unused preflight")
                 },
                 setupNoPair: { _, _ in
                     mutatingCalls.append("agent.setupNoPair")
@@ -482,7 +935,7 @@ final class DashboardAndSettingsTests: XCTestCase {
                     throw AgentClientError.commandFailed("unexpected up")
                 },
                 status: status,
-                readiness: status,
+                readiness: readiness ?? status,
                 statusAt: statusAt,
                 doctor: { fix in
                     mutatingCalls.append("agent.doctor(\(fix))")
@@ -513,9 +966,59 @@ final class DashboardAndSettingsTests: XCTestCase {
                 start: { mutatingCalls.append("homebrew.start") },
                 stop: { mutatingCalls.append("homebrew.stop") }
             ),
-            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
+            health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }),
             systemPrivacySettings: .noop
+        )
+    }
+
+    private nonisolated static func makeValidMacPairPreflightReport(
+        serviceCode: String? = nil,
+        configCode: String? = nil
+    ) throws -> OnboardingPreflightReport {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        let fixtureURL = root.appendingPathComponent("contracts/host-cli/preflight-permission-needed.json")
+        let base = try JSONDecoder().decode(
+            OnboardingPreflightReport.self,
+            from: try Data(contentsOf: fixtureURL)
+        )
+        let checks = base.checks.map { check -> OnboardingCheck in
+            if check.id == .serviceDaemon, let serviceCode {
+                return OnboardingCheck(
+                    id: .serviceDaemon,
+                    state: .actionNeeded,
+                    detail: "后台服务尚未运行。请在电脑上启动服务。",
+                    blocking: true,
+                    code: serviceCode,
+                    fix: .runFix(.restartService)
+                )
+            }
+            if check.id == .configStore, let configCode {
+                return OnboardingCheck(
+                    id: .configStore,
+                    state: .error,
+                    detail: "配置无法安全读取。",
+                    blocking: true,
+                    code: configCode,
+                    fix: .openSettings(.hostRecovery),
+                    configPath: base.configPath
+                )
+            }
+            return check
+        }
+        return OnboardingPreflightReport(
+            ok: false,
+            stage: .pair,
+            configured: true,
+            workspaceConfirmed: true,
+            configPath: base.configPath,
+            scanRoot: base.scanRoot,
+            browseRoot: base.browseRoot,
+            scanRootExists: true,
+            recommendedNext: configCode != nil ? .configStore : .serviceDaemon,
+            recommendedTransport: base.recommendedTransport,
+            checks: checks
         )
     }
 
@@ -526,7 +1029,8 @@ final class DashboardAndSettingsTests: XCTestCase {
         serviceError: String? = nil,
         version: String = "1.0.0",
         serverVersion: String? = "1.0.0",
-        projects: Int = 1
+        projects: Int = 1,
+        runtimeStatus: AgentRuntimeStatusSnapshot? = nil
     ) -> AgentStatus {
         AgentStatus(
             processOK: processOK,
@@ -545,7 +1049,8 @@ final class DashboardAndSettingsTests: XCTestCase {
                 listen: "127.0.0.1:8787",
                 checks: []
             ),
-            pairExpires: nil
+            pairExpires: nil,
+            runtimeStatus: runtimeStatus
         )
     }
 }

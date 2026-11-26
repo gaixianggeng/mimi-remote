@@ -17,7 +17,12 @@ enum DiagnosticsFocus: Equatable, Hashable, Sendable {
 @Observable
 final class HostStore {
     var lifecycle: HostLifecycleState = .loading
-    var owner: ServiceOwner = .none
+    var owner: ServiceOwner = .none {
+        didSet {
+            guard owner != oldValue else { return }
+            invalidateInFlightObservations()
+        }
+    }
     var status: AgentStatus?
     var doctor: AgentDoctorResults?
     var pairing: PairingInfo?
@@ -79,6 +84,10 @@ final class HostStore {
     var verifiedOnboardingCapability: String? { agent.verifiedOnboardingCapability() }
     @ObservationIgnored var pairingRefreshGeneration = 0
     @ObservationIgnored var tailcatStatusRequestSequence: UInt64 = 0
+    /// 单调递增的状态代次：在 owner 变更、进入首次设置向导或发起被动观察时递增，
+    /// 防止挂起恢复的旧监控 tick、readiness 或 recheck 覆盖新状态或误入启动服务的 `refresh()`。
+    @ObservationIgnored var stateGeneration: UInt64 = 0
+    @ObservationIgnored private var runtimeStatusFollowUpGeneration: UInt64 = 0
     /// 启动等待期间的 status 轮询只用来判断是否就绪。未就绪的结果不能把生命周期
     /// 写成 degraded/stopped，否则菜单栏会在"正在启动"阶段先闪出"服务需要处理"，
     /// 让用户误以为启动已经失败。真正的失败由等待结束后的 fail() 给出。
@@ -200,6 +209,7 @@ final class HostStore {
         lifecycle = .notConfigured
         pairingRefreshGeneration &+= 1
         pairing = nil
+        invalidateInFlightObservations()
     }
 
     func finishOnboarding(owner resolvedOwner: ServiceOwner) async {
@@ -546,6 +556,7 @@ final class HostStore {
 
     func refresh() async {
         guard !isBusy, !isRefreshingStatus, !isOnboardingInProgress else { return }
+        let generation = stateGeneration
         isRefreshingStatus = true
         defer { isRefreshingStatus = false }
         switch owner {
@@ -556,75 +567,123 @@ final class HostStore {
         case .none:
             if !agent.configExists() {
                 lifecycle = .notConfigured
-            } else if await homebrew.isLoaded() {
-                homebrewLoaded = true
-                owner = .homebrew
-                lifecycle = .migrationRequired
-                await refreshHomebrewStatus()
             } else {
-                await startMacAgentIfNeeded()
+                let brewLoaded = await homebrew.isLoaded()
+                guard generation == stateGeneration, !isOnboardingInProgress else { return }
+                if brewLoaded {
+                    homebrewLoaded = true
+                    owner = .homebrew
+                    lifecycle = .migrationRequired
+                    await refreshHomebrewStatus()
+                } else {
+                    await startMacAgentIfNeeded()
+                }
             }
         }
+        guard !isOnboardingInProgress else { return }
         if owner == .macApp, runtimeStatusNeedsFollowUp {
             scheduleRuntimeStatusFollowUp()
         }
     }
 
     /// 被动观察并同步后台服务的归属、审批与运行状态。
-    /// 只读取配置存在性、Homebrew 加载状态、SMAppService 登记状态与已运行服务的 status，
-    /// 绝不启动、重启、注销或自动修复服务（区别于会拉起服务的 `refresh()`）。
+    /// 只读取配置存在性、Homebrew 加载状态、SMAppService 登记状态与已运行服务的只读 readiness（不含 `--runtime`），
+    /// 绝不启动、重启、注销、自动修复服务或调度会回退启动的后台任务（区别于会拉起服务的 `refresh()`）。
     func observeServiceStatePassively() async {
         guard !isBusy, !isRefreshingStatus, !isOnboardingInProgress else { return }
         isRefreshingStatus = true
         defer { isRefreshingStatus = false }
 
+        invalidateInFlightObservations()
+        var generation = stateGeneration
+
         refreshPermissionsOnReturn()
 
         guard agent.configExists() else {
             homebrewLoaded = false
-            owner = .none
-            lifecycle = .notConfigured
+            resetObservedServiceState(lifecycle: .notConfigured, lastError: nil)
             return
         }
 
         let brewLoaded = await homebrew.isLoaded()
+        guard generation == stateGeneration, !isOnboardingInProgress else { return }
         homebrewLoaded = brewLoaded
         if brewLoaded {
-            owner = .homebrew
-            await refreshHomebrewStatusPassively()
+            if owner != .homebrew {
+                owner = .homebrew
+                status = nil
+                doctor = nil
+                lastError = nil
+                generation = stateGeneration
+            }
+            await refreshHomebrewStatusPassively(expectedGeneration: generation)
             return
         }
 
         if let configurationError = services.agentConfigurationError() {
-            owner = .none
-            lifecycle = .failed(configurationError)
-            lastError = configurationError
+            resetObservedServiceState(
+                lifecycle: .failed(configurationError),
+                lastError: configurationError
+            )
             return
         }
 
         switch services.agentStatus() {
         case .enabled:
-            owner = .macApp
+            if owner != .macApp {
+                owner = .macApp
+                status = nil
+                doctor = nil
+                lastError = nil
+                generation = stateGeneration
+            }
+            let sequence = nextStatusRequestSequence()
             do {
-                if let current = try await fetchAndApplyLatestStatus(), current.serviceOK {
-                    lastError = nil
-                }
+                // 被动观察必须走不含 `--runtime` 的只读 readiness，避免服务端按需拉起已停止的 Claude bridge。
+                let current = try await agent.readiness()
+                guard generation == stateGeneration,
+                      sequence == statusRequestSequence,
+                      !isOnboardingInProgress
+                else { return }
+                lastError = nil
+                apply(current)
             } catch is CancellationError {
                 return
             } catch {
+                guard generation == stateGeneration,
+                      sequence == statusRequestSequence,
+                      !isOnboardingInProgress
+                else { return }
                 lastError = error.localizedDescription
                 lifecycle = .degraded(error.localizedDescription)
             }
         case .requiresApproval:
-            owner = .none
-            lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
+            resetObservedServiceState(
+                lifecycle: .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"),
+                lastError: nil
+            )
         case .notRegistered, .notFound:
-            owner = .none
-            lifecycle = .stopped
+            resetObservedServiceState(lifecycle: .stopped, lastError: nil)
         }
+    }
 
-        if owner == .macApp, runtimeStatusNeedsFollowUp {
-            scheduleRuntimeStatusFollowUp()
+    private func resetObservedServiceState(
+        lifecycle nextLifecycle: HostLifecycleState,
+        lastError nextError: String?
+    ) {
+        owner = .none
+        status = nil
+        doctor = nil
+        lastError = nextError
+        lifecycle = nextLifecycle
+    }
+
+    private func invalidateInFlightObservations() {
+        stateGeneration &+= 1
+        statusRequestSequence &+= 1
+        if owner != .macApp || isOnboardingInProgress {
+            runtimeStatusFollowUpTask?.cancel()
+            runtimeStatusFollowUpTask = nil
         }
     }
 
@@ -1386,6 +1445,7 @@ final class HostStore {
     }
 
     func refreshMacAgentStatus(preserveStateOnCommandFailure: Bool = false, now: Date = Date()) async {
+        let generation = stateGeneration
         switch services.agentStatus() {
         case .enabled:
             do {
@@ -1393,6 +1453,7 @@ final class HostStore {
             } catch is CancellationError {
                 return
             } catch {
+                guard generation == stateGeneration, !isOnboardingInProgress else { return }
                 if preserveStateOnCommandFailure {
                     applyReadinessStalenessIfNeeded(now: now)
                 } else {
@@ -1410,12 +1471,18 @@ final class HostStore {
     }
 
     private func refreshHomebrewStatus() async {
+        let generation = stateGeneration
         guard let binary = homebrew.installedAgentBinary() else {
             lifecycle = .failed("Homebrew 服务仍在运行，但找不到对应 agentd。")
             return
         }
+        let sequence = nextStatusRequestSequence()
         do {
             let current = try await agent.statusAt(binary)
+            guard generation == stateGeneration,
+                  sequence == statusRequestSequence,
+                  !isOnboardingInProgress
+            else { return }
             status = current
             doctor = current.doctor
             lastStatusRefreshAt = Date()
@@ -1427,29 +1494,45 @@ final class HostStore {
         } catch is CancellationError {
             return
         } catch {
+            guard generation == stateGeneration,
+                  sequence == statusRequestSequence,
+                  !isOnboardingInProgress
+            else { return }
             fail(error)
         }
     }
 
-    private func refreshHomebrewStatusPassively() async {
+    private func refreshHomebrewStatusPassively(expectedGeneration: UInt64) async {
         guard let binary = homebrew.installedAgentBinary() else {
+            status = nil
+            doctor = nil
+            lastError = nil
             lifecycle = .degraded("Homebrew 服务仍在运行，但找不到对应 agentd。")
             return
         }
+        let sequence = nextStatusRequestSequence()
         do {
             let current = try await agent.statusAt(binary)
+            guard expectedGeneration == stateGeneration,
+                  sequence == statusRequestSequence,
+                  !isOnboardingInProgress
+            else { return }
             status = current
             doctor = current.doctor
             lastStatusRefreshAt = Date()
+            lastError = nil
             if !current.serviceOK {
                 lifecycle = .degraded(current.serviceError ?? "Homebrew 服务尚未就绪。")
             } else {
                 lifecycle = .migrationRequired
-                lastError = nil
             }
         } catch is CancellationError {
             return
         } catch {
+            guard expectedGeneration == stateGeneration,
+                  sequence == statusRequestSequence,
+                  !isOnboardingInProgress
+            else { return }
             lastError = error.localizedDescription
             lifecycle = .degraded(error.localizedDescription)
         }
@@ -1523,8 +1606,10 @@ final class HostStore {
     }
 
     func fetchAndApplyLatestStatus() async throws -> AgentStatus? {
+        let generation = stateGeneration
         let sequence = nextStatusRequestSequence()
         let current = try await agent.status()
+        guard generation == stateGeneration else { return nil }
         return applyStatusResponse(current, sequence: sequence) ? current : nil
     }
 
@@ -1648,7 +1733,15 @@ final class HostStore {
         // 启动闭环或向导未完成期间不让常驻监控改写生命周期或自动拉起服务。
         guard !isAwaitingServiceStart, !isOnboardingInProgress else { return }
         guard owner != .none, let endpoint = status?.endpoint else { return }
-        guard await health.check(endpoint) else {
+        let observedOwner = owner
+        let generation = stateGeneration
+        let healthy = await health.check(endpoint)
+        guard generation == stateGeneration,
+              owner == observedOwner,
+              !isAwaitingServiceStart,
+              !isOnboardingInProgress
+        else { return }
+        guard healthy else {
             await refresh()
             return
         }
@@ -1661,25 +1754,37 @@ final class HostStore {
         if tick.isMultiple(of: 30) {
             // 完整 status 已包含 readyz，本轮不再重复执行轻量 readiness。
             await refreshMacAgentStatus(preserveStateOnCommandFailure: true, now: now)
+            guard generation == stateGeneration,
+                  owner == .macApp,
+                  !isAwaitingServiceStart,
+                  !isOnboardingInProgress
+            else { return }
             // healthz 已在本轮确认进程存活；status 中的 process_ok 即使瞬时为 false，
             // 也不能把一个明确的 readiness 故障误报为进程停止。
             if let current = status, !current.serviceOK {
                 lifecycle = .degraded(current.serviceError ?? "Codex 服务尚未就绪。")
             }
         } else if tick.isMultiple(of: 6) {
-            await refreshReadinessStatus(now: now)
+            await refreshReadinessStatus(now: now, expectedGeneration: generation)
         } else {
             applyReadinessStalenessIfNeeded(now: now)
         }
     }
 
-    private func refreshReadinessStatus(now: Date) async {
+    private func refreshReadinessStatus(now: Date, expectedGeneration: UInt64? = nil) async {
+        let generation = expectedGeneration ?? stateGeneration
+        let observedOwner = owner
         // 轻量 readiness 与完整 status 写入同一份状态。二者必须共享请求序号，
         // 否则先发出的慢 readiness 会在较新的完整状态之后回写旧结果。
         let sequence = nextStatusRequestSequence()
         do {
             let current = try await agent.readiness()
-            guard sequence == statusRequestSequence else { return }
+            guard generation == stateGeneration,
+                  sequence == statusRequestSequence,
+                  owner == observedOwner,
+                  !isAwaitingServiceStart,
+                  !isOnboardingInProgress
+            else { return }
             lastReadinessCommandSuccessAt = now
             readinessFailureStartedAt = nil
             let resolved = preservingTransientStatusSnapshotsIfNeeded(in: current)
@@ -1692,6 +1797,12 @@ final class HostStore {
         } catch is CancellationError {
             return
         } catch {
+            guard generation == stateGeneration,
+                  sequence == statusRequestSequence,
+                  owner == observedOwner,
+                  !isAwaitingServiceStart,
+                  !isOnboardingInProgress
+            else { return }
             applyReadinessStalenessIfNeeded(now: now)
         }
     }
@@ -1705,11 +1816,22 @@ final class HostStore {
         lifecycle = .degraded("进程存活，但 Codex 服务状态暂时无法确认")
     }
 
+    var hasScheduledRuntimeStatusFollowUp: Bool {
+        runtimeStatusFollowUpTask != nil
+    }
+
     func scheduleRuntimeStatusFollowUp() {
         guard runtimeStatusFollowUpTask == nil else { return }
+        runtimeStatusFollowUpGeneration &+= 1
+        let followUpGeneration = runtimeStatusFollowUpGeneration
+        let expectedStateGeneration = stateGeneration
         runtimeStatusFollowUpTask = Task { [weak self] in
             guard let self else { return }
-            defer { runtimeStatusFollowUpTask = nil }
+            defer {
+                if self.runtimeStatusFollowUpGeneration == followUpGeneration {
+                    self.runtimeStatusFollowUpTask = nil
+                }
+            }
             // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
             // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
             // 首次 unavailable/额度刷新等 15 秒；凭据被拒等 30 秒轮换冷却后重试；
@@ -1729,7 +1851,12 @@ final class HostStore {
                 } catch {
                     return
                 }
-                guard !Task.isCancelled, owner == .macApp, !isBusy else { return }
+                guard !Task.isCancelled,
+                      owner == .macApp,
+                      !isBusy,
+                      !isOnboardingInProgress,
+                      stateGeneration == expectedStateGeneration
+                else { return }
                 guard !isRefreshingStatus else { continue }
 
                 guard retryState.delay(for: status?.runtimeStatus) == delay else { continue }
