@@ -50,6 +50,9 @@ func TestControlPanelPresentationSeparatesCodexAndClaudeConnectionStates(t *test
 	if presentation.ClaudeValue != "未配置" {
 		t.Fatalf("Claude Code state = %q, want 未配置", presentation.ClaudeValue)
 	}
+	if presentation.AgyValue != "未配置" || presentation.DeepSeekValue != "未配置" {
+		t.Fatalf("omitted optional assistants: Antigravity=%q DeepSeek=%q", presentation.AgyValue, presentation.DeepSeekValue)
+	}
 	if presentation.CodexColor == presentation.ClaudeColor {
 		t.Fatal("connected and unconfigured runtimes should use different colors")
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 		t.Fatalf("plain doctor arguments = %#v", plain)
 	}
 	fix := doctorArguments(true)
-	if len(fix) != 2 || fix[0] != "doctor" || fix[1] != "--fix" {
+	if !reflect.DeepEqual(fix, []string{"doctor", "--fix", "--json"}) {
 		t.Fatalf("doctor fix arguments = %#v", fix)
 	}
 }
@@ -47,7 +48,7 @@ func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {
 func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	for _, action := range []string{"start", "restart"} {
 		arguments := actionArguments(action)
-		want := []string{action, "--wait", "1m0s", "--no-pair"}
+		want := []string{action, "--wait", "1m0s", "--no-pair", "--json"}
 		if len(arguments) != len(want) {
 			t.Fatalf("%s arguments = %#v", action, arguments)
 		}
@@ -60,6 +61,53 @@ func TestActionArgumentsWaitForInteractiveServiceReadiness(t *testing.T) {
 	stop := actionArguments("stop")
 	if len(stop) != 1 || stop[0] != "stop" {
 		t.Fatalf("stop arguments = %#v", stop)
+	}
+}
+
+func TestWindowsServiceAndRepairActionsPreserveTypedHostErrors(t *testing.T) {
+	for _, tc := range []struct{ command, fixture, code string }{
+		{"start", "up-error-service-start-timeout.json", "service_start_timeout"},
+		{"restart", "up-error-service-start-timeout.json", "service_start_timeout"},
+		{"doctor", "setup-error-config-invalid.json", "config_invalid"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			controller := &agentController{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] != tc.command || !slices.Contains(args, "--json") {
+					t.Fatal("command did not request its JSON contract", args)
+				}
+				payload := loadTrayContractFile(t, tc.fixture)
+				return nil, decodeTrayCommandError(payload, nil, errors.New("exit status 1"), trayValidationContextForArgs("windows", args, true), args...)
+			}}
+			var err error
+			if tc.command == "doctor" {
+				var result string
+				result, err = controller.doctor(t.Context(), true)
+				if result != "" {
+					t.Fatal("failed repair returned a success report")
+				}
+			} else {
+				err = controller.action(t.Context(), tc.command)
+			}
+			var typed *onboardingCLIError
+			if !errors.As(err, &typed) || !typed.Diagnostic.Trusted || typed.Diagnostic.Code != tc.code || typed.Diagnostic.AllowedFix == nil {
+				t.Fatalf("lost typed %s diagnostic: %v", tc.code, err)
+			}
+		})
+	}
+}
+
+func TestWindowsDoctorRepairShowsFixesAndRestartInstruction(t *testing.T) {
+	receipt := `{"results":{"ok":true},"fixes":["已修复文件权限"],"restart_required":true}`
+	controller := &agentController{commandRunner: func(context.Context, ...string) ([]byte, error) {
+		return []byte(receipt), nil
+	}}
+	got, err := controller.doctor(t.Context(), true)
+	if err != nil || !strings.Contains(got, "已修复文件权限") || !strings.Contains(got, "重启服务") || strings.Contains(got, "{") {
+		t.Fatalf("unexpected repair summary: %q, %v", got, err)
+	}
+	receipt = `{}`
+	if _, err := controller.doctor(t.Context(), true); err == nil {
+		t.Fatal("invalid repair result was reported as success")
 	}
 }
 

@@ -785,7 +785,7 @@ func (a *trayApplication) runAction(label string, action string) {
 		cancel()
 		a.refreshStatus()
 		if err != nil {
-			a.showError(fmt.Errorf("%s服务失败：%s", label, formatTrayUserError(err)))
+			a.showError(err)
 			return
 		}
 		a.showBalloon("Mimi Remote", "服务已"+label, niifInfo)

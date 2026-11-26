@@ -1271,6 +1271,10 @@ func makeControlPanelRuntimePresentation(snapshot *runtimeStatus, runtimeID stri
 		}
 	}
 	if selected == nil {
+		// Fresh host snapshots omit these optional runtimes when disabled.
+		if runtimeID == "agy" || runtimeID == "deepseek" {
+			return controlPanelRuntimePresentation{Value: "未配置", Color: neutral.Color}
+		}
 		return controlPanelRuntimePresentation{Value: "状态未知", Color: neutral.Color}
 	}
 	if !selected.Enabled || strings.EqualFold(strings.TrimSpace(selected.State), "disabled") {

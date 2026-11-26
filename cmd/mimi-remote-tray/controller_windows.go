@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -201,14 +202,37 @@ func (c *agentController) action(ctx context.Context, action string) error {
 func actionArguments(action string) []string {
 	arguments := []string{action}
 	if action == "start" || action == "restart" {
-		arguments = append(arguments, "--wait", serviceReadyWait.String(), "--no-pair")
+		arguments = append(arguments, "--wait", serviceReadyWait.String(), "--no-pair", "--json")
 	}
 	return arguments
 }
 
 func (c *agentController) doctor(ctx context.Context, fix bool) (string, error) {
 	payload, err := c.runCommand(ctx, doctorArguments(fix)...)
-	return strings.TrimSpace(string(payload)), err
+	if err != nil {
+		return "", err
+	}
+	if !fix {
+		return strings.TrimSpace(string(payload)), nil
+	}
+	var receipt struct {
+		Fixes   []string `json:"fixes"`
+		Results struct {
+			OK bool `json:"ok"`
+		} `json:"results"`
+		RestartRequired bool `json:"restart_required"`
+	}
+	if json.Unmarshal(payload, &receipt) != nil || !receipt.Results.OK {
+		return "", errors.New("无法确认诊断修复结果，请重新运行诊断")
+	}
+	lines := []string{"诊断检查已通过。"}
+	for _, fix := range receipt.Fixes {
+		lines = append(lines, sanitizeTrayDiagnostic(fix, 180))
+	}
+	if receipt.RestartRequired {
+		lines = append(lines, "请重启服务使配置生效。")
+	}
+	return strings.Join(lines, "\r\n"), nil
 }
 
 func (c *agentController) pairing(ctx context.Context) (pairingInfo, error) {
@@ -256,7 +280,7 @@ func parsePairingInfo(payload []byte) (pairingInfo, error) {
 func doctorArguments(fix bool) []string {
 	arguments := []string{"doctor"}
 	if fix {
-		arguments = append(arguments, "--fix")
+		arguments = append(arguments, "--fix", "--json")
 	}
 	return arguments
 }
