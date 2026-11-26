@@ -136,6 +136,26 @@ func TestStartWaitsForPendingSocketOwnershipWithoutSubmitting(t *testing.T) {
 	}
 }
 
+// Model the interval between the socket deadline and the context timer callback.
+type delayedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c delayedDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestCoreReadinessDeadlineBeforeContextCancellation(t *testing.T) {
+	waiting := delayedDeadlineContext{t.Context(), time.Now().Add(-time.Second)}
+	err := waitForCoreReadiness(waiting, "windows", "http://"+unusedCoreTestAddress(t), "fixture", "1", "scheduled-task", 0)
+	var failure *onboardingCommandError
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected onboarding error, got %v", err)
+	}
+	if failure.code != "service_start_timeout" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("readiness code=%q cause=%v", failure.code, err)
+	}
+}
+
 func TestCoreColdStartRequiresBoundExpectedOwner(t *testing.T) {
 	for _, owner := range []string{"systemd", "", "gui"} {
 		t.Run("after startup "+owner, func(t *testing.T) {

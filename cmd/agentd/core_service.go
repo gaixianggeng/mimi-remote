@@ -138,12 +138,24 @@ func manageCoreService(ctx context.Context, platform, action, endpoint, token, e
 	}
 	waiting, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	previousPID := 0
+	if action == "restart" {
+		previousPID = owner.pid
+	}
+	return waitForCoreReadiness(waiting, platform, endpoint, token, expectedVersion, expected.manager, previousPID)
+}
+
+func waitForCoreReadiness(waiting context.Context, platform, endpoint, token, expectedVersion, expectedManager string, previousPID int) error {
+	deadline, hasDeadline := waiting.Deadline()
 	for {
-		found, _, err := inspectCoreService(waiting, platform, endpoint, token, expectedVersion, expected.manager)
+		found, _, err := inspectCoreService(waiting, platform, endpoint, token, expectedVersion, expectedManager)
+		// The socket can observe the wait deadline before the context's timer runs.
+		if err != nil && hasDeadline && time.Until(deadline) <= 0 {
+			return onboardingFailure("service_start_timeout", "service_daemon", true, context.DeadlineExceeded)
+		}
 		// A launchd kickstart can return while the old process still answers.
 		// Only the next PID can attest readiness for an explicit restart.
-		previousProcess := action == "restart" && owner.pid > 0 && found == owner
-		if !previousProcess {
+		if previousPID == 0 || found.pid != previousPID {
 			if err != nil && !errors.Is(err, errCoreStarting) && !errors.Is(err, errCoreOwnerPending) && waiting.Err() == nil {
 				return onboardingFailure("service_start_failed", "service_daemon", true, err)
 			}

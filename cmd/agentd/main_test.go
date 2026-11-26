@@ -2110,8 +2110,7 @@ func mainTestFileExists(path string) bool {
 func prepareBrewSideEffectProbe(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		installFakeWindowsCommands(t)
-		return filepath.Join(t.TempDir(), "windows-task-called")
+		return installFakeWindowsCommands(t)
 	}
 	useManagedServicePlatform(t, "darwin")
 	binDir := t.TempDir()
@@ -2141,6 +2140,10 @@ func prepareManagedCommandProbe(t *testing.T, commandName string) string {
 	marker := filepath.Join(t.TempDir(), commandName+"-called")
 	commandPath := filepath.Join(binDir, commandName)
 	body := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$MANAGED_COMMAND_MARKER\"\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		commandPath += ".cmd"
+		body = "@echo off\r\n>\"%MANAGED_COMMAND_MARKER%\" echo %*\r\n"
+	}
 	if err := os.WriteFile(commandPath, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
