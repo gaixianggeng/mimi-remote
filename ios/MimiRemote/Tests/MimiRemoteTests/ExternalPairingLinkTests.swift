@@ -107,15 +107,276 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertNil(connectedStore.lastPairingLinkRoute)
     }
 
-    func testConnectionProbeCancellationClassifierCoversAllCancellationTypes() {
-        XCTAssertTrue(AppStore.isConnectionProbeCancellation(CancellationError()))
-        XCTAssertTrue(AppStore.isConnectionProbeCancellation(URLError(.cancelled)))
-        XCTAssertTrue(AppStore.isConnectionProbeCancellation(
+    func testConnectionProbeCancellationClassifierCoversAllCancellationTypes() async {
+        XCTAssertTrue(isCancellationError(CancellationError()))
+        XCTAssertTrue(isCancellationError(URLError(.cancelled)))
+        XCTAssertTrue(isCancellationError(
             NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
         ))
-        XCTAssertTrue(AppStore.isConnectionProbeCancellation(HarnessTransportError.cancelled))
-        XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.cannotConnectToHost)))
-        XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.timedOut)))
+        XCTAssertTrue(isCancellationError(HarnessTransportError.cancelled))
+        XCTAssertTrue(isCancellationError(CodexAppServerConnectionError.transport(URLError(.cancelled))))
+        XCTAssertTrue(isCancellationError(CodexAppServerConnectionError.transport(CancellationError())))
+        XCTAssertTrue(AppStore.isConnectionProbeCancellation(CodexAppServerConnectionError.transport(URLError(.cancelled))))
+
+        XCTAssertFalse(isCancellationError(URLError(.cannotConnectToHost)))
+        XCTAssertFalse(isCancellationError(URLError(.timedOut)))
+        XCTAssertFalse(isCancellationError(CodexAppServerConnectionError.transport(
+            AgentAPIError.credentialsInvalid(status: 401)
+        )))
+
+        // 即使当前任务已取消，真实非取消错误也绝不能被判成取消。
+        let cancelledTask = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            XCTAssertTrue(Task.isCancelled)
+            XCTAssertFalse(isCancellationError(AgentAPIError.credentialsInvalid(status: 401)))
+            XCTAssertFalse(isCancellationError(PairingLinkError.expired))
+            XCTAssertFalse(AppStore.isConnectionProbeCancellation(AgentAPIError.credentialsInvalid(status: 401)))
+            XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.cannotConnectToHost)))
+            XCTAssertTrue(isCancellationError(CancellationError()))
+        }
+        await cancelledTask.value
+    }
+
+    /// 真实失败（凭据被拒、短票过期）与任务取消竞态时，不得被裸 `Task.isCancelled` 改写成 CancellationError。
+    func testRealFailureWhileTaskCancelledStillSurfacesInsteadOfConvertingToCancellation() async throws {
+        // 1) performPreparedConnectionChange：任务已取消但 prepare 返回 401 凭据失效，仍原样抛出。
+        let credGate = ControlledFailureGate()
+        let (credStore, _) = makeStores(routeProbe: { _, _, _ in })
+        let credTask = Task { @MainActor in
+            try await credStore.performPreparedConnectionChange {
+                try await credGate.waitIgnoringCancellation()
+                return PreparedConnectionSettings(endpoint: "http://100.64.0.1:8787", token: "bad")
+            }
+        }
+        try await waitUntil { credGate.isWaiting }
+        credTask.cancel()
+        credGate.fail(AgentAPIError.credentialsInvalid(status: 401))
+        do {
+            _ = try await credTask.value
+            XCTFail("真实凭据失效不得吞掉或成功")
+        } catch let error as AgentAPIError {
+            XCTAssertTrue(error.invalidatesCredentials, "应保留原始 401 凭据失效，而不是改写成 CancellationError")
+        } catch {
+            XCTFail("预期 AgentAPIError.credentialsInvalid，实际是 \(error)")
+        }
+
+        // 2) openPairingLink：任务已取消但底层返回过期的配对短票，页面仍收到真实过期反馈。
+        let ticketGate = ControlledFailureGate()
+        let (ticketStore, ticketAppStore) = makeStores(routeProbe: { _, _, _ in
+            try await ticketGate.waitIgnoringCancellation()
+        })
+        let expiredBody = Data(
+            #"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#.utf8
+        )
+        let expiredError = PairingOnboardingAPIError(
+            status: 401,
+            mapped: PairingErrorMapper.mapHTTPResponse(
+                data: expiredBody,
+                statusCode: 401,
+                contentType: PairingErrorMapper.acceptMediaType,
+                varyHeader: PairingErrorMapper.expectedVaryHeaderValue
+            ),
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: PairingErrorMapper.expectedVaryHeaderValue
+        )
+        let opening = Task { await ticketStore.openPairingLink(Self.tokenLink) }
+        try await waitUntil { ticketGate.isWaiting }
+        opening.cancel()
+        ticketGate.fail(expiredError)
+        await opening.value
+
+        XCTAssertEqual(ticketStore.lastPairingOnboardingError?.code, "pair_ticket_expired")
+        XCTAssertEqual(ticketAppStore.lastError, expiredError.userFacingMessage)
+        XCTAssertEqual(ticketStore.pairingLinkAttempt, .failed(expiredError.userFacingMessage))
+    }
+
+    /// 生产快速路径中 WebSocket `initialized` 发送因取消失败并被包装进 `CodexAppServerConnectionError.transport`：
+    /// 首轮取消后不得重试握手，且 `openPairingLink` 必须按取消回滚而不是写入 `.failed`。
+    func testWrappedTransportCancellationOnInitializedSendStopsHandshakeRetryWithoutReportingFailure() async throws {
+        let suiteName = "ExternalPairingLinkTests.WrappedCancel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PairingFastPathStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let project = AgentProject(id: "fast-cancel", name: "Fast", path: "/tmp/fast-cancel")
+        let configData = try JSONEncoder().encode(makeDirectAppServerConfig(project: project))
+        let versionData = try JSONSerialization.data(withJSONObject: [
+            "name": "agentd",
+            "version": "test",
+            "installation_id": "inst-fast-cancel",
+            "platform": "macos",
+            "protocol_revision": 2,
+            "minimum_client_protocol_revision": 1
+        ])
+        PairingFastPathStubURLProtocol.configure { request in
+            switch request.url?.path {
+            case "/api/version":
+                return (200, "application/json", versionData)
+            case "/api/app-server/config":
+                return (200, "application/json", configData)
+            default:
+                return (404, "application/json", Data("{}".utf8))
+            }
+        }
+        defer { PairingFastPathStubURLProtocol.reset() }
+
+        let transportPool = InitializedCancelTransportPool()
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            agentAPISession: session,
+            gatewayTransportFactory: { transportPool.makeTransport() }
+        )
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [], sessions: [], messagesResult: []) },
+            webSocketFactory: { MockWebSocketClient() },
+            webSocketReconnectDelayNanoseconds: { _ in 0 }
+        )
+
+        await store.openPairingLink(Self.tokenLink)
+
+        XCTAssertEqual(transportPool.createdCount, 1, "首次握手收到包装取消后不得再重试第二次 WebSocket 握手")
+        XCTAssertEqual(appStore.connectionStatus, .idle, "包装传输取消不得写入 .failed")
+        XCTAssertNil(appStore.lastError, "包装传输取消不得写入原始取消文案")
+        XCTAssertEqual(store.pairingLinkAttempt, .idle)
+        XCTAssertNil(store.lastPairingLinkRoute)
+        XCTAssertTrue(appStore.connectionProfiles.isEmpty)
+    }
+
+    /// 含 DNS 与 IP 双候选的配对链接：DNS 候选显式返回 `URLError.cancelled` 时必须立即停止，
+    /// 不得继续尝试 IP 候选，也不得提交配对或覆盖成失败。
+    func testCancelledDNSCandidateStopsBeforeTryingIPCandidate() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExternalPairingClaimStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 200,
+            contentType: "application/json",
+            vary: nil,
+            body: #"{"endpoint":"http://100.64.0.1:8787","token":"claimed-token","tailscale_dns_name":"mac.tailnet.ts.net"}"#
+        )
+        var probedEndpoints: [String] = []
+        let (store, appStore) = makeStores(
+            routeProbe: { endpoint, _, _ in
+                probedEndpoints.append(endpoint)
+                if endpoint.contains("mac.tailnet.ts.net") {
+                    throw URLError(.cancelled)
+                }
+            },
+            agentAPISession: session
+        )
+        let liveTicketURL = try XCTUnwrap(URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787"
+                + "&issued_at=2026-07-23T10%3A00%3A00Z&expires_at=4102444800&pair_sig=test-sig"
+        ))
+
+        await store.openPairingLink(liveTicketURL)
+
+        XCTAssertEqual(probedEndpoints, ["http://mac.tailnet.ts.net:8787"], "DNS 候选显式取消后不得继续落到 IP 候选")
+        XCTAssertTrue(appStore.connectionProfiles.isEmpty, "取消后不得提交配对")
+        XCTAssertEqual(appStore.connectionStatus, .idle)
+        XCTAssertNil(appStore.lastError)
+        XCTAssertEqual(store.pairingLinkAttempt, .idle)
+        XCTAssertNil(store.lastPairingLinkRoute)
+    }
+
+    /// 两条同路由外部链接先后触发：较早那条被取消回滚时，绝不能清掉较新同路由尝试的 `.connecting` 进度与路由。
+    func testOlderCancelledSameRoutePairingLinkDoesNotClearNewerSameRouteProgress() async throws {
+        let gate = RouteProbeGate()
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in try await gate.wait() })
+        store.suspendForBackground()
+
+        // 尝试 1 停在等待前台恢复，占据 .tailscale 路由与 .connecting 进度。
+        let older = Task {
+            await store.openPairingLink(Self.tokenLink, foregroundWaitTimeoutNanoseconds: 2_000_000_000)
+        }
+        try await waitUntil { store.pairingLinkAttempt == .connecting }
+
+        // 尝试 2 以相同路由接管展示所有权，同样等待前台恢复。
+        let newer = Task {
+            await store.openPairingLink(Self.tokenLink, foregroundWaitTimeoutNanoseconds: 2_000_000_000)
+        }
+        try await waitUntil { store.foregroundResumeWaiters.count == 2 }
+        XCTAssertEqual(store.pairingLinkAttempt, .connecting)
+        XCTAssertEqual(store.lastPairingLinkRoute, .tailscale)
+
+        // 取消旧尝试 1：其回滚必须按 token 校验所有权，不得清掉新同路由尝试 2 的进度与路由。
+        older.cancel()
+        await older.value
+        XCTAssertEqual(store.pairingLinkAttempt, .connecting, "旧尝试取消不得把新同路由尝试清成 .idle")
+        XCTAssertEqual(store.lastPairingLinkRoute, .tailscale, "旧尝试取消不得清掉新同路由尝试的路由")
+
+        // 恢复前台后只有新尝试 2 进入 routeProbe 并完成配对。
+        await store.resumeFromForeground()
+        try await waitUntil { gate.isWaiting }
+        gate.succeed()
+        await newer.value
+        XCTAssertEqual(store.pairingLinkAttempt, .idle)
+        XCTAssertEqual(appStore.connectionProfiles.count, 1)
+    }
+
+    /// 首次配对页此前已展示失败（且页面消费了 `.failed` 并将 `pairingLinkAttempt` 置回 `.idle`），
+    /// 重试被取消后必须恢复先前的可见错误、路由与结构化引导，而不是留下空白错误行。
+    func testCancelledPairingRetryPreservesPreviousVisibleErrorAndMetadata() async throws {
+        let lanLink = try XCTUnwrap(URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787&token=test-token"
+        ))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExternalPairingClaimStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        ExternalPairingClaimStubURLProtocol.configure(
+            statusCode: 401,
+            contentType: "application/vnd.mimi.onboarding.v1+json",
+            vary: "Accept",
+            body: #"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#
+        )
+        let retryGate = RouteProbeGate()
+        let (store, appStore) = makeStores(
+            routeProbe: { _, _, _ in try await retryGate.wait() },
+            agentAPISession: session
+        )
+        let expiredTicketURL = try XCTUnwrap(URL(
+            string: "mimiremote://pair?endpoint=http%3A%2F%2F192.168.1.20%3A8787"
+                + "&issued_at=2026-07-23T10%3A00%3A00Z&expires_at=4102444800&pair_sig=test-sig"
+        ))
+
+        // 1) 首轮失败，记录错误、路由与结构化引导。
+        await store.openPairingLink(expiredTicketURL)
+        let expectedError = L10n.text("ui.pairing_onboarding_pair_ticket_expired")
+        XCTAssertEqual(store.pairingLinkAttempt, .failed(expectedError))
+        XCTAssertEqual(store.lastPairingLinkRoute, .lan)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "pair_ticket_expired")
+        XCTAssertEqual(appStore.lastError, expectedError)
+
+        // 2) 模拟首次配对页消费 `.failed`（InitialConnectionSettingsSections.swift:385）。
+        store.pairingLinkAttempt = .idle
+
+        // 3) 发起同页重试并在连接中取消。
+        let retry = Task { await store.openPairingLink(lanLink) }
+        try await waitUntil { retryGate.isWaiting }
+        XCTAssertEqual(store.pairingLinkAttempt, .connecting)
+
+        retry.cancel()
+        await retry.value
+
+        XCTAssertEqual(store.pairingLinkAttempt, .failed(expectedError), "取消重试后必须重新发布先前错误，避免首次配对页错误行变空")
+        XCTAssertEqual(store.lastPairingLinkRoute, .lan)
+        XCTAssertEqual(store.lastPairingOnboardingError?.code, "pair_ticket_expired")
+        XCTAssertEqual(appStore.lastError, expectedError)
+        XCTAssertEqual(appStore.connectionStatus, .failed(expectedError))
     }
 
     func testConfiguredAppLeavesFirstConnectionPageStateUntouched() async throws {
@@ -493,11 +754,147 @@ private final class RouteProbeGate {
         continuation = nil
     }
 
+    func succeed() {
+        continuation?.resume(returning: ())
+        continuation = nil
+    }
+
     func fail(_ error: Error) {
         failure = error
         continuation?.resume(throwing: error)
         continuation = nil
     }
+}
+
+/// 忽略任务取消、只由测试显式交付真实失败，用来稳定复现“真实错误与任务取消竞态”。
+@MainActor
+private final class ControlledFailureGate {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private(set) var isWaiting = false
+
+    func waitIgnoringCancellation() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.continuation = continuation
+            isWaiting = true
+        }
+    }
+
+    func fail(_ error: Error) {
+        continuation?.resume(throwing: error)
+        continuation = nil
+    }
+}
+
+/// 模拟 WebSocket 握手：回答 `initialize`，随后在发送 `initialized` 通知时抛出 `URLError(.cancelled)`。
+private final class InitializedCancelTransportPool: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var createdCount = 0
+
+    func makeTransport() -> CodexAppServerTransport {
+        lock.withLock { createdCount += 1 }
+        return InitializedCancelTransport()
+    }
+}
+
+private final class InitializedCancelTransport: CodexAppServerTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var inboundQueue: [String] = []
+    private var receiveWaiter: CheckedContinuation<String?, Error>?
+    private var isClosed = false
+
+    func connect(url: URL, token: String) async throws {}
+
+    func send(_ text: String) async throws {
+        if let request = try? decodeAppServerRequest(text), request.method == "initialize" {
+            let idJSON: String
+            switch request.id {
+            case .int(let value): idJSON = "\(value)"
+            case .string(let value): idJSON = "\"\(value)\""
+            case .null: idJSON = "null"
+            }
+            pushInbound(#"{"id":\#(idJSON),"result":{"userAgent":"fixture"}}"#)
+            return
+        }
+        if text.contains(#""method":"initialized""#) {
+            throw URLError(.cancelled)
+        }
+    }
+
+    func receive() async throws -> String? {
+        try await withCheckedThrowingContinuation { continuation in
+            let next: String?? = lock.withLock {
+                if !inboundQueue.isEmpty {
+                    return .some(inboundQueue.removeFirst())
+                }
+                if isClosed {
+                    return .some(nil)
+                }
+                receiveWaiter = continuation
+                return nil
+            }
+            if let next {
+                continuation.resume(returning: next)
+            }
+        }
+    }
+
+    func close() async {
+        let waiter: CheckedContinuation<String?, Error>? = lock.withLock {
+            isClosed = true
+            let existing = receiveWaiter
+            receiveWaiter = nil
+            return existing
+        }
+        waiter?.resume(returning: nil)
+    }
+
+    private func pushInbound(_ text: String) {
+        let waiter: CheckedContinuation<String?, Error>? = lock.withLock {
+            if let existing = receiveWaiter {
+                receiveWaiter = nil
+                return existing
+            }
+            inboundQueue.append(text)
+            return nil
+        }
+        waiter?.resume(returning: text)
+    }
+}
+
+private final class PairingFastPathStubURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var handler: ((URLRequest) -> (Int, String, Data))?
+
+    static func configure(_ handler: @escaping (URLRequest) -> (Int, String, Data)) {
+        lock.withLock { self.handler = handler }
+    }
+
+    static func reset() {
+        lock.withLock { self.handler = nil }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let handler = Self.lock.withLock { Self.handler }
+        let (status, contentType, body) = handler?(request) ?? (500, "application/json", Data("{}".utf8))
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": contentType]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private final class ExternalPairingClaimStubURLProtocol: URLProtocol {

@@ -715,8 +715,8 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         let beforeRefresh = await codexTransport.sentMessages().count
         let refreshTask = Task { await store.refreshSessionLibraryIndex() }
         let workspaceList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: beforeRefresh)
-        transportResponse(codexTransport, id: workspaceList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
         let afterWorkspaceList = await codexTransport.sentMessages().count
+        transportResponse(codexTransport, id: workspaceList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
         let globalList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: afterWorkspaceList)
         transportResponse(codexTransport, id: globalList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
         await refreshTask.value
@@ -761,6 +761,338 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         let page = try await searchTask.value
         XCTAssertTrue(page.unavailableRuntimeProviders.isEmpty)
         XCTAssertEqual(rpcSpy.callCount, 0, "channel.enabled == false 时不得发出任何 /api/harness/rpc")
+    }
+
+    /// 门控只读宿主已加载的配置快照，不发起 `GET /api/app-server/config`；
+    /// 冷启动或快照失效时保留既有直达 Harness 行为，让真实 Harness 错误原样透传而不被配置读取错误替代。
+    func testGateNeverFetchesConfigAndPropagatesHarnessErrorsOnColdOrInvalidatedSnapshot() async throws {
+        let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
+        let workspace = AgentWorkspace(project: project)
+        let expectedHarnessError = HarnessTransportError.server(status: 502, message: "real harness error")
+
+        // 1) 冷启动快照尚未加载：门控不得调用 configProvider，直达 Harness 并透传真实 Harness 错误。
+        var coldConfigReads = 0
+        let coldRPC = FailingHarnessRPCTransport(error: expectedHarnessError)
+        let coldHarness = HarnessSessionAPIClient(endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: coldRPC)
+        let coldRuntime: (String) -> CodexAppServerSessionRuntime = { provider in
+            CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                runtimeProvider: provider,
+                transportFactory: { FakeCodexAppServerTransport() },
+                configProvider: {
+                    coldConfigReads += 1
+                    throw AgentAPIError.server(status: 500, message: "config endpoint failed")
+                }
+            )
+        }
+        let coldBundle = AppServerRuntimeBundle(
+            codexRuntime: coldRuntime("codex"),
+            claudeRuntime: coldRuntime("claude"),
+            harness: coldHarness
+        )
+        let coldClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: coldBundle)
+        coldClient.rememberRuntimeRoute("deepseek", forSessionID: "cold-session")
+
+        do {
+            _ = try await coldClient.sessionsPage(
+                workspace: workspace, runtimeProvider: "deepseek", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+            XCTFail("冷快照下应直达 Harness 并透传 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        do {
+            _ = try await coldClient.controlledGlobalSessionsPage(runtimeProvider: "deepseek", cursor: nil, limit: 20)
+            XCTFail("应透传 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        do {
+            _ = try await coldClient.modelOptions(runtimeProvider: "deepseek")
+            XCTFail("应透传 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        do {
+            try await coldClient.stopSession(id: "cold-session")
+            XCTFail("应透传 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        XCTAssertEqual(coldConfigReads, 0, "门控不得触发 GET /api/app-server/config")
+        XCTAssertEqual(coldRPC.callCount, 4)
+
+        // 2) 已加载快照随后因断线失效：门控仍不得调用失败的 configProvider，真实 Harness 错误必须原样透传。
+        var invalidatedConfigReads = 0
+        let invalidatedRPC = FailingHarnessRPCTransport(error: expectedHarnessError)
+        let invalidatedHarness = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: invalidatedRPC
+        )
+        let enabledConfig = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
+        )
+        let invalidatedBundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            preparedConfig: enabledConfig,
+            harnessFactory: { _, _ in invalidatedHarness },
+            configProvider: {
+                invalidatedConfigReads += 1
+                throw AgentAPIError.server(status: 500, message: "config endpoint failed")
+            }
+        )
+        let invalidatedClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: invalidatedBundle)
+        await invalidatedBundle.codex.invalidateConfigSnapshot()
+
+        do {
+            _ = try await invalidatedClient.sessionsPage(
+                workspace: workspace, runtimeProvider: "deepseek", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+            XCTFail("快照失效后应保留直达 Harness 行为")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        do {
+            try await invalidatedHarness.submitPrompt(
+                sessionID: "open-session", requestID: "req-1", text: "hi", mode: "queue", clientTimeZone: nil
+            )
+            XCTFail("快照失效后直接 RPC 应透传真实 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        XCTAssertEqual(invalidatedConfigReads, 0, "失效快照上走门控不得发起 GET /api/app-server/config")
+        XCTAssertEqual(invalidatedRPC.callCount, 2)
+    }
+
+    /// 生产配对路径采纳的 `AppServerRuntimeBundle` 必须绑定实时 `configProvider`，
+    /// 刷新后能双向观测 DeepSeek 启用与禁用切换（disabled -> enabled -> disabled）。
+    @MainActor
+    func testProductionPairedRuntimeBundleObservesLiveConfigRefreshOnEnableAndDisableTransitions() async throws {
+        let suiteName = "HarnessNativeRoutingSeamTests.LiveConfig.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+
+        let project = AgentProject(id: "live-cfg", name: "Live", path: "/tmp/live-cfg")
+        let disabledConfig = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: false)]
+        )
+        let enabledConfig = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
+        )
+        let versionData = try JSONSerialization.data(withJSONObject: [
+            "name": "agentd",
+            "version": "test",
+            "installation_id": "inst-live-cfg",
+            "platform": "macos",
+            "protocol_revision": 2,
+            "minimum_client_protocol_revision": 1
+        ])
+
+        let stubState = LiveConfigStubState(currentConfig: disabledConfig)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LiveConfigStubURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        LiveConfigStubURLProtocol.install(state: stubState, versionData: versionData)
+        defer { LiveConfigStubURLProtocol.reset() }
+
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false,
+            agentAPISession: session,
+            gatewayTransportFactory: { AutoInitializeAppServerTransport() }
+        )
+        let prepared = try await appStore.prepareConnectionSettings(
+            endpoint: "http://100.64.0.77:8787",
+            token: "live-token"
+        )
+        _ = try await appStore.commitConnectionSettings(prepared)
+        let bundle = try XCTUnwrap(appStore.activeRuntimeBundle)
+        defer { Task { await bundle.shutdownForHostSwitch() } }
+
+        let initialConfigRequests = stubState.configRequestCount
+        let initialEnabled = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(initialEnabled, false, "初始配对快照 DeepSeek 为禁用")
+        do {
+            try await bundle.requireLoadedNativeHarnessAllowed()
+            XCTFail("初始禁用态门控必须拦截")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(stubState.configRequestCount, initialConfigRequests, "门控检查不得追加 GET /api/app-server/config")
+
+        // 1) disabled -> enabled
+        stubState.setConfig(enabledConfig)
+        try await bundle.refreshConfiguration()
+        XCTAssertEqual(stubState.configRequestCount, initialConfigRequests + 1, "刷新必须调用实时 configProvider")
+        let afterEnable = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(afterEnable, true, "刷新后应立即观测到 DeepSeek 已启用")
+        try await bundle.requireLoadedNativeHarnessAllowed()
+        XCTAssertEqual(stubState.configRequestCount, initialConfigRequests + 1)
+
+        // 2) enabled -> disabled
+        stubState.setConfig(disabledConfig)
+        try await bundle.refreshConfiguration()
+        XCTAssertEqual(stubState.configRequestCount, initialConfigRequests + 2, "再次刷新必须再次读取实时配置")
+        let afterDisable = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(afterDisable, false, "刷新后应立即观测到 DeepSeek 已禁用")
+        do {
+            try await bundle.requireLoadedNativeHarnessAllowed()
+            XCTFail("禁用刷新后门控必须重新拦截")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(stubState.configRequestCount, initialConfigRequests + 2)
+    }
+
+    /// 共享宿主级 Harness RPC 门控必须覆盖已打开的 DeepSeek 会话：
+    /// 宿主刷新配置禁用渠道后，正在运行的事件客户端发起 prompt / selectModel / cancel 均不得再 POST `/api/harness/rpc`；
+    /// 启用状态下真实 Harness 错误仍原样透传，重新启用后该会话仍可继续发送。
+    @MainActor
+    func testAlreadyOpenDeepSeekSessionBlocksPromptModelSelectAndCancelRPCsAfterDisable() async throws {
+        let project = AgentProject(id: "open-gate", name: "OpenGate", path: "/tmp/open-gate")
+        let enabledConfig = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
+        )
+        let disabledConfig = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: false)]
+        )
+        let configState = LiveConfigStubState(currentConfig: enabledConfig)
+        let rpcSpy = OpenSessionGateRPCTransport()
+        let stream = FakeHarnessStreamTransport()
+        let api = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: rpcSpy,
+            stream: stream
+        )
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            preparedConfig: enabledConfig,
+            harnessFactory: { _, _ in api },
+            configProvider: {
+                configState.recordConfigRead()
+            }
+        )
+        defer { Task { await bundle.shutdownForHostSwitch() } }
+
+        // 打开会话并建立 opening snapshot 基线（带活跃轮次 turn=1）。
+        let sessionID = "native-open-session"
+        let eventClient = api.makeEventClient(sessionID: sessionID)
+        var connected = false
+        var lastOutcome: TurnSendOutcome?
+        var lastSendFailure: String?
+        var lastControlFailure: ControlCommandFailure?
+        eventClient.onStatus = { status in
+            if status == .connected { connected = true }
+        }
+        eventClient.onTurnSendOutcome = { _, outcome in lastOutcome = outcome }
+        eventClient.onSendFailure = { _, message in lastSendFailure = message }
+        eventClient.onControlFailure = { failure in lastControlFailure = failure }
+        eventClient.connect(sessionID: sessionID)
+
+        let followStreamID = try await waitForHarnessOpenStream(stream: stream)
+        stream.push(HarnessCarrierFrame(
+            type: HarnessWireCarrier.item,
+            streamId: followStreamID,
+            value: .object([
+                "type": .string(HarnessWireFrame.snapshot),
+                "header": .object([
+                    "version": .number(3),
+                    "id": .string(sessionID),
+                    "cwd": .string(project.path),
+                    "isSeeded": .bool(false),
+                ]),
+                "cursor": .number(1),
+                "records": .array([
+                    .object([
+                        "seq": .number(1),
+                        "type": .string(HarnessWireEventType.turnStart),
+                        "data": .object(["turn": .number(1)]),
+                    ])
+                ]),
+                "hasMore": .bool(false),
+                "assistantStream": .object(["revision": .number(0)]),
+            ]),
+            error: nil
+        ))
+        try await waitUntilCondition { connected }
+
+        // 1) 启用态：prompt 正常发往 Harness；启用态的真实 Harness 错误也原样透传。
+        XCTAssertTrue(eventClient.sendInput("while-enabled", clientMessageID: "req-enabled"))
+        try await waitUntilCondition { lastOutcome != nil }
+        XCTAssertEqual(rpcSpy.recordedMethods, [HarnessWireMethod.sessionPrompt])
+        if case .accepted? = lastOutcome {} else {
+            XCTFail("启用态发送应成功，实际是 \(String(describing: lastOutcome))")
+        }
+
+        let realError = HarnessTransportError.server(status: 500, message: "upstream harness boom")
+        rpcSpy.setNextError(realError)
+        do {
+            try await api.cancelSession(sessionID: sessionID)
+            XCTFail("启用态真实 Harness 错误必须原样透传")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, realError)
+        }
+        XCTAssertEqual(rpcSpy.recordedMethods, [HarnessWireMethod.sessionPrompt, HarnessWireMethod.sessionCancel])
+        rpcSpy.setNextError(nil)
+
+        // 2) 宿主刷新配置禁用 DeepSeek：已打开会话的 prompt / selectModel / cancel 全部在 RPC 边界拦下，零新 RPC。
+        configState.setConfig(disabledConfig)
+        try await bundle.refreshConfiguration()
+        let rpcCountAtDisable = rpcSpy.recordedMethods.count
+        let configReadsAtDisable = configState.configRequestCount
+
+        lastOutcome = nil
+        lastSendFailure = nil
+        XCTAssertTrue(eventClient.sendInput("blocked-prompt", clientMessageID: "req-disabled-prompt"))
+        try await waitUntilCondition { lastOutcome != nil }
+        if case .rejected? = lastOutcome {} else {
+            XCTFail("禁用态 prompt 应按本地拒绝返回，实际是 \(String(describing: lastOutcome))")
+        }
+
+        lastSendFailure = nil
+        let modelPayload = CodexAppServerTurnPayload(
+            prompt: "blocked-model-select",
+            options: CodexAppServerTurnOptions(
+                runtimeProvider: "deepseek",
+                model: "deepseek-chat",
+                modelProvider: "deepseek"
+            )
+        )
+        XCTAssertTrue(eventClient.sendTurn(modelPayload, clientMessageID: "req-disabled-model"))
+        try await waitUntilCondition { lastSendFailure != nil }
+        XCTAssertFalse(lastSendFailure?.contains("gatewayUnavailable") == true, "错误文案应使用本地化描述而非原始枚举名")
+
+        lastControlFailure = nil
+        XCTAssertTrue(eventClient.sendCtrlC(expectedTurnID: "h-turn-1"))
+        try await waitUntilCondition { lastControlFailure != nil }
+
+        XCTAssertEqual(rpcSpy.recordedMethods.count, rpcCountAtDisable, "禁用后已打开会话不得 POST prompt/selectModel/cancel RPC")
+        XCTAssertEqual(configState.configRequestCount, configReadsAtDisable, "门控检查不得触发额外 GET /api/app-server/config")
+
+        // 3) 重新启用并刷新后，同一个已打开会话仍可正常发送（证明禁用拦截没有把会话锁死在 responseUnknown）。
+        configState.setConfig(enabledConfig)
+        try await bundle.refreshConfiguration()
+        lastOutcome = nil
+        XCTAssertTrue(eventClient.sendInput("after-reenable", clientMessageID: "req-reenabled"))
+        try await waitUntilCondition { lastOutcome != nil }
+        if case .accepted? = lastOutcome {} else {
+            XCTFail("重新启用后发送应恢复成功，实际是 \(String(describing: lastOutcome))")
+        }
+        XCTAssertEqual(rpcSpy.recordedMethods.count, rpcCountAtDisable + 1)
+        XCTAssertEqual(rpcSpy.recordedMethods.last, HarnessWireMethod.sessionPrompt)
+
+        eventClient.disconnect()
     }
 
     // MARK: - 事件客户端与骨架
@@ -1292,5 +1624,218 @@ final class FakeHarnessSessionClient: HarnessSessionClient {
     /// 造一条宿主级事件，验证装配方真的把 sink 接上了。
     func emitHostEvent(_ event: AgentEvent) {
         hostEventsSink?(event)
+    }
+}
+
+private extension HarnessNativeRoutingSeamTests {
+    @MainActor
+    func waitUntilCondition(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        _ condition: @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while !condition() {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                XCTFail("等待条件超时", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    @MainActor
+    func waitForHarnessOpenStream(
+        stream: FakeHarnessStreamTransport,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> String {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            for frame in stream.sentFrames {
+                if case .open(let streamID, let endpoint, _) = frame,
+                   endpoint == HarnessWireEndpoint.sessionFollow {
+                    return streamID
+                }
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("等待 session/follow 订阅超时", file: file, line: line)
+        throw MockError.unimplemented
+    }
+}
+
+private final class LiveConfigStubState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var currentConfig: CodexAppServerConfigResponse
+    private var _configRequestCount = 0
+
+    init(currentConfig: CodexAppServerConfigResponse) {
+        self.currentConfig = currentConfig
+    }
+
+    var configRequestCount: Int {
+        lock.withLock { _configRequestCount }
+    }
+
+    func setConfig(_ config: CodexAppServerConfigResponse) {
+        lock.withLock { currentConfig = config }
+    }
+
+    func recordConfigRead() -> CodexAppServerConfigResponse {
+        lock.withLock {
+            _configRequestCount += 1
+            return currentConfig
+        }
+    }
+}
+
+private final class LiveConfigStubURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var state: LiveConfigStubState?
+    private static var versionData = Data()
+
+    static func install(state: LiveConfigStubState, versionData: Data) {
+        lock.withLock {
+            self.state = state
+            self.versionData = versionData
+        }
+    }
+
+    static func reset() {
+        lock.withLock {
+            state = nil
+            versionData = Data()
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let (state, versionData) = Self.lock.withLock { (Self.state, Self.versionData) }
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let body: Data
+        let status: Int
+        switch url.path {
+        case "/api/version":
+            status = 200
+            body = versionData
+        case "/api/app-server/config":
+            if let config = state?.recordConfigRead(), let encoded = try? JSONEncoder().encode(config) {
+                status = 200
+                body = encoded
+            } else {
+                status = 500
+                body = Data("{}".utf8)
+            }
+        default:
+            status = 404
+            body = Data("{}".utf8)
+        }
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class AutoInitializeAppServerTransport: CodexAppServerTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var inboundQueue: [String] = []
+    private var receiveWaiter: CheckedContinuation<String?, Error>?
+    private var isClosed = false
+
+    func connect(url: URL, token: String) async throws {}
+
+    func send(_ text: String) async throws {
+        if let request = try? decodeAppServerRequest(text), request.method == "initialize" {
+            let idJSON: String
+            switch request.id {
+            case .int(let value): idJSON = "\(value)"
+            case .string(let value): idJSON = "\"\(value)\""
+            case .null: idJSON = "null"
+            }
+            pushInbound(#"{"id":\#(idJSON),"result":{"userAgent":"fixture"}}"#)
+        }
+    }
+
+    func receive() async throws -> String? {
+        try await withCheckedThrowingContinuation { continuation in
+            let next: String?? = lock.withLock {
+                if !inboundQueue.isEmpty {
+                    return .some(inboundQueue.removeFirst())
+                }
+                if isClosed {
+                    return .some(nil)
+                }
+                receiveWaiter = continuation
+                return nil
+            }
+            if let next {
+                continuation.resume(returning: next)
+            }
+        }
+    }
+
+    func close() async {
+        let waiter: CheckedContinuation<String?, Error>? = lock.withLock {
+            isClosed = true
+            let existing = receiveWaiter
+            receiveWaiter = nil
+            return existing
+        }
+        waiter?.resume(returning: nil)
+    }
+
+    private func pushInbound(_ text: String) {
+        let waiter: CheckedContinuation<String?, Error>? = lock.withLock {
+            if let existing = receiveWaiter {
+                receiveWaiter = nil
+                return existing
+            }
+            inboundQueue.append(text)
+            return nil
+        }
+        waiter?.resume(returning: text)
+    }
+}
+
+private final class OpenSessionGateRPCTransport: HarnessRPCTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var methods: [String] = []
+    private var nextError: Error?
+
+    var recordedMethods: [String] {
+        lock.withLock { methods }
+    }
+
+    func setNextError(_ error: Error?) {
+        lock.withLock { nextError = error }
+    }
+
+    func call(_ request: HarnessRPCRequest) async throws -> HarnessJSONValue {
+        let error = lock.withLock { () -> Error? in
+            methods.append(request.method)
+            return nextError
+        }
+        if let error {
+            throw error
+        }
+        return .object(["ok": .bool(true)])
     }
 }

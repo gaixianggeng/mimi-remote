@@ -335,9 +335,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
     }
 
     private func requireNativeHarnessConfigured() async throws {
-        guard try await bundle.nativeHarnessConfigured() else {
-            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
-        }
+        try await bundle.requireLoadedNativeHarnessAllowed()
     }
 
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
@@ -372,7 +370,7 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
                 let secondaryOptions: [CodexAppServerModelOption]
                 if let native = bundle.nativeClient(for: secondary.provider) {
                     // 原生通道：Codex 上游不可用时依然能独立进入准备流程并给出模型目录。
-                    guard try await bundle.nativeHarnessConfigured() else { continue }
+                    guard (try await bundle.loadedNativeHarnessConfigured()) != false else { continue }
                     guard try await native.channelAvailable() else { continue }
                     secondaryOptions = try await native.modelOptions()
                 } else {
@@ -613,8 +611,8 @@ final class CodexAppServerRuntimeRoutingSessionAPIClient: SessionStoreAPIClient 
             do {
                 let page: ThreadSearchPage
                 if let native = bundle.nativeClient(for: provider) {
-                    // 原生通道与 Codex wire 完全无关：宿主未启用时不发探测，启用后失败只把自己记成 unavailable。
-                    guard try await bundle.nativeHarnessConfigured() else { continue }
+                    // 原生通道与 Codex wire 完全无关：宿主已加载快照声明未启用时不发探测，启用后失败只把自己记成 unavailable。
+                    guard (try await bundle.loadedNativeHarnessConfigured()) != false else { continue }
                     guard try await native.channelAvailable() else { continue }
                     page = try await native.searchSessions(query: query, cursor: nil, limit: limit)
                 } else {

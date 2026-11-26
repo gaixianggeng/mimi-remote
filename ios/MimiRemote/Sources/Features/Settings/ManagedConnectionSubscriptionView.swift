@@ -221,12 +221,34 @@ struct ManagedConnectionSubscriptionView: View {
     }
 
     private func connectComputer(_ raw: String, intent: ConnectionQRCodeScanIntent) async -> QRCodeScannerSubmissionResult {
-        guard !isScanningConnection, intent.isValid(activeProfileID: appStore.activeConnectionProfileID),
-              let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        guard !isScanningConnection else {
             return .rejected(L10n.text("ui.the_current_mac_has_changed_please_try_again"))
         }
         isScanningConnection = true
         defer { isScanningConnection = false }
+        return await Self.submitScannedConnection(
+            raw,
+            intent: intent,
+            appStore: appStore,
+            sessionStore: sessionStore,
+            tailcatController: tailcatController,
+            entitlementStore: entitlementStore
+        )
+    }
+
+    @MainActor
+    static func submitScannedConnection(
+        _ raw: String,
+        intent: ConnectionQRCodeScanIntent,
+        appStore: AppStore,
+        sessionStore: SessionStore,
+        tailcatController: TailcatExperimentController,
+        entitlementStore: ManagedConnectionEntitlementStore
+    ) async -> QRCodeScannerSubmissionResult {
+        guard intent.isValid(activeProfileID: appStore.activeConnectionProfileID),
+              let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return .rejected(L10n.text("ui.the_current_mac_has_changed_please_try_again"))
+        }
         do {
             let wasConfigured = appStore.isConfigured
             _ = try await sessionStore.applyPairingURL(url)
@@ -240,22 +262,39 @@ struct ManagedConnectionSubscriptionView: View {
                 _ = await sessionStore.refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
             }
             return .accepted(L10n.text("ui.this_mac_is_connected"))
-        } catch let pairingError as PairingOnboardingAPIError {
+        } catch {
+            return Self.pairingScanFailureResult(
+                for: error,
+                url: url,
+                hasActiveMimiEntitlement: entitlementStore.hasActiveEntitlement
+            )
+        }
+    }
+
+    /// 扫码配对失败的统一反馈：显式取消先于错误文案处理，绝不把 `Swift.CancellationError` 原文露给用户。
+    static func pairingScanFailureResult(
+        for error: Error,
+        url: URL,
+        hasActiveMimiEntitlement: Bool
+    ) -> QRCodeScannerSubmissionResult {
+        if isCancellationError(error) {
+            return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))
+        }
+        if let pairingError = error as? PairingOnboardingAPIError {
             if pairingError.action == .openManagedConnection {
                 return .requiresManagedConnection(pairingError.userFacingMessage)
             }
             return .onboardingFailure(pairingError.mapped)
-        } catch {
-            let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
-            let message = attemptedRoute == .lan && ConnectionFailureGuidance.isReachabilityFailure(error)
-                ? ConnectionFailureGuidance.message(
-                    for: error,
-                    route: attemptedRoute,
-                    hasActiveMimiEntitlement: entitlementStore.hasActiveEntitlement
-                )
-                : ManagedConnectionDevicesView.pairingErrorMessage(error)
-            return .rejected(message)
         }
+        let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
+        let message = attemptedRoute == .lan && ConnectionFailureGuidance.isReachabilityFailure(error)
+            ? ConnectionFailureGuidance.message(
+                for: error,
+                route: attemptedRoute,
+                hasActiveMimiEntitlement: hasActiveMimiEntitlement
+            )
+            : ManagedConnectionDevicesView.pairingErrorMessage(error)
+        return .rejected(message)
     }
 
     /// 中转开通页扫码后，只有内置连接自动选入 Mimi；局域网、Tailscale 与 HTTPS 保留用户所选连接方式。

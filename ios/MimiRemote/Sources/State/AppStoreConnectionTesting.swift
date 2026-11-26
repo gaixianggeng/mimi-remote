@@ -78,7 +78,7 @@ extension AppStore {
             guard affectsConnectionStatus else { return }
             // 页面切走导致的取消不是连接失败：把探测前的状态放回去，
             // 不能让设备页显示「连接失败」外加一条「已取消」。
-            if Self.isConnectionProbeCancellation(error) {
+            if isCancellationError(error) {
                 restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                 return
             }
@@ -150,6 +150,6 @@ extension AppStore {
     }
 
     static func isConnectionProbeCancellation(_ error: Error) -> Bool {
-        Task.isCancelled || isCancellationError(error)
+        isCancellationError(error)
     }
 }

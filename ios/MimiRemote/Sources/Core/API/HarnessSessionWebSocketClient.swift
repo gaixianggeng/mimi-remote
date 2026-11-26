@@ -1276,6 +1276,9 @@ final class HarnessSessionWebSocketClient: SessionWebSocketClient {
         if let transport = error as? HarnessTransportError {
             return transport.diagnosticSummary
         }
+        if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+            return localized
+        }
         return String(describing: error)
     }
 

@@ -246,6 +246,9 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     let token: String
     /// RPC、follow、宿主事件和应答共用这一份 runtime；不另建第二套连接管理器。
     private let runtime: HarnessSessionRuntime
+    /// 宿主级原生通道门控：在每次 `/api/harness/rpc` 发出前只读已加载配置快照校验启用状态。
+    private let rpcGateLock = NSLock()
+    private var rpcGate: (@Sendable () async throws -> Void)?
     /// 提交编排缓存。每建一个事件客户端都新建控制器会让"上一次提交尚未确认"
     /// 这条判断失效——状态机必须跨事件客户端存活。
     private var cachedSubmissionController: HarnessSubmissionController?
@@ -504,13 +507,36 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         return created
     }
 
+    /// 装配宿主级 RPC 门控（由 `AppServerRuntimeBundle` 同步注入，不涉及网络请求）。
+    func setRPCGate(_ gate: (@Sendable () async throws -> Void)?) {
+        rpcGateLock.withLock {
+            rpcGate = gate
+        }
+    }
+
+    private func enforceRPCGate() async throws {
+        let gate = rpcGateLock.withLock { rpcGate }
+        if let gate {
+            try await gate()
+        }
+    }
+
+    private func callRPC(
+        method: String,
+        args: HarnessJSONValue? = nil,
+        cwd: String? = nil
+    ) async throws -> HarnessJSONValue {
+        try await enforceRPCGate()
+        return try await runtime.call(method: method, args: args, cwd: cwd)
+    }
+
     /// 通道可用性探测。
     ///
     /// 用 `session/modelCatalog` 而不是 `session/list`：它零参数、只读、不触发任何模型调用，
     /// 却同样要走完整条鉴权与上游链路，因此足以区分"通道通了"和"通道没通"。
     /// 失败必须抛错——返回 false 会与"探测本身没跑"混成同一件事。
     func channelAvailable() async throws -> Bool {
-        _ = try await runtime.call(
+        _ = try await callRPC(
             method: HarnessWireMethod.sessionModelCatalog,
             args: .object([:]),
             cwd: nil
@@ -551,7 +577,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             // 中继会拒空 query；本地先拒能给出可操作文案，也避免把空查询当成"零命中"。
             throw HarnessTransportError.rejected(status: 400, message: "Search query must not be empty")
         }
-        let value = try await runtime.call(
+        let value = try await callRPC(
             method: HarnessWireMethod.sessionSearch,
             args: .object(["request": .object(["query": .string(trimmed)])]),
             cwd: nil
@@ -564,7 +590,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        let value = try await runtime.call(
+        let value = try await callRPC(
             method: HarnessWireMethod.sessionModelCatalog,
             // 该方法描述符没有参数：必须传空对象，省略或带键都会被中继拒。
             args: .object([:]),
@@ -593,6 +619,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         limit: Int?,
         loadMode: HistoryMessagesPage.LoadMode
     ) async throws -> HistoryMessagesPage {
+        try await enforceRPCGate()
         let decodedCursor = try HarnessHistoryPageDecoding.cursor(from: before)
         guard let baseline = await awaitSnapshotBaseline(
             for: sessionID,
@@ -626,7 +653,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
             request["maxMessages"] = .number(Double(limit))
         }
 
-        let value = try await runtime.call(
+        let value = try await callRPC(
             method: HarnessWireMethod.sessionPage,
             args: .object(["request": .object(request)]),
             cwd: nil
@@ -1035,7 +1062,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         if let sessionID = sessionID?.trimmedNonEmpty {
             request["sessionId"] = .string(sessionID)
         }
-        let value = try await runtime.call(
+        let value = try await callRPC(
             method: HarnessWireMethod.sessionCreate,
             args: .object(["request": .object(request)]),
             cwd: cwd
@@ -1066,7 +1093,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         if let effort = reasoningEffort?.trimmedNonEmpty {
             request["reasoningEffort"] = .string(effort)
         }
-        _ = try await runtime.call(
+        _ = try await callRPC(
             method: HarnessWireMethod.sessionSelectModel,
             args: .object(["request": .object(request)]),
             cwd: nil
@@ -1097,7 +1124,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
         if let zone = clientTimeZone?.trimmedNonEmpty {
             request["clientTimeZone"] = .string(zone)
         }
-        _ = try await runtime.call(
+        _ = try await callRPC(
             method: HarnessWireMethod.sessionPrompt,
             args: .object(["request": .object(request)]),
             cwd: nil
@@ -1109,7 +1136,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     /// 已读版本只有 session 级 cancel——它停的是这个会话正在跑的轮次，不是"某个指定轮次"。
     /// 契约要求如实记录这一点，不宣传成原子 turn 级条件取消。
     func cancelSession(sessionID: String) async throws {
-        _ = try await runtime.call(
+        _ = try await callRPC(
             method: HarnessWireMethod.sessionCancel,
             args: .object(["request": .object(["sessionId": .string(sessionID)])]),
             cwd: nil
@@ -1131,7 +1158,7 @@ final class HarnessSessionAPIClient: HarnessSessionClient {
     // MARK: 支撑
 
     private func listSessions(cwd: String?, workspace: AgentWorkspace?) async throws -> SessionsPage {
-        let value = try await runtime.call(
+        let value = try await callRPC(
             method: HarnessWireMethod.sessionList,
             // 形参名带下划线；写成 "request" 会被 Harness 网关判为 gateway/arguments-invalid。
             // 上游 list 没有服务端分页，因此不传 cursor。

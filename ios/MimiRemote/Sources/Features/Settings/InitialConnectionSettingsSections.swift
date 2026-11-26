@@ -1773,7 +1773,7 @@ struct InitialConnectionSettingsSections: View {
             ) else {
                 return
             }
-        } catch where AppStore.isConnectionProbeCancellation(error) {
+        } catch where isCancellationError(error) {
             setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
         } catch {
             let message = ConnectionFailureGuidance.message(
@@ -1863,7 +1863,7 @@ struct InitialConnectionSettingsSections: View {
                     ? L10n.text("ui.added_and_switched_to_this_mac")
                     : L10n.text("ui.this_mac_is_connected")
             )
-        } catch where AppStore.isConnectionProbeCancellation(error) {
+        } catch where isCancellationError(error) {
             isSavingConnection = false
             setConnectionAttemptError(nil, route: nil, forAddComputer: errorBelongsToAddComputer)
             return .rejected(L10n.text("ui.the_code_scan_has_been_cancelled_please_scan"))

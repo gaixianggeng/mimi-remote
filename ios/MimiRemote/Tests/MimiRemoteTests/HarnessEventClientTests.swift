@@ -1102,10 +1102,6 @@ final class HarnessEventClientTests: XCTestCase {
         let bundle = AppServerRuntimeBundle(
             endpoint: "http://127.0.0.1:8787",
             token: "fixture",
-            preparedConfig: makeDirectAppServerConfig(
-                project: AgentProject(id: "harness-project", name: "Harness", path: "/tmp/harness"),
-                channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
-            ),
             harnessFactory: { _, _ in api }
         )
         let routingClient = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)

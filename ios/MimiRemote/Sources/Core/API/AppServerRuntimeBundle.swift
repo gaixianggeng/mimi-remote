@@ -142,6 +142,7 @@ final class AppServerRuntimeBundle {
         harness = harnessFactory?(endpoint, token)
         self.routes = routes
         installThreadRuntimeOwnerLookup()
+        installNativeHarnessRPCGate()
     }
 
     init(
@@ -174,6 +175,7 @@ final class AppServerRuntimeBundle {
         harness = harnessFactory?(endpoint, token)
         self.routes = routes
         installThreadRuntimeOwnerLookup()
+        installNativeHarnessRPCGate()
     }
 
     init(
@@ -201,6 +203,17 @@ final class AppServerRuntimeBundle {
         self.harness = harness
         self.routes = routes
         installThreadRuntimeOwnerLookup()
+        installNativeHarnessRPCGate()
+    }
+
+    /// 共享宿主级原生 Harness RPC 门控：所有经本宿主发出的 Harness RPC（含已打开会话的
+    /// prompt / selectModel / cancel）在发送前核对宿主当前已加载的配置快照，不在门控内发起网络请求。
+    private func installNativeHarnessRPCGate() {
+        guard let apiClient = harness as? HarnessSessionAPIClient else { return }
+        apiClient.setRPCGate { [weak self] in
+            guard let self else { return }
+            try await self.requireLoadedNativeHarnessAllowed()
+        }
     }
 
     /// 重新授权翻列表前先问路由表：已知属于另一个 Runtime 的会话不会出现在本通道的列表里（#784）。
@@ -362,6 +375,28 @@ final class AppServerRuntimeBundle {
 
     func nativeHarnessConfigured() async throws -> Bool {
         try Self.nativeHarnessIsConfigured(in: try await currentConfiguration())
+    }
+
+    /// 只读当前宿主已加载且未失效的配置快照；绝不发起 `GET /api/app-server/config`。
+    func loadedConfigurationSnapshot() async -> CodexAppServerConfigResponse? {
+        await cachedConfigIfStillValid()
+    }
+
+    /// 仅基于已加载的配置快照判断原生 Harness 是否启用；快照尚未加载或已失效时返回 `nil`，
+    /// 保留直达 Harness 的既有行为，不在门控路径触发额外网络请求。
+    func loadedNativeHarnessConfigured() async throws -> Bool? {
+        guard let config = await loadedConfigurationSnapshot() else {
+            return nil
+        }
+        return try Self.nativeHarnessIsConfigured(in: config)
+    }
+
+    /// 共享宿主级门控：仅在配置快照已加载时阻止未启用或协议不兼容的调用；
+    /// 快照尚未加载时放行（不发起 `GET /api/app-server/config`）。
+    func requireLoadedNativeHarnessAllowed() async throws {
+        if let configured = try await loadedNativeHarnessConfigured(), !configured {
+            throw CodexAppServerSessionRuntimeError.gatewayUnavailable
+        }
     }
 
     static func channelAvailable(
