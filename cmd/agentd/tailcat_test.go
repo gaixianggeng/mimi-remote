@@ -100,9 +100,7 @@ func TestTailcatManagedCommandsUseLocalControlAndShowMode(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"))
 	for _, action := range []string{"enter-managed", "status", "exit-managed"} {
 		var stdout, stderr bytes.Buffer
 		if err := runTailcatWithWriters([]string{"tailcat", action, "--config", path}, &stdout, &stderr); err != nil {
@@ -152,9 +150,7 @@ func TestTailcatPairOnlyAdvertisesManagedFieldsInManagedMode(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, "tailcat"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.CreatePrivateFile(t, filepath.Join(dir, "tailcat", "local-control.token"), []byte("test-local-control"))
 		var stdout, stderr bytes.Buffer
 		err := runTailcatWithWriters([]string{"tailcat", "pair", "--config", path, "--qr-only", "--json"}, &stdout, &stderr)
 		server.Close()

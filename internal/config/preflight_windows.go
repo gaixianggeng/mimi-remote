@@ -26,15 +26,19 @@ func checkPreflightFileAccess(file *os.File, _ os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	owner, _, err := descriptor.Owner()
-	if err != nil {
-		return err
-	}
 	current, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
 	}
-	if owner == nil || !owner.Equals(current.User.Sid) {
+	return checkPrivateDescriptor(descriptor, current.User.Sid)
+}
+
+func checkPrivateDescriptor(descriptor *windows.SECURITY_DESCRIPTOR, user *windows.SID) error {
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	if owner == nil || !owner.Equals(user) {
 		return errFileNotOwned
 	}
 	control, _, err := descriptor.Control()

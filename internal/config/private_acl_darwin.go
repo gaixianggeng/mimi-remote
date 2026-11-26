@@ -1,8 +1,10 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +25,18 @@ const (
 	noACL         = 0xffffffff
 )
 
+func checkPermissionVolume(file *os.File) error {
+	var fs unix.Statfs_t
+	if err := unix.Fstatfs(int(file.Fd()), &fs); err != nil {
+		return err
+	}
+	kind := unix.ByteSliceToString(fs.Fstypename[:])
+	if (kind != "apfs" && kind != "hfs") || fs.Flags&unix.MNT_IGNORE_OWNERSHIP != 0 || fs.Flags&unix.MNT_LOCAL == 0 {
+		return fmt.Errorf("%w：无法验证文件系统的访问控制", errPreflightFileNotPrivate)
+	}
+	return nil
+}
+
 func fileACLAttr(fd uintptr, trap uintptr, attrs uint32, buf []byte) error {
 	attr := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Commonattr: attrs}
 	_, _, err := syscall.Syscall6(trap, fd, uintptr(unsafe.Pointer(&attr)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), 0, 0)
@@ -37,6 +51,10 @@ func checkExtendedACL(file *os.File) error {
 	buf := make([]byte, 12+fileSecHeader+maxEntries*aceSize)
 	err := fileACLAttr(file.Fd(), unix.SYS_FGETATTRLIST, unix.ATTR_CMN_EXTENDED_SECURITY, buf)
 	runtime.KeepAlive(file)
+	if errors.Is(err, os.ErrPermission) {
+		// A deny-readsecurity ACE can hide its own ACL from the owner.
+		return errPreflightFileNotPrivate
+	}
 	if err != nil {
 		return err
 	}
@@ -78,6 +96,14 @@ func repairExtendedACL(file *os.File) error {
 	return err
 }
 
+const defaultID = ^uint32(0) - 100 // KAUTH_UID_NONE / KAUTH_GID_NONE
+
+func noInheritACL() []byte {
+	security := emptyACLAttribute()[8:]
+	binary.NativeEndian.PutUint32(security[40:], 1<<17)
+	return security
+}
+
 // Supply KAUTH_FILESEC_NOACL with KAUTH_ACL_NO_INHERIT at creation. A
 // descriptor granted by an inherited ACE could survive a subsequent ACL repair.
 func createPrivateNew(path string) (*os.File, error) {
@@ -85,9 +111,7 @@ func createPrivateNew(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	security := emptyACLAttribute()[8:]
-	binary.NativeEndian.PutUint32(security[40:], 1<<17)
-	const defaultID = ^uint32(0) - 100 // KAUTH_UID_NONE / KAUTH_GID_NONE
+	security := noInheritACL()
 	flags := unix.O_RDWR | unix.O_CREAT | unix.O_EXCL | unix.O_CLOEXEC
 	fd, _, errno := syscall.Syscall6(unix.SYS_OPEN_EXTENDED, uintptr(unsafe.Pointer(name)), uintptr(flags), uintptr(defaultID), uintptr(defaultID), 0600, uintptr(unsafe.Pointer(&security[0])))
 	if errno != 0 {
@@ -113,23 +137,72 @@ func openPermissionFile(path string, _ bool) (*os.File, error) {
 
 func setPrivateMode(file *os.File) error { return file.Chmod(0600) }
 
+// getattrlistat can establish identity without READ_SECURITY, which lstat
+// requests even when the caller only needs ordinary identity attributes.
+type darwinRepairID struct {
+	device, kind, owner uint32
+	inode               uint64
+}
+
+func repairIdentityAt(fd int, path string) (darwinRepairID, uint64, error) {
+	var id darwinRepairID
+	name, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return id, 0, err
+	}
+	attrs := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Commonattr: unix.ATTR_CMN_DEVID | unix.ATTR_CMN_OBJTYPE | unix.ATTR_CMN_OWNERID | unix.ATTR_CMN_FILEID, Fileattr: unix.ATTR_FILE_LINKCOUNT}
+	var buf [28]byte
+	_, _, errno := syscall.Syscall6(unix.SYS_GETATTRLISTAT, uintptr(fd), uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&attrs)), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), unix.FSOPT_NOFOLLOW)
+	if errno != 0 {
+		return id, 0, errno
+	}
+	le := binary.NativeEndian
+	if le.Uint32(buf[:]) != uint32(len(buf)) {
+		return id, 0, errors.New("无法验证文件身份")
+	}
+	id = darwinRepairID{le.Uint32(buf[4:]), le.Uint32(buf[8:]), le.Uint32(buf[12:]), le.Uint64(buf[16:])}
+	return id, uint64(le.Uint32(buf[24:])), nil
+}
+
+func privateRepairDirectory(dir string) (string, error) {
+	path := filepath.Join(dir, ".permission-repair-"+rand.Text())
+	name, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+	security := noInheritACL()
+	_, _, errno := syscall.Syscall6(unix.SYS_MKDIR_EXTENDED, uintptr(unsafe.Pointer(name)), uintptr(defaultID), uintptr(defaultID), 0700, uintptr(unsafe.Pointer(&security[0])), 0)
+	if errno != 0 {
+		return "", errno
+	}
+	return path, nil
+}
+
 // Darwin lacks an unprivileged metadata-only open for an inode denying both
 // reads and writes. During explicit repair, pin it under a private directory
 // descriptor and check its identity and owner before changing its attributes.
-func repairInaccessibleFile(path string, openErr error) (bool, error) {
+func repairInaccessibleFile(path string, openErr error, check repairTargetCheck) (bool, error) {
 	if !errors.Is(openErr, os.ErrPermission) {
 		return false, openErr
 	}
-	expected, err := os.Lstat(path)
+	expected, links, err := repairIdentityAt(unix.AT_FDCWD, path)
 	if err != nil {
 		return false, err
 	}
-	stat := expected.Sys().(*syscall.Stat_t)
-	if !expected.Mode().IsRegular() || stat.Uid != uint32(os.Geteuid()) {
+	if expected.kind != 1 || expected.owner != uint32(os.Geteuid()) { // VREG
 		return false, errFileNotOwned
 	}
 
-	dir, err := os.MkdirTemp(filepath.Dir(path), ".permission-repair-")
+	if check != nil {
+		info, err := os.Lstat(path)
+		if err != nil && !errors.Is(err, os.ErrPermission) {
+			return false, err
+		}
+		if err := check(info, links); err != nil {
+			return false, err
+		}
+	}
+	dir, err := privateRepairDirectory(filepath.Dir(path))
 	if err != nil {
 		return false, err
 	}
@@ -143,10 +216,13 @@ func repairInaccessibleFile(path string, openErr error) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.Mode() != os.ModeDir|0700 || info.Sys().(*syscall.Stat_t).Uid != stat.Uid {
+	if info.Mode() != os.ModeDir|0700 || info.Sys().(*syscall.Stat_t).Uid != expected.owner {
 		return false, errPreflightFileNotPrivate
 	}
-	if err := repairExtendedACL(parent); err != nil {
+	if err := checkPermissionVolume(parent); err != nil {
+		return false, err
+	}
+	if err := checkExtendedACL(parent); err != nil {
 		return false, err
 	}
 	fd := int(parent.Fd())
@@ -155,11 +231,11 @@ func repairInaccessibleFile(path string, openErr error) (bool, error) {
 		return false, err
 	}
 	defer unix.Unlinkat(fd, alias, 0)
-	var pinned unix.Stat_t
-	if err := unix.Fstatat(fd, alias, &pinned, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	pinned, pinnedLinks, err := repairIdentityAt(fd, alias)
+	if err != nil {
 		return false, err
 	}
-	if pinned.Dev != stat.Dev || pinned.Ino != stat.Ino || pinned.Uid != stat.Uid || pinned.Mode&unix.S_IFMT != unix.S_IFREG {
+	if pinned != expected || pinnedLinks != links+1 {
 		return false, errors.New("文件已被替换")
 	}
 
@@ -177,7 +253,8 @@ func repairInaccessibleFile(path string, openErr error) (bool, error) {
 		return false, err
 	}
 	defer file.Close()
-	if !os.SameFile(expected, info) {
+	stat := info.Sys().(*syscall.Stat_t)
+	if uint32(stat.Dev) != expected.device || stat.Ino != expected.inode || stat.Uid != expected.owner {
 		return false, errors.New("文件已被替换")
 	}
 	if err := checkPreflightFileAccess(file, info); err != nil {

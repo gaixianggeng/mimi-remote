@@ -234,6 +234,16 @@ func (s *tailcatSidecarSupervisor) reconfigure(
 	if stateDir == "" {
 		return tailcatStatus{}, errors.New("Tailcat 缺少配置文件路径")
 	}
+	if _, err := config.CheckCompanionPermissions(s.configPath); err != nil {
+		return s.Status(ctx), err
+	}
+	raw, err := config.ReadPrivatePreflightFile(s.configPath, 4<<20)
+	if err != nil {
+		return s.Status(ctx), err
+	}
+	if _, err := config.CheckCredentialPermissions(raw); err != nil {
+		return s.Status(ctx), err
+	}
 	snapshot, err := snapshotTailcatIdentityState(stateDir)
 	if err != nil {
 		return s.Status(ctx), err

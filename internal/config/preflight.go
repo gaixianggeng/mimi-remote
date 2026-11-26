@@ -26,14 +26,31 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 		draft.AppServer = DefaultManagedAppServerConfig()
 	}
 	s := PreflightSnapshot{Config: draft}
-	info, err := os.Lstat(path)
+	_, err := permissionIdentity(path)
 	s.Configured = !errors.Is(err, os.ErrNotExist)
 	if err != nil && s.Configured {
-		s.Code = "config_invalid"
+		s.Code = PrivateFileDiagnostic(err)
+		if errors.Is(err, os.ErrPermission) {
+			s.Code = "config_permissions_unsafe"
+		}
+		return s
+	}
+	if _, err := CheckCompanionPermissions(path); err != nil {
+		s.Code = PrivateFileDiagnostic(err)
 		return s
 	}
 	journal := SetupJournalPath(path)
 	if _, e := os.Lstat(journal + ".recovery"); !errors.Is(e, os.ErrNotExist) {
+		if s.Configured {
+			raw, err := ReadPrivatePreflightFile(path, 4<<20)
+			if err == nil {
+				_, err = CheckCredentialPermissions(raw)
+			}
+			if errors.Is(err, errPreflightFileNotPrivate) {
+				s.Code = "config_permissions_unsafe"
+				return s
+			}
+		}
 		s.Code = "config_recovery_required"
 		s.RecoveryPath = "<配置目录>/" + filepath.Base(journal)
 		return s
@@ -60,7 +77,7 @@ func ReadPreflightSnapshot(path string) PreflightSnapshot {
 		s.Code = dirCode
 		return s
 	}
-	raw, err := readPreflightFile(path, info, 4<<20)
+	raw, err := ReadPrivatePreflightFile(path, 4<<20)
 	if err != nil {
 		s.Code = "config_invalid"
 		if errors.Is(err, errPreflightFileNotPrivate) {
@@ -139,9 +156,8 @@ func CheckCredentialPermissions(raw []byte) (string, error) {
 		} `json:"deepseek"`
 	}
 	// The caller handles document syntax. Opaque legacy files have no parsed references.
-	if err := json.Unmarshal(raw, &refs); err != nil {
-		return "", nil
-	}
+	// A type error in one module does not invalidate a reference decoded in the other.
+	_ = json.Unmarshal(raw, &refs)
 	for _, path := range []string{refs.AppServer.Token, refs.DeepSeek.Token} {
 		if path == "" {
 			continue
@@ -190,7 +206,10 @@ var errFileNotOwned = fmt.Errorf("%w：文件不属于当前用户", errPrefligh
 // regular file. Check the opened file before reading, without following a
 // final symlink or changing permissions.
 func ReadPrivatePreflightFile(path string, limit int64) ([]byte, error) {
-	expected, err := os.Lstat(path)
+	expected, err := permissionIdentity(path)
+	if errors.Is(err, os.ErrPermission) {
+		return nil, errPreflightFileNotPrivate
+	}
 	if err != nil {
 		return nil, err
 	}

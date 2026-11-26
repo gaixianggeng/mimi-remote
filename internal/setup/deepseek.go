@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -366,7 +365,7 @@ func storeDeepSeekConnection(
 			return errors.New("配置已被其他进程修改，请重新执行")
 		}
 		return writeSetupFilesAtomically(
-			document.configPath,
+			configImage{path: document.configPath, raw: document.original, exists: true},
 			tokenPath,
 			updated,
 			tokenRaw,
@@ -399,13 +398,6 @@ func loadDeepSeekConfigDocument(path string) (deepSeekConfigDocument, error) {
 	configPath, err := resolveConfigPath(path)
 	if err != nil {
 		return deepSeekConfigDocument{}, err
-	}
-	info, err := os.Lstat(configPath)
-	if err != nil {
-		return deepSeekConfigDocument{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return deepSeekConfigDocument{}, errors.New("配置文件必须是 regular file，不能是目录或符号链接")
 	}
 	original, err := readPrivateConfig(configPath)
 	if err != nil {

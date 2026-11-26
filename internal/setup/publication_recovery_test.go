@@ -582,3 +582,33 @@ func TestSetupPreservesReplacedStageAfterJournalPublication(t *testing.T) {
 	assertFileBytesAndMode(t, stage, replacement, 0600)
 	assertFileBytesAndMode(t, path, original, 0600)
 }
+
+func TestCanonicalPublicationBoundsConcurrentNarrowing(t *testing.T) {
+	clearSetupEnv(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	opts := atomicSetupOptions(t, path, false)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+	opts.ScanRoot = t.TempDir()
+	ops := defaultSetupFileTransactionOps()
+	publish := ops.rename
+	narrowed := false
+	ops.rename = func(from, to string) error {
+		if to == path {
+			configtest.SetNoncanonicalPermissions(t, path, true)
+			narrowed = true
+		}
+		return publish(from, to)
+	}
+	_, err := runWithFileOps(t.Context(), opts, ops)
+	if err != nil {
+		requirePublicationError(t, err, "config_recovery_required")
+	}
+	if !narrowed {
+		t.Fatal("did not reach publication")
+	}
+	if err := config.CheckPrivatePermissions(path); err != nil {
+		t.Fatalf("published permissions: %v", err)
+	}
+}

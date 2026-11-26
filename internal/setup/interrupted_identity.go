@@ -59,7 +59,7 @@ func keepInterruptedIdentity(journal string, id interruptedIdentity, ops setupFi
 		return err
 	}
 	defer ops.remove(stage)
-	if err = renameNewSetupFile(stage, path); err != nil {
+	if err = renamePrivateFile(stage, path, renameNewSetupFile); err != nil {
 		return recoveryError(journal, err)
 	}
 	return ops.syncDir(dir)

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
@@ -45,15 +44,7 @@ func diagnosticControlToken(configPath string, create bool) (string, error) {
 }
 
 func readDiagnosticControlToken(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() || info.Size() != 64 ||
-		(runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
-		return "", errors.New("本机诊断凭据格式或权限无效")
-	}
-	data, err := os.ReadFile(path)
+	data, err := config.ReadPrivatePreflightFile(path, 64)
 	if err != nil {
 		return "", err
 	}

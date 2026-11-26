@@ -174,6 +174,9 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 	p.source = p.dest
 	// Once a destination is committed the old install no longer supplies any field.
 	if !p.dest.exists && legacy != "" {
+		if _, err := config.CheckCompanionPermissions(legacy); err != nil {
+			return nil, saveFailure(config.PrivateFileDiagnostic(err), err)
+		}
 		p.legacy, err = readImage(legacy)
 		if err != nil {
 			return nil, err
@@ -258,7 +261,9 @@ func IsManagedCredential(path string, raw []byte, target string) bool {
 		return false
 	}
 	if ws != "" && (s.Config.AppServer.Managed || s.Config.AppServer.Transport == "local") {
-		if ref, err := config.ConfigPathIdentity(ws); err == nil && ref == id {
+		name := filepath.Base(id)
+		if ref, err := config.ConfigPathIdentity(ws); err == nil && ref == id &&
+			(name == "app-server-ws-token" || strings.HasPrefix(name, "app-server-ws-token-")) {
 			return true
 		}
 	}

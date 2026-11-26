@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 
@@ -9,6 +10,28 @@ import (
 )
 
 const accessACL = "system.posix_acl_access"
+
+// A synthetic mode on a network or virtual mount does not describe the
+// server's ACL. Only accept filesystems enforcing Unix mode and POSIX ACLs.
+func supportsPrivateMode(fsType uint32) bool {
+	switch fsType {
+	case unix.EXT4_SUPER_MAGIC, unix.XFS_SUPER_MAGIC, unix.BTRFS_SUPER_MAGIC,
+		unix.F2FS_SUPER_MAGIC, unix.TMPFS_MAGIC, unix.RAMFS_MAGIC, unix.OVERLAYFS_SUPER_MAGIC:
+		return true
+	}
+	return false
+}
+
+func checkPermissionVolume(file *os.File) error {
+	var fs unix.Statfs_t
+	if err := unix.Fstatfs(int(file.Fd()), &fs); err != nil {
+		return err
+	}
+	if !supportsPrivateMode(uint32(fs.Type)) {
+		return fmt.Errorf("%w：无法验证文件系统的访问控制", errPreflightFileNotPrivate)
+	}
+	return nil
+}
 
 func openPermissionFile(path string, _ bool) (*os.File, error) {
 	file, err := openSnapshotFile(path)

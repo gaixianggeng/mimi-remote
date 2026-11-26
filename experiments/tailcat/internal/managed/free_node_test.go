@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"tailscale.com/types/key"
 )
 
@@ -168,9 +169,7 @@ func TestPairingStartsBothNodesAndClosesThemTogether(t *testing.T) {
 		t.Fatalf("免费配对节点配置错误：%+v", config)
 	}
 	freePair := starter.host("free-pair")
-	if err := os.WriteFile(filepath.Join(manager.config.StateDir, "free-pair.address"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, filepath.Join(manager.config.StateDir, "free-pair.address"), []byte("x"))
 	manager.mu.Lock()
 	err = manager.closePairLocked()
 	manager.mu.Unlock()

@@ -2,7 +2,10 @@ module github.com/gaixianggeng/mimi-remote/experiments/tailcat
 
 go 1.27.1
 
+replace github.com/gaixianggeng/mimi-remote => ../..
+
 require (
+	github.com/gaixianggeng/mimi-remote v0.0.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/tailscale/tailcat v0.7.0
 	tailscale.com v1.103.0-pre.0.20260916030321-a2263542f260

@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -31,17 +32,10 @@ func MigrateAppServerToSSH(ctx context.Context, configPath string, requestedTarg
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
 	original, err := readPrivateConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败：%w", err)
 	}

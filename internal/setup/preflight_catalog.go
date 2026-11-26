@@ -46,7 +46,7 @@ func OnboardingDiagnostic(code, step, stage string, configured bool, recommended
 		}
 	}
 	draftAction := value == "enable_codex" || value == "enable_claude" || value == "enable_agy" || value == "save_setup"
-	needsSavedConfig := kind == "run_fix" && !draftAction
+	needsSavedConfig := kind == "run_fix" && !draftAction && code != "config_permissions_unsafe"
 	needsNetworkSelection := code == "network_selection_required" || (stage == "setup" && code == "no_network_available")
 	if !configured && (needsSavedConfig || needsNetworkSelection) {
 		kind, value = "run_fix", "save_setup"

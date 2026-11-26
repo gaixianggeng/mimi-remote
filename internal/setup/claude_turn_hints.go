@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 )
 
@@ -96,13 +95,6 @@ func readClaudeTurnHintsDocument(configPath string) (string, []byte, map[string]
 	cfgPath, err := resolveConfigPath(configPath)
 	if err != nil {
 		return "", nil, nil, nil, err
-	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return "", nil, nil, nil, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", nil, nil, nil, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
 	original, err := readPrivateConfig(cfgPath)
 	if err != nil {

@@ -44,11 +44,29 @@ func openPermissionTarget(path string, modify bool) (*os.File, os.FileInfo, erro
 
 // RepairPrivatePermissions restores canonical permissions in place on an identified, owned regular file.
 func RepairPrivatePermissions(path string) (bool, error) {
-	file, _, err := openPermissionTarget(path, true)
+	return repairPrivatePermissions(path, nil)
+}
+
+type repairTargetCheck func(os.FileInfo, uint64) error
+
+func repairPrivatePermissions(path string, check repairTargetCheck) (bool, error) {
+	file, info, err := openPermissionTarget(path, true)
 	if err != nil {
-		return repairInaccessibleFile(path, err)
+		return repairInaccessibleFile(path, err, check)
 	}
 	defer file.Close()
+	if check != nil {
+		if err := checkPreflightFileAccess(file, info); err != errPreflightFileNotPrivate {
+			return false, err
+		}
+		links, err := permissionLinkCount(file, info)
+		if err != nil {
+			return false, err
+		}
+		if err := check(info, links); err != nil {
+			return false, err
+		}
+	}
 	return makeFilePrivate(file)
 }
 
@@ -96,6 +114,23 @@ func makeFilePrivate(file *os.File) (bool, error) {
 	return true, nil
 }
 
+// Bind the verified handle to the filename that will be published, without
+// following a final symlink or relying on a lazy Windows path-based file ID.
+func checkPrivateFileName(file *os.File) error {
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	named, err := permissionIdentity(file.Name())
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(opened, named) {
+		return errors.New("暂存文件已被替换")
+	}
+	return nil
+}
+
 // CreatePrivateTemp returns an empty file verified on the handle used for secret writes.
 func CreatePrivateTemp(dir, prefix string) (*os.File, error) {
 	if filepath.Base(prefix) != prefix && prefix != "" {
@@ -117,9 +152,15 @@ func CreatePrivateTemp(dir, prefix string) (*os.File, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := prepareNewPrivateFile(file); err != nil {
+		err = prepareNewPrivateFile(file)
+		if err == nil {
+			err = checkPrivateFileName(file)
+		}
+		if err != nil {
+			if checkPrivateFileName(file) == nil {
+				os.Remove(path)
+			}
 			file.Close()
-			os.Remove(path)
 			return nil, err
 		}
 		return file, nil

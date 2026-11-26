@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 type fakeTailcatSidecar struct {
@@ -381,9 +382,7 @@ func TestTailcatLocalConfigureFailureImmediatelyReappliesManagedPolicy(t *testin
 func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 	stateDir := t.TempDir()
 	for _, name := range []string{"host.private.json", "host.address", "clients.json"} {
-		if err := os.WriteFile(filepath.Join(stateDir, name), []byte("original-"+name), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, filepath.Join(stateDir, name), []byte("original-"+name))
 	}
 	snapshot, err := snapshotTailcatIdentityState(stateDir)
 	if err != nil {
@@ -392,9 +391,7 @@ func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 	if err := clearTailcatIdentityState(stateDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, "host.address"), []byte("replacement"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, filepath.Join(stateDir, "host.address"), []byte("replacement"))
 	if err := restoreTailcatIdentityState(stateDir, snapshot); err != nil {
 		t.Fatal(err)
 	}

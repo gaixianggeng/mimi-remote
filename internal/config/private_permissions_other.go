@@ -2,4 +2,6 @@
 
 package config
 
-func repairInaccessibleFile(_ string, openErr error) (bool, error) { return false, openErr }
+func repairInaccessibleFile(_ string, openErr error, _ repairTargetCheck) (bool, error) {
+	return false, openErr
+}

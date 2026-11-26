@@ -17,6 +17,9 @@ func checkPreflightFileAccess(file *os.File, info os.FileInfo) error {
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
 		return errFileNotOwned
 	}
+	if err := checkPermissionVolume(file); err != nil {
+		return err
+	}
 	if info.Mode() != 0600 {
 		return errPreflightFileNotPrivate
 	}

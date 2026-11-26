@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -108,14 +107,6 @@ func ConfigureClaude(
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
 	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
@@ -271,13 +262,6 @@ func RestoreClaude(configPath string, previous ClaudeConfigurationResult) (Claud
 	cfgPath, err := resolveConfigPath(configPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
-	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
 	original, err := readPrivateConfig(cfgPath)
 	if err != nil {

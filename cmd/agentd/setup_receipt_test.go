@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -324,4 +327,152 @@ func TestSaveRefusesNoncanonicalPermissionsBeforeWritesAndDoctorRepairs(t *testi
 		t.Fatalf("incomplete installation repair: %s", got)
 	}
 	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", t.TempDir())
+}
+
+func TestSaveAndDoctorCheckInterruptedPublicationPermissions(t *testing.T) {
+	for _, kind := range []string{"journal", "stage", "backup", "token stage", "identity"} {
+		for _, scope := range []string{"broader", "narrower"} {
+			t.Run(kind+"/"+scope, func(t *testing.T) {
+				path := isolatedSaveCommand(t)
+				root := t.TempDir()
+				runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", root)
+				raw, cfg := savedFixtureConfig(t, path)
+				dir, journal := filepath.Dir(path), config.SetupJournalPath(path)
+				sum := fmt.Sprintf("%x", sha256.Sum256(raw))
+				record := config.SetupPublication{ConfigStage: ".config.json.tmp-permissions", After: sum, Before: sum, Backup: ".config.json.bak-permissions"}
+				stage := filepath.Join(dir, record.ConfigStage)
+				configtest.CreatePrivateFile(t, stage, raw)
+				backup := filepath.Join(dir, record.Backup)
+				if err := os.Link(path, backup); err != nil {
+					t.Fatal(err)
+				}
+				token := []byte("test transaction companion")
+				record.TokenStage, record.Companion = ".mimi-ws.tmp-permissions", "app-server-ws-token-permissions"
+				record.TokenDigest = fmt.Sprintf("%x", sha256.Sum256(token))
+				tokenStage := filepath.Join(dir, record.TokenStage)
+				configtest.CreatePrivateFile(t, tokenStage, token)
+				if err := os.Link(tokenStage, filepath.Join(dir, record.Companion)); err != nil {
+					t.Fatal(err)
+				}
+				body, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				configtest.CreatePrivateFile(t, journal, body)
+				id, err := json.Marshal(map[string]string{"bearer": cfg.Auth.Token})
+				if err != nil {
+					t.Fatal(err)
+				}
+				configtest.CreatePrivateFile(t, journal+".identity", id)
+				target := map[string]string{"journal": journal, "stage": stage, "backup": backup, "token stage": tokenStage, "identity": journal + ".identity"}[kind]
+				configtest.SetNoncanonicalPermissions(t, target, scope == "narrower")
+				if kind == "backup" {
+					configtest.SetNoncanonicalPermissions(t, journal, true)
+				}
+				if got := config.ReadPreflightSnapshot(path).Code; got != "config_permissions_unsafe" {
+					t.Fatalf("preflight: %s", got)
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var out, stderr bytes.Buffer
+				nextRoot := filepath.Join(root, "new")
+				args := []string{"agentd", "setup", "--config", path, "--json", "--no-pair", "--create-root", "--scan-root", nextRoot}
+				if commandExit(args, &out, &stderr) != 1 {
+					t.Fatal("expected permission refusal")
+				}
+				assertOnboardingError(t, out.Bytes(), stderr.String(), "config_permissions_unsafe", "config_store")
+				after, err := os.ReadDir(dir)
+				if err != nil || len(entries) != len(after) {
+					t.Fatal("refusal changed transaction files")
+				}
+				for i := range entries {
+					if entries[i].Name() != after[i].Name() {
+						t.Fatal("refusal changed transaction files")
+					}
+				}
+				assertPathDoesNotExist(t, nextRoot, "workspace created before permission refusal")
+				runSaveJSON(t, path, "doctor", "--fix")
+				if err := config.CheckPrivatePermissions(target); err != nil {
+					t.Fatal(err)
+				}
+				runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", root)
+				assertPathDoesNotExist(t, journal, "save did not finish replay after repair")
+				now, _ := savedFixtureConfig(t, path)
+				if !bytes.Equal(now, raw) {
+					t.Fatal("permission repair or replay changed saved configuration")
+				}
+			})
+		}
+	}
+}
+
+func TestDoctorFixesInterruptedIdentityBeforeFirstConfig(t *testing.T) {
+	path := isolatedSaveCommand(t)
+	witness := config.SetupJournalPath(path) + ".identity"
+	configtest.CreatePrivateFile(t, witness, []byte(`{"bearer":"fixture-preserved-interrupted-bearer"}`))
+	configtest.SetNoncanonicalPermissions(t, witness, true)
+	if got := config.ReadPreflightSnapshot(path).Code; got != "config_permissions_unsafe" {
+		t.Fatal(got)
+	}
+	runSaveJSON(t, path, "doctor", "--fix")
+	assertPathDoesNotExist(t, path, "doctor published a config during access repair")
+	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", t.TempDir())
+	_, cfg := savedFixtureConfig(t, path)
+	if cfg.Auth.Token != "fixture-preserved-interrupted-bearer" {
+		t.Fatal("lost interrupted identity")
+	}
+}
+
+func TestDoctorExternalCredentialNeedsNamedTarget(t *testing.T) {
+	path := isolatedSaveCommand(t)
+	root := t.TempDir()
+	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", root)
+	_, cfg := savedFixtureConfig(t, path)
+	token := filepath.Join(t.TempDir(), "external.token")
+	configtest.CreatePrivateFile(t, token, []byte("external fixture"))
+	cfg.DeepSeek.TokenFile = token
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configtest.WritePrivateFile(t, path, raw)
+	for _, narrow := range []bool{false, true} {
+		configtest.SetNoncanonicalPermissions(t, token, narrow)
+		if e := runDoctorWithWriters([]string{"doctor", "--config", path, "--fix"}, io.Discard, io.Discard); e == nil {
+			t.Fatal("doctor changed an external reference without an explicit target")
+		}
+		if err := config.CheckPrivatePermissions(token); config.PrivateFileDiagnostic(err) != "config_permissions_unsafe" {
+			t.Fatalf("external reference was modified: %v", err)
+		}
+		runSaveJSON(t, path, "doctor", "--fix", "--permission-file", token)
+		runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", root)
+	}
+}
+
+func TestDoctorPreservesReplacedRecoveryEvidence(t *testing.T) {
+	path := isolatedSaveCommand(t)
+	stage := filepath.Join(filepath.Dir(path), ".config.json.tmp-fixture")
+	replacement := []byte("unrelated replacement")
+	configtest.CreatePrivateFile(t, stage, replacement)
+	configtest.SetNoncanonicalPermissions(t, stage, true)
+	record := config.SetupPublication{ConfigStage: filepath.Base(stage), After: fmt.Sprintf("%x", sha256.Sum256([]byte("expected stage")))}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := config.SetupJournalPath(path)
+	configtest.CreatePrivateFile(t, journal, raw)
+	if err := runDoctorWithWriters([]string{"doctor", "--config", path, "--fix"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("accepted unrelated recovery member")
+	}
+	if err := config.CheckPrivatePermissions(stage); config.PrivateFileDiagnostic(err) != "config_permissions_unsafe" {
+		t.Fatal("changed unrelated file permissions")
+	}
+	now, err := os.ReadFile(stage)
+	if err != nil || !bytes.Equal(now, replacement) {
+		t.Fatal("changed unrelated file contents")
+	}
+	assertPathDoesNotExist(t, journal+".recovery", "created a marker during access repair")
 }

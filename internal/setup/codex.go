@@ -133,14 +133,6 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 	if err != nil {
 		return "", false, err
 	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return "", false, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
 	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return "", false, fmt.Errorf("读取配置文件失败：%w", err)

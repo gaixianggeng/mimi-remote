@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"time"
 
+	mimiconfig "github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -56,6 +58,9 @@ func StartHost(config HostConfig) (*Host, error) {
 		// Tailcat 把空白名单解释为允许所有客户端。实验服务未配对时必须显式
 		// 放入一个永远不会分发的占位键，保证稳定地址默认拒绝连接。
 		allowedClients = append(allowedClients, key.NewNode().Public())
+	}
+	if err := mimiconfig.CheckPrivatePermissions(config.AddressPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 	privateKey, savedInfo, err := loadOrCreateHostIdentity(config.IdentityPath)
 	if err != nil {
@@ -107,7 +112,7 @@ func StartHost(config HostConfig) (*Host, error) {
 			return nil, err
 		}
 	}
-	if err := writePrivateFile(config.AddressPath, []byte(string(address)+"\n")); err != nil {
+	if err := mimiconfig.WritePrivateFile(config.AddressPath, []byte(string(address)+"\n")); err != nil {
 		server.Close()
 		return nil, fmt.Errorf("写入 Tailcat 地址：%w", err)
 	}

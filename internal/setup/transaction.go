@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -21,22 +22,21 @@ type setupFileTransactionOps struct {
 }
 
 func writeSetupFilesAtomically(
-	configPath string,
+	beforeConfig configImage,
 	tokenPath string,
 	configRaw []byte,
 	tokenRaw []byte,
 	ops setupFileTransactionOps,
 ) error {
-	configPath = filepath.Clean(configPath)
+	configPath := filepath.Clean(beforeConfig.path)
 	tokenPath = filepath.Clean(tokenPath)
 	if configPath == tokenPath || (runtime.GOOS == "windows" && strings.EqualFold(configPath, tokenPath)) {
 		return fmt.Errorf("配置文件与 app-server token file 不能使用同一路径")
 	}
-	configExisted, err := regularFileOrMissing(configPath, "配置文件")
-	if err != nil {
+	if err := beforeConfig.check(); err != nil {
 		return err
 	}
-	tokenExisted, err := regularFileOrMissing(tokenPath, "app-server token file")
+	beforeToken, err := readImage(tokenPath)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,16 @@ func writeSetupFilesAtomically(
 	}
 	defer ops.remove(stagedConfig)
 
+	tokenInfo, err := config.FileIdentity(stagedToken)
+	if err != nil {
+		return err
+	}
+	configInfo, err := config.FileIdentity(stagedConfig)
+	if err != nil {
+		return err
+	}
 	keepBackups := false
-	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
+	tokenBackup, err := hardLinkBackup(tokenPath, beforeToken.exists, ops)
 	if err != nil {
 		return fmt.Errorf("创建 app-server token file 恢复点失败：%w", err)
 	}
@@ -68,7 +76,7 @@ func writeSetupFilesAtomically(
 			}
 		}()
 	}
-	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
+	configBackup, err := hardLinkBackup(configPath, beforeConfig.exists, ops)
 	if err != nil {
 		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
 	}
@@ -82,19 +90,31 @@ func writeSetupFilesAtomically(
 
 	// 先提交上游 token，再提交引用它的配置。第二步失败时恢复旧 token，
 	// 防止运行中的服务看到未配套提交的新凭证。
-	if err := renamePrivateFile(stagedToken, tokenPath, ops.rename); err != nil {
+	publish := func(stage string, id os.FileInfo, raw []byte, before configImage) error {
+		if !sameSetupFile(stage, id, raw) {
+			return saveFailure("config_concurrent_change", errors.New("暂存文件已更改"))
+		}
+		if err := before.check(); err != nil {
+			return err
+		}
+		if !before.exists {
+			return ops.renameNew(stage, before.path)
+		}
+		return ops.rename(stage, before.path)
+	}
+	if err := publish(stagedToken, tokenInfo, tokenRaw, beforeToken); err != nil {
 		return fmt.Errorf("提交 app-server token file 失败：%w", err)
 	}
-	if err := renamePrivateFile(stagedConfig, configPath, ops.rename); err != nil {
-		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
+	if err := publish(stagedConfig, configInfo, configRaw, beforeConfig); err != nil {
+		rollbackErr := restoreSetupTarget(beforeToken, tokenBackup, tokenInfo, tokenRaw, ops)
 		keepBackups = rollbackErr != nil
 		syncErr := ops.syncDir(dir)
 		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))
 	}
 	if err := ops.syncDir(dir); err != nil {
 		rollbackErr := errors.Join(
-			restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops),
-			restoreSetupTarget(configPath, configBackup, configExisted, ops),
+			restoreSetupTarget(beforeToken, tokenBackup, tokenInfo, tokenRaw, ops),
+			restoreSetupTarget(beforeConfig, configBackup, configInfo, configRaw, ops),
 		)
 		keepBackups = rollbackErr != nil
 		rollbackSyncErr := ops.syncDir(dir)
@@ -129,6 +149,9 @@ func hardLinkBackup(path string, existed bool, ops setupFileTransactionOps) (str
 	if !existed {
 		return "", nil
 	}
+	if err := config.CheckPrivatePermissions(path); err != nil {
+		return "", err
+	}
 	for attempt := 0; attempt < 10; attempt++ {
 		suffix, err := randomHex(8)
 		if err != nil {
@@ -139,6 +162,10 @@ func hardLinkBackup(path string, existed bool, ops setupFileTransactionOps) (str
 			if os.IsExist(err) {
 				continue
 			}
+			return "", err
+		}
+		if err := config.CheckPrivatePermissions(backup); err != nil {
+			_ = ops.remove(backup)
 			return "", err
 		}
 		return backup, nil
@@ -153,10 +180,18 @@ func renamePrivateFile(source, target string, rename func(string, string) error)
 	return rename(source, target)
 }
 
-func restoreSetupTarget(path string, backup string, existed bool, ops setupFileTransactionOps) error {
-	if existed {
+func restoreSetupTarget(before configImage, backup string, published os.FileInfo, raw []byte, ops setupFileTransactionOps) error {
+	path := before.path
+	if !sameSetupFile(path, published, raw) {
+		return errors.New("已发布的文件已被更改，已保留恢复点")
+	}
+	if before.exists {
 		if backup == "" {
 			return fmt.Errorf("%s 缺少恢复点", path)
+		}
+		prior, err := readImage(backup)
+		if err != nil || !prior.exists || !bytes.Equal(prior.raw, before.raw) {
+			return errors.New("恢复点的内容或权限已更改")
 		}
 		if err := renamePrivateFile(backup, path, ops.rename); err != nil {
 			return fmt.Errorf("恢复 %s 失败：%w", path, err)

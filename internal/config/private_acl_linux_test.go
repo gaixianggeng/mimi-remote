@@ -48,3 +48,11 @@ func TestLinuxRejectsAndRemovesMaskedNamedACL(t *testing.T) {
 		t.Fatalf("repaired file: %v", err)
 	}
 }
+
+func TestPrivateModeRejectsAlternativeACLModels(t *testing.T) {
+	for _, fs := range []uint32{unix.NFS_SUPER_MAGIC, unix.CIFS_SUPER_MAGIC, unix.SMB2_SUPER_MAGIC, unix.FUSE_SUPER_MAGIC} {
+		if supportsPrivateMode(fs) {
+			t.Errorf("accepted non-POSIX permission model on %x", fs)
+		}
+	}
+}

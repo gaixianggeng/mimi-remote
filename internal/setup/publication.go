@@ -18,11 +18,7 @@ import (
 
 // This private record identifies the exact files owned by one publication.
 // In particular, a filename prefix alone is never evidence of ownership.
-type publication struct {
-	ConfigStage, TokenStage, Companion, Backup string
-	Before, After, TokenDigest, IdentityDigest string
-	Fresh                                      bool
-}
+type publication = config.SetupPublication
 
 func digest(raw []byte) string { v := sha256.Sum256(raw); return hex.EncodeToString(v[:]) }
 func recoveryError(path string, err error) error {
@@ -30,18 +26,31 @@ func recoveryError(path string, err error) error {
 }
 func recoverPublication(ctx context.Context, path, legacy string, ops setupFileTransactionOps, identity *interruptedIdentity) error {
 	j := config.SetupJournalPath(path)
-	if _, err := os.Lstat(j + ".recovery"); !errors.Is(err, os.ErrNotExist) {
-		return recoveryError(j, errors.New("上一次提交需要手动检查"))
+	if _, err := config.CheckCompanionPermissions(path); err != nil {
+		return saveFailure(config.PrivateFileDiagnostic(err), err)
 	}
-	if !filePresent(j) && !filePresent(j+".identity") {
+	manual := filePresent(j + ".recovery")
+	if !manual && !filePresent(j) && !filePresent(j+".identity") {
 		return nil
 	}
-	return config.WithConfigCommitLock(ctx, path, func() error {
+	checkSource := func() error {
 		_, err := readPrivateConfig(path)
 		if errors.Is(err, os.ErrNotExist) && legacy != "" {
 			_, err = readPrivateConfig(legacy)
 		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := checkSource(); err != nil {
+		return err
+	}
+	if manual {
+		return recoveryError(j, errors.New("上一次提交需要手动检查"))
+	}
+	return config.WithConfigCommitLock(ctx, path, func() error {
+		if err := checkSource(); err != nil {
 			return err
 		}
 		stored, err := readInterruptedIdentity(j + ".identity")
@@ -49,10 +58,10 @@ func recoverPublication(ctx context.Context, path, legacy string, ops setupFileT
 			return err
 		}
 		if err = inspectPublication(path, ops, &stored); err != nil {
-			// A failed replay must remain visible to passive preflight as well.
-			if e := publishSetupCompanion(j, j+".recovery", ops); e == nil {
-				_ = ops.syncDir(filepath.Dir(path))
+			if config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+				return saveFailure("config_permissions_unsafe", err)
 			}
+			markPublicationRecovery(j, ops)
 			return err
 		}
 		if identity != nil {
@@ -60,6 +69,20 @@ func recoverPublication(ctx context.Context, path, legacy string, ops setupFileT
 		}
 		return nil
 	})
+}
+
+// The journal may be unreadable or replaced. The marker only records the
+// need for inspection and never inherits permissions or contents from it.
+func markPublicationRecovery(journal string, ops setupFileTransactionOps) {
+	dir := filepath.Dir(journal)
+	stage, err := ops.stage(dir, ".mimi-recovery-", nil)
+	if err != nil {
+		return
+	}
+	defer ops.remove(stage)
+	if err := renamePrivateFile(stage, journal+".recovery", ops.renameNew); err == nil {
+		_ = ops.syncDir(dir)
+	}
 }
 
 func replayPublication(path string, ops setupFileTransactionOps) error {
@@ -83,21 +106,8 @@ func inspectPublication(path string, ops setupFileTransactionOps, identity *inte
 		return recoveryError(journal, err)
 	}
 	dir := filepath.Dir(path)
-	// Check the full record, its bounded names and fingerprints before unlinking anything.
-	if len(record.After) != 64 || (record.Before != "" && len(record.Before) != 64) {
-		return recoveryError(journal, errors.New("恢复记录不完整"))
-	}
-	if record.ConfigStage == "" || (record.TokenStage == "") != (record.Companion == "") ||
-		(record.TokenStage != "" && len(record.TokenDigest) != 64) || (record.Before == "") != (record.Backup == "") {
-		return recoveryError(journal, errors.New("恢复记录不完整"))
-	}
-	for _, entry := range []struct{ name, prefix string }{
-		{record.ConfigStage, ".config.json.tmp-"}, {record.TokenStage, ".mimi-ws.tmp-"},
-		{record.Companion, "app-server-ws-token-"}, {record.Backup, "." + filepath.Base(path) + ".bak-"},
-	} {
-		if entry.name != "" && (filepath.Base(entry.name) != entry.name || !strings.HasPrefix(entry.name, entry.prefix)) {
-			return recoveryError(journal, errors.New("恢复路径无法验证"))
-		}
+	if _, err = record.Members(path); err != nil {
+		return recoveryError(journal, err)
 	}
 	image, err := readImage(path)
 	if err != nil {
@@ -251,9 +261,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if keep && errors.As(commitErr, &failed) && failed.Code == "config_recovery_required" {
 				// A crash can be replayed. A known indeterminate rollback needs
 				// read-only recovery; never discard its old or new generation.
-				if e := publishSetupCompanion(journal, journal+".recovery", ops); e == nil {
-					_ = ops.syncDir(dir)
-				}
+				markPublicationRecovery(journal, ops)
 			}
 		}()
 		// Only recovery before building a proposal can adopt an interrupted
@@ -329,7 +337,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			}
 			// Publish the flushed journal with the same no-clobber, write-through
 			// rename as a fresh config, including on Windows without directory fsync.
-			if err = ops.renameNew(stagedJournal, journal); err != nil {
+			if err = renamePrivateFile(stagedJournal, journal, ops.renameNew); err != nil {
 				if errors.Is(err, os.ErrExist) {
 					_ = ops.remove(stagedJournal)
 					return saveFailure("config_concurrent_change", err)
@@ -384,6 +392,9 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if !p.dest.exists {
 				publish = ops.renameNew
 			}
+			// #1128: an authorized editor can narrow the old destination between
+			// the last check and this rename. Publication installs the verified
+			// stage with Mimi's canonical permissions on the replacement inode.
 			if err = publish(stage, path); err != nil {
 				if !p.dest.exists && errors.Is(err, os.ErrExist) {
 					return abandon(saveFailure("config_concurrent_change", err))

@@ -9,6 +9,7 @@ import (
 
 var errACLUnsupported = errors.New("此平台无法验证文件 ACL")
 
+func checkPermissionVolume(*os.File) error                     { return errACLUnsupported }
 func checkExtendedACL(*os.File) error                          { return errACLUnsupported }
 func repairExtendedACL(*os.File) error                         { return errACLUnsupported }
 func openPermissionFile(path string, _ bool) (*os.File, error) { return openSnapshotFile(path) }

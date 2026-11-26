@@ -9,7 +9,7 @@ import (
 )
 
 func TestDarwinRejectsAndStripsEveryExtendedACL(t *testing.T) {
-	for _, rule := range []string{"everyone allow readattr", "everyone allow read", "everyone deny write"} {
+	for _, rule := range []string{"everyone allow readattr", "everyone allow read", "everyone deny write", "everyone deny readsecurity", "everyone deny read,write,readsecurity"} {
 		t.Run(rule, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "original")
 			if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {

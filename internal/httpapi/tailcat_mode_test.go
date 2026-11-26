@@ -107,9 +107,7 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 			t.Run(original+"/enabled="+map[bool]string{false: "false", true: "true"}[enabled], func(t *testing.T) {
 				s, c := newModeTestHost(t, binary, original, enabled)
 				old := s.Status(context.Background())
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 				status, err := c.ConfigureMode(context.Background(), true)
 				if err != nil {
 					t.Fatal(err)
@@ -274,9 +272,7 @@ func TestTailcatManagedModeFailureRestoresIdentityAndPolicy(t *testing.T) {
 					}
 					seedModeTestPolicy(t, c, s)
 				}
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 				before := s.Status(context.Background())
 				identity, err := snapshotTailcatIdentityState(s.stateDir)
 				if err != nil {
@@ -549,9 +545,7 @@ func TestSelfHostedOnOfficialRelayReturnsToDefaultRelayAtStart(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	s, _ := newModeTestHost(t, binary, config.DefaultManagedTailcatDERPMapURL, false)
 	for _, name := range []string{"host.private.json", "clients.json"} {
-		if err := os.WriteFile(filepath.Join(s.stateDir, name), []byte(`["stale"]`), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, filepath.Join(s.stateDir, name), []byte(`["stale"]`))
 	}
 	if _, err := agentsetup.ConfigureTailcat(s.configPath, true); err != nil {
 		t.Fatal(err)

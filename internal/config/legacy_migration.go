@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -32,12 +31,12 @@ type legacyMigrationFileOps struct {
 
 func defaultLegacyMigrationFileOps() legacyMigrationFileOps {
 	return legacyMigrationFileOps{
-		lstat:       os.Lstat,
+		lstat:       permissionIdentity,
 		readRegular: func(path string, info os.FileInfo) ([]byte, error) { return readPreflightFile(path, info, 4<<20) },
 		stage:       stageLegacyConfig,
 		link:        os.Link,
 		remove:      os.Remove,
-		syncDir:     syncLegacyMigrationDirectory,
+		syncDir:     syncPrivateDirectory,
 	}
 }
 
@@ -98,6 +97,11 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	if !sourceInfo.Mode().IsRegular() {
 		return false, fmt.Errorf("旧版配置必须是普通文件，不能是目录或符号链接：%s", source)
 	}
+	for _, path := range []string{source, destination} {
+		if _, err := CheckCompanionPermissions(path); err != nil {
+			return false, err
+		}
+	}
 	raw, err := ops.readRegular(source, sourceInfo)
 	if err != nil {
 		return false, fmt.Errorf("读取旧版配置失败：%w", err)
@@ -157,8 +161,13 @@ func publishLegacyConfig(destination, source string, sourceInfo os.FileInfo, raw
 	if _, err := CheckCredentialPermissions(current); err != nil {
 		return false, err
 	}
-	if err := CheckPrivatePermissions(staged.path); err != nil {
-		return false, err
+	named, err := permissionIdentity(staged.path)
+	if err != nil || !os.SameFile(named, staged.info) {
+		return false, errors.New("迁移暂存文件已被替换")
+	}
+	stagedRaw, err := readPreflightFile(staged.path, staged.info, 4<<20)
+	if err != nil || !bytes.Equal(stagedRaw, raw) {
+		return false, errors.New("迁移暂存文件已更改")
 	}
 	// hard link 是这里的 no-clobber 提交点：目标并发出现时返回 EEXIST，不会像 rename 一样覆盖新文件。
 	if err := ops.link(staged.path, destination); err != nil {
@@ -277,18 +286,6 @@ func removeMigrationDestinationIfOwned(path string, staged os.FileInfo, ops lega
 		return err
 	}
 	return nil
-}
-
-func syncLegacyMigrationDirectory(dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	file, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	return file.Sync()
 }
 
 func absoluteExpandedPath(path string) (string, error) {

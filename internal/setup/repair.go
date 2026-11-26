@@ -22,6 +22,9 @@ type privateFileStageOps struct {
 // Read the owned config and check any existing referenced credentials before
 // initiating a write, including a no-op save or a legacy transport migration.
 func readPrivateConfig(path string) ([]byte, error) {
+	if _, err := config.CheckCompanionPermissions(path); err != nil {
+		return nil, saveFailure(config.PrivateFileDiagnostic(err), err)
+	}
 	raw, err := config.ReadPrivatePreflightFile(path, 4<<20)
 	if err == nil {
 		_, err = config.CheckCredentialPermissions(raw)

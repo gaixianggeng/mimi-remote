@@ -758,8 +758,12 @@ func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs.BoolVar(&checkPort, "check-port", false, "检查当前配置端口是否可监听")
 	fs.BoolVar(&asJSON, "json", false, "只输出 JSON")
 	fs.BoolVar(&fix, "fix", false, "自动修复安全的常见问题")
+	permissionFile := fs.String("permission-file", "", "与 --fix 一起修复配置所引用的外部凭据文件权限")
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
+	}
+	if *permissionFile != "" && !fix {
+		return invalidOnboardingRequest(errors.New("--permission-file 需要 --fix"))
 	}
 	if !fix {
 		if err := prepareDefaultConfigMigration(fs, configPath, stderr); err != nil {
@@ -771,22 +775,23 @@ func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 		}
 		// A legacy default may supply the existing identity, but doctor never
 		// creates one. Validate the original bytes before copying anything.
+		repairPath := config.ExpandPath(configPath)
 		if !onboardingConfigured(configPath) {
-			if legacy := setupLegacyPath(fs); legacy != "" && onboardingConfigured(legacy) && config.CheckSetupWriteAvailable(config.ExpandPath(configPath)) == nil {
-				handled, err := repairDoctorFileAccess(doctorCtx, legacy, asJSON, stdout)
-				if handled || err != nil {
-					return err
-				}
+			legacy := setupLegacyPath(fs)
+			if _, err := config.CheckCompanionPermissions(repairPath); err == nil && legacy != "" && onboardingConfigured(legacy) && config.CheckSetupWriteAvailable(repairPath) == nil {
+				repairPath = legacy
 			}
+		}
+		handled, err := repairDoctorFileAccess(doctorCtx, repairPath, *permissionFile, asJSON, stdout)
+		if handled || err != nil {
+			return err
+		}
+		if !onboardingConfigured(configPath) {
 			result, err := runAgentSetup(doctorCtx, agentsetup.Options{ConfigPath: configPath, LegacyPath: setupLegacyPath(fs), RequireExisting: true, LocalServiceOnly: true})
 			if err != nil {
 				return err
 			}
 			setupMigrationNotice(stderr, result)
-		}
-		handled, err := repairDoctorFileAccess(doctorCtx, config.ExpandPath(configPath), asJSON, stdout)
-		if handled || err != nil {
-			return err
 		}
 	}
 	_, _, checker, err := loadRuntimeConfigFromPath(configPath, true)
