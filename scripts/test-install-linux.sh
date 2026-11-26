@@ -680,7 +680,8 @@ chmod +x "$TEST_DIR/fake-stat"
 
 exec_pre_root="$TEST_DIR/codex-daemon-test"
 runtime_root="$exec_pre_root/runtime"
-mkdir -p "$exec_pre_root" "$runtime_root"
+mkdir -p "$exec_pre_root" "$runtime_root/mimi-remote"
+chmod 0700 "$runtime_root/mimi-remote"
 target_codex_dir="$exec_pre_root/codex-daemon-1000"
 stage_link="$runtime_root/mimi-remote/codex-daemon"
 unsafe_marker="$runtime_root/mimi-remote/codex-daemon.unsafe"
@@ -740,7 +741,20 @@ grep -Fq 'not a directory' <<<"$file_out"
 [[ ! -e "$stage_link" && ! -L "$stage_link" ]]
 [[ -f "$unsafe_marker" ]]
 
-# 6. 清理占位并重新运行后，应自动清除不安全标记并恢复暂存链接。
+# 6. 暂存路径若被已有目录占位且目标不安全，必须递归移除暂存目录，杜绝 BindPaths 挂载未校验目录。
+rm -rf "$stage_link" "$target_codex_dir"
+mkdir -p "$stage_link/nested"
+: >"$stage_link/nested/keep"
+: >"$target_codex_dir"
+if dir_stage_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
+  echo "ExecStartPre 在暂存路径被目录占位且目标非法时未失败。" >&2
+  exit 1
+fi
+grep -Fq 'not a directory' <<<"$dir_stage_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+
+# 7. 清理占位并重新运行后，应自动清除不安全标记并恢复暂存链接。
 rm -f "$target_codex_dir"
 PATH="" /bin/sh -c "$exec_pre_testable"
 [[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]

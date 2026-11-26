@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -357,6 +360,8 @@ func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.
 	})
 
 	t.Run("windows_foreground_custom_config_does_not_recommend_installer", func(t *testing.T) {
+		winCustomConfig := `C:\Users\Alice\my dir '1'\config.json`
+		winQuoted := powerShellQuoteArgument(winCustomConfig)
 		readiness := summarizePairingReadiness(agentsetup.PreflightReport{
 			Stage: "pair",
 			OK:    false,
@@ -364,28 +369,93 @@ func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.
 				{ID: "assistant_any", Group: "assistant", State: "ok"},
 				{ID: "network_any", Group: "network", State: "action_needed", Blocking: true, Code: "network_selection_required"},
 			},
-		}, customConfig, "windows")
+		}, winCustomConfig, "windows")
 		if readiness.Ready || len(readiness.Blockers) != 1 {
 			t.Fatalf("Windows 自定义配置网络阻塞应返回 1 条阻塞项：%+v", readiness)
 		}
 		fix := readiness.Blockers[0].Fix
+		wantLanCmd := "agentd network --config " + winQuoted + " --lan-enabled=true"
 		for _, want := range []string{
-			"agentd network --config " + quoted + " --lan-enabled=true",
-			"agentd network --config " + quoted + " --tailscale-enabled=true",
-			"agentd serve --config " + quoted,
-			"agentd tailcat enable --config " + quoted,
-			"agentd tailcat pair --config " + quoted,
+			"PowerShell",
+			wantLanCmd,
+			"agentd network --config " + winQuoted + " --tailscale-enabled=true",
+			"agentd serve --config " + winQuoted,
+			"agentd tailcat enable --config " + winQuoted,
+			"agentd tailcat pair --config " + winQuoted,
 		} {
 			if !strings.Contains(fix, want) {
 				t.Fatalf("Windows 前台自定义配置网络提示缺少 %q：\n%s", want, fix)
 			}
 		}
-		for _, forbidden := range []string{"重新运行安装器", "agentd restart"} {
+		for _, forbidden := range []string{"重新运行安装器", "agentd restart", "&&", "'\"'\"'"} {
 			if strings.Contains(fix, forbidden) {
-				t.Fatalf("Windows 前台自定义配置不应引导使用 %q：\n%s", forbidden, fix)
+				t.Fatalf("Windows 前台自定义配置不应包含 %q：\n%s", forbidden, fix)
+			}
+		}
+		wantArgs := []string{"agentd", "network", "--config", winCustomConfig, "--lan-enabled=true"}
+		gotArgs := parsePowerShellSingleQuotedCommand(t, wantLanCmd)
+		if !reflect.DeepEqual(gotArgs, wantArgs) {
+			t.Fatalf("PowerShell 参数解析结果不匹配：got=%#v want=%#v", gotArgs, wantArgs)
+		}
+		if runtime.GOOS == "windows" {
+			if ps, err := exec.LookPath("powershell.exe"); err == nil {
+				psArgsPart := strings.TrimPrefix(wantLanCmd, "agentd ")
+				out, err := exec.Command(ps, "-NoProfile", "-NonInteractive", "-Command", "& { $args } "+psArgsPart).CombinedOutput()
+				if err != nil {
+					t.Fatalf("powershell.exe 验证参数失败：%v output=%q", err, string(out))
+				}
+				lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(string(out), "\r\n", "\n")), "\n")
+				if !reflect.DeepEqual(lines, wantArgs[1:]) {
+					t.Fatalf("powershell.exe 实测参数不匹配：got=%#v want=%#v", lines, wantArgs[1:])
+				}
 			}
 		}
 	})
+}
+
+func parsePowerShellSingleQuotedCommand(t *testing.T, command string) []string {
+	t.Helper()
+	var args []string
+	var cur strings.Builder
+	inToken := false
+	inSingle := false
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if inSingle {
+			if ch == '\'' {
+				if i+1 < len(command) && command[i+1] == '\'' {
+					cur.WriteByte('\'')
+					i++
+					continue
+				}
+				inSingle = false
+				continue
+			}
+			cur.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case ' ', '\t':
+			if inToken {
+				args = append(args, cur.String())
+				cur.Reset()
+				inToken = false
+			}
+		case '\'':
+			inSingle = true
+			inToken = true
+		default:
+			cur.WriteByte(ch)
+			inToken = true
+		}
+	}
+	if inSingle {
+		t.Fatalf("PowerShell 命令存在未闭合单引号：%q", command)
+	}
+	if inToken {
+		args = append(args, cur.String())
+	}
+	return args
 }
 
 func TestStatusPairingLegacyConfigReadOnlyAndReportsBlocker(t *testing.T) {

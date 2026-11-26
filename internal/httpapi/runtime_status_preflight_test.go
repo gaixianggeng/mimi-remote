@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -196,6 +195,9 @@ func TestPreflightLocalEndpointReportsAppliedGeneration(t *testing.T) {
 }
 
 func TestPreflightLocalEndpointReportsUnsafeSharedCodexSocketEvenWithEmptyCache(t *testing.T) {
+	if !config.SupportsSharedLocalAppServer() {
+		t.Skip("本机共享 Codex App Server 仅支持 macOS 与 Linux")
+	}
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
@@ -222,10 +224,6 @@ func TestPreflightLocalEndpointReportsUnsafeSharedCodexSocketEvenWithEmptyCache(
 	configtest.CreatePrivateFile(t, filepath.Join(codexHome, "auth.json"), authJSON)
 	fakeCodex := filepath.Join(root, "fake-codex")
 	fakeScript := "#!/bin/sh\necho 'codex-cli 0.172.0'\n"
-	if runtime.GOOS == "windows" {
-		fakeCodex += ".cmd"
-		fakeScript = "@echo codex-cli 0.172.0\r\n"
-	}
 	if err := os.WriteFile(fakeCodex, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}

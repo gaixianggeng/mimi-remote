@@ -123,10 +123,14 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
   packaged_codex_dir="${packaged_bind_path#*:}"
   packaged_exec_pre="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$packaged_service")"
   if ! grep -Fqx 'PrivateTmp=true' "$packaged_service" \
+    || ! grep -Fqx 'RuntimeDirectory=mimi-remote' "$packaged_service" \
+    || ! grep -Fqx 'RuntimeDirectoryPreserve=no' "$packaged_service" \
+    || ! grep -Fqx 'Environment=MIMI_SHARED_CODEX_UNSAFE_MARKER=%t/mimi-remote/codex-daemon.unsafe' "$packaged_service" \
     || [[ "$packaged_bind_path" != "-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U" ]] \
     || [[ "$packaged_exec_pre" != -+/bin/sh\ -c\ * ]] \
     || [[ "$packaged_exec_pre" != *"d=${packaged_codex_dir};"* ]] \
-    || [[ "$packaged_exec_pre" != *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]]; then
+    || [[ "$packaged_exec_pre" != *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]] \
+    || [[ "$packaged_exec_pre" != *'/bin/rm -rf -- "$$l" "$$u"'* ]]; then
     echo "发布产物门禁失败：$(basename "$archive") 中的 systemd 模板缺少 PrivateTmp=true 或共享 Codex 临时目录安全暂存绑定校验。" >&2
     exit 1
   fi

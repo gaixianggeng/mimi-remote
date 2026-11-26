@@ -23,21 +23,21 @@ func overrideSharedLocalSafetyHooks(
 	origEnabled := sharedLocalDirCheckEnabled
 	origUID := sharedLocalCurrentUID
 	origDaemonDir := sharedLocalLinuxDaemonDir
-	origRuntimeDir := sharedLocalRuntimeDir
+	origMarkerPath := sharedLocalUnsafeMarkerPath
 	origLstat := sharedLocalLstat
 	origReadlink := sharedLocalReadlink
 	t.Cleanup(func() {
 		sharedLocalDirCheckEnabled = origEnabled
 		sharedLocalCurrentUID = origUID
 		sharedLocalLinuxDaemonDir = origDaemonDir
-		sharedLocalRuntimeDir = origRuntimeDir
+		sharedLocalUnsafeMarkerPath = origMarkerPath
 		sharedLocalLstat = origLstat
 		sharedLocalReadlink = origReadlink
 	})
 	sharedLocalDirCheckEnabled = enabled
 	sharedLocalCurrentUID = func() uint32 { return uid }
 	sharedLocalLinuxDaemonDir = func() string { return daemonDir }
-	sharedLocalRuntimeDir = func() string { return "" }
+	sharedLocalUnsafeMarkerPath = func() string { return "" }
 	if lstat != nil {
 		sharedLocalLstat = lstat
 	}
@@ -324,19 +324,29 @@ func TestSharedLocalSafetyDisabledKeepsNonLinuxBehavior(t *testing.T) {
 	}
 }
 
-func TestSharedLocalSafetyRejectsSystemdUnsafeMarkerAndPreflightCheck(t *testing.T) {
+func TestSharedLocalSafetyRejectsSystemdUnsafeMarkerAndIgnoresForegroundRuntimeDir(t *testing.T) {
 	codexHome := shortSharedLocalCodexHome(t)
 	runtimeDir := t.TempDir()
 	markerDir := filepath.Join(runtimeDir, "mimi-remote")
 	if err := os.MkdirAll(markerDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(markerDir, "codex-daemon.unsafe"), []byte("unsafe\n"), 0o600); err != nil {
+	markerPath := filepath.Join(markerDir, "codex-daemon.unsafe")
+	if err := os.WriteFile(markerPath, []byte("unsafe\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	overrideSharedLocalSafetyHooks(t, true, filepath.Join(t.TempDir(), "absent"), uint32(os.Getuid()), defaultSharedLocalLstat)
-	sharedLocalRuntimeDir = func() string { return runtimeDir }
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
+	// 前台进程未注入 MIMI_SHARED_CODEX_UNSAFE_MARKER，即使同会话 XDG_RUNTIME_DIR 下存在旧标记也不受阻断。
+	overrideSharedLocalSafetyHooks(t, true, filepath.Join(t.TempDir(), "absent"), uint32(os.Getuid()), defaultSharedLocalLstat)
+	t.Setenv(sharedLocalUnsafeMarkerEnv, "")
+	sharedLocalUnsafeMarkerPath = func() string { return strings.TrimSpace(os.Getenv(sharedLocalUnsafeMarkerEnv)) }
+	if err := CheckSharedLocalCodexHomeSafety(codexHome); err != nil {
+		t.Fatalf("未设置服务专属环境变量的前台进程不应受 XDG_RUNTIME_DIR 标记阻断，got %v", err)
+	}
+
+	// systemd 服务进程注入 MIMI_SHARED_CODEX_UNSAFE_MARKER 后，标记存在即拒绝。
+	t.Setenv(sharedLocalUnsafeMarkerEnv, markerPath)
 	if err := CheckSharedLocalCodexHomeSafety(codexHome); err == nil || !strings.Contains(err.Error(), "systemd 预检已拒绝绑定") {
 		t.Fatalf("systemd 预检拒绝标记存在时应直接报不安全，got %v", err)
 	}

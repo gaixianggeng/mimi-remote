@@ -66,7 +66,19 @@ func (c pairingCommandContext) configFlag() string {
 	if !c.includeConfig || strings.TrimSpace(c.configPath) == "" {
 		return ""
 	}
-	return "--config " + shellQuoteArgument(c.configPath)
+	return "--config " + quotePairingConfigArgument(c.configPath, c.platform)
+}
+
+func quotePairingConfigArgument(value, platform string) string {
+	if platform == "windows" {
+		return powerShellQuoteArgument(value)
+	}
+	return shellQuoteArgument(value)
+}
+
+func powerShellQuoteArgument(value string) string {
+	// PowerShell 单引号字面量不展开 $、% 和反引号，内部单引号按 PowerShell 规则双写为 ''。
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func (c pairingCommandContext) cmd(subcommand string, extraArgs ...string) string {
@@ -364,12 +376,12 @@ func describeNetworkBlocker(checksByID map[string]agentsetup.PreflightCheck, cmd
 		if !cmds.managedService {
 			return pairingBlocker{
 				Summary: summary,
-				Fix:     fmt.Sprintf("同一局域网：确认网络为专用网络且防火墙放行 agentd.exe 后运行 %s（修改后重启匹配该配置的前台进程：%s）；Tailscale：%s（修改后重启匹配该配置的前台进程：%s）；联网时也可用 Tailcat：%s 后运行 %s", lanCmd, cmds.serve(), tailscaleCmd, cmds.serve(), tailcatEnableCmd, tailcatPairCmd),
+				Fix:     fmt.Sprintf("在 PowerShell 中：同一局域网（确认网络为专用网络且防火墙放行 agentd.exe 后）运行 %s，然后重启匹配该配置的前台进程（%s）；Tailscale：运行 %s，然后重启匹配该配置的前台进程（%s）；联网时也可用 Tailcat：%s 后运行 %s", lanCmd, cmds.serve(), tailscaleCmd, cmds.serve(), tailcatEnableCmd, tailcatPairCmd),
 			}
 		}
 		return pairingBlocker{
 			Summary: summary,
-			Fix:     fmt.Sprintf("Tailscale：%s && %s；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：%s 后运行 %s", tailscaleCmd, cmds.restartNoPair(), tailcatEnableCmd, tailcatPairCmd),
+			Fix:     fmt.Sprintf("在 PowerShell 中：Tailscale 运行 %s 后运行 %s；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：%s 后运行 %s", tailscaleCmd, cmds.restartNoPair(), tailcatEnableCmd, tailcatPairCmd),
 		}
 	}
 	if !cmds.managedService {
