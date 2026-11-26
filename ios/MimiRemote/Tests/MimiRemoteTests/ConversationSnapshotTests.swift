@@ -29,20 +29,23 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
     private var previousAppLanguageRawValue: String?
     private var didOverrideAppLanguage = false
 
+    private var snapshotHostWindow: UIWindow?
+
     override func setUp() async throws {
         try await super.setUp()
-        // XCTest 可能在宿主首个 Scene 成为 key window 前启动首个快照。
-        // drawHierarchyInKeyWindow 要求真实窗口，否则 SnapshotTesting 会直接终止进程。
+        // 纯快照测试有时先于 SwiftUI 的根窗口启动；为已连接的 Scene 提供绘图宿主。
         let clock = ContinuousClock()
         let deadline = clock.now + .seconds(5)
-        while keyWindow == nil && clock.now < deadline {
+        while UIApplication.shared.connectedScenes.isEmpty && clock.now < deadline {
             try await Task.sleep(for: .milliseconds(25))
         }
-        _ = try XCTUnwrap(keyWindow, "快照测试宿主需要可见的 key window")
-    }
-
-    private var keyWindow: UIWindow? {
-        UIApplication.shared.connectedScenes.lazy.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        if scenes.contains(where: { $0.windows.contains(where: \.isKeyWindow) }) { return }
+        let scene = try XCTUnwrap(scenes.first { $0.activationState == .foregroundActive } ?? scenes.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIViewController()
+        window.makeKeyAndVisible()
+        snapshotHostWindow = window
     }
 
     override func setUpWithError() throws {
@@ -56,6 +59,8 @@ class SimplifiedChineseSnapshotTestCase: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        snapshotHostWindow?.isHidden = true
+        snapshotHostWindow = nil
         if didOverrideAppLanguage {
             let defaults = UserDefaults.standard
             if hadStoredAppLanguage {
