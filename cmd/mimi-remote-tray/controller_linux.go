@@ -215,8 +215,12 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 		return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
 	}
 	if _, v1 := keys["ok"]; v1 {
-		if _, err := decodeOnboardingPairingTicketReceipt(payload, true); err != nil {
+		receipt, err := decodeOnboardingPairingTicketReceipt(payload, true)
+		if err != nil {
 			return linuxPairingInfo{}, errors.New("无法读取短期配对信息")
+		}
+		if receipt.Network != network {
+			return linuxPairingInfo{}, errors.New("配对网络与所选方式不一致")
 		}
 	}
 	u, err := url.Parse(result.PairURL)

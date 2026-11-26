@@ -5,12 +5,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image/png"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func inlinePairFixture(t *testing.T) *linuxTrayApplication {
@@ -268,5 +271,73 @@ func TestLinuxFakeClipboardCopiesRealPairURLOnlyAndNeverLeaksOrOpensTerminal(t *
 	a.dispatch("copy-pair-link")
 	if len(copied) != 2 {
 		t.Fatalf("expired ticket remained copyable: %v", copied)
+	}
+}
+
+func TestStandardTrayCopiesExactlyOneNewTicket(t *testing.T) {
+	screen, calls := linuxTerminalFixture(t)
+	a := screen.app
+	runner := a.controller.runner
+	var issued linuxPairingInfo
+	a.controller.runner = func(ctx context.Context, args ...string) ([]byte, error) {
+		payload, err := runner(ctx, args...)
+		if err == nil {
+			if err := json.Unmarshal(payload, &issued); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return payload, err
+	}
+	var copied string
+	a.clipboardCopy = func(_ context.Context, value string) error { copied = value; return nil }
+	a.terminalOpener = func(string) { t.Fatal("copy opened a terminal") }
+	menu := linuxDBusMenu{dispatch: a.dispatch}
+	items := linuxMenuItems(a.snapshot())
+	menu.update(items)
+	for _, item := range flattenLinuxMenu(items) {
+		if item.Action == "issue-copy-pair-tailscale" {
+			menu.Event(item.ID, "clicked", dbus.MakeVariant(""), 0)
+		}
+	}
+	if len(*calls) != 1 || copied == "" || copied != issued.PairURL || a.pairVault.HasActive("") {
+		t.Fatal("standard tray did not copy exactly the issued ticket and release it")
+	}
+}
+
+func TestMenuCloseInvalidatesPendingAndPublishedPair(t *testing.T) {
+	a := inlinePairFixture(t)
+	done := make(chan struct{})
+	menu := linuxDBusMenu{dispatch: func(action string) {
+		if run := a.prepareMenuAction(action); run != nil {
+			go func() { defer close(done); run() }()
+		}
+	}}
+	click := func() {
+		menu.update(linuxMenuItems(a.snapshot()))
+		menu.Event(110, "clicked", dbus.MakeVariant(""), 0)
+	}
+	runner := a.controller.runner
+	entered, release := make(chan struct{}), make(chan struct{})
+	a.controller.runner = func(ctx context.Context, args ...string) ([]byte, error) {
+		close(entered)
+		<-release
+		return runner(ctx, args...)
+	}
+	click()
+	<-entered
+	menu.Event(0, "closed", dbus.MakeVariant(""), 0)
+	close(release)
+	<-done
+	if a.snapshot().PairMenu != nil || a.pairVault.HasActive("") {
+		t.Fatal("closing the menu retained or restored a pending ticket")
+	}
+	a.controller.runner = runner
+	a.dispatch("pair-tailscale")
+	if !a.snapshot().HasPairLink {
+		t.Fatal("expected published ticket")
+	}
+	menu.Event(0, "closed", dbus.MakeVariant(""), 0)
+	if a.snapshot().PairMenu != nil || a.pairVault.HasActive("") {
+		t.Fatal("closing the menu retained the issued ticket")
 	}
 }

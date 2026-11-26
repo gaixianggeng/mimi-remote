@@ -91,7 +91,7 @@ func TestPairingLinkVaultFakeClipboardLifecycle(t *testing.T) {
 	expiredCh := make(chan string, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runPairingExpiryLoop(ctx, vault, 10*time.Millisecond, func(channel string, _ uint64) {
+	go runPairingExpiryLoop(ctx, vault, gen3, 10*time.Millisecond, func(channel string, _ uint64) {
 		expiredCh <- channel
 	})
 
@@ -123,5 +123,23 @@ func TestFormatPairingExpiryAtUsesRealRemainingLifetime(t *testing.T) {
 	}
 	if got := formatPairingExpiryAt(now.Add(-time.Second).Format(time.RFC3339), now); got != "已过期" {
 		t.Fatalf("expired formatting = %q, want 已过期", got)
+	}
+}
+
+func TestObsoleteExpiryLoopLeavesNewGenerationIntact(t *testing.T) {
+	now := time.Now()
+	vault := &pairingLinkVault{now: func() time.Time { return now }}
+	old := vault.Begin("lan")
+	current := vault.Begin("tailscale")
+	link := "mimiremote://pair?pair_sig=test"
+	if !vault.Store(current, "tailscale", link, now.Add(time.Second)) {
+		t.Fatal("could not store test ticket")
+	}
+	now = now.Add(2 * time.Second)
+	runPairingExpiryLoop(context.Background(), vault, old, time.Millisecond, func(string, uint64) {
+		t.Fatal("obsolete watcher consumed the new generation's expiry")
+	})
+	if expired, _, gen := vault.ExpireIfDue(); !expired || gen != current {
+		t.Fatal("current watcher lost its expiry notification")
 	}
 }

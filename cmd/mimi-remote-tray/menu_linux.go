@@ -33,6 +33,7 @@ type linuxTraySnapshot struct {
 	UIError      string
 	InlineQR     bool
 	HasPairLink  bool
+	PairCopied   bool
 	PairMenu     *linuxMenuPair
 }
 
@@ -74,11 +75,28 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 90, Separator: true},
 		linuxMenuItem{ID: 100, Label: "在终端中打开", Action: "status", Enabled: true},
 		linuxMenuItem{ID: 101, Label: "刷新状态", Action: "refresh", Enabled: available},
-		// D2 channel ordering: Tailscale > Built-in connection (Tailcat) > Same LAN.
-		linuxMenuItem{ID: 110, Label: "Tailscale 配对…", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
-		linuxMenuItem{ID: 102, Label: "内置连接（Tailcat）配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
-		linuxMenuItem{ID: 111, Label: "同一局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
-		linuxMenuItem{ID: 119, Label: "复制配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink},
+	)
+	channels := []linuxMenuItem{
+		{ID: 110, Label: "Tailscale 配对…", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
+		{ID: 102, Label: "内置连接（Tailcat）配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
+		{ID: 111, Label: "同一局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
+	}
+	items = append(items, channels...)
+	if !s.InlineQR {
+		// Standard menus close on selection, so offer issuance and copy as one click.
+		links := linuxMenuItem{ID: 120, Label: "生成并复制配对链接", Enabled: fresh && s.Status.ServiceOK}
+		for _, item := range channels {
+			links.Children = append(links.Children, linuxMenuItem{
+				ID: 300 + item.ID, Label: linuxPairNetworkName(item.Action),
+				Action: "issue-copy-" + item.Action, Enabled: item.Enabled,
+			})
+		}
+		items = append(items, links)
+	}
+	if s.InlineQR {
+		items = append(items, linuxMenuItem{ID: 119, Label: "复制配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink})
+	}
+	items = append(items,
 		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy-endpoint", Enabled: s.HasStatus && s.Status.Endpoint != ""},
 		linuxMenuItem{ID: 91, Separator: true},
 		linuxMenuItem{ID: 112, Label: "服务管理", Enabled: true, Children: []linuxMenuItem{
@@ -272,6 +290,10 @@ func (m *linuxDBusMenu) GetProperty(id int32, name string) (dbus.Variant, *dbus.
 	return dbus.MakeVariant(""), dbus.MakeFailedError(fmt.Errorf("unknown property"))
 }
 func (m *linuxDBusMenu) Event(id int32, event string, data dbus.Variant, timestamp uint32) *dbus.Error {
+	if id == 0 && event == "closed" {
+		m.dispatch("menu-closed")
+		return nil
+	}
 	if event != "clicked" {
 		return nil
 	}
@@ -285,7 +307,7 @@ func (m *linuxDBusMenu) Event(id int32, event string, data dbus.Variant, timesta
 	}
 	m.mu.RUnlock()
 	if action != "" {
-		go m.dispatch(action)
+		m.dispatch(action)
 	}
 	return nil
 }

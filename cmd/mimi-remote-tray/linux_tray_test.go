@@ -72,6 +72,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	calls := 0
 	future := false
 	v1 := false
+	receiptNetwork := ""
 	c := &linuxController{runner: func(_ context.Context, args ...string) ([]byte, error) {
 		if strings.Join(args, " ") != "pair --network tailscale --qr-only --json" {
 			t.Fatal("unsafe pairing arguments", args)
@@ -81,7 +82,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 			return json.Marshal(map[string]string{"schema": "mimi.onboarding.future/v2", "pair_url": "mimiremote://pair?" + query.Encode(), "pair_expires_at": expires})
 		}
 		if v1 {
-			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
+			return json.Marshal(onboardingPairingTicketReceipt{OK: &v1, Network: receiptNetwork, Endpoint: query.Get("endpoint"), PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 		}
 		return json.Marshal(linuxPairingInfo{PairURL: "mimiremote://pair?" + query.Encode(), PairExpiresAt: expires})
 	}}
@@ -102,6 +103,14 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("v1 ticket missing network accepted")
 	}
+	receiptNetwork = "lan"
+	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
+		t.Fatal("receipt for a different direct network was accepted")
+	}
+	receiptNetwork = "tailscale"
+	if _, err := c.pairing(context.Background(), "tailscale"); err != nil {
+		t.Fatal(err)
+	}
 	v1 = false
 	query.Set("token", "long-lived-secret")
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
@@ -113,7 +122,7 @@ func TestLinuxPairingAcceptsOnlyUnexpiredShortTicket(t *testing.T) {
 	if _, err := c.pairing(context.Background(), "tailscale"); err == nil {
 		t.Fatal("expired ticket accepted")
 	}
-	if calls != 6 {
+	if calls != 8 {
 		t.Fatal(calls)
 	}
 }

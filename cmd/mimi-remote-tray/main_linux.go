@@ -91,7 +91,7 @@ func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
 	app := &linuxTrayApplication{ctx: ctx, cancel: cancel, controller: controller, operation: make(chan struct{}, 1)}
 	app.state.InlineQR = len(inlineQR) > 0 && inlineQR[0]
 	defer app.clearMenuPair()
-	notifier, err := newLinuxNotifier(conn, app.dispatch, app.showTerminal, cancel)
+	notifier, err := newLinuxNotifier(conn, app.dispatchMenuEvent, app.dispatch, cancel)
 	if err != nil {
 		return err
 	}
@@ -167,64 +167,81 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 	return err
 }
 func (a *linuxTrayApplication) dispatch(action string) {
+	if run := a.prepareMenuAction(action); run != nil {
+		run()
+	}
+}
+
+func (a *linuxTrayApplication) dispatchMenuEvent(action string) {
+	if run := a.prepareMenuAction(action); run != nil {
+		go run()
+	}
+}
+
+// Reserve or clear the ticket before acknowledging the menu event. Only the
+// slow CLI and terminal work runs asynchronously for D-Bus callers.
+func (a *linuxTrayApplication) prepareMenuAction(action string) func() {
+	if channelAction, ok := strings.CutPrefix(action, "issue-copy-"); ok {
+		return a.prepareMenuPair(channelAction, true)
+	}
 	if a.snapshot().InlineQR && (strings.HasPrefix(action, "pair-") || action == "refresh-pair") {
-		a.toggleMenuPair(action)
-		return
+		return a.prepareMenuPair(action, false)
 	}
 	switch action {
 	case "quit":
 		a.clearMenuPair()
 		a.cancel()
 	case "refresh":
-		a.refresh(true)
+		return func() { a.refresh(true) }
 	case "copy-pair-link", "copy":
 		a.copyActivePairLink()
 	case "copy-endpoint":
-		a.copyEndpoint()
+		return a.copyEndpoint
 	case "leave-pair-page":
 		a.clearMenuPair()
+	case "menu-closed":
+		if a.snapshot().InlineQR {
+			a.clearMenuPair()
+		}
 	default:
-		// Leaving the inline pairing view for another page clears any active
-		// short-lived pairing ticket immediately.
 		a.clearMenuPair()
-		a.showTerminal(linuxTerminalPairAction(action))
+		return func() { a.showTerminal(linuxTerminalPairAction(action)) }
 	}
+	return nil
 }
 
 func (a *linuxTrayApplication) copyActivePairLink() {
-	pairURL, ok := a.pairVault.RedeemableURL("")
+	// Serialize selecting and handing off a ticket with switching or leaving
+	// the page. The clipboard process has a bounded lifetime.
+	a.update(a.copyPairLinkLocked)
+}
+
+func (a *linuxTrayApplication) copyPairLinkLocked(s *linuxTraySnapshot) {
+	pair := s.PairMenu
+	if pair == nil || !s.HasPairLink {
+		s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
+		return
+	}
+	pairURL, ok := a.pairVault.RedeemableURL(pair.Action)
 	if !ok {
-		a.update(func(s *linuxTraySnapshot) {
-			a.stopPairWatchersLocked()
-			s.HasPairLink = false
-			if s.PairMenu != nil {
-				s.PairMenu.CanCopyLink = false
-				if len(s.PairMenu.PNG) > 0 {
-					s.PairMenu = &linuxMenuPair{Action: s.PairMenu.Action, Error: "二维码已过期，请重新生成"}
-				}
-			}
-			s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
-		})
+		a.stopPairWatchersLocked()
+		s.PairMenu = &linuxMenuPair{Action: pair.Action, Error: "二维码已过期，请重新生成"}
+		s.HasPairLink = false
+		s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
 		return
 	}
 	copyFn := a.clipboardCopy
 	if copyFn == nil {
 		copyFn = copyLinuxClipboardText
 	}
-	if err := copyFn(a.ctx, pairURL); err != nil {
-		// Stay in the tray and surface a safe retry hint; NEVER open a terminal
-		// and NEVER include the ticket URL in UIError, D-Bus, or logs.
-		a.update(func(s *linuxTraySnapshot) {
-			s.UIError = "无法复制配对链接，请检查剪贴板工具后重试"
-		})
+	ctx, cancel := context.WithTimeout(a.ctx, pair.Expires.Sub(a.pairVault.currentTime()))
+	defer cancel()
+	if ctx.Err() != nil || copyFn(ctx, pairURL) != nil {
+		s.UIError = "无法复制配对链接，请检查剪贴板工具后重试"
 		return
 	}
-	a.update(func(s *linuxTraySnapshot) {
-		s.UIError = ""
-		if s.PairMenu != nil {
-			s.PairMenu.Copied = true
-		}
-	})
+	s.UIError = ""
+	s.PairCopied = true
 }
 
 func (a *linuxTrayApplication) copyEndpoint() {

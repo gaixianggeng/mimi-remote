@@ -123,6 +123,10 @@ func (v *pairingLinkVault) HasActive(channel string) bool {
 func (v *pairingLinkVault) ExpireIfDue() (expired bool, channel string, generation uint64) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	return v.expireIfDueLocked()
+}
+
+func (v *pairingLinkVault) expireIfDueLocked() (expired bool, channel string, generation uint64) {
 	if v.pairURL == "" {
 		return false, "", v.generation
 	}
@@ -151,7 +155,7 @@ func (v *pairingLinkVault) Clear() uint64 {
 
 // runPairingExpiryLoop polls vault.ExpireIfDue on interval (default 1 second)
 // until ctx is cancelled or the ticket expires, calling onExpire when wiped.
-func runPairingExpiryLoop(ctx context.Context, vault *pairingLinkVault, interval time.Duration, onExpire func(channel string, generation uint64)) {
+func runPairingExpiryLoop(ctx context.Context, vault *pairingLinkVault, generation uint64, interval time.Duration, onExpire func(channel string, generation uint64)) {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -162,13 +166,17 @@ func runPairingExpiryLoop(ctx context.Context, vault *pairingLinkVault, interval
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if expired, channel, gen := vault.ExpireIfDue(); expired {
-				if onExpire != nil {
-					onExpire(channel, gen)
-				}
+			vault.mu.Lock()
+			if vault.generation != generation {
+				vault.mu.Unlock()
 				return
 			}
-			if !vault.HasActive("") {
+			expired, channel, _ := vault.expireIfDueLocked()
+			vault.mu.Unlock()
+			if expired || channel == "" {
+				if onExpire != nil {
+					onExpire(channel, generation)
+				}
 				return
 			}
 		}

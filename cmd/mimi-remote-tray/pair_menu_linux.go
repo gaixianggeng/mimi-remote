@@ -21,7 +21,6 @@ type linuxMenuPair struct {
 	Loading     bool
 	Error       string
 	CanCopyLink bool
-	Copied      bool
 }
 
 const linuxPairImageLabel = "用 Mimi Remote 扫码"
@@ -51,7 +50,7 @@ func linuxPairMenuItems(items []linuxMenuItem, s linuxTraySnapshot) []linuxMenuI
 			result = append(result, linuxMenuItem{ID: 200, Label: linuxPairImageLabel, IconData: pair.PNG})
 		}
 		message := "有效至 " + pair.Expires.Local().Format("15:04:05")
-		if pair.Copied && pair.CanCopyLink {
+		if s.PairCopied && pair.CanCopyLink {
 			message = "配对链接已复制 · 有效至 " + pair.Expires.Local().Format("15:04:05")
 		}
 		if pair.Loading {
@@ -101,7 +100,7 @@ func (a *linuxTrayApplication) clearMenuPair() {
 	})
 }
 
-func (a *linuxTrayApplication) toggleMenuPair(action string) {
+func (a *linuxTrayApplication) prepareMenuPair(action string, copyOnIssue bool) func() {
 	var request *linuxMenuPair
 	var generation uint64
 	a.update(func(s *linuxTraySnapshot) {
@@ -110,7 +109,7 @@ func (a *linuxTrayApplication) toggleMenuPair(action string) {
 				return
 			}
 			action = s.PairMenu.Action
-		} else if s.PairMenu != nil && s.PairMenu.Action == action {
+		} else if !copyOnIssue && s.PairMenu != nil && s.PairMenu.Action == action {
 			a.stopPairWatchersLocked()
 			a.pairVault.Clear()
 			s.PairMenu = nil
@@ -122,14 +121,20 @@ func (a *linuxTrayApplication) toggleMenuPair(action string) {
 		}
 		a.stopPairWatchersLocked()
 		generation = a.pairVault.Begin(action)
+		s.PairCopied = false
 		s.HasPairLink = false
 		s.UIError = ""
 		request = &linuxMenuPair{Action: action, Loading: true}
 		s.PairMenu = request
 	})
 	if request == nil {
-		return
+		return nil
 	}
+	return func() { a.issueMenuPair(request, generation, copyOnIssue) }
+}
+
+func (a *linuxTrayApplication) issueMenuPair(request *linuxMenuPair, generation uint64, copyOnIssue bool) {
+	action := request.Action
 	result := &linuxMenuPair{Action: action}
 	var issuedPairURL string
 	state := a.snapshot()
@@ -142,16 +147,16 @@ func (a *linuxTrayApplication) toggleMenuPair(action string) {
 			if err == nil && !result.Expires.After(a.pairVault.currentTime()) {
 				err = fmt.Errorf("二维码已过期，请重新生成")
 			}
-			if err == nil {
+			if err == nil && !copyOnIssue {
 				var code *qrcode.QRCode
 				code, err = qrcode.New(pair.PairURL, qrcode.Low)
 				if err == nil {
 					// Integer modules and the library's four-module quiet zone.
 					result.PNG, err = code.PNG(len(code.Bitmap()) * 6)
-					if err == nil {
-						issuedPairURL = pair.PairURL
-					}
 				}
+			}
+			if err == nil {
+				issuedPairURL = pair.PairURL
 			}
 		}
 		if err != nil {
@@ -165,11 +170,13 @@ func (a *linuxTrayApplication) toggleMenuPair(action string) {
 		if s.PairMenu != request || a.ctx.Err() != nil {
 			return
 		}
-		if len(result.PNG) > 0 && issuedPairURL != "" {
+		if issuedPairURL != "" {
 			if a.pairVault.Store(generation, action, issuedPairURL, result.Expires) {
 				result.CanCopyLink = true
 				s.HasPairLink = true
-				a.startPairExpiryLoopLocked(result)
+				if !copyOnIssue {
+					a.startPairExpiryLoopLocked(result, generation)
+				}
 			} else {
 				result.PNG = nil
 				result.CanCopyLink = false
@@ -180,10 +187,21 @@ func (a *linuxTrayApplication) toggleMenuPair(action string) {
 			s.HasPairLink = false
 		}
 		s.PairMenu = result
+		if copyOnIssue {
+			if s.HasPairLink {
+				a.copyPairLinkLocked(s)
+			} else {
+				s.UIError = result.Error
+			}
+			// There is no open pairing page for a one-shot desktop menu command.
+			a.pairVault.Clear()
+			s.HasPairLink = false
+			s.PairMenu = nil
+		}
 	})
 }
 
-func (a *linuxTrayApplication) startPairExpiryLoopLocked(pair *linuxMenuPair) {
+func (a *linuxTrayApplication) startPairExpiryLoopLocked(pair *linuxMenuPair, generation uint64) {
 	a.stopPairWatchersLocked()
 	baseCtx := a.ctx
 	if baseCtx == nil {
@@ -195,7 +213,7 @@ func (a *linuxTrayApplication) startPairExpiryLoopLocked(pair *linuxMenuPair) {
 	if interval <= 0 {
 		interval = time.Second
 	}
-	go runPairingExpiryLoop(watchCtx, &a.pairVault, interval, func(_ string, _ uint64) {
+	go runPairingExpiryLoop(watchCtx, &a.pairVault, generation, interval, func(_ string, _ uint64) {
 		a.expireMenuPair(pair)
 	})
 }
