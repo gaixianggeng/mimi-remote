@@ -1119,6 +1119,315 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             sharedSocketPaths: sharedSockets
         ))
     }
+
+    // MARK: - Scope 3 P1-5: Validate shared_codex_home Like agentd & Confirm Managed Front-Door Listener
+
+    func testScope3_P1_5SharedCodexHomeValidationAndManagedFrontDoorListenerEnforcement() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-scope3-p1-5-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let fakeHome = tempRoot.appendingPathComponent("home", isDirectory: true)
+        let defaultPublicHome = fakeHome.appendingPathComponent(".codex", isDirectory: true)
+        let customPublicHome = tempRoot.appendingPathComponent("public-codex", isDirectory: true)
+        let validPrivateHome = tempRoot.appendingPathComponent("private-backend", isDirectory: true)
+        let otherPrivateHome = tempRoot.appendingPathComponent("other-backend", isDirectory: true)
+        let nestedInsidePublic = customPublicHome.appendingPathComponent("nested-backend", isDirectory: true)
+        let parentWrappingPublic = tempRoot.appendingPathComponent("parent-wrap", isDirectory: true)
+        let publicInsideParent = parentWrappingPublic.appendingPathComponent("public-child", isDirectory: true)
+        let symlinkToPublic = tempRoot.appendingPathComponent("symlink-to-public", isDirectory: false)
+        let regularFileNotDir = tempRoot.appendingPathComponent("not-a-dir", isDirectory: false)
+        let missingDir = tempRoot.appendingPathComponent("does-not-exist", isDirectory: true)
+        let configDir = fakeHome.appendingPathComponent("Library/Application Support/mimi-remote", isDirectory: true)
+        let launchAgentsDir = fakeHome.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+
+        for dir in [defaultPublicHome, customPublicHome, validPrivateHome, otherPrivateHome, nestedInsidePublic, publicInsideParent, configDir, launchAgentsDir] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        try Data("not-dir".utf8).write(to: regularFileNotDir)
+        try FileManager.default.createSymbolicLink(at: symlinkToPublic, withDestinationURL: customPublicHome)
+
+        let configURL = configDir.appendingPathComponent("config.json")
+        let plistURL = launchAgentsDir.appendingPathComponent("com.gaixianggeng.mimi.mac.codex-front.plist")
+        let currentUID = Darwin.geteuid()
+
+        func makeUnixLsof(_ entries: [(pid: Int32, cmd: String, fd: String, addr: String, name: String)]) -> Data {
+            var data = Data()
+            for entry in entries {
+                for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                    data.append(contentsOf: field.utf8)
+                    data.append(0)
+                }
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        let customPublicSock = customPublicHome
+            .appendingPathComponent("app-server-control/app-server-control.sock")
+            .standardizedFileURL.path
+        let matchedTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+        let psStandaloneOnly = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+           900     1   \(currentUID) /opt/homebrew/bin/codex app-server --listen unix://\(customPublicSock)
+        """
+        let standaloneListenerUnix = makeUnixLsof([
+            (pid: 900, cmd: "codex", fd: "5", addr: "0x1111", name: customPublicSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+        ])
+
+        // 1. shared_codex_home 缺失、非目录、或与公共 CODEX_HOME 重叠（相同/子目录/父目录/符号链接）时，
+        //    agentd 会拒绝该后端；向导必须返回 nil / 空集合并判为非共享，绝不得把独立 listener 误报为 shared！
+        let invalidConfigs: [(label: String, json: String)] = [
+            (
+                "missing shared_codex_home",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(missingDir.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(customPublicHome.path)"}}}"#
+            ),
+            (
+                "shared_codex_home is regular file",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(regularFileNotDir.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(customPublicHome.path)"}}}"#
+            ),
+            (
+                "shared_codex_home equals explicit CODEX_HOME",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(customPublicHome.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(customPublicHome.path)"}}}"#
+            ),
+            (
+                "shared_codex_home equals default ~/.codex",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(defaultPublicHome.path)"},"codex":{"enabled":true}}"#
+            ),
+            (
+                "shared_codex_home nested inside CODEX_HOME",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(nestedInsidePublic.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(customPublicHome.path)"}}}"#
+            ),
+            (
+                "CODEX_HOME nested inside shared_codex_home",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(parentWrappingPublic.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(publicInsideParent.path)"}}}"#
+            ),
+            (
+                "shared_codex_home symlink alias overlaps CODEX_HOME",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(symlinkToPublic.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(customPublicHome.path)"}}}"#
+            ),
+            (
+                "explicit CODEX_HOME missing on disk",
+                #"{"app_server":{"transport":"local","shared_codex_home":"\#(validPrivateHome.path)"},"codex":{"enabled":true,"env":{"CODEX_HOME":"\#(missingDir.path)"}}}"#
+            ),
+        ]
+
+        for testCase in invalidConfigs {
+            try testCase.json.write(to: configURL, atomically: true, encoding: .utf8)
+            let target = CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID
+            )
+            XCTAssertNil(target, "\(testCase.label) 必须被拒绝返回 nil")
+            XCTAssertTrue(
+                CodexDesktopLink.sharedCodexControlSocketPaths(
+                    homeDirectory: fakeHome,
+                    environment: [:],
+                    expectedUID: currentUID
+                ).isEmpty,
+                "\(testCase.label) 不得返回任何共享 socket 路径"
+            )
+            XCTAssertFalse(
+                CodexDesktopLink.hasVerifiedSharedConnection(
+                    psWithUIDOutput: psStandaloneOnly,
+                    desktopPIDs: [1914],
+                    localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                    expectedUsername: "alice",
+                    expectedUID: currentUID,
+                    tcpLsofOutput: matchedTCP,
+                    unixLsofOutput: standaloneListenerUnix,
+                    sharedTarget: target,
+                    homeDirectory: fakeHome
+                ),
+                "\(testCase.label) 时绝不得将独立 listener 误报为共享"
+            )
+        }
+
+        // 2. 配置合法且不重叠的 shared_codex_home 时，必须要求受管前门（agentd codex-front serve）监听；
+        //    独立 codex listener、普通 agentd serve、配置不匹配的前门或转发到错误 backend 的前门一律判为非共享！
+        let validCfgJSON = """
+        {
+          "app_server": { "transport": "local", "shared_codex_home": "\(validPrivateHome.path)" },
+          "codex": { "enabled": true, "env": { "CODEX_HOME": "\(customPublicHome.path)" } }
+        }
+        """
+        try validCfgJSON.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let validTarget = try XCTUnwrap(
+            CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID
+            )
+        )
+        XCTAssertTrue(validTarget.requiresManagedFrontDoor, "配置 shared_codex_home 时必须要求受管前门")
+
+        // 2a. 独立 codex listener -> 必须拒绝！
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psStandaloneOnly,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: standaloneListenerUnix,
+                sharedTarget: validTarget,
+                homeDirectory: fakeHome
+            ),
+            "配置 shared_codex_home 时独立 codex listener 绝不得被判为共享"
+        )
+
+        // 2b. 普通 agentd serve（非 codex-front serve）-> 必须拒绝！
+        let psAgentdServeNotFront = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+           900     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --config \(configURL.path)
+        """
+        let agentdListenerUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: customPublicSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+        ])
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psAgentdServeNotFront,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: agentdListenerUnix,
+                sharedTarget: validTarget,
+                homeDirectory: fakeHome
+            ),
+            "普通 agentd serve 不是受管前门，必须拒绝"
+        )
+
+        // 2c. 受管前门但指向不同 --config -> 必须拒绝！
+        let psMismatchedFront = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+           900     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd codex-front serve --config /tmp/other-agentd.json
+        """
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psMismatchedFront,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: agentdListenerUnix,
+                sharedTarget: validTarget,
+                homeDirectory: fakeHome
+            ),
+            "配置路径不一致的 codex-front serve 必须拒绝"
+        )
+
+        // 2d. 受管前门存在且配置一致，但转发到了错误的 app-server-backend.sock -> 必须拒绝！
+        let psMatchingFront = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+           900     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd codex-front serve --log-file /tmp/codex-front.log
+        """
+        let wrongBackendSock = otherPrivateHome.appendingPathComponent("app-server-control/app-server-backend.sock").standardizedFileURL.path
+        let wrongBackendUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: customPublicSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+            (pid: 950, cmd: "codex", fd: "4", addr: "0x4444", name: wrongBackendSock),
+            (pid: 900, cmd: "agentd", fd: "9", addr: "0x3333", name: "->0x4444"),
+        ])
+        XCTAssertFalse(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psMatchingFront,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: wrongBackendUnix,
+                sharedTarget: validTarget,
+                homeDirectory: fakeHome
+            ),
+            "前门连接到非期望 shared_codex_home 的 backend socket 时必须拒绝"
+        )
+
+        // 2e. 受管前门 LaunchAgent plist 登记了不同的后端目录（配置漂移）-> resolveSharedCodexSocketTarget 必须返回 nil！
+        let driftedPlist: [String: Any] = [
+            "Label": "com.gaixianggeng.mimi.mac.codex-front",
+            "Sockets": ["Listeners": ["SockPathName": customPublicSock]],
+            "EnvironmentVariables": ["MIMI_CODEX_FRONT_BACKEND_HOME": otherPrivateHome.path],
+        ]
+        let driftedPlistData = try PropertyListSerialization.data(fromPropertyList: driftedPlist, format: .xml, options: 0)
+        try driftedPlistData.write(to: plistURL)
+        XCTAssertNil(
+            CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID
+            ),
+            "前门 plist 登记的后端目录与 config.json 不一致时必须拒绝"
+        )
+
+        // 2f. plist、前门进程与 backend socket 全部一致 -> 正确判为共享！
+        let matchedPlist: [String: Any] = [
+            "Label": "com.gaixianggeng.mimi.mac.codex-front",
+            "Sockets": ["Listeners": ["SockPathName": customPublicSock]],
+            "EnvironmentVariables": ["MIMI_CODEX_FRONT_BACKEND_HOME": validPrivateHome.path],
+        ]
+        let matchedPlistData = try PropertyListSerialization.data(fromPropertyList: matchedPlist, format: .xml, options: 0)
+        try matchedPlistData.write(to: plistURL)
+
+        let verifiedTarget = try XCTUnwrap(
+            CodexDesktopLink.resolveSharedCodexSocketTarget(
+                homeDirectory: fakeHome,
+                environment: [:],
+                expectedUID: currentUID
+            )
+        )
+        let expectedBackendSock = validPrivateHome.appendingPathComponent("app-server-control/app-server-backend.sock").standardizedFileURL.path
+        let matchedFrontUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: customPublicSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+            (pid: 950, cmd: "codex", fd: "4", addr: "0x4444", name: expectedBackendSock),
+            (pid: 900, cmd: "agentd", fd: "9", addr: "0x3333", name: "->0x4444"),
+        ])
+        XCTAssertTrue(
+            CodexDesktopLink.hasVerifiedSharedConnection(
+                psWithUIDOutput: psMatchingFront,
+                desktopPIDs: [1914],
+                localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+                expectedUsername: "alice",
+                expectedUID: currentUID,
+                tcpLsofOutput: matchedTCP,
+                unixLsofOutput: matchedFrontUnix,
+                sharedTarget: verifiedTarget,
+                homeDirectory: fakeHome
+            ),
+            "受管前门、plist、公共 socket 与私有 backend 全部核验通过时应判为共享"
+        )
+    }
 }
 
 private actor ProbeTargetRecorder {

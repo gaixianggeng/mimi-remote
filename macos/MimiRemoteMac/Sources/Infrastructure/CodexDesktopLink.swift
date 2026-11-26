@@ -561,15 +561,244 @@ enum CodexDesktopLink {
         return .loaded(decoded)
     }
 
-    /// 按 `agentd` 实际配置的 transport 与公共 `CODEX_HOME` 解析共享 Codex App Server 控制 socket 路径集合（不读取 GUI 的 `CODEX_HOME`，也不在配置自定义目录时额外放行默认 `~/.codex`）。
-    /// 与 `agentd`（`internal/config/config.go`）对齐：缺失配置或省略 `app_server.transport` 时默认 transport 为 `ssh`，仅当显式配置 `local` 且启用 Codex 时返回本机共享控制 socket。
-    static func sharedCodexControlSocketPaths(
+    /// 经过 `agentd` 后端规则校验后的共享 Codex 控制 socket 解析结果。
+    struct SharedCodexSocketTarget: Equatable, Sendable {
+        let socketPaths: Set<String>
+        let requiresManagedFrontDoor: Bool
+        let expectedConfigURL: URL
+        let expectedBackendCodexHome: String?
+        let expectedBackendSocketPaths: Set<String>
+    }
+
+    private static let codexFrontLaunchAgentLabel = "com.gaixianggeng.mimi.mac.codex-front"
+
+    private static func defaultAgentdConfigURL(homeDirectory: URL) -> URL {
+        homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("mimi-remote", isDirectory: true)
+            .appendingPathComponent("config.json", isDirectory: false)
+    }
+
+    private static func normalizePathForComparison(_ path: String) -> String {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if standardized.count > 1 && standardized.hasSuffix("/") {
+            return String(standardized.dropLast())
+        }
+        return standardized
+    }
+
+    private static func configURLsMatch(_ lhs: URL, _ rhs: URL) -> Bool {
+        let lStd = normalizePathForComparison(lhs.path)
+        let rStd = normalizePathForComparison(rhs.path)
+        if lStd == rStd { return true }
+        let lRes = normalizePathForComparison(lhs.resolvingSymlinksInPath().path)
+        let rRes = normalizePathForComparison(rhs.resolvingSymlinksInPath().path)
+        return lRes == rRes
+    }
+
+    /// 校验绝对路径指向已存在的目录并返回 `realpath` 规范化路径（与 Go `canonicalExistingDirectory` 一致）。
+    static func canonicalExistingDirectory(_ path: String) -> String? {
+        guard path.hasPrefix("/") else { return nil }
+        var st = stat()
+        guard Darwin.fstatat(AT_FDCWD, path, &st, 0) == 0,
+              (st.st_mode & S_IFMT) == S_IFDIR else {
+            return nil
+        }
+        guard let resolvedPtr = Darwin.realpath(path, nil) else {
+            return nil
+        }
+        defer { free(resolvedPtr) }
+        return normalizePathForComparison(String(cString: resolvedPtr))
+    }
+
+    private static func pathContains(_ parent: String, _ candidate: String) -> Bool {
+        let p = normalizePathForComparison(parent)
+        let c = normalizePathForComparison(candidate)
+        if p == c { return true }
+        if p == "/" { return c.hasPrefix("/") }
+        return c.hasPrefix(p + "/")
+    }
+
+    /// 路径级重叠判定（相同或相互包含，与 Go `pathsOverlap` 一致）。
+    static func pathsOverlap(_ left: String, _ right: String) -> Bool {
+        pathContains(left, right) || pathContains(right, left)
+    }
+
+    private static func pathContainsByIdentity(_ parent: String, _ candidate: String) -> Bool {
+        var parentSt = stat()
+        guard Darwin.fstatat(AT_FDCWD, parent, &parentSt, 0) == 0 else { return false }
+        var current = URL(fileURLWithPath: normalizePathForComparison(candidate))
+        var hops = 0
+        while hops < 128 {
+            var curSt = stat()
+            if Darwin.fstatat(AT_FDCWD, current.path, &curSt, 0) == 0,
+               curSt.st_dev == parentSt.st_dev,
+               curSt.st_ino == parentSt.st_ino {
+                return true
+            }
+            let next = current.deletingLastPathComponent()
+            if next.path == current.path {
+                return false
+            }
+            current = next
+            hops += 1
+        }
+        return false
+    }
+
+    /// 基于 `(st_dev, st_ino)` 祖先链的重叠判定，覆盖大小写不敏感 APFS 别名与符号链接（与 Go `pathsOverlapByIdentity` 一致）。
+    static func pathsOverlapByIdentity(_ left: String, _ right: String) -> Bool {
+        pathContainsByIdentity(left, right) || pathContainsByIdentity(right, left)
+    }
+
+    /// 从完整命令行提取 `agentd codex-front serve` 的配置路径（省略 `--config` 时默认 `~/Library/Application Support/mimi-remote/config.json`）。
+    private static func extractAgentdCodexFrontServeConfigURL(
+        from entry: ProcessSnapshotEntry,
+        homeDirectory: URL
+    ) -> URL? {
+        if let exactArgs = entry.exactArguments {
+            guard exactArgs.count >= 3 else { return nil }
+            let base = URL(fileURLWithPath: exactArgs[0]).lastPathComponent
+            guard base == "agentd", exactArgs[1] == "codex-front", exactArgs[2] == "serve" else {
+                return nil
+            }
+            var idx = 3
+            while idx < exactArgs.count {
+                let arg = exactArgs[idx]
+                if arg == "--config" || arg == "-config" {
+                    if idx + 1 < exactArgs.count {
+                        let rawPath = exactArgs[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !rawPath.isEmpty {
+                            return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                        }
+                    }
+                    idx += 2
+                    continue
+                }
+                if arg.hasPrefix("--config=") {
+                    let rawPath = String(arg.dropFirst("--config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty {
+                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                    }
+                } else if arg.hasPrefix("-config=") {
+                    let rawPath = String(arg.dropFirst("-config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty {
+                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                    }
+                }
+                idx += 1
+            }
+            return defaultAgentdConfigURL(homeDirectory: homeDirectory)
+        }
+
+        let raw = entry.rawCommand
+        let frontRange: Range<String.Index>
+        if let matched = raw.range(of: "/agentd codex-front serve") {
+            frontRange = matched
+        } else if raw.hasPrefix("agentd codex-front serve"),
+                  let matched = raw.range(of: "agentd codex-front serve") {
+            frontRange = matched
+        } else {
+            return nil
+        }
+
+        let afterServe = raw[frontRange.upperBound...]
+        guard afterServe.isEmpty || afterServe.first == " " || afterServe.first == "\t" else {
+            return nil
+        }
+
+        let prefixes = [" --config=", " -config=", " --config ", " -config "]
+        for prefix in prefixes {
+            if let range = afterServe.range(of: prefix) {
+                var valueSlice = afterServe[range.upperBound...]
+                while let first = valueSlice.first, first == " " || first == "\t" {
+                    valueSlice = valueSlice.dropFirst()
+                }
+                if let nextFlag = valueSlice.range(of: " -") {
+                    valueSlice = valueSlice[..<nextFlag.lowerBound]
+                }
+                let rawPath = String(valueSlice).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rawPath.isEmpty {
+                    return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                }
+            }
+        }
+        return defaultAgentdConfigURL(homeDirectory: homeDirectory)
+    }
+
+    static func isManagedCodexFrontDoorProcess(
+        _ entry: ProcessSnapshotEntry,
+        expectedConfigURL: URL?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> Bool {
+        guard let frontConfigURL = extractAgentdCodexFrontServeConfigURL(from: entry, homeDirectory: homeDirectory) else {
+            return false
+        }
+        if let expectedConfigURL {
+            return configURLsMatch(frontConfigURL, expectedConfigURL)
+        }
+        return true
+    }
+
+    /// 若默认配置对应的受管前门 LaunchAgent plist 存在，核验其登记的公共 socket 与 `MIMI_CODEX_FRONT_BACKEND_HOME` 未漂移。
+    private static func validateCodexFrontPlistIfPresent(
+        homeDirectory: URL,
+        expectedUID: uid_t,
+        expectedConfigURL: URL,
+        expectedPublicSockets: Set<String>,
+        expectedBackendHome: String
+    ) -> Bool {
+        let defaultConfig = defaultAgentdConfigURL(homeDirectory: homeDirectory)
+        guard configURLsMatch(expectedConfigURL, defaultConfig) else {
+            return true
+        }
+        let plistURL = homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("LaunchAgents", isDirectory: true)
+            .appendingPathComponent("\(codexFrontLaunchAgentLabel).plist", isDirectory: false)
+        var lst = stat()
+        if Darwin.lstat(plistURL.path, &lst) != 0 {
+            return errno == ENOENT
+        }
+        guard (lst.st_mode & S_IFMT) == S_IFREG,
+              lst.st_uid == expectedUID,
+              let data = try? Data(contentsOf: plistURL),
+              let rawPlist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
+            return false
+        }
+        guard let sockets = rawPlist["Sockets"] as? [String: Any],
+              let listeners = sockets["Listeners"] as? [String: Any],
+              let sockPath = listeners["SockPathName"] as? String,
+              !sockPath.isEmpty else {
+            return false
+        }
+        let normalizedSock = normalizePathForComparison(sockPath)
+        let resolvedSock = normalizePathForComparison(URL(fileURLWithPath: sockPath).resolvingSymlinksInPath().path)
+        guard expectedPublicSockets.contains(normalizedSock) || expectedPublicSockets.contains(resolvedSock) else {
+            return false
+        }
+        let env = rawPlist["EnvironmentVariables"] as? [String: String]
+        guard let pinnedBackend = env?["MIMI_CODEX_FRONT_BACKEND_HOME"],
+              !pinnedBackend.isEmpty,
+              let canonicalPinned = canonicalExistingDirectory(pinnedBackend),
+              canonicalPinned == expectedBackendHome else {
+            return false
+        }
+        return true
+    }
+
+    /// 按 `agentd` 后端校验规则解析共享 Codex 控制 socket 目标：
+    /// - 缺失配置、配置损坏、禁用 Codex 或非 `local` transport 一律返回 `nil`；
+    /// - 显式 `codex.env.CODEX_HOME` 必须为已存在的绝对路径目录；默认 `~/.codex` 若存在则必须为目录；
+    /// - 配置 `app_server.shared_codex_home` 时，必须为已存在的绝对路径目录且不得与公共 `CODEX_HOME` 路径或 inode 重叠，并标记要求受管前门（拒绝独立 listener）。
+    static func resolveSharedCodexSocketTarget(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         expectedUID: uid_t = Darwin.geteuid(),
         agentdConfigURL: URL? = nil,
         processes: [Int32: ProcessSnapshotEntry] = [:]
-    ) -> Set<String> {
+    ) -> SharedCodexSocketTarget? {
         let configURL = agentdConfigURL ?? Self.agentdConfigURL(
             processes: processes,
             homeDirectory: homeDirectory,
@@ -577,74 +806,179 @@ enum CodexDesktopLink {
             expectedUID: expectedUID
         )
 
-        let effectiveCodexHome: URL
+        let rawPublicHome: String
+        let canonicalPublicHome: String
+        let requiresManagedFrontDoor: Bool
+        let canonicalBackendHome: String?
+        let rawSharedHome: String?
+
         switch loadAgentdCodexConfig(at: configURL, expectedUID: expectedUID) {
         case .invalid, .missing:
             // agentd 缺失配置或配置无效时不会启用本机共享 local socket（默认 transport 为 ssh）。
-            return []
+            return nil
         case .loaded(let cfg):
             if cfg.codex?.enabled == false {
-                return []
+                return nil
             }
             let rawTransport = cfg.appServer?.transport?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
             let effectiveTransport = rawTransport.isEmpty ? "ssh" : rawTransport
             guard effectiveTransport == "local" else {
-                return []
+                return nil
             }
-            // 与前门（internal/appserver/front_door_darwin.go）一致：
-            // app_server.shared_codex_home 仅隔离私有后端历史（app-server-backend.sock），
-            // 公共控制 socket（app-server-control.sock）始终按 codex.env.CODEX_HOME（缺失时回退 ~/.codex）定位。
-            if let sharedHome = cfg.appServer?.sharedCodexHome, !sharedHome.isEmpty {
-                guard sharedHome.hasPrefix("/") else {
-                    return []
-                }
-            }
+
             if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
-                guard configuredHome.hasPrefix("/") else {
-                    return []
+                guard let canonical = canonicalExistingDirectory(configuredHome) else {
+                    return nil
                 }
-                effectiveCodexHome = URL(fileURLWithPath: configuredHome, isDirectory: true)
+                rawPublicHome = configuredHome
+                canonicalPublicHome = canonical
             } else {
-                effectiveCodexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+                let defaultURL = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+                rawPublicHome = normalizePathForComparison(defaultURL.path)
+                var st = stat()
+                if Darwin.fstatat(AT_FDCWD, defaultURL.path, &st, 0) == 0 {
+                    guard (st.st_mode & S_IFMT) == S_IFDIR,
+                          let canonical = canonicalExistingDirectory(defaultURL.path) else {
+                        return nil
+                    }
+                    canonicalPublicHome = canonical
+                } else if errno == ENOENT {
+                    let resolvedHome = canonicalExistingDirectory(homeDirectory.path) ?? normalizePathForComparison(homeDirectory.path)
+                    canonicalPublicHome = URL(fileURLWithPath: resolvedHome, isDirectory: true)
+                        .appendingPathComponent(".codex", isDirectory: true)
+                        .standardizedFileURL.path
+                } else {
+                    return nil
+                }
+            }
+
+            // 与 agentd（internal/config/shared_codex_home.go + internal/appserver/front_door_darwin.go）对齐：
+            // shared_codex_home 必须是已存在的绝对路径独立目录，且不能与公共 CODEX_HOME 相同或相互包含（含符号链接/大小写别名）。
+            if let sharedHome = cfg.appServer?.sharedCodexHome, !sharedHome.isEmpty {
+                guard let backendCanonical = canonicalExistingDirectory(sharedHome) else {
+                    return nil
+                }
+                if pathsOverlap(rawPublicHome, sharedHome) ||
+                    pathsOverlap(canonicalPublicHome, backendCanonical) ||
+                    pathsOverlapByIdentity(rawPublicHome, sharedHome) ||
+                    pathsOverlapByIdentity(canonicalPublicHome, backendCanonical) {
+                    return nil
+                }
+                requiresManagedFrontDoor = true
+                canonicalBackendHome = backendCanonical
+                rawSharedHome = sharedHome
+            } else {
+                requiresManagedFrontDoor = false
+                canonicalBackendHome = nil
+                rawSharedHome = nil
             }
         }
 
         var paths: Set<String> = []
-        let controlDir = effectiveCodexHome.appendingPathComponent("app-server-control", isDirectory: true)
-        let socketURL = controlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
-        paths.insert(socketURL.standardizedFileURL.path)
+        let rawPublicURL = URL(fileURLWithPath: rawPublicHome, isDirectory: true)
+        let rawControlDir = rawPublicURL.appendingPathComponent("app-server-control", isDirectory: true)
+        let rawSocketURL = rawControlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
+        paths.insert(normalizePathForComparison(rawSocketURL.path))
 
-        let resolvedDir = controlDir.resolvingSymlinksInPath()
-        let canonicalSocket = resolvedDir.appendingPathComponent("app-server-control.sock", isDirectory: false).path
-        paths.insert(canonicalSocket)
+        let canonicalPublicURL = URL(fileURLWithPath: canonicalPublicHome, isDirectory: true)
+        let canonicalControlDir = canonicalPublicURL.appendingPathComponent("app-server-control", isDirectory: true)
+        let canonicalSocketURL = canonicalControlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
+        paths.insert(normalizePathForComparison(canonicalSocketURL.path))
 
-        var st = stat()
-        if Darwin.lstat(socketURL.path, &st) == 0,
-           (st.st_mode & S_IFMT) == S_IFLNK,
-           st.st_uid == expectedUID {
-            var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
-            let len = Darwin.readlink(socketURL.path, &buf, buf.count - 1)
-            if len > 0 {
-                let target = String(cString: buf)
-                let daemonPrefix1 = "/tmp/codex-daemon-\(expectedUID)/"
-                let daemonPrefix2 = "/private/tmp/codex-daemon-\(expectedUID)/"
-                if target.hasPrefix(daemonPrefix1) || target.hasPrefix(daemonPrefix2) {
-                    paths.insert(target)
-                    if target.hasPrefix(daemonPrefix1) {
-                        paths.insert("/private" + target)
+        let resolvedDir = rawControlDir.resolvingSymlinksInPath()
+        let resolvedSocket = resolvedDir.appendingPathComponent("app-server-control.sock", isDirectory: false).path
+        paths.insert(normalizePathForComparison(resolvedSocket))
+
+        if !requiresManagedFrontDoor {
+            var st = stat()
+            if Darwin.lstat(rawSocketURL.path, &st) == 0,
+               (st.st_mode & S_IFMT) == S_IFLNK,
+               st.st_uid == expectedUID {
+                var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+                let len = Darwin.readlink(rawSocketURL.path, &buf, buf.count - 1)
+                if len > 0 {
+                    let target = String(cString: buf)
+                    let daemonPrefix1 = "/tmp/codex-daemon-\(expectedUID)/"
+                    let daemonPrefix2 = "/private/tmp/codex-daemon-\(expectedUID)/"
+                    if target.hasPrefix(daemonPrefix1) || target.hasPrefix(daemonPrefix2) {
+                        paths.insert(target)
+                        if target.hasPrefix(daemonPrefix1) {
+                            paths.insert("/private" + target)
+                        }
                     }
                 }
             }
         }
-        return paths
+
+        var backendSockets: Set<String> = []
+        if let canonicalBackendHome {
+            guard validateCodexFrontPlistIfPresent(
+                homeDirectory: homeDirectory,
+                expectedUID: expectedUID,
+                expectedConfigURL: configURL,
+                expectedPublicSockets: paths,
+                expectedBackendHome: canonicalBackendHome
+            ) else {
+                return nil
+            }
+            let canonicalBackendSock = URL(fileURLWithPath: canonicalBackendHome, isDirectory: true)
+                .appendingPathComponent("app-server-control", isDirectory: true)
+                .appendingPathComponent("app-server-backend.sock", isDirectory: false)
+                .standardizedFileURL.path
+            backendSockets.insert(normalizePathForComparison(canonicalBackendSock))
+            if let rawSharedHome {
+                let rawBackendSock = URL(fileURLWithPath: rawSharedHome, isDirectory: true)
+                    .appendingPathComponent("app-server-control", isDirectory: true)
+                    .appendingPathComponent("app-server-backend.sock", isDirectory: false)
+                    .standardizedFileURL.path
+                backendSockets.insert(normalizePathForComparison(rawBackendSock))
+            }
+        }
+
+        return SharedCodexSocketTarget(
+            socketPaths: paths,
+            requiresManagedFrontDoor: requiresManagedFrontDoor,
+            expectedConfigURL: configURL,
+            expectedBackendCodexHome: canonicalBackendHome,
+            expectedBackendSocketPaths: backendSockets
+        )
+    }
+
+    /// 按 `agentd` 实际配置的 transport 与公共 `CODEX_HOME` 解析共享 Codex App Server 控制 socket 路径集合（不读取 GUI 的 `CODEX_HOME`，也不在配置自定义目录时额外放行默认 `~/.codex`）。
+    /// 与 `agentd`（`internal/config/config.go` 与 `internal/appserver/front_door_darwin.go`）对齐：缺失配置、省略 transport 或 `shared_codex_home` 无效/缺失/重叠时一律返回空集合。
+    static func sharedCodexControlSocketPaths(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        expectedUID: uid_t = Darwin.geteuid(),
+        agentdConfigURL: URL? = nil,
+        processes: [Int32: ProcessSnapshotEntry] = [:]
+    ) -> Set<String> {
+        resolveSharedCodexSocketTarget(
+            homeDirectory: homeDirectory,
+            environment: environment,
+            expectedUID: expectedUID,
+            agentdConfigURL: agentdConfigURL,
+            processes: processes
+        )?.socketPaths ?? []
     }
 
     /// 从 `lsof -nP -a -U -u <uid> -F0pcfdtn` 输出解析当前已连接到共享 Codex 控制 socket 的 `codex` 客户端进程 PID 集合。
+    /// 当 `requireManagedFrontDoor == true`（例如配置了 `app_server.shared_codex_home`）时，严格确认监听器属于当前用户的受管前门进程（`agentd codex-front serve`），拒绝独立 `codex` 监听或无法确认身份的进程。
     static func parseConnectedCodexClientPIDs(
         unixLsofOutput: Data,
-        sharedSocketPaths: Set<String>
+        sharedSocketPaths: Set<String>,
+        processes: [Int32: ProcessSnapshotEntry]? = nil,
+        expectedUID: uid_t? = nil,
+        requireManagedFrontDoor: Bool = false,
+        expectedConfigURL: URL? = nil,
+        expectedBackendSocketPaths: Set<String> = [],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Set<Int32> {
         guard !sharedSocketPaths.isEmpty, !unixLsofOutput.isEmpty else { return [] }
+        if requireManagedFrontDoor, processes == nil {
+            // 探测不到进程表时保守判为非共享，绝不猜。
+            return []
+        }
         struct UnixSocketFile {
             var pid: Int32 = 0
             var command: String = ""
@@ -699,8 +1033,39 @@ enum CodexDesktopLink {
         }
         flush()
 
+        var addressToName: [String: String] = [:]
+        for file in files where file.address.hasPrefix("0x") && !file.name.isEmpty && !file.name.hasPrefix("->") {
+            addressToName[file.address] = file.name
+        }
+
         var serverAddresses: Set<String> = []
         for file in files where file.address.hasPrefix("0x") && sharedSocketPaths.contains(file.name) {
+            if requireManagedFrontDoor {
+                guard file.command == "agentd",
+                      let entry = processes?[file.pid] else {
+                    continue
+                }
+                if let expectedUID, entry.uid != expectedUID {
+                    continue
+                }
+                guard isManagedCodexFrontDoorProcess(
+                    entry,
+                    expectedConfigURL: expectedConfigURL,
+                    homeDirectory: homeDirectory
+                ) else {
+                    continue
+                }
+                if !expectedBackendSocketPaths.isEmpty {
+                    let connectedBackendNames = files
+                        .filter { $0.pid == file.pid && $0.name.hasPrefix("->") }
+                        .compactMap { addressToName[String($0.name.dropFirst(2))] }
+                        .filter { $0.hasSuffix("/app-server-backend.sock") }
+                    if !connectedBackendNames.isEmpty,
+                       !connectedBackendNames.contains(where: { expectedBackendSocketPaths.contains(normalizePathForComparison($0)) }) {
+                        continue
+                    }
+                }
+            }
             serverAddresses.insert(file.address)
         }
         guard !serverAddresses.isEmpty else { return [] }
@@ -780,7 +1145,11 @@ enum CodexDesktopLink {
         expectedUID: uid_t,
         tcpLsofOutput: String,
         unixLsofOutput: Data,
-        sharedSocketPaths: Set<String>
+        sharedSocketPaths: Set<String>,
+        requireManagedFrontDoor: Bool = false,
+        expectedConfigURL: URL? = nil,
+        expectedBackendSocketPaths: Set<String> = [],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Bool {
         let processes = parseProcessesWithUID(psOutput: psWithUIDOutput)
         let candidates = localSSHChildCandidates(
@@ -802,7 +1171,13 @@ enum CodexDesktopLink {
         guard !verifiedClientTuples.isEmpty else { return false }
         let connectedCodexPIDs = parseConnectedCodexClientPIDs(
             unixLsofOutput: unixLsofOutput,
-            sharedSocketPaths: sharedSocketPaths
+            sharedSocketPaths: sharedSocketPaths,
+            processes: processes,
+            expectedUID: expectedUID,
+            requireManagedFrontDoor: requireManagedFrontDoor,
+            expectedConfigURL: expectedConfigURL,
+            expectedBackendSocketPaths: expectedBackendSocketPaths,
+            homeDirectory: homeDirectory
         )
         return hasCorrelatedSSHAuthenticatedCodexSession(
             processes: processes,
@@ -810,6 +1185,34 @@ enum CodexDesktopLink {
             connectedCodexPIDs: connectedCodexPIDs,
             verifiedClientTuples: verifiedClientTuples,
             serverConnectionsByPID: connectionsByPID
+        )
+    }
+
+    static func hasVerifiedSharedConnection(
+        psWithUIDOutput: String,
+        desktopPIDs: Set<Int32>,
+        localHosts: Set<String>,
+        expectedUsername: String?,
+        expectedUID: uid_t,
+        tcpLsofOutput: String,
+        unixLsofOutput: Data,
+        sharedTarget: SharedCodexSocketTarget?,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> Bool {
+        guard let sharedTarget else { return false }
+        return hasVerifiedSharedConnection(
+            psWithUIDOutput: psWithUIDOutput,
+            desktopPIDs: desktopPIDs,
+            localHosts: localHosts,
+            expectedUsername: expectedUsername,
+            expectedUID: expectedUID,
+            tcpLsofOutput: tcpLsofOutput,
+            unixLsofOutput: unixLsofOutput,
+            sharedSocketPaths: sharedTarget.socketPaths,
+            requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
+            expectedConfigURL: sharedTarget.expectedConfigURL,
+            expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths,
+            homeDirectory: homeDirectory
         )
     }
 
@@ -1157,10 +1560,20 @@ enum CodexDesktopLink {
             outputLimit: 1_048_576
         )
         guard let unixLsofResult, unixLsofResult.status == 0 else { return .separate }
-        let sharedSockets = sharedCodexControlSocketPaths(expectedUID: currentUID, processes: processes)
+        guard let sharedTarget = resolveSharedCodexSocketTarget(
+            expectedUID: currentUID,
+            processes: processes
+        ) else {
+            return .separate
+        }
         let connectedCodexPIDs = parseConnectedCodexClientPIDs(
             unixLsofOutput: unixLsofResult.stdout,
-            sharedSocketPaths: sharedSockets
+            sharedSocketPaths: sharedTarget.socketPaths,
+            processes: processes,
+            expectedUID: currentUID,
+            requireManagedFrontDoor: sharedTarget.requiresManagedFrontDoor,
+            expectedConfigURL: sharedTarget.expectedConfigURL,
+            expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths
         )
         var sshdAncestorSet: Set<Int32> = []
         for codexPID in connectedCodexPIDs {

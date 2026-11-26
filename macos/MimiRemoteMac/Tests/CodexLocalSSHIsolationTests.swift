@@ -40,6 +40,7 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         beforeAtomicCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeDelete: CodexLocalSSHConfigurator.CommitHook? = nil,
+        afterStageQuarantineMove: CodexLocalSSHConfigurator.CommitHook? = nil,
         simulateHardCrashPoint: CodexLocalSSHConfigurator.HardCrashSimulationPoint? = nil,
         beforeVerifySSH: (@Sendable () throws -> Void)? = nil
     ) -> CodexLocalSSHConfigurator {
@@ -75,6 +76,7 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             beforeAtomicCommit: beforeAtomicCommit,
             afterVerifyBeforeCommit: afterVerifyBeforeCommit,
             afterVerifyBeforeDelete: afterVerifyBeforeDelete,
+            afterStageQuarantineMove: afterStageQuarantineMove,
             simulateHardCrashPoint: simulateHardCrashPoint
         )
     }
@@ -1454,6 +1456,338 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             runProbe: { _, _, _, stdin in CommandResult(status: 0, stdout: stdin ?? Data(), stderr: Data()) }
         )
         XCTAssertFalse(probeWritableTarget, "符号链接指向组/全局可写目标时只读探测必须拒绝")
+    }
+
+    // MARK: - Scope 3 P1-1: Never Delete Staging Files Without Recorded Inode
+
+    func testScope3_P1_1StagingCleanupRefusesDeletingFileWithoutRecordedInode() async throws {
+        // 1. 直接场景：暂存目录记录了目录 inode，但未记录文件 inode（nil），目录内出现同属主同名常规文件。
+        //    cleanupStagedKeyArtifact 与 remove() 均必须保守保留该文件并报错，绝不误删！
+        let directHome = tempHome.appendingPathComponent("scope3-p1-1-nil-inode", isDirectory: true)
+        let cfg = makeConfigurator(home: directHome, username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: cfg.mimiSSHDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(cfg.sshDirectory.path, 0o700)
+        _ = Darwin.chmod(cfg.mimiSSHDirectory.path, 0o700)
+
+        let dirName = "\(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix)\(UUID().uuidString)"
+        let stageDir = cfg.mimiSSHDirectory.appendingPathComponent(dirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: false)
+        _ = Darwin.chmod(stageDir.path, 0o700)
+
+        let preExistingSentinel = Data("PREEXISTING-UNOWNED-FILE-MUST-SURVIVE".utf8)
+        let stagedPriv = stageDir.appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        try preExistingSentinel.write(to: stagedPriv)
+        _ = Darwin.chmod(stagedPriv.path, 0o600)
+
+        var dirSt = stat()
+        XCTAssertEqual(Darwin.lstat(stageDir.path, &dirSt), 0)
+        let missingInodeArtifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: dirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: dirSt.st_dev, ino: dirSt.st_ino),
+            privateKeyIdentity: nil,
+            publicKeyIdentity: nil
+        )
+
+        XCTAssertFalse(
+            cfg.cleanupStagedKeyArtifact(missingInodeArtifact),
+            "缺少已记录文件 inode 时必须保守拒绝清理，绝不得按文件名删除未知文件"
+        )
+        XCTAssertEqual(try Data(contentsOf: stagedPriv), preExistingSentinel)
+
+        try cfg.saveManagedState(CodexLocalSSHConfigurator.ManagedState(stagedKeyArtifacts: [missingInodeArtifact]))
+        do {
+            try await cfg.remove()
+            XCTFail("暂存目录包含未记录 inode 文件时 remove() 必须报错并保留文件与账本")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed(let detail) {
+            XCTAssertTrue(detail.contains(dirName), "错误信息应提示用户手工核对暂存目录：\(detail)")
+        }
+        XCTAssertEqual(try Data(contentsOf: stagedPriv), preExistingSentinel)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cfg.stateFileURL.path), "未能清理时必须保留状态账本")
+
+        // 用户手工移除未知文件后，空暂存目录可通过 remove() 正常清理。
+        try FileManager.default.removeItem(at: stagedPriv)
+        try await cfg.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stageDir.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.stateFileURL.path))
+
+        // 2. 端到端场景：ssh-keygen 失败前在暂存目录留下未入账的文件（尚未记录文件 inode）。
+        //    configure() 的错误处理不得删除该未记录 inode 的文件，必须保守保留并明确提示用户。
+        let e2eHome = tempHome.appendingPathComponent("scope3-p1-1-keygen-partial", isDirectory: true)
+        try FileManager.default.createDirectory(at: e2eHome, withIntermediateDirectories: true)
+        let partialSentinel = Data("UNRECORDED-PARTIAL-OR-PREEXISTING-KEY".utf8)
+        let partialCfg = CodexLocalSSHConfigurator(
+            homeDirectory: e2eHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" {
+                    if let fIdx = arguments.firstIndex(of: "-f"), fIdx + 1 < arguments.count {
+                        let targetPath = arguments[fIdx + 1]
+                        try partialSentinel.write(to: URL(fileURLWithPath: targetPath))
+                    }
+                    return CommandResult(status: 1, stdout: Data(), stderr: Data("simulated failure".utf8))
+                }
+                if executable.lastPathComponent == "ssh", arguments.first == "-G" {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
+        )
+        do {
+            try await partialCfg.configure(verifyConnection: false)
+            XCTFail("ssh-keygen 失败且遗留未入账文件时 configure() 必须报错")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed(let detail) {
+            XCTAssertTrue(detail.contains("保守保留"), "错误应明确说明已保守保留未删除并提示核对：\(detail)")
+        }
+        let mimiEntries = try FileManager.default.contentsOfDirectory(atPath: partialCfg.mimiSSHDirectory.path)
+        let stagingDirs = mimiEntries.filter { $0.hasPrefix(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix) }
+        XCTAssertEqual(stagingDirs.count, 1)
+        let preservedFile = partialCfg.mimiSSHDirectory
+            .appendingPathComponent(stagingDirs[0], isDirectory: true)
+            .appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        XCTAssertEqual(try Data(contentsOf: preservedFile), partialSentinel, "未记录 inode 的文件绝不得在错误处理器中被删除")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: partialCfg.stateFileURL.path))
+    }
+
+    // MARK: - Scope 3 P1-2: Record Quarantine Location Before Move & Revalidate Inode During Recovery
+
+    func testScope3_P1_2StagingQuarantinePathRecordedBeforeMoveAndRevalidatedOnRecovery() async throws {
+        // 1. 正常中断恢复：remove() 将暂存目录移入隔离目录后立即模拟进程中断。
+        //    隔离路径必须在移动前已落盘入账；随后重新执行 remove() 必须复核隔离目录与内部文件 inode 并彻底清理，绝不出现“Remove 成功但文件残留”。
+        let recoverHome = tempHome.appendingPathComponent("scope3-p1-2-quarantine-recover", isDirectory: true)
+        try FileManager.default.createDirectory(at: recoverHome, withIntermediateDirectories: true)
+        let baseCfg = makeConfigurator(home: recoverHome, username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: baseCfg.mimiSSHDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(baseCfg.sshDirectory.path, 0o700)
+        _ = Darwin.chmod(baseCfg.mimiSSHDirectory.path, 0o700)
+
+        let dirName = "\(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix)\(UUID().uuidString)"
+        let stageDir = baseCfg.mimiSSHDirectory.appendingPathComponent(dirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: false)
+        _ = Darwin.chmod(stageDir.path, 0o700)
+        let privFile = stageDir.appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        let pubFile = stageDir.appendingPathComponent("\(CodexLocalSSHConfigurator.keyFileName).pub")
+        try Data("staged-priv-bytes".utf8).write(to: privFile)
+        try Data("staged-pub-bytes".utf8).write(to: pubFile)
+
+        var dirSt = stat()
+        var privSt = stat()
+        var pubSt = stat()
+        XCTAssertEqual(Darwin.lstat(stageDir.path, &dirSt), 0)
+        XCTAssertEqual(Darwin.lstat(privFile.path, &privSt), 0)
+        XCTAssertEqual(Darwin.lstat(pubFile.path, &pubSt), 0)
+
+        let artifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: dirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: dirSt.st_dev, ino: dirSt.st_ino),
+            privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: privSt.st_dev, ino: privSt.st_ino),
+            publicKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: pubSt.st_dev, ino: pubSt.st_ino)
+        )
+        try baseCfg.saveManagedState(CodexLocalSSHConfigurator.ManagedState(stagedKeyArtifacts: [artifact]))
+
+        let crashingRemover = makeConfigurator(
+            home: recoverHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            afterStageQuarantineMove: { _ in
+                throw CodexLocalSSHConfigurator.SimulatedHardCrashError(point: .afterStageQuarantineMove)
+            }
+        )
+        do {
+            try await crashingRemover.remove()
+            XCTFail("应触发模拟隔离移动后的进程中断")
+        } catch let crash as CodexLocalSSHConfigurator.SimulatedHardCrashError {
+            XCTAssertEqual(crash.point, .afterStageQuarantineMove)
+        }
+
+        // 断言：原路径已移走，隔离路径中仍保留暂存私钥，且状态账本已记录隔离目录名与 inode。
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stageDir.path))
+        let persistedState = try XCTUnwrap(try baseCfg.loadManagedState())
+        let persistedArtifact = try XCTUnwrap(persistedState.stagedKeyArtifacts.first)
+        let recordedQDir = try XCTUnwrap(persistedArtifact.quarantineDirectoryName, "移入隔离目录前必须已持久化隔离目录名")
+        XCTAssertNotNil(persistedArtifact.quarantineDirectoryIdentity, "移入隔离目录前必须已持久化隔离目录 inode")
+        let quarantinedPriv = baseCfg.mimiSSHDirectory
+            .appendingPathComponent(recordedQDir, isDirectory: true)
+            .appendingPathComponent("dir", isDirectory: true)
+            .appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: quarantinedPriv.path), "中断后隔离目录内的暂存私钥应仍在磁盘上")
+
+        // 恢复 remove()：复核隔离目录及文件 inode 并彻底清理，不留残留！
+        let recoveryRemover = makeConfigurator(home: recoverHome, username: "alice", systemSSHConfigPath: nil)
+        try await recoveryRemover.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quarantinedPriv.path), "恢复 remove() 必须清理隔离目录内残留暂存私钥")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: baseCfg.mimiSSHDirectory.appendingPathComponent(recordedQDir).path),
+            "恢复 remove() 必须清理隔离目录"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: baseCfg.mimiSSHDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: baseCfg.stateFileURL.path))
+
+        // 2. 篡改对抗：隔离移动中断后，若隔离目录内的文件被替换为新 inode，恢复 remove() 必须拒绝删除并保留文件与账本！
+        let tamperHome = tempHome.appendingPathComponent("scope3-p1-2-quarantine-tamper", isDirectory: true)
+        try FileManager.default.createDirectory(at: tamperHome, withIntermediateDirectories: true)
+        let tamperBase = makeConfigurator(home: tamperHome, username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: tamperBase.mimiSSHDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(tamperBase.sshDirectory.path, 0o700)
+        _ = Darwin.chmod(tamperBase.mimiSSHDirectory.path, 0o700)
+
+        let tamperDirName = "\(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix)\(UUID().uuidString)"
+        let tamperStageDir = tamperBase.mimiSSHDirectory.appendingPathComponent(tamperDirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: tamperStageDir, withIntermediateDirectories: false)
+        _ = Darwin.chmod(tamperStageDir.path, 0o700)
+        let tamperPriv = tamperStageDir.appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        try Data("orig-staged-priv".utf8).write(to: tamperPriv)
+
+        var tDirSt = stat()
+        var tPrivSt = stat()
+        XCTAssertEqual(Darwin.lstat(tamperStageDir.path, &tDirSt), 0)
+        XCTAssertEqual(Darwin.lstat(tamperPriv.path, &tPrivSt), 0)
+        let tamperArtifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: tamperDirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: tDirSt.st_dev, ino: tDirSt.st_ino),
+            privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: tPrivSt.st_dev, ino: tPrivSt.st_ino),
+            publicKeyIdentity: nil
+        )
+        try tamperBase.saveManagedState(CodexLocalSSHConfigurator.ManagedState(stagedKeyArtifacts: [tamperArtifact]))
+
+        let tamperCrashRemover = makeConfigurator(
+            home: tamperHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            afterStageQuarantineMove: { _ in
+                throw CodexLocalSSHConfigurator.SimulatedHardCrashError(point: .afterStageQuarantineMove)
+            }
+        )
+        do {
+            try await tamperCrashRemover.remove()
+            XCTFail("应触发中断")
+        } catch is CodexLocalSSHConfigurator.SimulatedHardCrashError {}
+
+        let tamperState = try XCTUnwrap(try tamperBase.loadManagedState())
+        let tamperQDir = try XCTUnwrap(tamperState.stagedKeyArtifacts.first?.quarantineDirectoryName)
+        let tamperQPriv = tamperBase.mimiSSHDirectory
+            .appendingPathComponent(tamperQDir, isDirectory: true)
+            .appendingPathComponent("dir", isDirectory: true)
+            .appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        let replacementSentinel = Data("TAMPERED-IN-QUARANTINE-MUST-NOT-DELETE".utf8)
+        try FileManager.default.removeItem(at: tamperQPriv)
+        try replacementSentinel.write(to: tamperQPriv)
+
+        let tamperRecovery = makeConfigurator(home: tamperHome, username: "alice", systemSSHConfigPath: nil)
+        do {
+            try await tamperRecovery.remove()
+            XCTFail("隔离目录内文件 inode 被替换后恢复 remove() 必须拒绝删除并报错")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed(let detail) {
+            XCTAssertTrue(detail.contains(tamperQDir), "报错信息应包含隔离目录提示：\(detail)")
+        }
+        XCTAssertEqual(try Data(contentsOf: tamperQPriv), replacementSentinel, "inode 不匹配的替换文件绝不得被删除")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tamperBase.stateFileURL.path), "未能清理时必须保留状态账本")
+    }
+
+    // MARK: - Scope 3 P1-3: Verify Key Ownership From Captured Bytes Without Live-Path ssh-keygen TOCTOU
+
+    func testScope3_P1_3RemoveVerifiesOwnershipFromCapturedBytesWithoutLivePathSubprocessTOCTOU() async throws {
+        let toctouHome = tempHome.appendingPathComponent("scope3-p1-3-no-toctou", isDirectory: true)
+        try FileManager.default.createDirectory(at: toctouHome, withIntermediateDirectories: true)
+
+        let setupCfg = makeConfigurator(home: toctouHome, username: "alice", systemSSHConfigPath: nil)
+        try await setupCfg.configure(verifyConnection: false)
+        let ownedPubText = try String(contentsOf: setupCfg.publicKeyURL, encoding: .utf8)
+
+        // 1. 核验 inspect() 与 remove() 绝不按实时路径启动 /usr/bin/ssh-keygen 子进程，彻底消除两次快照间的 TOCTOU。
+        let noSubprocessCfg = CodexLocalSSHConfigurator(
+            homeDirectory: toctouHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" {
+                    XCTFail("inspect/remove 必须从已抓取字节在内存核验私钥归属，不得按实时路径调用 ssh-keygen：\(arguments)")
+                }
+                return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    standardInput: standardInput
+                )
+            }
+        )
+        let inspected = await noSubprocessCfg.inspect()
+        XCTAssertTrue(inspected.keyExists, "纯内存字节核验应确认 Mimi 私钥归属")
+        try await noSubprocessCfg.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.privateKeyURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.publicKeyURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path))
+
+        // 2. 对抗验证：即使外部子进程试图在 ssh-keygen -y 期间伪造返回托管公钥，只要抓取到的目标文件字节不是受管私钥，remove() 必须拒绝删除！
+        let spoofHome = tempHome.appendingPathComponent("scope3-p1-3-spoof-victim", isDirectory: true)
+        try FileManager.default.createDirectory(at: spoofHome, withIntermediateDirectories: true)
+        let spoofSetup = makeConfigurator(home: spoofHome, username: "alice", systemSSHConfigPath: nil)
+        try await spoofSetup.configure(verifyConnection: false)
+        let victimBytes = Data("VICTIM-FILE-REPLACED-AT-PRIVATE-KEY-PATH\n".utf8)
+        try victimBytes.write(to: spoofSetup.privateKeyURL)
+        _ = Darwin.chmod(spoofSetup.privateKeyURL.path, 0o600)
+
+        let spoofRemover = CodexLocalSSHConfigurator(
+            homeDirectory: spoofHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" && arguments.contains("-y") {
+                    // 若仍调用子进程则伪造返回合法公钥，用以证明不再依赖子进程实时路径。
+                    return CommandResult(status: 0, stdout: Data(ownedPubText.utf8), stderr: Data())
+                }
+                return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    standardInput: standardInput
+                )
+            }
+        )
+        do {
+            try await spoofRemover.remove()
+            XCTFail("被替换为非受管字节的私钥路径必须报 conflictingKeyFiles 且不得删除")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {}
+        XCTAssertEqual(try Data(contentsOf: spoofSetup.privateKeyURL), victimBytes, "受害者文件绝不得被删除")
+    }
+
+    // MARK: - Scope 3 P1-4: Remove Cleans Owned Private Key After Permissions-Only Change to 0640
+
+    func testScope3_P1_4RemoveCleansOwnedPrivateKeyAfterPermissionsOnlyChangeTo0640() async throws {
+        let perm0640Home = tempHome.appendingPathComponent("scope3-p1-4-chmod-0640", isDirectory: true)
+        try FileManager.default.createDirectory(at: perm0640Home, withIntermediateDirectories: true)
+
+        let setupCfg = makeConfigurator(home: perm0640Home, username: "alice", systemSSHConfigPath: nil)
+        try await setupCfg.configure(verifyConnection: false)
+
+        // 仅修改私钥权限为 0640（OpenSSH ssh-keygen -y 会因权限过宽拒绝读取，但文件内容仍为 Mimi 受管私钥）。
+        XCTAssertEqual(Darwin.chmod(setupCfg.privateKeyURL.path, 0o640), 0)
+        XCTAssertEqual(try posixPermissions(of: setupCfg.privateKeyURL), 0o640)
+
+        // 佐证：系统 ssh-keygen -y 确实会拒绝 0640 权限的私钥，说明此场景曾直接触发误报冲突。
+        let keygenCheck = try await CodexLocalSSHConfigurator.defaultCommandRunner(
+            executable: URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
+            arguments: ["-y", "-P", "", "-f", setupCfg.privateKeyURL.path],
+            timeout: .seconds(10)
+        )
+        XCTAssertNotEqual(keygenCheck.status, 0, "OpenSSH ssh-keygen -y 应拒绝 0640 私钥，证实必须独立于权限位核验归属")
+
+        let inspected = await setupCfg.inspect()
+        XCTAssertTrue(inspected.isManaged)
+        XCTAssertTrue(inspected.keyExists, "仅改权为 0640 的受管私钥仍应通过字节密码学归属核验")
+
+        try await setupCfg.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.privateKeyURL.path), "Remove 必须清理仅改权为 0640 的受管私钥，不得报指纹冲突留钥")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.publicKeyURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.mimiSSHDirectory.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path))
+        let managedAfter = await setupCfg.inspect().isManaged
+        XCTAssertFalse(managedAfter)
     }
 }
 

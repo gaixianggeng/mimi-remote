@@ -17,6 +17,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     static let keyFileName = "mimi_codex_local_ed25519"
     static let keyComment = "mimi-codex-local"
     static let keyStagingDirectoryPrefix = ".mimi-keygen-"
+    static let keyQuarantineDirectoryPrefix = ".mimi-quarantine-"
     static let managedIncludeMarker = "# mimi-remote-local-ssh"
     static let managedIncludePath = "~/.ssh/mimi/config"
     static let managedIncludeLine = "Include \"\(managedIncludePath)\" \(managedIncludeMarker)"
@@ -34,6 +35,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     enum HardCrashSimulationPoint: Sendable {
         case afterAuthorizedKeysCommit
         case afterKnownHostsCommit
+        case afterStageQuarantineMove
     }
 
     struct SimulatedHardCrashError: LocalizedError, Equatable {
@@ -72,12 +74,15 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
     }
 
-    /// 本次首次配置独占创建的密钥暂存目录及文件 inode 记录，调用 ssh-keygen 前先登记目录 inode，生成后补全文件 inode。
+    /// 本次首次配置独占创建的密钥暂存目录及文件 inode 记录，调用 ssh-keygen 前先登记目录 inode，生成后补全文件 inode；
+    /// 清理移入隔离目录前同时持久化隔离目录名与 `(dev, ino)`，确保中断恢复时可复核真实 inode 而不漏清或误删。
     struct StagedKeyArtifact: Codable, Equatable, Sendable {
         var directoryName: String
         var directoryIdentity: FileIdentity
         var privateKeyIdentity: FileIdentity?
         var publicKeyIdentity: FileIdentity?
+        var quarantineDirectoryName: String? = nil
+        var quarantineDirectoryIdentity: FileIdentity? = nil
     }
 
     /// 首次配置写入前落盘的预写事务意图（WAL）：保证首次配置在任意写盘点被强杀后，重启仍能识别归属并安全撤销。
@@ -461,6 +466,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     let beforeAtomicCommit: CommitHook?
     let afterVerifyBeforeCommit: CommitHook?
     let afterVerifyBeforeDelete: CommitHook?
+    let afterStageQuarantineMove: CommitHook?
     let simulateHardCrashPoint: HardCrashSimulationPoint?
 
     init(
@@ -472,6 +478,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         beforeAtomicCommit: CommitHook? = nil,
         afterVerifyBeforeCommit: CommitHook? = nil,
         afterVerifyBeforeDelete: CommitHook? = nil,
+        afterStageQuarantineMove: CommitHook? = nil,
         simulateHardCrashPoint: HardCrashSimulationPoint? = nil
     ) {
         self.homeDirectory = homeDirectory
@@ -486,6 +493,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         self.beforeAtomicCommit = beforeAtomicCommit
         self.afterVerifyBeforeCommit = afterVerifyBeforeCommit
         self.afterVerifyBeforeDelete = afterVerifyBeforeDelete
+        self.afterStageQuarantineMove = afterStageQuarantineMove
         self.simulateHardCrashPoint = simulateHardCrashPoint
     }
 
@@ -927,11 +935,22 @@ struct CodexLocalSSHConfigurator: Sendable {
             createdSSHDirectory: createdSSHDirectory,
             createdMimiDirectory: createdMimiDirectory
         )
+        var trackedStagedArtifact = stagedKeyBundle.artifact
+        let persistStagedQuarantine: (StagedKeyArtifact) throws -> Void = { updated in
+            trackedStagedArtifact = updated
+            intentState.stagedKeyArtifacts = [updated]
+            intentState.pendingTransaction?.stagedKeyArtifact = updated
+            try saveManagedState(intentState, invokeHook: false)
+        }
 
         do {
             // 2a. 原子移动独占暂存目录中的唯一私钥与公钥到 `~/.ssh/mimi/`（同 inode 移动，无副本、无覆盖）
             let keyMaterial = try publishStagedKeyPairBundle(stagedKeyBundle, rollback: &rollback)
-            _ = cleanupStagedKeyArtifact(stagedKeyBundle.artifact)
+            let initialStageCleanup = try cleanupStagedKeyArtifactWithLedger(
+                trackedStagedArtifact,
+                persistQuarantine: persistStagedQuarantine
+            )
+            trackedStagedArtifact = initialStageCleanup.artifact
 
             // 2b. 独占新建 `~/.ssh/mimi/config`（0600）
             let writtenMimiSnapshot = try publishExclusiveNewFile(
@@ -1087,9 +1106,14 @@ struct CodexLocalSSHConfigurator: Sendable {
                 }
             }
 
-            // 确认清理本次独占创建的 staging 目录（核验 inode），未清理成功则保留记录。
-            if !cleanupStagedKeyArtifact(stagedKeyBundle.artifact) {
-                nextState.stagedKeyArtifacts = [stagedKeyBundle.artifact]
+            // 确认清理本次独占创建的 staging 目录（核验 inode 并先登记隔离路径），未清理成功则保留记录。
+            let finalStageCleanup = try cleanupStagedKeyArtifactWithLedger(
+                trackedStagedArtifact,
+                persistQuarantine: persistStagedQuarantine
+            )
+            trackedStagedArtifact = finalStageCleanup.artifact
+            if !finalStageCleanup.cleaned {
+                nextState.stagedKeyArtifacts = [trackedStagedArtifact]
             }
 
             try saveManagedState(nextState, invokeHook: true)
@@ -1097,8 +1121,13 @@ struct CodexLocalSSHConfigurator: Sendable {
             // 仅测试崩溃模拟：跳过内存回滚与暂存清理，直接模拟进程被 SIGKILL 终止后的落盘现场。
             throw crash
         } catch {
-            if !cleanupStagedKeyArtifact(stagedKeyBundle.artifact) {
-                rollback.residualStagedKeyArtifacts.append(stagedKeyBundle.artifact)
+            let fallbackStageCleanup = (try? cleanupStagedKeyArtifactWithLedger(
+                trackedStagedArtifact,
+                persistQuarantine: persistStagedQuarantine
+            )) ?? StagedCleanupResult(cleaned: false, artifact: trackedStagedArtifact)
+            trackedStagedArtifact = fallbackStageCleanup.artifact
+            if !fallbackStageCleanup.cleaned {
+                rollback.residualStagedKeyArtifacts.append(trackedStagedArtifact)
             }
             let rollbackOutcome = await performRollback(rollback)
             if !rollbackOutcome.fullyRolledBack {
@@ -1436,18 +1465,40 @@ struct CodexLocalSSHConfigurator: Sendable {
                     errors.append(.fileOperationFailed(error.localizedDescription))
                 }
 
-                // 2b. 清理本次独占创建且记录了 inode 的 `~/.ssh/mimi/.mimi-keygen-*` 暂存产物。
+                // 2b. 清理本次独占创建且记录了 inode 的 `~/.ssh/mimi/.mimi-keygen-*` 暂存产物（移入隔离目录前必须先持久化隔离目录名与 inode）。
                 if !state.stagedKeyArtifacts.isEmpty {
                     var remainingStaged: [StagedKeyArtifact] = []
-                    for artifact in state.stagedKeyArtifacts {
-                        if !cleanupStagedKeyArtifact(artifact) {
-                            remainingStaged.append(artifact)
+                    for index in state.stagedKeyArtifacts.indices {
+                        let artifact = state.stagedKeyArtifacts[index]
+                        do {
+                            let result = try cleanupStagedKeyArtifactWithLedger(
+                                artifact,
+                                persistQuarantine: { updated in
+                                    var persistedState = state
+                                    persistedState.stagedKeyArtifacts[index] = updated
+                                    try saveManagedState(persistedState, invokeHook: false)
+                                    state.stagedKeyArtifacts[index] = updated
+                                }
+                            )
+                            if !result.cleaned {
+                                remainingStaged.append(result.artifact)
+                            }
+                        } catch let crash as SimulatedHardCrashError {
+                            throw crash
+                        } catch {
+                            remainingStaged.append(state.stagedKeyArtifacts[index])
+                            errors.append(.fileOperationFailed(error.localizedDescription))
                         }
                     }
                     state.stagedKeyArtifacts = remainingStaged
                     if !remainingStaged.isEmpty {
-                        let names = remainingStaged.map(\.directoryName).joined(separator: "、")
-                        errors.append(.fileOperationFailed("未能清理残留密钥暂存目录（inode 不匹配或目录非空）：\(names)"))
+                        let names = remainingStaged.map { artifact -> String in
+                            if let qDir = artifact.quarantineDirectoryName {
+                                return "\(artifact.directoryName)（隔离目录：\(qDir)）"
+                            }
+                            return artifact.directoryName
+                        }.joined(separator: "、")
+                        errors.append(.fileOperationFailed("未能清理残留密钥暂存目录（缺少已记录 inode、inode 不匹配或目录非空），已保守保留未删除，请手工核对 ~/.ssh/mimi/：\(names)"))
                     }
                 }
             }
