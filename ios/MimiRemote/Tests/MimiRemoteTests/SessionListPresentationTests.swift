@@ -1836,6 +1836,106 @@ final class SessionListPresentationTests: XCTestCase {
     ) -> Date {
         calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour, minute: minute))!
     }
+
+    @MainActor
+    func testCwdMissingBadgeKeepsFullEnglishCopyOnCompactLargeType() throws {
+        let expected = "Original folder no longer exists (read-only)"
+        XCTAssertEqual(L10n.text("ui.session_cwd_missing_badge", language: .english), expected)
+        XCTAssertTrue(expected.contains("read-only"))
+
+        let defaults = UserDefaults.standard
+        let hadStoredLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
+        let previousLanguage = defaults.string(forKey: AppLanguage.preferenceKey)
+        defaults.set(AppLanguage.english.rawValue, forKey: AppLanguage.preferenceKey)
+        defer {
+            if hadStoredLanguage {
+                defaults.set(previousLanguage, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+        }
+
+        let compactWidth: CGFloat = 375
+        let missingHeight = try cwdMissingBadgeRowHeight(
+            cwdMissing: true,
+            width: compactWidth,
+            dynamicTypeSize: .xxxLarge
+        )
+        let presentHeight = try cwdMissingBadgeRowHeight(
+            cwdMissing: false,
+            width: compactWidth,
+            dynamicTypeSize: .xxxLarge
+        )
+
+        XCTAssertGreaterThan(
+            missingHeight,
+            presentHeight,
+            "full English badge should wrap below the title on a compact large-type row; missing=\(missingHeight) present=\(presentHeight)"
+        )
+    }
+
+    @MainActor
+    private func cwdMissingBadgeRowHeight(
+        cwdMissing: Bool,
+        width: CGFloat,
+        dynamicTypeSize: DynamicTypeSize
+    ) throws -> CGFloat {
+        let suiteName = "SessionListPresentationTests.CwdMissingBadge.\(UUID().uuidString)"
+        let themeDefaults = UserDefaults(suiteName: suiteName)!
+        themeDefaults.removePersistentDomain(forName: suiteName)
+        let themeStore = ThemeStore(defaults: themeDefaults)
+        let timestamp = Date(timeIntervalSince1970: 1_780_000_000)
+
+        let session = AgentSession(
+            id: cwdMissing ? "cwd-missing-en" : "cwd-present-en",
+            projectID: "project-id",
+            project: "mimi-onboarding-plan",
+            dir: "/Users/gaixg/Code/mimi-onboarding-plan/wt-maint",
+            title: "Round 2 fixes for PR 1155 maintenance entry",
+            status: SessionStatus.history.rawValue,
+            source: "agy",
+            runtimeProvider: "agy",
+            resumeID: nil,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            recencyAt: timestamp,
+            sessionOrigin: "cli",
+            cwdMissing: cwdMissing
+        )
+
+        let row = SessionIndexRow(
+            session: session,
+            foregroundActivity: nil,
+            isSelected: false,
+            isPinned: false,
+            isArchived: false,
+            reminder: nil,
+            isObserving: false,
+            density: .compact,
+            leadingSlot: .runtimeIcon,
+            currentDate: { timestamp }
+        )
+        .environmentObject(themeStore)
+        .environment(\.locale, Locale(identifier: "en_US"))
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .environment(\.colorScheme, .light)
+        .frame(width: width)
+
+        let windowScene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let host = UIHostingController(rootView: row)
+        host.overrideUserInterfaceStyle = .light
+        let window = UIWindow(windowScene: windowScene)
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 600)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        return host.sizeThatFits(in: CGSize(width: width, height: 600)).height
+    }
+
 }
 
 @MainActor
