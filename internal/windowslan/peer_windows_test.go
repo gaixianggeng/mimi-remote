@@ -87,9 +87,11 @@ func volumeGUIDPathForTest(t *testing.T, path string) string {
 }
 
 // Re-launches the test binary itself via its \\?\Volume{GUID} path and verifies
-// both CanonicalFirewallPath and TrustedPeer against the drive-letter parent.
+// both CanonicalFirewallPath and TrustedPeer against the drive-letter parent,
+// as well as rejection of a copied binary with a different file identity.
 func TestGUIDLaunchedBrokerMatchesPeerAndCanonicalFirewallPath(t *testing.T) {
-	if os.Getenv("MIMI_WINDOWSLAN_GUID_HELPER") == "1" {
+	switch os.Getenv("MIMI_WINDOWSLAN_GUID_HELPER") {
+	case "1":
 		exe, err := os.Executable()
 		if err != nil {
 			t.Fatalf("os.Executable: %v", err)
@@ -126,6 +128,22 @@ func TestGUIDLaunchedBrokerMatchesPeerAndCanonicalFirewallPath(t *testing.T) {
 			t.Fatal("GUID-launched broker accepted wrong PID")
 		}
 		return
+	case "different-identity":
+		parentPID, err := strconv.Atoi(os.Getenv("MIMI_WINDOWSLAN_GUID_PID"))
+		if err != nil || parentPID <= 0 {
+			t.Fatalf("invalid parent PID: %v", err)
+		}
+		conn, err := net.Dial("tcp4", os.Getenv("MIMI_WINDOWSLAN_GUID_ADDR"))
+		if err != nil {
+			t.Fatalf("dial parent listener: %v", err)
+		}
+		defer conn.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if TrustedPeer(ctx, conn, parentPID, "") {
+			t.Fatal("copied binary with different file identity accepted parent peer")
+		}
+		return
 	}
 
 	selfExe, err := os.Executable()
@@ -144,11 +162,28 @@ func TestGUIDLaunchedBrokerMatchesPeerAndCanonicalFirewallPath(t *testing.T) {
 	}
 	defer listener.Close()
 
-	accepted := make(chan net.Conn, 1)
+	accepted := make(chan net.Conn, 2)
+	acceptDone := make(chan struct{})
 	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr == nil {
+		defer close(acceptDone)
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
 			accepted <- conn
+		}
+	}()
+	defer func() {
+		_ = listener.Close()
+		<-acceptDone
+		for {
+			select {
+			case conn := <-accepted:
+				_ = conn.Close()
+			default:
+				return
+			}
 		}
 	}()
 
@@ -170,5 +205,34 @@ func TestGUIDLaunchedBrokerMatchesPeerAndCanonicalFirewallPath(t *testing.T) {
 	}
 	if runErr != nil {
 		t.Fatalf("GUID-launched helper failed: %v\n%s", runErr, string(out))
+	}
+
+	// A byte-identical copy on disk has a distinct FileIndex and must be rejected.
+	copyBytes, err := os.ReadFile(canonicalSelf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyExe := filepath.Join(t.TempDir(), "different-identity.test.exe")
+	if err := os.WriteFile(copyExe, copyBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if SameFileIdentity(canonicalSelf, copyExe) {
+		t.Fatalf("SameFileIdentity(%q, %q) = true for distinct copy", canonicalSelf, copyExe)
+	}
+	diffCmd := exec.CommandContext(ctx, copyExe, "-test.run=^TestGUIDLaunchedBrokerMatchesPeerAndCanonicalFirewallPath$", "-test.v")
+	diffCmd.Env = append(
+		os.Environ(),
+		"MIMI_WINDOWSLAN_GUID_HELPER=different-identity",
+		"MIMI_WINDOWSLAN_GUID_ADDR="+listener.Addr().String(),
+		"MIMI_WINDOWSLAN_GUID_PID="+strconv.Itoa(os.Getpid()),
+	)
+	diffOut, diffErr := diffCmd.CombinedOutput()
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	default:
+	}
+	if diffErr != nil {
+		t.Fatalf("different-identity helper failed: %v\n%s", diffErr, string(diffOut))
 	}
 }

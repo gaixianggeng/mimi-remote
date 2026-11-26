@@ -86,6 +86,17 @@ type agentController struct {
 	networkLastChecked time.Time
 	stateMu            sync.RWMutex
 	configured         bool
+	rejectionLatch     maintenanceRejectionLatch
+}
+
+func (c *agentController) checkLaunchAllowed() error {
+	if c == nil {
+		return newMaintenanceError(maintenanceFailureImageMissing)
+	}
+	if err := c.rejectionLatch.Error(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *agentController) setConfigured(value bool) {
@@ -161,6 +172,9 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	case <-ctx.Done():
 		return agentStatus{}, ctx.Err()
 	}
+	if err := c.checkLaunchAllowed(); err != nil {
+		return agentStatus{}, err
+	}
 
 	c.stateMu.RLock()
 	cachedBefore := c.cachedNetwork
@@ -190,11 +204,18 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	if err != nil {
 		return agentStatus{}, err
 	}
+	if err := c.checkLaunchAllowed(); err != nil {
+		return agentStatus{}, err
+	}
 	status, err := parseAgentStatus(payload)
 	if err != nil {
 		return agentStatus{}, err
 	}
 	c.stateMu.Lock()
+	if err := c.checkLaunchAllowed(); err != nil {
+		c.stateMu.Unlock()
+		return agentStatus{}, err
+	}
 	c.configured = true
 	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
 		snapshot := *status.NetworkStatus
@@ -325,13 +346,22 @@ func (c *agentController) preflight(
 	onProgress func(onboardingCheck),
 	extraArgs ...string,
 ) (onboardingPreflightReport, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return onboardingPreflightReport{}, err
+	}
 	run := c.runHiddenWithProgress
 	if c.commandRunner != nil {
 		run = func(runCtx context.Context, _ *onboardingProgressAccumulator, _ uint64, _ func(onboardingCheck), args ...string) ([]byte, error) {
+			if err := c.checkLaunchAllowed(); err != nil {
+				return nil, err
+			}
 			return c.commandRunner(runCtx, args...)
 		}
 	}
 	report, err := runTrayPreflight(ctx, "windows", stage, progress, generation, onProgress, run, extraArgs...)
+	if launchErr := c.checkLaunchAllowed(); launchErr != nil {
+		return onboardingPreflightReport{}, launchErr
+	}
 	if err == nil && report.Configured != nil {
 		c.setConfigured(*report.Configured)
 	}
@@ -349,6 +379,9 @@ func (c *agentController) runHiddenWithProgress(
 	onProgress func(onboardingCheck),
 	args ...string,
 ) ([]byte, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return nil, err
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

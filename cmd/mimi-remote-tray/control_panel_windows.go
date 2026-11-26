@@ -808,9 +808,9 @@ func (p *controlPanel) syncFromApplication() {
 	preflightPending := p.app.preflightSetupPending
 	busy := p.app.busy
 	pairingBusy := p.app.pairingBusy
-	identityRejected := p.app.maintenanceIdentityRejected
 	tailcat, hasTailcat, tailcatErr := p.app.tailcat, p.app.hasTailcat, p.app.tailcatErr
 	p.app.mu.RUnlock()
+	identityRejected := p.app.isMaintenanceIdentityRejected()
 	brokerBlocked := p.app.controller == nil || identityRejected
 	presentation := makeControlPanelPresentationWithMaintenance(
 		status,
@@ -995,7 +995,7 @@ func (p *controlPanel) refreshPairing() {
 		return
 	}
 	p.app.mu.Lock()
-	if p.app.pairingBusy || p.app.maintenanceIdentityRejected || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
+	if p.app.pairingBusy || p.app.isMaintenanceIdentityRejected() || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
 		p.app.mu.Unlock()
 		return
 	}

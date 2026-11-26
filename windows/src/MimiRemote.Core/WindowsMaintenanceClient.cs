@@ -50,18 +50,18 @@ public sealed record MaintenanceRunResult
         string message,
         OnboardingPreflightReport? preflight = null,
         PairingTicketReceipt? pairingTicket = null) => new()
-    {
-        Succeeded = true,
-        BrokerVerified = true,
-        FailureKind = MaintenanceFailureKind.None,
-        Message = message,
-        PostRunStatus = status,
-        PostRunPreflight = preflight,
-        PostRunPairingTicket = pairingTicket,
-        WorkspaceConfirmed = status.WorkspaceConfirmed == true,
-        LanEnabled = IsLanEnabled(status),
-        LanPolicyOk = IsLanPolicyOk(status),
-    };
+        {
+            Succeeded = true,
+            BrokerVerified = true,
+            FailureKind = MaintenanceFailureKind.None,
+            Message = message,
+            PostRunStatus = status,
+            PostRunPreflight = preflight,
+            PostRunPairingTicket = pairingTicket,
+            WorkspaceConfirmed = status.WorkspaceConfirmed == true,
+            LanEnabled = IsLanEnabled(status),
+            LanPolicyOk = IsLanPolicyOk(status),
+        };
 
     public static MaintenanceRunResult Failure(
         MaintenanceFailureKind kind,
@@ -70,19 +70,22 @@ public sealed record MaintenanceRunResult
         bool brokerVerified = false)
     {
         var (fallback, message) = DescribeFailure(kind);
+        var verified = brokerVerified && !IsIdentityRejection(kind);
+        var verifiedStatus = verified ? status : null;
+        var verifiedPreflight = verified ? preflight : null;
         return new MaintenanceRunResult
         {
             Succeeded = false,
-            BrokerVerified = brokerVerified,
+            BrokerVerified = verified,
             FailureKind = kind,
             FallbackToDownload = fallback,
             DownloadUrl = fallback ? WindowsMaintenanceClient.OfficialDownloadUrl : null,
             Message = message,
-            PostRunStatus = status,
-            PostRunPreflight = preflight,
-            WorkspaceConfirmed = status?.WorkspaceConfirmed == true,
-            LanEnabled = status is not null && IsLanEnabled(status),
-            LanPolicyOk = status is not null && IsLanPolicyOk(status),
+            PostRunStatus = verifiedStatus,
+            PostRunPreflight = verifiedPreflight,
+            WorkspaceConfirmed = verifiedStatus?.WorkspaceConfirmed == true,
+            LanEnabled = verifiedStatus is not null && IsLanEnabled(verifiedStatus),
+            LanPolicyOk = verifiedStatus is not null && IsLanPolicyOk(verifiedStatus),
         };
     }
 
@@ -95,6 +98,9 @@ public sealed record MaintenanceRunResult
         or MaintenanceFailureKind.MaintenanceImageMissing
         or MaintenanceFailureKind.DigestMismatch
         or MaintenanceFailureKind.AuthenticodeFailed;
+
+    public static bool IsTerminalImageRejection(MaintenanceFailureKind kind) =>
+        IsIdentityRejection(kind) && kind != MaintenanceFailureKind.ElevatedSession;
 
     internal static bool IsLanEnabled(HostStatus status) =>
         status.ModuleStatus?.LanEnabled == true || status.NetworkStatus?.AllowLan == true;
@@ -183,6 +189,55 @@ public sealed class MaintenanceFailureException : InvalidOperationException
         : base(MaintenanceRunResult.DescribeFailure(kind).Message, innerException)
     {
         FailureKind = kind;
+    }
+}
+
+/// <summary>
+/// Single authoritative maintenance-rejection latch shared by ClientContext and
+/// AgentClient. Once latched, rejection stays terminal across ordinary refreshes
+/// and process launches until a fresh verified maintenance run succeeds or the
+/// app restarts.
+/// </summary>
+public sealed class MaintenanceRejectionLatch
+{
+    private int rejectedKind;
+
+    public bool IsRejected => Volatile.Read(ref rejectedKind) != (int)MaintenanceFailureKind.None;
+
+    public MaintenanceFailureKind FailureKind => (MaintenanceFailureKind)Volatile.Read(ref rejectedKind);
+
+    public void ApplyResult(MaintenanceRunResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (MaintenanceRunResult.IsTerminalImageRejection(result.FailureKind))
+        {
+            Latch(result.FailureKind);
+            return;
+        }
+        if (result.BrokerVerified)
+        {
+            Clear();
+        }
+    }
+
+    public void Latch(MaintenanceFailureKind kind)
+    {
+        if (!MaintenanceRunResult.IsTerminalImageRejection(kind))
+        {
+            kind = MaintenanceFailureKind.IdentityMismatch;
+        }
+        Volatile.Write(ref rejectedKind, (int)kind);
+    }
+
+    public void Clear() => Volatile.Write(ref rejectedKind, (int)MaintenanceFailureKind.None);
+
+    public void ThrowIfRejected()
+    {
+        var kind = FailureKind;
+        if (kind != MaintenanceFailureKind.None)
+        {
+            throw new MaintenanceFailureException(kind);
+        }
     }
 }
 
@@ -416,11 +471,16 @@ public sealed class WindowsMaintenanceClient(
                 var argv = (string[])ModifyArguments.Clone();
                 var result = await platform.RunBrokerAsync(pinnedBroker, argv, cancellationToken).ConfigureAwait(false);
 
-                brokerVerified = true;
                 if (result.ExitCode != 0)
                 {
                     modifyFailure = ClassifyBrokerFailure(result.StdOut, result.StdErr, result.ExitCode);
+                    if (MaintenanceRunResult.IsIdentityRejection(modifyFailure))
+                    {
+                        throw new MaintenanceFailureException(modifyFailure);
+                    }
                 }
+
+                brokerVerified = true;
                 if (modifyFailure == MaintenanceFailureKind.OldHostUnsupported)
                 {
                     return;
@@ -473,7 +533,12 @@ public sealed class WindowsMaintenanceClient(
 
         if (modifyFailure != MaintenanceFailureKind.None)
         {
-            return MaintenanceRunResult.Failure(modifyFailure, postRunStatus, postRunPreflight, brokerVerified: true);
+            var verified = !MaintenanceRunResult.IsIdentityRejection(modifyFailure);
+            return MaintenanceRunResult.Failure(
+                modifyFailure,
+                verified ? postRunStatus : null,
+                verified ? postRunPreflight : null,
+                brokerVerified: verified);
         }
 
         if (postRunStatus is null)
@@ -504,6 +569,14 @@ public sealed class WindowsMaintenanceClient(
         try
         {
             var statusResult = await platform.RunBrokerAsync(pinnedBroker, (string[])StatusArguments.Clone(), statusCts.Token).ConfigureAwait(false);
+            if (statusResult.ExitCode != 0)
+            {
+                var classified = ClassifyBrokerFailure(statusResult.StdOut, statusResult.StdErr, statusResult.ExitCode);
+                if (MaintenanceRunResult.IsIdentityRejection(classified))
+                {
+                    throw new MaintenanceFailureException(classified);
+                }
+            }
             if (statusResult.ExitCode != 0 || string.IsNullOrWhiteSpace(statusResult.StdOut))
             {
                 if (required)
@@ -557,6 +630,14 @@ public sealed class WindowsMaintenanceClient(
                 pinnedBroker,
                 ["preflight", "--json", "--stage", stage],
                 preflightCts.Token).ConfigureAwait(false);
+            if (result.ExitCode != 0)
+            {
+                var classified = ClassifyBrokerFailure(result.StdOut, result.StdErr, result.ExitCode);
+                if (MaintenanceRunResult.IsIdentityRejection(classified))
+                {
+                    throw new MaintenanceFailureException(classified);
+                }
+            }
             if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StdOut))
             {
                 return null;
@@ -608,6 +689,14 @@ public sealed class WindowsMaintenanceClient(
                 pinnedBroker,
                 AgentClient.PairArguments("lan"),
                 pairCts.Token).ConfigureAwait(false);
+            if (result.ExitCode != 0)
+            {
+                var classified = ClassifyBrokerFailure(result.StdOut, result.StdErr, result.ExitCode);
+                if (MaintenanceRunResult.IsIdentityRejection(classified))
+                {
+                    throw new MaintenanceFailureException(classified);
+                }
+            }
             if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StdOut))
             {
                 return null;

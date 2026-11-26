@@ -39,7 +39,7 @@ public sealed class PairingViewModel : ClientPageViewModel
 
     public PairingViewModel(ClientContext context) : base(context)
     {
-        session = new PairingSessionController(new ClientContextPairingBackend(context), context.VerifiedCapability);
+        session = new PairingSessionController(new ClientContextPairingBackend(context, this), context.VerifiedCapability);
         session.TicketChanged += OnTicketChanged;
         timer.Tick += (_, _) => session.TickCountdown();
 
@@ -65,7 +65,11 @@ public sealed class PairingViewModel : ClientPageViewModel
         OpenConnectionCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteConnection));
     }
 
-    public override void OnNavigatedFrom() => session.InvalidateForNavigation();
+    public override void OnNavigatedFrom()
+    {
+        base.OnNavigatedFrom();
+        session.InvalidateForNavigation();
+    }
 
     protected override void OnActiveChanged()
     {
@@ -83,7 +87,7 @@ public sealed class PairingViewModel : ClientPageViewModel
 
     protected override async Task RefreshAsync(bool force)
     {
-        if (Context.Preview)
+        if (Context.Preview || Context.IsMaintenanceIdentityRejected)
         {
             return;
         }
@@ -125,7 +129,7 @@ public sealed class PairingViewModel : ClientPageViewModel
         base.Dispose();
     }
 
-    private sealed class ClientContextPairingBackend(ClientContext context) : IPairingSessionBackend
+    private sealed class ClientContextPairingBackend(ClientContext context, PairingViewModel owner) : IPairingSessionBackend
     {
         public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
             context.ReadPreflightAsync(
@@ -156,8 +160,8 @@ public sealed class PairingViewModel : ClientPageViewModel
             });
 
         public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance =>
-            context.RunInstallerMaintenance is { } run
-                ? ct => run(MaintenancePurpose.LanFirewall, ct)
+            context.RunInstallerMaintenance is not null
+                ? ct => owner.RunPageMaintenanceAsync(MaintenancePurpose.LanFirewall, ct)
                 : null;
 
         public Task<TailcatStatus> ReadTailcatStatusAsync(CancellationToken cancellationToken) =>

@@ -7,7 +7,7 @@ using Microsoft.Win32;
 namespace MimiRemote.Core;
 
 /// <summary>All commands go directly to agentd; no shell or terminal is involved.</summary>
-public sealed class AgentClient(string executable) : IAgentCommand
+public sealed class AgentClient(string executable, MaintenanceRejectionLatch? rejectionLatch = null) : IAgentCommand
 {
     public static JsonSerializerOptions JsonOptions { get; } = new()
     {
@@ -348,6 +348,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
         string? verifiedCapability,
         CancellationToken cancellationToken)
     {
+        rejectionLatch?.ThrowIfRejected();
         var start = new ProcessStartInfo(executable)
         {
             UseShellExecute = false,
@@ -380,6 +381,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             var (output, truncated) = await stdout.ConfigureAwait(false);
             var (error, _) = await stderr.ConfigureAwait(false);
+            rejectionLatch?.ThrowIfRejected();
             if (truncated)
             {
                 throw new InvalidDataException("电脑服务返回的数据过长，请重新检查。");

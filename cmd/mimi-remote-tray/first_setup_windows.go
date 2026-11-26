@@ -27,16 +27,26 @@ func (a *trayApplication) newMaintenanceRunner() maintenanceRunner {
 	}
 }
 
+func (a *trayApplication) rejectionLatch() *maintenanceRejectionLatch {
+	if a == nil {
+		return nil
+	}
+	if a.controller != nil {
+		return &a.controller.rejectionLatch
+	}
+	return &a.fallbackRejectionLatch
+}
+
 func (a *trayApplication) isMaintenanceIdentityRejected() bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.maintenanceIdentityRejected
+	return a.rejectionLatch().IsRejected()
 }
 
 func (a *trayApplication) setMaintenanceIdentityRejected(value bool) {
-	a.mu.Lock()
-	a.maintenanceIdentityRejected = value
-	a.mu.Unlock()
+	if value {
+		a.rejectionLatch().Latch(maintenanceFailureIdentityMismatch)
+		return
+	}
+	a.rejectionLatch().Clear()
 }
 
 func (a *trayApplication) dialogFunc() func(uintptr, string, string, uint32) int {
@@ -95,15 +105,18 @@ func canRunLanMaintenance(status agentStatus, statusErr error, preflightPending 
 	if brokerMissing || identityRejected || needsFirstSetup(status, statusErr, preflightPending) {
 		return false
 	}
-	return status.Version != ""
+	if status.Version == "" {
+		return false
+	}
+	// Limit the tray entry to enable/repair only: when LAN is already healthy,
+	// opening Modify (whose lanfirewall task starts unchecked) would default to
+	// disabling working LAN.
+	return !(statusHasLANEnabled(status) && isAffirmativeLANPolicyOK(status))
 }
 
 func lanMaintenanceMenuLabel(status agentStatus) string {
 	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked && !status.NetworkStatus.PolicyOK {
 		return "修复专用局域网防火墙…"
-	}
-	if statusHasLANEnabled(status) && isAffirmativeLANPolicyOK(status) {
-		return "管理专用局域网防火墙…"
 	}
 	return "开启专用局域网访问…"
 }
@@ -183,10 +196,21 @@ func (a *trayApplication) promptMissingBrokerRecovery(
 }
 
 func (a *trayApplication) applyMaintenanceOutcome(outcome maintenanceRunOutcome, err error) {
+	// Classify terminal identity rejection BEFORE checking BrokerVerified so a
+	// Modify or readback identity rejection always latches even if status was
+	// populated, and once latched stays terminal until a fresh verified run.
+	var maintErr *maintenanceError
+	if err != nil && errors.As(err, &maintErr) && isTerminalMaintenanceImageRejection(maintErr.Kind) {
+		a.rejectionLatch().Latch(maintErr.Kind)
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+		}
+		return
+	}
 	// Never execute an unverified refresh after identity rejection. Only accept
 	// post-run state returned by the verified pinned broker.
 	if outcome.BrokerVerified {
-		a.setMaintenanceIdentityRejected(false)
+		a.rejectionLatch().Clear()
 		if a.controller != nil {
 			a.controller.applyVerifiedMaintenanceStatus(outcome.Status)
 		}
@@ -196,16 +220,6 @@ func (a *trayApplication) applyMaintenanceOutcome(outcome maintenanceRunOutcome,
 			if a.window != 0 {
 				procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
 			}
-		}
-		return
-	}
-	var maintErr *maintenanceError
-	if err != nil && errors.As(err, &maintErr) &&
-		isMaintenanceIdentityRejection(maintErr.Kind) &&
-		maintErr.Kind != maintenanceFailureElevatedSession {
-		a.setMaintenanceIdentityRejected(true)
-		if a.window != 0 {
-			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
 		}
 	}
 }

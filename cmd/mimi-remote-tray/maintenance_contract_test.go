@@ -360,6 +360,25 @@ func TestMaintenanceRunnerFailurePathsFallBackWithTypedErrors(t *testing.T) {
 			expectBrokerCall: true,
 		},
 		{
+			name: "modify nonzero real broker identity diagnostic is terminal without status readback",
+			mutate: func(r *maintenanceRunner, d *fakePinnedMaintenanceDir) {
+				calls := 0
+				r.ops.runBroker = func(_ context.Context, _ pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
+					if !d.pinned {
+						t.Error("broker ran after pins were released")
+					}
+					calls++
+					if calls > 1 {
+						t.Fatalf("status readback must not run after Modify identity rejection: %v", args)
+					}
+					return nil, []byte("错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n"), 1, errors.New("broker exited non-zero")
+				}
+			},
+			wantKind:         maintenanceFailureIdentityMismatch,
+			wantDownload:     true,
+			expectBrokerCall: true,
+		},
+		{
 			name: "uac cancelled followed by rejected readback takes identity rejection precedence",
 			mutate: func(r *maintenanceRunner, d *fakePinnedMaintenanceDir) {
 				calls := 0
@@ -372,6 +391,23 @@ func TestMaintenanceRunnerFailurePathsFallBackWithTypedErrors(t *testing.T) {
 						return nil, nil, -1, newMaintenanceError(maintenanceFailureIdentityMismatch)
 					}
 					return nil, []byte("错误：管理员授权已取消，请回到桌面应用检查局域网设置"), 1223, errors.New("exit 1223")
+				}
+			},
+			wantKind:         maintenanceFailureIdentityMismatch,
+			wantDownload:     true,
+			expectBrokerCall: true,
+		},
+		{
+			name: "uac cancelled followed by real broker identity diagnostic on readback takes identity rejection precedence",
+			mutate: func(r *maintenanceRunner, d *fakePinnedMaintenanceDir) {
+				r.ops.runBroker = func(_ context.Context, _ pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
+					if !d.pinned {
+						t.Error("broker ran after pins were released")
+					}
+					if len(args) > 0 && args[0] == "status" {
+						return nil, []byte("错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n"), 1, errors.New("broker exited non-zero")
+					}
+					return nil, []byte("错误：管理员授权已取消，请回到桌面应用检查局域网设置\n"), 1223, errors.New("broker exited non-zero")
 				}
 			},
 			wantKind:         maintenanceFailureIdentityMismatch,
@@ -485,5 +521,41 @@ func TestMaintenanceRunnerLANRequiresFreshAffirmativePolicyCheck(t *testing.T) {
 				t.Fatalf("expected lan_still_disabled failure for %s, got outcome=%+v err=%v", tc.name, outcome, err)
 			}
 		})
+	}
+}
+
+func TestMaintenanceRejectionLatchPrecedenceAndLifetime(t *testing.T) {
+	var latch maintenanceRejectionLatch
+	if latch.IsRejected() || latch.Error() != nil {
+		t.Fatal("fresh latch must start unlatched")
+	}
+
+	// Elevated session is not a persistent tampered-image rejection.
+	if latch.ApplyOutcome(maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureElevatedSession)) || latch.IsRejected() {
+		t.Fatal("elevated session must not latch persistent image rejection")
+	}
+
+	// Terminal identity rejection must win even if BrokerVerified is somehow true.
+	if !latch.ApplyOutcome(
+		maintenanceRunOutcome{BrokerVerified: true, Status: agentStatus{Version: "1.2.3"}},
+		newMaintenanceError(maintenanceFailureDigestMismatch),
+	) {
+		t.Fatal("terminal identity rejection did not latch")
+	}
+	if !latch.IsRejected() || latch.FailureKind() != maintenanceFailureDigestMismatch {
+		t.Fatalf("latch state = (%v, %s), want (true, digest_mismatch)", latch.IsRejected(), latch.FailureKind())
+	}
+
+	// Unverified outcomes must not clear a latched rejection.
+	if !latch.ApplyOutcome(maintenanceRunOutcome{BrokerVerified: false}, newMaintenanceError(maintenanceFailureLaunchFailed)) || !latch.IsRejected() {
+		t.Fatal("unverified failure cleared latched rejection")
+	}
+	if !latch.ApplyOutcome(maintenanceRunOutcome{BrokerVerified: false}, newMaintenanceError(maintenanceFailureElevatedSession)) || !latch.IsRejected() {
+		t.Fatal("elevated session cleared latched rejection")
+	}
+
+	// Only a fresh verified maintenance run without a terminal identity rejection clears the latch.
+	if latch.ApplyOutcome(maintenanceRunOutcome{BrokerVerified: true, Status: agentStatus{Version: "1.2.3"}}, nil) || latch.IsRejected() {
+		t.Fatal("fresh verified maintenance run did not clear latched rejection")
 	}
 }

@@ -267,13 +267,24 @@ func TestConfirmedWorkspaceLanMaintenanceVerifiesPolicyAndUpdatesCache(t *testin
 		maintenanceOverride: &runner,
 	}
 	if !canRunLanMaintenance(app.status, nil, false, false, false) {
-		t.Fatal("confirmed workspace must expose Private LAN maintenance action")
+		t.Fatal("confirmed workspace with LAN disabled must expose Private LAN maintenance action")
 	}
 	if got := lanMaintenanceMenuLabel(app.status); got != "开启专用局域网访问…" {
 		t.Fatalf("LAN disabled label = %q", got)
 	}
+	prePresentation := makeControlPanelPresentation(app.status, nil, false, false)
+	if prePresentation.FirstSetupVisible || !prePresentation.LanMaintenanceVisible || !prePresentation.LanMaintenanceEnabled {
+		t.Fatalf("confirmed workspace panel with LAN disabled should expose LAN maintenance without first setup: %+v", prePresentation)
+	}
+	busyPresentation := makeControlPanelPresentation(app.status, nil, true, false)
+	if busyPresentation.LanMaintenanceEnabled {
+		t.Fatalf("busy panel must disable LAN maintenance: %+v", busyPresentation)
+	}
 	unhealthy := app.status
 	unhealthy.NetworkStatus = &networkStatus{Mode: "lan", AllowLAN: true, PolicyChecked: true, PolicyOK: false}
+	if !canRunLanMaintenance(unhealthy, nil, false, false, false) {
+		t.Fatal("unhealthy Private LAN must expose repair maintenance action")
+	}
 	if got := lanMaintenanceMenuLabel(unhealthy); got != "修复专用局域网防火墙…" {
 		t.Fatalf("LAN unhealthy label = %q", got)
 	}
@@ -300,18 +311,14 @@ func TestConfirmedWorkspaceLanMaintenanceVerifiesPolicyAndUpdatesCache(t *testin
 	if controller.cachedNetwork == nil || !controller.cachedNetwork.AllowLAN || !controller.cachedNetwork.FirewallValid || !controller.cachedNetwork.PolicyOK {
 		t.Fatalf("controller network cache not updated from verified LAN readback: %+v", controller.cachedNetwork)
 	}
-	if got := lanMaintenanceMenuLabel(app.status); got != "管理专用局域网防火墙…" {
-		t.Fatalf("LAN healthy label = %q", got)
+	// Once LAN is enabled and policy is affirmatively healthy, hide the Modify
+	// entry so opening the unchecked wizard cannot default to disabling working LAN.
+	if canRunLanMaintenance(app.status, nil, false, false, false) {
+		t.Fatal("healthy Private LAN must not expose Modify entry that defaults to disabling LAN")
 	}
-
-	// Verify control panel presentation exposes the LAN maintenance action for confirmed workspaces.
-	presentation := makeControlPanelPresentation(app.status, nil, false, false)
-	if presentation.FirstSetupVisible || !presentation.LanMaintenanceVisible || !presentation.LanMaintenanceEnabled {
-		t.Fatalf("confirmed workspace panel should expose LAN maintenance without first setup: %+v", presentation)
-	}
-	busyPresentation := makeControlPanelPresentation(app.status, nil, true, false)
-	if busyPresentation.LanMaintenanceEnabled {
-		t.Fatalf("busy panel must disable LAN maintenance: %+v", busyPresentation)
+	postPresentation := makeControlPanelPresentation(app.status, nil, false, false)
+	if postPresentation.FirstSetupVisible || postPresentation.LanMaintenanceVisible || postPresentation.LanMaintenanceEnabled {
+		t.Fatalf("healthy LAN panel must hide LAN maintenance entry: %+v", postPresentation)
 	}
 }
 
@@ -485,4 +492,217 @@ func TestMaintenanceIdentityRejectionBlocksEveryExecutableActionHandler(t *testi
 			t.Fatalf("unexpected recovery URL: %q", url)
 		}
 	}
+}
+
+func TestMaintenanceModifyRealDiagnosticIdentityRejectionIsTerminalAndLatches(t *testing.T) {
+	confirmed := true
+	runner, _, _, _ := makeValidMaintenanceFixture(t)
+	brokerCalls := 0
+	runner.ops.runBroker = func(_ context.Context, _ pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
+		brokerCalls++
+		if len(args) > 0 && args[0] == "status" {
+			t.Fatalf("status readback must not run after Modify identity rejection: %v", args)
+		}
+		return nil, []byte("错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n"), 1, errors.New("broker exited non-zero")
+	}
+
+	unverifiedCalls := 0
+	controller := &agentController{
+		agentPath:  `C:\nonexistent\agentd.exe`,
+		statusGate: make(chan struct{}, 1),
+		statusRunner: func(context.Context, ...string) ([]byte, error) {
+			unverifiedCalls++
+			return []byte(`{"version":"tampered","workspace_confirmed":true}`), nil
+		},
+		commandRunner: func(context.Context, ...string) ([]byte, error) {
+			unverifiedCalls++
+			return nil, nil
+		},
+	}
+	app := &trayApplication{
+		controller:          controller,
+		status:              agentStatus{Version: "1.2.3", ProcessOK: true, ServiceOK: true, WorkspaceConfirmed: &confirmed},
+		maintenanceOverride: &runner,
+	}
+
+	var opened []string
+	app.executeLanFirewallMaintenance(
+		func(_ uintptr, _, _ string, _ uint32) int { return idYes },
+		func(url string) error {
+			opened = append(opened, url)
+			return nil
+		},
+	)
+	if brokerCalls != 1 {
+		t.Fatalf("brokerCalls = %d, want 1 (modify only, no status readback)", brokerCalls)
+	}
+	if !app.isMaintenanceIdentityRejected() || !controller.rejectionLatch.IsRejected() {
+		t.Fatal("real Modify identity rejection must set the single authoritative rejection latch")
+	}
+	if len(opened) != 1 || opened[0] != maintenanceOfficialDownloadURL {
+		t.Fatalf("expected official download recovery URL, got %v", opened)
+	}
+
+	// Even if applyMaintenanceOutcome were called with BrokerVerified=true alongside
+	// a terminal identity rejection error, the latch must remain set and status ignored.
+	app.applyMaintenanceOutcome(
+		maintenanceRunOutcome{BrokerVerified: true, Status: agentStatus{Version: "9.9.9"}},
+		newMaintenanceError(maintenanceFailureIdentityMismatch),
+	)
+	if !app.isMaintenanceIdentityRejected() || app.status.Version != "1.2.3" {
+		t.Fatalf("terminal identity rejection did not take precedence: rejected=%v version=%q", app.isMaintenanceIdentityRejected(), app.status.Version)
+	}
+
+	// Subsequent ordinary status/refresh/readback calls must fail at process launch
+	// without invoking agentd.exe or clearing the latch.
+	app.refreshStatus()
+	if _, err := controller.status(context.Background(), false); err == nil {
+		t.Fatal("controller.status succeeded while latched")
+	}
+	if _, err := controller.runHiddenWithProgress(context.Background(), nil, 0, nil, "status", "--json"); err == nil {
+		t.Fatal("controller.runHiddenWithProgress launched while latched")
+	} else {
+		var maintErr *maintenanceError
+		if !errors.As(err, &maintErr) || maintErr.Kind != maintenanceFailureIdentityMismatch {
+			t.Fatalf("expected maintenanceError(identity_mismatch) from runHiddenWithProgress, got %v", err)
+		}
+	}
+	if unverifiedCalls != 0 || !app.isMaintenanceIdentityRejected() {
+		t.Fatalf("latched rejection leaked calls=%d or cleared latch=%v", unverifiedCalls, app.isMaintenanceIdentityRejected())
+	}
+
+	// Fresh verified maintenance run clears the latch.
+	app.applyMaintenanceOutcome(
+		maintenanceRunOutcome{
+			BrokerVerified:     true,
+			WorkspaceConfirmed: true,
+			Status:             agentStatus{Version: "1.2.4", ProcessOK: true, ServiceOK: true, WorkspaceConfirmed: &confirmed},
+		},
+		nil,
+	)
+	if app.isMaintenanceIdentityRejected() || app.status.Version != "1.2.4" {
+		t.Fatalf("fresh verified maintenance run did not clear latch or apply status: rejected=%v version=%q", app.isMaintenanceIdentityRejected(), app.status.Version)
+	}
+}
+
+func TestMaintenanceRejectionEnforcedAtProcessLaunchForQueuedRefreshAndCommands(t *testing.T) {
+	t.Run("rejection arrives while timer refresh is queued on controller statusGate", func(t *testing.T) {
+		firstEntered := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		statusCalls := 0
+		commandCalls := 0
+		controller := &agentController{
+			statusGate: make(chan struct{}, 1),
+		}
+		controller.statusRunner = func(_ context.Context, _ ...string) ([]byte, error) {
+			statusCalls++
+			if statusCalls == 1 {
+				close(firstEntered)
+				<-releaseFirst
+			}
+			return []byte(`{"version":"2.0.0","process_ok":true,"service_ok":true,"workspace_confirmed":true,"network_status":{"mode":"lan","allow_lan":true,"policy_checked":true,"policy_ok":true}}`), nil
+		}
+		controller.commandRunner = func(_ context.Context, _ ...string) ([]byte, error) {
+			commandCalls++
+			return nil, nil
+		}
+		confirmed := true
+		app := &trayApplication{
+			controller: controller,
+			status:     agentStatus{Version: "1.2.3", ProcessOK: true, ServiceOK: true, WorkspaceConfirmed: &confirmed},
+		}
+
+		// First refresh holds statusGate.
+		firstDone := make(chan struct{})
+		go func() {
+			defer close(firstDone)
+			app.refreshStatus()
+		}()
+		<-firstEntered
+
+		// Second refresh passes the entry guard BEFORE rejection and blocks on statusGate.
+		secondDone := make(chan struct{})
+		go func() {
+			defer close(secondDone)
+			app.refreshStatus()
+		}()
+		time.Sleep(40 * time.Millisecond)
+
+		// Maintenance identity rejection latches while the second refresh is queued.
+		app.applyMaintenanceOutcome(maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureIdentityMismatch))
+		close(releaseFirst)
+
+		<-firstDone
+		<-secondDone
+
+		if statusCalls != 1 {
+			t.Fatalf("queued refresh launched agentd.exe after rejection latched: statusCalls=%d", statusCalls)
+		}
+		if commandCalls != 0 {
+			t.Fatalf("queued refresh launched follow-up command after rejection latched: commandCalls=%d", commandCalls)
+		}
+		if app.status.Version != "1.2.3" || controller.cachedNetwork != nil {
+			t.Fatalf("late in-flight refresh overwrote state after rejection: version=%q cachedNetwork=%+v", app.status.Version, controller.cachedNetwork)
+		}
+	})
+
+	t.Run("rejection arrives between status and preflight inside refreshStatusWithRuntimeRefresh", func(t *testing.T) {
+		pending := false
+		pendingJSON, _ := json.Marshal(agentStatus{Version: "1.2.3", WorkspaceConfirmed: &pending})
+		preflightCalls := 0
+		var app *trayApplication
+		controller := &agentController{
+			statusGate: make(chan struct{}, 1),
+			statusRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+				// Rejection latches while status is finishing, before refresh reaches preflight.
+				app.applyMaintenanceOutcome(maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureDigestMismatch))
+				return pendingJSON, nil
+			},
+			commandRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+				preflightCalls++
+				return nil, nil
+			},
+		}
+		app = &trayApplication{
+			controller: controller,
+			status:     agentStatus{Version: "1.0.0"},
+		}
+
+		app.refreshStatus()
+		if preflightCalls != 0 {
+			t.Fatalf("preflight launched after maintenance rejection latched mid-refresh: %d calls", preflightCalls)
+		}
+		if app.status.Version != "1.0.0" {
+			t.Fatalf("mid-refresh status overwrote app status after rejection: %+v", app.status)
+		}
+	})
+
+	t.Run("rejection arrives between two sequential queued controller commands", func(t *testing.T) {
+		commandCalls := 0
+		controller := &agentController{
+			statusGate: make(chan struct{}, 1),
+		}
+		controller.commandRunner = func(_ context.Context, args ...string) ([]byte, error) {
+			commandCalls++
+			if commandCalls == 1 {
+				// Latch rejection immediately before the second chained command (tailcat status).
+				controller.rejectionLatch.Latch(maintenanceFailureIdentityMismatch)
+				return []byte(`{"ok":true}`), nil
+			}
+			t.Fatalf("second command %v ran after rejection latched", args)
+			return nil, nil
+		}
+
+		_, err := controller.setTailcat(context.Background(), true)
+		if err == nil {
+			t.Fatal("setTailcat succeeded across mid-sequence identity rejection")
+		}
+		var maintErr *maintenanceError
+		if !errors.As(err, &maintErr) || maintErr.Kind != maintenanceFailureIdentityMismatch {
+			t.Fatalf("expected wrapped identity_mismatch error from second command, got %v", err)
+		}
+		if commandCalls != 1 {
+			t.Fatalf("commandCalls = %d, want 1", commandCalls)
+		}
+	})
 }

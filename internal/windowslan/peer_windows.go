@@ -102,23 +102,49 @@ if ($task.State -eq 4 -and $actions.Count -eq 1 -and $actions.Item(1).Type -eq 0
     [Console]::Out.Write('owned')
 }`
 
+const peerVolumeNameNT = 0x2
+
 // SameExecutableIdentity compares a peer process image against the current
-// executable using both kernel NT native image paths and on-disk file identity
-// (VolumeSerialNumber + FileIndex), so a broker launched by \\?\Volume{GUID}
-// recognizes a managed service started by drive letter without trusting raw
-// path strings or reparse points.
+// executable using on-disk file identity (VolumeSerialNumber + FileIndex) and
+// canonical NT native paths from non-reparse handles, so a broker launched by
+// \\?\Volume{GUID} (or a long path) recognizes a managed service started by
+// drive letter (or an 8.3 short path) without trusting raw path strings or
+// reparse points.
 func SameExecutableIdentity(process windows.Handle) bool {
 	peerNative := processImageWithFlags(process, windows.PROCESS_NAME_NATIVE)
 	selfNative := processImageWithFlags(windows.CurrentProcess(), windows.PROCESS_NAME_NATIVE)
-	if peerNative == "" || selfNative == "" || !strings.EqualFold(peerNative, selfNative) {
+	if peerNative == "" || selfNative == "" {
+		return false
+	}
+	selfPath, err := os.Executable()
+	if err != nil {
 		return false
 	}
 	peerPath := processImage(process)
-	selfPath, err := os.Executable()
-	if err != nil || peerPath == "" {
+	if peerPath == "" {
+		if !strings.HasPrefix(peerNative, `\Device\`) {
+			return false
+		}
+		peerPath = `\\?\GLOBALROOT` + peerNative
+	}
+	selfInfo, selfFinalNative, okSelf := regularFileIdentityWithNative(selfPath)
+	peerInfo, peerFinalNative, okPeer := regularFileIdentityWithNative(peerPath)
+	if !okSelf || !okPeer {
 		return false
 	}
-	return SameFileIdentity(selfPath, peerPath)
+	if !sameByHandleFileInfo(selfInfo, peerInfo) || !strings.EqualFold(selfFinalNative, peerFinalNative) {
+		return false
+	}
+	if !strings.EqualFold(peerNative, selfNative) {
+		if !strings.HasPrefix(peerNative, `\Device\`) {
+			return false
+		}
+		rawPeerInfo, rawPeerFinalNative, okRaw := regularFileIdentityWithNative(`\\?\GLOBALROOT` + peerNative)
+		if !okRaw || !sameByHandleFileInfo(selfInfo, rawPeerInfo) || !strings.EqualFold(selfFinalNative, rawPeerFinalNative) {
+			return false
+		}
+	}
+	return true
 }
 
 // SameFileIdentity reports whether two paths open the exact same regular file
@@ -129,16 +155,25 @@ func SameFileIdentity(pathA, pathB string) bool {
 	if !okA || !okB {
 		return false
 	}
-	return infoA.VolumeSerialNumber == infoB.VolumeSerialNumber &&
-		infoA.FileIndexHigh == infoB.FileIndexHigh &&
-		infoA.FileIndexLow == infoB.FileIndexLow
+	return sameByHandleFileInfo(infoA, infoB)
+}
+
+func sameByHandleFileInfo(a, b windows.ByHandleFileInformation) bool {
+	return a.VolumeSerialNumber == b.VolumeSerialNumber &&
+		a.FileIndexHigh == b.FileIndexHigh &&
+		a.FileIndexLow == b.FileIndexLow
 }
 
 func regularFileIdentity(path string) (windows.ByHandleFileInformation, bool) {
+	info, _, ok := regularFileIdentityWithNative(path)
+	return info, ok
+}
+
+func regularFileIdentityWithNative(path string) (windows.ByHandleFileInformation, string, bool) {
 	var zero windows.ByHandleFileInformation
 	utf16Path, err := windows.UTF16PtrFromString(strings.TrimSpace(path))
 	if err != nil {
-		return zero, false
+		return zero, "", false
 	}
 	handle, err := windows.CreateFile(
 		utf16Path,
@@ -150,18 +185,39 @@ func regularFileIdentity(path string) (windows.ByHandleFileInformation, bool) {
 		0,
 	)
 	if err != nil {
-		return zero, false
+		return zero, "", false
 	}
 	defer windows.CloseHandle(handle)
 
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return zero, false
+		return zero, "", false
 	}
 	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DEVICE|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
-		return zero, false
+		return zero, "", false
 	}
-	return info, true
+	nativePath, ok := peerFinalNativePathByHandle(handle)
+	if !ok {
+		return zero, "", false
+	}
+	return info, nativePath, true
+}
+
+func peerFinalNativePathByHandle(handle windows.Handle) (string, bool) {
+	buf := make([]uint16, 4096)
+	for {
+		n, err := windows.GetFinalPathNameByHandle(handle, &buf[0], uint32(len(buf)), peerVolumeNameNT)
+		if err != nil || n == 0 {
+			return "", false
+		}
+		if int(n) < len(buf) {
+			return windows.UTF16ToString(buf[:n]), true
+		}
+		if n > 32768 {
+			return "", false
+		}
+		buf = make([]uint16, n+1)
+	}
 }
 
 func processImage(process windows.Handle) string {

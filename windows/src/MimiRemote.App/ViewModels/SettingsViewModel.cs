@@ -21,7 +21,9 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public bool IsGateConfirmed => OnboardingNavigationGate.IsSettingsEditable(Context.GateState);
     public bool IsReadOnlyMode => !IsGateConfirmed;
     public bool IsPendingConfirmation => Context.GateState == OnboardingGateState.PendingConfirmation && Context.RunInstallerMaintenance is not null && !Context.Preview;
-    public bool HasMaintenanceDownloadFallback => (!Context.Preview && !Context.HasAgent) || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl);
+    public bool HasMaintenanceDownloadFallback =>
+        (!Context.Preview && (!Context.HasAgent || Context.IsMaintenanceIdentityRejected))
+        || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl);
     public string GateNotice => OnboardingNavigationGate.DescribeState(Context.GateState);
     public string ScanRoot { get => scanRoot; private set => SetProperty(ref scanRoot, value); }
     public string BrowseRoot
@@ -88,8 +90,11 @@ public sealed class SettingsViewModel : ClientPageViewModel
         OpenMaintenanceDownloadCommand = new RelayCommand(
             () =>
             {
-                var url = maintenanceFallbackDownloadUrl
-                    ?? (!Context.Preview && !Context.HasAgent ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
+                var url = maintenanceFallbackDownloadUrl;
+                if (url is null && !Context.Preview && (!Context.HasAgent || Context.IsMaintenanceIdentityRejected))
+                {
+                    url = WindowsMaintenanceClient.OfficialDownloadUrl;
+                }
                 if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
                 {
                     Context.OpenUrl(url);
@@ -111,6 +116,13 @@ public sealed class SettingsViewModel : ClientPageViewModel
         if (Context.Preview)
         {
             ServiceVersion = (await Context.ReadStatusAsync(force: force, token: Lifetime.Token)).Version;
+            return;
+        }
+        if (Context.IsMaintenanceIdentityRejected)
+        {
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            Report(MaintenanceRunResult.DescribeFailure(Context.MaintenanceRejectionLatch.FailureKind).Message, error: true);
             return;
         }
         if (Context.HasAgent)
@@ -200,14 +212,16 @@ public sealed class SettingsViewModel : ClientPageViewModel
 
     private async Task ConfirmWorkspaceViaMaintenanceAsync()
     {
-        if (!IsPendingConfirmation || Context.RunInstallerMaintenance is not { } runMaintenance)
+        if (!IsPendingConfirmation || Context.RunInstallerMaintenance is null)
         {
             return;
         }
         SetMaintenanceFallbackUrl(null);
-        var result = await runMaintenance(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
+        var result = await RunPageMaintenanceAsync(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
         SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
-        if (result.BrokerVerified)
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        if (!Context.IsMaintenanceIdentityRejected && result.BrokerVerified)
         {
             if (result.PostRunStatus is { } verifiedStatus && !string.IsNullOrWhiteSpace(verifiedStatus.Version))
             {

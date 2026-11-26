@@ -191,31 +191,31 @@ type notifyIconData struct {
 }
 
 type trayApplication struct {
-	window                      uintptr
-	icon                        uintptr
-	ownsIcon                    bool
-	taskbarCreated              uint32
-	controller                  *agentController
-	mu                          sync.RWMutex
-	status                      agentStatus
-	statusErr                   error
-	preflightSetupPending       bool
-	statusRequest               uint64
-	statusApplied               uint64
-	busy                        bool
-	pairingBusy                 bool
-	quitting                    bool
-	initialPairing              bool
-	initialShow                 bool
-	refreshStop                 chan struct{}
-	panel                       *controlPanel
-	tailcat                     tailcatTrayStatus
-	hasTailcat                  bool
-	tailcatErr                  error
-	maintenanceIdentityRejected bool
-	maintenanceOverride         *maintenanceRunner
-	showDialogFn                func(uintptr, string, string, uint32) int
-	openURLFn                   func(string) error
+	window                 uintptr
+	icon                   uintptr
+	ownsIcon               bool
+	taskbarCreated         uint32
+	controller             *agentController
+	mu                     sync.RWMutex
+	status                 agentStatus
+	statusErr              error
+	preflightSetupPending  bool
+	statusRequest          uint64
+	statusApplied          uint64
+	busy                   bool
+	pairingBusy            bool
+	quitting               bool
+	initialPairing         bool
+	initialShow            bool
+	refreshStop            chan struct{}
+	panel                  *controlPanel
+	tailcat                tailcatTrayStatus
+	hasTailcat             bool
+	tailcatErr             error
+	fallbackRejectionLatch maintenanceRejectionLatch
+	maintenanceOverride    *maintenanceRunner
+	showDialogFn           func(uintptr, string, string, uint32) int
+	openURLFn              func(string) error
 }
 
 var currentTray *trayApplication
@@ -608,11 +608,17 @@ func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 	ctx, cancel := statusContext()
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	preflightPending := false
 	if status.workspacePendingConfirmation() || (err != nil && !isFirstSetupError(err)) {
 		preflightCtx, stop := context.WithTimeout(context.Background(), trayCommandTimeout("windows", "preflight"))
 		report, preflightErr := a.controller.preflight(preflightCtx, "setup", nil, request, nil)
 		stop()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		if preflightErr == nil {
 			preflightPending, preflightErr = pendingFromSetupReport(report)
 		}
@@ -643,9 +649,12 @@ func (a *trayApplication) completeStatusRequest(request uint64, status agentStat
 }
 
 func (a *trayApplication) completeStatusRequestWithSetup(request uint64, status agentStatus, err error, preflightPending bool) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if request < a.statusApplied {
+	if a.isMaintenanceIdentityRejected() || request < a.statusApplied {
 		return
 	}
 	a.statusApplied = request

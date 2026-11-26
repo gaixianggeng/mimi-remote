@@ -27,6 +27,7 @@ public sealed class SetupViewModel : ClientPageViewModel
 
     public bool HasMaintenanceDownloadFallback =>
         IsMissingBroker
+        || Context.IsMaintenanceIdentityRejected
         || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl)
         || wizard.HasMaintenanceFallbackDownload;
 
@@ -58,7 +59,7 @@ public sealed class SetupViewModel : ClientPageViewModel
 
     public SetupViewModel(ClientContext context) : base(context)
     {
-        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context), context.VerifiedCapability)
+        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context, this), context.VerifiedCapability)
         {
             RequestPathAsync = HandlePathPickerAsync,
         };
@@ -159,7 +160,7 @@ public sealed class SetupViewModel : ClientPageViewModel
             {
                 var url = maintenanceFallbackDownloadUrl
                     ?? wizard.MaintenanceFallbackDownloadUrl
-                    ?? (IsMissingBroker ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
+                    ?? (IsMissingBroker || Context.IsMaintenanceIdentityRejected ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
                 if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
                 {
                     Context.OpenUrl(url);
@@ -176,7 +177,11 @@ public sealed class SetupViewModel : ClientPageViewModel
         };
     }
 
-    public override void OnNavigatedFrom() => wizard.InvalidateForNavigation();
+    public override void OnNavigatedFrom()
+    {
+        base.OnNavigatedFrom();
+        wizard.InvalidateForNavigation();
+    }
 
     protected override void OnActiveChanged()
     {
@@ -197,6 +202,14 @@ public sealed class SetupViewModel : ClientPageViewModel
     {
         if (Context.Preview)
         {
+            return;
+        }
+        if (Context.IsMaintenanceIdentityRejected)
+        {
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            preserveMaintenanceNotice = true;
+            Report(MaintenanceRunResult.DescribeFailure(Context.MaintenanceRejectionLatch.FailureKind).Message, error: true);
             return;
         }
         if (!Context.HasAgent)
@@ -292,15 +305,17 @@ public sealed class SetupViewModel : ClientPageViewModel
 
     private async Task ConfirmWorkspaceViaMaintenanceAsync()
     {
-        if (!IsPendingWorkspaceConfirmation || Context.RunInstallerMaintenance is not { } runMaintenance)
+        if (!IsPendingWorkspaceConfirmation || Context.RunInstallerMaintenance is null)
         {
             return;
         }
         preserveMaintenanceNotice = false;
         SetMaintenanceFallbackUrl(null);
-        var result = await runMaintenance(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
+        var result = await RunPageMaintenanceAsync(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
         SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
-        if (result.BrokerVerified)
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+        if (!Context.IsMaintenanceIdentityRejected && result.BrokerVerified)
         {
             if (result.PostRunPreflight is { } verifiedPreflight)
             {
@@ -389,7 +404,7 @@ public sealed class SetupViewModel : ClientPageViewModel
         base.Dispose();
     }
 
-    private sealed class ClientContextWizardBackend(ClientContext context) : IOnboardingWizardBackend
+    private sealed class ClientContextWizardBackend(ClientContext context, SetupViewModel owner) : IOnboardingWizardBackend
     {
         private readonly SynchronizationContext? uiContext = SynchronizationContext.Current;
 
@@ -453,8 +468,8 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
 
         public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance =>
-            context.RunInstallerMaintenance is { } run
-                ? ct => run(MaintenancePurpose.LanFirewall, ct)
+            context.RunInstallerMaintenance is not null
+                ? ct => owner.RunPageMaintenanceAsync(MaintenancePurpose.LanFirewall, ct)
                 : null;
 
         public bool DirectoryExists(string path) => Directory.Exists(path);

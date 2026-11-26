@@ -20,6 +20,8 @@ public sealed class ClientContext : IDisposable
 
     public bool Preview { get; }
     public bool IsMaintenanceRunning => Volatile.Read(ref activeMaintenanceRuns) > 0;
+    public MaintenanceRejectionLatch MaintenanceRejectionLatch { get; } = new();
+    public bool IsMaintenanceIdentityRejected => MaintenanceRejectionLatch.IsRejected;
     private long gateRequest;
     internal DesktopPreferences Preferences { get; } = DesktopPreferences.Load();
     public Action Quit { get; set; } = () => { };
@@ -54,7 +56,7 @@ public sealed class ClientContext : IDisposable
             RunInstallerMaintenance = RunTrustedInstallerMaintenanceAsync;
             try
             {
-                agent = new AgentClient(AgentClient.FindExecutable());
+                agent = new AgentClient(AgentClient.FindExecutable(), MaintenanceRejectionLatch);
             }
             catch (FileNotFoundException)
             {
@@ -62,44 +64,63 @@ public sealed class ClientContext : IDisposable
         }
     }
 
-    private async Task<MaintenanceRunResult> RunTrustedInstallerMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token)
+    public async Task<MaintenanceRunResult> RunMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token = default)
     {
+        if (RunInstallerMaintenance is not { } run)
+        {
+            var unavailable = MaintenanceRunResult.Failure(MaintenanceFailureKind.UnsignedBuild);
+            RecordMaintenanceResult(unavailable);
+            return unavailable;
+        }
         Interlocked.Increment(ref activeMaintenanceRuns);
         try
         {
-            var native = new WindowsMaintenanceNative();
-            var client = new WindowsMaintenanceClient(
-                WindowsMaintenanceNative.ResolveCandidateInstallDirectory,
-                () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
-                () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
-                native);
-            var preflightStage = purpose == MaintenancePurpose.ConfirmWorkspace ? "setup" : "pair";
-            var result = await Task.Run(
-                () => client.RunModifyAsync(purpose, preflightStage, VerifiedCapability, token),
-                token);
-            if (!result.BrokerVerified)
-            {
-                // Skip all executable refreshes after identity rejection so an
-                // unverified or registry-selected AgentClient can never run.
-                return result;
-            }
-            Invalidate();
-            if (result.PostRunStatus is { } refreshed)
-            {
-                cached = refreshed;
-                hasRuntime = true;
-                statusAt = DateTimeOffset.UtcNow;
-            }
-            if (result.PostRunPreflight is { } verifiedPreflight)
-            {
-                UpdateGateFromPreflight(verifiedPreflight);
-            }
+            var result = await run(purpose, token);
+            RecordMaintenanceResult(result);
             return result;
         }
         finally
         {
             Interlocked.Decrement(ref activeMaintenanceRuns);
         }
+    }
+
+    public void RecordMaintenanceResult(MaintenanceRunResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        var rejected = MaintenanceRunResult.IsTerminalImageRejection(result.FailureKind);
+        MaintenanceRejectionLatch.ApplyResult(result);
+        if (rejected || !result.BrokerVerified)
+        {
+            // Skip all executable refreshes after identity rejection or unverified
+            // failure so an unverified or registry-selected AgentClient can never run.
+            return;
+        }
+        Invalidate();
+        if (result.PostRunStatus is { } refreshed)
+        {
+            cached = refreshed;
+            hasRuntime = true;
+            statusAt = DateTimeOffset.UtcNow;
+        }
+        if (result.PostRunPreflight is { } verifiedPreflight)
+        {
+            UpdateGateFromPreflight(verifiedPreflight);
+        }
+    }
+
+    private Task<MaintenanceRunResult> RunTrustedInstallerMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token)
+    {
+        var native = new WindowsMaintenanceNative();
+        var client = new WindowsMaintenanceClient(
+            WindowsMaintenanceNative.ResolveCandidateInstallDirectory,
+            () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
+            () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
+            native);
+        var preflightStage = purpose == MaintenancePurpose.ConfirmWorkspace ? "setup" : "pair";
+        return Task.Run(
+            () => client.RunModifyAsync(purpose, preflightStage, VerifiedCapability, token),
+            token);
     }
 
     public AgentClient Agent => agent ?? throw new InvalidOperationException(Preview
@@ -128,17 +149,23 @@ public sealed class ClientContext : IDisposable
     public async Task<OnboardingPreflightReport> ReadPreflightAsync(OnboardingPreflightOptions options,
         Action<OnboardingCheck>? onProgress, CancellationToken cancellationToken)
     {
+        MaintenanceRejectionLatch.ThrowIfRejected();
         var request = ++gateRequest;
         try
         {
             var report = await Agent.PreflightAsync(options, onProgress, "windows", cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
+            MaintenanceRejectionLatch.ThrowIfRejected();
             if (request != gateRequest)
             {
                 throw new OperationCanceledException("已有更新的预检结果。", cancellationToken);
             }
             UpdateGateFromPreflight(report);
             return report;
+        }
+        catch (MaintenanceFailureException)
+        {
+            throw;
         }
         catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException
             or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
@@ -158,6 +185,10 @@ public sealed class ClientContext : IDisposable
         if (Preview)
         {
             UpdateGateFromPreflight(null, null);
+            return gateState;
+        }
+        if (IsMaintenanceIdentityRejected)
+        {
             return gateState;
         }
         if (agent is null)
@@ -184,12 +215,14 @@ public sealed class ClientContext : IDisposable
 
     public async Task<HostStatus> ReadStatusAsync(bool runtime = false, bool force = false, CancellationToken token = default)
     {
+        MaintenanceRejectionLatch.ThrowIfRejected();
         if (cached is not null && !force && (!runtime || hasRuntime) && DateTimeOffset.UtcNow - statusAt < TimeSpan.FromSeconds(15))
         {
             return cached;
         }
         while (true)
         {
+            MaintenanceRejectionLatch.ThrowIfRejected();
             if (statusRequest is null || statusRequest.IsCompleted || requestRevision != revision)
             {
                 requestRevision = revision;
@@ -197,6 +230,7 @@ public sealed class ClientContext : IDisposable
             }
             var expected = requestRevision;
             var pending = await statusRequest.WaitAsync(token);
+            MaintenanceRejectionLatch.ThrowIfRejected();
             if (expected != revision)
             {
                 continue;
@@ -219,7 +253,9 @@ public sealed class ClientContext : IDisposable
             return cached;
         }
 #endif
+        MaintenanceRejectionLatch.ThrowIfRejected();
         var status = await Agent.ReadAsync<HostStatus>(runtime ? ["status", "--json", "--runtime"] : ["status", "--json"]);
+        MaintenanceRejectionLatch.ThrowIfRejected();
         if (expected == revision)
         {
             cached = status;

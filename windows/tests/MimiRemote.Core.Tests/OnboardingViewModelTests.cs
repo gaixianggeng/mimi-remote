@@ -787,8 +787,7 @@ public sealed class OnboardingViewModelTests
 
         // 7) SetupViewModel full focus transition via SetActiveAsync(false) -> SetActiveAsync(true).
         var setupContext = new ClientContext();
-        var lanReadyForSetupVm = false;
-        setupContext.Agent.PreflightHandler = (_, _, _) => Task.FromResult(lanReadyForSetupVm ? readyLanReport : blockedReport);
+        setupContext.Agent.PreflightHandler = (_, _, _) => Task.FromResult(blockedReport);
         TaskCompletionSource<MaintenanceRunResult> pendingVmMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
         setupContext.RunInstallerMaintenance = (_, _) => pendingVmMaintenance.Task;
 
@@ -799,9 +798,9 @@ public sealed class OnboardingViewModelTests
         await setupVm.Wizard.ProceedToConnectStepAsync();
         setupVm.SelectTransportCommand.Execute("lan");
 
+        var callsBeforeVmMaintenance = setupContext.Agent.Calls.Count;
         var vmEnable = setupVm.EnableTransportCommand.ExecuteAsync(null);
         await setupVm.SetActiveAsync(false);
-        lanReadyForSetupVm = true;
         pendingVmMaintenance.SetResult(BuildSuccessResult("setup-vm-focus-held", DateTimeOffset.UtcNow.AddMinutes(5)));
         await vmEnable;
         Assert.False(setupVm.Wizard.HasIssuedTicket);
@@ -809,6 +808,7 @@ public sealed class OnboardingViewModelTests
         await setupVm.SetActiveAsync(true);
         Assert.True(setupVm.Wizard.HasIssuedTicket);
         Assert.Contains(vmQrPayloads, url => string.Equals(url, "mimiremote://pair?pair_sig=setup-vm-focus-held", StringComparison.Ordinal));
+        Assert.Equal(callsBeforeVmMaintenance, setupContext.Agent.Calls.Count);
 
         // Navigating away from SetupViewModel discards any held ticket.
         setupVm.OnNavigatedFrom();

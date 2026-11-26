@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -255,6 +256,91 @@ func isMaintenanceIdentityRejection(kind maintenanceFailureKind) bool {
 	}
 }
 
+func isTerminalMaintenanceImageRejection(kind maintenanceFailureKind) bool {
+	return isMaintenanceIdentityRejection(kind) && kind != maintenanceFailureElevatedSession
+}
+
+// maintenanceRejectionLatch is the single authoritative rejection latch shared
+// by the tray UI and agentController process-launch boundary. Once latched,
+// rejection stays terminal across ordinary refreshes and queued commands until
+// a fresh verified maintenance run succeeds or the app restarts.
+type maintenanceRejectionLatch struct {
+	mu       sync.RWMutex
+	rejected bool
+	kind     maintenanceFailureKind
+}
+
+func (l *maintenanceRejectionLatch) IsRejected() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.RLock()
+	rejected := l.rejected
+	l.mu.RUnlock()
+	return rejected
+}
+
+func (l *maintenanceRejectionLatch) FailureKind() maintenanceFailureKind {
+	if l == nil {
+		return maintenanceFailureNone
+	}
+	l.mu.RLock()
+	rejected := l.rejected
+	kind := l.kind
+	l.mu.RUnlock()
+	if !rejected {
+		return maintenanceFailureNone
+	}
+	if !isTerminalMaintenanceImageRejection(kind) {
+		return maintenanceFailureIdentityMismatch
+	}
+	return kind
+}
+
+func (l *maintenanceRejectionLatch) Latch(kind maintenanceFailureKind) {
+	if l == nil {
+		return
+	}
+	if !isTerminalMaintenanceImageRejection(kind) {
+		kind = maintenanceFailureIdentityMismatch
+	}
+	l.mu.Lock()
+	l.rejected = true
+	l.kind = kind
+	l.mu.Unlock()
+}
+
+func (l *maintenanceRejectionLatch) Clear() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.rejected = false
+	l.kind = maintenanceFailureNone
+	l.mu.Unlock()
+}
+
+func (l *maintenanceRejectionLatch) Error() *maintenanceError {
+	kind := l.FailureKind()
+	if kind == maintenanceFailureNone {
+		return nil
+	}
+	return newMaintenanceError(kind)
+}
+
+func (l *maintenanceRejectionLatch) ApplyOutcome(outcome maintenanceRunOutcome, err error) bool {
+	var maintErr *maintenanceError
+	if err != nil && errors.As(err, &maintErr) && isTerminalMaintenanceImageRejection(maintErr.Kind) {
+		l.Latch(maintErr.Kind)
+		return true
+	}
+	if outcome.BrokerVerified {
+		l.Clear()
+		return false
+	}
+	return l.IsRejected()
+}
+
 func isAffirmativeLANPolicyOK(status agentStatus) bool {
 	return status.NetworkStatus != nil &&
 		status.NetworkStatus.PolicyChecked &&
@@ -327,16 +413,16 @@ func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose main
 		}
 		args := append([]string(nil), maintenanceModifyArgs...)
 		stdout, stderr, exitCode, runErr := r.ops.runBroker(ctx, pinnedBroker, args)
-		var maintErr *maintenanceError
-		if runErr != nil && errors.As(runErr, &maintErr) && isMaintenanceIdentityRejection(maintErr.Kind) {
-			return maintErr
-		}
-
-		outcome.BrokerVerified = true
 		var modifyErr *maintenanceError
 		if runErr != nil || exitCode != 0 {
 			modifyErr = classifyMaintenanceBrokerFailure(stdout, stderr, exitCode, runErr)
 		}
+		if modifyErr != nil && isMaintenanceIdentityRejection(modifyErr.Kind) {
+			outcome = maintenanceRunOutcome{}
+			return modifyErr
+		}
+
+		outcome.BrokerVerified = true
 		if modifyErr != nil && modifyErr.Kind == maintenanceFailureOldHostUnsupported {
 			return modifyErr
 		}
@@ -348,7 +434,7 @@ func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose main
 		if ctx.Err() == nil {
 			statusCtx, stopStatus := context.WithTimeout(ctx, maintenanceStatusReadTimeout)
 			statusArgs := append([]string(nil), maintenanceStatusArgs...)
-			statusOut, _, statusExit, statusRunErr := r.ops.runBroker(statusCtx, pinnedBroker, statusArgs)
+			statusOut, statusErrOut, statusExit, statusRunErr := r.ops.runBroker(statusCtx, pinnedBroker, statusArgs)
 			stopStatus()
 			if statusRunErr == nil && statusExit == 0 {
 				if parsed, parseErr := parseAgentStatus(statusOut); parseErr == nil {
@@ -357,8 +443,8 @@ func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose main
 					return newMaintenanceError(maintenanceFailureStatusReadFailed)
 				}
 			} else {
-				var statusMaintErr *maintenanceError
-				if statusRunErr != nil && errors.As(statusRunErr, &statusMaintErr) && isMaintenanceIdentityRejection(statusMaintErr.Kind) {
+				statusMaintErr := classifyMaintenanceBrokerFailure(statusOut, statusErrOut, statusExit, statusRunErr)
+				if statusMaintErr != nil && isMaintenanceIdentityRejection(statusMaintErr.Kind) {
 					outcome = maintenanceRunOutcome{}
 					return statusMaintErr
 				}
@@ -376,7 +462,11 @@ func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose main
 		return nil
 	})
 	if err != nil {
-		return outcome, ensureMaintenanceError(err, maintenanceFailureLaunchFailed)
+		resolvedErr := ensureMaintenanceError(err, maintenanceFailureLaunchFailed)
+		if isMaintenanceIdentityRejection(resolvedErr.Kind) {
+			outcome = maintenanceRunOutcome{}
+		}
+		return outcome, resolvedErr
 	}
 
 	if purpose == maintenancePurposeConfirmWorkspace && !outcome.WorkspaceConfirmed {

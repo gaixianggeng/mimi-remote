@@ -77,6 +77,9 @@ func tailcatPairingArguments() []string {
 }
 
 func (c *agentController) runCommand(ctx context.Context, args ...string) ([]byte, error) {
+	if err := c.checkLaunchAllowed(); err != nil {
+		return nil, err
+	}
 	if c.commandRunner != nil {
 		return c.commandRunner(ctx, args...)
 	}
@@ -186,6 +189,9 @@ func (a *trayApplication) refreshTailcat(processOK bool) {
 }
 
 func (a *trayApplication) storeTailcat(status tailcatTrayStatus, err error) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.tailcatErr = err

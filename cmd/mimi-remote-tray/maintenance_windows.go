@@ -540,13 +540,35 @@ func verifyTrayPathMatchesIdentity(path string, broker pinnedBrokerImage) error 
 		info.FileIndexLow != broker.FileIndexLow {
 		return newMaintenanceError(maintenanceFailureIdentityMismatch)
 	}
+	if broker.NativeImagePath != "" {
+		finalNative, err := trayFinalNativePathByHandle(h)
+		if err != nil || !strings.EqualFold(finalNative, broker.NativeImagePath) {
+			return newMaintenanceError(maintenanceFailureIdentityMismatch)
+		}
+	}
 	return nil
+}
+
+func verifyTrayNativePathMatchesIdentity(nativePath string, broker pinnedBrokerImage) error {
+	if !strings.HasPrefix(nativePath, `\Device\`) {
+		return newMaintenanceError(maintenanceFailureIdentityMismatch)
+	}
+	return verifyTrayPathMatchesIdentity(`\\?\GLOBALROOT`+nativePath, broker)
 }
 
 func verifyTrayProcessMatchesIdentity(proc windows.Handle, broker pinnedBrokerImage) error {
 	nativePath, err := queryTrayProcessImagePath(proc, windows.PROCESS_NAME_NATIVE)
-	if err != nil || broker.NativeImagePath == "" || !strings.EqualFold(nativePath, broker.NativeImagePath) {
+	if err != nil || nativePath == "" || broker.NativeImagePath == "" {
 		return newMaintenanceError(maintenanceFailureIdentityMismatch)
+	}
+	if !strings.EqualFold(nativePath, broker.NativeImagePath) {
+		// QueryFullProcessImageNameW preserves 8.3 short components (such as
+		// RUNNER~1 on Windows CI) while GetFinalPathNameByHandleW returns the
+		// normalized long name. Verify the exact kernel NT path resolves to the
+		// same non-reparse file identity and normalized NT path before resuming.
+		if err := verifyTrayNativePathMatchesIdentity(nativePath, broker); err != nil {
+			return err
+		}
 	}
 	if err := verifyTrayPathMatchesIdentity(broker.Path, broker); err != nil {
 		return err

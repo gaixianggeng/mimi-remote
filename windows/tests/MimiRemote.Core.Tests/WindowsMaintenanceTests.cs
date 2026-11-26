@@ -106,6 +106,7 @@ public sealed class WindowsMaintenanceTests
     [InlineData("digest_mismatch_broker", MaintenanceFailureKind.DigestMismatch, true, false, false)]
     [InlineData("authenticode_failed", MaintenanceFailureKind.AuthenticodeFailed, true, false, false)]
     [InlineData("process_identity_mismatch", MaintenanceFailureKind.IdentityMismatch, true, true, false)]
+    [InlineData("modify_identity_mismatch_real_diagnostic", MaintenanceFailureKind.IdentityMismatch, true, true, false)]
     [InlineData("uac_cancelled_code", MaintenanceFailureKind.UacCancelled, true, true, true)]
     [InlineData("old_host", MaintenanceFailureKind.OldHostUnsupported, true, true, true)]
     [InlineData("status_unconfirmed", MaintenanceFailureKind.StatusStillUnconfirmed, false, true, true)]
@@ -170,6 +171,12 @@ public sealed class WindowsMaintenanceTests
             case "process_identity_mismatch":
                 fixture.ModifyException = new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
                 break;
+            case "modify_identity_mismatch_real_diagnostic":
+                fixture.BrokerResult = new MaintenanceBrokerProcessResult(
+                    "",
+                    "错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n",
+                    1);
+                break;
             case "uac_cancelled_code":
                 fixture.BrokerResult = new MaintenanceBrokerProcessResult(
                     "",
@@ -217,10 +224,12 @@ public sealed class WindowsMaintenanceTests
             Assert.NotEmpty(fixture.LaunchedCalls);
             Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
         }
-        if (scenario == "process_identity_mismatch")
+        if (scenario is "process_identity_mismatch" or "modify_identity_mismatch_real_diagnostic")
         {
-            // Must not run status readback after pre-resume process identity failure.
+            // Must not run status readback after pre-resume or Modify identity rejection.
             Assert.Single(fixture.LaunchedCalls);
+            Assert.Null(result.PostRunStatus);
+            Assert.Null(result.PostRunPreflight);
         }
         if (scenario == "uac_cancelled_code")
         {
@@ -350,6 +359,115 @@ public sealed class WindowsMaintenanceTests
         Assert.Equal(2, fixture.LaunchedCalls.Count);
         Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
         Assert.Equal(["status", "--json", "--runtime", "--network-policy"], fixture.LaunchedCalls[1].Args);
+
+        // Real broker nonzero identity diagnostic on status readback must also be terminal.
+        var diagnosticFixture = new FakeMaintenancePlatform
+        {
+            BrokerResult = new MaintenanceBrokerProcessResult("", "错误：管理员授权已取消，请回到桌面应用检查局域网设置\n", 1223),
+            StatusResult = new MaintenanceBrokerProcessResult(
+                "",
+                "错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n",
+                1),
+        };
+        var diagResult = await diagnosticFixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+
+        Assert.False(diagResult.Succeeded);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, diagResult.FailureKind);
+        Assert.False(diagResult.BrokerVerified);
+        Assert.True(diagResult.FallbackToDownload);
+        Assert.Null(diagResult.PostRunStatus);
+        Assert.Null(diagResult.PostRunPreflight);
+        Assert.Equal(2, diagnosticFixture.LaunchedCalls.Count);
+        Assert.Equal(["installer-maintenance", "modify"], diagnosticFixture.LaunchedCalls[0].Args);
+        Assert.Equal(["status", "--json", "--runtime", "--network-policy"], diagnosticFixture.LaunchedCalls[1].Args);
+    }
+
+    [Fact]
+    public async Task ModifyRealDiagnosticIdentityRejectionIsTerminalAndBlocksAgentClientAtProcessLaunch()
+    {
+        var fixture = new FakeMaintenancePlatform
+        {
+            BrokerResult = new MaintenanceBrokerProcessResult(
+                "",
+                "错误：无法验证此版本的维护程序，请从官方下载页重新安装已签名的桌面安装包\n",
+                1),
+        };
+
+        var result = await fixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, result.FailureKind);
+        Assert.False(result.BrokerVerified);
+        Assert.True(result.FallbackToDownload);
+        Assert.Null(result.PostRunStatus);
+        Assert.Null(result.PostRunPreflight);
+        Assert.Single(fixture.LaunchedCalls);
+        Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
+
+        // MaintenanceRunResult.Failure must structurally reject verified status/preflight on identity rejection.
+        var coerced = MaintenanceRunResult.Failure(
+            MaintenanceFailureKind.IdentityMismatch,
+            fixture.PostRunStatus,
+            BuildSetupReport("setup", workspaceConfirmed: true),
+            brokerVerified: true);
+        Assert.False(coerced.BrokerVerified);
+        Assert.Null(coerced.PostRunStatus);
+        Assert.Null(coerced.PostRunPreflight);
+
+        // The single authoritative latch blocks AgentClient at RunCoreAsync BEFORE Process.Start.
+        var latch = new MaintenanceRejectionLatch();
+        var sentinelExecutable = Path.Combine(
+            Path.GetTempPath(),
+            "mimi-never-launch-" + Guid.NewGuid().ToString("N") + ".exe");
+        var agent = new AgentClient(sentinelExecutable, latch);
+
+        latch.ApplyResult(result);
+        Assert.True(latch.IsRejected);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, latch.FailureKind);
+
+        // Unverified failures and ElevatedSession must not clear a latched rejection.
+        latch.ApplyResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.ElevatedSession));
+        latch.ApplyResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.LaunchFailed));
+        Assert.True(latch.IsRejected);
+
+        var runEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() => agent.RunAsync(["status", "--json"]));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, runEx.FailureKind);
+        var preflightEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() =>
+            agent.PreflightAsync(new OnboardingPreflightOptions { Stage = "setup" }));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, preflightEx.FailureKind);
+        var readEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() =>
+            agent.ReadAsync<HostStatus>(["status", "--json"]));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, readEx.FailureKind);
+        var pairEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() => agent.PairAsync("lan"));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, pairEx.FailureKind);
+
+        // Rejection arriving between two sequential commands blocks the second command at launch.
+        var context = new ClientContext();
+        var calls = 0;
+        context.Agent.RunHandler = (args, _) =>
+        {
+            calls++;
+            if (calls == 1)
+            {
+                context.RecordMaintenanceResult(result);
+                return Task.FromResult("{}");
+            }
+            throw new InvalidOperationException($"Unexpected command after rejection: {string.Join(' ', args)}");
+        };
+        _ = await context.Agent.RunAsync(["tailcat", "enable", "--json"]);
+        Assert.True(context.IsMaintenanceIdentityRejected);
+        var secondCmdEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() =>
+            context.Agent.RunAsync(["tailcat", "status", "--json"]));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, secondCmdEx.FailureKind);
+        Assert.Equal(1, calls);
+        Assert.Single(context.Agent.Calls);
+
+        // Only a fresh verified maintenance run clears the latch.
+        latch.ApplyResult(MaintenanceRunResult.Success(
+            fixture.PostRunStatus,
+            "ok",
+            BuildSetupReport("setup", workspaceConfirmed: true)));
+        Assert.False(latch.IsRejected);
     }
 
     [Fact]
@@ -526,6 +644,87 @@ public sealed class WindowsMaintenanceTests
         Assert.True(model.Failed);
         Assert.True(model.HasMaintenanceDownloadFallback);
         Assert.Contains(OnboardingCopyCatalog.UrlDesktop, model.Notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SetupViewModelSuppressesWizardReturnPreflightAcrossFocusRoundTripWhenRejectedOrMissingPreflight()
+    {
+        // 1) Timing order A: focus returns while maintenance is still running, then maintenance rejects the image.
+        var rejectContext = new ClientContext();
+        rejectContext.Agent.PreflightHandler = (opts, _, _) => Task.FromResult(BuildSetupReport(opts.Stage, workspaceConfirmed: false));
+        var pendingReject = new TaskCompletionSource<MaintenanceRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rejectContext.RunInstallerMaintenance = (_, _) => pendingReject.Task;
+
+        using var rejectModel = new SetupViewModel(rejectContext);
+        await rejectModel.SetActiveAsync(true);
+        Assert.Equal(OnboardingGateState.PendingConfirmation, rejectContext.GateState);
+        var callsBeforeReject = rejectContext.Agent.Calls.Count;
+
+        var rejectRun = rejectModel.ConfirmWorkspaceViaMaintenanceCommand.ExecuteAsync(null);
+        await rejectModel.SetActiveAsync(false);
+        var queuedReactivation = rejectModel.SetActiveAsync(true);
+        pendingReject.SetResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.IdentityMismatch));
+        await Task.WhenAll(rejectRun, queuedReactivation);
+        await rejectModel.WhenIdle;
+
+        Assert.True(rejectContext.IsMaintenanceIdentityRejected);
+        Assert.Equal(callsBeforeReject, rejectContext.Agent.Calls.Count);
+        Assert.True(rejectModel.HasMaintenanceDownloadFallback);
+        Assert.True(rejectModel.Failed);
+
+        // Subsequent focus round trips and StatusChanged notifications stay blocked while latched.
+        await rejectModel.SetActiveAsync(false);
+        await rejectModel.SetActiveAsync(true);
+        rejectContext.RaiseStatusChanged();
+        await rejectModel.WhenIdle;
+        Assert.Equal(callsBeforeReject, rejectContext.Agent.Calls.Count);
+
+        // 2) Timing order B: maintenance completes while inactive WITHOUT verified preflight, then focus returns.
+        var noPreflightContext = new ClientContext();
+        noPreflightContext.Agent.PreflightHandler = (opts, _, _) => Task.FromResult(BuildSetupReport(opts.Stage, workspaceConfirmed: false));
+        var pendingNoPreflight = new TaskCompletionSource<MaintenanceRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        noPreflightContext.RunInstallerMaintenance = (_, _) => pendingNoPreflight.Task;
+
+        using var noPreflightModel = new SetupViewModel(noPreflightContext);
+        await noPreflightModel.SetActiveAsync(true);
+        var callsBeforeNoPreflight = noPreflightContext.Agent.Calls.Count;
+
+        var noPreflightRun = noPreflightModel.ConfirmWorkspaceViaMaintenanceCommand.ExecuteAsync(null);
+        await noPreflightModel.SetActiveAsync(false);
+        pendingNoPreflight.SetResult(MaintenanceRunResult.Success(
+            new HostStatus { Version = "1.2.3", ServiceOk = true, WorkspaceConfirmed = true },
+            "代码目录已确认，服务状态已刷新。",
+            preflight: null));
+        await noPreflightRun;
+        await noPreflightModel.SetActiveAsync(true);
+        await noPreflightModel.WhenIdle;
+
+        Assert.Equal(callsBeforeNoPreflight, noPreflightContext.Agent.Calls.Count);
+        Assert.True(noPreflightModel.Failed);
+        Assert.True(noPreflightModel.HasMaintenanceDownloadFallback);
+
+        // 3) LAN maintenance via EnableTransportCommand: rejected image and missing preflight across focus round trip.
+        var lanContext = new ClientContext();
+        lanContext.Agent.PreflightHandler = (opts, _, _) => Task.FromResult(BuildSetupReport(opts.Stage, workspaceConfirmed: true));
+        var pendingLan = new TaskCompletionSource<MaintenanceRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lanContext.RunInstallerMaintenance = (_, _) => pendingLan.Task;
+
+        using var lanModel = new SetupViewModel(lanContext);
+        await lanModel.SetActiveAsync(true);
+        await lanModel.Wizard.ProceedToConnectStepAsync();
+        lanModel.SelectTransportCommand.Execute("lan");
+        var callsBeforeLan = lanContext.Agent.Calls.Count;
+
+        var lanRun = lanModel.EnableTransportCommand.ExecuteAsync(null);
+        await lanModel.SetActiveAsync(false);
+        var lanReactivation = lanModel.SetActiveAsync(true);
+        pendingLan.SetResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.DigestMismatch));
+        await Task.WhenAll(lanRun, lanReactivation);
+        await lanModel.WhenIdle;
+
+        Assert.True(lanContext.IsMaintenanceIdentityRejected);
+        Assert.Equal(callsBeforeLan, lanContext.Agent.Calls.Count);
+        Assert.True(lanModel.HasMaintenanceDownloadFallback);
     }
 
     [Fact]
