@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -119,6 +121,90 @@ func TestPassiveCodexClaimUsesFreshAccountObservation(t *testing.T) {
 	expirePairingAssistantEvidence(r)
 	if r.checkPairingAssistant(t.Context(), generation, passivePairing) == nil {
 		t.Fatal("stale host account observation admitted discovery")
+	}
+}
+
+func TestLocalPairingUsesCodexObservationFromAppliedTailcatGeneration(t *testing.T) {
+	isolatePairingAssistantEnv(t)
+	for _, transport := range []string{"local", "ssh"} {
+		t.Run(transport, func(t *testing.T) {
+			if transport == "local" && !config.SupportsSharedLocalAppServer() {
+				t.Skip("shared local transport requires macOS or Linux")
+			}
+			accountRead := make(chan struct{})
+			hold, release := context.WithCancel(t.Context())
+			defer release()
+			pauseFirstRead := sync.OnceFunc(func() {
+				close(accountRead)
+				<-hold.Done()
+			})
+			respond := runtimeStatusCodexResponder(t)
+			upstream, _, dials := fakeAppServerUpstream(t, func(conn *websocket.Conn, mt int, payload []byte) {
+				var frame struct{ Method string }
+				if err := json.Unmarshal(payload, &frame); err != nil {
+					t.Error(err)
+					return
+				}
+				if frame.Method == "account/read" {
+					pauseFirstRead()
+				}
+				respond(conn, mt, payload)
+			})
+			root := t.TempDir()
+			s := newFileBackedPairingServer(t, map[string]any{
+				"auth": map[string]string{"token": testToken}, "app_server": map[string]string{"transport": transport},
+				"scan_roots": []string{root}, "browse_roots": []string{root},
+			}, directWSTestTransport{upstreamURL: upstream})
+			r := s.router
+			claim := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/pair/local", nil)
+				req.RemoteAddr = "127.0.0.1:12345"
+				req.Header.Set(localPairingHeader, "1")
+				rec := httptest.NewRecorder()
+				s.handler.ServeHTTP(rec, req)
+				return rec
+			}
+
+			// Hold an authenticated account response across the live relay change.
+			startup := r.cfg.SourceGeneration()
+			first := make(chan runtimeAccountStatus, 1)
+			go func() { first <- r.probeCodexRuntime(t.Context()) }()
+			select {
+			case <-accountRead:
+			case status := <-first:
+				t.Fatalf("host probe ended before account/read: %s", status.Reason)
+			}
+			if _, err := r.tailcat.ConfigureDERPMap(t.Context(), "https://relay.example.invalid/map"); err != nil {
+				t.Fatal(err)
+			}
+			applied := r.appliedPairingGeneration()
+			if applied == "" || applied == startup {
+				t.Fatal("live relay change did not advance the applied generation")
+			}
+			if rec := claim(); rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("claim before current account observation: %d", rec.Code)
+			}
+			release()
+			if status := <-first; status.State != runtimeStateConnected {
+				t.Fatalf("old account observation: %s", status.State)
+			}
+			if r.pairingStatus.stillFreshForPairing(startup) || r.pairingStatus.stillFreshForPairing(applied) {
+				t.Fatal("in-flight observation from the old generation admitted pairing")
+			}
+
+			_, status := readRuntimeStatusEventually(t, s.handler)
+			if status.Runtimes[0].State != runtimeStateConnected {
+				t.Fatal("host status did not observe the authenticated Codex account")
+			}
+			rec := claim()
+			var pair pairingClaimResponse
+			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &pair) != nil || pair.Token != testToken || pair.Endpoint != localPairingEndpoint {
+				t.Fatalf("automatic claim after fresh host status: %d %s", rec.Code, rec.Body)
+			}
+			if got := dials.Load(); got != 2 {
+				t.Fatalf("got %d Codex connections, want only the two host probes", got)
+			}
+		})
 	}
 }
 

@@ -62,26 +62,9 @@ func performLocalIssue(t *testing.T, s testServer, generation string, change fun
 	return rec
 }
 
-func TestDeepSeekOnlyIssuesAndClaimsOnAppliedGeneration(t *testing.T) {
-	isolatePairingAssistantEnv(t)
-	root := t.TempDir()
-	h := newFakeDeepSeekHarness(t)
-	var models atomic.Bool
-	models.Store(true)
-	h.handle(harnessclient.MethodSessionModelCatalog, func(json.RawMessage) (any, *harnessclient.RemoteError) {
-		if models.Load() {
-			return json.RawMessage(`{"groups":[{"models":[{"id":"fixture"}]}]}`), nil
-		}
-		return json.RawMessage(`{"groups":[]}`), nil
-	})
-	upstream := h.serve()
+func newFileBackedPairingServer(t *testing.T, document map[string]any, transport AppServerTransport) testServer {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
-	document := map[string]any{
-		"listen": "127.0.0.1:8787", "auth": map[string]string{"token": testToken},
-		"network":    map[string]bool{"allow_lan": true, "allow_tailscale": false},
-		"scan_roots": []string{root}, "browse_roots": []string{root},
-		"codex": map[string]bool{"enabled": false}, "deepseek": map[string]any{"enabled": true, "base_url": upstream.URL, "token_file": writeDeepSeekTestTokenFile(t, h.token)},
-	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -96,17 +79,40 @@ func TestDeepSeekOnlyIssuesAndClaimsOnAppliedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	checker := doctor.NewChecker("test", cfg, registry, path)
-	handler, r := NewRouterWithInstallationIDAndOptions(cfg, registry, checker, "test", "", RouterOptions{ConfigPath: path})
+	handler, r := NewRouterWithInstallationIDAndOptions(cfg, registry, checker, "test", "", RouterOptions{ConfigPath: path, AppServerSSH: transport})
 	t.Cleanup(r.Shutdown)
+	return testServer{handler: handler, router: r}
+}
+
+func TestDeepSeekOnlyIssuesAndClaimsOnAppliedGeneration(t *testing.T) {
+	isolatePairingAssistantEnv(t)
+	root := t.TempDir()
+	h := newFakeDeepSeekHarness(t)
+	var models atomic.Bool
+	models.Store(true)
+	h.handle(harnessclient.MethodSessionModelCatalog, func(json.RawMessage) (any, *harnessclient.RemoteError) {
+		if models.Load() {
+			return json.RawMessage(`{"groups":[{"models":[{"id":"fixture"}]}]}`), nil
+		}
+		return json.RawMessage(`{"groups":[]}`), nil
+	})
+	upstream := h.serve()
+	document := map[string]any{
+		"listen": "127.0.0.1:8787", "auth": map[string]string{"token": testToken},
+		"network":    map[string]bool{"allow_lan": true, "allow_tailscale": false},
+		"scan_roots": []string{root}, "browse_roots": []string{root},
+		"codex": map[string]bool{"enabled": false}, "deepseek": map[string]any{"enabled": true, "base_url": upstream.URL, "token_file": writeDeepSeekTestTokenFile(t, h.token)},
+	}
+	s := newFileBackedPairingServer(t, document, nil)
+	r, handler := s.router, s.handler
 	const endpoint = "http://192.168.50.5:8787"
 	r.directCandidate = func(context.Context, string, config.Config, setup.PairingNetwork) (setup.Result, error) {
 		return setup.Result{Endpoint: endpoint, Token: testToken, Network: setup.PairingNetworkLAN}, nil
 	}
 	r.directReachable = func(_ context.Context, a *net.TCPAddr) bool { return "http://"+a.String() == endpoint }
-	s := testServer{handler: handler, router: r}
-	g := cfg.SourceGeneration()
+	g := r.cfg.SourceGeneration()
 	if g == "" || g != r.appliedPairingGeneration() {
-		t.Fatalf("applied document unavailable: %s", config.ReadPreflightSnapshot(path).Code)
+		t.Fatalf("applied document unavailable: %s", config.ReadPreflightSnapshot(r.configPath).Code)
 	}
 	issue := performLocalIssue(t, s, g, nil)
 	var pair setup.Result
@@ -172,7 +178,7 @@ func TestDeepSeekOnlyIssuesAndClaimsOnAppliedGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configtest.WritePrivateFile(t, path, changed)
+	configtest.WritePrivateFile(t, r.configPath, changed)
 	if r.appliedPairingGeneration() != "" {
 		t.Fatal("new workspace incorrectly attributed to running daemon")
 	}
