@@ -662,6 +662,46 @@ extension CodexLocalSSHConfigurator {
         "xauthlocation",
     ]
 
+    /// 解析 OpenSSH `IgnoreUnknown <pattern-list>` 指令（仅接受单参数逗号分隔模式，与 OpenSSH `readconf.c` 一致）。
+    static func parseIgnoreUnknownPatterns(from tokens: [String]) -> [String]? {
+        guard tokens.count == 2 else { return nil }
+        let patterns = tokens[1]
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        guard !patterns.isEmpty, patterns.allSatisfy({ !$0.isEmpty }) else {
+            return nil
+        }
+        return patterns
+    }
+
+    /// 判定未识别指令是否满足 OpenSSH `IgnoreUnknown` 规则且可证明为惰性：
+    /// - 绝不放行任何已在 `recognizedSSHConfigKeywords` 中的指令（含 `Include`/`Match`/`ProxyCommand`/`LocalCommand`/`KnownHostsCommand` 等）；
+    /// - 仅接受纯 ASCII 标识符名称，并按 OpenSSH `match_pattern_list` 语义（含 `!` 取反）匹配。
+    static func matchesIgnoreUnknown(keyword: String, patterns: [String]) -> Bool {
+        let lower = keyword.lowercased()
+        guard !lower.isEmpty,
+              !recognizedSSHConfigKeywords.contains(lower),
+              let first = lower.utf8.first,
+              (first >= 0x61 && first <= 0x7A),
+              lower.utf8.allSatisfy({ b in
+                  (b >= 0x61 && b <= 0x7A) || (b >= 0x30 && b <= 0x39) || b == 0x2D || b == 0x5F
+              }) else {
+            return false
+        }
+        var matchedPositive = false
+        for pattern in patterns {
+            if pattern.hasPrefix("!") {
+                let negated = String(pattern.dropFirst())
+                if !negated.isEmpty, Darwin.fnmatch(negated, lower, 0) == 0 {
+                    return false
+                }
+            } else if Darwin.fnmatch(pattern, lower, 0) == 0 {
+                matchedPositive = true
+            }
+        }
+        return matchedPositive
+    }
+
     /// 严格按 OpenSSH `strdelim` / `argv_split` 语义切分配置行：
     /// - 拒绝除水平制表符（0x09）外的全部 ASCII 控制字节（含 `\0`、行内 `\r`、`\v`、`\f`、`\n`、`0x7F`），消除与 OpenSSH `WHITESPACE`/`isspace` 的分歧；
     /// - 支持关键字与参数间用空格、制表符或 `=` 分隔，并支持关键字内双引号（如 `"Include"`、`Inc"lude"`、`"Match"`）；

@@ -1,4 +1,5 @@
 import Darwin
+import os
 import XCTest
 @testable import MimiRemoteMac
 
@@ -39,6 +40,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         beforeAtomicCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeDelete: CodexLocalSSHConfigurator.CommitHook? = nil,
+        afterFileQuarantineMove: CodexLocalSSHConfigurator.CommitHook? = nil,
+        injectMetadataPreservationError: (@Sendable (_ label: String) -> String?)? = nil,
         simulateHardCrashPoint: CodexLocalSSHConfigurator.HardCrashSimulationPoint? = nil,
         beforeVerifySSH: (@Sendable () throws -> Void)? = nil
     ) -> (CodexLocalSSHConfigurator, CommandRecorder) {
@@ -85,6 +88,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             beforeAtomicCommit: beforeAtomicCommit,
             afterVerifyBeforeCommit: afterVerifyBeforeCommit,
             afterVerifyBeforeDelete: afterVerifyBeforeDelete,
+            afterFileQuarantineMove: afterFileQuarantineMove,
+            injectMetadataPreservationError: injectMetadataPreservationError,
             simulateHardCrashPoint: simulateHardCrashPoint
         )
         return (configurator, recorder)
@@ -1914,6 +1919,227 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         return Int(st.st_mode & 0o777)
+    }
+
+    // MARK: - PR #1169 r2 Regressions (Raw Byte Xattrs, Quarantine Journal Keep, IgnoreUnknown, Staging Cleanup, Dir Lock)
+
+    func testR2_P1_1PreservesByteDistinctCanonicallyEquivalentXattrsAndCleansUpStagedCopyOnRefusal() async throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: cfg.sshDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(cfg.sshDirectory.path, 0o700)
+
+        let originalConfig = "Host prod\n    HostName 10.0.0.5\n"
+        try originalConfig.write(to: cfg.sshConfigURL, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(cfg.sshConfigURL.path, 0o600)
+
+        // 两个 Unicode 规范等价但原始 UTF-8 字节不同的扩展属性名（NFC vs NFD）：Swift String 字典会误合并。
+        var nfcName: [CChar] = Array("user.mimi.".utf8.map { CChar(bitPattern: $0) }) + [CChar(bitPattern: 0xC3), CChar(bitPattern: 0xA9), 0]
+        var nfdName: [CChar] = Array("user.mimi.".utf8.map { CChar(bitPattern: $0) }) + [CChar(bitPattern: 0x65), CChar(bitPattern: 0xCC), CChar(bitPattern: 0x81), 0]
+        let nfcVal = Data("value-nfc-only".utf8)
+        let nfdVal = Data("value-nfd-only".utf8)
+
+        let rc1: Int32 = nfcVal.withUnsafeBytes { raw in
+            nfcName.withUnsafeBufferPointer { nameBuf in
+                Darwin.setxattr(cfg.sshConfigURL.path, nameBuf.baseAddress!, raw.baseAddress, raw.count, 0, XATTR_NOFOLLOW)
+            }
+        }
+        let rc2: Int32 = nfdVal.withUnsafeBytes { raw in
+            nfdName.withUnsafeBufferPointer { nameBuf in
+                Darwin.setxattr(cfg.sshConfigURL.path, nameBuf.baseAddress!, raw.baseAddress, raw.count, 0, XATTR_NOFOLLOW)
+            }
+        }
+        XCTAssertEqual(rc1, 0)
+        XCTAssertEqual(rc2, 0)
+
+        func readRawXattr(_ nameBytes: [CChar], at url: URL) -> Data? {
+            let sz = nameBytes.withUnsafeBufferPointer { nameBuf in
+                Darwin.getxattr(url.path, nameBuf.baseAddress!, nil, 0, 0, XATTR_NOFOLLOW)
+            }
+            guard sz >= 0 else { return nil }
+            var buf = [UInt8](repeating: 0, count: sz)
+            let got = nameBytes.withUnsafeBufferPointer { nameBuf in
+                Darwin.getxattr(url.path, nameBuf.baseAddress!, &buf, buf.count, 0, XATTR_NOFOLLOW)
+            }
+            guard got >= 0 else { return nil }
+            return Data(buf.prefix(got))
+        }
+
+        // 先确认底层文件系统确实分别保存了两条不同字节的 xattr。
+        XCTAssertEqual(readRawXattr(nfcName, at: cfg.sshConfigURL), nfcVal)
+        XCTAssertEqual(readRawXattr(nfdName, at: cfg.sshConfigURL), nfdVal)
+
+        // 1. configure() 与 remove() 替换文件后，两条字节不同的规范等价 xattr 必须全部完整保留！
+        try await cfg.configure(verifyConnection: false)
+        XCTAssertEqual(readRawXattr(nfcName, at: cfg.sshConfigURL), nfcVal, "替换后必须完整保留 NFC 扩展属性")
+        XCTAssertEqual(readRawXattr(nfdName, at: cfg.sshConfigURL), nfdVal, "替换后必须完整保留 NFD 扩展属性，绝不得被 String 字典合并丢弃")
+
+        try await cfg.remove()
+        XCTAssertEqual(readRawXattr(nfcName, at: cfg.sshConfigURL), nfcVal)
+        XCTAssertEqual(readRawXattr(nfdName, at: cfg.sshConfigURL), nfdVal)
+
+        // 2. P2-1：元数据无法保留拒绝替换时，暂存目录 .mimi-cas-* 与内部 item 必须彻底清理，不得残留副本！
+        let (refusingCfg, _) = makeConfigurator(
+            username: "alice",
+            systemSSHConfigPath: nil,
+            injectMetadataPreservationError: { label in
+                label == "~/.ssh/config" ? "模拟元数据保留失败" : nil
+            }
+        )
+        do {
+            try await refusingCfg.configure(verifyConnection: false)
+            XCTFail("元数据无法保留时必须拒绝替换")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {}
+        let sshEntries = try FileManager.default.contentsOfDirectory(atPath: cfg.sshDirectory.path)
+        let leftoverCAS = sshEntries.filter { $0.hasPrefix(".mimi-cas-") }
+        XCTAssertTrue(leftoverCAS.isEmpty, "元数据拒绝替换后不得在 ~/.ssh 残留任何 .mimi-cas-* 暂存目录或副本：\(leftoverCAS)")
+    }
+
+    func testR2_P1_2KeepsQuarantineJournalWhenVerifyAndRestoreBothFailSoRetryNeverReportsFalseSuccess() async throws {
+        let (setupCfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        try await setupCfg.configure(verifyConnection: false)
+
+        // 构造「隔离核验失败 + 恢复原路径也冲突（EEXIST）」：
+        // 1) afterVerifyBeforeDelete 修改私钥权限（使隔离核验 snapshotsMatch 失败）；
+        // 2) afterFileQuarantineMove 在原路径写入一个占位文件（使 RENAME_EXCL 恢复失败）。
+        let targetKeyURL = setupCfg.privateKeyURL
+        let (conflictRemover, _) = makeConfigurator(
+            username: "alice",
+            systemSSHConfigPath: nil,
+            afterVerifyBeforeDelete: { url in
+                if url == targetKeyURL {
+                    _ = Darwin.chmod(url.path, 0o400)
+                }
+            },
+            afterFileQuarantineMove: { qDirURL in
+                if qDirURL.deletingLastPathComponent().standardizedFileURL == setupCfg.mimiSSHDirectory.standardizedFileURL {
+                    try Data("BLOCKER-AT-ORIGINAL-PATH".utf8).write(to: targetKeyURL)
+                }
+            }
+        )
+
+        do {
+            try await conflictRemover.remove()
+            XCTFail("核验与恢复均失败时 remove() 必须报错")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {}
+
+        // 关键断言：隔离账本与密钥归属记录均不得被清除！
+        let stateAfterFail = try XCTUnwrap(try setupCfg.loadManagedState())
+        let journaled = try XCTUnwrap(stateAfterFail.quarantinedFileArtifacts.first, "核验与恢复均失败时绝不得清除隔离账本")
+        XCTAssertEqual(journaled.originalFileName, CodexLocalSSHConfigurator.keyFileName)
+        XCTAssertNotNil(stateAfterFail.keyFingerprint, "滞留隔离私钥时不得清除归属指纹")
+        let strandedKey = setupCfg.mimiSSHDirectory
+            .appendingPathComponent(journaled.quarantineDirectoryName, isDirectory: true)
+            .appendingPathComponent("item", isDirectory: false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: strandedKey.path))
+
+        // 把原路径占位文件删掉后，若隔离文件已被篡改，重试 remove() 仍必须报错且保留账本，绝不误报成功！
+        try FileManager.default.removeItem(at: targetKeyURL)
+        let tamperedBytes = Data("TAMPERED-AFTER-STRANDED".utf8)
+        _ = Darwin.chmod(strandedKey.path, 0o600)
+        try FileManager.default.removeItem(at: strandedKey)
+        try tamperedBytes.write(to: strandedKey)
+
+        do {
+            try await setupCfg.remove()
+            XCTFail("滞留隔离文件与记录指纹不匹配时，重试 remove() 绝不得误报成功")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {}
+        XCTAssertEqual(try Data(contentsOf: strandedKey), tamperedBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path), "未成功删除滞留文件时绝不得移除状态文件")
+    }
+
+    func testR2_P1_3HonorsIgnoreUnknownForInertDirectivesWhileBlockingDangerousDirectives() async throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: cfg.sshDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(cfg.sshDirectory.path, 0o700)
+
+        let markerFile = tempHome.appendingPathComponent("r2-ignoreunknown-marker-\(UUID().uuidString)")
+        let extraInclude = cfg.sshDirectory.appendingPathComponent("extra.conf")
+        try "Host *\n    User alice\n".write(to: extraInclude, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(extraInclude.path, 0o600)
+
+        // 1. 合法可移植配置：IgnoreUnknown UseKeychain,CustomLinuxOpt 后使用 UseKeychain 与 CustomLinuxOpt，冻结器与 ssh -G 均应通过！
+        let portableConfig = """
+        IgnoreUnknown UseKeychain,CustomLinuxOpt
+        Host 127.0.0.1
+            HostName 127.0.0.1
+            User alice
+            UseKeychain yes
+            CustomLinuxOpt enabled
+        """
+        let frozen = try cfg.materializeEvaluationSSHConfig(userConfigText: portableConfig, includeSystemConfig: false)
+        defer { frozen.cleanup() }
+        let frozenText = try String(contentsOf: frozen.configFileURL, encoding: .utf8)
+        XCTAssertTrue(frozenText.contains("# [ignored by IgnoreUnknown] customlinuxopt"), "命中 IgnoreUnknown 的未知指令必须注释掉以确保 ssh -G 惰性")
+        let effective = try await cfg.resolveEffectiveSSHConfig(
+            configPath: frozen.configFileURL.path,
+            alias: "127.0.0.1",
+            includeSystemConfig: false
+        )
+        XCTAssertEqual(effective.hostname, "127.0.0.1")
+        XCTAssertEqual(effective.user, "alice")
+
+        // 2. IgnoreUnknown 绝不能绕过 Include、Match exec、ProxyCommand，也不能放行前置或未列出的未知指令！
+        let blockedConfigs: [(String, String)] = [
+            ("IgnoreUnknown cannot bypass Match exec", "IgnoreUnknown Match\nMatch exec \"touch '\(markerFile.path)'\"\n"),
+            ("IgnoreUnknown cannot bypass unfreezable Include", "IgnoreUnknown Include\nInclude %h/evil.conf\n"),
+            ("unknown before IgnoreUnknown", "CustomLinuxOpt enabled\nIgnoreUnknown CustomLinuxOpt\n"),
+            ("unlisted unknown directive", "IgnoreUnknown OtherOpt\nCustomLinuxOpt enabled\n"),
+        ]
+        for (label, text) in blockedConfigs {
+            do {
+                let bad = try cfg.materializeEvaluationSSHConfig(userConfigText: text, includeSystemConfig: false)
+                bad.cleanup()
+                XCTFail("\(label) 必须被拒绝")
+            } catch CodexLocalSSHConfigurator.ConfigError.effectiveConfigConflict {}
+            XCTAssertFalse(FileManager.default.fileExists(atPath: markerFile.path))
+        }
+
+        // IgnoreUnknown ProxyCommand 仍保留 ProxyCommand 给 ssh -G 并在有效配置校验中被拦截。
+        let proxyConfig = """
+        IgnoreUnknown ProxyCommand
+        Host 127.0.0.1
+            HostName 127.0.0.1
+            User alice
+            ProxyCommand nc 198.51.100.1 22
+        """
+        let frozenProxy = try cfg.materializeEvaluationSSHConfig(userConfigText: proxyConfig, includeSystemConfig: false)
+        defer { frozenProxy.cleanup() }
+        let proxyEffective = try await cfg.resolveEffectiveSSHConfig(
+            configPath: frozenProxy.configFileURL.path,
+            alias: "127.0.0.1",
+            includeSystemConfig: false
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(proxyEffective, expectedUser: "alice"))
+    }
+
+    func testR2_P2_2DirectorySharedLockSerializesVerifyOnlyRetryWhenLockFileIsAbsent() async throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        try await cfg.configure(verifyConnection: false)
+
+        // 删除 .codex-local-ssh.lock，模拟锁文件尚未存在/被清理的场景。
+        try? FileManager.default.removeItem(at: cfg.lockFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.lockFileURL.path))
+
+        // 模拟另一进程持有状态目录的独占锁 O_EXLOCK（正在写入状态）。
+        let stateDir = cfg.stateFileURL.deletingLastPathComponent()
+        let writerDirFD = Darwin.open(stateDir.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_EXLOCK | O_NONBLOCK)
+        XCTAssertGreaterThanOrEqual(writerDirFD, 0, "模拟跨进程写者应能获取状态目录独占锁")
+
+        let finishedFlag = OSAllocatedUnfairLock(initialState: false)
+        let verifyTask = Task {
+            try await cfg.configure(verifyConnection: false)
+            finishedFlag.withLock { $0 = true }
+        }
+
+        // 等待 150ms：写者持锁期间，只读校验必须阻塞，绝不能越过并发写者观察半成品！
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(finishedFlag.withLock { $0 }, "锁文件缺失时，只读校验仍须通过状态目录共享锁与跨进程写者串行化")
+
+        // 释放写者目录锁后，只读校验顺利完成且仍不创建锁文件！
+        Darwin.close(writerDirFD)
+        try await verifyTask.value
+        XCTAssertTrue(finishedFlag.withLock { $0 })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.lockFileURL.path), "只读校验完成后仍不得创建锁文件")
     }
 }
 

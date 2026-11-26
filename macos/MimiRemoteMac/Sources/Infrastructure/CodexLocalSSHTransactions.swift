@@ -957,45 +957,36 @@ extension CodexLocalSSHConfigurator {
                             reason: "回滚期间检测到 ~/.ssh/authorized_keys 权限变为组或其他用户可写，已拒绝修改权限或保留其中条目；请先手工核对文件内容并执行 chmod 600 ~/.ssh/authorized_keys。"
                         )
                     }
-                    if let writtenSnap = rollback.writtenAuthSnapshot, Self.snapshotsMatch(writtenSnap, snapshot) {
-                        if !rollback.originalAuthSnapshot.exists {
+                    // 收窄撤销（刘飞方案）：只删除本次写入、带 Mimi 标记的那一行公钥，不恢复整文件备份。
+                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/authorized_keys")
+                    var working = text
+                    var changed = false
+
+                    let targetKeyBody = rollback.addedAuthorizedKeyBody ?? rollback.generatedKeyBody
+                    if let entry = rollback.addedAuthorizedKeyEntry, let keyBody = targetKeyBody {
+                        let reverted = Self.removeExactAuthorizedKeyEntry(
+                            entry,
+                            expectedKeyBody: keyBody,
+                            addedLeadingNewline: rollback.addedAuthorizedKeyLeadingNewline,
+                            from: working
+                        )
+                        if reverted.removed {
+                            working = reverted.text
+                            changed = true
+                        }
+                    }
+
+                    if changed {
+                        if !rollback.originalAuthSnapshot.exists && working.isEmpty {
                             try removeFileMatchingSnapshot(
                                 authorizedKeysURL,
-                                expectedSnapshot: writtenSnap,
+                                expectedSnapshot: snapshot,
                                 label: "~/.ssh/authorized_keys",
-                                invokeHook: false
+                                invokeHook: false,
+                                journalQuarantine: journalRollbackQuarantine,
+                                clearQuarantine: clearRollbackQuarantine
                             )
                         } else {
-                            _ = try writeFileAtomically(
-                                rollback.originalAuthSnapshot.data,
-                                to: authorizedKeysURL,
-                                mode: rollback.originalAuthSnapshot.mode ?? 0o600,
-                                expectedSnapshot: writtenSnap,
-                                label: "~/.ssh/authorized_keys",
-                                invokeHook: false
-                            )
-                        }
-                        authReverted = true
-                    } else {
-                        let text = try decodeUTF8(snapshot.data, label: "~/.ssh/authorized_keys")
-                        var working = text
-                        var changed = false
-
-                        let targetKeyBody = rollback.addedAuthorizedKeyBody ?? rollback.generatedKeyBody
-                        if let entry = rollback.addedAuthorizedKeyEntry, let keyBody = targetKeyBody {
-                            let reverted = Self.removeExactAuthorizedKeyEntry(
-                                entry,
-                                expectedKeyBody: keyBody,
-                                addedLeadingNewline: rollback.addedAuthorizedKeyLeadingNewline,
-                                from: working
-                            )
-                            if reverted.removed {
-                                working = reverted.text
-                                changed = true
-                            }
-                        }
-
-                        if changed {
                             let mode = Self.preservedSafeFileMode(existing: snapshot.mode, defaultMode: 0o600)
                             _ = try writeFileAtomically(
                                 Data(working.utf8),
@@ -1006,19 +997,19 @@ extension CodexLocalSSHConfigurator {
                                 invokeHook: false
                             )
                         }
+                    }
 
-                        if let keyBody = targetKeyBody {
-                            let residuals = Self.findResidualAuthorizedKeyBodies([keyBody], in: working)
-                            if !residuals.isEmpty {
-                                authReverted = false
-                                residualAuthBodies.append(contentsOf: residuals)
-                                failures.append("~/.ssh/authorized_keys 中本次新增公钥的授权行已被外部修改，未能自动撤销，已保留外部改动与撤销记录")
-                            } else {
-                                authReverted = true
-                            }
+                    if let keyBody = targetKeyBody {
+                        let residuals = Self.findResidualAuthorizedKeyBodies([keyBody], in: working)
+                        if !residuals.isEmpty {
+                            authReverted = false
+                            residualAuthBodies.append(contentsOf: residuals)
+                            failures.append("~/.ssh/authorized_keys 中本次新增公钥的授权行已被外部修改，未能自动撤销，已保留外部改动与撤销记录")
                         } else {
                             authReverted = true
                         }
+                    } else {
+                        authReverted = true
                     }
                 }
             } catch {
@@ -1059,53 +1050,35 @@ extension CodexLocalSSHConfigurator {
                             reason: "回滚期间检测到 ~/.ssh/config 权限变为组或其他用户可写，已拒绝修改权限或保留其中条目；请先手工核对文件内容并执行 chmod 600 ~/.ssh/config。"
                         )
                     }
-                    if let writtenSnap = rollback.writtenConfigSnapshot, Self.snapshotsMatch(writtenSnap, snapshot) {
-                        if !rollback.originalConfigSnapshot.exists {
+                    // 收窄撤销（刘飞方案）：只删除本次写入、带 Mimi 标记的那一行 Include，不恢复整文件备份。
+                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
+                    let currentStripped = try Self.stripManagedIncludeLine(from: text)
+                    if rollback.originalHadManagedInclude {
+                        configReverted = true
+                    } else if currentStripped.hadManagedInclude {
+                        if !rollback.originalConfigSnapshot.exists && currentStripped.remaining.isEmpty {
                             try removeFileMatchingSnapshot(
                                 sshConfigURL,
-                                expectedSnapshot: writtenSnap,
+                                expectedSnapshot: snapshot,
                                 label: "~/.ssh/config",
-                                invokeHook: false
+                                invokeHook: false,
+                                journalQuarantine: journalRollbackQuarantine,
+                                clearQuarantine: clearRollbackQuarantine
                             )
                         } else {
+                            let mode = Self.preservedSafeFileMode(existing: snapshot.mode, defaultMode: 0o600)
                             _ = try writeFileAtomically(
-                                rollback.originalConfigSnapshot.data,
+                                Data(currentStripped.remaining.utf8),
                                 to: sshConfigURL,
-                                mode: rollback.originalConfigSnapshot.mode ?? 0o600,
-                                expectedSnapshot: writtenSnap,
+                                mode: mode,
+                                expectedSnapshot: snapshot,
                                 label: "~/.ssh/config",
                                 invokeHook: false
                             )
                         }
                         configReverted = true
                     } else {
-                        let text = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
-                        let currentStripped = try Self.stripManagedIncludeLine(from: text)
-                        if rollback.originalHadManagedInclude {
-                            configReverted = true
-                        } else if currentStripped.hadManagedInclude {
-                            if !rollback.originalConfigSnapshot.exists && currentStripped.remaining.isEmpty {
-                                try removeFileMatchingSnapshot(
-                                    sshConfigURL,
-                                    expectedSnapshot: snapshot,
-                                    label: "~/.ssh/config",
-                                    invokeHook: false
-                                )
-                            } else {
-                                let mode = Self.preservedSafeFileMode(existing: snapshot.mode, defaultMode: 0o600)
-                                _ = try writeFileAtomically(
-                                    Data(currentStripped.remaining.utf8),
-                                    to: sshConfigURL,
-                                    mode: mode,
-                                    expectedSnapshot: snapshot,
-                                    label: "~/.ssh/config",
-                                    invokeHook: false
-                                )
-                            }
-                            configReverted = true
-                        } else {
-                            configReverted = true
-                        }
+                        configReverted = true
                     }
                 }
             } catch {
@@ -1555,5 +1528,212 @@ extension CodexLocalSSHConfigurator {
         // 共用按公钥残留检查：即便精确 Mimi 标记行已删，只要同公钥还有其他授权行就必须保留记录并报告冲突！
         let residuals = Self.findResidualAuthorizedKeyBodies(trackedBodies, in: working)
         return AuthorizedKeysRemovalOutcome(removedAny: removedAny, residualBodies: residuals)
+    }
+
+    // MARK: - Concurrency Serialization (In-process + Cross-process Directory & File Advisory Locks)
+
+    /// 跨进程写锁：固定按「状态目录独占锁 -> 锁文件独占锁」顺序加锁，
+    /// 确保即便 `.codex-local-ssh.lock` 尚未创建或被删除，与只读校验共享目录锁仍严格互斥且无死锁。
+    func withSerializedLock<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
+        let key = homeDirectory.standardizedFileURL.path
+        return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
+            try ensureStateDirectory()
+            let stateDir = stateFileURL.deletingLastPathComponent()
+            let dirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
+            defer {
+                if let dirLockFD { Darwin.close(dirLockFD) }
+            }
+            let fileLockFD = try await acquireAdvisoryFileLock(at: lockFileURL)
+            defer {
+                Darwin.close(fileLockFD)
+            }
+            return try await operation()
+        }
+    }
+
+    /// 供 `configure()` 使用的只读优先串行锁：
+    /// 先在不创建/不改权状态目录与锁文件的前提下，对已存在状态目录加共享目录锁 `O_SHLOCK`（若存在锁文件同时校验并加共享锁），
+    /// 即使 `.codex-local-ssh.lock` 缺失也能严格阻塞跨进程写者；仅当确需首次写入状态时才释放共享锁并升级为独占写锁。
+    func withReadOnlyFirstSerializedLock<T: Sendable>(
+        tryReadOnly: () async throws -> T?,
+        performWrite: () async throws -> T
+    ) async throws -> T {
+        let key = homeDirectory.standardizedFileURL.path
+        return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
+            let stateDir = stateFileURL.deletingLastPathComponent()
+            var readDirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: false)
+            var readFileLockFD: Int32?
+            func releaseReadLocks() {
+                if let fd = readFileLockFD {
+                    Darwin.close(fd)
+                    readFileLockFD = nil
+                }
+                if let fd = readDirLockFD {
+                    Darwin.close(fd)
+                    readDirLockFD = nil
+                }
+            }
+            do {
+                if readDirLockFD != nil {
+                    readFileLockFD = try await acquireExistingValidatedAdvisoryFileLockIfPresent(at: lockFileURL)
+                }
+                if let result = try await tryReadOnly() {
+                    releaseReadLocks()
+                    return result
+                }
+            } catch {
+                releaseReadLocks()
+                throw error
+            }
+            releaseReadLocks()
+
+            try ensureStateDirectory()
+            let writeDirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
+            defer {
+                if let writeDirLockFD { Darwin.close(writeDirLockFD) }
+            }
+            let writeFileLockFD = try await acquireAdvisoryFileLock(at: lockFileURL)
+            defer {
+                Darwin.close(writeFileLockFD)
+            }
+            return try await performWrite()
+        }
+    }
+
+    private func acquireDirectoryAdvisoryLock(at dirURL: URL, exclusive: Bool) async throws -> Int32? {
+        guard try validateDirectoryIfPresent(dirURL, label: dirURL.lastPathComponent) != nil else {
+            return nil
+        }
+        let lockFlag = exclusive ? O_EXLOCK : O_SHLOCK
+        let deadline = ContinuousClock.now + .seconds(20)
+        while true {
+            let fd = Darwin.open(dirURL.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | lockFlag | O_NONBLOCK)
+            if fd >= 0 {
+                var st = stat()
+                guard Darwin.fstat(fd, &st) == 0,
+                      (st.st_mode & S_IFMT) == S_IFDIR,
+                      st.st_uid == Darwin.geteuid() else {
+                    Darwin.close(fd)
+                    throw ConfigError.unsafeFileSystemTarget("\(dirURL.lastPathComponent) 类型或属主不安全。")
+                }
+                return fd
+            }
+            let err = errno
+            if err == ENOENT {
+                return nil
+            }
+            if err == ELOOP {
+                throw ConfigError.unsafeFileSystemTarget("\(dirURL.lastPathComponent) 是符号链接。")
+            }
+            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
+                throw ConfigError.fileOperationFailed("获取目录并发锁失败：\(Self.posixErrorMessage(err))")
+            }
+            if ContinuousClock.now >= deadline {
+                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
+    private func acquireExistingValidatedAdvisoryFileLockIfPresent(at url: URL) async throws -> Int32? {
+        guard try validateRegularFileIfPresent(url, label: url.lastPathComponent) != nil else {
+            return nil
+        }
+        let deadline = ContinuousClock.now + .seconds(20)
+        while true {
+            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_SHLOCK | O_NONBLOCK)
+            if fd >= 0 {
+                var st = stat()
+                guard Darwin.fstat(fd, &st) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG,
+                      st.st_uid == Darwin.geteuid() else {
+                    Darwin.close(fd)
+                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
+                }
+                return fd
+            }
+            let err = errno
+            if err == ENOENT {
+                return nil
+            }
+            if err == ELOOP {
+                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
+            }
+            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
+                throw ConfigError.fileOperationFailed("获取只读并发锁失败：\(Self.posixErrorMessage(err))")
+            }
+            if ContinuousClock.now >= deadline {
+                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
+    private func acquireAdvisoryFileLock(at url: URL) async throws -> Int32 {
+        try validateRegularFileIfPresent(url, label: url.lastPathComponent)
+        let deadline = ContinuousClock.now + .seconds(20)
+        while true {
+            let fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK, 0o600)
+            if fd >= 0 {
+                var st = stat()
+                guard Darwin.fstat(fd, &st) == 0,
+                      (st.st_mode & S_IFMT) == S_IFREG,
+                      st.st_uid == Darwin.geteuid() else {
+                    Darwin.close(fd)
+                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
+                }
+                _ = Darwin.fchmod(fd, 0o600)
+                return fd
+            }
+            let err = errno
+            if err == ELOOP {
+                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
+            }
+            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
+                throw ConfigError.fileOperationFailed("获取并发锁失败：\(Self.posixErrorMessage(err))")
+            }
+            if ContinuousClock.now >= deadline {
+                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+}
+
+/// 进程内按目录串行化所有 SSH 配置读写与撤销，避免双入口或重入并发写盘。
+private actor CodexLocalSSHOperationLock {
+    static let shared = CodexLocalSSHOperationLock()
+
+    private var lockedKeys: Set<String> = []
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    func withLock<T: Sendable>(key: String, operation: () async throws -> T) async throws -> T {
+        await acquire(key: key)
+        defer { release(key: key) }
+        return try await operation()
+    }
+
+    private func acquire(key: String) async {
+        if !lockedKeys.contains(key) {
+            lockedKeys.insert(key)
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters[key, default: []].append(continuation)
+        }
+    }
+
+    private func release(key: String) {
+        if var queue = waiters[key], !queue.isEmpty {
+            let next = queue.removeFirst()
+            if queue.isEmpty {
+                waiters.removeValue(forKey: key)
+            } else {
+                waiters[key] = queue
+            }
+            next.resume()
+        } else {
+            lockedKeys.remove(key)
+        }
     }
 }

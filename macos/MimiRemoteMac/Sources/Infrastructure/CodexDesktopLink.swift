@@ -13,42 +13,6 @@ enum CodexDesktopLink {
         case notRunning
     }
 
-    /// 打开 Codex 桌面版 SSH / 连接设置页的结果，供向导明确反馈未安装、回退或启动失败。
-    enum OpenSettingsResult: Equatable, Sendable {
-        case openedSSHSettings
-        case openedConnectionsFallback
-        case openedAppFallback
-        case notInstalled
-        case launchFailed(String)
-
-        var feedbackMessage: String? {
-            switch self {
-            case .openedSSHSettings:
-                "已将 SSH 设置页链接发送给 Codex 桌面版；如未自动跳转，可点击「打开连接设置」或手动进入「设置 → 连接 → SSH」。"
-            case .openedConnectionsFallback:
-                "已将「连接」设置页链接发送给 Codex 桌面版，请进入 SSH 子页继续添加主机。"
-            case .openedAppFallback:
-                "已打开 Codex 桌面版，请手动进入「设置 → 连接 → SSH」继续添加主机。"
-            case .notInstalled:
-                "没有找到 Codex 桌面版，请先安装 Codex 桌面版后再试。"
-            case .launchFailed(let detail):
-                detail.isEmpty ? "没能打开 Codex 桌面版。" : "没能打开 Codex 桌面版：\(detail)"
-            }
-        }
-
-        var isFailure: Bool {
-            switch self {
-            case .notInstalled, .launchFailed:
-                true
-            case .openedSSHSettings, .openedConnectionsFallback, .openedAppFallback:
-                false
-            }
-        }
-    }
-
-    static let sshSettingsURL = URL(string: "codex://settings/connections/ssh")!
-    static let connectionsSettingsURL = URL(string: "codex://settings/connections")!
-
     /// OpenSSH 中会消费后一个参数值的短选项集合，用于准确提取 ssh 命令的目标主机与覆盖选项。
     private static let sshOptionsRequiringArgument: Set<String> = [
         "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J",
@@ -287,6 +251,7 @@ enum CodexDesktopLink {
         let arguments: [Substring]
         let rawCommand: String
         var exactArguments: [String]? = nil
+        var environment: [String: String]? = nil
     }
 
     /// 解析 `ps -axo pid=,ppid=,uid=,command=` 输出，保留原始完整命令行（不丢失路径中的空格）供后续参数解析与 `sshd` 祖先链核验。
@@ -331,8 +296,8 @@ enum CodexDesktopLink {
         return table
     }
 
-    /// 通过 macOS 内核 `KERN_PROCARGS2` 读取同用户实时进程的精确 `argv` 数组，完整保留可执行文件路径和 `--config` 路径中的空格。
-    static func processArguments(forPID pid: Int32) -> [String]? {
+    /// 通过 macOS 内核 `KERN_PROCARGS2` 读取同用户实时进程的精确 `argv` 数组与环境变量（用于识别 `AGENTD_LISTEN`/`AGENTD_PORT`/`AGENTD_TOKEN` 覆盖）。
+    static func processArgumentsAndEnvironment(forPID pid: Int32) -> (arguments: [String], environment: [String: String])? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size: size_t = 0
         guard Darwin.sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
@@ -369,7 +334,33 @@ enum CodexDesktopLink {
             args.append(String(decoding: buffer[start..<offset], as: UTF8.self))
             offset += 1
         }
-        return args.isEmpty ? nil : args
+        guard !args.isEmpty else { return nil }
+
+        var env: [String: String] = [:]
+        while offset < size {
+            if buffer[offset] == 0 {
+                offset += 1
+                continue
+            }
+            let start = offset
+            while offset < size && buffer[offset] != 0 {
+                offset += 1
+            }
+            let entry = String(decoding: buffer[start..<offset], as: UTF8.self)
+            if let eq = entry.firstIndex(of: "=") {
+                let key = String(entry[..<eq])
+                let val = String(entry[entry.index(after: eq)...])
+                if !key.isEmpty {
+                    env[key] = val
+                }
+            }
+            offset += 1
+        }
+        return (args, env)
+    }
+
+    static func processArguments(forPID pid: Int32) -> [String]? {
+        processArgumentsAndEnvironment(forPID: pid)?.arguments
     }
 
     /// 从带 UID 的 `ps` 表中提取桌面版名下满足直连回环条件的 ssh 子进程候选列表。
@@ -393,6 +384,10 @@ enum CodexDesktopLink {
     }
 
     private struct AgentdCodexConfigFile: Decodable {
+        struct AuthSection: Decodable {
+            let token: String?
+        }
+
         struct CodexSection: Decodable {
             let enabled: Bool?
             let env: [String: String]?
@@ -409,21 +404,24 @@ enum CodexDesktopLink {
         }
 
         let listen: String?
+        let auth: AuthSection?
         let codex: CodexSection?
         let appServer: AppServerSection?
 
         enum CodingKeys: String, CodingKey {
             case listen
+            case auth
             case codex
             case appServer = "app_server"
         }
     }
 
-    /// 经实时进程、LaunchAgent 与监听端口核验确认当前正为 Mimi 服务的 `agentd serve` 实例。
+    /// 经实时进程、LaunchAgent 与实时回环监听端口核验确认当前正为 Mimi 服务的 `agentd serve` 实例。
     struct ActiveMimiAgentd: Equatable, Sendable {
         let pid: Int32
         let configURL: URL
         let listenPort: Int
+        let authToken: String?
     }
 
     private static let agentdLaunchAgentLabel = "com.gaixianggeng.mimi.mac.agentd"
@@ -444,6 +442,17 @@ enum CodexDesktopLink {
         return nil
     }
 
+    private static func isLoopbackReachableBindHost(_ rawHost: String) -> Bool {
+        let lower = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
+        return lower == "127.0.0.1" ||
+            lower == "::1" ||
+            lower == "localhost" ||
+            lower == "*" ||
+            lower == "0.0.0.0" ||
+            lower == "::"
+    }
+
+    /// 从 `lsof -nP -a -u <uid> -iTCP -sTCP:LISTEN -F pn` 解析每个进程可从本机回环直连的 TCP 监听端口集合。
     static func parseListeningTCPPorts(lsofOutput: String) -> [Int32: Set<Int>] {
         var result: [Int32: Set<Int>] = [:]
         var currentPID: Int32?
@@ -456,6 +465,7 @@ enum CodexDesktopLink {
             case "n":
                 guard let pid = currentPID,
                       let parsed = parseHostPort(value),
+                      isLoopbackReachableBindHost(parsed.host),
                       let port = Int(parsed.port),
                       port > 0 else { continue }
                 result[pid, default: []].insert(port)
@@ -477,6 +487,26 @@ enum CodexDesktopLink {
             return port
         }
         return LocalGatewayClient.defaultPort
+    }
+
+    /// 与 Go `internal/config/config.go:applyEnv` 对齐：优先 `AGENTD_LISTEN`，其次 `AGENTD_PORT`/`AGENTD_BIND`，最后回退到 JSON `listen`。
+    private static func effectiveExpectedListenPort(
+        configListen: String?,
+        processEnv: [String: String]?
+    ) -> Int {
+        if let envListen = processEnv?["AGENTD_LISTEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envListen.isEmpty {
+            return configuredListenPort(from: envListen)
+        }
+        let envBind = processEnv?["AGENTD_BIND"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let envPort = processEnv?["AGENTD_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !envBind.isEmpty || !envPort.isEmpty {
+            if let parsed = Int(envPort), parsed > 0 {
+                return parsed
+            }
+            return LocalGatewayClient.defaultPort
+        }
+        return configuredListenPort(from: configListen)
     }
 
     private static func isAgentdSupervisorProcess(_ entry: ProcessSnapshotEntry) -> Bool {
@@ -522,8 +552,8 @@ enum CodexDesktopLink {
         return defaultAgentdConfigURL(homeDirectory: homeDirectory)
     }
 
-    /// 唯一识别当前正为 Mimi 服务的活动 `agentd serve` 进程（优先 LaunchAgent supervisor 子进程，其次匹配 Mimi 配置与监听端口的唯一实例）；
-    /// 绝不借用同用户其他 `agentd serve --config ...` 的配置，无法确认或存在歧义时返回 `nil`（判为非共享）。
+    /// 唯一识别当前正为 Mimi 服务的活动 `agentd serve` 进程（优先 LaunchAgent supervisor 子进程，其次匹配 Mimi 配置的唯一实时回环监听实例）；
+    /// 支持 `AGENTD_LISTEN` / `AGENTD_PORT` 覆写导致的实时回环监听端口与 JSON `listen` 不同，绝不借用同用户其他 `agentd serve --config ...` 的配置，无法确认或存在歧义时返回 `nil`。
     static func resolveActiveMimiAgentd(
         processes: [Int32: ProcessSnapshotEntry],
         listeningPortsByPID: [Int32: Set<Int>]? = nil,
@@ -544,23 +574,39 @@ enum CodexDesktopLink {
         guard !serveCandidates.isEmpty else { return nil }
 
         func makeActive(_ candidate: (entry: ProcessSnapshotEntry, configURL: URL)) -> ActiveMimiAgentd? {
-            let loadedPort: Int
+            let loadedCfg: AgentdCodexConfigFile
             switch loadAgentdCodexConfig(at: candidate.configURL, expectedUID: expectedUID) {
             case .loaded(let cfg):
-                loadedPort = configuredListenPort(from: cfg.listen)
+                loadedCfg = cfg
             case .missing, .invalid:
                 return nil
             }
+            let expectedPort = effectiveExpectedListenPort(
+                configListen: loadedCfg.listen,
+                processEnv: candidate.entry.environment
+            )
+            let resolvedPort: Int
             if let listeningPortsByPID {
-                let ports = listeningPortsByPID[candidate.entry.pid] ?? []
-                if !ports.contains(loadedPort) {
+                let livePorts = listeningPortsByPID[candidate.entry.pid] ?? []
+                if livePorts.contains(expectedPort) {
+                    resolvedPort = expectedPort
+                } else if livePorts.count == 1, let onlyLivePort = livePorts.first {
+                    // 覆盖 AGENTD_LISTEN / AGENTD_PORT 场景：已唯一锁定该进程时直接使用其真实回环监听端口。
+                    resolvedPort = onlyLivePort
+                } else {
                     return nil
                 }
+            } else {
+                resolvedPort = expectedPort
             }
+            let envToken = candidate.entry.environment?["AGENTD_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cfgToken = loadedCfg.auth?.token?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectiveToken = (envToken?.isEmpty == false ? envToken : nil) ?? (cfgToken?.isEmpty == false ? cfgToken : nil)
             return ActiveMimiAgentd(
                 pid: candidate.entry.pid,
                 configURL: candidate.configURL,
-                listenPort: loadedPort
+                listenPort: resolvedPort,
+                authToken: effectiveToken
             )
         }
 
@@ -1658,55 +1704,6 @@ enum CodexDesktopLink {
         return hosts
     }
 
-    @MainActor
-    static func openSSHSettings(
-        preferSSHSubpage: Bool = true,
-        findApp: @MainActor () -> URL? = {
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID)
-        },
-        openURL: @MainActor (URL, URL) async throws -> Void = { url, appURL in
-            _ = try await NSWorkspace.shared.open(
-                [url],
-                withApplicationAt: appURL,
-                configuration: NSWorkspace.OpenConfiguration()
-            )
-        },
-        openApp: @MainActor (URL) async throws -> Void = { appURL in
-            _ = try await NSWorkspace.shared.openApplication(
-                at: appURL,
-                configuration: NSWorkspace.OpenConfiguration()
-            )
-        }
-    ) async -> OpenSettingsResult {
-        guard let appURL = findApp() else {
-            return .notInstalled
-        }
-        if preferSSHSubpage {
-            do {
-                try await openURL(sshSettingsURL, appURL)
-                return .openedSSHSettings
-            } catch {
-                // 旧版桌面版若不识别 SSH 子页，回退到通用连接页。
-            }
-        }
-        do {
-            try await openURL(connectionsSettingsURL, appURL)
-            return .openedConnectionsFallback
-        } catch {
-            do {
-                try await openApp(appURL)
-                return .openedAppFallback
-            } catch let launchError {
-                return .launchFailed(launchError.localizedDescription)
-            }
-        }
-    }
-
-    @MainActor
-    static func openConnectionsSettings() async -> OpenSettingsResult {
-        await openSSHSettings(preferSSHSubpage: false)
-    }
-
     /// 活动连接检查允许的主机名集合：已同时核验回环 TCP 四元组与共享后端关联，故允许 `ssh -G localhost` 报告的 `hostname localhost`。
     static let activeConnectionAllowedLoopbackHosts: Set<String> = ["127.0.0.1", "::1", "localhost"]
 
@@ -1746,9 +1743,10 @@ enum CodexDesktopLink {
         var processes = parseProcessesWithUID(psOutput: result.stdoutText)
         for (pid, entry) in processes where entry.uid == currentUID &&
             (entry.rawCommand.contains("agentd") || entry.rawCommand.contains(AgentdSupervisorInvocation.flag)) {
-            if let exactArgs = processArguments(forPID: pid) {
+            if let procInfo = processArgumentsAndEnvironment(forPID: pid) {
                 var enriched = entry
-                enriched.exactArguments = exactArgs
+                enriched.exactArguments = procInfo.arguments
+                enriched.environment = procInfo.environment
                 processes[pid] = enriched
             }
         }
@@ -1888,9 +1886,11 @@ enum CodexDesktopLink {
                 expectedConfigURL: sharedTarget.expectedConfigURL,
                 expectedBackendSocketPaths: sharedTarget.expectedBackendSocketPaths
             )
-            guard !desktopOnlyPIDs.isEmpty else { return .separate }
+            guard !desktopOnlyPIDs.isEmpty,
+                  let bearerToken = activeAgentd.authToken,
+                  !bearerToken.isEmpty else { return .separate }
             guard let probeChannel = try? await LocalGatewayClient(requestTimeout: 5)
-                .openCodexProbeChannel(port: activeAgentd.listenPort) else {
+                .openCodexProbeChannel(port: activeAgentd.listenPort, bearerToken: bearerToken) else {
                 return .separate
             }
             defer { probeChannel.close() }
@@ -1936,20 +1936,5 @@ enum CodexDesktopLink {
             return .separate
         }
         return .shared
-    }
-
-    @MainActor
-    static func open(threadID: String) async throws {
-        guard let url = url(threadID: threadID) else {
-            throw AgentClientError.commandFailed("会话 ID 不合法。")
-        }
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID) else {
-            throw AgentClientError.commandFailed("没有找到 Codex 桌面版。")
-        }
-        do {
-            _ = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
-        } catch {
-            throw AgentClientError.commandFailed("没能打开 Codex 桌面版：\(error.localizedDescription)")
-        }
     }
 }

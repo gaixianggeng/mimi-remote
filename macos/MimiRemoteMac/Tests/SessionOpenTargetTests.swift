@@ -1,3 +1,6 @@
+import CryptoKit
+import Darwin
+import os
 import XCTest
 @testable import MimiRemoteMac
 
@@ -1665,6 +1668,190 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertEqual(recordedPrefers, [true, false])
         XCTAssertFalse(coordinator.desktopOpenFeedbackIsError)
         XCTAssertTrue(coordinator.desktopOpenFeedback?.contains("连接") == true)
+    }
+
+    // MARK: - PR #1169 r2 P1-4 & P1-5: Pairing-Independent Probe & Live Loopback Listener Override
+
+    func testR2_P1_5IdentifiesActiveDaemonWithAgentdListenAndPortOverrides() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-r2-p1-5-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let fakeHome = tempRoot.appendingPathComponent("home", isDirectory: true)
+        let configDir = fakeHome.appendingPathComponent("Library/Application Support/mimi-remote", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        let configURL = configDir.appendingPathComponent("config.json")
+        try #"{"listen":"127.0.0.1:8787","auth":{"token":"cfg-secret-token"},"app_server":{"transport":"local"},"codex":{"enabled":true}}"#
+            .write(to: configURL, atomically: true, encoding: .utf8)
+
+        let currentUID = Darwin.geteuid()
+        let basePS = """
+          699     1   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/MacOS/Mimi Remote Mac --agentd-supervisor
+          700   699   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --log-file /tmp/mimi.log
+        """
+
+        // 1. AGENTD_LISTEN 覆写端口为 18787（与 JSON 8787 不同），lsof 实时回环监听在 127.0.0.1:18787 -> 必须识别成功！
+        var procsListenOverride = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
+        procsListenOverride[700]?.environment = ["AGENTD_LISTEN": "127.0.0.1:18787"]
+        let listenOverridePorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn127.0.0.1:18787\n")
+        let activeListen = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsListenOverride,
+            listeningPortsByPID: listenOverridePorts,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+        XCTAssertEqual(activeListen.pid, 700)
+        XCTAssertEqual(activeListen.listenPort, 18787)
+        XCTAssertEqual(activeListen.authToken, "cfg-secret-token")
+
+        // 2. AGENTD_PORT + AGENTD_TOKEN 覆写且绑定通配地址 *:19001 -> 必须识别端口 19001 与 env token！
+        var procsPortOverride = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
+        procsPortOverride[700]?.environment = ["AGENTD_PORT": "19001", "AGENTD_TOKEN": "env-override-token"]
+        let wildcardPorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn*:19001\n")
+        let activePort = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsPortOverride,
+            listeningPortsByPID: wildcardPorts,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+        XCTAssertEqual(activePort.listenPort, 19001)
+        XCTAssertEqual(activePort.authToken, "env-override-token")
+
+        // 3. 即使未读到进程环境变量，已锁定唯一活动进程且仅有一个实时回环监听端口 20444（与 JSON 8787 不同）-> 直接采用实时回环端口！
+        let procsNoEnv = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
+        let singleLivePorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn[::1]:20444\n")
+        let activeSingleLive = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsNoEnv,
+            listeningPortsByPID: singleLivePorts,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+        XCTAssertEqual(activeSingleLive.listenPort, 20444)
+
+        // 4. 仅监听非回环地址（192.168.1.10:18787）-> 不属于本机回环监听，必须忽略并返回 nil！
+        let nonLoopbackPorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn192.168.1.10:18787\n")
+        XCTAssertTrue(nonLoopbackPorts[700]?.isEmpty ?? true)
+        XCTAssertNil(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsNoEnv,
+            listeningPortsByPID: nonLoopbackPorts,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+    }
+
+    func testR2_P1_4IdleDaemonProbeUsesBearerTokenIndependentOfPairing503() async throws {
+        // 构造真实本机回环 HTTP+WebSocket 服务端：/api/pair/local 永远返回 503，
+        // 而 /api/app-server/ws?runtime=codex 校验 Bearer Token 后完成 WebSocket 升级并响应 initialize。
+        let expectedToken = "mimi-direct-probe-token-\(UUID().uuidString)"
+        let listenFD = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listenFD, 0)
+        defer { Darwin.close(listenFD) }
+        var reuse: Int32 = 1
+        _ = Darwin.setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindRC = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(listenFD, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bindRC, 0)
+        XCTAssertEqual(Darwin.listen(listenFD, 4), 0)
+
+        var boundAddr = sockaddr_in()
+        var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameRC = withUnsafeMutablePointer(to: &boundAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.getsockname(listenFD, sa, &addrLen)
+            }
+        }
+        XCTAssertEqual(nameRC, 0)
+        let port = Int(UInt16(bigEndian: boundAddr.sin_port))
+
+        let pairLocalHits = OSAllocatedUnfairLock(initialState: 0)
+        let wsAuthMatched = OSAllocatedUnfairLock(initialState: false)
+        let serverTask = Task.detached {
+            while true {
+                let clientFD = Darwin.accept(listenFD, nil, nil)
+                if clientFD < 0 { break }
+                defer { Darwin.close(clientFD) }
+                var reqBuf = [UInt8](repeating: 0, count: 8192)
+                let n = Darwin.read(clientFD, &reqBuf, reqBuf.count)
+                guard n > 0 else { continue }
+                let reqText = String(decoding: reqBuf.prefix(n), as: UTF8.self)
+                let lines = reqText.components(separatedBy: "\r\n")
+                let firstLine = lines.first ?? ""
+
+                if firstLine.contains("/api/pair/local") {
+                    pairLocalHits.withLock { $0 += 1 }
+                    let resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 29\r\nConnection: close\r\n\r\n{\"error\":\"pairing not ready\"}"
+                    _ = resp.withCString { Darwin.write(clientFD, $0, strlen($0)) }
+                    continue
+                }
+
+                var wsKey = ""
+                var authHeader = ""
+                for line in lines.dropFirst() {
+                    if let colon = line.firstIndex(of: ":") {
+                        let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                        let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                        if k == "sec-websocket-key" { wsKey = v }
+                        if k == "authorization" { authHeader = v }
+                    }
+                }
+                guard firstLine.contains("/api/app-server/ws?runtime=codex"),
+                      authHeader == "Bearer \(expectedToken)",
+                      !wsKey.isEmpty else {
+                    let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    _ = resp.withCString { Darwin.write(clientFD, $0, strlen($0)) }
+                    continue
+                }
+                wsAuthMatched.withLock { $0 = true }
+
+                let magic = wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                let acceptVal = Data(Insecure.SHA1.hash(data: Data(magic.utf8))).base64EncodedString()
+                let upgradeResp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(acceptVal)\r\n\r\n"
+                _ = upgradeResp.withCString { Darwin.write(clientFD, $0, strlen($0)) }
+
+                // 读取客户端 initialize 文本帧并回复合法 JSON-RPC result 帧（服务端帧不加掩码）。
+                var frameBuf = [UInt8](repeating: 0, count: 4096)
+                let frameN = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+                guard frameN > 2 else { continue }
+                let replyJSON = Data(#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-test"}}"#.utf8)
+                var outFrame: [UInt8] = [0x81, UInt8(replyJSON.count)]
+                outFrame.append(contentsOf: replyJSON)
+                _ = outFrame.withUnsafeBytes { Darwin.write(clientFD, $0.baseAddress, $0.count) }
+                // 读取客户端 initialized 帧后等待关闭。
+                _ = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+                break
+            }
+        }
+
+        // 先确认若调用 /api/pair/local 确实返回 503（模拟 Codex 唯一助手且无新观测的配对未就绪场景）。
+        let client = LocalGatewayClient(requestTimeout: 5)
+        do {
+            _ = try await client.claimToken(port: port)
+            XCTFail("/api/pair/local 在本夹具中应返回 503")
+        } catch LocalGatewayError.claimRejected {}
+        XCTAssertEqual(pairLocalHits.withLock { $0 }, 1)
+
+        // 核心回归：openCodexProbeChannel 直接携带 Bearer Token 建立探针通道，完全绕开 /api/pair/local 并成功握手！
+        let channel = try await client.openCodexProbeChannel(port: port, bearerToken: expectedToken)
+        channel.close()
+        Darwin.shutdown(listenFD, SHUT_RDWR)
+        await serverTask.value
+
+        XCTAssertEqual(pairLocalHits.withLock { $0 }, 1, "openCodexProbeChannel 绝不得调用 /api/pair/local")
+        XCTAssertTrue(wsAuthMatched.withLock { $0 }, "探针通道必须携带 Bearer Token 直连 /api/app-server/ws?runtime=codex")
     }
 }
 

@@ -101,13 +101,20 @@ struct LocalGatewayClient: DesktopSessionSource {
         return DesktopSessionListing(sessions: sessions, hasMore: cursor != nil)
     }
 
-    /// 为只读共享后端核验建立一次性 Codex 网关通道（不带 `session` 参数，不会挤掉手机具名会话），调用方负责立即关闭。
-    func openCodexProbeChannel(port: Int) async throws -> LocalJSONRPCChannel {
-        try await connect(runtime: .codex, port: port)
+    /// 为只读共享后端核验建立一次性 Codex 网关通道（不依赖 `/api/pair/local` 配对就绪状态，直接使用活动守护进程 Bearer Token，且不带 `session` 参数，不会挤掉手机具名会话）。
+    func openCodexProbeChannel(port: Int, bearerToken: String) async throws -> LocalJSONRPCChannel {
+        guard !bearerToken.isEmpty else {
+            throw LocalGatewayError.claimRejected("缺少本机 Mimi 服务的鉴权 Token。")
+        }
+        return try await connect(runtime: .codex, port: port, token: bearerToken)
     }
 
     private func connect(runtime: SessionRuntime, port: Int) async throws -> LocalJSONRPCChannel {
         let token = try await claimToken(port: port)
+        return try await connect(runtime: runtime, port: port, token: token)
+    }
+
+    private func connect(runtime: SessionRuntime, port: Int, token: String) async throws -> LocalJSONRPCChannel {
         guard let url = URL(string: "ws://127.0.0.1:\(port)/api/app-server/ws?runtime=\(runtime.rawValue)") else {
             throw LocalGatewayError.invalidResponse
         }

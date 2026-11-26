@@ -452,3 +452,105 @@ final class CodexSharedSetupCoordinator {
         desktopOpenFeedbackIsError = result.isFailure
     }
 }
+
+extension CodexDesktopLink {
+    /// 打开 Codex 桌面版 SSH / 连接设置页的结果，供向导明确反馈未安装、回退或启动失败。
+    enum OpenSettingsResult: Equatable, Sendable {
+        case openedSSHSettings
+        case openedConnectionsFallback
+        case openedAppFallback
+        case notInstalled
+        case launchFailed(String)
+
+        var feedbackMessage: String? {
+            switch self {
+            case .openedSSHSettings:
+                "已将 SSH 设置页链接发送给 Codex 桌面版；如未自动跳转，可点击「打开连接设置」或手动进入「设置 → 连接 → SSH」。"
+            case .openedConnectionsFallback:
+                "已将「连接」设置页链接发送给 Codex 桌面版，请进入 SSH 子页继续添加主机。"
+            case .openedAppFallback:
+                "已打开 Codex 桌面版，请手动进入「设置 → 连接 → SSH」继续添加主机。"
+            case .notInstalled:
+                "没有找到 Codex 桌面版，请先安装 Codex 桌面版后再试。"
+            case .launchFailed(let detail):
+                detail.isEmpty ? "没能打开 Codex 桌面版。" : "没能打开 Codex 桌面版：\(detail)"
+            }
+        }
+
+        var isFailure: Bool {
+            switch self {
+            case .notInstalled, .launchFailed:
+                true
+            case .openedSSHSettings, .openedConnectionsFallback, .openedAppFallback:
+                false
+            }
+        }
+    }
+
+    static let sshSettingsURL = URL(string: "codex://settings/connections/ssh")!
+    static let connectionsSettingsURL = URL(string: "codex://settings/connections")!
+
+    @MainActor
+    static func openSSHSettings(
+        preferSSHSubpage: Bool = true,
+        findApp: @MainActor () -> URL? = {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID)
+        },
+        openURL: @MainActor (URL, URL) async throws -> Void = { url, appURL in
+            _ = try await NSWorkspace.shared.open(
+                [url],
+                withApplicationAt: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        },
+        openApp: @MainActor (URL) async throws -> Void = { appURL in
+            _ = try await NSWorkspace.shared.openApplication(
+                at: appURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        }
+    ) async -> OpenSettingsResult {
+        guard let appURL = findApp() else {
+            return .notInstalled
+        }
+        if preferSSHSubpage {
+            do {
+                try await openURL(sshSettingsURL, appURL)
+                return .openedSSHSettings
+            } catch {
+                // 旧版桌面版若不识别 SSH 子页，回退到通用连接页。
+            }
+        }
+        do {
+            try await openURL(connectionsSettingsURL, appURL)
+            return .openedConnectionsFallback
+        } catch {
+            do {
+                try await openApp(appURL)
+                return .openedAppFallback
+            } catch let launchError {
+                return .launchFailed(launchError.localizedDescription)
+            }
+        }
+    }
+
+    @MainActor
+    static func openConnectionsSettings() async -> OpenSettingsResult {
+        await openSSHSettings(preferSSHSubpage: false)
+    }
+
+    @MainActor
+    static func open(threadID: String) async throws {
+        guard let url = url(threadID: threadID) else {
+            throw AgentClientError.commandFailed("会话 ID 不合法。")
+        }
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: SessionOpenTarget.codexDesktopBundleID) else {
+            throw AgentClientError.commandFailed("没有找到 Codex 桌面版。")
+        }
+        do {
+            _ = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        } catch {
+            throw AgentClientError.commandFailed("没能打开 Codex 桌面版：\(error.localizedDescription)")
+        }
+    }
+}

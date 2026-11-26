@@ -52,12 +52,34 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    /// 文件的扩展访问元数据（ACL 与扩展属性），用于替换已有 SSH 文件时完整保留访问控制或拒绝降级替换。
+    /// 单条扩展属性（按原始字节保存属性名，避免 Swift `String` Unicode 规范等价把 NFC/NFD 等不同字节属性名合并）。
+    struct RawExtendedAttribute: Equatable, Hashable {
+        let rawName: Data
+        let value: Data
+
+        var displayName: String {
+            String(decoding: rawName, as: UTF8.self)
+        }
+
+        func withCStringName<R>(_ body: (UnsafePointer<CChar>) throws -> R) rethrows -> R {
+            var bytes: [CChar] = []
+            bytes.reserveCapacity(rawName.count + 1)
+            for byte in rawName {
+                bytes.append(CChar(bitPattern: byte))
+            }
+            bytes.append(0)
+            return try bytes.withUnsafeBufferPointer { buf in
+                try body(buf.baseAddress!)
+            }
+        }
+    }
+
+    /// 文件的扩展访问元数据（ACL 与按原始字节排序的扩展属性列表），用于替换已有 SSH 文件时完整保留访问控制或拒绝降级替换。
     struct FileAccessMetadata: Equatable {
         let aclExternalData: Data?
-        let xattrs: [String: Data]
+        let xattrs: [RawExtendedAttribute]
 
-        static let empty = FileAccessMetadata(aclExternalData: nil, xattrs: [:])
+        static let empty = FileAccessMetadata(aclExternalData: nil, xattrs: [])
     }
 
     /// 明确区分「确实缺失（仅 ENOENT）」与「存在」；任何其他 errno（如 EACCES、ENOTDIR、ELOOP）必须显式抛错，绝不静默降级为缺失。
@@ -327,17 +349,17 @@ extension CodexLocalSSHConfigurator {
         return Data(buffer.prefix(copied))
     }
 
-    private func captureExtendedAttributes(fromFD fd: Int32, label: String) throws -> [String: Data] {
+    private func captureExtendedAttributes(fromFD fd: Int32, label: String) throws -> [RawExtendedAttribute] {
         var listSize = Darwin.flistxattr(fd, nil, 0, 0)
         if listSize < 0 {
             let err = errno
             if err == ENOTSUP {
-                return [:]
+                return []
             }
             throw ConfigError.fileOperationFailed("无法列举 \(label) 的扩展属性：\(Self.posixErrorMessage(err))")
         }
         if listSize == 0 {
-            return [:]
+            return []
         }
         var nameBuffer = [CChar](repeating: 0, count: listSize)
         var actualSize = Darwin.flistxattr(fd, &nameBuffer, nameBuffer.count, 0)
@@ -346,7 +368,7 @@ extension CodexLocalSSHConfigurator {
             guard listSize >= 0 else {
                 throw ConfigError.fileOperationFailed("无法重新列举 \(label) 的扩展属性：\(Self.posixErrorMessage())")
             }
-            if listSize == 0 { return [:] }
+            if listSize == 0 { return [] }
             nameBuffer = [CChar](repeating: 0, count: listSize)
             actualSize = Darwin.flistxattr(fd, &nameBuffer, nameBuffer.count, 0)
         }
@@ -354,7 +376,7 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.fileOperationFailed("读取 \(label) 扩展属性列表失败：\(Self.posixErrorMessage())")
         }
 
-        var names: [String] = []
+        var rawNames: [Data] = []
         var offset = 0
         while offset < actualSize {
             var end = offset
@@ -363,27 +385,34 @@ extension CodexLocalSSHConfigurator {
             }
             if end > offset {
                 let bytes = nameBuffer[offset..<end].map { UInt8(bitPattern: $0) }
-                names.append(String(decoding: bytes, as: UTF8.self))
+                rawNames.append(Data(bytes))
             }
             offset = end + 1
         }
+        rawNames.sort { $0.lexicographicallyPrecedes($1) }
 
-        var result: [String: Data] = [:]
-        for name in names {
-            let valSize = Darwin.fgetxattr(fd, name, nil, 0, 0, 0)
+        var result: [RawExtendedAttribute] = []
+        result.reserveCapacity(rawNames.count)
+        for rawName in rawNames {
+            let entry = RawExtendedAttribute(rawName: rawName, value: Data())
+            let valSize = entry.withCStringName { cName in
+                Darwin.fgetxattr(fd, cName, nil, 0, 0, 0)
+            }
             if valSize < 0 {
-                throw ConfigError.fileOperationFailed("无法读取 \(label) 的扩展属性 \(name)：\(Self.posixErrorMessage())")
+                throw ConfigError.fileOperationFailed("无法读取 \(label) 的扩展属性 \(entry.displayName)：\(Self.posixErrorMessage())")
             }
             if valSize == 0 {
-                result[name] = Data()
+                result.append(entry)
                 continue
             }
             var valBuf = [UInt8](repeating: 0, count: valSize)
-            let readLen = Darwin.fgetxattr(fd, name, &valBuf, valBuf.count, 0, 0)
-            guard readLen >= 0 else {
-                throw ConfigError.fileOperationFailed("读取 \(label) 的扩展属性 \(name) 失败：\(Self.posixErrorMessage())")
+            let readLen = entry.withCStringName { cName in
+                Darwin.fgetxattr(fd, cName, &valBuf, valBuf.count, 0, 0)
             }
-            result[name] = Data(valBuf.prefix(readLen))
+            guard readLen >= 0 else {
+                throw ConfigError.fileOperationFailed("读取 \(label) 的扩展属性 \(entry.displayName) 失败：\(Self.posixErrorMessage())")
+            }
+            result.append(RawExtendedAttribute(rawName: rawName, value: Data(valBuf.prefix(readLen))))
         }
         return result
     }
@@ -413,22 +442,28 @@ extension CodexLocalSSHConfigurator {
             }
         }
 
-        // 2. 保留扩展属性（xattrs），并清除暂存文件上可能意外继承的额外属性
+        // 2. 按原始字节名保留全部扩展属性（xattrs，含 NFC/NFD 等字节级唯一名称），并清除意外继承的额外属性
+        let desiredRawNames = Set(existingMetadata.xattrs.map(\.rawName))
         let currentXattrs = try captureExtendedAttributes(fromFD: fd, label: label)
-        for existingName in currentXattrs.keys where existingMetadata.xattrs[existingName] == nil {
-            guard Darwin.fremovexattr(fd, existingName, 0) == 0 else {
-                throw ConfigError.fileOperationFailed(
-                    "无法清理暂存文件 \(label) 继承的扩展属性（\(existingName)）：\(Self.posixErrorMessage())，已拒绝替换。"
-                )
-            }
-        }
-        for (name, value) in existingMetadata.xattrs.sorted(by: { $0.key < $1.key }) {
-            let status: Int32 = value.withUnsafeBytes { raw in
-                Darwin.fsetxattr(fd, name, raw.baseAddress, raw.count, 0, 0)
+        for existingAttr in currentXattrs where !desiredRawNames.contains(existingAttr.rawName) {
+            let status = existingAttr.withCStringName { cName in
+                Darwin.fremovexattr(fd, cName, 0)
             }
             guard status == 0 else {
                 throw ConfigError.fileOperationFailed(
-                    "无法保留 \(label) 的扩展属性（\(name)）：\(Self.posixErrorMessage())，已拒绝替换。"
+                    "无法清理暂存文件 \(label) 继承的扩展属性（\(existingAttr.displayName)）：\(Self.posixErrorMessage())，已拒绝替换。"
+                )
+            }
+        }
+        for attr in existingMetadata.xattrs {
+            let status: Int32 = attr.withCStringName { cName in
+                attr.value.withUnsafeBytes { raw in
+                    Darwin.fsetxattr(fd, cName, raw.baseAddress, raw.count, 0, 0)
+                }
+            }
+            guard status == 0 else {
+                throw ConfigError.fileOperationFailed(
+                    "无法保留 \(label) 的扩展属性（\(attr.displayName)）：\(Self.posixErrorMessage())，已拒绝替换。"
                 )
             }
         }
@@ -712,8 +747,12 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.fileOperationFailed("无法在独占暂存目录创建 \(label)：\(Self.posixErrorMessage())")
         }
         var closed = false
+        var succeeded = false
         defer {
             if !closed { Darwin.close(fd) }
+            if !succeeded {
+                _ = Darwin.unlinkat(dirFD, fileName, 0)
+            }
         }
         guard Darwin.fchmod(fd, 0o600) == 0 else {
             throw ConfigError.fileOperationFailed("设置 \(label) 权限失败：\(Self.posixErrorMessage())")
@@ -755,6 +794,7 @@ extension CodexLocalSSHConfigurator {
         let stagedSnapshot = FileSnapshot(exists: true, info: stagedInfo, metadata: stagedMetadata, data: data)
         Darwin.close(fd)
         closed = true
+        succeeded = true
         return stagedSnapshot
     }
 
@@ -1075,12 +1115,11 @@ extension CodexLocalSSHConfigurator {
         do {
             try verify(qDirFD)
         } catch {
-            // 核验未通过：原子无覆盖恢复回原路径；若原路径已被新文件占用，保留在隔离目录内绝不覆盖或删除。
+            // 核验未通过：原子无覆盖恢复回原路径；若原路径已被新文件占用，保留在隔离目录内绝不覆盖或删除，
+            // 且绝不清除隔离账本，避免后续重试因原路径缺失而误报删除成功并丢弃归属记录。
             if Darwin.renameatx_np(qDirFD, "item", dirFD, fileName, UInt32(RENAME_EXCL)) != 0 {
                 let restoreErr = errno
                 keepQuarantineDir = true
-                // 隔离目录内的文件核验不匹配（属于外部替换文件），不能作为待自动删除项；清除自动清理账本并明确报告保留路径。
-                afterUnlinkOrRestoreClear?()
                 let preservedPath = parentDir
                     .appendingPathComponent(qDirName, isDirectory: true)
                     .appendingPathComponent("item", isDirectory: false)
@@ -1533,12 +1572,16 @@ extension CodexLocalSSHConfigurator {
         virtualFileOverrides: [String: String],
         counter: inout Int,
         depth: Int,
-        activeStack: inout Set<String>
+        activeStack: inout Set<String>,
+        inheritedIgnoreUnknownPatterns: [String]? = nil
     ) throws -> String {
         guard depth <= 16 else {
             throw ConfigError.effectiveConfigConflict("SSH 配置 Include 嵌套层级超过 16 层，无法忠实冻结。")
         }
         let virtualPathSet = Set(virtualFileOverrides.keys)
+        var globalIgnorePatterns = inheritedIgnoreUnknownPatterns
+        var blockIgnorePatterns: [String]? = nil
+        var inUnconditionalScope = true
         var output = ""
         for slice in Self.rawLineSlices(in: text) {
             let rawLine = Self.utf8Substring(text, range: slice.contentRange)
@@ -1555,14 +1598,43 @@ extension CodexLocalSSHConfigurator {
                 continue
             }
             let keyword = firstToken.lowercased()
-            guard Self.recognizedSSHConfigKeywords.contains(keyword) else {
+            if !Self.recognizedSSHConfigKeywords.contains(keyword) {
+                let activeIgnorePatterns = globalIgnorePatterns ?? blockIgnorePatterns
+                if let activeIgnorePatterns,
+                   Self.matchesIgnoreUnknown(keyword: keyword, patterns: activeIgnorePatterns) {
+                    // 已确认不在 OpenSSH 已知/危险指令集中且命中先前生效的 IgnoreUnknown：注释掉确保 ssh -G 下严格惰性。
+                    output.append("# [ignored by IgnoreUnknown] \(keyword)\n")
+                    continue
+                }
                 throw ConfigError.effectiveConfigConflict(
                     "SSH 配置包含无法识别的指令（\(firstToken)），拒绝冻结并停止只读评估。"
                 )
             }
-            if keyword == "match" {
+            if keyword == "host" {
+                blockIgnorePatterns = nil
+                let patterns = tokens.dropFirst().map { $0.lowercased() }
+                inUnconditionalScope = patterns.count == 1 && patterns[0] == "*"
+                output.append(rawLine)
+                output.append("\n")
+            } else if keyword == "match" {
                 if let matchError = Self.validateMatchCriteria(Array(tokens.dropFirst())) {
                     throw ConfigError.effectiveConfigConflict(matchError)
+                }
+                blockIgnorePatterns = nil
+                let criteria = tokens.dropFirst().map { $0.lowercased() }
+                inUnconditionalScope = criteria.count == 1 && criteria[0] == "all"
+                output.append(rawLine)
+                output.append("\n")
+            } else if keyword == "ignoreunknown" {
+                guard let parsedPatterns = Self.parseIgnoreUnknownPatterns(from: tokens) else {
+                    throw ConfigError.effectiveConfigConflict("SSH 配置 IgnoreUnknown 指令语法无效，拒绝冻结并停止只读评估。")
+                }
+                if inUnconditionalScope {
+                    if globalIgnorePatterns == nil {
+                        globalIgnorePatterns = parsedPatterns
+                    }
+                } else if blockIgnorePatterns == nil {
+                    blockIgnorePatterns = parsedPatterns
                 }
                 output.append(rawLine)
                 output.append("\n")
@@ -1619,7 +1691,8 @@ extension CodexLocalSSHConfigurator {
                             virtualFileOverrides: virtualFileOverrides,
                             counter: &counter,
                             depth: depth + 1,
-                            activeStack: &activeStack
+                            activeStack: &activeStack,
+                            inheritedIgnoreUnknownPatterns: globalIgnorePatterns
                         )
                         counter += 1
                         let childURL = tempDirectory.appendingPathComponent("inc-\(counter).conf")
@@ -1749,164 +1822,6 @@ extension CodexLocalSSHConfigurator {
             return try readAllBytes(from: fd, label: url.lastPathComponent, maxBytes: 4 * 1024 * 1024)
         } catch {
             throw ConfigError.effectiveConfigConflict("读取 SSH 配置文件 \(effectiveLabel) 失败：\(error.localizedDescription)")
-        }
-    }
-
-    // MARK: - Concurrency Serialization (In-process + Cross-process Advisory Lock)
-
-    func withSerializedLock<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
-        let key = homeDirectory.standardizedFileURL.path
-        return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
-            try ensureStateDirectory()
-            let lockFD = try await acquireAdvisoryFileLock(at: lockFileURL)
-            defer {
-                Darwin.close(lockFD)
-            }
-            return try await operation()
-        }
-    }
-
-    /// 供 `configure()` 使用的只读优先串行锁：
-    /// 先在不创建/不改权状态目录与锁文件的前提下复用已校验的现有共享锁判断是否存在已有配置；
-    /// 仅当确需执行首次写入状态时才升级到独占写锁，确保只读校验重试零文件系统改动。
-    func withReadOnlyFirstSerializedLock<T: Sendable>(
-        tryReadOnly: () async throws -> T?,
-        performWrite: () async throws -> T
-    ) async throws -> T {
-        let key = homeDirectory.standardizedFileURL.path
-        return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
-            var readLockFD = try await acquireExistingValidatedAdvisoryFileLockIfPresent(at: lockFileURL)
-            do {
-                if let result = try await tryReadOnly() {
-                    if let fd = readLockFD {
-                        Darwin.close(fd)
-                        readLockFD = nil
-                    }
-                    return result
-                }
-            } catch {
-                if let fd = readLockFD {
-                    Darwin.close(fd)
-                    readLockFD = nil
-                }
-                throw error
-            }
-            if let fd = readLockFD {
-                Darwin.close(fd)
-                readLockFD = nil
-            }
-            try ensureStateDirectory()
-            let writeLockFD = try await acquireAdvisoryFileLock(at: lockFileURL)
-            defer {
-                Darwin.close(writeLockFD)
-            }
-            return try await performWrite()
-        }
-    }
-
-    private func acquireExistingValidatedAdvisoryFileLockIfPresent(at url: URL) async throws -> Int32? {
-        let stateDir = url.deletingLastPathComponent()
-        guard try validateDirectoryIfPresent(stateDir, label: stateDir.lastPathComponent) != nil else {
-            return nil
-        }
-        guard try validateRegularFileIfPresent(url, label: url.lastPathComponent) != nil else {
-            return nil
-        }
-        let deadline = ContinuousClock.now + .seconds(20)
-        while true {
-            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_SHLOCK | O_NONBLOCK)
-            if fd >= 0 {
-                var st = stat()
-                guard Darwin.fstat(fd, &st) == 0,
-                      (st.st_mode & S_IFMT) == S_IFREG,
-                      st.st_uid == Darwin.geteuid() else {
-                    Darwin.close(fd)
-                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
-                }
-                return fd
-            }
-            let err = errno
-            if err == ENOENT {
-                return nil
-            }
-            if err == ELOOP {
-                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
-            }
-            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
-                throw ConfigError.fileOperationFailed("获取只读并发锁失败：\(Self.posixErrorMessage(err))")
-            }
-            if ContinuousClock.now >= deadline {
-                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-    }
-
-    private func acquireAdvisoryFileLock(at url: URL) async throws -> Int32 {
-        try validateRegularFileIfPresent(url, label: url.lastPathComponent)
-        let deadline = ContinuousClock.now + .seconds(20)
-        while true {
-            let fd = Darwin.open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_EXLOCK | O_NONBLOCK, 0o600)
-            if fd >= 0 {
-                var st = stat()
-                guard Darwin.fstat(fd, &st) == 0,
-                      (st.st_mode & S_IFMT) == S_IFREG,
-                      st.st_uid == Darwin.geteuid() else {
-                    Darwin.close(fd)
-                    throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 类型或属主不安全。")
-                }
-                _ = Darwin.fchmod(fd, 0o600)
-                return fd
-            }
-            let err = errno
-            if err == ELOOP {
-                throw ConfigError.unsafeFileSystemTarget("\(url.lastPathComponent) 是符号链接。")
-            }
-            if err != EWOULDBLOCK && err != EAGAIN && err != EINTR {
-                throw ConfigError.fileOperationFailed("获取并发锁失败：\(Self.posixErrorMessage(err))")
-            }
-            if ContinuousClock.now >= deadline {
-                throw ConfigError.concurrentModification("等待另一项 SSH 配置操作超时。")
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-    }
-}
-
-/// 进程内按目录串行化所有 SSH 配置读写与撤销，避免双入口或重入并发写盘。
-private actor CodexLocalSSHOperationLock {
-    static let shared = CodexLocalSSHOperationLock()
-
-    private var lockedKeys: Set<String> = []
-    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
-
-    func withLock<T: Sendable>(key: String, operation: () async throws -> T) async throws -> T {
-        await acquire(key: key)
-        defer { release(key: key) }
-        return try await operation()
-    }
-
-    private func acquire(key: String) async {
-        if !lockedKeys.contains(key) {
-            lockedKeys.insert(key)
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiters[key, default: []].append(continuation)
-        }
-    }
-
-    private func release(key: String) {
-        if var queue = waiters[key], !queue.isEmpty {
-            let next = queue.removeFirst()
-            if queue.isEmpty {
-                waiters.removeValue(forKey: key)
-            } else {
-                waiters[key] = queue
-            }
-            next.resume()
-        } else {
-            lockedKeys.remove(key)
         }
     }
 }
