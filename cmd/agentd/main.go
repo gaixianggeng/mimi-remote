@@ -485,7 +485,7 @@ func runStatus(args []string) error {
 	if *inspectNetworkPolicy {
 		networkStatusCh = make(chan agentNetworkStatus, 1)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), statusNetworkPolicyTimeout)
 			defer cancel()
 			networkStatusCh <- inspectPlatformNetworkStatus(ctx, cfg)
 		}()

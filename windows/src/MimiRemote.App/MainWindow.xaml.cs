@@ -93,6 +93,20 @@ public sealed partial class MainWindow : Window, IDisposable
         };
         AppWindow.Closing += (_, args) =>
         {
+            if (context.IsMaintenanceRunning)
+            {
+                args.Cancel = true;
+                if (!quitting && tray is not null)
+                {
+                    AppWindow.Hide();
+                    UpdateActivity();
+                }
+                else
+                {
+                    SendNotification("Mimi Remote", "安装维护向导正在运行，请等待维护完成后再退出应用。");
+                }
+                return;
+            }
             if (!quitting && tray is not null)
             {
                 args.Cancel = true;

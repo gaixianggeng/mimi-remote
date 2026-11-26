@@ -376,6 +376,14 @@ public sealed class OnboardingViewModelTests
             ],
         };
 
+        var verifiedLanTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-lan-ticket",
+            PairExpiresAt = now.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
         var pairingMaintenanceCalls = 0;
         var pairingBackend = new FakePairingBackend(() => now)
         {
@@ -394,21 +402,34 @@ public sealed class OnboardingViewModelTests
                         NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
                     },
                     "专用网络防火墙与局域网访问已生效。",
-                    readyLanReport));
+                    readyLanReport,
+                    verifiedLanTicket));
             },
         };
 
         using var controller = new PairingSessionController(pairingBackend);
         controller.SetActive(true);
         await controller.RefreshAsync();
+        var preflightCallsBeforeMaintenance = pairingBackend.PreflightCalls;
+        var pairCallsBeforeMaintenance = pairingBackend.PairCalls;
         controller.SelectTransport("lan");
         Assert.True(controller.CanEnableSelectedTransport);
         Assert.True(controller.SelectedTransportItem?.NeedsFirewallMaintenance);
         await controller.EnableSelectedTransportAsync();
         Assert.Equal(1, pairingMaintenanceCalls);
         Assert.Empty(pairingBackend.EnabledTransports);
+        Assert.Equal(preflightCallsBeforeMaintenance, pairingBackend.PreflightCalls);
+        Assert.Equal(pairCallsBeforeMaintenance, pairingBackend.PairCalls);
         Assert.True(controller.HasActiveTicket);
 
+        var wizardVerifiedTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-wizard-lan",
+            PairExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
         var wizardMaintenanceCalls = 0;
         var wizardBackend = new FakeWizardBackend
         {
@@ -427,16 +448,21 @@ public sealed class OnboardingViewModelTests
                         NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
                     },
                     "专用网络防火墙与局域网访问已生效。",
-                    readyLanReport));
+                    readyLanReport,
+                    wizardVerifiedTicket));
             },
         };
         using var wizard = new OnboardingWizardStateMachine(wizardBackend);
         await wizard.ProceedToConnectStepAsync();
+        var wizardPreflightsBefore = wizardBackend.PreflightCalls;
+        var wizardPairsBefore = wizardBackend.PairCalls;
         wizard.SelectTransport("lan");
         Assert.True(wizard.CanEnableSelectedTransport);
         await wizard.EnableSelectedTransportAsync();
         Assert.Equal(1, wizardMaintenanceCalls);
         Assert.Empty(wizardBackend.EnabledTransports);
+        Assert.Equal(wizardPreflightsBefore, wizardBackend.PreflightCalls);
+        Assert.Equal(wizardPairsBefore, wizardBackend.PairCalls);
         Assert.True(wizard.HasIssuedTicket);
     }
 
@@ -453,6 +479,30 @@ public sealed class OnboardingViewModelTests
             serviceOk: true,
             tailcatReady: true,
             lanFirewallBlocked: true);
+        var readyLanReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true);
+        readyLanReport = readyLanReport with
+        {
+            Checks =
+            [
+                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+        var verifiedLanTicket = new PairingTicketReceipt
+        {
+            Ok = true,
+            Endpoint = "http://192.168.1.20:8787",
+            PairUrl = "mimiremote://pair?pair_sig=verified-after-repair",
+            PairExpiresAt = now.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+            Network = "lan",
+        };
+        var includeVerifiedPreflight = true;
         var backend = new FakePairingBackend(() => now)
         {
             OnOpenUrl = url => openedUrls.Add(url),
@@ -472,7 +522,9 @@ public sealed class OnboardingViewModelTests
                         ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
                         NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
                     },
-                    "专用网络防火墙与局域网访问已生效。"));
+                    "专用网络防火墙与局域网访问已生效。",
+                    includeVerifiedPreflight ? readyLanReport : null,
+                    includeVerifiedPreflight ? verifiedLanTicket : null));
             },
             Report = blockedReport,
         };
@@ -488,25 +540,23 @@ public sealed class OnboardingViewModelTests
         controller.OpenFallbackDownload();
         Assert.Equal([OnboardingCopyCatalog.UrlDesktop], openedUrls);
 
-        // Once maintenance succeeds and preflight refreshes with LAN ready, ticket is issued.
+        // Missing verified preflight must fail closed without invoking unverified refresh/pair.
         lanEnabled = true;
-        var readyLanReport = BuildWindowsReport(
-            stage: "pair",
-            configured: true,
-            workspaceConfirmed: true,
-            serviceOk: true,
-            tailcatReady: true);
-        readyLanReport = readyLanReport with
-        {
-            Checks =
-            [
-                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
-                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
-                    : c),
-            ],
-        };
-        backend.Report = readyLanReport;
+        includeVerifiedPreflight = false;
+        var preflightsBeforeMissing = backend.PreflightCalls;
+        var pairsBeforeMissing = backend.PairCalls;
         await controller.EnableSelectedTransportAsync();
+        Assert.Equal(preflightsBeforeMissing, backend.PreflightCalls);
+        Assert.Equal(pairsBeforeMissing, backend.PairCalls);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.False(controller.HasActiveTicket);
+
+        // Once maintenance returns verified preflight and verified pairing ticket,
+        // both are applied without invoking unverified refresh/pair.
+        includeVerifiedPreflight = true;
+        await controller.EnableSelectedTransportAsync();
+        Assert.Equal(preflightsBeforeMissing, backend.PreflightCalls);
+        Assert.Equal(pairsBeforeMissing, backend.PairCalls);
         Assert.False(controller.HasFallbackDownload);
         Assert.True(controller.HasActiveTicket);
 
@@ -1522,11 +1572,17 @@ public sealed class OnboardingViewModelTests
         public Func<Task<bool>>? OnWorkspaceUpdate { get; set; }
         public Func<Task<UpReadinessReceipt>>? OnRestart { get; set; }
 
+        public int PreflightCalls { get; private set; }
+        public int PairCalls { get; private set; }
+
         public Task<OnboardingPreflightReport> PreflightAsync(
             OnboardingPreflightOptions options,
             Action<OnboardingCheck>? onProgress,
-            CancellationToken cancellationToken) =>
-            OnPreflight!(options, onProgress, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            PreflightCalls++;
+            return OnPreflight!(options, onProgress, cancellationToken);
+        }
 
         public Task<SetupReceipt> SetupNoPairAsync(string scanRoot, OnboardingSetupOptions options, CancellationToken cancellationToken)
         {
@@ -1550,8 +1606,10 @@ public sealed class OnboardingViewModelTests
                 : Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
 
-        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>
-            Task.FromResult(new PairingTicketReceipt
+        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken)
+        {
+            PairCalls++;
+            return Task.FromResult(new PairingTicketReceipt
             {
                 Ok = true,
                 Endpoint = "http://127.0.0.1:8787",
@@ -1559,6 +1617,7 @@ public sealed class OnboardingViewModelTests
                 PairExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
                 Network = network,
             });
+        }
 
         public Task SetRuntimePathAsync(string runtimeId, string value, CancellationToken cancellationToken)
         {
@@ -1611,11 +1670,19 @@ public sealed class OnboardingViewModelTests
         public Func<string, Task>? OnEnableTransport { get; set; }
         public Action<string>? OnOpenUrl { get; init; }
 
-        public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
-            Task.FromResult(Report);
+        public int PreflightCalls { get; private set; }
+        public int PairCalls { get; private set; }
 
-        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>
-            PendingTicket ?? Task.FromResult(NextTicket ?? new PairingTicketReceipt
+        public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken)
+        {
+            PreflightCalls++;
+            return Task.FromResult(Report);
+        }
+
+        public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken)
+        {
+            PairCalls++;
+            return PendingTicket ?? Task.FromResult(NextTicket ?? new PairingTicketReceipt
             {
                 Ok = true,
                 Endpoint = "http://127.0.0.1:8787",
@@ -1623,6 +1690,7 @@ public sealed class OnboardingViewModelTests
                 PairExpiresAt = clock().AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
                 Network = network,
             });
+        }
 
         public Task EnableTransportAsync(string transport, CancellationToken cancellationToken)
         {

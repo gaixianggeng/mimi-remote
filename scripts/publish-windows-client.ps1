@@ -139,9 +139,37 @@ try {
         }
     }
     & (Join-Path $PSScriptRoot 'copy-windows-client-notices.ps1') -AssetsPath $assets -Destination $stage
-    Copy-Item -LiteralPath (Join-Path $root 'packaging/windows/native-preview-readme.txt') -Destination (Join-Path $stage 'README.txt')
-    $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object Extension -ne '.pdb')
     $signingMode = if (-not $releaseVersion) { 'unsigned-preview' } elseif ($PfxPath) { 'authenticode-pfx' } else { 'unsigned-release' }
+    if ($releaseVersion) {
+        $signingSummary = if ($PfxPath) {
+            "Signing mode: $signingMode (Authenticode signed). Verify the archive .sha256 sidecar and confirm (Get-AuthenticodeSignature .\MimiRemote.exe).Status is Valid."
+        } else {
+            "Signing mode: $signingMode (unsigned compatibility release). Verify the archive .sha256 sidecar before running; Windows SmartScreen may warn. Trusted maintenance entry requires an Authenticode-signed release."
+        }
+        $setupArtifact = if ($PfxPath) { "Mimi-Remote-Setup-$releaseVersion.exe" } else { "Mimi-Remote-Setup-$releaseVersion-unsigned.exe" }
+        $releaseReadme = @(
+            "Mimi Remote Windows Client $releaseVersion (win-x64)"
+            ''
+            $signingSummary
+            "Matching Setup installer: $setupArtifact (installs the managed service and maintenance components into %LOCALAPPDATA%\Programs\Mimi Remote)."
+            ''
+            'Extract the complete archive before launching MimiRemote.exe. The .NET and Windows App'
+            'SDK runtimes are included. Keep all DLL files and the licenses folder together.'
+            ''
+            'This client archive does not install or replace your existing background service.'
+            "Install or upgrade with the matching Mimi Remote Setup $releaseVersion installer first."
+            'Closing the client does not stop the computer service. A new tray icon is suppressed'
+            'while the previously installed Mimi Remote tray is still running.'
+            ''
+            'Source: https://github.com/gaixianggeng/mimi-remote'
+            'See manifest.json for the exact release version, signing mode, source commit, and SHA-256 hashes.'
+            'See LICENSE, NOTICE.md, THIRD_PARTY_NOTICES.md and licenses/ for applicable terms.'
+        ) -join "`r`n"
+        Set-Content -LiteralPath (Join-Path $stage 'README.txt') -Value $releaseReadme -Encoding utf8
+    } else {
+        Copy-Item -LiteralPath (Join-Path $root 'packaging/windows/native-preview-readme.txt') -Destination (Join-Path $stage 'README.txt')
+    }
+    $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object Extension -ne '.pdb')
     $manifest = [ordered]@{
         source_commit = $commit
         source_dirty = $dirty

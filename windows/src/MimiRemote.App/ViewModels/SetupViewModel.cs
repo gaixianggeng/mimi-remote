@@ -19,8 +19,16 @@ public sealed class SetupViewModel : ClientPageViewModel
         && Context.RunInstallerMaintenance is not null
         && !Context.Preview;
 
+    public bool IsMissingBroker =>
+        !Context.Preview
+        && (!Context.HasAgent
+            || string.Equals(Context.LastPreflightError?.Code, "embedded_binary_missing", StringComparison.Ordinal)
+            || string.Equals(wizard.PreflightError?.Code, "embedded_binary_missing", StringComparison.Ordinal));
+
     public bool HasMaintenanceDownloadFallback =>
-        !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl) || wizard.HasMaintenanceFallbackDownload;
+        IsMissingBroker
+        || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl)
+        || wizard.HasMaintenanceFallbackDownload;
 
     public string Root
     {
@@ -149,7 +157,9 @@ public sealed class SetupViewModel : ClientPageViewModel
         OpenMaintenanceDownloadCommand = new RelayCommand(
             () =>
             {
-                var url = maintenanceFallbackDownloadUrl ?? wizard.MaintenanceFallbackDownloadUrl;
+                var url = maintenanceFallbackDownloadUrl
+                    ?? wizard.MaintenanceFallbackDownloadUrl
+                    ?? (IsMissingBroker ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
                 if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
                 {
                     Context.OpenUrl(url);
@@ -184,6 +194,17 @@ public sealed class SetupViewModel : ClientPageViewModel
     {
         if (Context.Preview)
         {
+            return;
+        }
+        if (!Context.HasAgent)
+        {
+            var missingDiag = OnboardingCopyCatalog.SynthesizeLocal("embedded_binary_missing", "service_daemon");
+            Context.UpdateGateFromPreflight(null, missingDiag);
+            OnPropertyChanged(nameof(IsMissingBroker));
+            OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
+            OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
+            preserveMaintenanceNotice = false;
+            Report(missingDiag.Message, error: true);
             return;
         }
         await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
@@ -282,14 +303,22 @@ public sealed class SetupViewModel : ClientPageViewModel
             {
                 wizard.ApplyVerifiedPreflightReport(verifiedPreflight);
                 Context.UpdateGateFromPreflight(verifiedPreflight);
+                if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
+                {
+                    Root = wizard.SelectedScanRoot;
+                }
             }
-            else
+            else if (result.Succeeded)
             {
-                await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
-            }
-            if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
-            {
-                Root = wizard.SelectedScanRoot;
+                // Never fall back to the unverified launcher when verified preflight is absent.
+                SetMaintenanceFallbackUrl(WindowsMaintenanceClient.OfficialDownloadUrl);
+                preserveMaintenanceNotice = true;
+                Report(
+                    MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message
+                    + " 如持续无法确认，请前往桌面端正式下载页获取已签名的安装包："
+                    + WindowsMaintenanceClient.OfficialDownloadUrl,
+                    error: true);
+                return;
             }
         }
         preserveMaintenanceNotice = true;
@@ -307,7 +336,10 @@ public sealed class SetupViewModel : ClientPageViewModel
     private void OnGateStateChanged(object? sender, OnboardingGateState state)
     {
         OnPropertyChanged(nameof(IsPendingWorkspaceConfirmation));
+        OnPropertyChanged(nameof(IsMissingBroker));
+        OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
         ConfirmWorkspaceViaMaintenanceCommand.NotifyCanExecuteChanged();
+        OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
         CompleteWizardCommand.NotifyCanExecuteChanged();
     }
 
@@ -317,8 +349,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             CompleteWizardCommand.NotifyCanExecuteChanged();
         }
-        if (args.PropertyName == nameof(OnboardingWizardStateMachine.HasMaintenanceFallbackDownload))
+        if (args.PropertyName is nameof(OnboardingWizardStateMachine.HasMaintenanceFallbackDownload)
+            or nameof(OnboardingWizardStateMachine.PreflightError))
         {
+            OnPropertyChanged(nameof(IsMissingBroker));
             OnPropertyChanged(nameof(HasMaintenanceDownloadFallback));
             OpenMaintenanceDownloadCommand.NotifyCanExecuteChanged();
         }

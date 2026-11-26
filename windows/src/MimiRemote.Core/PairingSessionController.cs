@@ -354,20 +354,24 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                     }
                     return;
                 }
+                if (maintenanceResult.PostRunPreflight is not { } verifiedReport)
+                {
+                    var missingMessage = MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message;
+                    Note = missingMessage;
+                    preservedMaintenanceNote = missingMessage;
+                    FallbackDownloadUrl = WindowsMaintenanceClient.OfficialDownloadUrl;
+                    return;
+                }
                 preservedMaintenanceNote = null;
                 FallbackDownloadUrl = null;
-                if (maintenanceResult.PostRunPreflight is { } verifiedReport)
+                ApplyReport(verifiedReport);
+                UpdateIdleNote();
+                if (selection == generation
+                    && CanGenerate
+                    && string.Equals(SelectedTransport, target, StringComparison.Ordinal)
+                    && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
                 {
-                    ApplyReport(verifiedReport);
-                    UpdateIdleNote();
-                }
-                else
-                {
-                    await RefreshAsync(cancellationToken);
-                }
-                if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
-                {
-                    await GenerateAsync(cancellationToken);
+                    ApplyVerifiedPairingTicket(target, verifiedTicket);
                 }
                 return;
             }
@@ -405,6 +409,32 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             await GenerateAsync(cancellationToken);
         }
+    }
+
+    private void ApplyVerifiedPairingTicket(string target, PairingTicketReceipt receipt)
+    {
+        if (disposed || !active || !RouteReady || !string.Equals(SelectedTransport, target, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
+            || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
+            || expiry <= backend.Now())
+        {
+            Note = "配对信息无效或已经过期，请刷新二维码。";
+            return;
+        }
+        issuedPairUrl = receipt.PairUrl;
+        issuedExpiresAt = expiry;
+        issuedNetwork = target;
+        DidCopyLink = false;
+        CountdownText = OnboardingWizardStateMachine.FormatCountdown(expiry - backend.Now(), expiry);
+        Note = receipt.Warnings.Count > 0
+            ? string.Join("\n", receipt.Warnings)
+            : "请使用手机端 Mimi Remote 扫描二维码，或点击“复制配对链接”。";
+        NotifyActionState();
+        TicketChanged?.Invoke(this, issuedPairUrl);
     }
 
     public async Task GenerateAsync(CancellationToken cancellationToken = default)

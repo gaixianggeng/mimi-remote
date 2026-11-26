@@ -21,7 +21,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
     public bool IsGateConfirmed => OnboardingNavigationGate.IsSettingsEditable(Context.GateState);
     public bool IsReadOnlyMode => !IsGateConfirmed;
     public bool IsPendingConfirmation => Context.GateState == OnboardingGateState.PendingConfirmation && Context.RunInstallerMaintenance is not null && !Context.Preview;
-    public bool HasMaintenanceDownloadFallback => !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl);
+    public bool HasMaintenanceDownloadFallback => (!Context.Preview && !Context.HasAgent) || !string.IsNullOrWhiteSpace(maintenanceFallbackDownloadUrl);
     public string GateNotice => OnboardingNavigationGate.DescribeState(Context.GateState);
     public string ScanRoot { get => scanRoot; private set => SetProperty(ref scanRoot, value); }
     public string BrowseRoot
@@ -88,7 +88,9 @@ public sealed class SettingsViewModel : ClientPageViewModel
         OpenMaintenanceDownloadCommand = new RelayCommand(
             () =>
             {
-                if (maintenanceFallbackDownloadUrl is { } url && OnboardingCopyCatalog.IsAllowedUrl(url))
+                var url = maintenanceFallbackDownloadUrl
+                    ?? (!Context.Preview && !Context.HasAgent ? WindowsMaintenanceClient.OfficialDownloadUrl : null);
+                if (url is not null && OnboardingCopyCatalog.IsAllowedUrl(url))
                 {
                     Context.OpenUrl(url);
                 }
@@ -207,19 +209,26 @@ public sealed class SettingsViewModel : ClientPageViewModel
         SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
         if (result.BrokerVerified)
         {
+            if (result.PostRunStatus is { } verifiedStatus && !string.IsNullOrWhiteSpace(verifiedStatus.Version))
+            {
+                ServiceVersion = verifiedStatus.Version;
+            }
             if (result.PostRunPreflight is { } verifiedPreflight)
             {
                 Context.UpdateGateFromPreflight(verifiedPreflight);
                 ScanRoot = verifiedPreflight.ScanRoot;
                 BrowseRoot = verifiedPreflight.BrowseRoot;
             }
-            if (result.PostRunStatus is { } verifiedStatus && !string.IsNullOrWhiteSpace(verifiedStatus.Version))
+            else if (result.Succeeded)
             {
-                ServiceVersion = verifiedStatus.Version;
-            }
-            else if (result.PostRunPreflight is null)
-            {
-                await RefreshAsync(force: true);
+                // Never fall back to the unverified launcher when verified preflight is absent.
+                SetMaintenanceFallbackUrl(WindowsMaintenanceClient.OfficialDownloadUrl);
+                Report(
+                    MaintenanceRunResult.DescribeFailure(MaintenanceFailureKind.StatusReadFailed).Message
+                    + " 如持续无法确认，请前往桌面端正式下载页获取已签名的安装包："
+                    + WindowsMaintenanceClient.OfficialDownloadUrl,
+                    error: true);
+                return;
             }
         }
         Report(result.Message, error: !result.Succeeded);

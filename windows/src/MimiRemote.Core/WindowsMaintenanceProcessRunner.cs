@@ -32,9 +32,13 @@ public static class WindowsMaintenanceProcessRunner
     private const uint Infinite = 0xFFFFFFFF;
     private const uint WaitObject0 = 0x00000000;
     private const int ErrorInsufficientBuffer = 122;
+    private const int ErrorWaitTimeout = 258;
     private const int ErrorCancelled = 1223;
+    private const uint JobPollIntervalMs = 200;
+    private static readonly TimeSpan PostTerminationDrainTimeout = TimeSpan.FromSeconds(15);
 
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+    private const int JobObjectBasicAccountingClass = 1;
     private const int JobObjectAssociateCompletionPortClass = 7;
     private const int JobObjectExtendedLimitClass = 9;
     private const uint JobObjectMsgActiveProcessZero = 4;
@@ -118,20 +122,37 @@ public static class WindowsMaintenanceProcessRunner
         PinnedBrokerImage broker,
         string[] arguments,
         CancellationToken cancellationToken) =>
-        RunBoundProcessAsync(broker, arguments, Environment.SystemDirectory, cancellationToken);
+        RunBoundProcessAsync(broker, arguments, Environment.SystemDirectory, killOnCancel: true, cancellationToken);
+
+    [SupportedOSPlatform("windows")]
+    public static Task<MaintenanceBrokerProcessResult> RunBoundProcessAsync(
+        PinnedBrokerImage broker,
+        string[] arguments,
+        bool killOnCancel,
+        CancellationToken cancellationToken) =>
+        RunBoundProcessAsync(broker, arguments, Environment.SystemDirectory, killOnCancel, cancellationToken);
 
     [SupportedOSPlatform("windows")]
     public static Task<MaintenanceBrokerProcessResult> RunBoundProcessAsync(
         PinnedBrokerImage broker,
         string[] arguments,
         string workingDirectory,
+        CancellationToken cancellationToken) =>
+        RunBoundProcessAsync(broker, arguments, workingDirectory, killOnCancel: true, cancellationToken);
+
+    [SupportedOSPlatform("windows")]
+    public static Task<MaintenanceBrokerProcessResult> RunBoundProcessAsync(
+        PinnedBrokerImage broker,
+        string[] arguments,
+        string workingDirectory,
+        bool killOnCancel,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(broker);
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentNullException.ThrowIfNull(workingDirectory);
 
-        return Task.Run(() => RunBoundProcessCore(broker, arguments, workingDirectory, cancellationToken), cancellationToken);
+        return Task.Run(() => RunBoundProcessCore(broker, arguments, workingDirectory, killOnCancel, cancellationToken), cancellationToken);
     }
 
     [SupportedOSPlatform("windows")]
@@ -139,6 +160,7 @@ public static class WindowsMaintenanceProcessRunner
         PinnedBrokerImage broker,
         string[] arguments,
         string workingDirectory,
+        bool killOnCancel,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -164,11 +186,14 @@ public static class WindowsMaintenanceProcessRunner
             {
                 throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
             }
-            var limits = new JobObjectExtendedLimitInformation();
-            limits.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
-            if (!SetInformationJobObjectExtended(job, JobObjectExtendedLimitClass, ref limits, (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>()))
+            if (killOnCancel)
             {
-                throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
+                var limits = new JobObjectExtendedLimitInformation();
+                limits.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+                if (!SetInformationJobObjectExtended(job, JobObjectExtendedLimitClass, ref limits, (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>()))
+                {
+                    throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
+                }
             }
 
             iocp = CreateIoCompletionPort(new nint(-1), 0, 0, 1);
@@ -298,10 +323,17 @@ public static class WindowsMaintenanceProcessRunner
                 throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _ = TerminateProcess(processHandle, 1);
+                _ = WaitForSingleObject(processHandle, 5_000);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             if (ResumeThread(threadHandle) == uint.MaxValue)
             {
                 _ = TerminateJobObject(job, 1);
-                WaitForJobZeroProcesses(iocp, completionKey);
+                _ = WaitForJobEmpty(job, iocp, completionKey, PostTerminationDrainTimeout, CancellationToken.None);
                 throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
             }
 
@@ -315,35 +347,69 @@ public static class WindowsMaintenanceProcessRunner
             var stderrTask = Task.Run(() => ReadBoundedHandle(stderrReadHandle, 65_536));
 
             uint exitCode = 0;
+            var cancelledByCaller = 0;
+            var waitFailed = false;
+            CancellationTokenRegistration cancelRegistration = default;
             try
             {
-                using (cancellationToken.Register(() => _ = TerminateJobObject(job, 1)))
+                if (killOnCancel)
                 {
-                    var waitResult = WaitForSingleObject(processHandle, Infinite);
-                    if (waitResult != WaitObject0 || !GetExitCodeProcess(processHandle, out exitCode))
+                    cancelRegistration = cancellationToken.Register(() =>
+                    {
+                        Interlocked.Exchange(ref cancelledByCaller, 1);
+                        _ = TerminateJobObject(job, 1);
+                    });
+                }
+
+                var waitResult = WaitForSingleObject(processHandle, Infinite);
+                if (waitResult != WaitObject0 || !GetExitCodeProcess(processHandle, out exitCode))
+                {
+                    waitFailed = true;
+                    if (killOnCancel)
                     {
                         _ = TerminateJobObject(job, 1);
-                        WaitForJobZeroProcesses(iocp, completionKey);
-                        cancellationToken.ThrowIfCancellationRequested();
-                        throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
                     }
+                }
 
-                    // Keep all directory and binary pins active until every descendant
-                    // in the Job Object (including Inno's setup child) has exited.
-                    WaitForJobZeroProcesses(iocp, completionKey);
+                // Confirm every process in the Job Object (including Inno's setup
+                // child) has exited via JobObjectBasicAccountingInformation before
+                // releasing directory and image pins. Use a bounded drain window
+                // when terminating after cancellation or wait failure.
+                var drainBounded = killOnCancel
+                    && (waitFailed || Volatile.Read(ref cancelledByCaller) != 0 || cancellationToken.IsCancellationRequested);
+                var jobEmpty = WaitForJobEmpty(
+                    job,
+                    iocp,
+                    completionKey,
+                    drainBounded ? PostTerminationDrainTimeout : null,
+                    killOnCancel ? cancellationToken : CancellationToken.None);
+                if (!jobEmpty)
+                {
+                    waitFailed = true;
+                    if (killOnCancel)
+                    {
+                        _ = TerminateJobObject(job, 1);
+                    }
+                    // Force-close read handles so pipe readers unwind cleanly if a
+                    // job wait failed and a descendant could still hold write ends.
+                    stdoutReadHandle.Dispose();
+                    stderrReadHandle.Dispose();
                 }
             }
             finally
             {
-                if (!stdoutTask.IsCompleted || !stderrTask.IsCompleted)
-                {
-                    _ = TerminateJobObject(job, 1);
-                    WaitForJobZeroProcesses(iocp, completionKey);
-                }
-                Task.WaitAll(stdoutTask, stderrTask);
+                cancelRegistration.Dispose();
+                DrainOutputTasks(stdoutTask, stderrTask);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
+            if (killOnCancel)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            if (waitFailed || stdoutTask.IsFaulted || stderrTask.IsFaulted)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
+            }
             return new MaintenanceBrokerProcessResult(stdoutTask.Result, stderrTask.Result, unchecked((int)exitCode));
         }
         finally
@@ -468,14 +534,95 @@ public static class WindowsMaintenanceProcessRunner
     }
 
     [SupportedOSPlatform("windows")]
-    private static void WaitForJobZeroProcesses(nint iocp, nint expectedKey)
+    private static bool TryQueryActiveProcessCount(nint job, out uint activeProcesses)
     {
-        while (GetQueuedCompletionStatus(iocp, out var msg, out var key, out _, Infinite))
+        var size = (uint)Marshal.SizeOf<JobObjectBasicAccountingInformation>();
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingClass, out var accounting, size, out var returned)
+            || returned < size)
         {
-            if (key == expectedKey && msg == JobObjectMsgActiveProcessZero)
+            activeProcesses = 0;
+            return false;
+        }
+        activeProcesses = accounting.ActiveProcesses;
+        return true;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool WaitForJobEmpty(
+        nint job,
+        nint iocp,
+        nint expectedKey,
+        TimeSpan? maxDuration,
+        CancellationToken cancelToken)
+    {
+        var deadlineTicks = maxDuration is { } limit
+            ? Environment.TickCount64 + (long)Math.Max(1, limit.TotalMilliseconds)
+            : (long?)null;
+
+        while (true)
+        {
+            if (!TryQueryActiveProcessCount(job, out var activeProcesses))
             {
-                return;
+                return false;
             }
+            if (activeProcesses == 0)
+            {
+                return true;
+            }
+
+            if (cancelToken.IsCancellationRequested && deadlineTicks is null)
+            {
+                _ = TerminateJobObject(job, 1);
+                deadlineTicks = Environment.TickCount64 + (long)PostTerminationDrainTimeout.TotalMilliseconds;
+            }
+
+            var waitMs = JobPollIntervalMs;
+            if (deadlineTicks is { } deadline)
+            {
+                var remaining = deadline - Environment.TickCount64;
+                if (remaining <= 0)
+                {
+                    return TryQueryActiveProcessCount(job, out var finalActive) && finalActive == 0;
+                }
+                if (remaining < waitMs)
+                {
+                    waitMs = (uint)remaining;
+                }
+            }
+
+            if (GetQueuedCompletionStatus(iocp, out var msg, out var key, out _, waitMs))
+            {
+                if (key == expectedKey && msg == JobObjectMsgActiveProcessZero)
+                {
+                    if (!TryQueryActiveProcessCount(job, out var verifiedActive))
+                    {
+                        return false;
+                    }
+                    if (verifiedActive == 0)
+                    {
+                        return true;
+                    }
+                }
+                continue;
+            }
+
+            var err = Marshal.GetLastWin32Error();
+            if (err != ErrorWaitTimeout)
+            {
+                return TryQueryActiveProcessCount(job, out var finalActive) && finalActive == 0;
+            }
+        }
+    }
+
+    private static void DrainOutputTasks(Task<string> stdoutTask, Task<string> stderrTask)
+    {
+        try
+        {
+            Task.WaitAll(stdoutTask, stderrTask);
+        }
+        catch (AggregateException)
+        {
+            // Expected only when handles were disposed after an explicit job wait failure.
         }
     }
 
@@ -609,6 +756,19 @@ public static class WindowsMaintenanceProcessRunner
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicAccountingInformation
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct JobObjectAssociateCompletionPort
     {
         public nint CompletionKey;
@@ -722,6 +882,15 @@ public static class WindowsMaintenanceProcessRunner
         int informationClass,
         ref JobObjectAssociateCompletionPort information,
         uint informationLength);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(
+        nint job,
+        int informationClass,
+        out JobObjectBasicAccountingInformation information,
+        uint informationLength,
+        out uint returnLength);
 
     [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

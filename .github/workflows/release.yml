@@ -204,6 +204,18 @@ jobs:
             throw 'WINDOWS_SIGN_PFX and WINDOWS_SIGN_PFX_PASSWORD must either both be configured or both be absent.'
           }
           $pfx = $null
+          $publishClientScript = './scripts/publish-windows-client.ps1'
+          $publishClientSupported = $false
+          if (Test-Path -LiteralPath $publishClientScript -PathType Leaf) {
+            $publishClientCmd = Get-Command -Name $publishClientScript -ErrorAction SilentlyContinue
+            if ($publishClientCmd -and
+                $publishClientCmd.Parameters.ContainsKey('Version') -and
+                $publishClientCmd.Parameters.ContainsKey('PfxPath') -and
+                $publishClientCmd.Parameters.ContainsKey('PfxPassword') -and
+                $publishClientCmd.Parameters.ContainsKey('AllowUnsignedRelease')) {
+              $publishClientSupported = $true
+            }
+          }
           try {
             if ($hasPfx) {
               $pfx = Join-Path $env:RUNNER_TEMP 'mimi-remote-signing.pfx'
@@ -213,33 +225,44 @@ jobs:
                 -OutputDirectory dist-windows `
                 -PfxPath $pfx `
                 -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
-              ./scripts/publish-windows-client.ps1 `
-                -Version ($env:RELEASE_TAG).TrimStart('v') `
-                -OutputDirectory dist-windows `
-                -PfxPath $pfx `
-                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+              if ($publishClientSupported) {
+                ./scripts/publish-windows-client.ps1 `
+                  -Version ($env:RELEASE_TAG).TrimStart('v') `
+                  -OutputDirectory dist-windows `
+                  -PfxPath $pfx `
+                  -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+              } else {
+                Write-Host 'Tagged source does not support release WinUI client publishing; skipping client archive.'
+              }
             } else {
               Write-Warning 'Windows signing secrets are absent. Building an unsigned compatibility-check installer for the private Actions artifact.'
               ./scripts/build-windows-installer.ps1 `
                 -Version ($env:RELEASE_TAG).TrimStart('v') `
                 -OutputDirectory dist-windows `
                 -AllowUnsignedRelease
-              ./scripts/publish-windows-client.ps1 `
-                -Version ($env:RELEASE_TAG).TrimStart('v') `
-                -OutputDirectory dist-windows `
-                -AllowUnsignedRelease
+              if ($publishClientSupported) {
+                ./scripts/publish-windows-client.ps1 `
+                  -Version ($env:RELEASE_TAG).TrimStart('v') `
+                  -OutputDirectory dist-windows `
+                  -AllowUnsignedRelease
+              } else {
+                Write-Host 'Tagged source does not support release WinUI client publishing; skipping client archive.'
+              }
             }
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
-            $clientArchive = Get-Item "dist-windows\Mimi-Remote-Client-*.zip"
-            if (-not (Test-Path -LiteralPath "$($clientArchive.FullName).sha256" -PathType Leaf)) {
-              throw "Missing WinUI client SHA-256 sidecar: $($clientArchive.FullName).sha256"
+            if ($publishClientSupported) {
+              $clientArchive = Get-Item "dist-windows\Mimi-Remote-Client-*.zip"
+              if (-not (Test-Path -LiteralPath "$($clientArchive.FullName).sha256" -PathType Leaf)) {
+                throw "Missing WinUI client SHA-256 sidecar: $($clientArchive.FullName).sha256"
+              }
             }
+            $artifactLabel = if ($publishClientSupported) { 'Windows installer & WinUI client signing' } else { 'Windows installer signing' }
             if ($hasPfx) {
               ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG -RequireSignature
-              'Windows installer & WinUI client signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              "${artifactLabel}: Authenticode PFX (Valid)." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             } else {
               ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG
-              'Windows installer & WinUI client signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              "${artifactLabel}: unsigned-release. Verify SHA-256 before running; SmartScreen may warn." | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             }
           } finally {
             if ($pfx) {

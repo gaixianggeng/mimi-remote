@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -30,11 +32,24 @@ const (
 	errorCancelledExitCode         = 1223
 	maintenanceVolumeNameNT        = 0x2
 	trayJobMsgActiveProcessZero    = 4
+	trayJobPollIntervalMs          = 200
+	trayJobPostTerminationTimeout  = 15 * time.Second
 )
 
 type trayJobAssociateCompletionPort struct {
 	CompletionKey  uintptr
 	CompletionPort windows.Handle
+}
+
+type trayJobBasicAccountingInformation struct {
+	TotalUserTime            int64
+	TotalKernelTime          int64
+	ThisPeriodTotalUserTime  int64
+	ThisPeriodTotalKernel    int64
+	TotalPageFaultCount      uint32
+	TotalProcesses           uint32
+	ActiveProcesses          uint32
+	TotalTerminatedProcesses uint32
 }
 
 var (
@@ -450,6 +465,10 @@ func verifyCodeSigningChain(cert *windows.CertContext, additionalStore windows.H
 	return nil
 }
 
+func isMaintenanceModifyArgs(args []string) bool {
+	return len(args) == 2 && args[0] == "installer-maintenance" && args[1] == "modify"
+}
+
 func windowsRunMaintenanceBroker(ctx context.Context, broker pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -458,7 +477,7 @@ func windowsRunMaintenanceBroker(ctx context.Context, broker pinnedBrokerImage, 
 	if err != nil {
 		return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
 	}
-	return runBoundTrayProcess(ctx, broker, args, systemDir, 256*1024, 64*1024)
+	return runBoundTrayProcessWithMode(ctx, broker, args, systemDir, 256*1024, 64*1024, !isMaintenanceModifyArgs(args))
 }
 
 func trayFinalNativePathByHandle(handle windows.Handle) (string, error) {
@@ -540,16 +559,84 @@ func verifyTrayProcessMatchesIdentity(proc windows.Handle, broker pinnedBrokerIm
 	return nil
 }
 
-func waitForTrayJobZeroProcesses(iocp windows.Handle, expectedKey uintptr) {
+func queryTrayJobActiveProcesses(job windows.Handle) (uint32, error) {
+	var info trayJobBasicAccountingInformation
+	var returned uint32
+	size := uint32(unsafe.Sizeof(info))
+	err := windows.QueryInformationJobObject(
+		job,
+		windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)),
+		size,
+		&returned,
+	)
+	if err != nil || returned < size {
+		return 0, errors.New("query job active processes failed")
+	}
+	return info.ActiveProcesses, nil
+}
+
+func waitForTrayJobEmpty(
+	ctx context.Context,
+	job windows.Handle,
+	iocp windows.Handle,
+	expectedKey uintptr,
+	killOnCancel bool,
+	boundedTimeout time.Duration,
+) error {
+	var deadline time.Time
+	if boundedTimeout > 0 {
+		deadline = time.Now().Add(boundedTimeout)
+	}
 	for {
+		active, err := queryTrayJobActiveProcesses(job)
+		if err != nil {
+			return err
+		}
+		if active == 0 {
+			return nil
+		}
+		if killOnCancel && ctx != nil && ctx.Err() != nil && deadline.IsZero() {
+			_ = windows.TerminateJobObject(job, 1)
+			deadline = time.Now().Add(trayJobPostTerminationTimeout)
+		}
+		waitMs := uint32(trayJobPollIntervalMs)
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				finalActive, finalErr := queryTrayJobActiveProcesses(job)
+				if finalErr == nil && finalActive == 0 {
+					return nil
+				}
+				return errors.New("timed out waiting for job processes to exit")
+			}
+			if ms := uint32(remaining.Milliseconds()); ms > 0 && ms < waitMs {
+				waitMs = ms
+			}
+		}
+
 		var msg uint32
 		var key uintptr
 		var overlapped *windows.Overlapped
-		if err := windows.GetQueuedCompletionStatus(iocp, &msg, &key, &overlapped, windows.INFINITE); err != nil {
-			return
+		err = windows.GetQueuedCompletionStatus(iocp, &msg, &key, &overlapped, waitMs)
+		if err == nil {
+			if key == expectedKey && msg == trayJobMsgActiveProcessZero {
+				verified, verifyErr := queryTrayJobActiveProcesses(job)
+				if verifyErr != nil {
+					return verifyErr
+				}
+				if verified == 0 {
+					return nil
+				}
+			}
+			continue
 		}
-		if key == expectedKey && msg == trayJobMsgActiveProcessZero {
-			return
+		if !errors.Is(err, syscall.Errno(258)) {
+			finalActive, finalErr := queryTrayJobActiveProcesses(job)
+			if finalErr == nil && finalActive == 0 {
+				return nil
+			}
+			return errors.New("job completion wait failed")
 		}
 	}
 }
@@ -564,21 +651,34 @@ func buildWindowsCommandLine(appPath string, args []string) string {
 }
 
 func runBoundTrayProcess(ctx context.Context, broker pinnedBrokerImage, args []string, workDir string, stdoutLimit, stderrLimit int) ([]byte, []byte, int, error) {
+	return runBoundTrayProcessWithMode(ctx, broker, args, workDir, stdoutLimit, stderrLimit, true)
+}
+
+func runBoundTrayProcessWithMode(ctx context.Context, broker pinnedBrokerImage, args []string, workDir string, stdoutLimit, stderrLimit int, killOnCancel bool) ([]byte, []byte, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, -1, err
+	}
+
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
 	}
 	defer windows.CloseHandle(job)
 
-	var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(
-		job,
-		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&limits)),
-		uint32(unsafe.Sizeof(limits)),
-	); err != nil {
-		return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
+	if killOnCancel {
+		var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+		limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+		if _, err := windows.SetInformationJobObject(
+			job,
+			windows.JobObjectExtendedLimitInformation,
+			uintptr(unsafe.Pointer(&limits)),
+			uint32(unsafe.Sizeof(limits)),
+		); err != nil {
+			return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
+		}
 	}
 
 	iocp, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
@@ -735,9 +835,14 @@ func runBoundTrayProcess(ctx context.Context, broker pinnedBrokerImage, args []s
 		_, _ = windows.WaitForSingleObject(pi.Process, 5000)
 		return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_, _ = windows.WaitForSingleObject(pi.Process, 5000)
+		return nil, nil, -1, err
+	}
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
 		_ = windows.TerminateJobObject(job, 1)
-		waitForTrayJobZeroProcesses(iocp, completionKey)
+		_ = waitForTrayJobEmpty(context.Background(), job, iocp, completionKey, false, trayJobPostTerminationTimeout)
 		return nil, nil, -1, newMaintenanceError(maintenanceFailureLaunchFailed)
 	}
 
@@ -754,48 +859,79 @@ func runBoundTrayProcess(ctx context.Context, broker pinnedBrokerImage, args []s
 		_, _ = io.Copy(errBuf, stderrFile)
 	}()
 
-	jobDone := make(chan struct{})
-	go func() {
-		waitForTrayJobZeroProcesses(iocp, completionKey)
-		close(jobDone)
-	}()
-
+	stopProcWait := make(chan struct{})
 	procDone := make(chan struct{})
 	var exitCode uint32
 	var procErr error
 	go func() {
-		res, waitErr := windows.WaitForSingleObject(pi.Process, windows.INFINITE)
-		if waitErr != nil || res != windows.WAIT_OBJECT_0 {
-			procErr = errors.New("broker process wait failed")
-		} else if codeErr := windows.GetExitCodeProcess(pi.Process, &exitCode); codeErr != nil {
-			procErr = codeErr
+		defer close(procDone)
+		for {
+			res, waitErr := windows.WaitForSingleObject(pi.Process, trayJobPollIntervalMs)
+			if waitErr != nil {
+				procErr = errors.New("broker process wait failed")
+				return
+			}
+			if res == windows.WAIT_OBJECT_0 {
+				if codeErr := windows.GetExitCodeProcess(pi.Process, &exitCode); codeErr != nil {
+					procErr = codeErr
+				}
+				return
+			}
+			if res != uint32(windows.WAIT_TIMEOUT) {
+				procErr = errors.New("broker process wait returned unexpected status")
+				return
+			}
+			select {
+			case <-stopProcWait:
+				procErr = errors.New("broker process wait abandoned after termination timeout")
+				return
+			default:
+			}
 		}
-		close(procDone)
 	}()
 
 	var ctxErr error
-	select {
-	case <-procDone:
+	var jobErr error
+	if killOnCancel {
 		select {
-		case <-jobDone:
+		case <-procDone:
+			jobErr = waitForTrayJobEmpty(ctx, job, iocp, completionKey, true, 0)
+			if ctx.Err() != nil {
+				ctxErr = ctx.Err()
+			}
 		case <-ctx.Done():
 			ctxErr = ctx.Err()
 			_ = windows.TerminateJobObject(job, 1)
-			<-jobDone
+			select {
+			case <-procDone:
+			case <-time.After(trayJobPostTerminationTimeout):
+				close(stopProcWait)
+				<-procDone
+			}
+			jobErr = waitForTrayJobEmpty(context.Background(), job, iocp, completionKey, false, trayJobPostTerminationTimeout)
 		}
-	case <-ctx.Done():
-		ctxErr = ctx.Err()
-		_ = windows.TerminateJobObject(job, 1)
+	} else {
+		// Interactive installer-maintenance modify must never be terminated
+		// mid-apply after stopping the managed service or starting an elevated
+		// firewall helper. Keep all directory/image pins held until ActiveProcesses==0.
 		<-procDone
-		<-jobDone
+		jobErr = waitForTrayJobEmpty(context.Background(), job, iocp, completionKey, false, 0)
 	}
 
+	if jobErr != nil || procErr != nil {
+		// Ensure pipe readers unwind even if a job wait failed explicitly.
+		_ = stdoutFile.Close()
+		_ = stderrFile.Close()
+	}
 	readWG.Wait()
 	if ctxErr != nil {
 		return outBuf.Bytes(), errBuf.Bytes(), -1, ctxErr
 	}
 	if procErr != nil {
 		return outBuf.Bytes(), errBuf.Bytes(), -1, procErr
+	}
+	if jobErr != nil {
+		return outBuf.Bytes(), errBuf.Bytes(), -1, jobErr
 	}
 	if exitCode != 0 {
 		return outBuf.Bytes(), errBuf.Bytes(), int(exitCode), errors.New("broker exited non-zero")

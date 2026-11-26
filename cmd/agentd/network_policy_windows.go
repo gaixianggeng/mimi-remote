@@ -15,12 +15,19 @@ import (
 
 // 策略查询经 PowerShell 读取防火墙和网络配置，登录后冷启动实测 8–11 秒。
 // 预算不足时 PowerShell 会被强杀，启动只剩 exit status 1（#456）。
-const windowsLANPolicyCheckTimeout = 30 * time.Second
+const (
+	windowsLANPolicyCheckTimeout = 30 * time.Second
+	statusNetworkPolicyTimeout   = windowsLANPolicyCheckTimeout
+)
 
 func ensurePlatformLANAccessAllowed() error {
-	agentPath, err := os.Executable()
+	rawPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("定位 agentd.exe 失败：%w", err)
+	}
+	agentPath, err := windowslan.CanonicalFirewallPath(rawPath)
+	if err != nil {
+		return fmt.Errorf("解析 agentd.exe 规范路径失败：%w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), windowsLANPolicyCheckTimeout)
 	defer cancel()
@@ -56,7 +63,11 @@ func platformServeLANGate(ctx context.Context, cfg config.Config) *networkaccess
 	gate := networkaccess.NewLANGate(func(parent context.Context) string {
 		child, done := context.WithTimeout(parent, windowsLANPolicyCheckTimeout)
 		defer done()
-		exe, err := os.Executable()
+		rawExe, err := os.Executable()
+		if err != nil {
+			return "lan_firewall_blocked"
+		}
+		exe, err := windowslan.CanonicalFirewallPath(rawExe)
 		if err != nil {
 			return "lan_firewall_blocked"
 		}

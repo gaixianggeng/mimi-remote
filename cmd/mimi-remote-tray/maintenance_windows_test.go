@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -93,23 +94,134 @@ func TestBoundTrayBrokerTimeoutTerminatesEntireJobTreeBeforeReturning(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	powershellPath := filepath.Join(systemDir, "WindowsPowerShell", "v1.0", "powershell.exe")
+	valid := inspectNativeBrokerImage(t, powershellPath)
+
+	tempDir := t.TempDir()
+	pidFile := filepath.Join(tempDir, "descendant.pid")
+	tmpFile := pidFile + ".tmp"
+	escapedTmp := strings.ReplaceAll(tmpFile, "'", "''")
+	escapedPID := strings.ReplaceAll(pidFile, "'", "''")
+	script := `$child = Start-Process -FilePath "$env:SystemRoot\System32\ping.exe" -ArgumentList '-n','60','127.0.0.1' -NoNewWindow -PassThru; ` +
+		`[IO.File]::WriteAllText('` + escapedTmp + `', [string]$child.Id); ` +
+		`[IO.File]::Move('` + escapedTmp + `', '` + escapedPID + `'); ` +
+		`$child.WaitForExit()`
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type runOutcome struct {
+		err error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		_, _, _, runErr := runBoundTrayProcess(ctx, valid, []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script}, systemDir, 4096, 4096)
+		done <- runOutcome{err: runErr}
+	}()
+
+	var descendantPID int
+	waitDeadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if raw, readErr := os.ReadFile(pidFile); readErr == nil {
+			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(raw))); parseErr == nil && parsed > 0 {
+				descendantPID = parsed
+				break
+			}
+		}
+		select {
+		case res := <-done:
+			t.Fatalf("bound process exited before spawning descendant: %v", res.err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if descendantPID <= 0 {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for descendant PID file")
+	}
+
+	// Open a handle to the live descendant BEFORE cancelling so Windows cannot
+	// recycle the PID and we can assert it has already exited upon return.
+	descendantHandle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE, false, uint32(descendantPID))
+	if err != nil {
+		cancel()
+		<-done
+		t.Fatalf("open descendant PID %d: %v", descendantPID, err)
+	}
+	defer func() {
+		if res, _ := windows.WaitForSingleObject(descendantHandle, 0); res != windows.WAIT_OBJECT_0 {
+			_ = windows.TerminateProcess(descendantHandle, 1)
+		}
+		_ = windows.CloseHandle(descendantHandle)
+	}()
+	if res, waitErr := windows.WaitForSingleObject(descendantHandle, 0); waitErr != nil || res != uint32(windows.WAIT_TIMEOUT) {
+		cancel()
+		<-done
+		t.Fatalf("descendant PID %d was not alive before cancellation (wait=%d err=%v)", descendantPID, res, waitErr)
+	}
+
+	cancelStart := time.Now()
+	cancel()
+	res := <-done
+	if !errors.Is(res.err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", res.err)
+	}
+	if elapsed := time.Since(cancelStart); elapsed > 10*time.Second {
+		t.Fatalf("job tree cancellation took too long: %v", elapsed)
+	}
+	if waitRes, waitErr := windows.WaitForSingleObject(descendantHandle, 0); waitErr != nil || waitRes != windows.WAIT_OBJECT_0 {
+		t.Fatalf("descendant PID %d was still running after bound runner returned (wait=%d err=%v)", descendantPID, waitRes, waitErr)
+	}
+}
+
+func TestBoundTrayModifyModeCompletesDespiteContextCancellation(t *testing.T) {
+	systemDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmdPath := filepath.Join(systemDir, "cmd.exe")
 	valid := inspectNativeBrokerImage(t, cmdPath)
 
-	// Spawn a child ping process that would normally outlive the parent if only
-	// the parent were killed, and confirm cancelling ctx terminates the whole job.
-	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	tempDir := t.TempDir()
+	startedMarker := filepath.Join(tempDir, "started.txt")
+	finishedMarker := filepath.Join(tempDir, "finished.txt")
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	afterMarker := filepath.Join(t.TempDir(), "after-cancel.txt")
-	start := time.Now()
-	_, _, _, err = runBoundTrayProcess(ctx, valid, []string{"/c", "ping -n 30 127.0.0.1 >nul && echo late > " + afterMarker}, systemDir, 4096, 4096)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got %v", err)
+
+	type runOutcome struct {
+		exitCode int
+		err      error
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Fatalf("job tree cancellation took too long: %v", elapsed)
+	done := make(chan runOutcome, 1)
+	go func() {
+		_, _, code, runErr := runBoundTrayProcessWithMode(
+			ctx,
+			valid,
+			[]string{"/c", `echo started > "` + startedMarker + `" && ping -n 2 127.0.0.1 >nul && echo done > "` + finishedMarker + `"`},
+			systemDir,
+			4096,
+			4096,
+			false,
+		)
+		done <- runOutcome{exitCode: code, err: runErr}
+	}()
+
+	waitDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		if _, statErr := os.Stat(startedMarker); statErr == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if _, statErr := os.Stat(afterMarker); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("descendant continued executing after job termination: statErr=%v", statErr)
+	// Cancel caller context AFTER the process has started; modify mode must let
+	// it complete cleanly instead of killing it mid-apply.
+	cancel()
+	res := <-done
+	if res.err != nil || res.exitCode != 0 {
+		t.Fatalf("modify mode aborted on post-launch cancel: code=%d err=%v", res.exitCode, res.err)
+	}
+	if _, statErr := os.Stat(finishedMarker); statErr != nil {
+		t.Fatalf("modify mode process did not finish cleanly: %v", statErr)
 	}
 }

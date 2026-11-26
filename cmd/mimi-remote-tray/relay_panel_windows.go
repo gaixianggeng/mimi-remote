@@ -144,7 +144,7 @@ func (p *controlPanel) chooseRelayService() {
 		p.relayEditing = true
 		p.pairingView = false
 		setControlPanelVisible(p.dashboardControls, false)
-		setControlPanelVisible([]uintptr{p.firstSetup}, false)
+		setControlPanelVisible([]uintptr{p.firstSetup, p.lanMaintenance}, false)
 		setControlPanelVisible(p.pairingControls, false)
 		setControlPanelVisible([]uintptr{p.relayPicker}, false)
 		setControlPanelVisible(p.relayControls, true)
@@ -161,7 +161,7 @@ func (p *controlPanel) chooseRelayService() {
 }
 
 func (p *controlPanel) applyRelay(choice, relayURL string) {
-	if p.app.controller == nil {
+	if p.app.controller == nil || p.app.isMaintenanceIdentityRejected() {
 		p.app.promptMissingBrokerRecovery(showMessage, shellOpenPath)
 		return
 	}

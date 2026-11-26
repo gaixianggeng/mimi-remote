@@ -19,8 +19,7 @@ const (
 	maintenanceBrokerRole          = "agentd.exe"
 	maintenanceImageRole           = "Mimi-Remote-Maintenance.exe"
 	maintenanceOfficialDownloadURL = onboardingURLDesktop
-	maintenanceDefaultTimeout      = 15 * time.Minute
-	maintenanceStatusReadTimeout   = 30 * time.Second
+	maintenanceStatusReadTimeout   = 45 * time.Second
 )
 
 var (

@@ -10,9 +10,13 @@ import (
 )
 
 func preflightLANPolicy(ctx context.Context, enabled bool) string {
-	exe, err := os.Executable()
+	rawExe, err := os.Executable()
 	if err != nil {
 		return "lan_public_network_blocked"
+	}
+	exe, err := windowslan.CanonicalFirewallPath(rawExe)
+	if err != nil {
+		return "lan_firewall_blocked"
 	}
 	policy, err := windowslan.Check(ctx, exe)
 	if ctx.Err() != nil {

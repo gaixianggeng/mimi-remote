@@ -92,6 +92,7 @@ const (
 	menuTailcatManaged
 	menuFirstSetup
 	menuDownloadRecovery
+	menuLanMaintenance
 )
 
 // wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
@@ -209,9 +210,10 @@ type trayApplication struct {
 	refreshStop           chan struct{}
 	panel                 *controlPanel
 	tailcat               tailcatTrayStatus
-	hasTailcat            bool
-	tailcatErr            error
-	maintenanceOverride   *maintenanceRunner
+	hasTailcat                  bool
+	tailcatErr                  error
+	maintenanceIdentityRejected bool
+	maintenanceOverride         *maintenanceRunner
 }
 
 var currentTray *trayApplication
@@ -590,6 +592,9 @@ func (a *trayApplication) refreshStatus() {
 }
 
 func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
+	if a.isMaintenanceIdentityRejected() {
+		return
+	}
 	request := a.beginStatusRequest()
 	if a.controller == nil {
 		a.completeStatusRequestWithSetup(request, agentStatus{}, newMaintenanceError(maintenanceFailureImageMissing), false)
@@ -679,15 +684,19 @@ func (a *trayApplication) showMenu() {
 
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
 	brokerMissing := a.controller == nil
+	identityRejected := a.isMaintenanceIdentityRejected()
+	brokerBlocked := brokerMissing || identityRejected
 	header := "状态：" + status.lifecycleTitle()
 	if brokerMissing {
 		header = "状态：缺少核心代理（需重新安装）"
+	} else if identityRejected {
+		header = "状态：维护身份校验失败（需重新安装）"
 	} else if firstSetupNeeded {
 		header = "状态：待完成首次设置"
 	} else if status.Version == "" {
 		header = "状态：正在检查"
 	}
-	if statusErr != nil && !firstSetupNeeded && !brokerMissing {
+	if statusErr != nil && !firstSetupNeeded && !brokerBlocked {
 		if status.Version == "" {
 			header = "状态：服务不可用"
 		} else {
@@ -695,32 +704,34 @@ func (a *trayApplication) showMenu() {
 		}
 	}
 	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
-	if brokerMissing {
+	if brokerBlocked {
 		appendMenu(menu, mfString, menuDownloadRecovery, "下载正式安装包…")
 	} else if firstSetupNeeded {
 		appendMenu(menu, menuFlags(busy), menuFirstSetup, "完成首次设置…")
+	} else if canRunLanMaintenance(status, statusErr, preflightPending, brokerMissing, identityRejected) {
+		appendMenu(menu, menuFlags(busy), menuLanMaintenance, lanMaintenanceMenuLabel(status))
 	}
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGray, menuStatus, header)
-	appendMenu(menu, menuFlags(brokerMissing), menuRefresh, "刷新状态")
+	appendMenu(menu, menuFlags(brokerBlocked), menuRefresh, "刷新状态")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(brokerMissing || busy || status.ProcessOK), menuStart, "启动服务")
-	appendMenu(menu, menuFlags(brokerMissing || busy || !status.ProcessOK), menuRestart, "重新启动服务")
-	appendMenu(menu, menuFlags(brokerMissing || busy || !status.ProcessOK), menuStop, "停止服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || status.ProcessOK), menuStart, "启动服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || !status.ProcessOK), menuRestart, "重新启动服务")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(brokerMissing || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
-	appendMenu(menu, menuFlags(brokerMissing || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
-	appendMenu(menu, menuFlags(brokerMissing || busy), menuDoctor, "运行诊断…")
-	appendMenu(menu, menuFlags(brokerMissing || busy), menuDoctorFix, "修复诊断问题…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy), menuDoctor, "运行诊断…")
+	appendMenu(menu, menuFlags(brokerBlocked || busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
 	appendMenu(menu, mfSeparator, 0, "")
 	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
 	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "内置连接："+tailcatPresentation.Value)
-	appendMenu(menu, menuFlags(brokerMissing || !tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
-	appendMenu(menu, menuFlags(brokerMissing || !tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
+	appendMenu(menu, menuFlags(brokerBlocked || !tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
+	appendMenu(menu, menuFlags(brokerBlocked || !tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
 	appendMenu(menu, mfSeparator, 0, "")
 	exitLabel := "退出并停止服务…"
-	if brokerMissing {
+	if brokerBlocked {
 		exitLabel = "退出托盘"
 	}
 	appendMenu(menu, menuFlags(busy), menuExitAndStop, exitLabel)
@@ -765,6 +776,8 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 		a.showControlPanel()
 	case menuFirstSetup:
 		a.runFirstSetupMaintenance()
+	case menuLanMaintenance:
+		a.runLanFirewallMaintenance()
 	case menuDownloadRecovery:
 		a.openOfficialDownloadRecovery()
 	case menuRefresh:
@@ -897,7 +910,7 @@ func (a *trayApplication) showStatus() {
 }
 
 func (a *trayApplication) exitAndStop() {
-	if a.controller == nil {
+	if a.controller == nil || a.isMaintenanceIdentityRejected() {
 		a.mu.Lock()
 		a.quitting = true
 		a.mu.Unlock()

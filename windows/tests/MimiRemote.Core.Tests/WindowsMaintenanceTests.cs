@@ -1,5 +1,11 @@
+using System.Formats.Asn1;
+using System.Globalization;
+using System.Numerics;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using MimiRemote.App;
@@ -15,6 +21,8 @@ public sealed class WindowsMaintenanceTests
     private static readonly byte[] MaintenanceBytes = Encoding.UTF8.GetBytes("signed-maintenance-image");
     private static readonly byte[] BrokerDigest = SHA256.HashData(BrokerBytes);
     private static readonly byte[] MaintenanceDigest = SHA256.HashData(MaintenanceBytes);
+    private static readonly byte[] LeafSerial = [0x01, 0x23, 0x45, 0x67, 0x89, 0x0A, 0xBC, 0xDE];
+    private static readonly byte[] NoEkuSerial = [0x02, 0x23, 0x45, 0x67, 0x89, 0x0A, 0xBC, 0xDF];
 
     [Fact]
     public async Task TrustedModifyVerifiesIdentityPinsLaunchesArgvAndReReadsStatusWhilePinned()
@@ -59,6 +67,29 @@ public sealed class WindowsMaintenanceTests
         Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
         Assert.Equal(["status", "--json", "--runtime", "--network-policy"], fixture.LaunchedCalls[1].Args);
         Assert.True(fixture.StatusReadWhilePinned);
+    }
+
+    [Fact]
+    public async Task LanFirewallModifyWithPairStageIssuesVerifiedPairingTicketWhilePinned()
+    {
+        var fixture = new FakeMaintenancePlatform();
+        var client = fixture.CreateClient();
+
+        var result = await client.RunModifyAsync(MaintenancePurpose.LanFirewall, "pair", null);
+
+        Assert.True(result.Succeeded);
+        Assert.True(result.BrokerVerified);
+        Assert.True(result.LanEnabled);
+        Assert.True(result.LanPolicyOk);
+        Assert.NotNull(result.PostRunPreflight);
+        Assert.NotNull(result.PostRunPairingTicket);
+        Assert.Equal("lan", result.PostRunPairingTicket.Network);
+        Assert.Equal(4, fixture.LaunchedCalls.Count);
+        Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
+        Assert.Equal(["status", "--json", "--runtime", "--network-policy"], fixture.LaunchedCalls[1].Args);
+        Assert.Equal(["preflight", "--json", "--stage", "pair"], fixture.LaunchedCalls[2].Args);
+        Assert.Equal(["pair", "--network", "lan", "--qr-only", "--json"], fixture.LaunchedCalls[3].Args);
+        Assert.True(fixture.PairReadWhilePinned);
     }
 
     [Theory]
@@ -384,6 +415,56 @@ public sealed class WindowsMaintenanceTests
     }
 
     [Fact]
+    public async Task SetupViewModelFailsClosedWithoutUnverifiedPreflightWhenVerifiedPreflightIsAbsent()
+    {
+        var context = new ClientContext();
+        var confirmed = false;
+        context.Agent.PreflightHandler = (opts, _, _) => Task.FromResult(BuildSetupReport(opts.Stage, confirmed));
+        context.RunInstallerMaintenance = (_, _) =>
+        {
+            confirmed = true;
+            return Task.FromResult(MaintenanceRunResult.Success(
+                new HostStatus { Version = "1.2.3", ServiceOk = true, WorkspaceConfirmed = true },
+                "代码目录已确认，服务状态已刷新。",
+                preflight: null));
+        };
+
+        using var model = new SetupViewModel(context);
+        await model.SetActiveAsync(true);
+        var callsBeforeMaintenance = context.Agent.Calls.Count;
+
+        await model.ConfirmWorkspaceViaMaintenanceCommand.ExecuteAsync(null);
+        Assert.Equal(callsBeforeMaintenance, context.Agent.Calls.Count);
+        Assert.True(model.Failed);
+        Assert.True(model.HasMaintenanceDownloadFallback);
+        Assert.Contains(OnboardingCopyCatalog.UrlDesktop, model.Notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SetupViewModelExposesLocalDownloadRecoveryWhenBrokerIsMissing()
+    {
+        var openedUrls = new List<string>();
+        var context = new ClientContext
+        {
+            HasAgent = false,
+            OpenUrl = url => openedUrls.Add(url),
+        };
+
+        using var model = new SetupViewModel(context);
+        await model.SetActiveAsync(true);
+
+        Assert.Equal(OnboardingGateState.Unconfigured, context.GateState);
+        Assert.False(model.IsPendingWorkspaceConfirmation);
+        Assert.True(model.IsMissingBroker);
+        Assert.True(model.HasMaintenanceDownloadFallback);
+        Assert.True(model.OpenMaintenanceDownloadCommand.CanExecute(null));
+        Assert.Empty(context.Agent.Calls);
+
+        model.OpenMaintenanceDownloadCommand.Execute(null);
+        Assert.Equal([OnboardingCopyCatalog.UrlDesktop], openedUrls);
+    }
+
+    [Fact]
     public void FormatCommandLineQuotesSpacesQuotesAndTrailingBackslashes()
     {
         var cmd = WindowsMaintenanceProcessRunner.FormatCommandLine(
@@ -395,6 +476,7 @@ public sealed class WindowsMaintenanceTests
     }
 
     [Fact]
+    [SupportedOSPlatform("windows")]
     public async Task BoundProcessRunnerVerifiesImageIdentityBeforeResumeOnWindows()
     {
         if (!OperatingSystem.IsWindows())
@@ -446,7 +528,85 @@ public sealed class WindowsMaintenanceTests
     }
 
     [Fact]
+    [SupportedOSPlatform("windows")]
     public async Task BoundProcessRunnerCancellationTerminatesEntireJobTreeOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var powershellPath = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        PinnedBrokerImage valid;
+        using (var handle = File.OpenHandle(powershellPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, powershellPath);
+        }
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint-job-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var descendantHandle = (nint)0;
+        try
+        {
+            var pidFile = Path.Combine(tempDir, "descendant.pid");
+            var tmpFile = pidFile + ".tmp";
+            var escapedTmp = tmpFile.Replace("'", "''", StringComparison.Ordinal);
+            var escapedPid = pidFile.Replace("'", "''", StringComparison.Ordinal);
+            var script =
+                "$child = Start-Process -FilePath \"$env:SystemRoot\\System32\\ping.exe\" -ArgumentList '-n','60','127.0.0.1' -NoNewWindow -PassThru; "
+                + $"[IO.File]::WriteAllText('{escapedTmp}', [string]$child.Id); "
+                + $"[IO.File]::Move('{escapedTmp}', '{escapedPid}'); "
+                + "$child.WaitForExit()";
+
+            using var cts = new CancellationTokenSource();
+            var runTask = WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
+                valid,
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+                cts.Token);
+
+            var descendantPid = 0;
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (File.Exists(pidFile)
+                    && int.TryParse(File.ReadAllText(pidFile).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                    && parsed > 0)
+                {
+                    descendantPid = parsed;
+                    break;
+                }
+                Assert.False(runTask.IsCompleted, "Bound process exited before spawning descendant.");
+                await Task.Delay(50);
+            }
+            Assert.True(descendantPid > 0, "Timed out waiting for descendant PID.");
+
+            // Hold a native handle to the live descendant BEFORE cancelling so
+            // Windows cannot recycle the PID and we can assert it exited before return.
+            descendantHandle = OpenProcess(ProcessSynchronize | ProcessQueryLimitedInformation | ProcessTerminate, false, (uint)descendantPid);
+            Assert.NotEqual((nint)0, descendantHandle);
+            Assert.Equal(WaitTimeout, WaitForSingleObject(descendantHandle, 0));
+
+            await cts.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runTask);
+            Assert.Equal(WaitObject0, WaitForSingleObject(descendantHandle, 0));
+        }
+        finally
+        {
+            if (descendantHandle != 0)
+            {
+                if (WaitForSingleObject(descendantHandle, 0) != WaitObject0)
+                {
+                    _ = TerminateProcess(descendantHandle, 1);
+                }
+                _ = CloseHandle(descendantHandle);
+            }
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
+    public async Task BoundProcessRunnerNonDestructiveModifyModeCompletesDespiteCancellationOnWindows()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -460,24 +620,244 @@ public sealed class WindowsMaintenanceTests
             valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, cmdPath);
         }
 
-        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint-job-" + Guid.NewGuid().ToString("N"));
+        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint-modify-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         try
         {
-            var lateMarker = Path.Combine(tempDir, "late.txt");
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
-                    valid,
-                    ["/c", $"ping -n 30 127.0.0.1 >nul && echo late > \"{lateMarker}\""],
-                    cts.Token));
-            Assert.False(File.Exists(lateMarker));
+            var startedMarker = Path.Combine(tempDir, "started.txt");
+            var doneMarker = Path.Combine(tempDir, "done.txt");
+            using var cts = new CancellationTokenSource();
+            var runTask = WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
+                valid,
+                ["/c", $"echo started > \"{startedMarker}\" && ping -n 2 127.0.0.1 >nul && echo done > \"{doneMarker}\""],
+                killOnCancel: false,
+                cts.Token);
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (!File.Exists(startedMarker) && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(25);
+            }
+            await cts.CancelAsync();
+            var result = await runTask;
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(doneMarker));
         }
         finally
         {
             Directory.Delete(tempDir, recursive: true);
         }
     }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
+    public async Task NativeCmsVerifierValidatesSignedReceiptAndRejectsTamperingOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        using var caRsa = RSA.Create(2048);
+        var caRequest = new CertificateRequest("CN=Mimi Maintenance Test Root", caRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        caRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: true, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
+        caRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, critical: true));
+        caRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(caRequest.PublicKey, critical: false));
+        using var caCert = caRequest.CreateSelfSigned(now.AddHours(-1), now.AddHours(2));
+
+        using var leafRsa = RSA.Create(2048);
+        var leafRequest = new CertificateRequest("CN=Mimi Maintenance Test Publisher", leafRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        leafRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: false, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
+        leafRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        leafRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.3") }, critical: false));
+        leafRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(leafRequest.PublicKey, critical: false));
+        leafRequest.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(caCert, includeKeyIdentifier: true, includeIssuerAndSerial: false));
+        using var leafCert = leafRequest.Create(caCert, now.AddHours(-1), now.AddHours(1), LeafSerial);
+
+        using var noEkuRsa = RSA.Create(2048);
+        var noEkuRequest = new CertificateRequest("CN=Mimi Maintenance No CodeSigning EKU", noEkuRsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        noEkuRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(certificateAuthority: false, hasPathLengthConstraint: false, pathLengthConstraint: 0, critical: true));
+        noEkuRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        noEkuRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new("1.3.6.1.5.5.7.3.1") }, critical: false));
+        noEkuRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(noEkuRequest.PublicKey, critical: false));
+        noEkuRequest.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(caCert, includeKeyIdentifier: true, includeIssuerAndSerial: false));
+        using var noEkuCert = noEkuRequest.Create(caCert, now.AddHours(-1), now.AddHours(1), NoEkuSerial);
+
+        var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
+        {
+            schema = WindowsMaintenanceClient.ReceiptSchema,
+            version = "1.2.3",
+            broker = WindowsMaintenanceClient.BrokerRole,
+            broker_sha256 = Convert.ToHexStringLower(BrokerDigest),
+            maintenance = WindowsMaintenanceClient.MaintenanceRole,
+            maintenance_sha256 = Convert.ToHexStringLower(MaintenanceDigest),
+        }));
+        var publisherDigest = SHA256.HashData(leafCert.RawData);
+        var trustRoots = new X509Certificate2Collection { caCert };
+
+        var validCms = BuildSignedCmsDer(payload, leafRsa, leafCert, LeafSerial, [leafCert, caCert]);
+
+        // Valid signed CMS passes native CryptMsg + signer lookup + signature + chain checks.
+        var verified = WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(validCms, publisherDigest, trustRoots);
+        Assert.Equal(payload, verified);
+
+        // Production system trust mode rejects an untrusted test root.
+        var untrustedEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceipt(validCms, publisherDigest));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, untrustedEx.FailureKind);
+
+        // Tampered encapsulated payload fails native signature verification.
+        var tamperedPayload = (byte[])validCms.Clone();
+        var versionOffset = tamperedPayload.AsSpan().IndexOf("1.2.3"u8);
+        Assert.True(versionOffset >= 0);
+        tamperedPayload[versionOffset] = (byte)'9';
+        var payloadEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(tamperedPayload, publisherDigest, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, payloadEx.FailureKind);
+
+        // Corrupted signature fails native CryptMsgControl verification.
+        var corruptSigCms = BuildSignedCmsDer(payload, leafRsa, leafCert, LeafSerial, [leafCert, caCert], corruptSignature: true);
+        var sigEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(corruptSigCms, publisherDigest, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, sigEx.FailureKind);
+
+        // Wrong expected publisher SHA-256 fails closed.
+        var wrongPublisher = (byte[])publisherDigest.Clone();
+        wrongPublisher[0] ^= 0xFF;
+        var pubEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(validCms, wrongPublisher, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, pubEx.FailureKind);
+
+        // Certificate lacking Code Signing EKU fails chain policy.
+        var noEkuCms = BuildSignedCmsDer(payload, noEkuRsa, noEkuCert, NoEkuSerial, [noEkuCert, caCert]);
+        var noEkuPublisher = SHA256.HashData(noEkuCert.RawData);
+        var ekuEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(noEkuCms, noEkuPublisher, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, ekuEx.FailureKind);
+
+        // Detached CMS (no encapsulated content) fails closed.
+        var detachedCms = BuildSignedCmsDer(payload, leafRsa, leafCert, LeafSerial, [leafCert, caCert], detached: true);
+        var detachedEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(detachedCms, publisherDigest, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, detachedEx.FailureKind);
+
+        // Non-CMS / truncated bytes fail closed.
+        var junkEx = Assert.Throws<MaintenanceFailureException>(() =>
+            WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(Encoding.UTF8.GetBytes("CMS:not-asn1"), publisherDigest, trustRoots));
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, junkEx.FailureKind);
+
+        // Exercise WindowsMaintenanceClient end-to-end with the native Windows CMS verifier.
+        var fixture = new FakeMaintenancePlatform
+        {
+            ExpectedPublisher = Convert.ToHexStringLower(publisherDigest),
+            CmsVerifierOverride = (raw, pub) => WindowsMaintenanceCmsVerifier.VerifyCmsReceiptForTesting(raw, pub, trustRoots),
+        };
+        fixture.PinnedDir.ReceiptRaw = validCms;
+        var okResult = await fixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+        Assert.True(okResult.Succeeded);
+
+        fixture.PinnedDir.ReceiptRaw = tamperedPayload;
+        var badResult = await fixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+        Assert.False(badResult.Succeeded);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, badResult.FailureKind);
+    }
+
+    private static byte[] BuildSignedCmsDer(
+        byte[] payload,
+        RSA signingKey,
+        X509Certificate2 signerCert,
+        byte[] serialBigEndian,
+        X509Certificate2[] certificates,
+        bool detached = false,
+        bool corruptSignature = false)
+    {
+        var writer = new AsnWriter(AsnEncodingRules.DER);
+        var ctx0 = new Asn1Tag(TagClass.ContextSpecific, 0, isConstructed: true);
+        using (writer.PushSequence())
+        {
+            writer.WriteObjectIdentifier("1.2.840.113549.1.7.2");
+            using (writer.PushSequence(ctx0))
+            {
+                using (writer.PushSequence())
+                {
+                    writer.WriteInteger(1);
+                    using (writer.PushSetOf())
+                    {
+                        WriteAlgorithmIdentifier(writer, "2.16.840.1.101.3.4.2.1");
+                    }
+                    using (writer.PushSequence())
+                    {
+                        writer.WriteObjectIdentifier("1.2.840.113549.1.7.1");
+                        if (!detached)
+                        {
+                            using (writer.PushSequence(ctx0))
+                            {
+                                writer.WriteOctetString(payload);
+                            }
+                        }
+                    }
+                    using (writer.PushSetOf(ctx0))
+                    {
+                        foreach (var cert in certificates)
+                        {
+                            writer.WriteEncodedValue(cert.RawData);
+                        }
+                    }
+                    using (writer.PushSetOf())
+                    {
+                        using (writer.PushSequence())
+                        {
+                            writer.WriteInteger(1);
+                            using (writer.PushSequence())
+                            {
+                                writer.WriteEncodedValue(signerCert.IssuerName.RawData);
+                                writer.WriteInteger(new BigInteger(serialBigEndian, isUnsigned: true, isBigEndian: true));
+                            }
+                            WriteAlgorithmIdentifier(writer, "2.16.840.1.101.3.4.2.1");
+                            WriteAlgorithmIdentifier(writer, "1.2.840.113549.1.1.1");
+                            var signature = signingKey.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                            if (corruptSignature)
+                            {
+                                signature[0] ^= 0xFF;
+                            }
+                            writer.WriteOctetString(signature);
+                        }
+                    }
+                }
+            }
+        }
+        return writer.Encode();
+    }
+
+    private static void WriteAlgorithmIdentifier(AsnWriter writer, string oid)
+    {
+        using (writer.PushSequence())
+        {
+            writer.WriteObjectIdentifier(oid);
+            writer.WriteNull();
+        }
+    }
+
+    private const uint ProcessSynchronize = 0x00100000;
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const uint ProcessTerminate = 0x0001;
+    private const uint WaitObject0 = 0x00000000;
+    private const uint WaitTimeout = 0x00000102;
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern nint OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TerminateProcess(nint processHandle, uint exitCode);
+
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(nint handle);
 
     private static OnboardingPreflightReport BuildSetupReport(string stage, bool workspaceConfirmed) =>
         new()
@@ -642,11 +1022,13 @@ public sealed class WindowsMaintenanceTests
         public Exception? PinException { get; set; }
         public Exception? CmsException { get; set; }
         public Exception? ModifyException { get; set; }
+        public Func<byte[], byte[], byte[]>? CmsVerifierOverride { get; set; }
         public FakePinnedDirectory PinnedDir { get; } = new();
         public List<(PinnedBrokerImage Broker, string[] Args)> LaunchedCalls { get; } = [];
         public bool BrokerRanWhilePinned { get; private set; }
         public bool StatusReadWhilePinned { get; private set; }
         public bool PreflightReadWhilePinned { get; private set; }
+        public bool PairReadWhilePinned { get; private set; }
         public MaintenanceBrokerProcessResult BrokerResult { get; set; } = new("", "", 0);
         public MaintenanceBrokerProcessResult? StatusResult { get; set; }
         public HostStatus PostRunStatus { get; set; } = new()
@@ -697,6 +1079,10 @@ public sealed class WindowsMaintenanceTests
             {
                 throw CmsException;
             }
+            if (CmsVerifierOverride is not null)
+            {
+                return CmsVerifierOverride(rawReceipt, expectedPublisher.ToArray());
+            }
             var text = Encoding.UTF8.GetString(rawReceipt);
             if (!text.StartsWith("CMS:", StringComparison.Ordinal))
             {
@@ -723,6 +1109,19 @@ public sealed class WindowsMaintenanceTests
                 PreflightReadWhilePinned = PinnedDir.Pinned;
                 var stage = arguments.Length >= 4 ? arguments[3] : "setup";
                 return Task.FromResult(new MaintenanceBrokerProcessResult(BuildValidPreflightJson(stage), "", 0));
+            }
+            if (arguments.Length > 0 && string.Equals(arguments[0], "pair", StringComparison.Ordinal))
+            {
+                PairReadWhilePinned = PinnedDir.Pinned;
+                var ticketJson = JsonSerializer.Serialize(new
+                {
+                    ok = true,
+                    endpoint = "http://192.168.1.20:8787",
+                    network = "lan",
+                    pair_url = "mimiremote://pair?pair_sig=pinned-lan-ticket",
+                    pair_expires_at = DateTimeOffset.UtcNow.AddMinutes(5).ToString("O", CultureInfo.InvariantCulture),
+                });
+                return Task.FromResult(new MaintenanceBrokerProcessResult(ticketJson, "", 0));
             }
             BrokerRanWhilePinned = PinnedDir.Pinned;
             if (ModifyException is not null)

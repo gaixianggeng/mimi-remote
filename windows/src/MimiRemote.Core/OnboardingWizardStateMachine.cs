@@ -1223,17 +1223,18 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
                     }
                     return;
                 }
-                if (maintenanceResult.PostRunPreflight is { } verifiedReport)
+                if (maintenanceResult.PostRunPreflight is not { } verifiedReport)
                 {
-                    ApplyVerifiedPreflightReport(verifiedReport);
+                    var missingPreflight = MaintenanceRunResult.Failure(MaintenanceFailureKind.StatusReadFailed);
+                    LastLanMaintenanceResult = missingPreflight;
+                    MaintenanceFallbackDownloadUrl = WindowsMaintenanceClient.OfficialDownloadUrl;
+                    PairingError = BuildLanMaintenanceDiagnostic(missingPreflight);
+                    return;
                 }
-                else
+                ApplyVerifiedPreflightReport(verifiedReport);
+                if (selection == pairingGeneration && IsTransportReady("lan") && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
                 {
-                    await RunPreflightAsync("pair", cancellationToken);
-                }
-                if (selection == pairingGeneration && IsTransportReady("lan"))
-                {
-                    await IssuePairingAsync("lan", cancellationToken);
+                    ApplyVerifiedPairingTicket("lan", verifiedTicket);
                 }
                 return;
             }

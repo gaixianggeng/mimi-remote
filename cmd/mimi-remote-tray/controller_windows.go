@@ -162,21 +162,25 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 		return agentStatus{}, ctx.Err()
 	}
 
-	// 排队与执行使用独立预算。手动刷新取得执行权后，必须完整覆盖
-	// runtime 的 10 秒探测以及计划任务、配置和网络状态读取。
-	timeout := backgroundStatusCommandTimeout
-	if refreshRuntime {
-		timeout = manualStatusCommandTimeout
-	}
-	commandCtx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	c.stateMu.RLock()
 	cachedBefore := c.cachedNetwork
 	lastChecked := c.networkLastChecked
 	c.stateMu.RUnlock()
 	inspectNetwork := cachedBefore == nil ||
 		time.Since(lastChecked) >= networkPolicyRefreshInterval
+
+	// 排队与执行使用独立预算。手动刷新取得执行权后，必须完整覆盖
+	// runtime 的探测、Windows 冷启动 LAN 策略查询（最多 30 秒）以及计划任务与配置读取。
+	timeout := backgroundStatusCommandTimeout
+	if refreshRuntime {
+		timeout = manualStatusCommandTimeout
+	}
+	if inspectNetwork && timeout < networkPolicyStatusCommandTimeout {
+		timeout = networkPolicyStatusCommandTimeout
+	}
+	commandCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	args := statusArguments(refreshRuntime, inspectNetwork)
 	runner := c.statusRunner
 	if runner == nil {
@@ -444,9 +448,10 @@ func trayLogf(format string, args ...any) {
 }
 
 const (
-	statusQueueTimeout             = 25 * time.Second
-	backgroundStatusCommandTimeout = 12 * time.Second
-	manualStatusCommandTimeout     = runtimebudget.ManualCommandTimeout
+	statusQueueTimeout                = 50 * time.Second
+	backgroundStatusCommandTimeout    = 12 * time.Second
+	networkPolicyStatusCommandTimeout = 45 * time.Second
+	manualStatusCommandTimeout        = runtimebudget.ManualCommandTimeout
 	// 启动就绪要覆盖 LAN 策略查询（最多 30 秒）与受管 Codex 初始化（最多 25 秒）；
 	// 20 秒时实测约 22 秒才开始监听，托盘会先报就绪失败（#456）。
 	serviceReadyWait = 60 * time.Second

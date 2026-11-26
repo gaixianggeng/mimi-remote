@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -16,11 +17,24 @@ import (
 const (
 	maintenanceUACCancelledExitCode = 1223
 	jobObjectMsgActiveProcessZero   = 4
+	jobPollIntervalMs               = 200
+	jobPostTerminationDrainTimeout  = 15 * time.Second
 )
 
 type jobObjectAssociateCompletionPort struct {
 	CompletionKey  uintptr
 	CompletionPort windows.Handle
+}
+
+type jobObjectBasicAccountingInformation struct {
+	TotalUserTime            int64
+	TotalKernelTime          int64
+	ThisPeriodTotalUserTime  int64
+	ThisPeriodTotalKernel    int64
+	TotalPageFaultCount      uint32
+	TotalProcesses           uint32
+	ActiveProcesses          uint32
+	TotalTerminatedProcesses uint32
 }
 
 var errMaintenanceLaunch = errors.New("维护程序未完成，请返回桌面应用重新检查状态")
@@ -97,22 +111,16 @@ func maintenanceUACCancelledError() error {
 }
 
 func runBoundMaintenanceProcess(identity pinnedFileIdentity, rawParams, dir string) (uint32, error) {
+	// Track Inno's loader and unpacked setup children in a Job Object without
+	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so an unexpected broker exit cannot
+	// terminate the maintenance wizard mid-apply (after stopping the service
+	// and before restarting it or recording firewall state). Pre-resume
+	// failures still explicitly terminate the suspended process.
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return 0, errMaintenanceLaunch
 	}
 	defer windows.CloseHandle(job)
-
-	var limits windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
-	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if _, err := windows.SetInformationJobObject(
-		job,
-		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&limits)),
-		uint32(unsafe.Sizeof(limits)),
-	); err != nil {
-		return 0, errMaintenanceLaunch
-	}
 
 	iocp, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 1)
 	if err != nil {
@@ -183,33 +191,92 @@ func runBoundMaintenanceProcess(identity pinnedFileIdentity, rawParams, dir stri
 	}
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
 		_ = windows.TerminateJobObject(job, 1)
-		waitForJobZeroProcesses(iocp, completionKey)
+		_ = waitForJobEmpty(job, iocp, completionKey, jobPostTerminationDrainTimeout)
 		return 0, errMaintenanceLaunch
 	}
 
 	waitResult, waitErr := windows.WaitForSingleObject(pi.Process, windows.INFINITE)
 	var exitCode uint32
 	if waitErr != nil || waitResult != windows.WAIT_OBJECT_0 || windows.GetExitCodeProcess(pi.Process, &exitCode) != nil {
-		_ = windows.TerminateJobObject(job, 1)
-		waitForJobZeroProcesses(iocp, completionKey)
+		_ = waitForJobEmpty(job, iocp, completionKey, 0)
 		return 0, errMaintenanceLaunch
 	}
-	// Keep verification pins held until Inno's unpacked setup child processes
-	// in the job have also completely exited.
-	waitForJobZeroProcesses(iocp, completionKey)
+	// Keep verification pins held until JobObjectBasicAccountingInformation
+	// confirms every process in the job (including Inno's unpacked setup child)
+	// has exited.
+	if err := waitForJobEmpty(job, iocp, completionKey, 0); err != nil {
+		return 0, errMaintenanceLaunch
+	}
 	return exitCode, nil
 }
 
-func waitForJobZeroProcesses(iocp windows.Handle, expectedKey uintptr) {
+func queryJobActiveProcesses(job windows.Handle) (uint32, error) {
+	var info jobObjectBasicAccountingInformation
+	var returned uint32
+	size := uint32(unsafe.Sizeof(info))
+	err := windows.QueryInformationJobObject(
+		job,
+		windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)),
+		size,
+		&returned,
+	)
+	if err != nil || returned < size {
+		return 0, errMaintenanceLaunch
+	}
+	return info.ActiveProcesses, nil
+}
+
+func waitForJobEmpty(job, iocp windows.Handle, expectedKey uintptr, maxWait time.Duration) error {
+	var deadline time.Time
+	if maxWait > 0 {
+		deadline = time.Now().Add(maxWait)
+	}
 	for {
+		active, err := queryJobActiveProcesses(job)
+		if err != nil {
+			return err
+		}
+		if active == 0 {
+			return nil
+		}
+		waitMs := uint32(jobPollIntervalMs)
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				finalActive, finalErr := queryJobActiveProcesses(job)
+				if finalErr == nil && finalActive == 0 {
+					return nil
+				}
+				return errMaintenanceLaunch
+			}
+			if ms := uint32(remaining.Milliseconds()); ms > 0 && ms < waitMs {
+				waitMs = ms
+			}
+		}
+
 		var msg uint32
 		var key uintptr
 		var overlapped *windows.Overlapped
-		if err := windows.GetQueuedCompletionStatus(iocp, &msg, &key, &overlapped, windows.INFINITE); err != nil {
-			return
+		err = windows.GetQueuedCompletionStatus(iocp, &msg, &key, &overlapped, waitMs)
+		if err == nil {
+			if key == expectedKey && msg == jobObjectMsgActiveProcessZero {
+				verified, verifyErr := queryJobActiveProcesses(job)
+				if verifyErr != nil {
+					return verifyErr
+				}
+				if verified == 0 {
+					return nil
+				}
+			}
+			continue
 		}
-		if key == expectedKey && msg == jobObjectMsgActiveProcessZero {
-			return
+		if !errors.Is(err, syscall.Errno(258)) {
+			finalActive, finalErr := queryJobActiveProcesses(job)
+			if finalErr == nil && finalActive == 0 {
+				return nil
+			}
+			return errMaintenanceLaunch
 		}
 	}
 }

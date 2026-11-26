@@ -88,4 +88,36 @@ public sealed partial class OnboardingWizardStateMachine
         AllowedFix = OnboardingFix.OpenSettings("windows_firewall"),
         Trusted = true,
     };
+
+    private void ApplyVerifiedPairingTicket(string target, PairingTicketReceipt receipt)
+    {
+        if (disposed || IsCompleted || CurrentStep != OnboardingWizardStep.ConnectPhone
+            || !string.Equals(SelectedTransport, target, StringComparison.Ordinal)
+            || !CanIssuePairingQr)
+        {
+            return;
+        }
+        if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
+            || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
+            || expiry <= backend.Now())
+        {
+            PairingError = new OnboardingResolvedDiagnostic
+            {
+                Code = "pair_ticket_invalid",
+                Step = "network_any",
+                Message = "配对信息无效或已经过期，请刷新二维码。",
+                AllowedFix = OnboardingFix.Retry,
+                Trusted = true,
+            };
+            return;
+        }
+        issuedPairUrl = receipt.PairUrl;
+        issuedExpiresAt = expiry;
+        issuedNetwork = target;
+        issuedWarnings = receipt.Warnings;
+        UpdateCountdown();
+        NotifyTicketProperties();
+        IssuedTicketChanged?.Invoke(this, issuedPairUrl);
+    }
 }

@@ -40,11 +40,16 @@ public sealed record MaintenanceRunResult
     public required string Message { get; init; }
     public HostStatus? PostRunStatus { get; init; }
     public OnboardingPreflightReport? PostRunPreflight { get; init; }
+    public PairingTicketReceipt? PostRunPairingTicket { get; init; }
     public bool WorkspaceConfirmed { get; init; }
     public bool LanEnabled { get; init; }
     public bool LanPolicyOk { get; init; }
 
-    public static MaintenanceRunResult Success(HostStatus status, string message, OnboardingPreflightReport? preflight = null) => new()
+    public static MaintenanceRunResult Success(
+        HostStatus status,
+        string message,
+        OnboardingPreflightReport? preflight = null,
+        PairingTicketReceipt? pairingTicket = null) => new()
     {
         Succeeded = true,
         BrokerVerified = true,
@@ -52,6 +57,7 @@ public sealed record MaintenanceRunResult
         Message = message,
         PostRunStatus = status,
         PostRunPreflight = preflight,
+        PostRunPairingTicket = pairingTicket,
         WorkspaceConfirmed = status.WorkspaceConfirmed == true,
         LanEnabled = IsLanEnabled(status),
         LanPolicyOk = IsLanPolicyOk(status),
@@ -219,7 +225,12 @@ public sealed class WindowsMaintenanceClient(
 
     private static readonly string[] ModifyArguments = ["installer-maintenance", "modify"];
     private static readonly string[] StatusArguments = ["status", "--json", "--runtime", "--network-policy"];
-    private static readonly TimeSpan StatusReadTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan StatusReadTimeout = TimeSpan.FromSeconds(45);
+
+    public static bool IsModifyCommand(IReadOnlyList<string> arguments) =>
+        arguments.Count == ModifyArguments.Length
+        && string.Equals(arguments[0], ModifyArguments[0], StringComparison.Ordinal)
+        && string.Equals(arguments[1], ModifyArguments[1], StringComparison.Ordinal);
 
     public static string? ResolveExpectedVersion(ClientBuild build)
     {
@@ -384,6 +395,7 @@ public sealed class WindowsMaintenanceClient(
         var modifyFailure = MaintenanceFailureKind.None;
         HostStatus? postRunStatus = null;
         OnboardingPreflightReport? postRunPreflight = null;
+        PairingTicketReceipt? postRunPairingTicket = null;
 
         try
         {
@@ -414,14 +426,25 @@ public sealed class WindowsMaintenanceClient(
                     return;
                 }
 
-                // Re-read status and optional preflight through the SAME verified
-                // pinned broker while directory and binary pins remain active.
-                // Also re-read after any launched wizard exits nonzero (such as UAC
-                // cancellation) so partial changes are reflected immediately.
+                // Re-read status, optional preflight, and (for successful LAN
+                // maintenance) the follow-up pairing ticket through the SAME
+                // verified pinned broker while directory and binary pins remain
+                // active. Also re-read after any launched wizard exits nonzero
+                // (such as UAC cancellation) so partial changes are reflected.
                 postRunStatus = await ReadVerifiedStatusAsync(pinnedBroker, modifyFailure == MaintenanceFailureKind.None, cancellationToken).ConfigureAwait(false);
                 if (preflightStage is "setup" or "pair" && !cancellationToken.IsCancellationRequested)
                 {
                     postRunPreflight = await TryReadVerifiedPreflightAsync(pinnedBroker, preflightStage, verifiedCapability, cancellationToken).ConfigureAwait(false);
+                }
+                if (modifyFailure == MaintenanceFailureKind.None
+                    && purpose == MaintenancePurpose.LanFirewall
+                    && postRunStatus is not null
+                    && MaintenanceRunResult.IsLanEnabled(postRunStatus)
+                    && MaintenanceRunResult.IsLanPolicyOk(postRunStatus)
+                    && IsPreflightLanReady(postRunPreflight)
+                    && !cancellationToken.IsCancellationRequested)
+                {
+                    postRunPairingTicket = await TryReadVerifiedLanPairingTicketAsync(pinnedBroker, cancellationToken).ConfigureAwait(false);
                 }
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -467,7 +490,7 @@ public sealed class WindowsMaintenanceClient(
 
         var lanReady = MaintenanceRunResult.IsLanEnabled(postRunStatus) && MaintenanceRunResult.IsLanPolicyOk(postRunStatus);
         return lanReady
-            ? MaintenanceRunResult.Success(postRunStatus, "专用网络防火墙与局域网访问已生效。", postRunPreflight)
+            ? MaintenanceRunResult.Success(postRunStatus, "专用网络防火墙与局域网访问已生效。", postRunPreflight, postRunPairingTicket)
             : MaintenanceRunResult.Failure(MaintenanceFailureKind.LanStillDisabled, postRunStatus, postRunPreflight, brokerVerified: true);
     }
 
@@ -547,6 +570,54 @@ public sealed class WindowsMaintenanceClient(
                 out var report,
                 out _)
                 ? report
+                : null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MaintenanceFailureException error) when (MaintenanceRunResult.IsIdentityRejection(error.FailureKind))
+        {
+            throw;
+        }
+        catch (Exception error) when (error is OperationCanceledException or MaintenanceFailureException or IOException
+            or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or TimeoutException
+            or System.ComponentModel.Win32Exception or JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsPreflightLanReady(OnboardingPreflightReport? report) =>
+        report is { Stage: "pair", Configured: true, WorkspaceConfirmed: true }
+        && report.Checks.Any(c =>
+            string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+            && string.Equals(c.State, "ok", StringComparison.Ordinal)
+            && c.Enabled == true
+            && c.Available == true);
+
+    private async Task<PairingTicketReceipt?> TryReadVerifiedLanPairingTicketAsync(
+        PinnedBrokerImage pinnedBroker,
+        CancellationToken cancellationToken)
+    {
+        using var pairCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        pairCts.CancelAfter(OnboardingTimeouts.Pair);
+        try
+        {
+            var result = await platform.RunBrokerAsync(
+                pinnedBroker,
+                AgentClient.PairArguments("lan"),
+                pairCts.Token).ConfigureAwait(false);
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StdOut))
+            {
+                return null;
+            }
+            return OnboardingCopyCatalog.TryDecodePairingTicketReceipt(
+                result.StdOut,
+                requireNetwork: false,
+                out var receipt,
+                out _)
+                ? receipt
                 : null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

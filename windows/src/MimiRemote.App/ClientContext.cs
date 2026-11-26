@@ -16,8 +16,10 @@ public sealed class ClientContext : IDisposable
     private readonly SemaphoreSlim changes = new(1, 1);
     private OnboardingGateState gateState;
     private bool gateInitialized;
+    private int activeMaintenanceRuns;
 
     public bool Preview { get; }
+    public bool IsMaintenanceRunning => Volatile.Read(ref activeMaintenanceRuns) > 0;
     private long gateRequest;
     internal DesktopPreferences Preferences { get; } = DesktopPreferences.Load();
     public Action Quit { get; set; } = () => { };
@@ -62,34 +64,42 @@ public sealed class ClientContext : IDisposable
 
     private async Task<MaintenanceRunResult> RunTrustedInstallerMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token)
     {
-        var native = new WindowsMaintenanceNative();
-        var client = new WindowsMaintenanceClient(
-            WindowsMaintenanceNative.ResolveTrustedInstallDirectory,
-            () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
-            () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
-            native);
-        var preflightStage = purpose == MaintenancePurpose.ConfirmWorkspace ? "setup" : "pair";
-        var result = await Task.Run(
-            () => client.RunModifyAsync(purpose, preflightStage, VerifiedCapability, token),
-            token);
-        if (!result.BrokerVerified)
+        Interlocked.Increment(ref activeMaintenanceRuns);
+        try
         {
-            // Skip all executable refreshes after identity rejection so an
-            // unverified or registry-selected AgentClient can never run.
+            var native = new WindowsMaintenanceNative();
+            var client = new WindowsMaintenanceClient(
+                WindowsMaintenanceNative.ResolveTrustedInstallDirectory,
+                () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
+                () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
+                native);
+            var preflightStage = purpose == MaintenancePurpose.ConfirmWorkspace ? "setup" : "pair";
+            var result = await Task.Run(
+                () => client.RunModifyAsync(purpose, preflightStage, VerifiedCapability, token),
+                token);
+            if (!result.BrokerVerified)
+            {
+                // Skip all executable refreshes after identity rejection so an
+                // unverified or registry-selected AgentClient can never run.
+                return result;
+            }
+            Invalidate();
+            if (result.PostRunStatus is { } refreshed)
+            {
+                cached = refreshed;
+                hasRuntime = true;
+                statusAt = DateTimeOffset.UtcNow;
+            }
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                UpdateGateFromPreflight(verifiedPreflight);
+            }
             return result;
         }
-        Invalidate();
-        if (result.PostRunStatus is { } refreshed)
+        finally
         {
-            cached = refreshed;
-            hasRuntime = true;
-            statusAt = DateTimeOffset.UtcNow;
+            Interlocked.Decrement(ref activeMaintenanceRuns);
         }
-        if (result.PostRunPreflight is { } verifiedPreflight)
-        {
-            UpdateGateFromPreflight(verifiedPreflight);
-        }
-        return result;
     }
 
     public AgentClient Agent => agent ?? throw new InvalidOperationException(Preview
