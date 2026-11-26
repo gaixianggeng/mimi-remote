@@ -205,7 +205,23 @@ public sealed class SettingsViewModel : ClientPageViewModel
         SetMaintenanceFallbackUrl(null);
         var result = await runMaintenance(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
         SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
-        await RefreshAsync(force: true);
+        if (result.BrokerVerified)
+        {
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                Context.UpdateGateFromPreflight(verifiedPreflight);
+                ScanRoot = verifiedPreflight.ScanRoot;
+                BrowseRoot = verifiedPreflight.BrowseRoot;
+            }
+            if (result.PostRunStatus is { } verifiedStatus && !string.IsNullOrWhiteSpace(verifiedStatus.Version))
+            {
+                ServiceVersion = verifiedStatus.Version;
+            }
+            else if (result.PostRunPreflight is null)
+            {
+                await RefreshAsync(force: true);
+            }
+        }
         Report(result.Message, error: !result.Succeeded);
     }
 

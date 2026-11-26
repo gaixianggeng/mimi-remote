@@ -213,20 +213,33 @@ jobs:
                 -OutputDirectory dist-windows `
                 -PfxPath $pfx `
                 -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
+              ./scripts/publish-windows-client.ps1 `
+                -Version ($env:RELEASE_TAG).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -PfxPath $pfx `
+                -PfxPassword $env:WINDOWS_SIGN_PFX_PASSWORD
             } else {
               Write-Warning 'Windows signing secrets are absent. Building an unsigned compatibility-check installer for the private Actions artifact.'
               ./scripts/build-windows-installer.ps1 `
                 -Version ($env:RELEASE_TAG).TrimStart('v') `
                 -OutputDirectory dist-windows `
                 -AllowUnsignedRelease
+              ./scripts/publish-windows-client.ps1 `
+                -Version ($env:RELEASE_TAG).TrimStart('v') `
+                -OutputDirectory dist-windows `
+                -AllowUnsignedRelease
             }
             $installer = Get-Item "dist-windows\Mimi-Remote-Setup-*.exe"
+            $clientArchive = Get-Item "dist-windows\Mimi-Remote-Client-*.zip"
+            if (-not (Test-Path -LiteralPath "$($clientArchive.FullName).sha256" -PathType Leaf)) {
+              throw "Missing WinUI client SHA-256 sidecar: $($clientArchive.FullName).sha256"
+            }
             if ($hasPfx) {
               ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG -RequireSignature
-              'Windows installer signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              'Windows installer & WinUI client signing: Authenticode PFX (Valid).' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             } else {
               ./scripts/check-windows-installer.ps1 -InstallerPath $installer.FullName -ExpectedVersion $env:RELEASE_TAG
-              'Windows installer signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+              'Windows installer & WinUI client signing: unsigned-release. Verify SHA-256 before running; SmartScreen may warn.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             }
           } finally {
             if ($pfx) {

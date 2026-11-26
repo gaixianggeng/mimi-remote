@@ -97,6 +97,8 @@ namespace MimiRemote.App
             await action();
             StatusChanged?.Invoke(this, EventArgs.Empty);
         }
+
+        public void RaiseStatusChanged() => StatusChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public sealed class PollingTestAgent : IAgentCommand

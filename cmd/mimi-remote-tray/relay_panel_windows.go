@@ -161,6 +161,10 @@ func (p *controlPanel) chooseRelayService() {
 }
 
 func (p *controlPanel) applyRelay(choice, relayURL string) {
+	if p.app.controller == nil {
+		p.app.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	status, _, _ := p.app.tailcatSnapshot()
 	if choice != "mimi" && status.Enabled && (status.managed() || relayURL != status.DERPMapURL) {
 		if showMessage(p.window, "更换中转服务？", "本机内置连接会短暂重连，使用该线路的手机需要重新扫码。Tailscale 和局域网连接不受影响。", mbYesNo|mbIconWarning) != idYes {

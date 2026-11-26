@@ -343,9 +343,101 @@ public sealed class OnboardingViewModelTests
         Assert.True(controller.HasFallbackDownload);
         Assert.Equal(OnboardingCopyCatalog.UrlDesktop, controller.FallbackDownloadUrl);
 
+        // Status refreshes must preserve the typed maintenance failure message and download link.
+        await controller.RefreshAsync();
+        Assert.Contains("同一局域网保持关闭", controller.Note, StringComparison.Ordinal);
+        Assert.True(controller.HasFallbackDownload);
+        Assert.Equal(OnboardingCopyCatalog.UrlDesktop, controller.FallbackDownloadUrl);
+
         // Other ready transport (tailcat) remains fully usable.
         controller.SelectTransport("tailcat");
         Assert.True(controller.CanGenerate);
+        Assert.False(controller.HasFallbackDownload);
+    }
+
+    [Fact]
+    public async Task 默认安装私有网络下首次启用LAN走受信维护向导()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var defaultInstallReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanDisabled: true);
+        var readyLanReport = defaultInstallReport with
+        {
+            Checks =
+            [
+                .. defaultInstallReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+
+        var pairingMaintenanceCalls = 0;
+        var pairingBackend = new FakePairingBackend(() => now)
+        {
+            Report = defaultInstallReport,
+            RunLanFirewallMaintenance = _ =>
+            {
+                pairingMaintenanceCalls++;
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。",
+                    readyLanReport));
+            },
+        };
+
+        using var controller = new PairingSessionController(pairingBackend);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        Assert.True(controller.CanEnableSelectedTransport);
+        Assert.True(controller.SelectedTransportItem?.NeedsFirewallMaintenance);
+        await controller.EnableSelectedTransportAsync();
+        Assert.Equal(1, pairingMaintenanceCalls);
+        Assert.Empty(pairingBackend.EnabledTransports);
+        Assert.True(controller.HasActiveTicket);
+
+        var wizardMaintenanceCalls = 0;
+        var wizardBackend = new FakeWizardBackend
+        {
+            OnPreflight = (_, _, _) => Task.FromResult(defaultInstallReport),
+            RunLanFirewallMaintenance = _ =>
+            {
+                wizardMaintenanceCalls++;
+                return Task.FromResult(MaintenanceRunResult.Success(
+                    new HostStatus
+                    {
+                        Version = "1.2.3",
+                        ProcessOk = true,
+                        ServiceOk = true,
+                        WorkspaceConfirmed = true,
+                        ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                    },
+                    "专用网络防火墙与局域网访问已生效。",
+                    readyLanReport));
+            },
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        Assert.True(wizard.CanEnableSelectedTransport);
+        await wizard.EnableSelectedTransportAsync();
+        Assert.Equal(1, wizardMaintenanceCalls);
+        Assert.Empty(wizardBackend.EnabledTransports);
+        Assert.True(wizard.HasIssuedTicket);
     }
 
     [Fact]
@@ -378,7 +470,7 @@ public sealed class OnboardingViewModelTests
                         ServiceOk = true,
                         WorkspaceConfirmed = true,
                         ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
-                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true },
+                        NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
                     },
                     "专用网络防火墙与局域网访问已生效。"));
             },
@@ -418,9 +510,11 @@ public sealed class OnboardingViewModelTests
         Assert.False(controller.HasFallbackDownload);
         Assert.True(controller.HasActiveTicket);
 
-        // Wizard Step 4 also surfaces typed fallback download on maintenance failure.
+        // Wizard Step 4 keeps the diagnostic catalog-aligned and exposes download fallback on the typed result.
+        var wizardOpenedUrls = new List<string>();
         var wizardBackend = new FakeWizardBackend
         {
+            OnOpenUrl = url => wizardOpenedUrls.Add(url),
             RunLanFirewallMaintenance = _ => Task.FromResult(MaintenanceRunResult.Failure(MaintenanceFailureKind.DigestMismatch)),
             OnPreflight = (_, _, _) => Task.FromResult(blockedReport),
         };
@@ -431,7 +525,10 @@ public sealed class OnboardingViewModelTests
         await wizard.EnableSelectedTransportAsync();
         Assert.True(wizard.HasMaintenanceFallbackDownload);
         Assert.Equal(OnboardingCopyCatalog.UrlDesktop, wizard.MaintenanceFallbackDownloadUrl);
-        Assert.Equal(OnboardingFix.OpenUrl(OnboardingCopyCatalog.UrlDesktop), wizard.PairingError?.AllowedFix);
+        Assert.Equal(MaintenanceFailureKind.DigestMismatch, wizard.LastLanMaintenanceResult?.FailureKind);
+        Assert.Equal(OnboardingFix.OpenSettings("windows_firewall"), wizard.PairingError?.AllowedFix);
+        wizard.OpenMaintenanceFallbackDownload();
+        Assert.Equal([OnboardingCopyCatalog.UrlDesktop], wizardOpenedUrls);
     }
 
     [Fact]
@@ -906,6 +1003,7 @@ public sealed class OnboardingViewModelTests
         bool tailcatReady = false,
         bool lanPublicBlocked = false,
         bool lanFirewallBlocked = false,
+        bool lanDisabled = false,
         string? configCode = null)
     {
         var effectiveBrowse = browseRoot ?? scanRoot;
@@ -1292,22 +1390,41 @@ public sealed class OnboardingViewModelTests
                     HasCodeKey = true,
                     HasFixKey = true,
                 }
-                : new OnboardingCheck
-                {
-                    Id = "network_lan",
-                    Group = "network",
-                    State = "optional",
-                    Title = "同一局域网",
-                    Detail = "未检测到可信局域网。",
-                    Blocking = false,
-                    Enabled = false,
-                    Available = false,
-                    Code = "lan_unavailable",
-                    Fix = OnboardingFix.Retry,
-                    HasAvailableKey = true,
-                    HasCodeKey = true,
-                    HasFixKey = true,
-                };
+                : lanDisabled
+                    ? new OnboardingCheck
+                    {
+                        Id = "network_lan",
+                        Group = "network",
+                        State = "optional",
+                        Title = "同一局域网",
+                        Detail = "同一局域网连接可用，可在配对设置中启用。",
+                        Blocking = false,
+                        Enabled = false,
+                        Available = true,
+                        Code = "lan_disabled",
+                        Fix = configured
+                            ? (isPair ? OnboardingFix.RunFix("enable_lan") : OnboardingFix.OpenSettings("connections"))
+                            : OnboardingFix.RunFix("save_setup"),
+                        HasAvailableKey = true,
+                        HasCodeKey = true,
+                        HasFixKey = true,
+                    }
+                    : new OnboardingCheck
+                    {
+                        Id = "network_lan",
+                        Group = "network",
+                        State = "optional",
+                        Title = "同一局域网",
+                        Detail = "未检测到可信局域网。",
+                        Blocking = false,
+                        Enabled = false,
+                        Available = false,
+                        Code = "lan_unavailable",
+                        Fix = OnboardingFix.Retry,
+                        HasAvailableKey = true,
+                        HasCodeKey = true,
+                        HasFixKey = true,
+                    };
 
         var anyNetwork = tailscaleReady || tailcatReady;
         string? recommendedTransport = (tailscaleReady || tailscaleDisabledAvailable)

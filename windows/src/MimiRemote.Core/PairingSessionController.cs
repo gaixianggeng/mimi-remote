@@ -51,6 +51,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     private bool relayNoticeOpen;
     private bool relayFailed;
     private string? fallbackDownloadUrl;
+    private string? preservedMaintenanceNote;
     private bool active;
     private bool disposed;
 
@@ -230,6 +231,8 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         SelectedTransport = transportId;
+        preservedMaintenanceNote = null;
+        FallbackDownloadUrl = null;
         Clear();
         UpdateIdleNote();
     }
@@ -249,6 +252,11 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 return;
             }
             ApplyReport(latest);
+            if (SelectedTransportItem is { Id: "lan", Ready: true })
+            {
+                preservedMaintenanceNote = null;
+                FallbackDownloadUrl = null;
+            }
             if (!RouteReady || IsExpired)
             {
                 Clear();
@@ -294,6 +302,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         Clear();
+        preservedMaintenanceNote = null;
         FallbackDownloadUrl = null;
         var selection = generation;
         if (string.Equals(target, "lan", StringComparison.Ordinal))
@@ -325,6 +334,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 {
                     var fallback = MaintenanceRunResult.Failure(error is MaintenanceFailureException maint ? maint.FailureKind : MaintenanceFailureKind.LaunchFailed);
                     Note = error is OnboardingCliException { Diagnostic: { } diag } ? diag.Message : fallback.Message;
+                    preservedMaintenanceNote = Note;
                     FallbackDownloadUrl = error is OnboardingCliException ? null : fallback.DownloadUrl;
                     return;
                 }
@@ -335,10 +345,26 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 if (!maintenanceResult.Succeeded)
                 {
                     Note = maintenanceResult.Message;
+                    preservedMaintenanceNote = maintenanceResult.Message;
                     FallbackDownloadUrl = maintenanceResult.FallbackToDownload ? maintenanceResult.DownloadUrl : null;
+                    if (maintenanceResult.BrokerVerified && maintenanceResult.PostRunPreflight is { } verifiedFailureReport)
+                    {
+                        ApplyReport(verifiedFailureReport);
+                        UpdateIdleNote();
+                    }
                     return;
                 }
-                await RefreshAsync(cancellationToken);
+                preservedMaintenanceNote = null;
+                FallbackDownloadUrl = null;
+                if (maintenanceResult.PostRunPreflight is { } verifiedReport)
+                {
+                    ApplyReport(verifiedReport);
+                    UpdateIdleNote();
+                }
+                else
+                {
+                    await RefreshAsync(cancellationToken);
+                }
                 if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
                 {
                     await GenerateAsync(cancellationToken);
@@ -687,6 +713,10 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             var available = check?.Available == true;
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
+            var lanDisabledNeedsMaintenance = string.Equals(id, "lan", StringComparison.Ordinal)
+                && string.Equals(check?.Code, "lan_disabled", StringComparison.Ordinal)
+                && backend.RunLanFirewallMaintenance is not null;
+            var needsFirewallMaintenance = firewallBlocked || lanDisabledNeedsMaintenance;
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
             var canEnable = diag is { Trusted: true } && (firewallBlocked
                 ? backend.RunLanFirewallMaintenance is not null
@@ -714,7 +744,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 available,
                 ready,
                 canEnable,
-                firewallBlocked,
+                needsFirewallMaintenance,
                 publicBlocked,
                 check?.Code,
                 diag?.AllowedFix));
@@ -726,6 +756,11 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     {
         if (HasActiveTicket)
         {
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(preservedMaintenanceNote))
+        {
+            Note = preservedMaintenanceNote;
             return;
         }
         var selected = SelectedTransportItem;

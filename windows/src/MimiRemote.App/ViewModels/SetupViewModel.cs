@@ -10,6 +10,7 @@ public sealed class SetupViewModel : ClientPageViewModel
     private readonly OnboardingWizardStateMachine wizard;
     private string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "code");
     private string? maintenanceFallbackDownloadUrl;
+    private bool preserveMaintenanceNotice;
 
     public OnboardingWizardStateMachine Wizard => wizard;
 
@@ -156,6 +157,13 @@ public sealed class SetupViewModel : ClientPageViewModel
             },
             () => HasMaintenanceDownloadFallback);
         OpenDiagnosticsCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteDiagnostics));
+        PropertyChanged += (_, args) =>
+        {
+            if (string.Equals(args.PropertyName, nameof(NoticeOpen), StringComparison.Ordinal) && !NoticeOpen)
+            {
+                preserveMaintenanceNotice = false;
+            }
+        };
     }
 
     protected override void OnActiveChanged()
@@ -185,9 +193,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
         if (wizard.PreflightError is { } err)
         {
+            preserveMaintenanceNotice = false;
             Report(err.Message, error: true);
         }
-        else if (wizard.StepError is null)
+        else if (wizard.StepError is null && wizard.PairingError is null && !preserveMaintenanceNotice)
         {
             NoticeOpen = false;
         }
@@ -199,6 +208,7 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             throw new InvalidOperationException("界面预览不会更改代码目录或电脑服务。");
         }
+        preserveMaintenanceNotice = false;
         var selected = Root.Trim();
         if (!Path.IsPathFullyQualified(selected))
         {
@@ -262,14 +272,27 @@ public sealed class SetupViewModel : ClientPageViewModel
         {
             return;
         }
+        preserveMaintenanceNotice = false;
         SetMaintenanceFallbackUrl(null);
         var result = await runMaintenance(MaintenancePurpose.ConfirmWorkspace, Lifetime.Token);
         SetMaintenanceFallbackUrl(result.FallbackToDownload ? result.DownloadUrl : null);
-        await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
-        if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
+        if (result.BrokerVerified)
         {
-            Root = wizard.SelectedScanRoot;
+            if (result.PostRunPreflight is { } verifiedPreflight)
+            {
+                wizard.ApplyVerifiedPreflightReport(verifiedPreflight);
+                Context.UpdateGateFromPreflight(verifiedPreflight);
+            }
+            else
+            {
+                await wizard.RunPreflightAsync(cancellationToken: Lifetime.Token);
+            }
+            if (!string.IsNullOrWhiteSpace(wizard.SelectedScanRoot))
+            {
+                Root = wizard.SelectedScanRoot;
+            }
         }
+        preserveMaintenanceNotice = true;
         Report(result.Message, error: !result.Succeeded);
     }
 
@@ -312,6 +335,10 @@ public sealed class SetupViewModel : ClientPageViewModel
         else if (string.Equals(args.PropertyName, nameof(OnboardingWizardStateMachine.PairingError), StringComparison.Ordinal)
             && wizard.PairingError is { } pairErr)
         {
+            if (wizard.LastLanMaintenanceResult is not null)
+            {
+                preserveMaintenanceNotice = true;
+            }
             Report(pairErr.Message, error: true);
         }
     }

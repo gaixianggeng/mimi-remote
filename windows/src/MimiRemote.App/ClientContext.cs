@@ -62,14 +62,22 @@ public sealed class ClientContext : IDisposable
 
     private async Task<MaintenanceRunResult> RunTrustedInstallerMaintenanceAsync(MaintenancePurpose purpose, CancellationToken token)
     {
-        var native = new WindowsMaintenanceNative(ct =>
-            Agent.ReadAsync<HostStatus>(["status", "--json", "--runtime", "--network-policy"], ct));
+        var native = new WindowsMaintenanceNative();
         var client = new WindowsMaintenanceClient(
             WindowsMaintenanceNative.ResolveTrustedInstallDirectory,
             () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
             () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
             native);
-        var result = await Task.Run(() => client.RunModifyAsync(purpose, token), token);
+        var preflightStage = purpose == MaintenancePurpose.ConfirmWorkspace ? "setup" : "pair";
+        var result = await Task.Run(
+            () => client.RunModifyAsync(purpose, preflightStage, VerifiedCapability, token),
+            token);
+        if (!result.BrokerVerified)
+        {
+            // Skip all executable refreshes after identity rejection so an
+            // unverified or registry-selected AgentClient can never run.
+            return result;
+        }
         Invalidate();
         if (result.PostRunStatus is { } refreshed)
         {
@@ -77,8 +85,10 @@ public sealed class ClientContext : IDisposable
             hasRuntime = true;
             statusAt = DateTimeOffset.UtcNow;
         }
-        await RefreshGateAsync(token);
-        StatusChanged?.Invoke(this, EventArgs.Empty);
+        if (result.PostRunPreflight is { } verifiedPreflight)
+        {
+            UpdateGateFromPreflight(verifiedPreflight);
+        }
         return result;
     }
 

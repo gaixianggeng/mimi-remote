@@ -91,6 +91,7 @@ const (
 	menuTailcatStatus
 	menuTailcatManaged
 	menuFirstSetup
+	menuDownloadRecovery
 )
 
 // wmTrayPair 的 wParam：区分普通配对和直接打开 Tailcat 二维码。
@@ -226,7 +227,7 @@ func main() {
 	defer runtime.UnlockOSThread()
 
 	controller, err := newAgentController()
-	if err != nil {
+	if err != nil && !errors.Is(err, errMissingAgentBinary) {
 		showMessage(0, "Mimi Remote", err.Error(), mbOK|mbIconError)
 		return
 	}
@@ -235,6 +236,9 @@ func main() {
 		initialPairing: *pairAfterInstall,
 		initialShow:    *showAfterStart,
 		refreshStop:    make(chan struct{}),
+	}
+	if controller == nil {
+		app.statusErr = newMaintenanceError(maintenanceFailureImageMissing)
 	}
 	if err := app.run(); err != nil {
 		showMessage(0, "Mimi Remote", err.Error(), mbOK|mbIconError)
@@ -522,6 +526,15 @@ func (a *trayApplication) removeIcon() {
 }
 
 func (a *trayApplication) bootstrap() {
+	if a.controller == nil {
+		request := a.beginStatusRequest()
+		a.completeStatusRequestWithSetup(request, agentStatus{}, newMaintenanceError(maintenanceFailureImageMissing), false)
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+		}
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	// The installer can restart agentd immediately before the tray starts. A
 	// single status check in that short gap used to leave the tray showing an
 	// unavailable service until the next 20-second refresh, making a manual
@@ -578,6 +591,13 @@ func (a *trayApplication) refreshStatus() {
 
 func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 	request := a.beginStatusRequest()
+	if a.controller == nil {
+		a.completeStatusRequestWithSetup(request, agentStatus{}, newMaintenanceError(maintenanceFailureImageMissing), false)
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+		}
+		return
+	}
 	ctx, cancel := statusContext()
 	status, err := a.controller.status(ctx, refreshRuntime)
 	cancel()
@@ -658,13 +678,16 @@ func (a *trayApplication) showMenu() {
 	a.mu.RUnlock()
 
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
+	brokerMissing := a.controller == nil
 	header := "状态：" + status.lifecycleTitle()
-	if firstSetupNeeded {
+	if brokerMissing {
+		header = "状态：缺少核心代理（需重新安装）"
+	} else if firstSetupNeeded {
 		header = "状态：待完成首次设置"
 	} else if status.Version == "" {
 		header = "状态：正在检查"
 	}
-	if statusErr != nil && !firstSetupNeeded {
+	if statusErr != nil && !firstSetupNeeded && !brokerMissing {
 		if status.Version == "" {
 			header = "状态：服务不可用"
 		} else {
@@ -672,29 +695,35 @@ func (a *trayApplication) showMenu() {
 		}
 	}
 	appendMenu(menu, mfString, menuControlPanel, "打开控制面板")
-	if firstSetupNeeded {
+	if brokerMissing {
+		appendMenu(menu, mfString, menuDownloadRecovery, "下载正式安装包…")
+	} else if firstSetupNeeded {
 		appendMenu(menu, menuFlags(busy), menuFirstSetup, "完成首次设置…")
 	}
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGray, menuStatus, header)
-	appendMenu(menu, mfString, menuRefresh, "刷新状态")
+	appendMenu(menu, menuFlags(brokerMissing), menuRefresh, "刷新状态")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || status.ProcessOK), menuStart, "启动服务")
-	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuRestart, "重新启动服务")
-	appendMenu(menu, menuFlags(busy || !status.ProcessOK), menuStop, "停止服务")
+	appendMenu(menu, menuFlags(brokerMissing || busy || status.ProcessOK), menuStart, "启动服务")
+	appendMenu(menu, menuFlags(brokerMissing || busy || !status.ProcessOK), menuRestart, "重新启动服务")
+	appendMenu(menu, menuFlags(brokerMissing || busy || !status.ProcessOK), menuStop, "停止服务")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
-	appendMenu(menu, menuFlags(busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
-	appendMenu(menu, menuFlags(busy), menuDoctor, "运行诊断…")
-	appendMenu(menu, menuFlags(busy), menuDoctorFix, "修复诊断问题…")
+	appendMenu(menu, menuFlags(brokerMissing || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy), menuPair, "配对设备…")
+	appendMenu(menu, menuFlags(brokerMissing || busy || statusErr != nil || firstSetupNeeded || !status.ServiceOK || pairingBusy || !hasTailcat || !tailcat.ready()), menuTailcatPair, "内置连接配对…")
+	appendMenu(menu, menuFlags(brokerMissing || busy), menuDoctor, "运行诊断…")
+	appendMenu(menu, menuFlags(brokerMissing || busy), menuDoctorFix, "修复诊断问题…")
 	appendMenu(menu, mfString, menuLogs, "查看日志…")
 	appendMenu(menu, mfSeparator, 0, "")
 	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
 	appendMenu(menu, mfString|mfGray, menuTailcatStatus, "内置连接："+tailcatPresentation.Value)
-	appendMenu(menu, menuFlags(!tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
-	appendMenu(menu, menuFlags(!tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
+	appendMenu(menu, menuFlags(brokerMissing || !tailcatPresentation.ToggleEnabled), menuTailcatToggle, tailcatPresentation.ToggleLabel+"…")
+	appendMenu(menu, menuFlags(brokerMissing || !tailcatManagedMenuEnabled(status, hasTailcat, tailcatErr, busy)), menuTailcatManaged, tailcatManagedMenuLabel(tailcat)+"…")
 	appendMenu(menu, mfSeparator, 0, "")
-	appendMenu(menu, menuFlags(busy), menuExitAndStop, "退出并停止服务…")
+	exitLabel := "退出并停止服务…"
+	if brokerMissing {
+		exitLabel = "退出托盘"
+	}
+	appendMenu(menu, menuFlags(busy), menuExitAndStop, exitLabel)
 
 	var cursor point
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
@@ -736,6 +765,8 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 		a.showControlPanel()
 	case menuFirstSetup:
 		a.runFirstSetupMaintenance()
+	case menuDownloadRecovery:
+		a.openOfficialDownloadRecovery()
 	case menuRefresh:
 		a.refreshStatusInteractive()
 	case menuStart:
@@ -757,7 +788,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuDoctorFix:
 		a.runDoctor(true)
 	case menuLogs:
-		if err := a.controller.openLogsTerminal(); err != nil {
+		if err := openManagedLogs(); err != nil {
 			a.showError(err)
 		}
 	case menuExitAndStop:
@@ -766,6 +797,10 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 }
 
 func (a *trayApplication) refreshStatusInteractive() {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
@@ -776,6 +811,10 @@ func (a *trayApplication) refreshStatusInteractive() {
 }
 
 func (a *trayApplication) runAction(label string, action string) {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
@@ -794,6 +833,10 @@ func (a *trayApplication) runAction(label string, action string) {
 }
 
 func (a *trayApplication) runDoctor(fix bool) {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}
@@ -854,6 +897,15 @@ func (a *trayApplication) showStatus() {
 }
 
 func (a *trayApplication) exitAndStop() {
+	if a.controller == nil {
+		a.mu.Lock()
+		a.quitting = true
+		a.mu.Unlock()
+		if a.window != 0 {
+			procPostMessageW.Call(a.window, wmClose, 0, 0)
+		}
+		return
+	}
 	result := showMessage(
 		a.window,
 		"退出并停止 Mimi Remote？",

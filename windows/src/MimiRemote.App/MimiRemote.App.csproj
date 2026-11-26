@@ -20,10 +20,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.0.0-preview</Version>
-    <InformationalVersion>0.0.0-preview</InformationalVersion>
+    <Version Condition="'$(Version)' == ''">0.0.0-preview</Version>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(MimiReleasePublisherSha256)' != ''">
+    <AssemblyMetadata Include="MimiReleasePublisherSha256" Value="$(MimiReleasePublisherSha256)" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- 只引用界面和自包含部署需要的组件，避免把未使用的 AI/ML、Widgets、Search 打入预览包。 -->

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestMaintenanceRequestUsesFixedActions(t *testing.T) {
@@ -93,5 +95,69 @@ func TestMaintenanceRejectsWrongOrUnsignedImage(t *testing.T) {
 	}
 	if err := withLockedMaintenance(dir, digest, verifyMaintenancePublisher, launch); !errors.Is(err, errMaintenanceIdentity) {
 		t.Fatal(err)
+	}
+}
+
+func TestMaintenanceUACCancelledPropagatesDistinctExitCode(t *testing.T) {
+	err := maintenanceUACCancelledError()
+	var coded *exitCodeError
+	if !errors.As(err, &coded) || coded.exitCode != maintenanceUACCancelledExitCode {
+		t.Fatalf("expected exitCodeError(%d), got %T %v", maintenanceUACCancelledExitCode, err, err)
+	}
+	var typed *onboardingCommandError
+	if !errors.As(err, &typed) || typed.code != "lan_firewall_blocked" || typed.step != "network_lan" {
+		t.Fatalf("expected typed lan_firewall_blocked diagnostic, got %v", err)
+	}
+}
+
+func TestBoundMaintenanceProcessVerifiesImageIdentityBeforeResume(t *testing.T) {
+	systemDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdPath := filepath.Join(systemDir, "cmd.exe")
+	p, err := windows.UTF16PtrFromString(cmdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(p, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(h)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		t.Fatal(err)
+	}
+	nativePath, err := finalNativePathByHandle(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	valid := pinnedFileIdentity{
+		path:          cmdPath,
+		nativePath:    nativePath,
+		volumeSerial:  info.VolumeSerialNumber,
+		fileIndexHigh: info.FileIndexHigh,
+		fileIndexLow:  info.FileIndexLow,
+	}
+	marker := filepath.Join(t.TempDir(), "ran.txt")
+	code, err := runBoundMaintenanceProcess(valid, `/c echo ok > "`+marker+`"`, systemDir)
+	if err != nil || code != 0 {
+		t.Fatalf("matching identity failed: code=%d err=%v", code, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("expected matching bound process to execute: %v", err)
+	}
+
+	// Tampered identity must terminate the suspended process BEFORE any code runs.
+	tampered := valid
+	tampered.fileIndexLow ^= 1
+	blockedMarker := filepath.Join(t.TempDir(), "must-not-run.txt")
+	if _, err := runBoundMaintenanceProcess(tampered, `/c echo pwn > "`+blockedMarker+`"`, systemDir); !errors.Is(err, errMaintenanceIdentity) {
+		t.Fatalf("tampered file index should fail with errMaintenanceIdentity, got %v", err)
+	}
+	if _, err := os.Stat(blockedMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tampered suspended process executed before identity check: stat err=%v", err)
 	}
 }

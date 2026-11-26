@@ -113,6 +113,8 @@ type pairingInfo struct {
 
 const networkPolicyRefreshInterval = 2 * time.Minute
 
+var errMissingAgentBinary = errors.New("安装目录中缺少 agentd.exe")
+
 func newAgentController() (*agentController, error) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -121,12 +123,32 @@ func newAgentController() (*agentController, error) {
 	agentPath := filepath.Join(filepath.Dir(executable), "agentd.exe")
 	info, err := os.Stat(agentPath)
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("安装目录中缺少 agentd.exe：%s", agentPath)
+		return nil, fmt.Errorf("%w：%s", errMissingAgentBinary, agentPath)
 	}
 	return &agentController{
 		agentPath:  agentPath,
 		statusGate: make(chan struct{}, 1),
 	}, nil
+}
+
+func (c *agentController) applyVerifiedMaintenanceStatus(status agentStatus) {
+	if c == nil {
+		return
+	}
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if status.Version != "" {
+		c.configured = true
+	}
+	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
+		snapshot := *status.NetworkStatus
+		c.cachedNetwork = &snapshot
+		c.networkLastChecked = time.Now()
+	} else {
+		// Never reuse a pre-maintenance network policy snapshot after Modify.
+		c.cachedNetwork = nil
+		c.networkLastChecked = time.Time{}
+	}
 }
 
 func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agentStatus, error) {
@@ -149,8 +171,12 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	commandCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	inspectNetwork := c.cachedNetwork == nil ||
-		time.Since(c.networkLastChecked) >= networkPolicyRefreshInterval
+	c.stateMu.RLock()
+	cachedBefore := c.cachedNetwork
+	lastChecked := c.networkLastChecked
+	c.stateMu.RUnlock()
+	inspectNetwork := cachedBefore == nil ||
+		time.Since(lastChecked) >= networkPolicyRefreshInterval
 	args := statusArguments(refreshRuntime, inspectNetwork)
 	runner := c.statusRunner
 	if runner == nil {
@@ -164,7 +190,8 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 	if err != nil {
 		return agentStatus{}, err
 	}
-	c.setConfigured(true)
+	c.stateMu.Lock()
+	c.configured = true
 	if status.NetworkStatus != nil && status.NetworkStatus.PolicyChecked {
 		snapshot := *status.NetworkStatus
 		c.cachedNetwork = &snapshot
@@ -180,6 +207,7 @@ func (c *agentController) status(ctx context.Context, refreshRuntime bool) (agen
 		c.cachedNetwork = nil
 		c.networkLastChecked = time.Time{}
 	}
+	c.stateMu.Unlock()
 	return status, nil
 }
 
@@ -350,6 +378,10 @@ func (c *agentController) runHiddenWithProgress(
 }
 
 func (c *agentController) openLogsTerminal() error {
+	return openManagedLogs()
+}
+
+func openManagedLogs() error {
 	// 不打开 cmd：日志本来就是一串文本，用系统默认程序打开 agentd.log
 	// 既能滚动查看，也不会在用户面前多出一个终端窗口。
 	logPath, err := managedLogPath()

@@ -20,9 +20,20 @@ const (
 	maintenanceImageRole           = "Mimi-Remote-Maintenance.exe"
 	maintenanceOfficialDownloadURL = onboardingURLDesktop
 	maintenanceDefaultTimeout      = 15 * time.Minute
+	maintenanceStatusReadTimeout   = 30 * time.Second
 )
 
-var maintenanceModifyArgs = []string{"installer-maintenance", "modify"}
+var (
+	maintenanceModifyArgs = []string{"installer-maintenance", "modify"}
+	maintenanceStatusArgs = []string{"status", "--json", "--runtime", "--network-policy"}
+)
+
+type maintenancePurpose string
+
+const (
+	maintenancePurposeConfirmWorkspace maintenancePurpose = "confirm_workspace"
+	maintenancePurposeLANFirewall      maintenancePurpose = "lan_firewall"
+)
 
 type maintenanceFailureKind string
 
@@ -40,6 +51,7 @@ const (
 	maintenanceFailureUACCancelled           maintenanceFailureKind = "uac_cancelled"
 	maintenanceFailureLaunchFailed           maintenanceFailureKind = "launch_failed"
 	maintenanceFailureStatusStillUnconfirmed maintenanceFailureKind = "status_still_unconfirmed"
+	maintenanceFailureLANStillDisabled       maintenanceFailureKind = "lan_still_disabled"
 	maintenanceFailureStatusReadFailed       maintenanceFailureKind = "status_read_failed"
 )
 
@@ -96,6 +108,11 @@ func newMaintenanceError(kind maintenanceFailureKind) *maintenanceError {
 		return &maintenanceError{
 			Kind:    kind,
 			Message: "维护向导已退出，但代码目录仍处于待确认状态。请再次点击“完成首次设置…”确认代码目录，或刷新状态检查。",
+		}
+	case maintenanceFailureLANStillDisabled:
+		return &maintenanceError{
+			Kind:    kind,
+			Message: "维护向导已退出，但同一局域网仍未开启或专用网络防火墙策略未生效。请确认当前为专用网络后重试。",
 		}
 	case maintenanceFailureStatusReadFailed:
 		return &maintenanceError{
@@ -185,20 +202,27 @@ func decodeSHA256Hex(value string) ([]byte, error) {
 	return decoded, nil
 }
 
+type pinnedBrokerImage struct {
+	Path            string
+	NativeImagePath string
+	VolumeSerial    uint32
+	FileIndexHigh   uint32
+	FileIndexLow    uint32
+}
+
 // pinnedMaintenanceDir represents an installed directory whose volume root and
 // every ancestor directory have been opened without FILE_SHARE_DELETE and
 // checked against reparse points until the launch callback returns.
 type pinnedMaintenanceDir interface {
 	ReadReceipt(name string, maxBytes int64) ([]byte, error)
-	VerifyPinnedImage(name string, expectedDigest []byte, expectedPublisher []byte) (string, error)
+	VerifyPinnedImage(name string, expectedDigest []byte, expectedPublisher []byte) (pinnedBrokerImage, error)
 }
 
 type maintenancePlatformOps struct {
 	isElevated        func() (bool, error)
 	withPinnedInstall func(installDir string, fn func(pinned pinnedMaintenanceDir) error) error
 	verifyCMSReceipt  func(raw []byte, expectedPublisher []byte) ([]byte, error)
-	runBroker         func(ctx context.Context, pinnedBrokerPath string, args []string) (stdout []byte, stderr []byte, exitCode int, err error)
-	readStatus        func(ctx context.Context) (agentStatus, error)
+	runBroker         func(ctx context.Context, broker pinnedBrokerImage, args []string) (stdout []byte, stderr []byte, exitCode int, err error)
 }
 
 type maintenanceRunner struct {
@@ -209,13 +233,58 @@ type maintenanceRunner struct {
 }
 
 type maintenanceRunOutcome struct {
+	BrokerVerified     bool
 	Status             agentStatus
 	WorkspaceConfirmed bool
 	LANEnabled         bool
 	LANPolicyOK        bool
 }
 
+func isMaintenanceIdentityRejection(kind maintenanceFailureKind) bool {
+	switch kind {
+	case maintenanceFailureUnsignedBuild,
+		maintenanceFailureElevatedSession,
+		maintenanceFailureReceiptMissing,
+		maintenanceFailureIdentityMismatch,
+		maintenanceFailureReparsePoint,
+		maintenanceFailureImageMissing,
+		maintenanceFailureDigestMismatch,
+		maintenanceFailureAuthenticodeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAffirmativeLANPolicyOK(status agentStatus) bool {
+	return status.NetworkStatus != nil &&
+		status.NetworkStatus.PolicyChecked &&
+		status.NetworkStatus.PolicyOK &&
+		status.NetworkStatus.FirewallValid &&
+		!status.NetworkStatus.PolicyInspectionErr &&
+		status.NetworkStatus.UnsafeRuleCount == 0
+}
+
+func buildMaintenanceOutcome(status agentStatus, brokerVerified bool) maintenanceRunOutcome {
+	return maintenanceRunOutcome{
+		BrokerVerified:     brokerVerified,
+		Status:             status,
+		WorkspaceConfirmed: status.workspaceConfirmedKnownTrue(),
+		LANEnabled: (status.ModuleStatus != nil && status.ModuleStatus.LANEnabled) ||
+			(status.NetworkStatus != nil && status.NetworkStatus.AllowLAN),
+		LANPolicyOK: isAffirmativeLANPolicyOK(status),
+	}
+}
+
 func (r maintenanceRunner) RunModify(ctx context.Context, requireWorkspaceConfirmed bool) (maintenanceRunOutcome, error) {
+	purpose := maintenancePurposeLANFirewall
+	if requireWorkspaceConfirmed {
+		purpose = maintenancePurposeConfirmWorkspace
+	}
+	return r.RunModifyForPurpose(ctx, purpose)
+}
+
+func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose maintenancePurpose) (maintenanceRunOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -224,7 +293,7 @@ func (r maintenanceRunner) RunModify(ctx context.Context, requireWorkspaceConfir
 		return maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureUnsignedBuild)
 	}
 	if r.ops.isElevated == nil || r.ops.withPinnedInstall == nil ||
-		r.ops.verifyCMSReceipt == nil || r.ops.runBroker == nil || r.ops.readStatus == nil {
+		r.ops.verifyCMSReceipt == nil || r.ops.runBroker == nil {
 		return maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureUnsignedBuild)
 	}
 	elevated, err := r.ops.isElevated()
@@ -236,6 +305,7 @@ func (r maintenanceRunner) RunModify(ctx context.Context, requireWorkspaceConfir
 		return maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureReparsePoint)
 	}
 
+	var outcome maintenanceRunOutcome
 	err = r.ops.withPinnedInstall(installDir, func(pinned pinnedMaintenanceDir) error {
 		rawReceipt, readErr := pinned.ReadReceipt(maintenanceReceiptName, maintenanceReceiptMaxBytes)
 		if readErr != nil {
@@ -252,36 +322,67 @@ func (r maintenanceRunner) RunModify(ctx context.Context, requireWorkspaceConfir
 		if _, imgErr := pinned.VerifyPinnedImage(maintenanceImageRole, receipt.MaintenanceDigest, expectedPublisher); imgErr != nil {
 			return ensureMaintenanceError(imgErr, maintenanceFailureIdentityMismatch)
 		}
-		pinnedBrokerPath, brokerErr := pinned.VerifyPinnedImage(maintenanceBrokerRole, receipt.BrokerDigest, expectedPublisher)
+		pinnedBroker, brokerErr := pinned.VerifyPinnedImage(maintenanceBrokerRole, receipt.BrokerDigest, expectedPublisher)
 		if brokerErr != nil {
 			return ensureMaintenanceError(brokerErr, maintenanceFailureIdentityMismatch)
 		}
 		args := append([]string(nil), maintenanceModifyArgs...)
-		stdout, stderr, exitCode, runErr := r.ops.runBroker(ctx, pinnedBrokerPath, args)
+		stdout, stderr, exitCode, runErr := r.ops.runBroker(ctx, pinnedBroker, args)
+		var maintErr *maintenanceError
+		if runErr != nil && errors.As(runErr, &maintErr) && isMaintenanceIdentityRejection(maintErr.Kind) {
+			return maintErr
+		}
+
+		outcome.BrokerVerified = true
+		var modifyErr *maintenanceError
 		if runErr != nil || exitCode != 0 {
-			return classifyMaintenanceBrokerFailure(stdout, stderr, exitCode, runErr)
+			modifyErr = classifyMaintenanceBrokerFailure(stdout, stderr, exitCode, runErr)
+		}
+		if modifyErr != nil && modifyErr.Kind == maintenanceFailureOldHostUnsupported {
+			return modifyErr
+		}
+
+		// Re-read status through the SAME verified pinned broker while all
+		// directory and binary pins remain active. Also re-read after any
+		// launched wizard exits nonzero (e.g. UAC cancellation) so partial
+		// changes such as workspace confirmation are observed.
+		if ctx.Err() == nil {
+			statusCtx, stopStatus := context.WithTimeout(ctx, maintenanceStatusReadTimeout)
+			statusArgs := append([]string(nil), maintenanceStatusArgs...)
+			statusOut, _, statusExit, statusRunErr := r.ops.runBroker(statusCtx, pinnedBroker, statusArgs)
+			stopStatus()
+			if statusRunErr == nil && statusExit == 0 {
+				if parsed, parseErr := parseAgentStatus(statusOut); parseErr == nil {
+					outcome = buildMaintenanceOutcome(parsed, true)
+				} else if modifyErr == nil {
+					return newMaintenanceError(maintenanceFailureStatusReadFailed)
+				}
+			} else if modifyErr == nil {
+				var statusMaintErr *maintenanceError
+				if statusRunErr != nil && errors.As(statusRunErr, &statusMaintErr) && isMaintenanceIdentityRejection(statusMaintErr.Kind) {
+					outcome.BrokerVerified = false
+					return statusMaintErr
+				}
+				return newMaintenanceError(maintenanceFailureStatusReadFailed)
+			}
+		} else if modifyErr == nil {
+			return newMaintenanceError(maintenanceFailureStatusReadFailed)
+		}
+
+		if modifyErr != nil {
+			return modifyErr
 		}
 		return nil
 	})
 	if err != nil {
-		return maintenanceRunOutcome{}, ensureMaintenanceError(err, maintenanceFailureLaunchFailed)
+		return outcome, ensureMaintenanceError(err, maintenanceFailureLaunchFailed)
 	}
 
-	status, statusErr := r.ops.readStatus(ctx)
-	if statusErr != nil {
-		return maintenanceRunOutcome{}, newMaintenanceError(maintenanceFailureStatusReadFailed)
-	}
-	outcome := maintenanceRunOutcome{
-		Status:             status,
-		WorkspaceConfirmed: status.workspaceConfirmedKnownTrue(),
-		LANEnabled: (status.ModuleStatus != nil && status.ModuleStatus.LANEnabled) ||
-			(status.NetworkStatus != nil && status.NetworkStatus.AllowLAN),
-		LANPolicyOK: status.NetworkStatus == nil ||
-			!status.NetworkStatus.PolicyChecked ||
-			status.NetworkStatus.PolicyOK,
-	}
-	if requireWorkspaceConfirmed && !outcome.WorkspaceConfirmed {
+	if purpose == maintenancePurposeConfirmWorkspace && !outcome.WorkspaceConfirmed {
 		return outcome, newMaintenanceError(maintenanceFailureStatusStillUnconfirmed)
+	}
+	if purpose == maintenancePurposeLANFirewall && (!outcome.LANEnabled || !outcome.LANPolicyOK) {
+		return outcome, newMaintenanceError(maintenanceFailureLANStillDisabled)
 	}
 	return outcome, nil
 }

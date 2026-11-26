@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -32,48 +33,75 @@ public enum MaintenanceFailureKind
 public sealed record MaintenanceRunResult
 {
     public bool Succeeded { get; init; }
+    public bool BrokerVerified { get; init; }
     public MaintenanceFailureKind FailureKind { get; init; }
     public bool FallbackToDownload { get; init; }
     public string? DownloadUrl { get; init; }
     public required string Message { get; init; }
     public HostStatus? PostRunStatus { get; init; }
+    public OnboardingPreflightReport? PostRunPreflight { get; init; }
     public bool WorkspaceConfirmed { get; init; }
     public bool LanEnabled { get; init; }
     public bool LanPolicyOk { get; init; }
 
-    public static MaintenanceRunResult Success(HostStatus status, string message) => new()
+    public static MaintenanceRunResult Success(HostStatus status, string message, OnboardingPreflightReport? preflight = null) => new()
     {
         Succeeded = true,
+        BrokerVerified = true,
         FailureKind = MaintenanceFailureKind.None,
         Message = message,
         PostRunStatus = status,
+        PostRunPreflight = preflight,
         WorkspaceConfirmed = status.WorkspaceConfirmed == true,
         LanEnabled = IsLanEnabled(status),
         LanPolicyOk = IsLanPolicyOk(status),
     };
 
-    public static MaintenanceRunResult Failure(MaintenanceFailureKind kind, HostStatus? status = null)
+    public static MaintenanceRunResult Failure(
+        MaintenanceFailureKind kind,
+        HostStatus? status = null,
+        OnboardingPreflightReport? preflight = null,
+        bool brokerVerified = false)
     {
         var (fallback, message) = DescribeFailure(kind);
         return new MaintenanceRunResult
         {
             Succeeded = false,
+            BrokerVerified = brokerVerified,
             FailureKind = kind,
             FallbackToDownload = fallback,
             DownloadUrl = fallback ? WindowsMaintenanceClient.OfficialDownloadUrl : null,
             Message = message,
             PostRunStatus = status,
+            PostRunPreflight = preflight,
             WorkspaceConfirmed = status?.WorkspaceConfirmed == true,
             LanEnabled = status is not null && IsLanEnabled(status),
             LanPolicyOk = status is not null && IsLanPolicyOk(status),
         };
     }
 
+    public static bool IsIdentityRejection(MaintenanceFailureKind kind) => kind is
+        MaintenanceFailureKind.UnsignedBuild
+        or MaintenanceFailureKind.ElevatedSession
+        or MaintenanceFailureKind.ReceiptMissing
+        or MaintenanceFailureKind.IdentityMismatch
+        or MaintenanceFailureKind.ReparsePointRejected
+        or MaintenanceFailureKind.MaintenanceImageMissing
+        or MaintenanceFailureKind.DigestMismatch
+        or MaintenanceFailureKind.AuthenticodeFailed;
+
     internal static bool IsLanEnabled(HostStatus status) =>
         status.ModuleStatus?.LanEnabled == true || status.NetworkStatus?.AllowLan == true;
 
     internal static bool IsLanPolicyOk(HostStatus status) =>
-        status.NetworkStatus is null || !status.NetworkStatus.PolicyChecked || status.NetworkStatus.PolicyOk;
+        status.NetworkStatus is
+        {
+            PolicyChecked: true,
+            PolicyOk: true,
+            FirewallValid: true,
+            PolicyInspectionError: false,
+            UnsafeRuleCount: 0,
+        };
 
     public static (bool FallbackToDownload, string Message) DescribeFailure(MaintenanceFailureKind kind)
     {
@@ -152,12 +180,19 @@ public sealed class MaintenanceFailureException : InvalidOperationException
     }
 }
 
+public sealed record PinnedBrokerImage(
+    string FullPath,
+    string NativeImagePath,
+    uint VolumeSerialNumber,
+    uint FileIndexHigh,
+    uint FileIndexLow);
+
 public sealed record MaintenanceBrokerProcessResult(string StdOut, string StdErr, int ExitCode);
 
 public interface IPinnedMaintenanceDirectory
 {
     byte[] ReadReceipt(string fileName, int maxBytes);
-    string VerifyPinnedImage(string fileName, ReadOnlySpan<byte> expectedDigest, ReadOnlySpan<byte> expectedPublisher);
+    PinnedBrokerImage VerifyPinnedImage(string fileName, ReadOnlySpan<byte> expectedDigest, ReadOnlySpan<byte> expectedPublisher);
 }
 
 public interface IWindowsMaintenancePlatform
@@ -165,8 +200,7 @@ public interface IWindowsMaintenancePlatform
     bool IsElevated();
     Task WithPinnedInstallAsync(string installDirectory, Func<IPinnedMaintenanceDirectory, Task> action, CancellationToken cancellationToken);
     byte[] VerifyCmsReceipt(byte[] rawReceipt, ReadOnlySpan<byte> expectedPublisher);
-    Task<MaintenanceBrokerProcessResult> RunBrokerAsync(string pinnedBrokerPath, string[] arguments, CancellationToken cancellationToken);
-    Task<HostStatus> ReadStatusAsync(CancellationToken cancellationToken);
+    Task<MaintenanceBrokerProcessResult> RunBrokerAsync(PinnedBrokerImage pinnedBroker, string[] arguments, CancellationToken cancellationToken);
 }
 
 public sealed class WindowsMaintenanceClient(
@@ -181,8 +215,31 @@ public sealed class WindowsMaintenanceClient(
     public const string BrokerRole = "agentd.exe";
     public const string MaintenanceRole = "Mimi-Remote-Maintenance.exe";
     public const string OfficialDownloadUrl = OnboardingCopyCatalog.UrlDesktop;
+    public const string PublisherMetadataKey = "MimiReleasePublisherSha256";
 
     private static readonly string[] ModifyArguments = ["installer-maintenance", "modify"];
+    private static readonly string[] StatusArguments = ["status", "--json", "--runtime", "--network-policy"];
+    private static readonly TimeSpan StatusReadTimeout = TimeSpan.FromSeconds(30);
+
+    public static string? ResolveExpectedVersion(ClientBuild build)
+    {
+        ArgumentNullException.ThrowIfNull(build);
+        return build.Release is not null ? build.Display : null;
+    }
+
+    public static string? ResolvePreTrustedPublisherSha256(ClientBuild build, Assembly assembly)
+    {
+        ArgumentNullException.ThrowIfNull(build);
+        ArgumentNullException.ThrowIfNull(assembly);
+        if (build.Release is null)
+        {
+            return null;
+        }
+        var pinned = assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attr => string.Equals(attr.Key, PublisherMetadataKey, StringComparison.Ordinal))
+            ?.Value;
+        return string.IsNullOrWhiteSpace(pinned) ? null : pinned.Trim();
+    }
 
     private sealed record ReceiptPayload
     {
@@ -287,7 +344,14 @@ public sealed class WindowsMaintenanceClient(
         }
     }
 
-    public async Task<MaintenanceRunResult> RunModifyAsync(MaintenancePurpose purpose, CancellationToken cancellationToken = default)
+    public Task<MaintenanceRunResult> RunModifyAsync(MaintenancePurpose purpose, CancellationToken cancellationToken = default) =>
+        RunModifyAsync(purpose, preflightStage: null, verifiedCapability: null, cancellationToken);
+
+    public async Task<MaintenanceRunResult> RunModifyAsync(
+        MaintenancePurpose purpose,
+        string? preflightStage,
+        string? verifiedCapability,
+        CancellationToken cancellationToken = default)
     {
         if (!TryParseTrustedReleaseIdentity(
             resolveExpectedVersion(),
@@ -316,6 +380,11 @@ public sealed class WindowsMaintenanceClient(
             return MaintenanceRunResult.Failure(MaintenanceFailureKind.ReparsePointRejected);
         }
 
+        var brokerVerified = false;
+        var modifyFailure = MaintenanceFailureKind.None;
+        HostStatus? postRunStatus = null;
+        OnboardingPreflightReport? postRunPreflight = null;
+
         try
         {
             await platform.WithPinnedInstallAsync(installDir, async pinned =>
@@ -331,12 +400,28 @@ public sealed class WindowsMaintenanceClient(
                     throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
                 }
                 _ = pinned.VerifyPinnedImage(MaintenanceRole, receipt.MaintenanceDigest, expectedPublisher);
-                var pinnedBrokerPath = pinned.VerifyPinnedImage(BrokerRole, receipt.BrokerDigest, expectedPublisher);
+                var pinnedBroker = pinned.VerifyPinnedImage(BrokerRole, receipt.BrokerDigest, expectedPublisher);
                 var argv = (string[])ModifyArguments.Clone();
-                var result = await platform.RunBrokerAsync(pinnedBrokerPath, argv, cancellationToken).ConfigureAwait(false);
+                var result = await platform.RunBrokerAsync(pinnedBroker, argv, cancellationToken).ConfigureAwait(false);
+
+                brokerVerified = true;
                 if (result.ExitCode != 0)
                 {
-                    throw new MaintenanceFailureException(ClassifyBrokerFailure(result.StdOut, result.StdErr, result.ExitCode));
+                    modifyFailure = ClassifyBrokerFailure(result.StdOut, result.StdErr, result.ExitCode);
+                }
+                if (modifyFailure == MaintenanceFailureKind.OldHostUnsupported)
+                {
+                    return;
+                }
+
+                // Re-read status and optional preflight through the SAME verified
+                // pinned broker while directory and binary pins remain active.
+                // Also re-read after any launched wizard exits nonzero (such as UAC
+                // cancellation) so partial changes are reflected immediately.
+                postRunStatus = await ReadVerifiedStatusAsync(pinnedBroker, modifyFailure == MaintenanceFailureKind.None, cancellationToken).ConfigureAwait(false);
+                if (preflightStage is "setup" or "pair" && !cancellationToken.IsCancellationRequested)
+                {
+                    postRunPreflight = await TryReadVerifiedPreflightAsync(pinnedBroker, preflightStage, verifiedCapability, cancellationToken).ConfigureAwait(false);
                 }
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -346,40 +431,138 @@ public sealed class WindowsMaintenanceClient(
         }
         catch (MaintenanceFailureException error)
         {
-            return MaintenanceRunResult.Failure(error.FailureKind);
+            var verified = brokerVerified && !MaintenanceRunResult.IsIdentityRejection(error.FailureKind);
+            return MaintenanceRunResult.Failure(
+                error.FailureKind,
+                verified ? postRunStatus : null,
+                verified ? postRunPreflight : null,
+                verified);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
-            or InvalidOperationException or System.ComponentModel.Win32Exception or CryptographicException)
+            or InvalidOperationException or System.ComponentModel.Win32Exception or CryptographicException or JsonException or TimeoutException)
         {
-            return MaintenanceRunResult.Failure(MaintenanceFailureKind.LaunchFailed);
+            return MaintenanceRunResult.Failure(
+                brokerVerified ? MaintenanceFailureKind.StatusReadFailed : MaintenanceFailureKind.LaunchFailed,
+                brokerVerified ? postRunStatus : null,
+                brokerVerified ? postRunPreflight : null,
+                brokerVerified);
         }
 
-        HostStatus status;
-        try
+        if (modifyFailure != MaintenanceFailureKind.None)
         {
-            status = await platform.ReadStatusAsync(cancellationToken).ConfigureAwait(false);
+            return MaintenanceRunResult.Failure(modifyFailure, postRunStatus, postRunPreflight, brokerVerified: true);
         }
-        catch (OperationCanceledException)
+
+        if (postRunStatus is null)
         {
-            throw;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
-            or InvalidOperationException or TimeoutException or System.ComponentModel.Win32Exception or JsonException)
-        {
-            return MaintenanceRunResult.Failure(MaintenanceFailureKind.StatusReadFailed);
+            return MaintenanceRunResult.Failure(MaintenanceFailureKind.StatusReadFailed, preflight: postRunPreflight, brokerVerified: true);
         }
 
         if (purpose == MaintenancePurpose.ConfirmWorkspace)
         {
-            return status.WorkspaceConfirmed == true
-                ? MaintenanceRunResult.Success(status, "代码目录已确认，服务状态已刷新。")
-                : MaintenanceRunResult.Failure(MaintenanceFailureKind.StatusStillUnconfirmed, status);
+            return postRunStatus.WorkspaceConfirmed == true
+                ? MaintenanceRunResult.Success(postRunStatus, "代码目录已确认，服务状态已刷新。", postRunPreflight)
+                : MaintenanceRunResult.Failure(MaintenanceFailureKind.StatusStillUnconfirmed, postRunStatus, postRunPreflight, brokerVerified: true);
         }
 
-        var lanReady = MaintenanceRunResult.IsLanEnabled(status) && MaintenanceRunResult.IsLanPolicyOk(status);
+        var lanReady = MaintenanceRunResult.IsLanEnabled(postRunStatus) && MaintenanceRunResult.IsLanPolicyOk(postRunStatus);
         return lanReady
-            ? MaintenanceRunResult.Success(status, "专用网络防火墙与局域网访问已生效。")
-            : MaintenanceRunResult.Failure(MaintenanceFailureKind.LanStillDisabled, status);
+            ? MaintenanceRunResult.Success(postRunStatus, "专用网络防火墙与局域网访问已生效。", postRunPreflight)
+            : MaintenanceRunResult.Failure(MaintenanceFailureKind.LanStillDisabled, postRunStatus, postRunPreflight, brokerVerified: true);
+    }
+
+    private async Task<HostStatus?> ReadVerifiedStatusAsync(
+        PinnedBrokerImage pinnedBroker,
+        bool required,
+        CancellationToken cancellationToken)
+    {
+        using var statusCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        statusCts.CancelAfter(StatusReadTimeout);
+        try
+        {
+            var statusResult = await platform.RunBrokerAsync(pinnedBroker, (string[])StatusArguments.Clone(), statusCts.Token).ConfigureAwait(false);
+            if (statusResult.ExitCode != 0 || string.IsNullOrWhiteSpace(statusResult.StdOut))
+            {
+                if (required)
+                {
+                    throw new MaintenanceFailureException(MaintenanceFailureKind.StatusReadFailed);
+                }
+                return null;
+            }
+            var parsed = JsonSerializer.Deserialize<HostStatus>(statusResult.StdOut, AgentClient.JsonOptions);
+            if (parsed is null || string.IsNullOrWhiteSpace(parsed.Version))
+            {
+                if (required)
+                {
+                    throw new MaintenanceFailureException(MaintenanceFailureKind.StatusReadFailed);
+                }
+                return null;
+            }
+            return parsed;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MaintenanceFailureException error) when (MaintenanceRunResult.IsIdentityRejection(error.FailureKind))
+        {
+            throw;
+        }
+        catch (Exception error) when (error is OperationCanceledException or MaintenanceFailureException or IOException
+            or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or TimeoutException
+            or System.ComponentModel.Win32Exception or JsonException)
+        {
+            if (required)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.StatusReadFailed, error);
+            }
+            return null;
+        }
+    }
+
+    private async Task<OnboardingPreflightReport?> TryReadVerifiedPreflightAsync(
+        PinnedBrokerImage pinnedBroker,
+        string stage,
+        string? verifiedCapability,
+        CancellationToken cancellationToken)
+    {
+        using var preflightCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        preflightCts.CancelAfter(OnboardingTimeouts.Preflight);
+        try
+        {
+            var result = await platform.RunBrokerAsync(
+                pinnedBroker,
+                ["preflight", "--json", "--stage", stage],
+                preflightCts.Token).ConfigureAwait(false);
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.StdOut))
+            {
+                return null;
+            }
+            return OnboardingCopyCatalog.TryDecodeAndValidateReport(
+                result.StdOut,
+                "windows",
+                stage,
+                nativeOverlay: false,
+                verifiedCapability: verifiedCapability,
+                out var report,
+                out _)
+                ? report
+                : null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (MaintenanceFailureException error) when (MaintenanceRunResult.IsIdentityRejection(error.FailureKind))
+        {
+            throw;
+        }
+        catch (Exception error) when (error is OperationCanceledException or MaintenanceFailureException or IOException
+            or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or TimeoutException
+            or System.ComponentModel.Win32Exception or JsonException)
+        {
+            return null;
+        }
     }
 
     public static MaintenanceFailureKind ClassifyBrokerFailure(string stdout, string stderr, int exitCode)

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 )
 
@@ -15,16 +16,22 @@ func (a *trayApplication) newMaintenanceRunner() maintenanceRunner {
 	installDir := ""
 	if a.controller != nil && a.controller.agentPath != "" {
 		installDir = filepath.Dir(a.controller.agentPath)
+	} else if executable, err := os.Executable(); err == nil {
+		installDir = filepath.Dir(executable)
 	}
 	return maintenanceRunner{
 		installDir:      installDir,
 		expectedVersion: releaseVersion,
 		publisherSHA256: releasePublisherSHA256,
-		ops:             defaultWindowsMaintenanceOps(a.controller),
+		ops:             defaultWindowsMaintenanceOps(),
 	}
 }
 
 func (a *trayApplication) runFirstSetupMaintenance() {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	if !a.firstSetupRequired() {
 		return
 	}
@@ -35,6 +42,38 @@ func (a *trayApplication) runFirstSetupMaintenance() {
 		defer a.endBusy()
 		a.executeFirstSetupMaintenance(showMessage, shellOpenPath)
 	}()
+}
+
+func (a *trayApplication) openOfficialDownloadRecovery() {
+	a.executeOfficialDownloadRecovery(showMessage, shellOpenPath)
+}
+
+func (a *trayApplication) executeOfficialDownloadRecovery(
+	show func(uintptr, string, string, uint32) int,
+	openURL func(string) error,
+) {
+	if openURL != nil {
+		if err := openURL(maintenanceOfficialDownloadURL); err == nil {
+			return
+		}
+	}
+	if show != nil {
+		show(a.window, "下载正式安装包", "请前往桌面端正式下载页获取已签名的安装包："+maintenanceOfficialDownloadURL, mbOK|mbIconInfo)
+	}
+}
+
+func (a *trayApplication) promptMissingBrokerRecovery(
+	show func(uintptr, string, string, uint32) int,
+	openURL func(string) error,
+) {
+	if show == nil {
+		return
+	}
+	maintErr := newMaintenanceError(maintenanceFailureImageMissing)
+	body := maintErr.Message + "\r\n\r\n是否立即打开官方下载页面？"
+	if show(a.window, "Mimi Remote 恢复", body, mbYesNo|mbIconWarning) == idYes && openURL != nil {
+		_ = openURL(maintenanceOfficialDownloadURL)
+	}
 }
 
 func (a *trayApplication) executeFirstSetupMaintenance(
@@ -49,11 +88,19 @@ func (a *trayApplication) executeFirstSetupMaintenance(
 
 	runner := a.newMaintenanceRunner()
 	outcome, err := runner.RunModify(ctx, true)
-	if a.controller != nil {
-		a.refreshStatusWithRuntimeRefresh(true)
-	} else if outcome.Status.Version != "" {
-		request := a.beginStatusRequest()
-		a.completeStatusRequestWithSetup(request, outcome.Status, nil, !outcome.WorkspaceConfirmed)
+	// Never execute an unverified refresh after identity rejection. Only accept
+	// post-run state returned by the verified pinned broker.
+	if outcome.BrokerVerified {
+		if a.controller != nil {
+			a.controller.applyVerifiedMaintenanceStatus(outcome.Status)
+		}
+		if outcome.Status.Version != "" {
+			request := a.beginStatusRequest()
+			a.completeStatusRequestWithSetup(request, outcome.Status, nil, !outcome.WorkspaceConfirmed)
+			if a.window != 0 {
+				procPostMessageW.Call(a.window, wmTrayRefresh, 0, 0)
+			}
+		}
 	}
 
 	if err != nil {

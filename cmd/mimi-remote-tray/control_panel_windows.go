@@ -821,6 +821,11 @@ func (p *controlPanel) syncFromApplication() {
 		p.statusBackground = presentation.StatusBackground
 		p.updateStatusBrush(presentation.StatusBackground)
 		setControlPanelText(p.badgeLabel, presentation.StateBadge)
+		firstSetupLabel := "完成首次设置…"
+		if p.app.controller == nil {
+			firstSetupLabel = "下载正式安装包…"
+		}
+		setControlPanelText(p.firstSetup, firstSetupLabel)
 		setControlPanelVisible([]uintptr{p.firstSetup}, presentation.FirstSetupVisible)
 		setControlPanelEnabled(p.firstSetup, presentation.FirstSetupEnabled)
 	}
@@ -979,6 +984,9 @@ func (p *controlPanel) refreshPairing() {
 	p.pairingErr = nil
 	p.syncPairingControls()
 	window := p.window
+	if p.app.controller == nil {
+		return
+	}
 	pair := p.app.controller.pairing
 	if p.pairingTailcat {
 		pair = p.app.controller.tailcatPairing
@@ -1132,6 +1140,9 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, preflightPending bool, busy bool, pairingBusy bool) controlPanelPresentation {
 	neutralRuntimeColor := rgbColor(101, 101, 110)
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
+	var maintErr *maintenanceError
+	brokerMissing := errors.As(statusErr, &maintErr) && maintErr.Kind == maintenanceFailureImageMissing
+	firstSetupVisible := firstSetupNeeded || brokerMissing
 	presentation := controlPanelPresentation{
 		StateTitle:        "正在检查服务",
 		StateBadge:        "正在检查",
@@ -1150,15 +1161,15 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		ClaudeColor:       neutralRuntimeColor,
 		AgyColor:          neutralRuntimeColor,
 		DeepSeekColor:     neutralRuntimeColor,
-		FirstSetupVisible: firstSetupNeeded,
-		FirstSetupEnabled: firstSetupNeeded && !busy,
-		RefreshEnabled:    !busy,
-		StartEnabled:      !busy && !status.ProcessOK,
-		RestartEnabled:    !busy && status.ProcessOK,
-		StopEnabled:       !busy && status.ProcessOK,
-		PairEnabled:       !busy && statusErr == nil && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
-		DoctorEnabled:     !busy,
-		FixEnabled:        !busy,
+		FirstSetupVisible: firstSetupVisible,
+		FirstSetupEnabled: firstSetupVisible && !busy,
+		RefreshEnabled:    !busy && !brokerMissing,
+		StartEnabled:      !busy && !brokerMissing && !status.ProcessOK,
+		RestartEnabled:    !busy && !brokerMissing && status.ProcessOK,
+		StopEnabled:       !busy && !brokerMissing && status.ProcessOK,
+		PairEnabled:       !busy && !brokerMissing && statusErr == nil && !firstSetupNeeded && status.ServiceOK && !pairingBusy,
+		DoctorEnabled:     !busy && !brokerMissing,
+		FixEnabled:        !busy && !brokerMissing,
 		LogsEnabled:       !busy,
 	}
 	if statusErr != nil && status.Version == "" {
@@ -1865,7 +1876,7 @@ func (p *controlPanel) dispatch(command uint32) {
 	case panelDoctorFix:
 		p.app.runDoctor(true)
 	case panelLogs:
-		if err := p.app.controller.openLogsTerminal(); err != nil {
+		if err := openManagedLogs(); err != nil {
 			p.app.showError(err)
 		}
 	case panelPairBack:

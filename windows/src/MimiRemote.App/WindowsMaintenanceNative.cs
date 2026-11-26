@@ -1,9 +1,7 @@
-using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using Microsoft.Win32.SafeHandles;
 using MimiRemote.Core;
 
@@ -14,7 +12,7 @@ namespace MimiRemote.App;
 /// maintenance contract (mimi.windows.maintenance/v1). Never consults PATH,
 /// registry uninstall keys, uninstaller executables, Downloads, or diagnostics.
 /// </summary>
-internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<HostStatus>> readStatusAsync) : IWindowsMaintenancePlatform
+internal sealed class WindowsMaintenanceNative : IWindowsMaintenancePlatform
 {
     private const uint TokenQuery = 0x0008;
     private const int TokenElevationInfoClass = 20;
@@ -33,7 +31,6 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
 
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
-    private const int ErrorCancelled = 1223;
 
     private const uint X509AsnEncoding = 0x00000001;
     private const uint Pkcs7AsnEncoding = 0x00010000;
@@ -52,7 +49,7 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
     private const uint WtdChoiceFile = 1;
     private const uint WtdStateActionVerify = 1;
     private const uint WtdStateActionClose = 2;
-    private const uint WtdCacheOnlyUrlRetrieval = 0x00000004;
+    private const uint WtdCacheOnlyUrlRetrieval = 0x00001000;
 
     private static readonly Guid WinTrustActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
@@ -60,28 +57,10 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
 
     internal static string? ResolveExpectedVersion(ClientBuild build) =>
-        build.Release is not null ? build.Display : null;
+        WindowsMaintenanceClient.ResolveExpectedVersion(build);
 
-    internal static string? ResolvePreTrustedPublisherSha256(ClientBuild build, Assembly assembly)
-    {
-        if (build.Release is null)
-        {
-            return null;
-        }
-        var pinned = assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
-            .FirstOrDefault(attr => string.Equals(attr.Key, "MimiReleasePublisherSha256", StringComparison.Ordinal))
-            ?.Value;
-        if (!string.IsNullOrWhiteSpace(pinned))
-        {
-            return pinned.Trim();
-        }
-        var selfPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(selfPath))
-        {
-            return null;
-        }
-        return TryExtractVerifiedSelfPublisherSha256(selfPath);
-    }
+    internal static string? ResolvePreTrustedPublisherSha256(ClientBuild build, Assembly assembly) =>
+        WindowsMaintenanceClient.ResolvePreTrustedPublisherSha256(build, assembly);
 
     public bool IsElevated()
     {
@@ -175,6 +154,7 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
         }
         var hStore = (nint)0;
         var signerCertPtr = (nint)0;
+        var signerInfoPtr = (nint)0;
         try
         {
             if (!CryptMsgUpdate(hMsg, rawReceipt, (uint)rawReceipt.Length, true))
@@ -202,22 +182,30 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
                 throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
             }
 
-            var signerInfoBytes = GetCmsBytesParam(hMsg, CmsgSignerCertInfoParam, 0, 65_536);
+            // CMSG_SIGNER_CERT_INFO_PARAM populates a CERT_INFO containing internal
+            // pointers into the same buffer; allocate fixed unmanaged memory from the
+            // native write through certificate lookup so GC can never relocate it.
+            uint signerInfoSize = 0;
+            if (!CryptMsgGetParamPtr(hMsg, CmsgSignerCertInfoParam, 0, 0, ref signerInfoSize)
+                || signerInfoSize == 0
+                || signerInfoSize > 65_536)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+            signerInfoPtr = Marshal.AllocHGlobal((int)signerInfoSize);
+            if (!CryptMsgGetParamPtr(hMsg, CmsgSignerCertInfoParam, 0, signerInfoPtr, ref signerInfoSize)
+                || signerInfoSize == 0)
+            {
+                throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
+            }
+
             hStore = CertOpenStore(CertStoreProvMsg, CertMsgEncoding, 0, 0, hMsg);
             if (hStore == 0)
             {
                 throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
             }
 
-            var signerInfoHandle = GCHandle.Alloc(signerInfoBytes, GCHandleType.Pinned);
-            try
-            {
-                signerCertPtr = CertGetSubjectCertificateFromStore(hStore, CertMsgEncoding, signerInfoHandle.AddrOfPinnedObject());
-            }
-            finally
-            {
-                signerInfoHandle.Free();
-            }
+            signerCertPtr = CertGetSubjectCertificateFromStore(hStore, CertMsgEncoding, signerInfoPtr);
 
             if (signerCertPtr == 0)
             {
@@ -251,6 +239,10 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
             {
                 _ = CertFreeCertificateContext(signerCertPtr);
             }
+            if (signerInfoPtr != 0)
+            {
+                Marshal.FreeHGlobal(signerInfoPtr);
+            }
             if (hStore != 0)
             {
                 _ = CertCloseStore(hStore, 0);
@@ -259,96 +251,11 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
         }
     }
 
-    public async Task<MaintenanceBrokerProcessResult> RunBrokerAsync(
-        string pinnedBrokerPath,
+    public Task<MaintenanceBrokerProcessResult> RunBrokerAsync(
+        PinnedBrokerImage pinnedBroker,
         string[] arguments,
-        CancellationToken cancellationToken)
-    {
-        var start = new ProcessStartInfo(pinnedBrokerPath)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WorkingDirectory = Environment.SystemDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = new UTF8Encoding(false),
-            StandardErrorEncoding = new UTF8Encoding(false),
-        };
-        foreach (var arg in arguments)
-        {
-            start.ArgumentList.Add(arg);
-        }
-        using var process = new Process { StartInfo = start };
-        try
-        {
-            if (!process.Start())
-            {
-                throw new MaintenanceFailureException(MaintenanceFailureKind.LaunchFailed);
-            }
-        }
-        catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == ErrorCancelled)
-        {
-            throw new MaintenanceFailureException(MaintenanceFailureKind.UacCancelled, error);
-        }
-
-        var stdoutTask = ReadBoundedTextAsync(process.StandardOutput, 262_144, cancellationToken);
-        var stderrTask = ReadBoundedTextAsync(process.StandardError, 65_536, cancellationToken);
-        try
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            return new MaintenanceBrokerProcessResult(stdout, stderr, process.ExitCode);
-        }
-        catch (OperationCanceledException)
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            try
-            {
-                await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            throw;
-        }
-        finally
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
-        }
-    }
-
-    public Task<HostStatus> ReadStatusAsync(CancellationToken cancellationToken) =>
-        readStatusAsync(cancellationToken);
-
-    private static string? TryExtractVerifiedSelfPublisherSha256(string selfPath)
-    {
-        using var handle = CreateFileW(
-            selfPath,
-            GenericRead,
-            FileShareRead,
-            0,
-            OpenExisting,
-            FileFlagOpenReparsePoint,
-            0);
-        if (handle.IsInvalid)
-        {
-            return null;
-        }
-        if (!GetFileInformationByHandle(handle, out var info)
-            || (info.FileAttributes & (FileAttributeReparsePoint | FileAttributeDevice | FileAttributeDirectory)) != 0)
-        {
-            return null;
-        }
-        var digest = VerifyAuthenticodeAndExtractSignerSha256(handle, selfPath);
-        return digest is null ? null : Convert.ToHexStringLower(digest);
-    }
+        CancellationToken cancellationToken) =>
+        WindowsMaintenanceProcessRunner.RunBoundProcessAsync(pinnedBroker, arguments, cancellationToken);
 
     private static void VerifyCodeSigningChain(byte[] signerDer, nint hStore)
     {
@@ -537,22 +444,6 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
         return SHA256.HashData(der);
     }
 
-    private static async Task<string> ReadBoundedTextAsync(StreamReader reader, int limit, CancellationToken cancellationToken)
-    {
-        var builder = new StringBuilder();
-        var buffer = new char[4096];
-        int count;
-        while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) != 0)
-        {
-            var keep = Math.Min(count, limit - builder.Length);
-            if (keep > 0)
-            {
-                builder.Append(buffer, 0, keep);
-            }
-        }
-        return builder.ToString();
-    }
-
     private sealed class PinnedDirectoryScope : IPinnedMaintenanceDirectory, IDisposable
     {
         private readonly List<SafeFileHandle> handles = [];
@@ -585,7 +476,7 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
                 : throw new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch);
         }
 
-        public string VerifyPinnedImage(string fileName, ReadOnlySpan<byte> expectedDigest, ReadOnlySpan<byte> expectedPublisher)
+        public PinnedBrokerImage VerifyPinnedImage(string fileName, ReadOnlySpan<byte> expectedDigest, ReadOnlySpan<byte> expectedPublisher)
         {
             var (handle, fullPath) = OpenPinnedRegularFile(fileName, MaintenanceFailureKind.MaintenanceImageMissing);
             using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -607,7 +498,7 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
             {
                 throw new MaintenanceFailureException(MaintenanceFailureKind.AuthenticodeFailed);
             }
-            return fullPath;
+            return WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, fullPath);
         }
 
         private (SafeFileHandle Handle, string FullPath) OpenPinnedRegularFile(string fileName, MaintenanceFailureKind missingKind)
@@ -659,9 +550,12 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
     private struct ByHandleFileInformation
     {
         public uint FileAttributes;
-        public ulong CreationTime;
-        public ulong LastAccessTime;
-        public ulong LastWriteTime;
+        public uint CreationTimeLow;
+        public uint CreationTimeHigh;
+        public uint LastAccessTimeLow;
+        public uint LastAccessTimeHigh;
+        public uint LastWriteTimeLow;
+        public uint LastWriteTimeHigh;
         public uint VolumeSerialNumber;
         public uint FileSizeHigh;
         public uint FileSizeLow;
@@ -761,6 +655,10 @@ internal sealed class WindowsMaintenanceNative(Func<CancellationToken, Task<Host
     [DllImport("crypt32.dll", EntryPoint = "CryptMsgGetParam", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CryptMsgGetParamBytes(nint cryptMsg, uint paramType, uint index, [Out] byte[]? data, ref uint dataLength);
+
+    [DllImport("crypt32.dll", EntryPoint = "CryptMsgGetParam", ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptMsgGetParamPtr(nint cryptMsg, uint paramType, uint index, nint data, ref uint dataLength);
 
     [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

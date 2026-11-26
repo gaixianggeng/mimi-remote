@@ -173,7 +173,7 @@ func tailcatToggleConfirmation(enable bool) (string, string, uint32) {
 // refreshTailcat 只在 agentd 进程可用时读取 Tailcat；服务停止时清空旧状态，
 // 避免停机后仍显示“运行中”。
 func (a *trayApplication) refreshTailcat(processOK bool) {
-	if !processOK {
+	if !processOK || a.controller == nil {
 		a.mu.Lock()
 		a.tailcat, a.hasTailcat, a.tailcatErr = tailcatTrayStatus{}, false, nil
 		a.mu.Unlock()
@@ -212,6 +212,10 @@ func (a *trayApplication) toggleTailcat() {
 // confirmAndSetTailcat 在用户确认后开启或关闭 Tailcat。notifyWindow 非零时，开启
 // 成功后向该窗口投递 wmPanelTailcatEnabled，让配对视图切到 Tailcat 二维码。
 func (a *trayApplication) confirmAndSetTailcat(enable bool, notifyWindow uintptr) {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	title, text, flags := tailcatToggleConfirmation(enable)
 	if showMessage(a.window, title, text, flags) != idYes || !a.beginBusy() {
 		return
@@ -249,6 +253,10 @@ func (a *trayApplication) showRelayServiceInfo() {
 }
 
 func (a *trayApplication) setTailcatForPairing(window uintptr) {
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+		return
+	}
 	if !a.beginBusy() {
 		return
 	}

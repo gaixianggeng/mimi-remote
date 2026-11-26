@@ -177,6 +177,22 @@ if (-not $releaseSource.Contains('-AllowUnsignedRelease')) { throw 'Release work
 if (-not $releaseSource.Contains('must either both be configured or both be absent')) { throw 'Partial Windows signing credentials must fail the release.' }
 if (-not $releaseSource.Contains('-RequireSignature')) { throw 'Release workflow must still enforce Authenticode when signing credentials exist.' }
 if (($releaseSource.Split('-ExpectedVersion $env:RELEASE_TAG').Count - 1) -lt 2) { throw 'Release workflow must verify the installer and its Tailcat helper against the release tag in both signing modes.' }
+if (-not $releaseSource.Contains('./scripts/publish-windows-client.ps1')) { throw 'Release workflow must also publish the version-matched WinUI client.' }
+$publishClient = Get-Content -LiteralPath (Join-Path $root 'scripts\publish-windows-client.ps1') -Raw
+foreach ($expected in @('-p:MimiReleasePublisherSha256=$publisher', 'signtool verify /pa $clientExe', 'Mimi-Remote-Client-$releaseVersion-win-x64.zip')) {
+    if (-not $publishClient.Contains($expected)) { throw "WinUI client release publishing is missing required policy: $expected" }
+}
+$winUiProject = Get-Content -LiteralPath (Join-Path $root 'windows\src\MimiRemote.App\MimiRemote.App.csproj') -Raw
+if (-not $winUiProject.Contains('AssemblyMetadata Include="MimiReleasePublisherSha256"')) {
+    throw 'WinUI project must embed MimiReleasePublisherSha256 when supplied by release builds.'
+}
+$winUiNative = Get-Content -LiteralPath (Join-Path $root 'windows\src\MimiRemote.App\WindowsMaintenanceNative.cs') -Raw
+if ($winUiNative.Contains('TryExtractVerifiedSelfPublisherSha256')) {
+    throw 'WinUI maintenance verification must not fall back to reading a self-signer from disk.'
+}
+if (-not $common.Contains('MaintenanceUacCancelledExitCode = 1223')) {
+    throw 'Installer common script must propagate distinct UAC cancellation exit code 1223.'
+}
 foreach ($path in $windowsDocs) {
     $docSource = Get-Content -LiteralPath $path -Raw
     if (-not $docSource.Contains('Windows')) {
