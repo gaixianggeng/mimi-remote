@@ -12,11 +12,11 @@
 | 分组 | 文件 | 覆盖要点 |
 |---|---|---|
 | `accepted` | `gateway-global-unmarked-same-page-retry.json` | Go 网关 Controlled Global Git 超时返回无 `listMeta` / 无 `pageDisposition` 的 `mimi_*` 同页重试游标，次轮补出更晚条目，且 `cliVersion` 当前被白名单裁剪 |
-| `accepted` | `claude-sdk-empty-cwd.json` | Claude SDK（`mimi-claude-adapter/0.3.0`）合法输出 `cwd: ""` 与正常行同页、Unix 秒时间戳、`recencyAt: null` |
+| `accepted` | `claude-sdk-empty-cwd.json` | Claude SDK（`mimi-claude-adapter/0.3.0`）合法输出 `cwd: ""` 与正常行同页、Unix 秒时间戳、`recencyAt: null`、同秒 `id DESC` 实测排序 |
 | `accepted` | `claude-legacy-rust-ms.json` | Rust Claude（`alleycat-claude-bridge/0.2.15`）Unix 毫秒时间戳、同毫秒 `thread_id ASC` 跨页游标、省略 `recencyAt` |
-| `accepted` | `codex-recency-at-null.json` | Codex（`codex-cli 0.171.0`）`sortKey: "recency_at"` 下 `recencyAt: null`、正常秒级 `recencyAt` 及 StateDB 未回填 `recencyAt: 0` |
+| `accepted` | `codex-recency-at-null.json` | Codex（`codex-cli 0.171.0`）`sortKey: "recency_at"` 下实测 StateDB 未回填 `recencyAt: 0` 与正常秒级值，以及基于协议 Schema（`v2/ThreadListResponse.json`）派生的 `recencyAt: null` 用例 |
 | `accepted` | `agy-acp-current-list.json` | Antigravity（`mimi-agy-adapter/0.1.0`）当前无 `listMeta`、Unix 秒时间戳、`cli`/`other` 来源与 `cwdMissing` |
-| `accepted` | `deepseek-harness-session-list.json` | DeepSeek（`harness_native`）全量毫秒快照、无分页游标 |
+| `accepted` | `deepseek-harness-session-list.json` | DeepSeek（`harness_native_v1`）网关裁剪（过滤 `blank: true`、保留全部 3 条非空行）并按 `harnessclient.SessionSummary` 重编码的全量无分页毫秒快照 |
 | `malformed` | `missing-next-cursor-key.json` 等 5 项 | 缺 `nextCursor` 键、非数组 `data`、空白 ID、非字符串 `cwd`、同页混用秒与毫秒时间戳 |
 
 ## 校验命令

@@ -5,7 +5,7 @@
  * 严格不修改任何产品源码，使用真实 @anthropic-ai/claude-agent-sdk listSessions、
  * TranscriptIndex、ActivityClock、WorkingDirectories、Overlay 与 createThreadHandlers，
  * 在隔离临时 CLAUDE_CONFIG_DIR 上构造固定种子 240 目标仓会话（+ 40 其他项目会话），
- * 按 3 批 ×（冷 5 次 + 热 20 次）测量热态次页 p95 及目录处理（sessions.list + toRecord + sort）耗时占比。
+ * 按 3 批 ×（冷 5 次 + 热 20 次）测量热态次页合并（pooled）p95 及目录处理（sessions.list + toRecord + sort）耗时占比。
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +29,17 @@ interface CliOptions {
   jsonOut?: string;
 }
 
+function parseIntArg(flag: string, raw: string | undefined, min: number): number {
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(`参数 ${flag} 缺少整数值`);
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`参数 ${flag} 必须是 >= ${min} 的整数，收到：${raw}`);
+  }
+  return value;
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
     seed: 20260410,
@@ -41,13 +52,19 @@ function parseArgs(argv: string[]): CliOptions {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--seed" && next) { opts.seed = Number(next); i += 1; }
-    else if (arg === "--batches" && next) { opts.batches = Number(next); i += 1; }
-    else if (arg === "--cold" && next) { opts.cold = Number(next); i += 1; }
-    else if (arg === "--warm" && next) { opts.warm = Number(next); i += 1; }
-    else if (arg === "--target-sessions" && next) { opts.targetSessions = Number(next); i += 1; }
-    else if (arg === "--other-sessions" && next) { opts.otherSessions = Number(next); i += 1; }
-    else if (arg === "--json-out" && next) { opts.jsonOut = next; i += 1; }
+    if (arg === "--seed") { opts.seed = parseIntArg(arg, next, 0); i += 1; }
+    else if (arg === "--batches") { opts.batches = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--cold") { opts.cold = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--warm") { opts.warm = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--target-sessions") { opts.targetSessions = parseIntArg(arg, next, 200); i += 1; }
+    else if (arg === "--other-sessions") { opts.otherSessions = parseIntArg(arg, next, 0); i += 1; }
+    else if (arg === "--json-out") {
+      if (!next) throw new Error("参数 --json-out 缺少输出路径");
+      opts.jsonOut = next;
+      i += 1;
+    } else {
+      throw new Error(`未知参数：${arg}`);
+    }
   }
   return opts;
 }
@@ -80,14 +97,46 @@ function deterministicUuid(index: number): string {
   return `10000000-0000-4000-8000-${hex}`;
 }
 
+function isolateGitProcessEnv(): () => void {
+  const saved = new Map<string, string | undefined>();
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("GIT_")) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+  }
+  const overrides: Record<string, string> = {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!saved.has(key)) saved.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of saved.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 function initGitRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, env });
+  execFileSync("git", ["init", "-q", "--template=", "-b", "main"], { cwd: dir, env: process.env });
   execFileSync(
     "git",
-    ["-c", "user.name=Demo", "-c", "user.email=demo@example.invalid", "commit", "-q", "--allow-empty", "-m", "init"],
-    { cwd: dir, env },
+    [
+      "-c", "user.name=Demo",
+      "-c", "user.email=demo@example.invalid",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "commit.gpgsign=false",
+      "-c", "tag.gpgsign=false",
+      "commit", "-q", "--allow-empty", "-m", "init",
+    ],
+    { cwd: dir, env: process.env },
   );
 }
 
@@ -104,6 +153,7 @@ interface PhaseTiming {
 
 const opts = parseArgs(process.argv.slice(2));
 const rand = mulberry32(opts.seed);
+const restoreGitEnv = isolateGitProcessEnv();
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-phase0-claude-bench-")));
 const prevClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 const prevLegacyIndex = process.env.MIMI_CLAUDE_LEGACY_INDEX;
@@ -119,15 +169,26 @@ try {
   const targetWt2 = path.join(sandbox, "target-wt-2");
   const otherRepo = path.join(sandbox, "other-repo");
   initGitRepo(targetRepo);
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-  execFileSync("git", ["worktree", "add", "-q", "-b", "wt-1", targetWt1], { cwd: targetRepo, env: gitEnv });
-  execFileSync("git", ["worktree", "add", "-q", "-b", "wt-2", targetWt2], { cwd: targetRepo, env: gitEnv });
+  execFileSync("git", ["-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", "wt-1", targetWt1], {
+    cwd: targetRepo,
+    env: process.env,
+  });
+  execFileSync("git", ["-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", "wt-2", targetWt2], {
+    cwd: targetRepo,
+    env: process.env,
+  });
   initGitRepo(otherRepo);
 
   const baseMs = Date.parse("2026-04-01T00:00:00.000Z");
   const targetCwds = [targetRepo, targetRepo, targetRepo, targetRepo, targetWt1, targetWt2];
+  const expectedTargetIds = new Set<string>();
+  const expectedTargetCountsByCwd = new Map<string, number>([
+    [targetRepo, 0],
+    [targetWt1, 0],
+    [targetWt2, 0],
+  ]);
 
-  const writeSyntheticSession = (idx: number, cwd: string, branch: string) => {
+  const writeSyntheticSession = (idx: number, cwd: string, branch: string): string => {
     const sid = deterministicUuid(idx + 1);
     const startMs = baseMs + Math.floor(rand() * 86400 * 20) * 1000;
     const turns = 2 + Math.floor(rand() * 6);
@@ -140,12 +201,15 @@ try {
       b.title(`Demo Session ${idx}`);
     }
     b.write(configDir);
+    return sid;
   };
 
   for (let i = 0; i < opts.targetSessions; i += 1) {
     const cwd = targetCwds[i % targetCwds.length]!;
     const branch = cwd === targetWt1 ? "wt-1" : cwd === targetWt2 ? "wt-2" : "main";
-    writeSyntheticSession(i, cwd, branch);
+    const sid = writeSyntheticSession(i, cwd, branch);
+    expectedTargetIds.add(sid);
+    expectedTargetCountsByCwd.set(cwd, (expectedTargetCountsByCwd.get(cwd) ?? 0) + 1);
   }
   for (let i = 0; i < opts.otherSessions; i += 1) {
     writeSyntheticSession(opts.targetSessions + i, otherRepo, "main");
@@ -252,13 +316,54 @@ try {
     return { runTimedList };
   };
 
-  // 先确认真实匹配数 >= 200 且可翻第 2 页
+  // 计时循环外翻完全部页面，验证完整预期会话集（>= 200 且精确包含主仓与全部 worktree 会话）
   const sanity = createInstrumentedStack();
-  const sanityP1 = await sanity.runTimedList({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
-  if (sanityP1.response.data.length !== 20 || !sanityP1.response.nextCursor) {
-    throw new Error(`Claude SDK 首页夹具异常：len=${sanityP1.response.data.length}`);
+  const seenIds = new Set<string>();
+  const actualCountsByCwd = new Map<string, number>();
+  let page2Cursor: string | null = null;
+  let cursor: string | undefined;
+  const maxPages = Math.ceil(opts.targetSessions / 20) + 5;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const res = await sanity.runTimedList({
+      cwd: targetRepo,
+      limit: 20,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      ...(cursor ? { cursor } : {}),
+    });
+    if (page === 1) {
+      if (res.response.data.length !== 20 || !res.response.nextCursor) {
+        throw new Error(`Claude SDK 首页夹具异常：len=${res.response.data.length}, nextCursor=${res.response.nextCursor}`);
+      }
+      page2Cursor = res.response.nextCursor;
+    }
+    for (const row of res.response.data) {
+      if (seenIds.has(row.id)) {
+        throw new Error(`Claude SDK 全量分页校验发现重复会话：${row.id}`);
+      }
+      if (!expectedTargetIds.has(row.id)) {
+        throw new Error(`Claude SDK 全量分页校验返回非目标会话：${row.id} (cwd=${row.cwd})`);
+      }
+      seenIds.add(row.id);
+      actualCountsByCwd.set(row.cwd, (actualCountsByCwd.get(row.cwd) ?? 0) + 1);
+    }
+    if (!res.response.nextCursor) break;
+    cursor = res.response.nextCursor;
   }
-  const page2Cursor = sanityP1.response.nextCursor;
+  if (seenIds.size !== opts.targetSessions || seenIds.size < 200) {
+    throw new Error(
+      `Claude SDK 目标会话全集校验失败：期望 ${opts.targetSessions}（>= 200），实际仅匹配 ${seenIds.size}`,
+    );
+  }
+  for (const [cwd, expectedCount] of expectedTargetCountsByCwd.entries()) {
+    const actualCount = actualCountsByCwd.get(cwd) ?? 0;
+    if (actualCount !== expectedCount) {
+      throw new Error(`Claude SDK 目录归并校验失败（${cwd}）：期望 ${expectedCount}，实际 ${actualCount}`);
+    }
+  }
+  if (!page2Cursor) {
+    throw new Error("Claude SDK 未产出第 2 页游标");
+  }
 
   const summarizeTimings = (items: PhaseTiming[]) => {
     const totals = items.map((x) => x.totalMs);
@@ -282,8 +387,8 @@ try {
         liveAndToThread: mean(live),
         catalogProcessing: mean(proc),
       },
-      catalogProcessingSharePct: Number(((sumProc / sumTotal) * 100).toFixed(2)),
-      preparePlusCatalogSharePct: Number(((sumPrepAndProc / sumTotal) * 100).toFixed(2)),
+      catalogProcessingSharePct: sumTotal > 0 ? Number(((sumProc / sumTotal) * 100).toFixed(2)) : 0,
+      preparePlusCatalogSharePct: sumTotal > 0 ? Number(((sumPrepAndProc / sumTotal) * 100).toFixed(2)) : 0,
     };
   };
 
@@ -293,6 +398,7 @@ try {
     coldPage2: ReturnType<typeof summarizeTimings>;
     warmPage2: ReturnType<typeof summarizeTimings>;
   }> = [];
+  const allWarmP2Timings: PhaseTiming[] = [];
 
   for (let batch = 1; batch <= opts.batches; batch += 1) {
     const coldP1: PhaseTiming[] = [];
@@ -317,7 +423,7 @@ try {
       coldP2.push(r2.timing);
     }
 
-    // 热态：先预热首页与次页，再连续执行 20 次热态第 2 页查询
+    // 热态：先预热首页与次页，再连续执行 opts.warm 次热态第 2 页查询
     const warmStack = createInstrumentedStack();
     const warmP1 = await warmStack.runTimedList({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
     const warmCursor = warmP1.response.nextCursor ?? page2Cursor;
@@ -336,6 +442,7 @@ try {
         throw new Error(`热态第 2 页返回异常：len=${r2.response.data.length}`);
       }
       warmP2.push(r2.timing);
+      allWarmP2Timings.push(r2.timing);
     }
 
     batchResults.push({
@@ -346,10 +453,11 @@ try {
     });
   }
 
+  const pooledWarm = summarizeTimings(allWarmP2Timings);
   const warmP95s = batchResults.map((b) => b.warmPage2.totalMs.p95);
   const warmShares = batchResults.map((b) => b.warmPage2.catalogProcessingSharePct);
-  const warmP95Mean = mean(warmP95s);
-  const warmShareMean = mean(warmShares);
+  const warmP95BatchMean = mean(warmP95s);
+  const warmShareBatchMean = mean(warmShares);
   const spreadPct = (() => {
     const mn = Math.min(...warmP95s);
     const mx = Math.max(...warmP95s);
@@ -362,17 +470,24 @@ try {
     config: { batches: opts.batches, cold: opts.cold, warm: opts.warm },
     dataset: {
       targetRepoSessions: opts.targetSessions,
+      verifiedTargetRepoSessions: seenIds.size,
+      verifiedByDirectory: Object.fromEntries(
+        [...expectedTargetCountsByCwd.keys()].map((dir) => [path.basename(dir), actualCountsByCwd.get(dir) ?? 0]),
+      ),
       otherRepoSessions: opts.otherSessions,
       totalTranscriptFiles: opts.targetSessions + opts.otherSessions,
       pageSize: 20,
     },
     thresholdEvaluation: {
-      rule: "warmPage2.p95 > 30ms AND catalogProcessingSharePct (sessions.list + toRecord + sort) > 50%",
-      warmPage2P95MsMean: warmP95Mean,
+      rule: "pooled warmPage2.p95 (across all warm runs) > 30ms AND pooled catalogProcessingSharePct (sessions.list + toRecord + sort) > 50%",
+      warmPage2RunsPooled: pooledWarm.runs,
+      warmPage2P95MsPooled: pooledWarm.totalMs.p95,
+      warmPage2P95MsBatchMean: warmP95BatchMean,
       warmPage2P95MsMaxAcrossBatches: Math.max(...warmP95s),
       warmPage2P95SpreadPct: spreadPct,
-      catalogProcessingSharePctMean: warmShareMean,
-      triggered: warmP95Mean > 30 && warmShareMean > 50,
+      catalogProcessingSharePctPooled: pooledWarm.catalogProcessingSharePct,
+      catalogProcessingSharePctBatchMean: warmShareBatchMean,
+      triggered: pooledWarm.totalMs.p95 > 30 && pooledWarm.catalogProcessingSharePct > 50,
     },
     batches: batchResults,
   };
@@ -386,5 +501,6 @@ try {
   else process.env.CLAUDE_CONFIG_DIR = prevClaudeConfigDir;
   if (prevLegacyIndex === undefined) delete process.env.MIMI_CLAUDE_LEGACY_INDEX;
   else process.env.MIMI_CLAUDE_LEGACY_INDEX = prevLegacyIndex;
+  restoreGitEnv();
   rmSync(sandbox, { recursive: true, force: true });
 }

@@ -2,21 +2,26 @@
 /**
  * Phase 0 可复跑性能基准：Antigravity (bridges/agy-acp) 目录列表
  *
- * 严格不修改任何产品源码，通过临时 PATH 下的真实 git 包装器精确统计 OS 级 git spawn 次数，
- * 并通过确定性固定种子数据集（500 全局 / 30 目标仓，含 worktree、symlink、百分号编码路径、缺失目录、孤儿会话）
- * 按 3 批 ×（冷 5 次并发 + 热 20 次顺序）采集基线数据。
+ * 严格不修改任何产品源码，通过临时 PATH 下的静态真实 git 包装器精确统计 OS 级 git spawn 次数，
+ * 并使用生产 `createAcpSessionBackend` + `SharedReadonlyAcp` + 受控内存 ACP 传输（`FakeAgyWorld`）
+ * 驱动完整 `listSummaries`、`diskRevision`、`resolveSessionOrigin`、`inspectExternalActivity`、
+ * `AgyCatalog`、`GitRepoIndex` 与 `createThreadHandlers` 链路；
+ * 在确定性固定种子数据集（500 全局 / 30 目标仓，含 worktree、symlink、百分号编码路径、缺失目录、孤儿会话）
+ * 上按 3 批 ×（冷 5 次并发 + 热 20 次顺序）采集基线数据。
  */
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import type { AcpSessionSummary } from "../bridges/agy-acp/src/acp/types.ts";
-import { AgyCatalog, AgyHistoryStore, type AgySessionBackend } from "../bridges/agy-acp/src/agy/catalog.ts";
-import { conversationDbPath, resolveSessionOrigin, type AgySessionOrigin } from "../bridges/agy-acp/src/agy/env.ts";
+import type { AcpTransport } from "../bridges/agy-acp/src/acp/client.ts";
+import { SharedReadonlyAcp, type SpawnAgyTransport } from "../bridges/agy-acp/src/agy/binary.ts";
+import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend } from "../bridges/agy-acp/src/agy/catalog.ts";
+import type { AgySessionOrigin } from "../bridges/agy-acp/src/agy/env.ts";
 import { GitRepoIndex } from "../bridges/agy-acp/src/agy/git.ts";
 import { AgyOverlay } from "../bridges/agy-acp/src/agy/overlay.ts";
 import { createThreadHandlers } from "../bridges/agy-acp/src/handlers/threads.ts";
+import { FakeAgyWorld, type FakeStoredSession } from "../bridges/agy-acp/test/support/fake-agy.ts";
 
 interface CliOptions {
   seed: number;
@@ -27,17 +32,34 @@ interface CliOptions {
   jsonOut?: string;
 }
 
+function parseIntArg(flag: string, raw: string | undefined, min: number): number {
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(`参数 ${flag} 缺少整数值`);
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`参数 ${flag} 必须是 >= ${min} 的整数，收到：${raw}`);
+  }
+  return value;
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = { seed: 20260410, batches: 3, cold: 5, warm: 20, concurrency: 4 };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--seed" && next) { opts.seed = Number(next); i += 1; }
-    else if (arg === "--batches" && next) { opts.batches = Number(next); i += 1; }
-    else if (arg === "--cold" && next) { opts.cold = Number(next); i += 1; }
-    else if (arg === "--warm" && next) { opts.warm = Number(next); i += 1; }
-    else if (arg === "--concurrency" && next) { opts.concurrency = Number(next); i += 1; }
-    else if (arg === "--json-out" && next) { opts.jsonOut = next; i += 1; }
+    if (arg === "--seed") { opts.seed = parseIntArg(arg, next, 0); i += 1; }
+    else if (arg === "--batches") { opts.batches = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--cold") { opts.cold = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--warm") { opts.warm = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--concurrency") { opts.concurrency = parseIntArg(arg, next, 1); i += 1; }
+    else if (arg === "--json-out") {
+      if (!next) throw new Error("参数 --json-out 缺少输出路径");
+      opts.jsonOut = next;
+      i += 1;
+    } else {
+      throw new Error(`未知参数：${arg}`);
+    }
   }
   return opts;
 }
@@ -65,56 +87,132 @@ function mean(values: number[]): number {
   return Number((values.reduce((acc, v) => acc + v, 0) / values.length).toFixed(3));
 }
 
+function isolateGitProcessEnv(): () => void {
+  const saved = new Map<string, string | undefined>();
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("GIT_")) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+  }
+  const overrides: Record<string, string> = {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!saved.has(key)) saved.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of saved.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
 function initGitRepo(realGit: string, dir: string): void {
   mkdirSync(dir, { recursive: true });
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-  execFileSync(realGit, ["init", "-q", "-b", "main"], { cwd: dir, env });
+  execFileSync(realGit, ["init", "-q", "--template=", "-b", "main"], { cwd: dir, env: process.env });
   execFileSync(
     realGit,
-    ["-c", "user.name=Demo", "-c", "user.email=demo@example.invalid", "commit", "-q", "--allow-empty", "-m", "init"],
-    { cwd: dir, env },
+    [
+      "-c", "user.name=Demo",
+      "-c", "user.email=demo@example.invalid",
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "commit.gpgsign=false",
+      "-c", "tag.gpgsign=false",
+      "commit", "-q", "--allow-empty", "-m", "init",
+    ],
+    { cwd: dir, env: process.env },
   );
 }
 
 function addWorktree(realGit: string, repoDir: string, wtDir: string, branch: string): void {
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-  execFileSync(realGit, ["worktree", "add", "-q", "-b", branch, wtDir], { cwd: repoDir, env });
+  execFileSync(
+    realGit,
+    ["-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", branch, wtDir],
+    { cwd: repoDir, env: process.env },
+  );
 }
 
 function encodeFileUri(absPath: string): string {
   return `file://${absPath.split("/").map((seg) => encodeURIComponent(seg)).join("/")}`;
 }
 
-function readSpawnCount(counterFile: string): number {
-  try {
-    const content = readFileSync(counterFile, "utf8");
-    return content ? content.trim().split("\n").filter(Boolean).length : 0;
-  } catch {
-    return 0;
+const STATIC_GIT_WRAPPER = `#!/bin/sh
+set -eu
+if [ -z "\${MIMI_BENCH_GIT_COUNTER_FILE:-}" ] || [ -z "\${MIMI_BENCH_REAL_GIT:-}" ]; then
+  echo "bench git wrapper: missing required env" >&2
+  exit 125
+fi
+if [ ! -f "$MIMI_BENCH_GIT_COUNTER_FILE" ] || [ ! -w "$MIMI_BENCH_GIT_COUNTER_FILE" ]; then
+  if [ -n "\${MIMI_BENCH_GIT_ERROR_FILE:-}" ]; then
+    printf 'counter_not_writable\\n' > "$MIMI_BENCH_GIT_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench git wrapper: counter file not writable" >&2
+  exit 125
+fi
+if ! printf '1\\n' >> "$MIMI_BENCH_GIT_COUNTER_FILE"; then
+  if [ -n "\${MIMI_BENCH_GIT_ERROR_FILE:-}" ]; then
+    printf 'counter_append_failed\\n' > "$MIMI_BENCH_GIT_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench git wrapper: failed to write counter file" >&2
+  exit 125
+fi
+exec "$MIMI_BENCH_REAL_GIT" "$@"
+`;
+
+function assertNoWrapperError(errorFile: string): void {
+  if (existsSync(errorFile)) {
+    const detail = readFileSync(errorFile, "utf8").trim();
+    throw new Error(`git 包装器计数写入失败：${detail || "unknown"}`);
   }
 }
 
-function resetSpawnCount(counterFile: string): void {
+function readSpawnCount(counterFile: string, errorFile: string): number {
+  assertNoWrapperError(errorFile);
+  const content = readFileSync(counterFile, "utf8");
+  if (!content) return 0;
+  const lines = content.split("\n").filter((line) => line.length > 0);
+  for (const line of lines) {
+    if (line !== "1") {
+      throw new Error(`git 计数文件内容异常：${JSON.stringify(line)}`);
+    }
+  }
+  return lines.length;
+}
+
+function resetSpawnCount(counterFile: string, errorFile: string): void {
+  rmSync(errorFile, { force: true });
   writeFileSync(counterFile, "");
 }
 
 const opts = parseArgs(process.argv.slice(2));
 const rand = mulberry32(opts.seed);
-const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+const realGit = Bun.which("git");
+if (!realGit) {
+  throw new Error("未在 PATH 中找到 git 可执行文件");
+}
+
+const restoreGitEnv = isolateGitProcessEnv();
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-phase0-agy-bench-")));
 const originalPath = process.env.PATH ?? "";
+const prevCounterEnv = process.env.MIMI_BENCH_GIT_COUNTER_FILE;
+const prevErrorEnv = process.env.MIMI_BENCH_GIT_ERROR_FILE;
+const prevRealGitEnv = process.env.MIMI_BENCH_REAL_GIT;
 
 try {
-  // 1. 构造真实 git 包装器（精确计数 OS 级 git spawn，无产品源码侵入）
+  // 1. 构造静态真实 git 包装器（路径仅通过环境变量按数据传递，避免 shell 展开特殊字符）
   const binDir = path.join(sandbox, "bin");
   mkdirSync(binDir, { recursive: true });
   const gitCounterFile = path.join(sandbox, "git-spawns.log");
-  resetSpawnCount(gitCounterFile);
+  const gitErrorFile = path.join(sandbox, "git-wrapper.err");
+  resetSpawnCount(gitCounterFile, gitErrorFile);
   const gitWrapper = path.join(binDir, "git");
-  writeFileSync(
-    gitWrapper,
-    `#!/bin/sh\nprintf '1\\n' >> "${gitCounterFile}"\nexec "${realGit}" "$@"\n`,
-  );
+  writeFileSync(gitWrapper, STATIC_GIT_WRAPPER);
   chmodSync(gitWrapper, 0o755);
 
   // 2. 构造固定种子数据集（500 全局 / 30 目标仓：含 worktree、symlink、百分号编码路径、缺失目录、孤儿）
@@ -161,21 +259,30 @@ try {
   mkdirSync(cliConvDir, { recursive: true });
   mkdirSync(otherConvDir, { recursive: true });
 
-  const summaries: AcpSessionSummary[] = [];
+  const fakeSessions: FakeStoredSession[] = [];
+  const expectedTargetIds = new Set<string>();
   const baseEpochSec = 1775800000;
   const targetPaths = [targetRepo, targetWt1, targetWt2, targetSymlink, targetEncodedUri];
   const uniqueCandidateCwds = new Set<string>();
 
-  const addSession = (idx: number, cwd: string, origin: AgySessionOrigin | "orphan") => {
+  const addSession = (idx: number, cwd: string, origin: AgySessionOrigin | "orphan", isTarget: boolean) => {
     const id = `agy-bench-${String(idx).padStart(4, "0")}`;
     const offsetSec = Math.floor(rand() * 86400 * 14);
     const updatedIso = new Date((baseEpochSec + offsetSec) * 1000).toISOString();
-    summaries.push({
+    fakeSessions.push({
       sessionId: id,
       cwd,
       title: `Synthetic Agy Session ${idx}`,
       updatedAt: updatedIso,
+      modeId: "default",
+      model: "gemini-4-carbon",
+      thoughtLevel: "medium",
+      replayUpdates: [],
+      appDataDirName: origin === "other" ? "antigravity" : "antigravity-cli",
     });
+    if (isTarget) {
+      expectedTargetIds.add(id);
+    }
     if (origin === "cli") {
       writeFileSync(path.join(cliConvDir, `${id}.db`), "");
       uniqueCandidateCwds.add(cwd);
@@ -188,33 +295,33 @@ try {
   // 30 目标仓会话（分布在主仓、2 个 worktree、symlink、百分号编码 URI）
   for (let i = 0; i < 30; i += 1) {
     const cwd = targetPaths[i % targetPaths.length]!;
-    addSession(i, cwd, i % 3 === 0 ? "other" : "cli");
+    addSession(i, cwd, i % 3 === 0 ? "other" : "cli", true);
   }
   // 360 其他 Git 仓及 worktree 会话
   for (let i = 30; i < 390; i += 1) {
     const cwd = otherRepos[(i - 30) % otherRepos.length]!;
-    addSession(i, cwd, i % 4 === 0 ? "other" : "cli");
+    addSession(i, cwd, i % 4 === 0 ? "other" : "cli", false);
   }
   // 50 非 Git 目录会话（含编码 URI）
   for (let i = 390; i < 440; i += 1) {
     const cwd = nonGitDirs[(i - 390) % nonGitDirs.length]!;
-    addSession(i, cwd, "cli");
+    addSession(i, cwd, "cli", false);
   }
   // 30 缺失目录会话
   for (let i = 440; i < 470; i += 1) {
     const cwd = missingDirs[(i - 440) % missingDirs.length]!;
-    addSession(i, cwd, i % 2 === 0 ? "other" : "cli");
+    addSession(i, cwd, i % 2 === 0 ? "other" : "cli", false);
   }
   // 30 孤儿会话（无 .db 文件）
   for (let i = 470; i < 500; i += 1) {
     const cwd = otherRepos[i % otherRepos.length]!;
-    addSession(i, cwd, "orphan");
+    addSession(i, cwd, "orphan", false);
   }
 
   // 固定种子洗牌，模拟现网乱序摘要流
-  for (let i = summaries.length - 1; i > 0; i -= 1) {
+  for (let i = fakeSessions.length - 1; i > 0; i -= 1) {
     const j = Math.floor(rand() * (i + 1));
-    [summaries[i], summaries[j]] = [summaries[j]!, summaries[i]!];
+    [fakeSessions[i], fakeSessions[j]] = [fakeSessions[j]!, fakeSessions[i]!];
   }
 
   const agyEnv: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir };
@@ -222,29 +329,111 @@ try {
   mkdirSync(stateDir, { recursive: true });
 
   const createStack = () => {
-    let acpListCalls = 0;
-    const backend: AgySessionBackend = {
-      async listSummaries() {
-        acpListCalls += 1;
-        return summaries;
-      },
-      wasLastOtherListDegraded: () => false,
-      async loadReplay() {
-        return [];
-      },
-      resolveSessionOrigin: (sessionId) => resolveSessionOrigin(sessionId, agyEnv),
-      conversationFilePath: (sessionId, origin) => conversationDbPath(sessionId, agyEnv, origin) ?? null,
+    let acpCliListRpcs = 0;
+    let acpOtherListRpcs = 0;
+    const world = new FakeAgyWorld({ sessions: fakeSessions });
+    const countingSpawnTransport: SpawnAgyTransport = (spawnOptions): AcpTransport => {
+      const transport = world.spawnTransport(spawnOptions);
+      const isOther = spawnOptions.appDataDirName === "antigravity";
+      let buf = "";
+      transport.stdin.on("data", (chunk: Buffer | string) => {
+        buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        let nl = buf.indexOf("\n");
+        while (nl >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          nl = buf.indexOf("\n");
+          if (!line) continue;
+          try {
+            const msg = JSON.parse(line) as { method?: unknown };
+            if (msg.method === "session/list") {
+              if (isOther) acpOtherListRpcs += 1;
+              else acpCliListRpcs += 1;
+            }
+          } catch {
+            // 忽略非 JSON 行
+          }
+        }
+      });
+      return transport;
     };
+
+    const cliSharedAcp = new SharedReadonlyAcp(() => "fake-agy", countingSpawnTransport, () => agyEnv, "antigravity-cli");
+    const otherSharedAcp = new SharedReadonlyAcp(() => "fake-agy", countingSpawnTransport, () => agyEnv, "antigravity");
+    const backend = createAcpSessionBackend(cliSharedAcp, otherSharedAcp, () => agyEnv);
     const git = new GitRepoIndex(30_000);
     const overlay = new AgyOverlay(path.join(stateDir, "overlay.json"));
     const catalog = new AgyCatalog({ backend, git, overlay }, 1_500);
     const history = new AgyHistoryStore(catalog, backend);
     const handlers = createThreadHandlers(catalog, history);
-    return { handlers, getAcpListCalls: () => acpListCalls };
+    return {
+      handlers,
+      getAcpListRpcCounts: () => ({
+        cli: acpCliListRpcs,
+        other: acpOtherListRpcs,
+        total: acpCliListRpcs + acpOtherListRpcs,
+      }),
+      close: async () => {
+        await Promise.all([cliSharedAcp.close(), otherSharedAcp.close()]);
+      },
+    };
   };
 
-  // 开启 PATH 包装，开始 3 批实测
+  // 开启 PATH 包装并自检计数写入/读取可用，再开始实测
+  process.env.MIMI_BENCH_GIT_COUNTER_FILE = gitCounterFile;
+  process.env.MIMI_BENCH_GIT_ERROR_FILE = gitErrorFile;
+  process.env.MIMI_BENCH_REAL_GIT = realGit;
   process.env.PATH = `${binDir}:${originalPath}`;
+
+  execFileSync("git", ["--version"], { env: process.env });
+  const selfTestSpawns = readSpawnCount(gitCounterFile, gitErrorFile);
+  if (selfTestSpawns !== 1) {
+    throw new Error(`git 包装器自检失败：期望 1 次计数，实际 ${selfTestSpawns}`);
+  }
+  resetSpawnCount(gitCounterFile, gitErrorFile);
+
+  // 计时循环外验证完整目标仓集合（全部 30 条，覆盖主仓、2 个 worktree、symlink 与编码 URI）
+  const sanityStack = createStack();
+  try {
+    const seenIds = new Set<string>();
+    const seenCwds = new Set<string>();
+    let cursor: string | undefined;
+    for (let pageIdx = 0; pageIdx < 10; pageIdx += 1) {
+      const resp = await sanityStack.handlers.list({
+        cwd: targetRepo,
+        limit: 20,
+        sortKey: "updated_at",
+        sortDirection: "desc",
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const row of resp.data) {
+        if (seenIds.has(row.id)) {
+          throw new Error(`Agy 全量完整性校验发现重复会话：${row.id}`);
+        }
+        if (!expectedTargetIds.has(row.id)) {
+          throw new Error(`Agy 全量完整性校验返回非目标会话：${row.id} (cwd=${row.cwd})`);
+        }
+        seenIds.add(row.id);
+        seenCwds.add(row.cwd);
+      }
+      if (!resp.nextCursor) break;
+      cursor = resp.nextCursor;
+    }
+    if (seenIds.size !== expectedTargetIds.size) {
+      throw new Error(`Agy 全量完整性校验失败：期望 ${expectedTargetIds.size} 条，实际 ${seenIds.size} 条`);
+    }
+    for (const requiredDir of [targetRepo, targetWt1, targetWt2, targetSymlink]) {
+      if (!seenCwds.has(requiredDir)) {
+        throw new Error(`Agy 全量完整性校验缺少预期目录会话：${requiredDir}`);
+      }
+    }
+    const sanityRpcs = sanityStack.getAcpListRpcCounts();
+    if (sanityRpcs.cli < 1 || sanityRpcs.other < 1) {
+      throw new Error(`Agy 生产后端未发出预期 CLI+Other ACP session/list RPC：${JSON.stringify(sanityRpcs)}`);
+    }
+  } finally {
+    await sanityStack.close();
+  }
 
   const batchResults: Array<{
     batch: number;
@@ -255,7 +444,8 @@ try {
       gitSpawnsPerRun: number[];
       gitSpawnsMean: number;
       gitSpawnsTotal: number;
-      acpListCallsPerRun: number[];
+      acpSessionListRpcsPerRun: number[];
+      acpSessionListRpcsMean: number;
       returnedRowsPerCall: number;
     };
     sequentialWarm: {
@@ -263,90 +453,110 @@ try {
       latencyMs: { p50: number; p95: number; max: number; mean: number };
       gitSpawnsAbsoluteTotal: number;
       gitSpawnsPerRun: number;
-      acpListCallsDelta: number;
+      acpSessionListRpcsDelta: number;
+      acpCliRpcsDelta: number;
+      acpOtherRpcsDelta: number;
       returnedRowsPerCall: number;
     };
   }> = [];
 
   for (let batch = 1; batch <= opts.batches; batch += 1) {
-    // A. 并发冷查（清进程缓存 / 新建 GitRepoIndex 与 AgyCatalog，并发触发同仓查询）
+    // A. 并发冷查（清进程缓存 / 新建 SharedReadonlyAcp、GitRepoIndex 与 AgyCatalog，并发触发同仓查询）
     const coldLatencies: number[] = [];
     const coldGitSpawns: number[] = [];
-    const coldAcpCalls: number[] = [];
+    const coldAcpRpcs: number[] = [];
     let coldReturned = 0;
 
     for (let run = 0; run < opts.cold; run += 1) {
-      const { handlers, getAcpListCalls } = createStack();
-      resetSpawnCount(gitCounterFile);
-      const t0 = performance.now();
-      const responses = await Promise.all(
-        Array.from({ length: opts.concurrency }, () =>
-          handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" }),
-        ),
-      );
-      const elapsed = performance.now() - t0;
-      const spawns = readSpawnCount(gitCounterFile);
-      coldLatencies.push(elapsed);
-      coldGitSpawns.push(spawns);
-      coldAcpCalls.push(getAcpListCalls());
-      coldReturned = responses[0]!.data.length;
-      for (const r of responses) {
-        if (r.data.length !== 20 || r.nextCursor === null) {
-          throw new Error(`Agy 并发冷查结果异常：len=${r.data.length}, nextCursor=${r.nextCursor}`);
+      const stack = createStack();
+      try {
+        resetSpawnCount(gitCounterFile, gitErrorFile);
+        const t0 = performance.now();
+        const responses = await Promise.all(
+          Array.from({ length: opts.concurrency }, () =>
+            stack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" }),
+          ),
+        );
+        const elapsed = performance.now() - t0;
+        const spawns = readSpawnCount(gitCounterFile, gitErrorFile);
+        if (spawns <= 0) {
+          throw new Error(`Agy 并发冷查未记录到任何 git spawn（spawns=${spawns}）`);
+        }
+        const rpcs = stack.getAcpListRpcCounts();
+        if (rpcs.total <= 0) {
+          throw new Error(`Agy 并发冷查未记录到任何 ACP session/list RPC`);
+        }
+        coldLatencies.push(elapsed);
+        coldGitSpawns.push(spawns);
+        coldAcpRpcs.push(rpcs.total);
+        coldReturned = responses[0]!.data.length;
+        for (const r of responses) {
+          if (r.data.length !== 20 || r.nextCursor === null) {
+            throw new Error(`Agy 并发冷查结果异常：len=${r.data.length}, nextCursor=${r.nextCursor}`);
+          }
+        }
+      } finally {
+        await stack.close();
+      }
+    }
+
+    // B. 顺序热态（预热 30s Git 缓存与常驻 ACP 连接后连续顺序查询）
+    const warmStack = createStack();
+    try {
+      await warmStack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
+      resetSpawnCount(gitCounterFile, gitErrorFile);
+      const acpBeforeWarm = warmStack.getAcpListRpcCounts();
+      const warmLatencies: number[] = [];
+      let warmReturned = 0;
+      for (let run = 0; run < opts.warm; run += 1) {
+        const t0 = performance.now();
+        const resp = await warmStack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
+        warmLatencies.push(performance.now() - t0);
+        warmReturned = resp.data.length;
+        if (resp.data.length !== 20 || resp.nextCursor === null) {
+          throw new Error(`Agy 顺序热态结果异常：len=${resp.data.length}, nextCursor=${resp.nextCursor}`);
         }
       }
-    }
+      const warmSpawnsTotal = readSpawnCount(gitCounterFile, gitErrorFile);
+      const acpAfterWarm = warmStack.getAcpListRpcCounts();
 
-    // B. 顺序热态（预热 30s Git 缓存后连续 20 次顺序查询）
-    const warmStack = createStack();
-    await warmStack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
-    resetSpawnCount(gitCounterFile);
-    const acpBeforeWarm = warmStack.getAcpListCalls();
-    const warmLatencies: number[] = [];
-    let warmReturned = 0;
-    for (let run = 0; run < opts.warm; run += 1) {
-      const t0 = performance.now();
-      const resp = await warmStack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
-      warmLatencies.push(performance.now() - t0);
-      warmReturned = resp.data.length;
-      if (resp.data.length !== 20 || resp.nextCursor === null) {
-        throw new Error(`Agy 顺序热态结果异常：len=${resp.data.length}, nextCursor=${resp.nextCursor}`);
-      }
+      batchResults.push({
+        batch,
+        concurrentCold: {
+          runs: opts.cold,
+          concurrency: opts.concurrency,
+          latencyMs: {
+            p50: percentile(coldLatencies, 50),
+            p95: percentile(coldLatencies, 95),
+            max: percentile(coldLatencies, 100),
+            mean: mean(coldLatencies),
+          },
+          gitSpawnsPerRun: coldGitSpawns,
+          gitSpawnsMean: mean(coldGitSpawns),
+          gitSpawnsTotal: coldGitSpawns.reduce((a, b) => a + b, 0),
+          acpSessionListRpcsPerRun: coldAcpRpcs,
+          acpSessionListRpcsMean: mean(coldAcpRpcs),
+          returnedRowsPerCall: coldReturned,
+        },
+        sequentialWarm: {
+          runs: opts.warm,
+          latencyMs: {
+            p50: percentile(warmLatencies, 50),
+            p95: percentile(warmLatencies, 95),
+            max: percentile(warmLatencies, 100),
+            mean: mean(warmLatencies),
+          },
+          gitSpawnsAbsoluteTotal: warmSpawnsTotal,
+          gitSpawnsPerRun: Number((warmSpawnsTotal / opts.warm).toFixed(3)),
+          acpSessionListRpcsDelta: acpAfterWarm.total - acpBeforeWarm.total,
+          acpCliRpcsDelta: acpAfterWarm.cli - acpBeforeWarm.cli,
+          acpOtherRpcsDelta: acpAfterWarm.other - acpBeforeWarm.other,
+          returnedRowsPerCall: warmReturned,
+        },
+      });
+    } finally {
+      await warmStack.close();
     }
-    const warmSpawnsTotal = readSpawnCount(gitCounterFile);
-    const warmAcpDelta = warmStack.getAcpListCalls() - acpBeforeWarm;
-
-    batchResults.push({
-      batch,
-      concurrentCold: {
-        runs: opts.cold,
-        concurrency: opts.concurrency,
-        latencyMs: {
-          p50: percentile(coldLatencies, 50),
-          p95: percentile(coldLatencies, 95),
-          max: percentile(coldLatencies, 100),
-          mean: mean(coldLatencies),
-        },
-        gitSpawnsPerRun: coldGitSpawns,
-        gitSpawnsMean: mean(coldGitSpawns),
-        gitSpawnsTotal: coldGitSpawns.reduce((a, b) => a + b, 0),
-        acpListCallsPerRun: coldAcpCalls,
-        returnedRowsPerCall: coldReturned,
-      },
-      sequentialWarm: {
-        runs: opts.warm,
-        latencyMs: {
-          p50: percentile(warmLatencies, 50),
-          p95: percentile(warmLatencies, 95),
-          max: percentile(warmLatencies, 100),
-          mean: mean(warmLatencies),
-        },
-        gitSpawnsAbsoluteTotal: warmSpawnsTotal,
-        gitSpawnsPerRun: Number((warmSpawnsTotal / opts.warm).toFixed(3)),
-        acpListCallsDelta: warmAcpDelta,
-        returnedRowsPerCall: warmReturned,
-      },
-    });
   }
 
   const warmP95s = batchResults.map((b) => b.sequentialWarm.latencyMs.p95);
@@ -359,10 +569,11 @@ try {
 
   const report = {
     benchmark: "agy-acp-list-phase0",
+    backendScope: "production createAcpSessionBackend + SharedReadonlyAcp + AcpClient + AgyCatalog + GitRepoIndex + createThreadHandlers over controlled in-memory ACP transport (excludes upstream agy daemon SQLite/RPC I/O)",
     seed: opts.seed,
     config: { batches: opts.batches, cold: opts.cold, warm: opts.warm, concurrency: opts.concurrency },
     dataset: {
-      totalSummaries: summaries.length,
+      totalSummaries: fakeSessions.length,
       targetRepoSessions: 30,
       otherRepoSessions: 360,
       nonGitSessions: 50,
@@ -373,14 +584,15 @@ try {
     },
     summary: {
       concurrentColdGitSpawnsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.gitSpawnsMean)),
+      concurrentColdAcpRpcsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.acpSessionListRpcsMean)),
       concurrentColdP95MsMean: mean(coldP95s),
       concurrentColdP95SpreadPct: variancePct(coldP95s),
       sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: batchResults.reduce(
         (acc, b) => acc + b.sequentialWarm.gitSpawnsAbsoluteTotal,
         0,
       ),
-      sequentialWarmAcpDeltaAcrossAllBatches: batchResults.reduce(
-        (acc, b) => acc + b.sequentialWarm.acpListCallsDelta,
+      sequentialWarmAcpRpcsDeltaAcrossAllBatches: batchResults.reduce(
+        (acc, b) => acc + b.sequentialWarm.acpSessionListRpcsDelta,
         0,
       ),
       sequentialWarmP95MsMean: mean(warmP95s),
@@ -395,5 +607,12 @@ try {
   console.log(JSON.stringify(report, null, 2));
 } finally {
   process.env.PATH = originalPath;
+  if (prevCounterEnv === undefined) delete process.env.MIMI_BENCH_GIT_COUNTER_FILE;
+  else process.env.MIMI_BENCH_GIT_COUNTER_FILE = prevCounterEnv;
+  if (prevErrorEnv === undefined) delete process.env.MIMI_BENCH_GIT_ERROR_FILE;
+  else process.env.MIMI_BENCH_GIT_ERROR_FILE = prevErrorEnv;
+  if (prevRealGitEnv === undefined) delete process.env.MIMI_BENCH_REAL_GIT;
+  else process.env.MIMI_BENCH_REAL_GIT = prevRealGitEnv;
+  restoreGitEnv();
   rmSync(sandbox, { recursive: true, force: true });
 }

@@ -8,12 +8,12 @@
     "codexCli": "codex-cli 0.171.0",
     "repoProtocolSnapshot": "0.162.0"
   },
-  "provenance": "Live wire shape captured from codex app-server (codex-cli 0.171.0) against isolated synthetic CODEX_HOME, combined with the protocol-valid recencyAt: null case (codex app-server generate-json-schema v2/ThreadListResponse.json declares recencyAt: integer | null; state_5.sqlite unbackfilled rows also produce recencyAt: 0). Sanitized paths and prompts.",
+  "provenance": "Exchange 2 (statedb-unbackfilled-recency-zero) is a live wire capture from codex app-server (codex-cli 0.171.0) against isolated synthetic CODEX_HOME where unbackfilled state_5.sqlite rows return recencyAt: 0. Exchange 1 (recency-sort-with-null-row) is a schema-derived case built on that captured wire shape to exercise the protocol-valid recencyAt: null value declared by codex app-server generate-json-schema v2/ThreadListResponse.json (recencyAt: integer | null); it is NOT a live-captured null response. Paths and prompts are sanitized.",
   "observedBehaviors": [
     "createdAt and updatedAt are Unix seconds (< 1e10).",
     "Protocol schema v2/Thread.ts:64 and codex-cli 0.171.0 generate-json-schema declare recencyAt as int64 | null.",
-    "Under sortKey: \"recency_at\", rows may carry recencyAt: null (older/unpopulated records) or recencyAt: 0 (unbackfilled state_5.sqlite rows observed live on codex-cli 0.171.0) alongside populated Unix-second recencyAt values.",
-    "Without a locked server-side fallback formula, recencyAt: null rows must be treated as opaque server order rather than synthesized from updatedAt for strict cross-runtime proof."
+    "Live capture on codex-cli 0.171.0 under sortKey: \"recency_at\" with useStateDbOnly: true produces recencyAt: 0 on unbackfilled state_5.sqlite rows alongside populated Unix-second recencyAt values.",
+    "Schema-derived case under sortKey: \"recency_at\" models recencyAt: null (permitted by v2/ThreadListResponse.json); without a locked server-side fallback formula, recencyAt: null rows must be treated as opaque server order rather than synthesized from updatedAt for strict cross-runtime proof."
   ],
   "handshake": {
     "request": {

@@ -110,19 +110,20 @@ for b in agy["batches"]:
     sw = b["sequentialWarm"]
     print(
         f"  Batch {b['batch']}: 并发冷查(x{cc['concurrency']}) git_spawns={cc['gitSpawnsPerRun']} (mean={cc['gitSpawnsMean']}), "
-        f"p50={cc['latencyMs']['p50']}ms, p95={cc['latencyMs']['p95']}ms | "
-        f"顺序热态 git_spawns={sw['gitSpawnsAbsoluteTotal']}, acp_delta={sw['acpListCallsDelta']}, "
+        f"acp_rpcs={cc['acpSessionListRpcsPerRun']}, p50={cc['latencyMs']['p50']}ms, p95={cc['latencyMs']['p95']}ms | "
+        f"顺序热态 git_spawns={sw['gitSpawnsAbsoluteTotal']}, acp_rpc_delta={sw['acpSessionListRpcsDelta']}, "
         f"p50={sw['latencyMs']['p50']}ms, p95={sw['latencyMs']['p95']}ms"
     )
 print(
     f"- 汇总：并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
     f"顺序热态总 git spawn={agy['summary']['sequentialWarmGitSpawnsAbsoluteAcrossAllBatches']}，"
+    f"顺序热态总 ACP RPC 增量={agy['summary']['sequentialWarmAcpRpcsDeltaAcrossAllBatches']}，"
     f"热态 p95 均值={agy['summary']['sequentialWarmP95MsMean']}ms（批间极差波动 {agy['summary']['sequentialWarmP95SpreadPct']}%）"
 )
 
 print("\n[Claude SDK bridges/claude-sdk]")
 print(
-    f"- 数据集：{claude['dataset']['targetRepoSessions']} 目标仓 / "
+    f"- 数据集：{claude['dataset']['verifiedTargetRepoSessions']}/{claude['dataset']['targetRepoSessions']} 目标仓（含 worktree） / "
     f"{claude['dataset']['totalTranscriptFiles']} 总 transcript，页长 {claude['dataset']['pageSize']}"
 )
 for b in claude["batches"]:
@@ -137,8 +138,8 @@ for b in claude["batches"]:
     )
 te = claude["thresholdEvaluation"]
 print(
-    f"- 阈值评估（热态次页 p95 > 30ms 且目录处理占比 > 50%）："
-    f"p95 均值={te['warmPage2P95MsMean']}ms（批间极差波动 {te['warmPage2P95SpreadPct']}%），"
-    f"目录处理占比均值={te['catalogProcessingSharePctMean']}% → triggered={te['triggered']}"
+    f"- 阈值评估（合并热态次页 p95 > 30ms 且目录处理占比 > 50%，n={te['warmPage2RunsPooled']}）："
+    f"合并 p95={te['warmPage2P95MsPooled']}ms（批均值 {te['warmPage2P95MsBatchMean']}ms，批间极差波动 {te['warmPage2P95SpreadPct']}%），"
+    f"合并目录处理占比={te['catalogProcessingSharePctPooled']}% → triggered={te['triggered']}"
 )
 PY
