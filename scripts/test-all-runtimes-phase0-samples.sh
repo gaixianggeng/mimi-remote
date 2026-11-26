@@ -12,6 +12,7 @@ FIXTURE_DIR="$ROOT_DIR/scripts/testdata/all-runtimes-phase0"
 python3 - "$FIXTURE_DIR" <<'PY'
 from __future__ import annotations
 import base64
+import ipaddress
 import json
 import pathlib
 import re
@@ -49,7 +50,7 @@ for required_key in (
     val = versions.get(required_key)
     require(isinstance(val, str) and bool(val.strip()), f"缺少组件版本：{required_key}")
 
-# 脱敏扫描：覆盖整个夹具目录的原文与解码后的 JSON 字符串（含路径末尾无斜杠与百分号编码路径）
+# 脱敏扫描：覆盖整个夹具目录的原文与解码后的 JSON 字符串（含路径末尾无斜杠、URL 编码路径与 IPv4/IPv6 Tailscale 地址）
 secret_re = re.compile(
     r"-----BEGIN (ENCRYPTED |RSA |EC |OPENSSH )?PRIVATE KEY-----"
     r"|github_pat_[A-Za-z0-9_]{40,}"
@@ -62,51 +63,225 @@ home_re = re.compile(
     r"/Users/(?!(?:me|you|demo)(?=/|$|[^A-Za-z0-9._-]))[A-Za-z0-9._-]+"
     r"|/home/(?!(?:me|user|demo)(?=/|$|[^A-Za-z0-9._-]))[A-Za-z0-9._-]+"
 )
-tailscale_re = re.compile(
-    r"100\.(?!64\.0\.0/10(?:[^0-9]|$))(6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}"
+TAILSCALE_IPV4_NET = ipaddress.ip_network("100.64.0.0/10")
+TAILSCALE_IPV6_NET = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+ipv4_candidate_re = re.compile(
+    r"(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2})(?![0-9A-Za-z/]))?(?![0-9.])"
+)
+bracketed_ipv6_re = re.compile(
+    r"\[([0-9A-Fa-f:.]+)(?:%[A-Za-z0-9._-]+)?\](?::(\d{1,5}))?"
+)
+unbracketed_ipv6_re = re.compile(
+    r"(?:(?<![0-9A-Za-z])([0-9A-Fa-f]{1,4}:[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*)|(?<![0-9A-Fa-f:])(::[0-9A-Fa-f:.]*))"
+    r"(?:%[A-Za-z0-9._-]+)?(?:/(\d{1,3})(?![0-9A-Za-z/]))?(?![0-9A-Za-z])"
 )
 
 
+class SanitizationError(ValueError):
+    pass
+
+
+def decode_url_variants(text: str, max_rounds: int = 3) -> list[str]:
+    variants = [text]
+    cur = text
+    for _ in range(max_rounds):
+        nxt = urllib.parse.unquote(cur)
+        if nxt == cur:
+            break
+        variants.append(nxt)
+        cur = nxt
+    return variants
+
+
+def is_tailscale_ipv6(addr: ipaddress.IPv6Address, prefix_str: str | None = None) -> bool:
+    if addr in TAILSCALE_IPV6_NET:
+        if prefix_str == "48" and addr == TAILSCALE_IPV6_NET.network_address:
+            return False
+        return True
+    mapped = addr.ipv4_mapped
+    if mapped is not None and mapped in TAILSCALE_IPV4_NET:
+        return True
+    return False
+
+
+def parse_ipv6_variants(raw: str) -> list[ipaddress.IPv6Address]:
+    cleaned = raw.rstrip(".")
+    if cleaned.startswith(":") and not cleaned.startswith("::"):
+        cleaned = cleaned[1:]
+    if cleaned.endswith(":") and not cleaned.endswith("::"):
+        cleaned = cleaned[:-1]
+    candidates = [cleaned]
+    if ":" in cleaned:
+        head, tail = cleaned.rsplit(":", 1)
+        if tail.isdigit() and 0 <= int(tail) <= 65535 and ":" in head:
+            candidates.append(head)
+    parsed: list[ipaddress.IPv6Address] = []
+    for item in candidates:
+        try:
+            parsed.append(ipaddress.IPv6Address(item))
+        except ValueError:
+            continue
+    return parsed
+
+
+def has_tailscale_address(text: str) -> bool:
+    for m in ipv4_candidate_re.finditer(text):
+        addr_str, prefix_str = m.group(1), m.group(2)
+        try:
+            addr4 = ipaddress.IPv4Address(addr_str)
+        except ValueError:
+            continue
+        if addr4 in TAILSCALE_IPV4_NET:
+            if prefix_str == "10" and addr4 == TAILSCALE_IPV4_NET.network_address:
+                continue
+            return True
+
+    for m in bracketed_ipv6_re.finditer(text):
+        for addr6 in parse_ipv6_variants(m.group(1)):
+            if is_tailscale_ipv6(addr6):
+                return True
+
+    for m in unbracketed_ipv6_re.finditer(text):
+        raw = m.group(1) or m.group(2)
+        prefix_str = m.group(3)
+        if not raw:
+            continue
+        for addr6 in parse_ipv6_variants(raw):
+            if is_tailscale_ipv6(addr6, prefix_str):
+                return True
+
+    return False
+
+
 def scan_text(text: str, location: str) -> None:
-    candidates = [text]
-    unquoted = urllib.parse.unquote(text)
-    if unquoted != text:
-        candidates.append(unquoted)
-    for candidate in candidates:
+    for candidate in decode_url_variants(text):
         if secret_re.search(candidate):
-            raise SystemExit(f"脱敏检查失败（疑似凭据）：{location}")
+            raise SanitizationError(f"脱敏检查失败（疑似凭据）：{location}")
         if home_re.search(candidate):
-            raise SystemExit(f"脱敏检查失败（非脱敏主目录路径）：{location}")
-        if tailscale_re.search(candidate):
-            raise SystemExit(f"脱敏检查失败（包含具体 Tailscale 地址）：{location}")
+            raise SanitizationError(f"脱敏检查失败（非脱敏主目录路径）：{location}")
+        if has_tailscale_address(candidate):
+            raise SanitizationError(f"脱敏检查失败（包含具体 Tailscale 地址）：{location}")
 
 
-def iter_json_strings(node: object, prefix: str = "") -> list[tuple[str, str]]:
+def iter_json_strings(node: object, prefix: str = "$") -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     if isinstance(node, str):
-        found.append((prefix or "$", node))
+        found.append((prefix, node))
     elif isinstance(node, dict):
-        for k, v in node.items():
-            key_path = f"{prefix}.{k}" if prefix else str(k)
+        for idx, (k, v) in enumerate(node.items()):
+            entry_path = f"{prefix}.field[{idx}]"
             if isinstance(k, str):
-                found.append((f"{key_path}(key)", k))
-            found.extend(iter_json_strings(v, key_path))
+                found.append((f"{entry_path}.key", k))
+            found.extend(iter_json_strings(v, f"{entry_path}.value"))
     elif isinstance(node, list):
         for idx, item in enumerate(node):
             found.extend(iter_json_strings(item, f"{prefix}[{idx}]"))
     return found
 
 
+def scan_document(text: str, rel: str, is_json: bool) -> None:
+    scan_text(text, rel)
+    if is_json:
+        parsed = json.loads(text)
+        for field_path, val in iter_json_strings(parsed):
+            scan_text(val, f"{rel}:{field_path}")
+
+
+def run_sanitization_selftest() -> None:
+    # 1) 验证 Unicode 转义的疑似凭据 JSON 键被拒绝，且错误信息仅含字段序号路径，绝不回显输入（原串/解码串/键名）
+    synth_secret = "gh" + "p_" + ("A1b2C3" * 6)
+    escaped_secret_key = "".join(f"\\u{ord(ch):04x}" for ch in synth_secret)
+    raw_secret_key_json = '{"' + escaped_secret_key + '": {"nested": "ok"}}'
+    err_msg: str | None = None
+    try:
+        scan_document(raw_secret_key_json, "selftest/key.json", is_json=True)
+    except SanitizationError as exc:
+        err_msg = str(exc)
+    require(err_msg is not None, "脱敏自检失败：未拒绝 Unicode 转义凭据键")
+    require("疑似凭据" in err_msg and "selftest/key.json:$.field[0].key" in err_msg, f"脱敏自检失败：定位路径异常：{err_msg}")
+    require(synth_secret not in err_msg and escaped_secret_key not in err_msg, "脱敏自检失败：错误信息回显了凭据键输入")
+
+    # 2) 验证敏感值嵌套在自定义键名下时，错误信息不回显键名或敏感值
+    custom_key = "sensitive_custom_field_alpha"
+    synth_home = "/Us" + "ers/" + "alice_private/project"
+    escaped_home = "".join(f"\\u{ord(ch):04x}" for ch in synth_home)
+    raw_home_val_json = '{"' + custom_key + '": ["ok", "' + escaped_home + '"]}'
+    err_msg = None
+    try:
+        scan_document(raw_home_val_json, "selftest/val.json", is_json=True)
+    except SanitizationError as exc:
+        err_msg = str(exc)
+    require(err_msg is not None, "脱敏自检失败：未拒绝非脱敏主目录值")
+    require("selftest/val.json:$.field[0].value[1]" in err_msg, f"脱敏自检失败：值定位路径异常：{err_msg}")
+    require(
+        custom_key not in err_msg and synth_home not in err_msg and escaped_home not in err_msg,
+        "脱敏自检失败：错误信息回显了自定义键名或路径输入",
+    )
+
+    # 3) 验证 Tailscale IPv4 与 IPv6（全写、压缩、大小写、带端口、无括号带端口、zone、URL 编码、双重编码、IPv4-mapped）均被拦截且不回显
+    ts_v4_prefix = "100." + "64."
+    ts_v6_prefix = "fd7a" + ":115c:" + "a1e0"
+    ts_cases = [
+        ("v4-plain", ts_v4_prefix + "12.34"),
+        ("v4-port", "http://" + ts_v4_prefix + "12.34:8080/ws"),
+        ("v4-urlencoded", urllib.parse.quote("http://" + ts_v4_prefix + "12.34:8080/ws", safe="")),
+        ("v6-compressed", ts_v6_prefix + "::1"),
+        ("v6-compressed-upper", (ts_v6_prefix + "::ab12:1").upper()),
+        ("v6-full", ts_v6_prefix + ":ab12:4843:cd96:6258:0001"),
+        ("v6-bracket-port", "https://[" + ts_v6_prefix + "::1]:8443/api"),
+        ("v6-unbracket-port", ts_v6_prefix + ":0000:0000:0000:0000:0001:8080"),
+        ("v6-zone-port", "http://[" + ts_v6_prefix + "::1%25utun3]:8080/ws"),
+        ("v6-urlencoded", urllib.parse.quote("https://[" + ts_v6_prefix + "::1]:8443/api", safe="")),
+        ("v6-double-urlencoded", urllib.parse.quote(urllib.parse.quote("[" + ts_v6_prefix + "::1]:8080", safe=""), safe="")),
+        ("v6-bare-urlencoded", urllib.parse.quote(ts_v6_prefix + "::1", safe="")),
+        ("v6-label-prefix", "via:" + ts_v6_prefix + "::1"),
+        ("v6-ipv4-mapped-dotted", "https://[::ffff:" + ts_v4_prefix + "1.2]:443"),
+        ("v6-ipv4-mapped-hex", "[::ffff:" + "6440:" + "0102]:443"),
+    ]
+    for case_name, sample in ts_cases:
+        escaped_sample = "".join(f"\\u{ord(ch):04x}" for ch in sample)
+        payload = '{"peer": "' + escaped_sample + '"}'
+        err_msg = None
+        try:
+            scan_document(payload, f"selftest/{case_name}.json", is_json=True)
+        except SanitizationError as exc:
+            err_msg = str(exc)
+        require(err_msg is not None, f"脱敏自检失败：未拦截 Tailscale 用例 {case_name}")
+        require(
+            "Tailscale" in err_msg and f"selftest/{case_name}.json:$.field[0].value" in err_msg,
+            f"脱敏自检失败：Tailscale 定位异常（{case_name}）：{err_msg}",
+        )
+        require(
+            sample not in err_msg and escaped_sample not in err_msg and "peer" not in err_msg,
+            f"脱敏自检失败：Tailscale 错误信息回显输入（{case_name}）",
+        )
+
+    # 4) 验证非 Tailscale 地址与文档网段字面量不误报
+    safe_samples = [
+        "100." + "64.0.0/10",
+        ts_v6_prefix + "::/48",
+        "100." + "63.255.255",
+        "100." + "128.0.1",
+        "fd7a" + ":115c:a1e1::1",
+        "[2001:db8::1]:8080",
+        "[::ffff:192.0.2.1]:443",
+        "2026-11-26T17:44:09Z",
+    ]
+    for safe_idx, safe_val in enumerate(safe_samples):
+        scan_document(json.dumps({"ok": safe_val}), f"selftest/safe-{safe_idx}.json", is_json=True)
+
+
+run_sanitization_selftest()
+
 for file_path in sorted(fixture_dir.rglob("*")):
     if not file_path.is_file():
         continue
     text = file_path.read_text(encoding="utf-8")
     rel = str(file_path.relative_to(fixture_dir))
-    scan_text(text, rel)
-    if file_path.suffix == ".json":
-        parsed = json.loads(text)
-        for field_path, val in iter_json_strings(parsed):
-            scan_text(val, f"{rel}:{field_path}")
+    try:
+        scan_document(text, rel, is_json=(file_path.suffix == ".json"))
+    except SanitizationError as exc:
+        raise SystemExit(str(exc))
 
 MS_THRESHOLD = 10_000_000_000
 ALLOWED_DEEPSEEK_PROJECTION_KEYS = {"title", "turnOutline", "modelSelection"}

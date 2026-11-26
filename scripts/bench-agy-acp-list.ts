@@ -189,15 +189,62 @@ fi
 exec "$MIMI_BENCH_REAL_GIT" "$@"
 `;
 
-function assertNoWrapperError(errorFile: string): void {
+const STATIC_PS_WRAPPER = `#!/bin/sh
+set -u
+if [ -z "\${MIMI_BENCH_PS_LOG_FILE:-}" ] || [ -z "\${MIMI_BENCH_REAL_PS:-}" ]; then
+  echo "bench ps wrapper: missing required env" >&2
+  exit 125
+fi
+if [ ! -f "$MIMI_BENCH_PS_LOG_FILE" ] || [ ! -w "$MIMI_BENCH_PS_LOG_FILE" ]; then
+  if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+    printf 'log_not_writable\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench ps wrapper: log file not writable" >&2
+  exit 125
+fi
+if ! printf 'start\\n' >> "$MIMI_BENCH_PS_LOG_FILE"; then
+  if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+    printf 'log_append_failed\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench ps wrapper: failed to write log file" >&2
+  exit 125
+fi
+"$MIMI_BENCH_REAL_PS" "$@"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  status_line="ok"
+else
+  status_line="fail:$rc"
+fi
+if ! printf '%s\\n' "$status_line" >> "$MIMI_BENCH_PS_LOG_FILE"; then
+  if [ -n "\${MIMI_BENCH_PS_ERROR_FILE:-}" ]; then
+    printf 'log_append_failed\\n' > "$MIMI_BENCH_PS_ERROR_FILE" 2>/dev/null || true
+  fi
+  echo "bench ps wrapper: failed to write log file" >&2
+  exit 125
+fi
+exit "$rc"
+`;
+
+interface ProcessScanStats {
+  attempts: number;
+  succeeded: number;
+  failed: number;
+  incomplete: number;
+  exitCodes: number[];
+}
+
+type ProcessScanStatus = "ok" | "degraded";
+
+function assertNoWrapperError(errorFile: string, label = "git"): void {
   if (existsSync(errorFile)) {
     const detail = readFileSync(errorFile, "utf8").trim();
-    throw new Error(`git 包装器计数写入失败：${detail || "unknown"}`);
+    throw new Error(`${label} 包装器计数写入失败：${detail || "unknown"}`);
   }
 }
 
 function readSpawnCount(counterFile: string, errorFile: string): number {
-  assertNoWrapperError(errorFile);
+  assertNoWrapperError(errorFile, "git");
   const content = readFileSync(counterFile, "utf8");
   if (!content) return 0;
   const lines = content.split("\n").filter((line) => line.length > 0);
@@ -214,12 +261,68 @@ function resetSpawnCount(counterFile: string, errorFile: string): void {
   writeFileSync(counterFile, "");
 }
 
+function readPsLog(logFile: string, errorFile: string): ProcessScanStats {
+  assertNoWrapperError(errorFile, "ps");
+  const content = readFileSync(logFile, "utf8");
+  if (!content) {
+    return { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [] };
+  }
+  let attempts = 0;
+  let succeeded = 0;
+  let failed = 0;
+  const exitCodes: number[] = [];
+  for (const line of content.split("\n").filter((item) => item.length > 0)) {
+    if (line === "start") {
+      attempts += 1;
+    } else if (line === "ok") {
+      succeeded += 1;
+    } else if (line.startsWith("fail:")) {
+      failed += 1;
+      const code = Number(line.slice("fail:".length));
+      if (Number.isInteger(code)) exitCodes.push(code);
+    } else {
+      throw new Error(`ps 日志文件内容异常：${JSON.stringify(line)}`);
+    }
+  }
+  const incomplete = Math.max(0, attempts - succeeded - failed);
+  return { attempts, succeeded, failed, incomplete, exitCodes };
+}
+
+function resetPsLog(logFile: string, errorFile: string): void {
+  rmSync(errorFile, { force: true });
+  writeFileSync(logFile, "");
+}
+
+function mergePsStats(items: ProcessScanStats[]): ProcessScanStats {
+  return {
+    attempts: items.reduce((acc, s) => acc + s.attempts, 0),
+    succeeded: items.reduce((acc, s) => acc + s.succeeded, 0),
+    failed: items.reduce((acc, s) => acc + s.failed, 0),
+    incomplete: items.reduce((acc, s) => acc + s.incomplete, 0),
+    exitCodes: items.flatMap((s) => s.exitCodes),
+  };
+}
+
+function countValidPsLines(stdout: string): number {
+  let count = 0;
+  for (const raw of stdout.split("\n")) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const match = /^(\d+)\s+([\s\S]+)$/.exec(trimmed);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (Number.isInteger(pid) && pid > 0) count += 1;
+  }
+  return count;
+}
+
 const opts = parseArgs(process.argv.slice(2));
 const rand = mulberry32(opts.seed);
 const realGit = Bun.which("git");
 if (!realGit) {
   throw new Error("未在 PATH 中找到 git 可执行文件");
 }
+const realPs = process.platform === "win32" ? null : Bun.which("ps");
 
 const restoreGitEnv = isolateGitProcessEnv();
 const sandbox = realpathSync(mkdtempSync(path.join(os.tmpdir(), "mimi-phase0-agy-bench-")));
@@ -227,9 +330,12 @@ const originalPath = process.env.PATH ?? "";
 const prevCounterEnv = process.env.MIMI_BENCH_GIT_COUNTER_FILE;
 const prevErrorEnv = process.env.MIMI_BENCH_GIT_ERROR_FILE;
 const prevRealGitEnv = process.env.MIMI_BENCH_REAL_GIT;
+const prevPsLogEnv = process.env.MIMI_BENCH_PS_LOG_FILE;
+const prevPsErrorEnv = process.env.MIMI_BENCH_PS_ERROR_FILE;
+const prevRealPsEnv = process.env.MIMI_BENCH_REAL_PS;
 
 try {
-  // 1. 构造静态真实 git 包装器（路径仅通过环境变量按数据传递，避免 shell 展开特殊字符）
+  // 1. 构造静态真实 git 与 ps 包装器（路径仅通过环境变量按数据传递，避免 shell 展开特殊字符）
   const binDir = path.join(sandbox, "bin");
   mkdirSync(binDir, { recursive: true });
   const gitCounterFile = path.join(sandbox, "git-spawns.log");
@@ -238,6 +344,15 @@ try {
   const gitWrapper = path.join(binDir, "git");
   writeFileSync(gitWrapper, STATIC_GIT_WRAPPER);
   chmodSync(gitWrapper, 0o755);
+
+  const psLogFile = path.join(sandbox, "ps-scans.log");
+  const psErrorFile = path.join(sandbox, "ps-wrapper.err");
+  resetPsLog(psLogFile, psErrorFile);
+  if (realPs) {
+    const psWrapper = path.join(binDir, "ps");
+    writeFileSync(psWrapper, STATIC_PS_WRAPPER);
+    chmodSync(psWrapper, 0o755);
+  }
 
   // 2. 构造固定种子数据集（500 全局 / 30 目标仓：含 worktree、symlink、百分号编码路径、缺失目录、孤儿）
   const workspacesRoot = path.join(sandbox, "workspaces");
@@ -424,10 +539,17 @@ try {
     };
   };
 
-  // 开启 PATH 包装并自检计数写入/读取可用，再开始实测
+  // 开启 PATH 包装并自检 git 计数器与 ps 进程扫描可用性，再开始实测
   process.env.MIMI_BENCH_GIT_COUNTER_FILE = gitCounterFile;
   process.env.MIMI_BENCH_GIT_ERROR_FILE = gitErrorFile;
   process.env.MIMI_BENCH_REAL_GIT = realGit;
+  process.env.MIMI_BENCH_PS_LOG_FILE = psLogFile;
+  process.env.MIMI_BENCH_PS_ERROR_FILE = psErrorFile;
+  if (realPs) {
+    process.env.MIMI_BENCH_REAL_PS = realPs;
+  } else {
+    delete process.env.MIMI_BENCH_REAL_PS;
+  }
   process.env.PATH = `${binDir}:${originalPath}`;
 
   execFileSync("git", ["--version"], { env: process.env });
@@ -437,9 +559,72 @@ try {
   }
   resetSpawnCount(gitCounterFile, gitErrorFile);
 
+  const psSelfTest: {
+    status: ProcessScanStatus;
+    command: string;
+    parsedProcessCount: number;
+    exitCode: number | null;
+    errorCode: string | null;
+    reason: string | null;
+  } = {
+    status: "degraded",
+    command: "ps -eo pid=,args=",
+    parsedProcessCount: 0,
+    exitCode: null,
+    errorCode: null,
+    reason: null,
+  };
+  if (process.platform === "win32") {
+    psSelfTest.reason = "unsupported_platform_win32";
+  } else if (!realPs) {
+    psSelfTest.reason = "ps_not_found";
+  } else {
+    resetPsLog(psLogFile, psErrorFile);
+    try {
+      const stdout = execFileSync("ps", ["-eo", "pid=,args="], {
+        env: process.env,
+        timeout: 1_000,
+        maxBuffer: 2 * 1024 * 1024,
+        encoding: "utf8",
+      });
+      const probeStats = readPsLog(psLogFile, psErrorFile);
+      if (probeStats.attempts !== 1 || probeStats.succeeded !== 1 || probeStats.failed !== 0 || probeStats.incomplete !== 0) {
+        throw new Error(`ps 包装器自检计数异常：${JSON.stringify(probeStats)}`);
+      }
+      const parsedCount = countValidPsLines(stdout);
+      psSelfTest.parsedProcessCount = parsedCount;
+      psSelfTest.exitCode = 0;
+      if (parsedCount > 0) {
+        psSelfTest.status = "ok";
+      } else {
+        psSelfTest.reason = "ps_empty_process_list";
+      }
+    } catch (error) {
+      assertNoWrapperError(psErrorFile, "ps");
+      const errObj = error as { status?: unknown; code?: unknown; signal?: unknown };
+      const exitCode = typeof errObj.status === "number" ? errObj.status : null;
+      const errorCode = typeof errObj.code === "string" ? errObj.code : null;
+      const signal = typeof errObj.signal === "string" ? errObj.signal : null;
+      psSelfTest.exitCode = exitCode;
+      psSelfTest.errorCode = errorCode;
+      if (errorCode) {
+        psSelfTest.reason = `ps_self_test_failed:${errorCode}`;
+      } else if (exitCode !== null) {
+        psSelfTest.reason = `ps_self_test_failed:exit_${exitCode}`;
+      } else if (signal) {
+        psSelfTest.reason = `ps_self_test_failed:signal_${signal}`;
+      } else {
+        psSelfTest.reason = "ps_self_test_failed:unknown";
+      }
+    }
+    resetPsLog(psLogFile, psErrorFile);
+  }
+
   // 计时循环外验证完整目标仓集合（全部 30 条，覆盖主仓、2 个 worktree、symlink 与编码 URI）
   const sanityStack = createStack();
+  let sanityPsStats: ProcessScanStats = { attempts: 0, succeeded: 0, failed: 0, incomplete: 0, exitCodes: [] };
   try {
+    resetPsLog(psLogFile, psErrorFile);
     const seenIds = new Set<string>();
     const seenCwds = new Set<string>();
     let cursor: string | undefined;
@@ -476,12 +661,15 @@ try {
     if (sanityRpcs.cli < 1 || sanityRpcs.other < 1) {
       throw new Error(`Agy 生产后端未发出预期 CLI+Other ACP session/list RPC：${JSON.stringify(sanityRpcs)}`);
     }
+    sanityPsStats = readPsLog(psLogFile, psErrorFile);
   } finally {
     await sanityStack.close();
   }
 
   const batchResults: Array<{
     batch: number;
+    processScanStatus: ProcessScanStatus;
+    eligibleForPhase1Comparison: boolean;
     concurrentCold: {
       runs: number;
       concurrency: number;
@@ -491,6 +679,13 @@ try {
       gitSpawnsTotal: number;
       acpSessionListRpcsPerRun: number[];
       acpSessionListRpcsMean: number;
+      processScan: {
+        status: ProcessScanStatus;
+        attempts: number;
+        succeeded: number;
+        failed: number;
+        incomplete: number;
+      };
       returnedRowsPerCall: number;
     };
     sequentialWarm: {
@@ -501,21 +696,36 @@ try {
       acpSessionListRpcsDelta: number;
       acpCliRpcsDelta: number;
       acpOtherRpcsDelta: number;
+      processScan: {
+        status: ProcessScanStatus;
+        warmupAttempts: number;
+        warmupSucceeded: number;
+        warmupFailed: number;
+        warmupIncomplete: number;
+        timedAttempts: number;
+        timedSucceeded: number;
+        timedFailed: number;
+        timedIncomplete: number;
+      };
       returnedRowsPerCall: number;
     };
   }> = [];
+
+  const allMeasuredPsStats: ProcessScanStats[] = [sanityPsStats];
 
   for (let batch = 1; batch <= opts.batches; batch += 1) {
     // A. 并发冷查（清进程缓存 / 新建 SharedReadonlyAcp、GitRepoIndex 与 AgyCatalog，并发触发同仓查询）
     const coldLatencies: number[] = [];
     const coldGitSpawns: number[] = [];
     const coldAcpRpcs: number[] = [];
+    const coldPsRuns: ProcessScanStats[] = [];
     let coldReturned = 0;
 
     for (let run = 0; run < opts.cold; run += 1) {
       const stack = createStack();
       try {
         resetSpawnCount(gitCounterFile, gitErrorFile);
+        resetPsLog(psLogFile, psErrorFile);
         const t0 = performance.now();
         const responses = await Promise.all(
           Array.from({ length: opts.concurrency }, () =>
@@ -531,6 +741,7 @@ try {
         if (rpcs.total <= 0) {
           throw new Error(`Agy 并发冷查未记录到任何 ACP session/list RPC`);
         }
+        coldPsRuns.push(readPsLog(psLogFile, psErrorFile));
         coldLatencies.push(elapsed);
         coldGitSpawns.push(spawns);
         coldAcpRpcs.push(rpcs.total);
@@ -545,11 +756,19 @@ try {
       }
     }
 
+    const coldPs = mergePsStats(coldPsRuns);
+    allMeasuredPsStats.push(coldPs);
+    const coldPsStatus: ProcessScanStatus =
+      psSelfTest.status === "ok" && coldPs.failed === 0 && coldPs.incomplete === 0 ? "ok" : "degraded";
+
     // B. 顺序热态（预热 30s Git 缓存与常驻 ACP 连接后连续顺序查询）
     const warmStack = createStack();
     try {
+      resetPsLog(psLogFile, psErrorFile);
       await warmStack.handlers.list({ cwd: targetRepo, limit: 20, sortKey: "updated_at", sortDirection: "desc" });
+      const warmWarmupPs = readPsLog(psLogFile, psErrorFile);
       resetSpawnCount(gitCounterFile, gitErrorFile);
+      resetPsLog(psLogFile, psErrorFile);
       const acpBeforeWarm = warmStack.getAcpListRpcCounts();
       const warmLatencies: number[] = [];
       let warmReturned = 0;
@@ -563,10 +782,25 @@ try {
         }
       }
       const warmSpawnsTotal = readSpawnCount(gitCounterFile, gitErrorFile);
+      const warmTimedPs = readPsLog(psLogFile, psErrorFile);
       const acpAfterWarm = warmStack.getAcpListRpcCounts();
+
+      allMeasuredPsStats.push(warmWarmupPs, warmTimedPs);
+      const warmPsStatus: ProcessScanStatus =
+        psSelfTest.status === "ok"
+        && warmWarmupPs.failed === 0
+        && warmWarmupPs.incomplete === 0
+        && warmTimedPs.failed === 0
+        && warmTimedPs.incomplete === 0
+          ? "ok"
+          : "degraded";
+      const batchPsStatus: ProcessScanStatus =
+        coldPsStatus === "ok" && warmPsStatus === "ok" ? "ok" : "degraded";
 
       batchResults.push({
         batch,
+        processScanStatus: batchPsStatus,
+        eligibleForPhase1Comparison: batchPsStatus === "ok",
         concurrentCold: {
           runs: opts.cold,
           concurrency: opts.concurrency,
@@ -581,6 +815,13 @@ try {
           gitSpawnsTotal: coldGitSpawns.reduce((a, b) => a + b, 0),
           acpSessionListRpcsPerRun: coldAcpRpcs,
           acpSessionListRpcsMean: mean(coldAcpRpcs),
+          processScan: {
+            status: coldPsStatus,
+            attempts: coldPs.attempts,
+            succeeded: coldPs.succeeded,
+            failed: coldPs.failed,
+            incomplete: coldPs.incomplete,
+          },
           returnedRowsPerCall: coldReturned,
         },
         sequentialWarm: {
@@ -596,6 +837,17 @@ try {
           acpSessionListRpcsDelta: acpAfterWarm.total - acpBeforeWarm.total,
           acpCliRpcsDelta: acpAfterWarm.cli - acpBeforeWarm.cli,
           acpOtherRpcsDelta: acpAfterWarm.other - acpBeforeWarm.other,
+          processScan: {
+            status: warmPsStatus,
+            warmupAttempts: warmWarmupPs.attempts,
+            warmupSucceeded: warmWarmupPs.succeeded,
+            warmupFailed: warmWarmupPs.failed,
+            warmupIncomplete: warmWarmupPs.incomplete,
+            timedAttempts: warmTimedPs.attempts,
+            timedSucceeded: warmTimedPs.succeeded,
+            timedFailed: warmTimedPs.failed,
+            timedIncomplete: warmTimedPs.incomplete,
+          },
           returnedRowsPerCall: warmReturned,
         },
       });
@@ -604,13 +856,40 @@ try {
     }
   }
 
-  const warmP95s = batchResults.map((b) => b.sequentialWarm.latencyMs.p95);
-  const coldP95s = batchResults.map((b) => b.concurrentCold.latencyMs.p95);
+  const totalPsStats = mergePsStats(allMeasuredPsStats);
+  let exclusionReason: string | null = null;
+  if (psSelfTest.status !== "ok") {
+    exclusionReason = psSelfTest.reason ?? "ps_self_test_degraded";
+  } else if (totalPsStats.failed > 0 || totalPsStats.incomplete > 0) {
+    exclusionReason = `ps_scan_failed_during_benchmark:failed=${totalPsStats.failed},incomplete=${totalPsStats.incomplete}`;
+  } else if (totalPsStats.succeeded === 0) {
+    exclusionReason = "ps_scan_never_succeeded_during_benchmark";
+  }
+
+  const overallPsStatus: ProcessScanStatus = exclusionReason === null ? "ok" : "degraded";
+  if (psSelfTest.status !== "ok" || totalPsStats.succeeded === 0) {
+    for (const batchItem of batchResults) {
+      batchItem.processScanStatus = "degraded";
+      batchItem.eligibleForPhase1Comparison = false;
+    }
+  }
+
+  const eligibleBatches = batchResults.filter((b) => b.eligibleForPhase1Comparison);
+  const excludedBatches = batchResults.filter((b) => !b.eligibleForPhase1Comparison);
+  const phase1Eligible = overallPsStatus === "ok" && eligibleBatches.length === batchResults.length;
+
   const variancePct = (vals: number[]) => {
     const mn = Math.min(...vals);
     const mx = Math.max(...vals);
     return mn > 0 ? Number((((mx - mn) / mn) * 100).toFixed(2)) : 0;
   };
+
+  const eligibleColdP95s = eligibleBatches.map((b) => b.concurrentCold.latencyMs.p95);
+  const eligibleWarmP95s = eligibleBatches.map((b) => b.sequentialWarm.latencyMs.p95);
+  const phase1ColdP95Mean = phase1Eligible ? mean(eligibleColdP95s) : null;
+  const phase1ColdP95Spread = phase1Eligible ? variancePct(eligibleColdP95s) : null;
+  const phase1WarmP95Mean = phase1Eligible ? mean(eligibleWarmP95s) : null;
+  const phase1WarmP95Spread = phase1Eligible ? variancePct(eligibleWarmP95s) : null;
 
   const report = {
     benchmark: "agy-acp-list-phase0",
@@ -627,11 +906,33 @@ try {
       uniqueNonOrphanRawCwds: uniqueCandidateCwds.size,
       existingUniqueCwdsEligibleForGitInspect: uniqueCandidateCwds.size - missingDirs.length,
     },
+    processScan: {
+      status: overallPsStatus,
+      eligibleForPhase1Comparison: phase1Eligible,
+      exclusionReason,
+      selfTest: psSelfTest,
+      sanity: {
+        attempts: sanityPsStats.attempts,
+        succeeded: sanityPsStats.succeeded,
+        failed: sanityPsStats.failed,
+        incomplete: sanityPsStats.incomplete,
+      },
+      totals: {
+        attempts: totalPsStats.attempts,
+        succeeded: totalPsStats.succeeded,
+        failed: totalPsStats.failed,
+        incomplete: totalPsStats.incomplete,
+      },
+    },
     summary: {
+      processScanStatus: overallPsStatus,
+      eligibleForPhase1Comparison: phase1Eligible,
+      eligibleBatchCount: eligibleBatches.length,
+      degradedBatchCount: excludedBatches.length,
       concurrentColdGitSpawnsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.gitSpawnsMean)),
       concurrentColdAcpRpcsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.acpSessionListRpcsMean)),
-      concurrentColdP95MsMean: mean(coldP95s),
-      concurrentColdP95SpreadPct: variancePct(coldP95s),
+      concurrentColdP95MsMean: phase1ColdP95Mean,
+      concurrentColdP95SpreadPct: phase1ColdP95Spread,
       sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: batchResults.reduce(
         (acc, b) => acc + b.sequentialWarm.gitSpawnsAbsoluteTotal,
         0,
@@ -640,11 +941,28 @@ try {
         (acc, b) => acc + b.sequentialWarm.acpSessionListRpcsDelta,
         0,
       ),
-      sequentialWarmP95MsMean: mean(warmP95s),
-      sequentialWarmP95SpreadPct: variancePct(warmP95s),
+      sequentialWarmP95MsMean: phase1WarmP95Mean,
+      sequentialWarmP95SpreadPct: phase1WarmP95Spread,
+      phase1Comparison: {
+        eligible: phase1Eligible,
+        status: phase1Eligible ? "valid" : "excluded_degraded",
+        excludedReason: exclusionReason,
+        eligibleBatches: eligibleBatches.map((b) => b.batch),
+        excludedBatches: excludedBatches.map((b) => b.batch),
+        concurrentColdP95MsMean: phase1ColdP95Mean,
+        concurrentColdP95SpreadPct: phase1ColdP95Spread,
+        sequentialWarmP95MsMean: phase1WarmP95Mean,
+        sequentialWarmP95SpreadPct: phase1WarmP95Spread,
+      },
     },
     batches: batchResults,
   };
+
+  if (!phase1Eligible) {
+    console.error(
+      `[WARN] Agy 进程扫描(ps)处于降级状态（reason=${exclusionReason}，attempts=${totalPsStats.attempts}，succeeded=${totalPsStats.succeeded}，failed=${totalPsStats.failed}，incomplete=${totalPsStats.incomplete}），本次延迟结果已排除出 Phase 1 性能对比。`,
+    );
+  }
 
   if (opts.jsonOut) {
     writeFileSync(opts.jsonOut, `${JSON.stringify(report, null, 2)}\n`);
@@ -658,6 +976,12 @@ try {
   else process.env.MIMI_BENCH_GIT_ERROR_FILE = prevErrorEnv;
   if (prevRealGitEnv === undefined) delete process.env.MIMI_BENCH_REAL_GIT;
   else process.env.MIMI_BENCH_REAL_GIT = prevRealGitEnv;
+  if (prevPsLogEnv === undefined) delete process.env.MIMI_BENCH_PS_LOG_FILE;
+  else process.env.MIMI_BENCH_PS_LOG_FILE = prevPsLogEnv;
+  if (prevPsErrorEnv === undefined) delete process.env.MIMI_BENCH_PS_ERROR_FILE;
+  else process.env.MIMI_BENCH_PS_ERROR_FILE = prevPsErrorEnv;
+  if (prevRealPsEnv === undefined) delete process.env.MIMI_BENCH_REAL_PS;
+  else process.env.MIMI_BENCH_REAL_PS = prevRealPsEnv;
   restoreGitEnv();
   rmSync(sandbox, { recursive: true, force: true });
 }

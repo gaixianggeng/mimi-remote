@@ -50,7 +50,7 @@ bash ./scripts/bench-all-runtimes-phase0.sh --seed 20260410 --batches 3 --cold 5
 
 - 入口脚本：`scripts/bench-all-runtimes-phase0.sh`
 - 隔离性：两个基准脚本在夹具初始化与全部计时调用前均清空宿主 `GIT_*` 仓库变量并禁用全局/系统 Git 配置，退出时恢复，不污染外部仓库。
-- Antigravity 基准：`scripts/bench-agy-acp-list.ts`（通过临时 `PATH` 静态 `git` 包装器按环境变量传递路径计数 OS 级 `git` spawn，计数读写失败即报错中止；运行生产 `createAcpSessionBackend` + `SharedReadonlyAcp` + `AcpClient` + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers` 完整链路，底层使用受控内存 ACP 传输 `FakeAgyWorld` 隔离上游 `agy` 守护进程 SQLite/RPC I/O）
+- Antigravity 基准：`scripts/bench-agy-acp-list.ts`（通过临时 `PATH` 静态 `git` 与 `ps` 包装器按环境变量传递路径计数 OS 级 `git` spawn 并记录 `ps -eo pid=,args=` 进程扫描成功/降级状态，包装器读写失败即报错中止；若 `ps` 进程扫描降级则将延迟结果排除出 Phase 1 对比；运行生产 `createAcpSessionBackend` + `SharedReadonlyAcp` + `AcpClient` + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers` 完整链路，底层使用受控内存 ACP 传输 `FakeAgyWorld` 隔离上游 `agy` 守护进程 SQLite/RPC I/O）
 - Claude SDK 基准：`scripts/bench-claude-sdk-list.ts`（在隔离临时 `CLAUDE_CONFIG_DIR` 运行真实 `@anthropic-ai/claude-agent-sdk` `listSessions`、`TranscriptIndex`、`ActivityClock`、`WorkingDirectories`、`Overlay`、`Catalog` 与 `createThreadHandlers`，并在计时循环外全量翻页校验完整目标会话集含全部 worktree）
 
 ### 3.2 Antigravity（`bridges/agy-acp`）基线数据
