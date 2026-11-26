@@ -1190,9 +1190,7 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if err := os.Mkdir(projectPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(upstreamTokenPath, []byte("upstream-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, upstreamTokenPath, []byte("upstream-token"))
 	cfg := config.Config{
 		Listen: strings.TrimPrefix(server.URL, "http://"),
 		Auth:   config.AuthConfig{Token: token},
@@ -2364,15 +2362,15 @@ func TestSetupKeepsUnsafeLegacySourceReadOnly(t *testing.T) {
 	if err := os.Chmod(fixture.source, 0644); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range [][]string{{"setup", "--no-pair"}, {"doctor", "--fix"}, {"runtime", "--runtime-path", "codex=auto"}, {"workspace", "--scan-root", t.TempDir()}} {
+	for _, command := range [][]string{{"setup", "--no-pair"}, {"runtime", "--runtime-path", "codex=auto"}, {"workspace", "--scan-root", t.TempDir()}} {
 		var out, stderr bytes.Buffer
 		args := append(append([]string{"agentd"}, command...), "--json")
 		if commandExit(args, &out, &stderr) != 1 {
 			t.Fatal("command imported an unsafe legacy identity")
 		}
-		assertOnboardingError(t, out.Bytes(), stderr.String(), "config_recovery_required", "config_store")
-		if !bytes.Contains(out.Bytes(), []byte(`"target":"host_recovery"`)) {
-			t.Fatal("unsafe legacy file needs read-only recovery")
+		assertOnboardingError(t, out.Bytes(), stderr.String(), "config_permissions_unsafe", "config_store")
+		if !bytes.Contains(out.Bytes(), []byte(`"action":"doctor_fix"`)) {
+			t.Fatal("expected explicit permission repair")
 		}
 	}
 	raw, readErr := os.ReadFile(fixture.source)
@@ -2384,4 +2382,12 @@ func TestSetupKeepsUnsafeLegacySourceReadOnly(t *testing.T) {
 		t.Fatalf("unsafe source permissions changed: %v", err)
 	}
 	assertPathDoesNotExist(t, fixture.destination, "unsafe legacy configuration must remain read-only")
+	var out, diagnostic bytes.Buffer
+	if err := runDoctorWithWriters([]string{"doctor", "--fix", "--json"}, &out, &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := config.ReadPrivatePreflightFile(fixture.source, 4<<20); err != nil || !bytes.Equal(data, fixture.raw) {
+		t.Fatal("doctor did not restore canonical permissions on the original identity")
+	}
+	assertPathDoesNotExist(t, fixture.destination, "permission repair must leave migration to a subsequent save")
 }

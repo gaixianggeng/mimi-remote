@@ -47,3 +47,22 @@ func TestRepairOwnedModeWithoutReplacingOrFollowing(t *testing.T) {
 		t.Fatalf("repeat repair changed=%v err=%v", changed, err)
 	}
 }
+
+func TestUnreadableOwnedFileRemainsRepairable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing")
+	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadPrivatePreflightFile(path, 100); len(b) != 0 || PrivateFileDiagnostic(err) != "config_permissions_unsafe" {
+		t.Fatalf("unreadable file: %v", err)
+	}
+	if changed, err := RepairPrivatePermissions(path); !changed || err != nil {
+		t.Fatalf("repair changed=%v err=%v", changed, err)
+	}
+	if b, err := ReadPrivatePreflightFile(path, 100); string(b) != "fixture" || err != nil {
+		t.Fatalf("after repair: %v", err)
+	}
+}

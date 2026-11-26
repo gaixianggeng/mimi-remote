@@ -24,7 +24,7 @@ type stagedLegacyConfig struct {
 type legacyMigrationFileOps struct {
 	lstat       func(string) (os.FileInfo, error)
 	readRegular func(string, os.FileInfo) ([]byte, error)
-	stage       func(string, string, []byte, string) (stagedLegacyConfig, error)
+	stage       func(string, string, []byte) (stagedLegacyConfig, error)
 	link        func(string, string) error
 	remove      func(string) error
 	syncDir     func(string) error
@@ -77,18 +77,7 @@ func MigrateLegacyDefaultConfig(requestedPath string, explicitlyConfigured bool)
 	if _, err := os.Lstat(legacyPath); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	var migrated bool
-	err = WithConfigCommitLock(ctx, requested, func() error {
-		if err := CheckSetupWriteAvailable(requested); err != nil {
-			return err
-		}
-		var err error
-		migrated, err = migrateLegacyDefaultConfig(requested, legacyPath, defaultLegacyMigrationFileOps())
-		return err
-	})
-	return migrated, err
+	return migrateLegacyDefaultConfig(requested, legacyPath, defaultLegacyMigrationFileOps())
 }
 
 func migrateLegacyDefaultConfig(destination string, source string, ops legacyMigrationFileOps) (bool, error) {
@@ -114,6 +103,29 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 		return false, fmt.Errorf("读取旧版配置失败：%w", err)
 	}
 
+	if _, err := CheckCredentialPermissions(raw); err != nil {
+		return false, err
+	}
+
+	// Start the lock only after checking the legacy file and its credentials.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var migrated bool
+	err = WithConfigCommitLock(ctx, destination, func() error {
+		if err := CheckSetupWriteAvailable(destination); err != nil {
+			return err
+		}
+		if _, err := ops.lstat(destination); !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		var err error
+		migrated, err = publishLegacyConfig(destination, source, sourceInfo, raw, ops)
+		return err
+	})
+	return migrated, err
+}
+
+func publishLegacyConfig(destination, source string, sourceInfo os.FileInfo, raw []byte, ops legacyMigrationFileOps) (bool, error) {
 	destinationDir := filepath.Dir(destination)
 	createdDirs, err := ensureLegacyMigrationDirectory(destinationDir)
 	if err != nil {
@@ -126,7 +138,7 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 		}
 	}()
 
-	staged, err := ops.stage(destinationDir, ".config.json.migrate-", raw, source)
+	staged, err := ops.stage(destinationDir, ".config.json.migrate-", raw)
 	if staged.path != "" {
 		defer ops.remove(staged.path)
 	}
@@ -142,7 +154,10 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	if err != nil || !bytes.Equal(current, raw) {
 		return false, errors.New("旧版配置已更改，请重新选择")
 	}
-	if err := CopyPrivatePermissions(source, staged.path); err != nil {
+	if _, err := CheckCredentialPermissions(current); err != nil {
+		return false, err
+	}
+	if err := CheckPrivatePermissions(staged.path); err != nil {
 		return false, err
 	}
 	// hard link 是这里的 no-clobber 提交点：目标并发出现时返回 EEXIST，不会像 rename 一样覆盖新文件。
@@ -171,7 +186,7 @@ func migrateLegacyDefaultConfig(destination string, source string, ops legacyMig
 	return true, nil
 }
 
-func stageLegacyConfig(dir string, pattern string, raw []byte, source string) (result stagedLegacyConfig, resultErr error) {
+func stageLegacyConfig(dir string, pattern string, raw []byte) (result stagedLegacyConfig, resultErr error) {
 	file, err := CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return result, err
@@ -183,16 +198,6 @@ func stageLegacyConfig(dir string, pattern string, raw []byte, source string) (r
 			_ = os.Remove(result.path)
 		}
 	}()
-	if runtime.GOOS != "windows" {
-		if err := file.Chmod(0o600); err != nil {
-			return result, err
-		}
-	}
-	if runtime.GOOS == "windows" {
-		if err := CopyPrivatePermissions(source, result.path); err != nil {
-			return result, err
-		}
-	}
 	if _, err := io.Copy(file, bytes.NewReader(raw)); err != nil {
 		return result, err
 	}

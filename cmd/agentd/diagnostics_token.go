@@ -25,7 +25,7 @@ func diagnosticControlToken(configPath string, create bool) (string, error) {
 		return "", err
 	}
 	value = hex.EncodeToString(random)
-	file, err := os.CreateTemp(filepath.Dir(path), ".diagnostics-token-*")
+	file, err := config.CreatePrivateTemp(filepath.Dir(path), ".diagnostics-token-")
 	if err != nil {
 		return "", err
 	}

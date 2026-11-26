@@ -3,7 +3,6 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"unsafe"
 
@@ -36,7 +35,14 @@ func checkPreflightFileAccess(file *os.File, _ os.FileInfo) error {
 		return err
 	}
 	if owner == nil || !owner.Equals(current.User.Sid) {
-		return errors.New("文件不属于当前用户")
+		return errFileNotOwned
+	}
+	control, _, err := descriptor.Control()
+	if err != nil {
+		return err
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return errPreflightFileNotPrivate
 	}
 	acl, _, err := descriptor.DACL()
 	if err != nil || !privatePreflightDACL(acl, owner) {
@@ -50,30 +56,22 @@ func privatePreflightDACL(acl *windows.ACL, owner *windows.SID) bool {
 	if acl == nil {
 		return false
 	}
-	const sensitive = windows.GENERIC_ALL | windows.GENERIC_READ | windows.GENERIC_WRITE |
-		windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | windows.FILE_WRITE_ATTRIBUTES |
-		windows.FILE_WRITE_EA | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER
+	// FA in file SDDL is STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x1ff.
+	const fileAllAccess = 0x001f01ff
+	expected := map[string]bool{owner.String(): true, "S-1-5-18": true, "S-1-5-32-544": true}
+	if int(acl.AceCount) != len(expected) {
+		return false
+	}
 	for i := uint16(0); i < acl.AceCount; i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(acl, uint32(i), &ace); err != nil {
+		if windows.GetAce(acl, uint32(i), &ace) != nil || ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != fileAllAccess {
 			return false
 		}
-		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
-			continue
-		}
-		// Object/callback ACEs have a different SID layout; keep the file
-		// in recovery if its access cannot be established.
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
+		if !expected[sid] {
 			return false
 		}
-		if ace.Mask&sensitive == 0 {
-			continue
-		}
-		principal := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !principal.Equals(owner) && !principal.IsWellKnown(windows.WinLocalSystemSid) &&
-			!principal.IsWellKnown(windows.WinBuiltinAdministratorsSid) && !principal.IsWellKnown(windows.WinCreatorOwnerRightsSid) {
-			return false
-		}
+		delete(expected, sid)
 	}
 	return true
 }

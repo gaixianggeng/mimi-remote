@@ -38,7 +38,7 @@ func EditWorkspace(path, legacy, scan, browse string, restore *WorkspaceConfigur
 	if err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
-	if err = recoverPublication(ctx, path, defaultSetupFileTransactionOps(), nil); err != nil {
+	if err = recoverPublication(ctx, path, legacy, defaultSetupFileTransactionOps(), nil); err != nil {
 		return WorkspaceConfigurationResult{}, err
 	}
 	p, err := readProposal(path, legacy, false)

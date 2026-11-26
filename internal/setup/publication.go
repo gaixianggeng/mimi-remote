@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -29,7 +28,7 @@ func digest(raw []byte) string { v := sha256.Sum256(raw); return hex.EncodeToStr
 func recoveryError(path string, err error) error {
 	return &SaveError{Code: "config_recovery_required", Step: "config_store", ConfigPath: "<配置目录>/config.json", RecoveryPath: "<配置目录>/" + filepath.Base(path), Cause: err}
 }
-func recoverPublication(ctx context.Context, path string, ops setupFileTransactionOps, identity *interruptedIdentity) error {
+func recoverPublication(ctx context.Context, path, legacy string, ops setupFileTransactionOps, identity *interruptedIdentity) error {
 	j := config.SetupJournalPath(path)
 	if _, err := os.Lstat(j + ".recovery"); !errors.Is(err, os.ErrNotExist) {
 		return recoveryError(j, errors.New("上一次提交需要手动检查"))
@@ -38,6 +37,13 @@ func recoverPublication(ctx context.Context, path string, ops setupFileTransacti
 		return nil
 	}
 	return config.WithConfigCommitLock(ctx, path, func() error {
+		_, err := readPrivateConfig(path)
+		if errors.Is(err, os.ErrNotExist) && legacy != "" {
+			_, err = readPrivateConfig(legacy)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		stored, err := readInterruptedIdentity(j + ".identity")
 		if err != nil {
 			return err
@@ -218,16 +224,12 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 		}
 	}()
 	if changes {
-		permissionsFrom := ""
-		if p.source.exists {
-			permissionsFrom = p.source.path
-		}
-		stage, err = ops.stage(dir, ".config.json.tmp-", raw, permissionsFrom)
+		stage, err = ops.stage(dir, ".config.json.tmp-", raw)
 		if err == nil {
 			stageInfo, err = config.FileIdentity(stage)
 		}
 		if err == nil && p.companion != "" {
-			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token, "")
+			tokenStage, err = ops.stage(dir, ".mimi-ws.tmp-", p.token)
 			if err == nil {
 				tokenInfo, err = config.FileIdentity(tokenStage)
 			}
@@ -285,14 +287,6 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupFile(tokenStage, tokenInfo, p.token)) {
 				return saveFailure("config_concurrent_change", errors.New("暂存文件已被替换"))
 			}
-			if p.source.exists {
-				if err := copyAndSyncPermissions(p.source.path, stage); err != nil {
-					if conflict := p.source.check(); conflict != nil {
-						return conflict
-					}
-					return err
-				}
-			}
 			r := publication{ConfigStage: filepath.Base(stage), After: digest(raw), Fresh: !p.source.exists}
 			if r.Fresh {
 				r.IdentityDigest = (interruptedIdentity{Bearer: p.cfg.Auth.Token, Upstream: strings.TrimSpace(string(p.token))}).digest()
@@ -329,7 +323,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				}
 			}()
 			manifest, _ := json.Marshal(r)
-			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest, "")
+			stagedJournal, err := ops.stage(dir, ".mimi-publish.tmp-", manifest)
 			if err != nil {
 				return err
 			}
@@ -411,6 +405,9 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				}
 				if backup != "" {
 					rollback := stage
+					if !sameSetupFile(backup, backupInfo, p.dest.raw) {
+						return recoveryError(journal, errors.New("恢复点的内容或权限已更改"))
+					}
 					if e = ops.link(backup, rollback); e == nil {
 						e = ops.rename(rollback, path)
 					}
@@ -468,23 +465,6 @@ func (p *proposal) removeSetupFileIfOwned(path string, expected os.FileInfo, raw
 			_ = ops.remove(path)
 		}
 	}
-}
-
-func copyAndSyncPermissions(source, stage string) error {
-	if runtime.GOOS == "windows" {
-		// The stage was flushed with the original DACL. Its owner may only
-		// have read access under that policy, so do not reopen it for writing.
-		return config.CopyPrivatePermissions(source, stage)
-	}
-	file, err := os.OpenFile(stage, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if err = config.CopyPrivatePermissions(source, stage); err != nil {
-		return err
-	}
-	return file.Sync()
 }
 
 // A non-cooperating editor can adopt the newly published companion before

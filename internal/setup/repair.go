@@ -3,64 +3,67 @@ package setup
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type configWriter func(path string, raw []byte) error
-type renameFile func(oldPath string, newPath string) error
 
 type privateFileStageOps struct {
 	write func(file *os.File, raw []byte) (int, error)
 	sync  func(file *os.File) error
 }
 
-func writePrivateFileAtomically(path string, raw []byte) error {
-	return writePrivateFileAtomicallyWithRename(path, raw, renameSetupFile)
+// Read the owned config and check any existing referenced credentials before
+// initiating a write, including a no-op save or a legacy transport migration.
+func readPrivateConfig(path string) ([]byte, error) {
+	raw, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	if err == nil {
+		_, err = config.CheckCredentialPermissions(raw)
+	}
+	if err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+		return nil, saveFailure("config_permissions_unsafe", err)
+	}
+	return raw, err
 }
 
 func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return withConfigCommitLock(ctx, path, func() error {
-		current, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("重新读取配置失败：%w", err)
-		}
-		if !bytes.Equal(current, expected) {
-			return saveFailure("config_concurrent_change", fmt.Errorf("配置已被其他进程修改，请重新执行"))
-		}
-		return writePrivateFileAtomically(path, raw)
+		return writePrivateFileAtomically(path, expected, raw)
 	})
 }
 
-func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename renameFile) error {
-	dir := filepath.Dir(path)
-	source := ""
-	if _, err := os.Lstat(path); err == nil {
-		source = path
-	} else if !os.IsNotExist(err) {
+func writePrivateFileAtomically(path string, expected, raw []byte) error {
+	checkOriginal := func() error {
+		current, err := readPrivateConfig(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, expected) {
+			return saveFailure("config_concurrent_change", errors.New("配置已被其他进程修改，请重新执行"))
+		}
+		return nil
+	}
+	if err := checkOriginal(); err != nil {
 		return err
 	}
-	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw, source)
+	dir := filepath.Dir(path)
+	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tempPath)
-	if _, err := os.Lstat(path); err == nil {
-		if err = copyAndSyncPermissions(path, tempPath); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
+	if err := checkOriginal(); err != nil {
 		return err
 	}
-	if err := rename(tempPath, path); err != nil {
+	if err := renamePrivateFile(tempPath, path, renameSetupFile); err != nil {
 		return err
 	}
 
@@ -72,8 +75,8 @@ func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename rename
 	return nil
 }
 
-func stagePrivateFile(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
-	return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, privateFileStageOps{
+func stagePrivateFile(dir string, pattern string, raw []byte) (string, error) {
+	return stagePrivateFileWithOps(dir, pattern, raw, privateFileStageOps{
 		write: func(file *os.File, raw []byte) (int, error) {
 			return file.Write(raw)
 		},
@@ -83,7 +86,7 @@ func stagePrivateFile(dir string, pattern string, raw []byte, permissionsFrom st
 	})
 }
 
-func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissionsFrom string, ops privateFileStageOps) (string, error) {
+func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops privateFileStageOps) (string, error) {
 	file, err := config.CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return "", err
@@ -97,14 +100,6 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, permissions
 		}
 	}()
 
-	if err := config.MakeFilePrivate(file); err != nil {
-		return "", err
-	}
-	if runtime.GOOS == "windows" && permissionsFrom != "" {
-		if err := config.CopyPrivatePermissions(permissionsFrom, path); err != nil {
-			return "", err
-		}
-	}
 	written, err := ops.write(file, raw)
 	if err != nil {
 		return "", err

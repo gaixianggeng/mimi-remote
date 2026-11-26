@@ -3,10 +3,11 @@ package setup
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 // writeNoNetworkConfig 复现 Windows 安装器不勾选局域网后的配置：loopback listen，
@@ -30,9 +31,7 @@ func writeNoNetworkConfig(t *testing.T, listen, token string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, raw)
 	return path
 }
 
@@ -85,9 +84,7 @@ func TestRunLocalServiceOnlyAppliesToNewAndExistingConfig(t *testing.T) {
 
 func TestLocalServiceAccessRejectsUnreadableConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, []byte("{not json"))
 	if _, err := LocalServiceAccess(path); err == nil {
 		t.Fatal("损坏的配置不能被当作可启动的服务")
 	}

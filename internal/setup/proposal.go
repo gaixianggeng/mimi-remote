@@ -145,11 +145,6 @@ func previewSavedSetup(path, legacy string) config.PreflightSnapshot {
 			}
 		}
 	}
-	if source.Code == "config_permissions_unsafe" {
-		// doctor fixes the committed destination. Only its owner can repair an
-		// old installation before deciding which config to migrate.
-		source.Code = "config_recovery_required"
-	}
 	return source
 }
 
@@ -181,10 +176,6 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 	if !p.dest.exists && legacy != "" {
 		p.legacy, err = readImage(legacy)
 		if err != nil {
-			var failure *SaveError
-			if errors.As(err, &failure) && failure.Code == "config_permissions_unsafe" {
-				return nil, saveFailure("config_recovery_required", failure.Cause)
-			}
 			return nil, err
 		}
 		if p.legacy.exists {
@@ -192,33 +183,16 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 		}
 	}
 	if p.source.exists {
+		if _, err := config.CheckCredentialPermissions(p.source.raw); err != nil {
+			return nil, saveFailure(config.PrivateFileDiagnostic(err), err)
+		}
 		if force {
 			return nil, saveFailure("token_rotation_requires_approval", errors.New("已保留现有身份"))
 		}
 		if err = json.Unmarshal(p.source.raw, &p.doc); err != nil || p.doc == nil {
 			return nil, saveFailure("config_invalid", errors.New("配置不是有效的 JSON 对象"))
 		}
-		s := config.ParseSetupDocument(p.source.raw)
-		// The former Unix release stored the same managed loopback WS stanza
-		// that Windows still uses. Convert only that verified historical shape.
-		if s.Code == "config_invalid" && config.SupportsSharedLocalAppServer() && config.ValidateSetupDocumentKeys(p.source.raw) == nil {
-			var previous struct {
-				AppServer config.AppServerConfig `json:"app_server"`
-			}
-			_ = json.Unmarshal(p.source.raw, &previous)
-			ws := previous.AppServer
-			if ws.Transport == "ws" && ws.Managed && ws.SSHTarget == "" && !ws.PinTransport && ws.WSTokenFile != "" && config.IsManagedLoopbackWS(ws.Listen) {
-				if err = p.captureToken(ws.WSTokenFile); err != nil {
-					return nil, err
-				}
-				p.set("local", "app_server", "transport")
-				for _, key := range []string{"managed", "listen", "ws_token_file", "remote_gateway"} {
-					p.set(nil, "app_server", key)
-				}
-				updated, _ := json.Marshal(p.doc)
-				s = config.ParseSetupDocument(updated)
-			}
-		}
+		s, ws := p.parseSource()
 		if s.Code != "" {
 			cause := error(errors.New("已保留原配置"))
 			if s.Code == "config_requires_newer_version" {
@@ -230,8 +204,8 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 			return nil, saveFailure(s.Code, cause)
 		}
 		p.cfg = s.Config
-		if p.cfg.AppServer.Transport == "ws" {
-			if err = p.captureToken(p.cfg.AppServer.WSTokenFile); err != nil {
+		if ws != "" {
+			if err = p.captureToken(ws); err != nil {
 				return nil, err
 			}
 		}
@@ -239,12 +213,65 @@ func readProposal(path, legacy string, force bool) (*proposal, error) {
 	return p, nil
 }
 
+// parseSource recognizes both the native format and the historical Unix managed WS stanza.
+func (p *proposal) parseSource() (config.PreflightSnapshot, string) {
+	s := config.ParseSetupDocument(p.source.raw)
+	// The former Unix release stored the same managed loopback WS stanza
+	// that Windows still uses. Convert only that verified historical shape.
+	if s.Code == "config_invalid" && config.SupportsSharedLocalAppServer() && config.ValidateSetupDocumentKeys(p.source.raw) == nil {
+		var previous struct {
+			AppServer config.AppServerConfig `json:"app_server"`
+		}
+		_ = json.Unmarshal(p.source.raw, &previous)
+		ws := previous.AppServer
+		if ws.Transport == "ws" && ws.Managed && ws.SSHTarget == "" && !ws.PinTransport && ws.WSTokenFile != "" && config.IsManagedLoopbackWS(ws.Listen) {
+			p.set("local", "app_server", "transport")
+			for _, key := range []string{"managed", "listen", "ws_token_file", "remote_gateway"} {
+				p.set(nil, "app_server", key)
+			}
+			updated, _ := json.Marshal(p.doc)
+			return config.ParseSetupDocument(updated), ws.WSTokenFile
+		}
+	}
+	if s.Config.AppServer.Transport == "ws" {
+		return s, s.Config.AppServer.WSTokenFile
+	}
+	return s, ""
+}
+
+// IsManagedCredential identifies only tokens belonging to a valid saved installation.
+func IsManagedCredential(path string, raw []byte, target string) bool {
+	p := proposal{source: configImage{raw: raw}}
+	if json.Unmarshal(raw, &p.doc) != nil || p.doc == nil {
+		return false
+	}
+	s, ws := p.parseSource()
+	if s.Code != "" {
+		return false
+	}
+	id, err := config.ConfigPathIdentity(target)
+	if err != nil {
+		return false
+	}
+	home, err := config.ConfigPathIdentity(path)
+	if err != nil || filepath.Dir(id) != filepath.Dir(home) || id == home {
+		return false
+	}
+	if ws != "" && (s.Config.AppServer.Managed || s.Config.AppServer.Transport == "local") {
+		if ref, err := config.ConfigPathIdentity(ws); err == nil && ref == id {
+			return true
+		}
+	}
+	ref, err := config.ConfigPathIdentity(s.Config.DeepSeek.TokenFile)
+	return err == nil && id == ref && id == managedDeepSeekTokenPath(home)
+}
+
 func (p *proposal) captureToken(path string) error {
 	path = config.ExpandPath(path)
 	raw, err := config.ReadPrivatePreflightFile(path, 4096)
 	if err != nil || strings.TrimSpace(string(raw)) == "" {
 		code := "config_recovery_required"
-		if p.dest.exists && filepath.Dir(path) == filepath.Dir(p.dest.path) && err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+		if err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
 			code = "config_permissions_unsafe"
 		}
 		return saveFailure(code, errors.New("无法验证配置引用的凭据"))

@@ -763,7 +763,10 @@ func ensureTailcatLocalControlToken(stateDir string) error {
 		return fmt.Errorf("创建 Tailcat 状态目录：%w", err)
 	}
 	path := filepath.Join(stateDir, "local-control.token")
-	if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+	if data, err := os.ReadFile(path); err == nil {
+		if strings.TrimSpace(string(data)) == "" {
+			return errors.New("Tailcat 本机控制凭据为空")
+		}
 		return nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("读取 Tailcat 本机控制凭据：%w", err)
@@ -772,20 +775,27 @@ func ensureTailcatLocalControlToken(stateDir string) error {
 	if _, err := rand.Read(random); err != nil {
 		return fmt.Errorf("生成 Tailcat 本机控制凭据：%w", err)
 	}
-	return writeTailcatPrivateFile(path, []byte(hex.EncodeToString(random)+"\n"))
+	err := writeTailcatPrivateFile(path, []byte(hex.EncodeToString(random)+"\n"))
+	if errors.Is(err, os.ErrExist) {
+		data, err := config.ReadPrivatePreflightFile(path, 4096)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			return errors.New("Tailcat 本机控制凭据为空")
+		}
+		return nil
+	}
+	return err
 }
 
 func writeTailcatPrivateFile(path string, data []byte) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".tailcat-token-*")
+	temporary, err := config.CreatePrivateTemp(filepath.Dir(path), ".tailcat-token-")
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
 	if _, err := temporary.Write(data); err != nil {
 		_ = temporary.Close()
 		return err
@@ -793,7 +803,7 @@ func writeTailcatPrivateFile(path string, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return os.Link(temporaryPath, path)
 }
 
 // ReadTailcatLocalControlToken 只供同机 agentd CLI/Mac App 读取本地控制凭据。

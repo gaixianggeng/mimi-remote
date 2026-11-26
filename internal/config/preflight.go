@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -125,8 +126,41 @@ func ParseSetupDocument(raw []byte) PreflightSnapshot {
 	return s
 }
 
+// CheckCredentialPermissions checks existing token files named in persisted bytes,
+// including disabled modules and legacy transports. Missing credentials retain
+// their existing module-specific diagnostics and recovery behavior.
+func CheckCredentialPermissions(raw []byte) (string, error) {
+	var refs struct {
+		AppServer struct {
+			Token string `json:"ws_token_file"`
+		} `json:"app_server"`
+		DeepSeek struct {
+			Token string `json:"token_file"`
+		} `json:"deepseek"`
+	}
+	// The caller handles document syntax. Opaque legacy files have no parsed references.
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		return "", nil
+	}
+	for _, path := range []string{refs.AppServer.Token, refs.DeepSeek.Token} {
+		if path == "" {
+			continue
+		}
+		path = ExpandPath(path)
+		if err := CheckPrivatePermissions(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return path, err
+		}
+	}
+	return "", nil
+}
+
 func InspectCommittedDocument(raw []byte) PreflightSnapshot {
 	s := ParseSetupDocument(raw)
+	if _, err := CheckCredentialPermissions(raw); err != nil {
+		s.Code = PrivateFileDiagnostic(err)
+		s.Confirmed = false
+		return s
+	}
 	if s.Code == "" && s.Config.AppServer.Transport == "ws" {
 		path := ExpandPath(s.Config.AppServer.WSTokenFile)
 		token, err := ReadPrivatePreflightFile(path, 4096)
@@ -149,7 +183,8 @@ func PrivateFileDiagnostic(err error) string {
 	return "config_invalid"
 }
 
-var errPreflightFileNotPrivate = errors.New("文件权限未能保护本机凭据")
+var errPreflightFileNotPrivate = errors.New("文件权限不符合私有凭据要求")
+var errFileNotOwned = fmt.Errorf("%w：文件不属于当前用户", errPreflightFileNotPrivate)
 
 // ReadPrivatePreflightFile reads at most limit bytes from an existing, owned
 // regular file. Check the opened file before reading, without following a
@@ -166,10 +201,17 @@ func readPreflightFile(path string, expected os.FileInfo, limit int64) ([]byte, 
 	if !expected.Mode().IsRegular() {
 		return nil, errors.New("凭据路径必须是普通文件")
 	}
-	if limit < 0 || limit > 4<<20 || expected.Size() > limit {
+	if limit < 0 || limit > 4<<20 {
 		return nil, errors.New("配置文件过大")
 	}
 	f, err := openSnapshotFile(path)
+	if errors.Is(err, os.ErrPermission) {
+		// A data-read denial can itself be the permission problem. Inspect the
+		// descriptor without requiring read access to credential bytes.
+		if accessErr := CheckPrivatePermissions(path); accessErr != nil {
+			return nil, accessErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +222,9 @@ func readPreflightFile(path string, expected os.FileInfo, limit int64) ([]byte, 
 	}
 	if err := checkPreflightFileAccess(f, info); err != nil {
 		return nil, err
+	}
+	if info.Size() > limit {
+		return nil, errors.New("配置文件过大")
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if int64(len(raw)) > limit {

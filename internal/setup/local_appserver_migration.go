@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,7 +44,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
-	original, err := os.ReadFile(path)
+	original, err := readPrivateConfig(path)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -133,14 +132,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	updated = append(updated, '\n')
 
 	return withConfigCommitLock(ctx, path, func() error {
-		current, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("重新读取配置失败：%w", err)
-		}
-		if !bytes.Equal(current, original) {
-			return fmt.Errorf("配置已被其他进程修改，请重新执行")
-		}
-		if err := writePrivateFileAtomically(path, updated); err != nil {
+		if err := writePrivateFileAtomically(path, original, updated); err != nil {
 			return fmt.Errorf("原子迁移 app-server 配置失败：%w", err)
 		}
 		return nil

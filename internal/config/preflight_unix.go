@@ -3,7 +3,6 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"syscall"
 
@@ -16,9 +15,9 @@ func openSnapshotFile(path string) (*os.File, error) {
 func checkPreflightFileAccess(file *os.File, info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Geteuid()) {
-		return errors.New("文件不属于当前用户")
+		return errFileNotOwned
 	}
-	if info.Mode().Perm()&0077 != 0 {
+	if info.Mode() != 0600 {
 		return errPreflightFileNotPrivate
 	}
 	return checkExtendedACL(file)

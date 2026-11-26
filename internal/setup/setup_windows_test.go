@@ -38,7 +38,7 @@ func TestWindowsSetupSavesConfigWithOldAutomaticCodex(t *testing.T) {
 	}
 }
 
-func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) {
+func TestWindowsSetupPreservesCanonicalDACLAndReferencedToken(t *testing.T) {
 	clearSetupEnv(t)
 	path := filepath.Join(t.TempDir(), "config.json")
 	options := atomicSetupOptions(t, path, false)
@@ -50,24 +50,6 @@ func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) 
 		t.Fatal(err)
 	}
 	tokenPath := prior.AppServer.WSTokenFile
-	principal, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Metadata-only access differentiates this fixture from a newly created private DACL.
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + principal.User.Sid.String() + ")(A;;0x80;;;BU)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	acl, _, err := sd.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range []string{path, tokenPath} {
-		if err := windows.SetNamedSecurityInfo(file, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
 	dacl := func(path string) string {
 		t.Helper()
 		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
@@ -99,7 +81,7 @@ func TestWindowsSetupPreservesCustomPrivateDACLAndReferencedToken(t *testing.T) 
 		t.Fatalf("referenced WS token changed: %v", err)
 	}
 	if cfgACL != dacl(path) || tokenACL != dacl(tokenPath) {
-		t.Fatal("custom DACL changed after save or rollback")
+		t.Fatal("canonical DACL changed after save or rollback")
 	}
 }
 
@@ -123,47 +105,30 @@ func TestWindowsStageChecksInheritedDACLBeforeWritingSecrets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sourceDir, destDir := t.TempDir(), t.TempDir()
-	setDACL(sourceDir, "D:P"+owner, windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	destDir := t.TempDir()
 	setDACL(destDir, "D:P"+owner+"(A;OICI;FR;;;WD)", windows.PROTECTED_DACL_SECURITY_INFORMATION)
-	source, err := config.CreatePrivateTemp(sourceDir, "source-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = source.Close(); err != nil {
-		t.Fatal(err)
-	}
-	setDACL(source.Name(), "D:(A;;FA;;;"+user.User.Sid.String()+")", windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
-	if _, err = config.ReadPrivatePreflightFile(source.Name(), 64); err != nil {
-		t.Fatal(err)
-	}
 	stageOps := privateFileStageOps{
 		write: func(f *os.File, raw []byte) (int, error) {
-			// If this filesystem can preserve the private policy exactly, it
-			// must already be in effect at the first write.
-			if _, err := config.ReadPrivatePreflightFile(f.Name(), 64); err != nil {
-				t.Fatal("secret write attempted with an unsafe inherited DACL")
+			sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Fatal(err)
+			}
+			control, _, err := sd.Control()
+			if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
+				t.Fatal("stage inherited its parent DACL before writing")
+			}
+			if err := config.CheckPrivatePermissions(f.Name()); err != nil {
+				t.Fatal(err)
 			}
 			return f.Write(raw)
 		},
 		sync: func(f *os.File) error { return f.Sync() },
 	}
-	name, err := stagePrivateFileWithOps(destDir, "stage-", []byte("fixture"), source.Name(), stageOps)
-	if err == nil {
-		if _, err := config.ReadPrivatePreflightFile(name, 64); err != nil {
-			t.Fatal(err)
-		}
-		policy := func(p string) string {
-			sd, err := windows.GetNamedSecurityInfo(p, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return sd.String()
-		}
-		if policy(name) != policy(source.Name()) {
-			t.Fatal("staging changed the access policy")
-		}
-	} else {
-		assertSetupDirectoryEntries(t, destDir)
+	name, err := stagePrivateFileWithOps(destDir, "stage-", []byte("fixture"), stageOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := config.ReadPrivatePreflightFile(name, 64); err != nil || string(raw) != "fixture" {
+		t.Fatalf("published stage: %v", err)
 	}
 }

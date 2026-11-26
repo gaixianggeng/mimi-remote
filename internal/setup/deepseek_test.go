@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
@@ -82,9 +83,7 @@ func TestConfigureDeepSeekFailedProbeLeavesConfigAndTokenUntouched(t *testing.T)
 	configPath, original := writeDeepSeekConfigFixture(t, false, "", "")
 	tokenPath := filepath.Join(filepath.Dir(configPath), managedDeepSeekTokenFilename)
 	oldToken := []byte("old-token-byte-identical\n")
-	if err := os.WriteFile(tokenPath, oldToken, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, oldToken)
 	dependencies := deepSeekTestDependencies()
 	dependencies.probe = func(_ context.Context, candidate deepSeekConnectionCandidate) error {
 		return errors.New("remote echoed " + candidate.Token)
@@ -152,9 +151,7 @@ func TestConfigureDeepSeekConnectReenablesStoredConnectionWithoutDiscovery(t *te
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, false, "http://127.0.0.1:4000", tokenPath)
 	setDeepSeekAutoDiscover(t, configPath, true)
-	if err := os.WriteFile(tokenPath, []byte("stored-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("stored-token\n"))
 	dependencies := deepSeekTestDependencies()
 	dependencies.discover = func(context.Context) (deepSeekConnectionCandidate, error) {
 		t.Fatal("已有连接不应依赖启动日志重新发现")
@@ -182,9 +179,7 @@ func TestConfigureDeepSeekConnectKeepsEnabledIntentWhenStoredConnectionIsOffline
 	configPath := filepath.Join(dir, "config.json")
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, false, "http://127.0.0.1:4000", tokenPath)
-	if err := os.WriteFile(tokenPath, []byte("stored-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("stored-token\n"))
 	dependencies := deepSeekTestDependencies()
 	dependencies.discover = func(context.Context) (deepSeekConnectionCandidate, error) {
 		t.Fatal("离线是健康状态，不应改写已保存连接")
@@ -267,9 +262,7 @@ func TestConfigureDeepSeekFailedReplacementKeepsCurrentBaseURL(t *testing.T) {
 	configPath := filepath.Join(dir, "config.json")
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, true, "http://127.0.0.1:4000", tokenPath)
-	if err := os.WriteFile(tokenPath, []byte("current-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("current-token\n"))
 	dependencies := deepSeekTestDependencies()
 	dependencies.probe = func(context.Context, deepSeekConnectionCandidate) error {
 		return errors.New("probe failed")
@@ -309,9 +302,7 @@ func TestConfigureDeepSeekRefreshUpdatesEnabledManagedConnection(t *testing.T) {
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, true, "http://127.0.0.1:4000", tokenPath)
 	setDeepSeekAutoDiscover(t, configPath, true)
-	if err := os.WriteFile(tokenPath, []byte("old-managed-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("old-managed-token\n"))
 	dependencies := deepSeekTestDependencies()
 
 	result, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeRefresh, "", dependencies)
@@ -330,9 +321,7 @@ func TestConfigureDeepSeekManualConnectionIsNotReplacedByRefresh(t *testing.T) {
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, true, "http://127.0.0.1:4000", tokenPath)
 	oldToken := []byte("manual-token\n")
-	if err := os.WriteFile(tokenPath, oldToken, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, oldToken)
 	dependencies := deepSeekTestDependencies()
 	var probed deepSeekConnectionCandidate
 	dependencies.probe = func(_ context.Context, candidate deepSeekConnectionCandidate) error {
@@ -360,9 +349,7 @@ func TestConfigureDeepSeekRefreshDoesNotReplaceExternalTokenFile(t *testing.T) {
 	writeDeepSeekConfigAtPath(t, configPath, true, "http://127.0.0.1:4000", externalTokenPath)
 	setDeepSeekAutoDiscover(t, configPath, true)
 	oldToken := []byte("external-token\n")
-	if err := os.WriteFile(externalTokenPath, oldToken, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, externalTokenPath, oldToken)
 	dependencies := deepSeekTestDependencies()
 	dependencies.probe = func(_ context.Context, candidate deepSeekConnectionCandidate) error {
 		if candidate.BaseURL != "http://127.0.0.1:4000" || candidate.Token != "external-token" {
@@ -391,9 +378,7 @@ func TestConfigureDeepSeekEnabledInspectShowsConfiguredConnection(t *testing.T) 
 	configPath := filepath.Join(dir, "config.json")
 	tokenPath := filepath.Join(dir, managedDeepSeekTokenFilename)
 	writeDeepSeekConfigAtPath(t, configPath, true, "http://127.0.0.1:4000", tokenPath)
-	if err := os.WriteFile(tokenPath, []byte("configured-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, []byte("configured-token\n"))
 	dependencies := deepSeekTestDependencies()
 	dependencies.probe = func(_ context.Context, candidate deepSeekConnectionCandidate) error {
 		if candidate.BaseURL != "http://127.0.0.1:4000" || candidate.Token != "configured-token" {
@@ -419,9 +404,7 @@ func TestLoadDeepSeekConfigRejectsSecretBearingBaseURLWithoutEcho(t *testing.T) 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	secret := "must-not-echo"
 	raw := []byte(`{"deepseek":{"enabled":false,"base_url":"http://127.0.0.1:5173/?token=` + secret + `"}}`)
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, configPath, raw)
 	_, err := loadDeepSeekConfigDocument(configPath)
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("非法 base_url 应固定脱敏失败：%v", err)
@@ -432,9 +415,7 @@ func TestConfigureDeepSeekCASConflictPreservesNewerConfigAndOldToken(t *testing.
 	configPath, _ := writeDeepSeekConfigFixture(t, false, "", "")
 	tokenPath := filepath.Join(filepath.Dir(configPath), managedDeepSeekTokenFilename)
 	oldToken := []byte("old-managed-token\n")
-	if err := os.WriteFile(tokenPath, oldToken, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, tokenPath, oldToken)
 	newer := []byte("{\"newer\":true}\n")
 	dependencies := deepSeekTestDependencies()
 	dependencies.probe = func(context.Context, deepSeekConnectionCandidate) error {
@@ -456,7 +437,7 @@ func TestConfigureDeepSeekCASConflictPreservesNewerConfigAndOldToken(t *testing.
 	assertDeepSeekFile(t, tokenPath, oldToken, true)
 }
 
-func TestConfigureDeepSeekRepairsUnsafeManagedTokenMode(t *testing.T) {
+func TestConfigureDeepSeekRefusesUnsafeManagedTokenMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 使用 ACL，不检查 POSIX mode")
 	}
@@ -470,12 +451,23 @@ func TestConfigureDeepSeekRepairsUnsafeManagedTokenMode(t *testing.T) {
 	if err := os.Chmod(tokenPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeConnect, startupURL, dependencies)
-	if err != nil {
+	before := mustReadFile(t, configPath)
+	_, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeConnect, startupURL, dependencies)
+	var failure *SaveError
+	if !errors.As(err, &failure) || failure.Code != "config_permissions_unsafe" {
+		t.Fatalf("unsafe mode: %v", err)
+	}
+	if !bytes.Equal(before, mustReadFile(t, configPath)) {
+		t.Fatal("modified config on refusal")
+	}
+	if info, err := os.Stat(tokenPath); err != nil || info.Mode().Perm() != 0644 {
+		t.Fatal("changed permissions on refusal")
+	}
+	if _, err := config.RepairPrivatePermissions(tokenPath); err != nil {
 		t.Fatal(err)
 	}
-	if !result.RestartRequired {
-		t.Fatalf("不安全 mode 不能走 no-op：%+v", result)
+	if _, err := configureDeepSeek(t.Context(), configPath, DeepSeekRuntimeConnect, startupURL, dependencies); err != nil {
+		t.Fatal(err)
 	}
 	assertDeepSeekFile(t, tokenPath, []byte(deepSeekTestToken+"\n"), true)
 }

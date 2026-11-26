@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,55 +8,48 @@ import (
 	"testing"
 )
 
-func TestDarwinExtendedACLIsPreservedAndBroadGrantsAreRepairable(t *testing.T) {
+func TestDarwinRejectsAndStripsEveryExtendedACL(t *testing.T) {
+	for _, rule := range []string{"everyone allow readattr", "everyone allow read", "everyone deny write"} {
+		t.Run(rule, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "original")
+			if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if output, err := exec.Command("/bin/chmod", "+a", rule, path).CombinedOutput(); err != nil {
+				t.Fatalf("set ACL: %s %v", output, err)
+			}
+			if _, err := ReadPrivatePreflightFile(path, 100); !errors.Is(err, errPreflightFileNotPrivate) {
+				t.Fatalf("accepted ACL: %v", err)
+			}
+			if changed, err := RepairPrivatePermissions(path); err != nil || !changed {
+				t.Fatalf("repair changed=%v err=%v", changed, err)
+			}
+			raw, err := ReadPrivatePreflightFile(path, 100)
+			if err != nil || string(raw) != "fixture" {
+				t.Fatalf("repaired file: %v", err)
+			}
+		})
+	}
+}
+
+func TestDarwinNewStageExcludesInheritedAccessAtCreation(t *testing.T) {
 	dir := t.TempDir()
-	source, stage := filepath.Join(dir, "original"), filepath.Join(dir, "stage")
-	for _, p := range []string{source, stage} {
-		if err := os.WriteFile(p, []byte("synthetic-private-fixture"), 0600); err != nil {
-			t.Fatal(err)
-		}
+	if out, err := exec.Command("/bin/chmod", "+a", "everyone allow read,file_inherit", dir).CombinedOutput(); err != nil {
+		t.Fatalf("parent ACL: %v %s", err, out)
 	}
-	add := func(path, rule string) {
-		t.Helper()
-		if output, err := exec.Command("/bin/chmod", "+a", rule, path).CombinedOutput(); err != nil {
-			t.Fatalf("set ACL fixture: %v %s", err, output)
-		}
-	}
-	read := func(path string) darwinFileACL {
-		t.Helper()
-		f, err := openSnapshotFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		a, err := readFileACL(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return a
-	}
-	add(source, "everyone allow readattr")
-	original := read(source)
-	if len(original.data) == 0 {
-		t.Fatal("missing ACL fixture")
-	}
-	if err := CopyPrivatePermissions(source, stage); err != nil {
+	path := filepath.Join(dir, "ordinary")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(read(stage).data, original.data) {
-		t.Fatal("lost explicit ACL during staged copy")
+	if err := CheckPrivatePermissions(path); !errors.Is(err, errPreflightFileNotPrivate) {
+		t.Fatalf("missing inherited ACL fixture: %v", err)
 	}
-	add(stage, "everyone allow read")
-	if _, err := ReadPrivatePreflightFile(stage, 100); !errors.Is(err, errPreflightFileNotPrivate) {
-		t.Fatalf("accepted broad ACL: %v", err)
-	}
-	if changed, err := RepairPrivatePermissions(stage); err != nil || !changed {
-		t.Fatalf("repair changed=%v err=%v", changed, err)
-	}
-	if _, err := ReadPrivatePreflightFile(stage, 100); err != nil {
+	file, err := createPrivateNew(filepath.Join(dir, "stage"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(read(source).data, original.data) {
-		t.Fatal("changed original ACL")
+	defer file.Close()
+	if err := verifyPrivateFile(file); err != nil {
+		t.Fatalf("stage not private at creation: %v", err)
 	}
 }

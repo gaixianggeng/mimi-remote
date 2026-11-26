@@ -19,10 +19,10 @@ func TestMigrateLegacyDefaultConfigPreservesRawConfig(t *testing.T) {
 	raw := []byte(`{
   "listen": "127.0.0.1:8787",
   "auth": {"token": "legacy-outer-token-must-stay-unchanged"},
-  "app_server": {"transport": "ws", "managed": true, "listen": "ws://127.0.0.1:4222", "ws_token_file": "` + upstreamTokenPath + `"},
+  "app_server": {"transport": "ws", "managed": true, "listen": "ws://127.0.0.1:4222", "ws_token_file": "` + filepath.ToSlash(upstreamTokenPath) + `"},
   "codex": {"bin": "codex"},
-  "projects": [{"id": "demo", "name": "Demo", "path": "` + projectPath + `"}],
-  "worktrees_root": "` + worktreesPath + `",
+  "projects": [{"id": "demo", "name": "Demo", "path": "` + filepath.ToSlash(projectPath) + `"}],
+  "worktrees_root": "` + filepath.ToSlash(worktreesPath) + `",
   "future_unknown_field": {"keep": true}
 }
 `)
@@ -127,7 +127,7 @@ func TestMigrateLegacyDefaultConfigReadAndWriteFailuresLeaveNothing(t *testing.T
 					return nil, sentinel
 				}
 			case "write":
-				ops.stage = func(dir string, _ string, _ []byte, _ string) (stagedLegacyConfig, error) {
+				ops.stage = func(dir string, _ string, _ []byte) (stagedLegacyConfig, error) {
 					path := filepath.Join(dir, ".config.json.migrate-partial")
 					if err := os.WriteFile(path, []byte("partial"), 0o600); err != nil {
 						t.Fatal(err)

@@ -112,7 +112,7 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		return Result{}, err
 	}
 	var identity interruptedIdentity
-	if err = recoverPublication(ctx, path, ops, &identity); err != nil {
+	if err = recoverPublication(ctx, path, o.LegacyPath, ops, &identity); err != nil {
 		return Result{}, err
 	}
 	p, err := readProposal(path, o.LegacyPath, o.Force)
@@ -193,6 +193,9 @@ func (p *proposal) check(ctx context.Context) error {
 			return err
 		}
 	}
+	if _, err := config.CheckCredentialPermissions(p.source.raw); err != nil {
+		return saveFailure("config_concurrent_change", err)
+	}
 	if p.referencedToken.exists {
 		if err := p.referencedToken.check(); err != nil {
 			return err
@@ -222,7 +225,7 @@ func ConfigureRuntimePaths(path, legacy string, pins map[string]string) (Runtime
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err = recoverPublication(ctx, resolved, defaultSetupFileTransactionOps(), nil); err != nil {
+	if err = recoverPublication(ctx, resolved, legacy, defaultSetupFileTransactionOps(), nil); err != nil {
 		return RuntimePathResult{}, err
 	}
 	p, err := readProposal(resolved, legacy, false)

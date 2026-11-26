@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
@@ -251,7 +252,7 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 func failingSetupFileOps(configPath string, failure string, sentinel error) setupFileTransactionOps {
 	ops := defaultSetupFileTransactionOps()
 	if failure == "config-write" || failure == "config-fsync" {
-		ops.stage = func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error) {
+		ops.stage = func(dir string, pattern string, raw []byte) (string, error) {
 			stageOps := privateFileStageOps{
 				write: func(file *os.File, raw []byte) (int, error) {
 					if strings.HasSuffix(failure, "-write") {
@@ -268,7 +269,7 @@ func failingSetupFileOps(configPath string, failure string, sentinel error) setu
 					return file.Sync()
 				},
 			}
-			return stagePrivateFileWithOps(dir, pattern, raw, permissionsFrom, stageOps)
+			return stagePrivateFileWithOps(dir, pattern, raw, stageOps)
 		}
 	}
 	defaultRename := ops.rename
@@ -321,9 +322,7 @@ func atomicSetupOptions(t *testing.T, configPath string, force bool) Options {
 
 func writeFileWithMode(t *testing.T, path string, raw []byte, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, raw, mode); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, raw)
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}

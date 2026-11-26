@@ -28,7 +28,7 @@ func TestConfigCommitLockMakesCASAndRenameAtomicAcrossMimiWriters(t *testing.T) 
 		firstDone <- withConfigCommitLock(ctx, path, func() error {
 			close(entered)
 			<-release
-			return writePrivateFileAtomically(path, newer)
+			return writePrivateFileAtomically(path, original, newer)
 		})
 	}()
 	<-entered

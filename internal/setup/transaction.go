@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type setupFileTransactionOps struct {
-	stage     func(dir string, pattern string, raw []byte, permissionsFrom string) (string, error)
+	stage     func(dir string, pattern string, raw []byte) (string, error)
 	rename    func(oldPath string, newPath string) error
 	renameNew func(oldPath, newPath string) error
 	link      func(oldPath string, newPath string) error
@@ -43,39 +45,49 @@ func writeSetupFilesAtomically(
 		return fmt.Errorf("app-server token file 必须与配置文件位于同一目录")
 	}
 
-	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw, "")
+	stagedToken, err := ops.stage(dir, ".app-server-ws-token.tmp-", tokenRaw)
 	if err != nil {
 		return fmt.Errorf("暂存 app-server token file 失败：%w", err)
 	}
 	defer ops.remove(stagedToken)
-	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw, "")
+	stagedConfig, err := ops.stage(dir, ".config.json.tmp-", configRaw)
 	if err != nil {
 		return fmt.Errorf("暂存配置文件失败：%w", err)
 	}
 	defer ops.remove(stagedConfig)
 
+	keepBackups := false
 	tokenBackup, err := hardLinkBackup(tokenPath, tokenExisted, ops)
 	if err != nil {
 		return fmt.Errorf("创建 app-server token file 恢复点失败：%w", err)
 	}
 	if tokenBackup != "" {
-		defer ops.remove(tokenBackup)
+		defer func() {
+			if !keepBackups {
+				_ = ops.remove(tokenBackup)
+			}
+		}()
 	}
 	configBackup, err := hardLinkBackup(configPath, configExisted, ops)
 	if err != nil {
 		return fmt.Errorf("创建配置文件恢复点失败：%w", err)
 	}
 	if configBackup != "" {
-		defer ops.remove(configBackup)
+		defer func() {
+			if !keepBackups {
+				_ = ops.remove(configBackup)
+			}
+		}()
 	}
 
 	// 先提交上游 token，再提交引用它的配置。第二步失败时恢复旧 token，
 	// 防止运行中的服务看到未配套提交的新凭证。
-	if err := ops.rename(stagedToken, tokenPath); err != nil {
+	if err := renamePrivateFile(stagedToken, tokenPath, ops.rename); err != nil {
 		return fmt.Errorf("提交 app-server token file 失败：%w", err)
 	}
-	if err := ops.rename(stagedConfig, configPath); err != nil {
+	if err := renamePrivateFile(stagedConfig, configPath, ops.rename); err != nil {
 		rollbackErr := restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops)
+		keepBackups = rollbackErr != nil
 		syncErr := ops.syncDir(dir)
 		return fmt.Errorf("提交配置文件失败：%w", errors.Join(err, rollbackErr, syncErr))
 	}
@@ -84,6 +96,7 @@ func writeSetupFilesAtomically(
 			restoreSetupTarget(tokenPath, tokenBackup, tokenExisted, ops),
 			restoreSetupTarget(configPath, configBackup, configExisted, ops),
 		)
+		keepBackups = rollbackErr != nil
 		rollbackSyncErr := ops.syncDir(dir)
 		return fmt.Errorf("同步配置目录失败：%w", errors.Join(err, rollbackErr, rollbackSyncErr))
 	}
@@ -102,15 +115,12 @@ func defaultSetupFileTransactionOps() setupFileTransactionOps {
 }
 
 func regularFileOrMissing(path string, label string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("读取%s状态失败：%w", label, err)
+	err := config.CheckPrivatePermissions(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("%s必须是 regular file，不能是目录或符号链接：%s", label, path)
+	if err != nil {
+		return false, saveFailure(config.PrivateFileDiagnostic(err), fmt.Errorf("读取%s权限失败：%w", label, err))
 	}
 	return true, nil
 }
@@ -136,12 +146,19 @@ func hardLinkBackup(path string, existed bool, ops setupFileTransactionOps) (str
 	return "", fmt.Errorf("无法分配恢复点文件名")
 }
 
+func renamePrivateFile(source, target string, rename func(string, string) error) error {
+	if err := config.CheckPrivatePermissions(source); err != nil {
+		return err
+	}
+	return rename(source, target)
+}
+
 func restoreSetupTarget(path string, backup string, existed bool, ops setupFileTransactionOps) error {
 	if existed {
 		if backup == "" {
 			return fmt.Errorf("%s 缺少恢复点", path)
 		}
-		if err := ops.rename(backup, path); err != nil {
+		if err := renamePrivateFile(backup, path, ops.rename); err != nil {
 			return fmt.Errorf("恢复 %s 失败：%w", path, err)
 		}
 		return nil

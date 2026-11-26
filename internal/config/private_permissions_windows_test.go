@@ -1,182 +1,78 @@
 package config
 
 import (
-	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"golang.org/x/sys/windows"
 )
 
-func TestCopyAndRepairPrivateWindowsDACL(t *testing.T) {
+func TestWindowsRepairRejectsAndReplacesNoncanonicalDACLInPlace(t *testing.T) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sid := user.User.Sid.String()
-	dir := t.TempDir()
-	source := filepath.Join(dir, "existing")
-	original := []byte("synthetic-private-fixture")
-	if err := os.WriteFile(source, original, 0600); err != nil {
-		t.Fatal(err)
+	owner := "(A;;FA;;;" + user.User.Sid.String() + ")"
+	withoutSystem := owner + "(A;;FA;;;BA)"
+	system := "(A;;FA;;;SY)"
+	if user.User.Sid.IsWellKnown(windows.WinLocalSystemSid) {
+		system = ""
+		withoutSystem = "(A;;FA;;;BA)"
 	}
-	setACL := func(path, extra string) {
-		t.Helper()
-		sd, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + sid + ")" + extra)
-		if err != nil {
-			t.Fatal(err)
-		}
-		acl, _, err := sd.DACL()
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION, user.User.Sid, nil, acl, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	dacl := func(path string) string {
-		t.Helper()
-		sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sd.String()
-	}
-	setACL(source, "(A;;FR;;;SY)(A;;0x80;;;BU)")
-	expected := dacl(source)
-	stage, err := CreatePrivateTemp(dir, "transaction-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stage.Write(original); err != nil {
-		t.Fatal(err)
-	}
-	if err := stage.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadPrivatePreflightFile(stage.Name(), 1024); err != nil {
-		t.Fatal(err)
-	}
-	if err := CopyPrivatePermissions(source, stage.Name()); err != nil {
-		t.Fatal(err)
-	}
-	if dacl(stage.Name()) != expected || dacl(source) != expected {
-		t.Fatal("copy changed a protected Windows access policy")
-	}
-	setACL(source, "(A;;FR;;;WD)")
-	before, err := os.Stat(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	changed, err := RepairPrivatePermissions(source)
-	if err != nil || !changed {
-		t.Fatalf("repair changed=%v err=%v", changed, err)
-	}
-	raw, err := ReadPrivatePreflightFile(source, 1024)
-	if err != nil || !bytes.Equal(raw, original) {
-		t.Fatalf("private identity read: %v", err)
-	}
-	after, err := os.Stat(source)
-	if err != nil || !os.SameFile(before, after) {
-		t.Fatal("changed file identity during DACL repair")
-	}
-	if changed, err := RepairPrivatePermissions(source); err != nil || changed {
-		t.Fatalf("repeat repair changed=%v err=%v", changed, err)
-	}
-}
-
-func TestWindowsCopyPrivatePermissionsBeforeAndAfterWrite(t *testing.T) {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	setDACL := func(path, sddl string, protection windows.SECURITY_INFORMATION) {
-		t.Helper()
-		sd, err := windows.SecurityDescriptorFromString(sddl)
-		if err != nil {
-			t.Fatal(err)
-		}
-		acl, _, err := sd.DACL()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	setDACL(dir, "D:P(A;OICI;FA;;;"+user.User.Sid.String()+")", windows.PROTECTED_DACL_SECURITY_INFORMATION)
-
+	all := owner + system + "(A;;FA;;;BA)"
 	for _, tc := range []struct {
-		name                        string
-		protected, explicitMetadata bool
+		name, grants string
+		inherited    bool
 	}{
-		{"protected at creation", true, false},
-		{"inherited at creation", false, false},
-		{"explicit and inherited", false, true},
+		{"unprotected", all, true},
+		{"missing administrators", owner + system, false},
+		{"missing SYSTEM", withoutSystem, false},
+		{"deny read", "(D;;FR;;;WD)" + all, false},
+		{"metadata only extra grant", all + "(A;;0x80;;;BU)", false},
+		{"duplicate allow", all + owner, false},
+		{"restricted SYSTEM", owner + "(A;;FR;;;SY)(A;;FA;;;BA)", false},
+		{"inheritance flag", owner + "(A;OI;FA;;;SY)(A;;FA;;;BA)", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(dir, tc.name)
-			if tc.protected {
-				configtest.CreatePrivateFile(t, path, nil)
-			} else {
-				if err := os.WriteFile(path, nil, 0600); err != nil {
-					t.Fatal(err)
-				}
-				// An elevated runner can have a group as its default owner.
-				if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION, user.User.Sid, nil, nil, nil); err != nil {
-					t.Fatal(err)
-				}
-				if tc.explicitMetadata {
-					setDACL(path, "D:(A;;0x80;;;BU)", windows.UNPROTECTED_DACL_SECURITY_INFORMATION)
-				}
-			}
-			aces := func(path string) string {
-				t.Helper()
-				sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-				if err != nil {
-					t.Fatal(err)
-				}
-				control, _, err := sd.Control()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if protected := control&windows.SE_DACL_PROTECTED != 0; protected != tc.protected {
-					t.Fatalf("DACL protected = %v, want %v", protected, tc.protected)
-				}
-				_, entries, ok := strings.Cut(sd.String(), "(")
-				if !ok || strings.Contains(entries, "ID;") != !tc.protected {
-					t.Fatal("missing or unexpected inherited ACE")
-				}
-				return entries
-			}
-			want := aces(path)
-			stage, err := CreatePrivateTemp(dir, "stage-")
+			path := filepath.Join(t.TempDir(), "existing")
+			configtest.CreatePrivateFile(t, path, []byte("fixture"))
+			before, err := FileIdentity(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer stage.Close()
-			if err := MakeFilePrivate(stage); err != nil {
+			sd, err := windows.SecurityDescriptorFromString("D:" + tc.grants)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
-				t.Fatalf("empty stage: %v", err)
-			}
-			if got := aces(stage.Name()); got != want {
-				t.Fatal("stage did not preserve the source ACEs before writing")
-			}
-			if _, err := stage.WriteString("fixture"); err != nil {
+			acl, _, err := sd.DACL()
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := CopyPrivatePermissions(path, stage.Name()); err != nil {
-				t.Fatalf("populated stage: %v", err)
+			protection := windows.SECURITY_INFORMATION(windows.PROTECTED_DACL_SECURITY_INFORMATION)
+			if tc.inherited {
+				protection = windows.UNPROTECTED_DACL_SECURITY_INFORMATION
 			}
-			if aces(path) != want || aces(stage.Name()) != want {
-				t.Fatal("source or stage ACEs changed at final verification")
+			if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|protection, nil, nil, acl, nil); err != nil {
+				t.Fatal(err)
+			}
+			if raw, err := ReadPrivatePreflightFile(path, 100); len(raw) != 0 || !errors.Is(err, errPreflightFileNotPrivate) {
+				t.Fatalf("read noncanonical: %v", err)
+			}
+			if changed, err := RepairPrivatePermissions(path); !changed || err != nil {
+				t.Fatalf("repair changed=%v err=%v", changed, err)
+			}
+			after, err := FileIdentity(path)
+			if err != nil || !os.SameFile(before, after) {
+				t.Fatal("changed identity")
+			}
+			if raw, err := ReadPrivatePreflightFile(path, 100); string(raw) != "fixture" || err != nil {
+				t.Fatalf("repaired file: %v", err)
+			}
+			if changed, err := RepairPrivatePermissions(path); changed || err != nil {
+				t.Fatalf("repeat changed=%v err=%v", changed, err)
 			}
 		})
 	}

@@ -96,7 +96,7 @@ var preflightDiagnostics = map[string]diagnosticSpec{
 	"workspace_unreadable":              {"error", "choose_path", "workspace_root", "请选择可读取的代码目录。"},
 	"config_missing":                    {"action_needed", "run_fix", "save_setup", "请先选择代码目录并保存配置。"},
 	"config_dir_unwritable":             {"error", "retry", "", "无法写入配置目录。请检查访问权限和可用空间后重试。"},
-	"config_permissions_unsafe":         {"error", "run_fix", "doctor_fix", "配置文件的访问权限过宽。请在电脑上修复权限。"},
+	"config_permissions_unsafe":         {"error", "run_fix", "doctor_fix", "配置或凭据文件的访问权限不符合要求。请在电脑上修复权限。"},
 	"config_invalid":                    {"error", "open_settings", "host_recovery", "配置无法安全读取。请查看已保留的配置和恢复位置。"},
 	"config_requires_newer_version":     {"error", "open_url", "https://github.com/gaixianggeng/mimi-remote/releases/latest", "此配置需要较新的桌面端。请更新后重试。"},
 	"config_concurrent_change":          {"", "retry", "", "配置已在别处更改。请重新加载并确认选择。"},

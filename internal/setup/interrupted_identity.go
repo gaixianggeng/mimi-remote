@@ -54,7 +54,7 @@ func keepInterruptedIdentity(journal string, id interruptedIdentity, ops setupFi
 		return err
 	}
 	dir := filepath.Dir(path)
-	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw, "")
+	stage, err := ops.stage(dir, ".mimi-identity.tmp-", raw)
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -252,4 +253,75 @@ func TestWizardRejectsChoicesThatWouldSelectAnotherPath(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("a different grant or executable was persisted")
 	}
+}
+
+func TestSaveRefusesNoncanonicalPermissionsBeforeWritesAndDoctorRepairs(t *testing.T) {
+	path := isolatedSaveCommand(t)
+	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", t.TempDir())
+	_, cfg := savedFixtureConfig(t, path)
+	token := filepath.Join(filepath.Dir(path), "deepseek.token")
+	configtest.CreatePrivateFile(t, token, []byte("fixture-companion"))
+	cfg.DeepSeek.TokenFile = token
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configtest.WritePrivateFile(t, path, raw)
+	targets := map[string]string{"config": path, "deepseek": token}
+	if cfg.AppServer.Transport == "ws" {
+		targets["ws"] = cfg.AppServer.WSTokenFile
+	}
+	for name, target := range targets {
+		for _, scope := range []string{"broader", "narrower"} {
+			t.Run(name+"/"+scope, func(t *testing.T) {
+				prior, err := config.ReadPrivatePreflightFile(target, 4<<20)
+				if err != nil {
+					t.Fatal(err)
+				}
+				id, err := config.FileIdentity(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				configtest.SetNoncanonicalPermissions(t, target, scope == "narrower")
+				if got := config.ReadPreflightSnapshot(path).Code; got != "config_permissions_unsafe" {
+					t.Fatalf("preflight code %q", got)
+				}
+				root := filepath.Join(t.TempDir(), "new-workspace")
+				var out, stderr bytes.Buffer
+				args := []string{"agentd", "setup", "--config", path, "--json", "--no-pair", "--create-root", "--scan-root", root}
+				if code := commandExit(args, &out, &stderr); code != 1 {
+					t.Fatalf("save exit %d", code)
+				}
+				assertOnboardingError(t, out.Bytes(), stderr.String(), "config_permissions_unsafe", "config_store")
+				assertPathDoesNotExist(t, root, "created workspace before checking permissions")
+				if got := config.ReadPreflightSnapshot(path).Code; got != "config_permissions_unsafe" {
+					t.Fatal("save changed permissions")
+				}
+				runSaveJSON(t, path, "doctor", "--fix")
+				if got := config.ReadPreflightSnapshot(path).Code; got != "" {
+					t.Fatalf("preflight after doctor: %s", got)
+				}
+				now, err := config.FileIdentity(target)
+				if err != nil || !os.SameFile(id, now) {
+					t.Fatal("repair replaced the file")
+				}
+				body, err := config.ReadPrivatePreflightFile(target, 4<<20)
+				if err != nil || !bytes.Equal(body, prior) {
+					t.Fatal("repair changed credential bytes")
+				}
+				if saved, _ := savedFixtureConfig(t, path); !bytes.Equal(saved, raw) {
+					t.Fatal("config changed on refusal or repair")
+				}
+			})
+		}
+	}
+	// A pre-canonical installation can need repairs to all three files at once.
+	for _, target := range targets {
+		configtest.SetNoncanonicalPermissions(t, target, true)
+	}
+	runSaveJSON(t, path, "doctor", "--fix")
+	if got := config.ReadPreflightSnapshot(path).Code; got != "" {
+		t.Fatalf("incomplete installation repair: %s", got)
+	}
+	runSaveJSON(t, path, "setup", "--no-pair", "--scan-root", t.TempDir())
 }

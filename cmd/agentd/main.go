@@ -772,6 +772,12 @@ func runDoctorWithWriters(args []string, stdout, stderr io.Writer) error {
 		// A legacy default may supply the existing identity, but doctor never
 		// creates one. Validate the original bytes before copying anything.
 		if !onboardingConfigured(configPath) {
+			if legacy := setupLegacyPath(fs); legacy != "" && onboardingConfigured(legacy) && config.CheckSetupWriteAvailable(config.ExpandPath(configPath)) == nil {
+				handled, err := repairDoctorFileAccess(doctorCtx, legacy, asJSON, stdout)
+				if handled || err != nil {
+					return err
+				}
+			}
 			result, err := runAgentSetup(doctorCtx, agentsetup.Options{ConfigPath: configPath, LegacyPath: setupLegacyPath(fs), RequireExisting: true, LocalServiceOnly: true})
 			if err != nil {
 				return err
@@ -954,7 +960,7 @@ func repairDoctor(
 			return nil, false, nil, current, fmt.Errorf("修复配置文件权限失败：%w", err)
 		}
 		if fixed {
-			fixes = append(fixes, "已将配置文件权限收紧为 0600")
+			fixes = append(fixes, "已修复配置文件的访问权限")
 		}
 	}
 	if hasFailedCheck(current, "app-server") {
@@ -1430,7 +1436,11 @@ func prepareDefaultConfigMigration(fs *flag.FlagSet, requestedPath string, notic
 	})
 	migrated, err := config.MigrateLegacyDefaultConfig(requestedPath, explicitConfig)
 	if err != nil {
-		return onboardingFailure("config_recovery_required", "config_store", true, fmt.Errorf("迁移旧版默认配置失败：%w", err))
+		code := "config_recovery_required"
+		if config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+			code = "config_permissions_unsafe"
+		}
+		return onboardingFailure(code, "config_store", true, fmt.Errorf("迁移旧版默认配置失败：%w", err))
 	}
 	if migrated && notice != nil {
 		// 只提示路径和保留策略，不输出 auth.token 或配置原文；JSON 命令的 stdout 也保持纯净。

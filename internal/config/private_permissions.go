@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/rand"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // FileIdentity reads metadata from an open handle. Windows path-based Stat
@@ -17,19 +20,14 @@ func FileIdentity(path string) (os.FileInfo, error) {
 }
 
 func openPermissionTarget(path string, modify bool) (*os.File, os.FileInfo, error) {
-	expected, err := os.Lstat(path)
+	expected, err := permissionIdentity(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !expected.Mode().IsRegular() {
 		return nil, nil, errors.New("配置或凭据必须是普通文件")
 	}
-	var file *os.File
-	if modify {
-		file, err = openPermissionWriter(path)
-	} else {
-		file, err = openSnapshotFile(path)
-	}
+	file, err := openPermissionFile(path, modify)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -44,55 +42,86 @@ func openPermissionTarget(path string, modify bool) (*os.File, os.FileInfo, erro
 	return nil, nil, err
 }
 
-// RepairPrivatePermissions tightens access in place only after identifying an
-// owned regular file. The ownership check and repair use the same open handle.
+// RepairPrivatePermissions restores canonical permissions in place on an identified, owned regular file.
 func RepairPrivatePermissions(path string) (bool, error) {
-	file, info, err := openPermissionTarget(path, true)
+	file, _, err := openPermissionTarget(path, true)
 	if err != nil {
-		return false, err
+		return repairInaccessibleFile(path, err)
 	}
 	defer file.Close()
-	err = checkPreflightFileAccess(file, info)
-	if !errors.Is(err, errPreflightFileNotPrivate) {
-		return false, err
+	return makeFilePrivate(file)
+}
+
+// CheckPrivatePermissions validates an existing file without reading its contents.
+func CheckPrivatePermissions(path string) error {
+	file, info, err := openPermissionTarget(path, false)
+	if errors.Is(err, os.ErrPermission) {
+		return errPreflightFileNotPrivate
 	}
-	if err = MakeFilePrivate(file); err != nil {
-		return false, err
-	}
-	info, err = file.Stat()
 	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return checkPreflightFileAccess(file, info)
+}
+
+func verifyPrivateFile(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("凭据路径必须是普通文件")
+	}
+	return checkPreflightFileAccess(file, info)
+}
+
+// MakeFilePrivate applies canonical permissions and verifies the result on the same handle.
+func MakeFilePrivate(file *os.File) error {
+	_, err := makeFilePrivate(file)
+	return err
+}
+
+func makeFilePrivate(file *os.File) (bool, error) {
+	err := verifyPrivateFile(file)
+	if err != errPreflightFileNotPrivate {
 		return false, err
 	}
-	if err = checkPreflightFileAccess(file, info); err != nil {
+	if err := setPrivateAccess(file); err != nil {
+		return false, err
+	}
+	if err := verifyPrivateFile(file); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// CopyPrivatePermissions applies a validated original access policy to a private staging file.
-func CopyPrivatePermissions(source, stage string) error {
-	original, info, err := openPermissionTarget(source, false)
-	if err != nil {
-		return err
+// CreatePrivateTemp returns an empty file verified on the handle used for secret writes.
+func CreatePrivateTemp(dir, prefix string) (*os.File, error) {
+	if filepath.Base(prefix) != prefix && prefix != "" {
+		return nil, errors.New("暂存文件前缀无效")
 	}
-	defer original.Close()
-	if err := checkPreflightFileAccess(original, info); err != nil {
-		return err
+	if dir == "" {
+		dir = os.TempDir()
 	}
-	target, stageInfo, err := openPermissionTarget(stage, true)
-	if err != nil {
-		return err
+	before, after := prefix, ""
+	if pos := strings.LastIndexByte(prefix, '*'); pos >= 0 {
+		before, after = prefix[:pos], prefix[pos+1:]
 	}
-	defer target.Close()
-	if err := checkPreflightFileAccess(target, stageInfo); err != nil {
-		return err
+	for {
+		path := filepath.Join(dir, before+rand.Text()+after)
+		file, err := createPrivateNew(path)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := prepareNewPrivateFile(file); err != nil {
+			file.Close()
+			os.Remove(path)
+			return nil, err
+		}
+		return file, nil
 	}
-	if err := copyFileAccess(original, target, info); err != nil {
-		return err
-	}
-	stageInfo, err = target.Stat()
-	if err != nil {
-		return err
-	}
-	return checkPreflightFileAccess(target, stageInfo)
 }

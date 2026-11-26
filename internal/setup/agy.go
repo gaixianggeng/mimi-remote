@@ -87,7 +87,7 @@ func ConfigureAgy(
 		return AgyConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
 
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return AgyConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -225,7 +225,7 @@ func RestoreAgy(configPath string, previous AgyConfigurationResult) (AgyConfigur
 	if !info.Mode().IsRegular() {
 		return AgyConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return AgyConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}

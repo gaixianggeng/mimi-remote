@@ -116,7 +116,7 @@ func ConfigureClaude(
 		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
 
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -279,7 +279,7 @@ func RestoreClaude(configPath string, previous ClaudeConfigurationResult) (Claud
 	if !info.Mode().IsRegular() {
 		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
 	}
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}

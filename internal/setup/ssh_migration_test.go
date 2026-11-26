@@ -235,9 +235,7 @@ func TestMigrateAppServerToSharedLocalRewritesMacLoopbackSSHDefault(t *testing.T
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			original := []byte(`{"future":{"keep":true},"codex":{"bin":"/opt/codex","env":{"TERM":"xterm"}},"app_server":{"transport":"ssh","ssh_target":` + target + `,"auto_title":true,"approval_broker":true}}`)
-			if err := os.WriteFile(path, original, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.WritePrivateFile(t, path, original)
 			previousResolver := resolveMigrationCodexBin
 			resolveMigrationCodexBin = func(configured string) (string, error) { return configured, nil }
 			t.Cleanup(func() { resolveMigrationCodexBin = previousResolver })
@@ -291,9 +289,7 @@ func TestMigrateAppServerToSharedLocalKeepsExplicitMacSSHTargets(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"` + target + `","auto_title":true}}`)
-			if err := os.WriteFile(path, original, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.WritePrivateFile(t, path, original)
 			previous := localAppServerPreflight
 			localAppServerPreflight = func(context.Context, string, map[string]string) error {
 				t.Fatal("显式 SSH target 不应触发本机预检")
@@ -320,9 +316,7 @@ func TestMigrateAppServerToSharedLocalLoopbackSSHPreflightFailureKeepsSSH(t *tes
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"127.0.0.1","auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error { return errors.New("initialize failed") }
 	t.Cleanup(func() { localAppServerPreflight = previous })
@@ -513,9 +507,7 @@ func TestMigrateAppServerToSharedLocalRespectsPinnedLoopbackSSH(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
 	original := []byte(`{"app_server":{"transport":"ssh","ssh_target":"127.0.0.1","pin_transport":true,"auto_title":true}}`)
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, original)
 	previous := localAppServerPreflight
 	localAppServerPreflight = func(context.Context, string, map[string]string) error {
 		t.Fatal("被固定的 SSH 配置不应触发本机预检")

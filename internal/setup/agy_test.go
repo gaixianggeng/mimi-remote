@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/agybridge"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestB11Round3ConfigureAgyDistinguishesSignedInSignedOutAndUnknown(t *testing.T) {
@@ -74,9 +76,7 @@ exit 2
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(cfgPath, raw, 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, cfgPath, raw)
 		return cfgPath
 	}
 

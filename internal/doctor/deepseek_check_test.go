@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 // harnessStub 是只覆盖 doctor 需要的最小 Harness 服务：认证握手 + 模型目录。
@@ -48,9 +50,7 @@ func harnessStub(t *testing.T, token string) *httptest.Server {
 func writeTokenFile(t *testing.T, token string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "deepseek.token")
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatalf("写入 token 文件失败：%v", err)
-	}
+	configtest.WritePrivateFile(t, path, []byte(token+"\n"))
 	return path
 }
 
