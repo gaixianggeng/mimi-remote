@@ -850,6 +850,12 @@ enum ConnectionFailureGuidance {
         tailcatExperimentEnabled: Bool = false,
         hasActiveMimiEntitlement: Bool = false
     ) -> String {
+        if let pairingError = error as? PairingOnboardingAPIError {
+            if pairingError.code == "pair_ticket_expired", let repairPlatform {
+                return repairPlatform.pairingQRCodeExpiredGuidance
+            }
+            return pairingError.userFacingMessage
+        }
         if (error as? PairingLinkError) == .expired {
             return (repairPlatform ?? .unknown).pairingQRCodeExpiredGuidance
         }
@@ -928,7 +934,8 @@ enum ConnectionFailureGuidance {
     }
 
     private static func isPreservedUserFacingMessage(_ raw: String) -> Bool {
-        if HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
+        if PairingErrorMapper.isUserFacingMessage(raw) ||
+            HostPlatform.isPairingQRCodeExpiredGuidance(raw) ||
             TailcatPairingError.isUserFacingMessage(raw) ||
             ConnectionProfileError.isUserFacingMessage(raw) {
             return true

@@ -240,6 +240,11 @@ struct ManagedConnectionSubscriptionView: View {
                 _ = await sessionStore.refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
             }
             return .accepted(L10n.text("ui.this_mac_is_connected"))
+        } catch let pairingError as PairingOnboardingAPIError {
+            if pairingError.action == .openManagedConnection {
+                return .requiresManagedConnection(pairingError.userFacingMessage)
+            }
+            return .onboardingFailure(pairingError.mapped)
         } catch {
             let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
             let message = attemptedRoute == .lan && ConnectionFailureGuidance.isReachabilityFailure(error)

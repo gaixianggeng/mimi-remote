@@ -1270,7 +1270,12 @@ final class AppStore: ObservableObject {
                     restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
-                let message = L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
+                let message: String
+                if let pairingError = error as? PairingOnboardingAPIError, pairingError.status != 404 {
+                    message = pairingError.userFacingMessage
+                } else {
+                    message = L10n.text("ui.the_native_assistant_was_detected_but_the_automatic")
+                }
                 connectionStatus = .failed(message)
                 lastError = message
                 return false
