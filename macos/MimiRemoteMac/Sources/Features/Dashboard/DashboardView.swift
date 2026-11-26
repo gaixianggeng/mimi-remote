@@ -113,6 +113,17 @@ enum DashboardPresentation {
         return remediation?.message == message ? nil : message
     }
 
+    /// 仪表板「重新检查」先被动同步宿主服务归属与状态，再按最新生命周期刷新被动预检；
+    /// 整个过程绝不自动启动、重启或修复服务。
+    @MainActor
+    static func performRecheck(
+        store: HostStore,
+        reloadPassivePreflight: () async -> Void
+    ) async {
+        await store.observeServiceStatePassively()
+        await reloadPassivePreflight()
+    }
+
     private static func typedRemediation(
         fallbackTitle: String,
         fallbackMessage: String,
@@ -234,7 +245,12 @@ struct DashboardView: View {
                     ServiceOverviewView(
                         store: store,
                         remediation: remediation,
-                        recheckPreflight: { await loadPassivePreflightIfNeeded() }
+                        reloadPreflight: { await loadPassivePreflightIfNeeded() },
+                        recheckRecovery: {
+                            await DashboardPresentation.performRecheck(store: store) {
+                                await loadPassivePreflightIfNeeded()
+                            }
+                        }
                     )
                 }
 
@@ -317,7 +333,8 @@ struct DashboardView: View {
 private struct ServiceOverviewView: View {
     let store: HostStore
     let remediation: DashboardRemediation?
-    let recheckPreflight: () async -> Void
+    let reloadPreflight: () async -> Void
+    let recheckRecovery: () async -> Void
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsRestore = false
 
@@ -342,7 +359,7 @@ private struct ServiceOverviewView: View {
                             Button(action.title) {
                                 perform(action)
                             }
-                            .disabled(store.isBusy)
+                            .disabled(store.isBusy || (action == .recheck && store.isRefreshingStatus))
                         }
                     }
                 }
@@ -400,11 +417,11 @@ private struct ServiceOverviewView: View {
         case .repairAndStartService:
             Task {
                 await store.repairAndStartService()
-                await recheckPreflight()
+                await reloadPreflight()
             }
         case .recheck:
             Task {
-                await recheckPreflight()
+                await recheckRecovery()
             }
         case .openDiagnostics:
             store.requestedDiagnosticsFocus = .overview

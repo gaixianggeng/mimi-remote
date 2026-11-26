@@ -570,6 +570,64 @@ final class HostStore {
         }
     }
 
+    /// 被动观察并同步后台服务的归属、审批与运行状态。
+    /// 只读取配置存在性、Homebrew 加载状态、SMAppService 登记状态与已运行服务的 status，
+    /// 绝不启动、重启、注销或自动修复服务（区别于会拉起服务的 `refresh()`）。
+    func observeServiceStatePassively() async {
+        guard !isBusy, !isRefreshingStatus, !isOnboardingInProgress else { return }
+        isRefreshingStatus = true
+        defer { isRefreshingStatus = false }
+
+        refreshPermissionsOnReturn()
+
+        guard agent.configExists() else {
+            homebrewLoaded = false
+            owner = .none
+            lifecycle = .notConfigured
+            return
+        }
+
+        let brewLoaded = await homebrew.isLoaded()
+        homebrewLoaded = brewLoaded
+        if brewLoaded {
+            owner = .homebrew
+            await refreshHomebrewStatusPassively()
+            return
+        }
+
+        if let configurationError = services.agentConfigurationError() {
+            owner = .none
+            lifecycle = .failed(configurationError)
+            lastError = configurationError
+            return
+        }
+
+        switch services.agentStatus() {
+        case .enabled:
+            owner = .macApp
+            do {
+                if let current = try await fetchAndApplyLatestStatus(), current.serviceOK {
+                    lastError = nil
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                lastError = error.localizedDescription
+                lifecycle = .degraded(error.localizedDescription)
+            }
+        case .requiresApproval:
+            owner = .none
+            lifecycle = .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。")
+        case .notRegistered, .notFound:
+            owner = .none
+            lifecycle = .stopped
+        }
+
+        if owner == .macApp, runtimeStatusNeedsFollowUp {
+            scheduleRuntimeStatusFollowUp()
+        }
+    }
+
     /// MenuBarExtra 每次展开都会重建内容视图。短时间重复打开直接复用 Store
     /// 中的状态，避免为同一份服务状态反复启动 agentd 子进程。
     func refreshIfNeeded() async {
@@ -1370,6 +1428,30 @@ final class HostStore {
             return
         } catch {
             fail(error)
+        }
+    }
+
+    private func refreshHomebrewStatusPassively() async {
+        guard let binary = homebrew.installedAgentBinary() else {
+            lifecycle = .degraded("Homebrew 服务仍在运行，但找不到对应 agentd。")
+            return
+        }
+        do {
+            let current = try await agent.statusAt(binary)
+            status = current
+            doctor = current.doctor
+            lastStatusRefreshAt = Date()
+            if !current.serviceOK {
+                lifecycle = .degraded(current.serviceError ?? "Homebrew 服务尚未就绪。")
+            } else {
+                lifecycle = .migrationRequired
+                lastError = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            lastError = error.localizedDescription
+            lifecycle = .degraded(error.localizedDescription)
         }
     }
 

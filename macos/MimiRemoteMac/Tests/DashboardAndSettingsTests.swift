@@ -260,6 +260,294 @@ final class DashboardAndSettingsTests: XCTestCase {
         XCTAssertNil(store.loginItemWarning)
         XCTAssertEqual(registerCalls.current, 0)
     }
+
+    // MARK: - Dashboard passive recheck recovery
+
+    func testDashboardRecheckAfterApprovalRecoversOwnerStatusAndLifecycleWithoutStartingService() async {
+        let mutatingCalls = EventRecorder()
+        let statusCalls = CallCounter()
+        var agentState: ServiceRegistrationState = .requiresApproval
+        var mainAppState: ServiceRegistrationState = .requiresApproval
+
+        let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            mainAppStatus: { mainAppState },
+            status: {
+                _ = statusCalls.increment()
+                return readyStatus
+            },
+            mutatingCalls: mutatingCalls
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"))
+        XCTAssertNil(store.status)
+        XCTAssertEqual(
+            DashboardPresentation.remediation(
+                lifecycle: store.lifecycle,
+                owner: store.owner,
+                agentRegistrationState: store.agentRegistrationState,
+                hasConfiguration: store.hasConfiguration()
+            )?.primaryAction,
+            .openLoginItems
+        )
+
+        // 用户在系统设置中允许后台服务与主应用登录项后点击「重新检查」。
+        let preRecheckMutations = mutatingCalls.values
+        agentState = .enabled
+        mainAppState = .enabled
+        store.lastError = "此前失败的旧错误"
+
+        var lifecycleDuringPreflightReload: HostLifecycleState?
+        await DashboardPresentation.performRecheck(store: store) {
+            lifecycleDuringPreflightReload = store.lifecycle
+        }
+
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.status, readyStatus)
+        XCTAssertNil(store.lastError)
+        XCTAssertTrue(store.launchesAtLogin)
+        XCTAssertNil(store.loginItemWarning)
+        XCTAssertEqual(lifecycleDuringPreflightReload, .ready)
+        XCTAssertEqual(statusCalls.current, 1)
+        XCTAssertEqual(
+            mutatingCalls.values,
+            preRecheckMutations,
+            "批准后的重新检查只做被动观察，绝不能再次触发启动、重启、注册或修复"
+        )
+        XCTAssertNil(
+            DashboardPresentation.remediation(
+                lifecycle: store.lifecycle,
+                owner: store.owner,
+                agentRegistrationState: store.agentRegistrationState,
+                hasConfiguration: store.hasConfiguration()
+            )
+        )
+    }
+
+    func testDashboardRecheckOnHealthyRunningServiceDoesNotRestartEvenWhenRegistrationStaleOrVersionMismatched() async {
+        let mutatingCalls = EventRecorder()
+        let statusCalls = CallCounter()
+        var registrationCurrent = true
+        let initialStatus = Self.makeAgentStatus(processOK: true, serviceOK: true, version: "1.0.0", serverVersion: "1.0.0")
+        let updatedStatus = Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: true,
+            version: "1.1.0",
+            serverVersion: "1.0.0",
+            projects: 3
+        )
+        let currentStatus = LockedValue(initialStatus)
+
+        let store = makeRecheckHostStore(
+            agentStatus: { .enabled },
+            isAgentRegistrationCurrent: { registrationCurrent },
+            status: {
+                _ = statusCalls.increment()
+                return currentStatus.value
+            },
+            mutatingCalls: mutatingCalls
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(statusCalls.current, 1)
+        XCTAssertEqual(mutatingCalls.values, [])
+
+        // 即使登记版本号过期或存在版本差异，被动重新检查也不能重启健康运行中的服务。
+        registrationCurrent = false
+        currentStatus.value = updatedStatus
+
+        await DashboardPresentation.performRecheck(store: store) {}
+
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.status, updatedStatus)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    func testDashboardRecheckFailureKeepsDegradedStateWithoutStartingOrRestarting() async {
+        let mutatingCalls = EventRecorder()
+        let statusCalls = CallCounter()
+        var agentState: ServiceRegistrationState = .requiresApproval
+        let statusResult = LockedValue<Result<AgentStatus, Error>>(
+            .failure(AgentClientError.commandFailed("无法连接后台服务"))
+        )
+
+        let store = makeRecheckHostStore(
+            agentStatus: { agentState },
+            status: {
+                _ = statusCalls.increment()
+                return try statusResult.value.get()
+            },
+            mutatingCalls: mutatingCalls
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"))
+
+        // 1. 尚未在系统设置中批准：保持审批降级态，不查询也不起服。
+        await DashboardPresentation.performRecheck(store: store) {}
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"))
+        XCTAssertEqual(statusCalls.current, 0)
+        XCTAssertEqual(mutatingCalls.values, [])
+
+        // 2. 已批准但 status 命令失败：保持降级态，不自动重启/修复。
+        agentState = .enabled
+        await DashboardPresentation.performRecheck(store: store) {}
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .degraded("无法连接后台服务"))
+        XCTAssertEqual(statusCalls.current, 1)
+        XCTAssertEqual(mutatingCalls.values, [])
+
+        // 3. 已批准且进程存活但 readyz 未就绪：保持降级态，不自动重启/修复。
+        statusResult.value = .success(Self.makeAgentStatus(
+            processOK: true,
+            serviceOK: false,
+            serviceError: "readyz 不可用"
+        ))
+        await DashboardPresentation.performRecheck(store: store) {}
+        XCTAssertEqual(store.owner, .macApp)
+        XCTAssertEqual(store.lifecycle, .degraded("readyz 不可用"))
+        XCTAssertEqual(statusCalls.current, 2)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    func testDashboardRecheckDetectsHealthyHomebrewOwnerWithoutStartingOrStopping() async {
+        let mutatingCalls = EventRecorder()
+        let statusAtCalls = CallCounter()
+        let homebrewLoaded = LockedValue(false)
+        let readyStatus = Self.makeAgentStatus(processOK: true, serviceOK: true)
+
+        let store = makeRecheckHostStore(
+            agentStatus: { .requiresApproval },
+            homebrewLoaded: { homebrewLoaded.value },
+            status: { readyStatus },
+            statusAt: { _ in
+                _ = statusAtCalls.increment()
+                return readyStatus
+            },
+            mutatingCalls: mutatingCalls
+        )
+
+        await store.bootstrap()
+        XCTAssertEqual(store.owner, .none)
+        XCTAssertEqual(store.lifecycle, .degraded("请在系统设置的登录项中允许 Mimi Remote Mac。"))
+
+        homebrewLoaded.value = true
+        await DashboardPresentation.performRecheck(store: store) {}
+
+        XCTAssertEqual(store.owner, .homebrew)
+        XCTAssertTrue(store.homebrewLoaded)
+        XCTAssertEqual(store.lifecycle, .migrationRequired)
+        XCTAssertEqual(store.status, readyStatus)
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(statusAtCalls.current, 1)
+        XCTAssertEqual(mutatingCalls.values, [])
+    }
+
+    private func makeRecheckHostStore(
+        configExists: Bool = true,
+        agentStatus: @escaping @MainActor () -> ServiceRegistrationState,
+        mainAppStatus: @escaping @MainActor () -> ServiceRegistrationState = { .enabled },
+        isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
+        homebrewLoaded: @escaping @Sendable () async -> Bool = { false },
+        status: @escaping @Sendable () async throws -> AgentStatus,
+        statusAt: @escaping @Sendable (URL) async throws -> AgentStatus = { _ in
+            DashboardAndSettingsTests.makeAgentStatus(processOK: true, serviceOK: true)
+        },
+        mutatingCalls: EventRecorder
+    ) -> HostStore {
+        HostStore(
+            agent: AgentCommandClient(
+                configExists: { configExists },
+                setup: { _ in
+                    mutatingCalls.append("agent.setup")
+                    throw AgentClientError.commandFailed("unexpected setup")
+                },
+                setupNoPair: { _, _ in
+                    mutatingCalls.append("agent.setupNoPair")
+                    throw AgentClientError.commandFailed("unexpected setupNoPair")
+                },
+                up: { _ in
+                    mutatingCalls.append("agent.up")
+                    throw AgentClientError.commandFailed("unexpected up")
+                },
+                status: status,
+                readiness: status,
+                statusAt: statusAt,
+                doctor: { fix in
+                    mutatingCalls.append("agent.doctor(\(fix))")
+                    throw AgentClientError.commandFailed("unexpected doctor")
+                },
+                configureClaude: { _, _ in throw AgentClientError.commandFailed("unused") },
+                setLANAccess: { _ in throw AgentClientError.commandFailed("unused") },
+                pair: { _ in throw AgentClientError.commandFailed("unused") },
+                version: { "1.0.0" }
+            ),
+            services: ServiceManagementClient(
+                agentStatus: agentStatus,
+                agentConfigurationError: { nil },
+                isAgentRegistrationCurrent: isAgentRegistrationCurrent,
+                markAgentRegistrationCurrent: {},
+                registerAgent: { mutatingCalls.append("services.registerAgent") },
+                unregisterAgent: { mutatingCalls.append("services.unregisterAgent") },
+                restartAgent: { mutatingCalls.append("services.restartAgent") },
+                agentLaunchFailure: { nil },
+                mainAppStatus: mainAppStatus,
+                registerMainApp: { mutatingCalls.append("services.registerMainApp") },
+                unregisterMainApp: { mutatingCalls.append("services.unregisterMainApp") },
+                openLoginItemsSettings: { mutatingCalls.append("services.openLoginItemsSettings") }
+            ),
+            homebrew: HomebrewServiceClient(
+                isLoaded: homebrewLoaded,
+                installedAgentBinary: { URL(filePath: "/opt/homebrew/bin/agentd") },
+                start: { mutatingCalls.append("homebrew.start") },
+                stop: { mutatingCalls.append("homebrew.stop") }
+            ),
+            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
+            logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }),
+            systemPrivacySettings: .noop
+        )
+    }
+
+    private nonisolated static func makeAgentStatus(
+        processOK: Bool,
+        serviceOK: Bool,
+        processError: String? = nil,
+        serviceError: String? = nil,
+        version: String = "1.0.0",
+        serverVersion: String? = "1.0.0",
+        projects: Int = 1
+    ) -> AgentStatus {
+        AgentStatus(
+            processOK: processOK,
+            serviceOK: serviceOK,
+            processError: processError,
+            serviceError: serviceError,
+            version: version,
+            serverVersion: serverVersion,
+            endpoint: "http://100.64.0.8:8787",
+            configPath: "/tmp/config.json",
+            projects: projects,
+            doctorOK: serviceOK,
+            doctor: AgentDoctorResults(
+                ok: serviceOK,
+                version: version,
+                listen: "127.0.0.1:8787",
+                checks: []
+            ),
+            pairExpires: nil
+        )
+    }
 }
 
 private final class LockedWorkspaceCalls: @unchecked Sendable {
@@ -272,5 +560,19 @@ private final class LockedWorkspaceCalls: @unchecked Sendable {
 
     func append(_ pair: (String, String)) {
         lock.withLock { storage.append(pair) }
+    }
+}
+
+private final class LockedValue<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: T
+
+    init(_ initial: T) {
+        storage = initial
+    }
+
+    var value: T {
+        get { lock.withLock { storage } }
+        set { lock.withLock { storage = newValue } }
     }
 }
