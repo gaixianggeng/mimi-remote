@@ -165,6 +165,8 @@ final class OnboardingEmptyStatesSnapshotTests: SimplifiedChineseSnapshotTestCas
             .environmentObject(fixture.themeStore)
             .environment(\.colorScheme, .light)
             .environment(\.dynamicTypeSize, dynamicType)
+            // 单测宿主没有外部辅助技术客户端，也需要让 SwiftUI 生成实际的无障碍元素。
+            .environment(\.accessibilityEnabled, true)
             .frame(width: size.width, height: size.height)
 
             let host = UIHostingController(rootView: view)
