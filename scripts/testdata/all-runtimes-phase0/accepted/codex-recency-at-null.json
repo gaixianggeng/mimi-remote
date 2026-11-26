@@ -1,0 +1,256 @@
+{
+  "schema": "mimi.all_runtimes.phase0.live_sample.v1",
+  "sampleId": "codex-recency-at-null",
+  "category": "accepted",
+  "baselineCommit": "2c6342fb",
+  "runtimeProvider": "codex",
+  "component": {
+    "codexCli": "codex-cli 0.171.0",
+    "repoProtocolSnapshot": "0.162.0"
+  },
+  "provenance": "Exchange 2 (statedb-unbackfilled-recency-zero) is a live wire capture from codex app-server (codex-cli 0.171.0) against isolated synthetic CODEX_HOME where unbackfilled state_5.sqlite rows return recencyAt: 0. Exchange 1 (recency-sort-with-null-row) is a schema-derived case built on that captured wire shape to exercise the protocol-valid recencyAt: null value declared by codex app-server generate-json-schema v2/ThreadListResponse.json (recencyAt: integer | null); it is NOT a live-captured null response. Paths and prompts are sanitized.",
+  "observedBehaviors": [
+    "createdAt and updatedAt are Unix seconds (< 1e10).",
+    "Protocol schema v2/Thread.ts:64 and codex-cli 0.171.0 generate-json-schema declare recencyAt as int64 | null.",
+    "Live capture on codex-cli 0.171.0 under sortKey: \"recency_at\" with useStateDbOnly: true produces recencyAt: 0 on unbackfilled state_5.sqlite rows alongside populated Unix-second recencyAt values.",
+    "Schema-derived case under sortKey: \"recency_at\" models recencyAt: null (permitted by v2/ThreadListResponse.json); without a locked server-side fallback formula, recencyAt: null rows must be treated as opaque server order rather than synthesized from updatedAt for strict cross-runtime proof."
+  ],
+  "handshake": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "clientInfo": {
+          "name": "mimi_remote",
+          "title": "Mimi Remote",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "response": {
+      "id": 1,
+      "result": {
+        "userAgent": "mimi_remote/0.171.0 (Mac OS 27.3.0; arm64) dumb (mimi_remote; 0.1.0)",
+        "codexHome": "/Users/demo/.codex",
+        "platformFamily": "unix",
+        "platformOs": "macos"
+      }
+    }
+  },
+  "exchanges": [
+    {
+      "label": "recency-sort-with-null-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "thread/list",
+        "params": {
+          "cwd": "/Users/demo/workspace/alpha",
+          "limit": 20,
+          "sortKey": "recency_at"
+        }
+      },
+      "response": {
+        "id": 2,
+        "result": {
+          "data": [
+            {
+              "id": "01961f3a-0000-7000-8000-000000000002",
+              "environments": null,
+              "extra": null,
+              "sessionId": "01961f3a-0000-7000-8000-000000000002",
+              "forkedFromId": null,
+              "attachedToThreadId": null,
+              "parentThreadId": null,
+              "preview": "Synthetic sanitized prompt beta",
+              "ephemeral": false,
+              "section": null,
+              "sectionEnteredAt": null,
+              "projectId": null,
+              "historyMode": "legacy",
+              "modelProvider": "openai",
+              "model": null,
+              "reasoningEffort": null,
+              "createdAt": 1775815500,
+              "updatedAt": 1775815500,
+              "recencyAt": 1775815500,
+              "status": {
+                "type": "notLoaded"
+              },
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-2026-04-10T10-05-00-01961f3a-0000-7000-8000-000000000002.jsonl",
+              "cwd": "/Users/demo/workspace/alpha",
+              "cliVersion": "0.171.0",
+              "originator": "codex_cli_rs",
+              "source": "cli",
+              "canAcceptDirectInput": null,
+              "threadSource": null,
+              "agentNickname": null,
+              "agentRole": null,
+              "gitInfo": null,
+              "name": null,
+              "daybreakEnabled": null,
+              "turns": []
+            },
+            {
+              "id": "01961f3a-0000-7000-8000-000000000001",
+              "environments": null,
+              "extra": null,
+              "sessionId": "01961f3a-0000-7000-8000-000000000001",
+              "forkedFromId": null,
+              "attachedToThreadId": null,
+              "parentThreadId": null,
+              "preview": "Synthetic sanitized prompt alpha",
+              "ephemeral": false,
+              "section": null,
+              "sectionEnteredAt": null,
+              "projectId": null,
+              "historyMode": "legacy",
+              "modelProvider": "openai",
+              "model": null,
+              "reasoningEffort": null,
+              "createdAt": 1775815200,
+              "updatedAt": 1775815200,
+              "recencyAt": null,
+              "status": {
+                "type": "notLoaded"
+              },
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-2026-04-10T10-00-00-01961f3a-0000-7000-8000-000000000001.jsonl",
+              "cwd": "/Users/demo/workspace/alpha",
+              "cliVersion": "0.171.0",
+              "originator": "codex_cli_rs",
+              "source": "cli",
+              "canAcceptDirectInput": null,
+              "threadSource": null,
+              "agentNickname": null,
+              "agentRole": null,
+              "gitInfo": null,
+              "name": null,
+              "daybreakEnabled": null,
+              "turns": []
+            }
+          ],
+          "readStates": {
+            "01961f3a-0000-7000-8000-000000000001": {
+              "firstUnread": null,
+              "revision": "initial:01961f3a-0000-7000-8000-000000000001"
+            },
+            "01961f3a-0000-7000-8000-000000000002": {
+              "firstUnread": null,
+              "revision": "initial:01961f3a-0000-7000-8000-000000000002"
+            }
+          },
+          "nextCursor": null,
+          "backwardsCursor": "2026-04-10T10:04:59.999Z"
+        }
+      }
+    },
+    {
+      "label": "statedb-unbackfilled-recency-zero",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "thread/list",
+        "params": {
+          "cwd": "/Users/demo/workspace/alpha",
+          "limit": 20,
+          "sortKey": "recency_at",
+          "useStateDbOnly": true
+        }
+      },
+      "response": {
+        "id": 3,
+        "result": {
+          "data": [
+            {
+              "id": "01961f3a-0000-7000-8000-000000000002",
+              "environments": null,
+              "extra": null,
+              "sessionId": "01961f3a-0000-7000-8000-000000000002",
+              "forkedFromId": null,
+              "attachedToThreadId": null,
+              "parentThreadId": null,
+              "preview": "Synthetic sanitized prompt beta",
+              "ephemeral": false,
+              "section": null,
+              "sectionEnteredAt": null,
+              "projectId": null,
+              "historyMode": "legacy",
+              "modelProvider": "openai",
+              "model": null,
+              "reasoningEffort": null,
+              "createdAt": 1775815500,
+              "updatedAt": 1775815500,
+              "recencyAt": 1775815500,
+              "status": {
+                "type": "notLoaded"
+              },
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-2026-04-10T10-05-00-01961f3a-0000-7000-8000-000000000002.jsonl",
+              "cwd": "/Users/demo/workspace/alpha",
+              "cliVersion": "0.171.0",
+              "originator": "codex_cli_rs",
+              "source": "cli",
+              "canAcceptDirectInput": null,
+              "threadSource": null,
+              "agentNickname": null,
+              "agentRole": null,
+              "gitInfo": null,
+              "name": null,
+              "daybreakEnabled": null,
+              "turns": []
+            },
+            {
+              "id": "01961f3a-0000-7000-8000-000000000001",
+              "environments": null,
+              "extra": null,
+              "sessionId": "01961f3a-0000-7000-8000-000000000001",
+              "forkedFromId": null,
+              "attachedToThreadId": null,
+              "parentThreadId": null,
+              "preview": "Synthetic sanitized prompt alpha",
+              "ephemeral": false,
+              "section": null,
+              "sectionEnteredAt": null,
+              "projectId": null,
+              "historyMode": "legacy",
+              "modelProvider": "openai",
+              "model": null,
+              "reasoningEffort": null,
+              "createdAt": 1775815200,
+              "updatedAt": 1775815200,
+              "recencyAt": 0,
+              "status": {
+                "type": "notLoaded"
+              },
+              "path": "/Users/demo/.codex/sessions/2026/04/10/rollout-2026-04-10T10-00-00-01961f3a-0000-7000-8000-000000000001.jsonl",
+              "cwd": "/Users/demo/workspace/alpha",
+              "cliVersion": "0.171.0",
+              "originator": "codex_cli_rs",
+              "source": "cli",
+              "canAcceptDirectInput": null,
+              "threadSource": null,
+              "agentNickname": null,
+              "agentRole": null,
+              "gitInfo": null,
+              "name": null,
+              "daybreakEnabled": null,
+              "turns": []
+            }
+          ],
+          "readStates": {
+            "01961f3a-0000-7000-8000-000000000001": {
+              "firstUnread": null,
+              "revision": "initial:01961f3a-0000-7000-8000-000000000001"
+            },
+            "01961f3a-0000-7000-8000-000000000002": {
+              "firstUnread": null,
+              "revision": "initial:01961f3a-0000-7000-8000-000000000002"
+            }
+          },
+          "nextCursor": null,
+          "backwardsCursor": "2026-04-10T10:04:59.999Z"
+        }
+      }
+    }
+  ]
+}

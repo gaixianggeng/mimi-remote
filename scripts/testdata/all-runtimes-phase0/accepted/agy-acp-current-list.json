@@ -1,0 +1,110 @@
+{
+  "schema": "mimi.all_runtimes.phase0.live_sample.v1",
+  "sampleId": "agy-acp-current-list",
+  "category": "accepted",
+  "baselineCommit": "2c6342fb",
+  "runtimeProvider": "agy",
+  "component": {
+    "adapter": "mimi-agy-adapter/0.1.0",
+    "runtime": "bun 1.2.22"
+  },
+  "provenance": "Live capture from bridges/agy-acp (AgyCatalog + GitRepoIndex + createThreadHandlers) against isolated synthetic HOME/.gemini conversation databases; sanitized paths and titles.",
+  "observedBehaviors": [
+    "Current 2c6342fb response omits listMeta entirely (health/degradation state is not emitted on wire).",
+    "Outputs Unix second timestamps (< 1e10) and recencyAt: null.",
+    "Distinguishes CLI vs Other sessions via source: \"cli\" vs source: {\"custom\":\"other\"} and marks missing workspace dirs with cwdMissing: true and canAcceptDirectInput: false."
+  ],
+  "handshake": {
+    "userAgent": "mimi-agy-adapter/0.1.0"
+  },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "thread/list",
+    "params": {
+      "limit": 20,
+      "sortKey": "updated_at",
+      "sortDirection": "desc"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "data": [
+        {
+          "id": "agy-cli-0001",
+          "sessionId": "agy-cli-0001",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "Demo Agy CLI Session",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "google",
+          "model": null,
+          "reasoningEffort": null,
+          "createdAt": 1775815500,
+          "updatedAt": 1775815500,
+          "recencyAt": null,
+          "status": {
+            "type": "notLoaded"
+          },
+          "path": "/Users/demo/.gemini/antigravity-cli/conversations/agy-cli-0001.db",
+          "cwd": "/Users/demo/workspace/alpha",
+          "cliVersion": "mimi-agy-adapter/0.1.0",
+          "originator": null,
+          "source": "cli",
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": "Demo Agy CLI Session",
+          "turns": [],
+          "canAcceptDirectInput": true,
+          "cwdMissing": false
+        },
+        {
+          "id": "agy-other-0002",
+          "sessionId": "agy-other-0002",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "Demo Agy Desktop Session",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "google",
+          "model": null,
+          "reasoningEffort": null,
+          "createdAt": 1775815200,
+          "updatedAt": 1775815200,
+          "recencyAt": null,
+          "status": {
+            "type": "notLoaded"
+          },
+          "path": "/Users/demo/.gemini/antigravity/conversations/agy-other-0002.db",
+          "cwd": "/Users/demo/workspace/deleted-repo",
+          "cliVersion": "mimi-agy-adapter/0.1.0",
+          "originator": null,
+          "source": {
+            "custom": "other"
+          },
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": "Demo Agy Desktop Session",
+          "turns": [],
+          "canAcceptDirectInput": false,
+          "cwdMissing": true
+        }
+      ],
+      "nextCursor": null,
+      "backwardsCursor": "eyJ2IjoxNzc1ODE1NTAwLCJpZCI6ImFneS1jbGktMDAwMSIsImluY2wiOnRydWV9"
+    }
+  }
+}

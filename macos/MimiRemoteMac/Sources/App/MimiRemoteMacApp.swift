@@ -7,6 +7,12 @@ import SwiftUI
 enum MimiRemoteMacMain {
     @MainActor
     static func main() {
+#if DEBUG
+        if let testHome = ProcessInfo.processInfo.environment["MIMI_TEST_SSH_CRASH_STAGING_HOME"],
+           !testHome.isEmpty {
+            runDebugSSHStagingCrashHelper(homePath: testHome)
+        }
+#endif
         // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
         // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
         if CommandLine.arguments.contains("--codex-daemon-supervisor") {
@@ -45,6 +51,32 @@ enum MimiRemoteMacMain {
         }
         MimiRemoteMacApp.main()
     }
+
+#if DEBUG
+    /// 仅 Debug 单测使用：在独立子进程中执行真实独占密钥暂存并落盘 inode 后立即 `SIGKILL` 自杀，验证跳过 Swift `defer` 时的磁盘残留可被 `remove()` 按 inode 完整清理。
+    private static func runDebugSSHStagingCrashHelper(homePath: String) -> Never {
+        let homeURL = URL(fileURLWithPath: homePath, isDirectory: true)
+        Task.detached {
+            let configurator = CodexLocalSSHConfigurator(
+                homeDirectory: homeURL,
+                username: "alice",
+                systemSSHConfigPath: nil,
+                beforeAtomicCommit: { targetURL in
+                    if targetURL.lastPathComponent == CodexLocalSSHConfigurator.keyFileName {
+                        _ = Darwin.kill(Darwin.getpid(), SIGKILL)
+                        // 阻塞当前线程，防止多核环境下 SIGKILL 投递前闭包返回并继续执行 renameatx_np 移走暂存私钥。
+                        while true {
+                            _ = Darwin.pause()
+                        }
+                    }
+                }
+            )
+            _ = try? await configurator.configure(verifyConnection: false)
+            Darwin._exit(2)
+        }
+        dispatchMain()
+    }
+#endif
 }
 
 struct MimiRemoteMacApp: App {
@@ -119,6 +151,11 @@ struct MimiRemoteMacApp: App {
         }
         .defaultSize(width: 720, height: 560)
 
+        Window("连接 Codex 桌面版", id: AppWindow.codexSharedSetup.rawValue) {
+            CodexSharedSetupView(coordinator: .shared)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             MacSettingsView(store: store, updates: updates)
         }
@@ -143,4 +180,5 @@ enum AppWindow: String {
     case pairing
     case diagnostics
     case sessions
+    case codexSharedSetup
 }
