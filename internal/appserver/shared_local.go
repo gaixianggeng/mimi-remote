@@ -214,6 +214,30 @@ func (t *SharedLocalTransport) WebSocketDialer(timeout time.Duration) (websocket
 	return dialer, nil
 }
 
+// SocketSafetyError 只读检查本机共享 Codex socket 与目录安全性，不发起连接或拉起进程。
+func (t *SharedLocalTransport) SocketSafetyError() error {
+	if t == nil {
+		return nil
+	}
+	return validateSharedLocalSocketSafety(t.socket)
+}
+
+// CheckSharedLocalCodexHomeSafety 对指定 CODEX_HOME 对应的共享控制 socket 执行只读安全检查。
+func CheckSharedLocalCodexHomeSafety(codexHome string) error {
+	if !SupportsSharedLocalTransport() {
+		return nil
+	}
+	var env map[string]string
+	if strings.TrimSpace(codexHome) != "" {
+		env = map[string]string{"CODEX_HOME": codexHome}
+	}
+	socketPath, err := SharedLocalSocketPath(env)
+	if err != nil {
+		return err
+	}
+	return validateSharedLocalSocketSafety(socketPath)
+}
+
 func (t *SharedLocalTransport) ensureSafeSocketDir() error {
 	if err := validateSharedLocalSocketSafety(t.socket); err != nil {
 		msg := err.Error()

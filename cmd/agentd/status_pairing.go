@@ -253,7 +253,7 @@ func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck, c
 		{id: "assistant_codex", label: "Codex", enableCmd: cmds.cmd("runtime", "--codex=enabled"), loginHint: "codex login", cliEnabled: true},
 		{id: "assistant_claude", label: "Claude Code", enableCmd: cmds.cmd("runtime", "--claude=enabled"), loginHint: "claude login", cliEnabled: true},
 		{id: "assistant_agy", label: "Antigravity", enableCmd: cmds.cmd("runtime", "--agy=enabled"), loginHint: "登录 agy CLI", cliEnabled: true},
-		{id: "assistant_deepseek", label: "DeepSeek", enableCmd: cmds.cmd("runtime", "--deepseek=connect"), cliEnabled: false},
+		{id: "assistant_deepseek", label: "DeepSeek", enableCmd: cmds.cmd("runtime", "--deepseek=connect", "--json"), cliEnabled: false},
 	}
 
 	var availableEnable []string
@@ -324,7 +324,7 @@ func describeAssistantBlocker(checksByID map[string]agentsetup.PreflightCheck, c
 		cmds.cmd("runtime", "--codex=enabled"),
 		cmds.cmd("runtime", "--claude=enabled"),
 		cmds.cmd("runtime", "--agy=enabled"),
-		cmds.cmd("runtime", "--deepseek=connect"),
+		cmds.cmd("runtime", "--deepseek=connect", "--json"),
 	)
 	return pairingBlocker{
 		Summary: "没有可用助手（至少需要一个已安装并登录的助手，例如 Codex 或 Claude Code）",
@@ -361,13 +361,15 @@ func describeNetworkBlocker(checksByID map[string]agentsetup.PreflightCheck, cmd
 	tailcatPairCmd := cmds.cmd("tailcat pair")
 
 	if cmds.platform == "windows" {
-		tailscaleStep := fmt.Sprintf("%s && %s", tailscaleCmd, cmds.restartNoPair())
 		if !cmds.managedService {
-			tailscaleStep = fmt.Sprintf("%s，然后重启匹配该配置的前台进程（%s）", tailscaleCmd, cmds.serve())
+			return pairingBlocker{
+				Summary: summary,
+				Fix:     fmt.Sprintf("同一局域网：确认网络为专用网络且防火墙放行 agentd.exe 后运行 %s（修改后重启匹配该配置的前台进程：%s）；Tailscale：%s（修改后重启匹配该配置的前台进程：%s）；联网时也可用 Tailcat：%s 后运行 %s", lanCmd, cmds.serve(), tailscaleCmd, cmds.serve(), tailcatEnableCmd, tailcatPairCmd),
+			}
 		}
 		return pairingBlocker{
 			Summary: summary,
-			Fix:     fmt.Sprintf("Tailscale：%s；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：%s 后运行 %s", tailscaleStep, tailcatEnableCmd, tailcatPairCmd),
+			Fix:     fmt.Sprintf("Tailscale：%s && %s；局域网：重新运行安装器并勾选局域网访问；联网时也可用 Tailcat：%s 后运行 %s", tailscaleCmd, cmds.restartNoPair(), tailcatEnableCmd, tailcatPairCmd),
 		}
 	}
 	if !cmds.managedService {

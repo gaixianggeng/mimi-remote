@@ -116,6 +116,7 @@ type Router struct {
 	codexGateways             map[uint64]*codexGatewayConnection
 	codexGatewayWG            sync.WaitGroup
 	appServerSSH              AppServerTransport
+	sharedLocalSocketSafety   func() error
 	// codexBrokers 让具名 gateway 会话的上游连接在客户端离线后有界存活，
 	// iOS 退到后台期间仍能接住待审批反向请求。它不持久化：agentd 重启后
 	// 全部消失，上游请求继续 fail closed。

@@ -124,7 +124,7 @@ func TestStatusPairingReadyAndUnavailableStates(t *testing.T) {
 				"claude login",
 				"agentd runtime --claude=enabled",
 				"agentd runtime --agy=enabled",
-				"agentd runtime --deepseek=connect",
+				"agentd runtime --deepseek=connect --json",
 				"没有可达的手机连接方式",
 				"agentd network --lan-enabled=true",
 				"agentd network --tailscale-enabled=true",
@@ -212,7 +212,7 @@ func TestStatusPairingReadyAndUnavailableStates(t *testing.T) {
 func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.T) {
 	isolateOnboardingCommandEnv(t)
 	useManagedServicePlatform(t, "linux")
-	customDir := filepath.Join(t.TempDir(), `my "dir" '1'`)
+	customDir := filepath.Join(t.TempDir(), "my dir '1'")
 	if err := os.MkdirAll(customDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -335,6 +335,55 @@ func TestStatusPairingCustomConfigQuotesPathAndUsesForegroundRestart(t *testing.
 		want := "agentd restart --config " + shellQuoteArgument(defaultPath) + " --no-pair"
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("受管默认配置受 AGENTD_CONFIG 覆盖时应保留 --config：%q\n%s", want, stdout.String())
+		}
+	})
+
+	t.Run("double_quote_path_escaping_without_creating_dir", func(t *testing.T) {
+		syntheticPath := filepath.Join(t.TempDir(), `my "dir" '1'`, "config.json")
+		syntheticQuoted := shellQuoteArgument(syntheticPath)
+		readiness := summarizePairingReadiness(agentsetup.PreflightReport{
+			Stage: "pair",
+			OK:    true,
+			Checks: []agentsetup.PreflightCheck{
+				{ID: "assistant_any", State: "ok"},
+				{ID: "network_lan", State: "ok", Enabled: boolPtr(true), Available: boolPtrPtr(true)},
+				{ID: "network_any", State: "ok"},
+			},
+		}, syntheticPath, "linux")
+		want := "agentd pair --config " + syntheticQuoted + " --qr-only"
+		if readiness.PairCommand != want {
+			t.Fatalf("含双引号路径的命令未正确转义：got=%q want=%q", readiness.PairCommand, want)
+		}
+	})
+
+	t.Run("windows_foreground_custom_config_does_not_recommend_installer", func(t *testing.T) {
+		readiness := summarizePairingReadiness(agentsetup.PreflightReport{
+			Stage: "pair",
+			OK:    false,
+			Checks: []agentsetup.PreflightCheck{
+				{ID: "assistant_any", Group: "assistant", State: "ok"},
+				{ID: "network_any", Group: "network", State: "action_needed", Blocking: true, Code: "network_selection_required"},
+			},
+		}, customConfig, "windows")
+		if readiness.Ready || len(readiness.Blockers) != 1 {
+			t.Fatalf("Windows 自定义配置网络阻塞应返回 1 条阻塞项：%+v", readiness)
+		}
+		fix := readiness.Blockers[0].Fix
+		for _, want := range []string{
+			"agentd network --config " + quoted + " --lan-enabled=true",
+			"agentd network --config " + quoted + " --tailscale-enabled=true",
+			"agentd serve --config " + quoted,
+			"agentd tailcat enable --config " + quoted,
+			"agentd tailcat pair --config " + quoted,
+		} {
+			if !strings.Contains(fix, want) {
+				t.Fatalf("Windows 前台自定义配置网络提示缺少 %q：\n%s", want, fix)
+			}
+		}
+		for _, forbidden := range []string{"重新运行安装器", "agentd restart"} {
+			if strings.Contains(fix, forbidden) {
+				t.Fatalf("Windows 前台自定义配置不应引导使用 %q：\n%s", forbidden, fix)
+			}
 		}
 	})
 }

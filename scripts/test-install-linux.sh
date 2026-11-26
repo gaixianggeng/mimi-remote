@@ -632,10 +632,10 @@ grep -Fq "已保留配置和 Token：$HOME/.config/mimi-remote" <<<"$second_unin
 [[ -f "$HOME/.config/mimi-remote/config.json" ]]
 [[ "$(<"$HOME/.config/mimi-remote/app-server-ws-token")" == "$TEST_SECRET" ]]
 
-# 验证 packaging/systemd/mimi-remote.service 中 ExecStartPre 的 POSIX 语法与非阻断目录安全校验（#1163）。
+# 验证 packaging/systemd/mimi-remote.service 中 ExecStartPre 的 POSIX 语法与非阻断暂存绑定校验（#1163）。
 service_template="$ROOT_DIR/packaging/systemd/mimi-remote.service"
-grep -Fqx 'BindPaths=-/tmp/codex-daemon-%U' "$service_template" || {
-  echo "systemd unit 缺少忽略缺失路径的 BindPaths=-/tmp/codex-daemon-%U。" >&2
+grep -Fqx 'BindPaths=-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U' "$service_template" || {
+  echo "systemd unit 缺少通过已校验暂存链接绑定的 BindPaths=-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U。" >&2
   exit 1
 }
 exec_pre_raw="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_template")"
@@ -645,11 +645,11 @@ exec_pre_raw="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }'
 }
 exec_pre_script="${exec_pre_raw#"-+/bin/sh -c '"}"
 exec_pre_script="${exec_pre_script%"'"}"
-# 还原 systemd 的 specifier 与环境变量转义（%U -> UID，%% -> %，$$ -> $）。
+# 还原 systemd 的 specifier 与环境变量转义（%U -> UID，%t -> XDG_RUNTIME_DIR，%% -> %，$$ -> $）。
 exec_pre_expanded="$(python3 - "$exec_pre_script" <<'PY'
 import sys
 s = sys.argv[1]
-s = s.replace("%%", "\x00PERCENT\x00").replace("%U", "1000").replace("\x00PERCENT\x00", "%")
+s = s.replace("%%", "\x00PERCENT\x00").replace("%U", "1000").replace("%t", "/run/user/1000").replace("\x00PERCENT\x00", "%")
 s = s.replace("$$", "$")
 sys.stdout.write(s)
 PY
@@ -679,35 +679,45 @@ PY
 chmod +x "$TEST_DIR/fake-stat"
 
 exec_pre_root="$TEST_DIR/codex-daemon-test"
-mkdir -p "$exec_pre_root"
+runtime_root="$exec_pre_root/runtime"
+mkdir -p "$exec_pre_root" "$runtime_root"
 target_codex_dir="$exec_pre_root/codex-daemon-1000"
-exec_pre_testable="$(python3 - "$exec_pre_expanded" "$target_codex_dir" "$TEST_DIR/fake-stat" <<'PY'
+stage_link="$runtime_root/mimi-remote/codex-daemon"
+unsafe_marker="$runtime_root/mimi-remote/codex-daemon.unsafe"
+exec_pre_testable="$(python3 - "$exec_pre_expanded" "$target_codex_dir" "$runtime_root" "$TEST_DIR/fake-stat" <<'PY'
 import sys
-script, target, fake_stat = sys.argv[1:4]
+script, target, runtime_root, fake_stat = sys.argv[1:5]
 script = script.replace("/tmp/codex-daemon-1000", target)
+script = script.replace("/run/user/1000", runtime_root)
 script = script.replace("/usr/bin/stat", fake_stat).replace("/bin/stat", fake_stat)
 sys.stdout.write(script)
 PY
 )"
 
-# 1. 目录不存在时，在空 PATH 下也能创建 0700 目录。
+# 1. 目录不存在时，在空 PATH 下也能创建 0700 目录与暂存链接，且不写不安全标记。
 PATH="" /bin/sh -c "$exec_pre_testable"
 [[ -d "$target_codex_dir" && ! -L "$target_codex_dir" ]]
 [[ "$(python3 -c 'import os,sys; print(oct(os.lstat(sys.argv[1]).st_mode & 0o777))' "$target_codex_dir")" == "0o700" ]]
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
 
-# 2. 已存在且属主匹配但权限偏宽的目录，校验通过并收紧到 0700。
+# 2. 已存在且属主匹配但权限偏宽的目录，校验通过并收紧到 0700，保留暂存链接。
 chmod 0755 "$target_codex_dir"
 PATH="" /bin/sh -c "$exec_pre_testable"
 [[ "$(python3 -c 'import os,sys; print(oct(os.lstat(sys.argv[1]).st_mode & 0o777))' "$target_codex_dir")" == "0o700" ]]
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
 
-# 3. 属主不是当前用户时必须失败并输出清晰日志。
+# 3. 属主不是当前用户时必须失败、移除旧暂存链接（跳过 BindPaths）并写入不安全标记。
 if wrong_owner_out="$(PATH="" FAKE_STAT_UID=2000 /bin/sh -c "$exec_pre_testable" 2>&1)"; then
   echo "ExecStartPre 未拒绝他人属主目录。" >&2
   exit 1
 fi
 grep -Fq 'expected directory:1000' <<<"$wrong_owner_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
 
-# 4. 符号链接（即使指向合法目录）必须被拒绝。
+# 4. 符号链接（即使指向合法目录或悬空链接）必须被拒绝，暂存链接保持缺失并写入不安全标记。
 rmdir "$target_codex_dir"
 mkdir -p "$exec_pre_root/real-target"
 ln -s "$exec_pre_root/real-target" "$target_codex_dir"
@@ -716,14 +726,24 @@ if symlink_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
   exit 1
 fi
 grep -Fq 'ignoring unsafe symlink' <<<"$symlink_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
 rm "$target_codex_dir"
 
-# 5. 非目录（普通文件）必须被拒绝。
+# 5. 非目录（普通文件）必须被拒绝，暂存链接保持缺失并写入不安全标记。
 : >"$target_codex_dir"
 if file_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
   echo "ExecStartPre 未拒绝普通文件。" >&2
   exit 1
 fi
 grep -Fq 'not a directory' <<<"$file_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+
+# 6. 清理占位并重新运行后，应自动清除不安全标记并恢复暂存链接。
+rm -f "$target_codex_dir"
+PATH="" /bin/sh -c "$exec_pre_testable"
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
 
 echo "Linux Release 安全配对、PATH 提示、去敏诊断、升级、回滚和安全卸载测试通过。"

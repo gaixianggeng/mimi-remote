@@ -23,18 +23,21 @@ func overrideSharedLocalSafetyHooks(
 	origEnabled := sharedLocalDirCheckEnabled
 	origUID := sharedLocalCurrentUID
 	origDaemonDir := sharedLocalLinuxDaemonDir
+	origRuntimeDir := sharedLocalRuntimeDir
 	origLstat := sharedLocalLstat
 	origReadlink := sharedLocalReadlink
 	t.Cleanup(func() {
 		sharedLocalDirCheckEnabled = origEnabled
 		sharedLocalCurrentUID = origUID
 		sharedLocalLinuxDaemonDir = origDaemonDir
+		sharedLocalRuntimeDir = origRuntimeDir
 		sharedLocalLstat = origLstat
 		sharedLocalReadlink = origReadlink
 	})
 	sharedLocalDirCheckEnabled = enabled
 	sharedLocalCurrentUID = func() uint32 { return uid }
 	sharedLocalLinuxDaemonDir = func() string { return daemonDir }
+	sharedLocalRuntimeDir = func() string { return "" }
 	if lstat != nil {
 		sharedLocalLstat = lstat
 	}
@@ -318,5 +321,30 @@ func TestSharedLocalSafetyDisabledKeepsNonLinuxBehavior(t *testing.T) {
 	defer cancel()
 	if err := transport.EnsureReady(ctx); err != nil {
 		t.Fatalf("非 Linux 平台关闭目录校验时应保持原有连接行为：%v", err)
+	}
+}
+
+func TestSharedLocalSafetyRejectsSystemdUnsafeMarkerAndPreflightCheck(t *testing.T) {
+	codexHome := shortSharedLocalCodexHome(t)
+	runtimeDir := t.TempDir()
+	markerDir := filepath.Join(runtimeDir, "mimi-remote")
+	if err := os.MkdirAll(markerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, "codex-daemon.unsafe"), []byte("unsafe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	overrideSharedLocalSafetyHooks(t, true, filepath.Join(t.TempDir(), "absent"), uint32(os.Getuid()), defaultSharedLocalLstat)
+	sharedLocalRuntimeDir = func() string { return runtimeDir }
+
+	if err := CheckSharedLocalCodexHomeSafety(codexHome); err == nil || !strings.Contains(err.Error(), "systemd 预检已拒绝绑定") {
+		t.Fatalf("systemd 预检拒绝标记存在时应直接报不安全，got %v", err)
+	}
+	transport, err := NewSharedLocalTransport(SharedLocalOptions{Env: map[string]string{"CODEX_HOME": codexHome}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.SocketSafetyError(); err == nil || !strings.Contains(err.Error(), "systemd 预检已拒绝绑定") {
+		t.Fatalf("SocketSafetyError 应拒绝带预检标记的共享 Codex，got %v", err)
 	}
 }
