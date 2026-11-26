@@ -180,6 +180,7 @@ extension CodexAppServerSessionRuntime {
             cwd: session.dir,
             activeTurnID: session.activeTurnID
         )
+        threadsWithNoRolloutFallbackOnConnection.remove(session.id)
         threadsResumedOnConnection.insert(session.id)
     }
 

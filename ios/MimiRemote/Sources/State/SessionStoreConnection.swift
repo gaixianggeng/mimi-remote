@@ -567,10 +567,12 @@ extension SessionStore {
                 setActiveWriterConflict(true, sessionID: sessionID)
             }
             // 另一套 app-server 已持有 writer 时，同参数重连只会重复失败。停止重连并给出
-            // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动。
+            // Desktop session sync 指引，避免把结构性冲突伪装成短暂网络波动；
+            // 已存在冲突会话在显式校验写入权被拒（如 no rollout found）时也直接停在失败态。
             let canReconnect = shouldAutoReconnectWebSocket(sessionID: sessionID)
                 && !policyRejected
                 && !activeWriterConflict
+                && !hasActiveWriterConflict(sessionID: sessionID)
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
