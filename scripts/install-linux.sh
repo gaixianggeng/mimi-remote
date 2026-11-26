@@ -17,7 +17,7 @@ usage() {
   --self-test 只运行参数、架构和版本校验，不修改系统。
 
 约束：
-  - install/upgrade 默认只启动核心服务，可显式传入 --pair 请求短期配对码。
+  - install/upgrade 默认只启动核心服务，可显式传入 --pair 按当前可用连接方式请求短期配对码。
   - 只支持普通 Linux 用户的 systemd user service，不要使用 sudo。
   - install/upgrade 必须在官方 Release 包解压目录中执行。
   - 自定义 AGENTD_CONFIG 或 XDG_CONFIG_HOME 不适用当前固定 service 模板。
@@ -583,14 +583,26 @@ main() {
   echo "状态：\"$destination_binary\" status"
   echo "日志：\"$destination_binary\" logs -n 200"
   echo "重启：\"$destination_binary\" restart"
-  echo "配对：\"$destination_binary\" pair --qr-only"
+  local pairing_hint=""
+  if pairing_hint="$("$destination_binary" status --pairing 2>/dev/null)" && [[ -n "$pairing_hint" ]]; then
+    printf '%s\n' "$pairing_hint"
+  else
+    echo "配对需要：至少一个可用助手（Codex 已安装并登录）+ 同一局域网或 Tailscale（联网时也可用 Tailcat）。检查：agentd status"
+  fi
 
   if [[ "$request_pair" == 1 ]]; then
     echo
     echo "服务已就绪，请用移动端扫描下面的配对二维码："
-    # 配对属于安装后的交互交接；失败只给出绝对路径重试命令，不能回滚已提交事务。
-    if ! "$destination_binary" pair --qr-only; then
-      echo "警告：服务已安装并就绪，但暂时无法生成配对信息。请重试：\"$destination_binary\" pair --qr-only" >&2
+    # 配对属于安装后的交互交接；根据 status --pairing 选择当前可用传输（直连或 Tailcat），
+    # 失败只给出对应的绝对路径重试命令，不能回滚已提交事务。
+    local pair_args=(pair --qr-only)
+    local pair_retry_display="\"$destination_binary\" pair --qr-only"
+    if [[ "$pairing_hint" == "配对：可用，运行 "*"tailcat pair --qr-only"* ]]; then
+      pair_args=(tailcat pair --qr-only)
+      pair_retry_display="\"$destination_binary\" tailcat pair --qr-only"
+    fi
+    if ! "$destination_binary" "${pair_args[@]}"; then
+      echo "警告：服务已安装并就绪，但暂时无法生成配对信息。请重试：${pair_retry_display}" >&2
     fi
   fi
 }

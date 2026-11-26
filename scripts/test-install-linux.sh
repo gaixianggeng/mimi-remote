@@ -129,6 +129,30 @@ case "$1" in
     echo '{"service_ok":true,"ok":true}'
     ;;
   status)
+    if [[ "${2:-}" == "--pairing" ]]; then
+      case "${FAKE_STATUS_PAIRING_MODE:-unavailable}" in
+        fail)
+          echo "flag provided but not defined: -pairing" >&2
+          exit 2
+          ;;
+        ready)
+          echo "配对：可用，运行 agentd pair --qr-only"
+          ;;
+        tailcat_ready)
+          echo "配对：可用，运行 agentd tailcat pair --qr-only"
+          ;;
+        *)
+          cat <<'EOF'
+配对：暂不可用
+  - 没有可用助手（至少需要一个已安装并登录的助手，例如 Codex 或 Claude Code）
+    修复：安装并登录 Codex（codex login）或 Claude Code 后，运行 agentd runtime --codex=enabled && agentd restart --no-pair
+  - 没有可达的手机连接方式
+    修复：同一局域网：agentd network --lan-enabled=true && agentd restart --no-pair；Tailscale：agentd network --tailscale-enabled=true && agentd restart --no-pair；联网时也可用 Tailcat：agentd tailcat enable 后运行 agentd tailcat pair
+EOF
+          ;;
+      esac
+      exit 0
+    fi
     if [[ "$healthy" == true ]]; then
       echo '{"service_ok":true,"doctor_ok":false}'
     else
@@ -140,6 +164,11 @@ case "$1" in
     [[ "$*" == 'pair --qr-only' ]]
     if [[ "${FAKE_PAIR_FAIL:-0}" == 1 ]]; then exit 9; fi
     echo "短期配对二维码已就绪（${version}）"
+    ;;
+  tailcat)
+    [[ "$*" == 'tailcat pair --qr-only' ]]
+    if [[ "${FAKE_TAILCAT_PAIR_FAIL:-0}" == 1 ]]; then exit 11; fi
+    echo "Tailcat 短期配对二维码已就绪（${version}）"
     ;;
   *) echo "fake agentd 不支持：$1" >&2; exit 2 ;;
 esac
@@ -224,7 +253,13 @@ install_output="$(bash "$release_123/scripts/install-linux.sh" install 2>&1)"
 cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
 grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' <<<"$install_output"
 grep -Fq "状态：\"$HOME/.local/bin/agentd\" status" <<<"$install_output"
-grep -Fq "配对：\"$HOME/.local/bin/agentd\" pair --qr-only" <<<"$install_output"
+grep -Fq '配对：暂不可用' <<<"$install_output"
+grep -Fq '没有可用助手' <<<"$install_output"
+grep -Fq '没有可达的手机连接方式' <<<"$install_output"
+if grep -Fq "配对：\"$HOME/.local/bin/agentd\" pair --qr-only" <<<"$install_output"; then
+  echo "全新离线安装不应无条件输出旧的直接配对提示。" >&2
+  exit 1
+fi
 if grep -Fq "$TEST_SECRET" <<<"$install_output"; then
   echo "首次 setup 或安全配对输出泄漏了长期 Token。" >&2
   exit 1
@@ -269,14 +304,76 @@ assert_version "$pair_failure_home/.local/bin/agentd" "1.2.3"
 grep -Fq 'setup --no-pair --json --app-server-ssh-target linux-share-host' "$pair_failure_state/agentd.log"
 [[ "$(grep -c '1.2.3 setup ' "$pair_failure_state/agentd.log")" == 1 ]]
 [[ "$(grep -c 'start mimi-remote.service' "$pair_failure_state/systemctl.log")" == 1 ]]
-[[ "$(cat "$pair_failure_state/agentd.log")" == *$'start --no-pair --wait 60s\n1.2.3 pair --qr-only'* ]]
+[[ "$(cat "$pair_failure_state/agentd.log")" == *$'start --no-pair --wait 60s\n1.2.3 status --pairing\n1.2.3 pair --qr-only'* ]]
 [[ "$pair_failure_output" != *"$TEST_SECRET"* ]]
+
+# status --pairing 返回可用状态时，安装器原样输出。
+ready_hint_output="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=ready \
+    bash "$release_123/scripts/install-linux.sh" upgrade 2>&1
+)"
+grep -Fqx '配对：可用，运行 agentd pair --qr-only' <<<"$ready_hint_output"
+
+# 旧版本不支持 status --pairing 时，安装器必须回退到静态提示且不能回滚或失败。
+fallback_hint_output="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=fail \
+    bash "$release_123/scripts/install-linux.sh" upgrade 2>&1
+)"
+grep -Fqx '配对需要：至少一个可用助手（Codex 已安装并登录）+ 同一局域网或 Tailscale（联网时也可用 Tailcat）。检查：agentd status' <<<"$fallback_hint_output"
+if grep -Fq 'flag provided but not defined' <<<"$fallback_hint_output"; then
+  echo "status --pairing 失败回退不应把旧版参数错误泄露到输出。" >&2
+  exit 1
+fi
+assert_version "$pair_failure_home/.local/bin/agentd" "1.2.3"
+[[ -f "$pair_failure_state/active" ]]
 
 success_pair="$(HOME="$pair_failure_home" FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
   FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
   bash "$release_123/scripts/install-linux.sh" install --pair 2>&1)"
 grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$success_pair"
 [[ "$success_pair" != *"$TEST_SECRET"* ]]
+
+# 仅 Tailcat 可用时，--pair 必须调用 tailcat pair --qr-only，且失败重试提示也指向 tailcat pair。
+: >"$pair_failure_state/agentd.log"
+tailcat_pair_ok="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=tailcat_ready \
+    bash "$release_123/scripts/install-linux.sh" upgrade --pair 2>&1
+)"
+grep -Fq '配对：可用，运行 agentd tailcat pair --qr-only' <<<"$tailcat_pair_ok"
+grep -Fq 'Tailcat 短期配对二维码已就绪（1.2.3）' <<<"$tailcat_pair_ok"
+grep -Fq '1.2.3 tailcat pair --qr-only' "$pair_failure_state/agentd.log"
+if grep -Fq '1.2.3 pair --qr-only' "$pair_failure_state/agentd.log"; then
+  echo "仅 Tailcat 可用时 --pair 不应调用直连 pair --qr-only。" >&2
+  exit 1
+fi
+
+: >"$pair_failure_state/agentd.log"
+tailcat_pair_fail="$(
+  HOME="$pair_failure_home" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
+    FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+    FAKE_STATUS_PAIRING_MODE=tailcat_ready \
+    FAKE_TAILCAT_PAIR_FAIL=1 \
+    bash "$release_123/scripts/install-linux.sh" upgrade --pair 2>&1
+)"
+grep -Fq "请重试：\"$pair_failure_home/.local/bin/agentd\" tailcat pair --qr-only" <<<"$tailcat_pair_fail"
+if grep -Fq "请重试：\"$pair_failure_home/.local/bin/agentd\" pair --qr-only" <<<"$tailcat_pair_fail"; then
+  echo "Tailcat --pair 失败时重试提示不应指向直连 pair --qr-only。" >&2
+  exit 1
+fi
 
 bash "$release_124/scripts/install-linux.sh" upgrade >/dev/null
 assert_version "$HOME/.local/bin/agentd" "1.2.4"
@@ -534,5 +631,135 @@ grep -Fq '已处于未安装状态' <<<"$second_uninstall_output"
 grep -Fq "已保留配置和 Token：$HOME/.config/mimi-remote" <<<"$second_uninstall_output"
 [[ -f "$HOME/.config/mimi-remote/config.json" ]]
 [[ "$(<"$HOME/.config/mimi-remote/app-server-ws-token")" == "$TEST_SECRET" ]]
+
+# 验证 packaging/systemd/mimi-remote.service 中 ExecStartPre 的 POSIX 语法与非阻断暂存绑定校验（#1163）。
+service_template="$ROOT_DIR/packaging/systemd/mimi-remote.service"
+grep -Fqx 'BindPaths=-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U' "$service_template" || {
+  echo "systemd unit 缺少通过已校验暂存链接绑定的 BindPaths=-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U。" >&2
+  exit 1
+}
+exec_pre_raw="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_template")"
+[[ "$exec_pre_raw" == "-+/bin/sh -c '"*"'" ]] || {
+  echo "systemd ExecStartPre 未使用不阻断启动的 -+/bin/sh -c 单引号形式：$exec_pre_raw" >&2
+  exit 1
+}
+exec_pre_script="${exec_pre_raw#"-+/bin/sh -c '"}"
+exec_pre_script="${exec_pre_script%"'"}"
+# 还原 systemd 的 specifier 与环境变量转义（%U -> UID，%t -> XDG_RUNTIME_DIR，%% -> %，$$ -> $）。
+exec_pre_expanded="$(python3 - "$exec_pre_script" <<'PY'
+import sys
+s = sys.argv[1]
+s = s.replace("%%", "\x00PERCENT\x00").replace("%U", "1000").replace("%t", "/run/user/1000").replace("\x00PERCENT\x00", "%")
+s = s.replace("$$", "$")
+sys.stdout.write(s)
+PY
+)"
+/bin/sh -n -c "$exec_pre_expanded"
+
+python3_bin="$(command -v python3)"
+printf '#!%s\n' "$python3_bin" >"$TEST_DIR/fake-stat"
+cat >>"$TEST_DIR/fake-stat" <<'PY'
+import os, stat, sys
+# 仅实现 ExecStartPre 使用的 GNU/BusyBox stat -c %F:%u -- <path> 子集（基于 lstat）。
+fmt = sys.argv[2]
+path = sys.argv[4]
+st = os.lstat(path)
+mode = st.st_mode
+if stat.S_ISLNK(mode):
+    ftype = "symbolic link"
+elif stat.S_ISDIR(mode):
+    ftype = "directory"
+elif stat.S_ISREG(mode):
+    ftype = "regular file"
+else:
+    ftype = "other"
+uid = os.environ.get("FAKE_STAT_UID", "1000")
+print(fmt.replace("%F", ftype).replace("%u", uid))
+PY
+chmod +x "$TEST_DIR/fake-stat"
+
+exec_pre_root="$TEST_DIR/codex-daemon-test"
+runtime_root="$exec_pre_root/runtime"
+mkdir -p "$exec_pre_root" "$runtime_root/mimi-remote"
+chmod 0700 "$runtime_root/mimi-remote"
+target_codex_dir="$exec_pre_root/codex-daemon-1000"
+stage_link="$runtime_root/mimi-remote/codex-daemon"
+unsafe_marker="$runtime_root/mimi-remote/codex-daemon.unsafe"
+exec_pre_testable="$(python3 - "$exec_pre_expanded" "$target_codex_dir" "$runtime_root" "$TEST_DIR/fake-stat" <<'PY'
+import sys
+script, target, runtime_root, fake_stat = sys.argv[1:5]
+script = script.replace("/tmp/codex-daemon-1000", target)
+script = script.replace("/run/user/1000", runtime_root)
+script = script.replace("/usr/bin/stat", fake_stat).replace("/bin/stat", fake_stat)
+sys.stdout.write(script)
+PY
+)"
+
+# 1. 目录不存在时，在空 PATH 下也能创建 0700 目录与暂存链接，且不写不安全标记。
+PATH="" /bin/sh -c "$exec_pre_testable"
+[[ -d "$target_codex_dir" && ! -L "$target_codex_dir" ]]
+[[ "$(python3 -c 'import os,sys; print(oct(os.lstat(sys.argv[1]).st_mode & 0o777))' "$target_codex_dir")" == "0o700" ]]
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
+
+# 2. 已存在且属主匹配但权限偏宽的目录，校验通过并收紧到 0700，保留暂存链接。
+chmod 0755 "$target_codex_dir"
+PATH="" /bin/sh -c "$exec_pre_testable"
+[[ "$(python3 -c 'import os,sys; print(oct(os.lstat(sys.argv[1]).st_mode & 0o777))' "$target_codex_dir")" == "0o700" ]]
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
+
+# 3. 属主不是当前用户时必须失败、移除旧暂存链接（跳过 BindPaths）并写入不安全标记。
+if wrong_owner_out="$(PATH="" FAKE_STAT_UID=2000 /bin/sh -c "$exec_pre_testable" 2>&1)"; then
+  echo "ExecStartPre 未拒绝他人属主目录。" >&2
+  exit 1
+fi
+grep -Fq 'expected directory:1000' <<<"$wrong_owner_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+
+# 4. 符号链接（即使指向合法目录或悬空链接）必须被拒绝，暂存链接保持缺失并写入不安全标记。
+rmdir "$target_codex_dir"
+mkdir -p "$exec_pre_root/real-target"
+ln -s "$exec_pre_root/real-target" "$target_codex_dir"
+if symlink_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
+  echo "ExecStartPre 未拒绝符号链接。" >&2
+  exit 1
+fi
+grep -Fq 'ignoring unsafe symlink' <<<"$symlink_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+rm "$target_codex_dir"
+
+# 5. 非目录（普通文件）必须被拒绝，暂存链接保持缺失并写入不安全标记。
+: >"$target_codex_dir"
+if file_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
+  echo "ExecStartPre 未拒绝普通文件。" >&2
+  exit 1
+fi
+grep -Fq 'not a directory' <<<"$file_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+
+# 6. 暂存路径若被非空只读子目录占位且目标不安全，必须先恢复写权限并彻底移除暂存目录，杜绝 BindPaths 挂载未校验目录。
+rm -rf "$stage_link" "$target_codex_dir"
+mkdir -p "$stage_link/nested"
+: >"$stage_link/nested/keep"
+chmod 0444 "$stage_link/nested/keep"
+chmod 0555 "$stage_link/nested" "$stage_link"
+: >"$target_codex_dir"
+if dir_stage_out="$(PATH="" /bin/sh -c "$exec_pre_testable" 2>&1)"; then
+  echo "ExecStartPre 在暂存路径被只读目录占位且目标非法时未失败。" >&2
+  exit 1
+fi
+grep -Fq 'not a directory' <<<"$dir_stage_out"
+[[ ! -e "$stage_link" && ! -L "$stage_link" ]]
+[[ -f "$unsafe_marker" ]]
+
+# 7. 清理占位并重新运行后，应自动清除不安全标记并恢复暂存链接。
+rm -f "$target_codex_dir"
+PATH="" /bin/sh -c "$exec_pre_testable"
+[[ -L "$stage_link" && "$(readlink "$stage_link")" == "$target_codex_dir" ]]
+[[ ! -e "$unsafe_marker" ]]
 
 echo "Linux Release 安全配对、PATH 提示、去敏诊断、升级、回滚和安全卸载测试通过。"

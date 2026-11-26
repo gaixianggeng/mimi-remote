@@ -142,6 +142,33 @@ grep -Fqx 'UMask=0077' "$service_file" \
   || fail "systemd service 没有使用私有文件 umask。"
 grep -Fqx 'NoNewPrivileges=true' "$service_file" \
   || fail "systemd service 缺少 NoNewPrivileges。"
+grep -Fqx 'PrivateTmp=true' "$service_file" \
+  || fail "systemd service 缺少 PrivateTmp=true 加固。"
+grep -Fqx 'RuntimeDirectory=mimi-remote' "$service_file" \
+  || fail "systemd service 缺少服务专属 RuntimeDirectory=mimi-remote。"
+grep -Fqx 'RuntimeDirectoryMode=0700' "$service_file" \
+  || fail "systemd service 缺少 RuntimeDirectoryMode=0700。"
+grep -Fqx 'RuntimeDirectoryPreserve=no' "$service_file" \
+  || fail "systemd service 缺少 RuntimeDirectoryPreserve=no，停止服务后无法自动清理预检标记。"
+grep -Fqx 'Environment=MIMI_SHARED_CODEX_UNSAFE_MARKER=%t/mimi-remote/codex-daemon.unsafe' "$service_file" \
+  || fail "systemd service 缺少服务专属环境变量 MIMI_SHARED_CODEX_UNSAFE_MARKER。"
+codex_bind_path="$(awk -F= '$1 == "BindPaths" { print $2; exit }' "$service_file")"
+[[ "$codex_bind_path" == "-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U" ]] \
+  || fail "systemd service 缺少通过已校验暂存链接绑定共享 Codex 临时目录的 BindPaths=-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U。"
+codex_stage_link="${codex_bind_path#-}"
+codex_stage_link="${codex_stage_link%%:*}"
+codex_daemon_dir="${codex_bind_path#*:}"
+exec_start_pre="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_file")"
+[[ "$exec_start_pre" == -+/bin/sh\ -c\ * ]] \
+  || fail "systemd service 缺少不阻断核心启动且在沙箱外执行的 ExecStartPre=-+/bin/sh -c 校验。"
+[[ "$exec_start_pre" == *"d=${codex_daemon_dir};"* ]] \
+  || fail "systemd service 的 ExecStartPre 与 BindPaths 目标目录未对齐（${codex_daemon_dir}）。"
+[[ "$codex_stage_link" == "%t/mimi-remote/codex-daemon" && "$exec_start_pre" == *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]] \
+  || fail "systemd service 的 ExecStartPre 未管理 BindPaths 暂存链接与不安全标记。"
+for required_fragment in '/bin/chmod -R u+rwX -- "$$l"' '/bin/rm -rf -- "$$l"' '/bin/mkdir -m 0700' '[ -L "$$d" ]' '[ ! -d "$$d" ]' '/usr/bin/stat' '/bin/stat' '%%F:%%u' 'directory:%U' '/bin/chmod 0700' '"$$lnbin" -s -- "$$d" "$$l"'; do
+  [[ "$exec_start_pre" == *"$required_fragment"* ]] \
+    || fail "systemd service 的 ExecStartPre 缺少安全校验片段：${required_fragment}。"
+done
 grep -Fqx 'WantedBy=default.target' "$service_file" \
   || fail "systemd user service 没有挂到 default.target。"
 if grep -Eq '^(User=root|Group=root)|/root/' "$service_file"; then

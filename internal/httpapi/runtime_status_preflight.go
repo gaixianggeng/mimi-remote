@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
+	"github.com/gaixianggeng/mimi-remote/internal/appserver"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -15,10 +17,22 @@ func (r *Router) preflightHost(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	h := setup.PreflightHost{Generation: r.cfg.SourceGeneration(), Version: r.version, Ready: r.doctor.RunReadiness(req.Context()).OK,
+	appliedGeneration := ""
+	if r.pairingGeneration != nil {
+		// 复用与 /api/local/pair/issue 同一套已应用代次检查（含内存热生效的 Tailcat 配置），
+		// 让配对前提检查与真实票据签发门禁保持一致。
+		appliedGeneration = r.currentPairingGeneration(req.Context())
+	}
+	accounts := r.runtimeStatus.preflightAccounts()
+	if r.cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(r.cfg.AppServer.Transport), "local") {
+		if err := r.codexSharedLocalSocketSafetyErr(); err != nil {
+			accounts["codex"] = "upstream_unavailable"
+		}
+	}
+	h := setup.PreflightHost{Generation: r.cfg.SourceGeneration(), AppliedGeneration: &appliedGeneration, Version: r.version, Ready: r.doctor.RunReadiness(req.Context()).OK,
 		Assistants: map[string]bool{"codex": r.cfg.Codex.IsEnabled(), "claude": r.cfg.Claude.Enabled, "agy": r.cfg.Agy.Enabled, "deepseek": r.cfg.DeepSeek.Enabled},
 		Networks:   map[string]bool{"tailscale": r.cfg.TailscaleAccessEnabled(), "lan": r.cfg.LANAccessEnabled(), "tailcat": r.cfg.Tailcat.Enabled},
-		Accounts:   r.runtimeStatus.preflightAccounts(), FolderDenied: r.doctor.CachedFolderDenied()}
+		Accounts:   accounts, FolderDenied: r.doctor.CachedFolderDenied()}
 	if r.lanPolicyDiagnostic != nil {
 		code := r.lanPolicyDiagnostic()
 		h.LANPolicyCode = &code
@@ -30,6 +44,20 @@ func (r *Router) preflightHost(w http.ResponseWriter, req *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, h)
+}
+
+func (r *Router) codexSharedLocalSocketSafetyErr() error {
+	if r.sharedLocalSocketSafety != nil {
+		return r.sharedLocalSocketSafety()
+	}
+	if transport, ok := r.appServerSSH.(*appserver.SharedLocalTransport); ok && transport != nil {
+		return transport.SocketSafetyError()
+	}
+	home, ok := r.cfg.EffectiveLocalCodexHome()
+	if !ok {
+		return nil
+	}
+	return appserver.CheckSharedLocalCodexHomeSafety(home)
 }
 
 // Reading the existing generation must never schedule a refresh, even on miss.

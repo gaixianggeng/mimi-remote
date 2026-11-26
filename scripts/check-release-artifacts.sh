@@ -118,6 +118,23 @@ for platform in "${EXPECTED_ARCHIVES[@]}"; do
     echo "发布产物门禁失败：$(basename "$archive") 中的 systemd 模板与仓库源文件不一致。" >&2
     exit 1
   fi
+  packaged_service="$temp_dir/packaging/systemd/mimi-remote.service"
+  packaged_bind_path="$(awk -F= '$1 == "BindPaths" { print $2; exit }' "$packaged_service")"
+  packaged_codex_dir="${packaged_bind_path#*:}"
+  packaged_exec_pre="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$packaged_service")"
+  if ! grep -Fqx 'PrivateTmp=true' "$packaged_service" \
+    || ! grep -Fqx 'RuntimeDirectory=mimi-remote' "$packaged_service" \
+    || ! grep -Fqx 'RuntimeDirectoryPreserve=no' "$packaged_service" \
+    || ! grep -Fqx 'Environment=MIMI_SHARED_CODEX_UNSAFE_MARKER=%t/mimi-remote/codex-daemon.unsafe' "$packaged_service" \
+    || [[ "$packaged_bind_path" != "-%t/mimi-remote/codex-daemon:/tmp/codex-daemon-%U" ]] \
+    || [[ "$packaged_exec_pre" != -+/bin/sh\ -c\ * ]] \
+    || [[ "$packaged_exec_pre" != *"d=${packaged_codex_dir};"* ]] \
+    || [[ "$packaged_exec_pre" != *'r=%t/mimi-remote; l="$$r/codex-daemon"; u="$$r/codex-daemon.unsafe";'* ]] \
+    || [[ "$packaged_exec_pre" != *'/bin/chmod -R u+rwX -- "$$l"'* ]] \
+    || [[ "$packaged_exec_pre" != *'/bin/rm -rf -- "$$l"'* ]]; then
+    echo "发布产物门禁失败：$(basename "$archive") 中的 systemd 模板缺少 PrivateTmp=true 或共享 Codex 临时目录安全暂存绑定校验。" >&2
+    exit 1
+  fi
   if ! cmp -s scripts/install-linux.sh "$temp_dir/scripts/install-linux.sh"; then
     echo "发布产物门禁失败：$(basename "$archive") 中的 Linux 安装脚本与仓库源文件不一致。" >&2
     exit 1
