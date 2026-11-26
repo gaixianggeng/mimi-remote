@@ -367,7 +367,7 @@ func (p *proposal) fresh(o Options, identity interruptedIdentity) error {
 
 var observeSetupAssistant = inspectPreflightRuntime
 
-func (p *proposal) applyAssistants(ctx context.Context, o Options) error {
+func (p *proposal) applyAssistants(ctx context.Context, o Options, host PreflightHost) error {
 	for id, value := range o.RuntimePaths {
 		if err := p.applyPin(id, value); err != nil {
 			return err
@@ -400,7 +400,7 @@ func (p *proposal) applyAssistants(ctx context.Context, o Options) error {
 			inspect = o.ObserveAssistant
 		}
 		go func() {
-			obs := inspect(probing, id, cfg, override, PreflightHost{})
+			obs := inspect(probing, id, cfg, override, host)
 			observations <- observed{id, obs.Available != nil && *obs.Available && obs.Code == ""}
 		}()
 	}

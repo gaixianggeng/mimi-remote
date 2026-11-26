@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	mimiconfig "github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -59,7 +59,7 @@ func StartHost(config HostConfig) (*Host, error) {
 		// 放入一个永远不会分发的占位键，保证稳定地址默认拒绝连接。
 		allowedClients = append(allowedClients, key.NewNode().Public())
 	}
-	if err := mimiconfig.CheckPrivatePermissions(config.AddressPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := privatefile.Check(config.AddressPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	privateKey, savedInfo, err := loadOrCreateHostIdentity(config.IdentityPath)
@@ -112,7 +112,7 @@ func StartHost(config HostConfig) (*Host, error) {
 			return nil, err
 		}
 	}
-	if err := mimiconfig.WritePrivateFile(config.AddressPath, []byte(string(address)+"\n")); err != nil {
+	if err := privatefile.Write(config.AddressPath, []byte(string(address)+"\n")); err != nil {
 		server.Close()
 		return nil, fmt.Errorf("写入 Tailcat 地址：%w", err)
 	}

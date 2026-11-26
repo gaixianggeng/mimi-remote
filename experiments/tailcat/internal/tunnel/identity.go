@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 )
@@ -23,7 +23,7 @@ type clientIdentity struct {
 }
 
 func loadOrCreateHostIdentity(path string) (key.NodePrivate, *tailcat.ConnInfo, error) {
-	data, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	data, err := privatefile.Read(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return key.NewNode(), nil, nil
 	}
@@ -63,11 +63,11 @@ func saveHostIdentity(path string, privateKey key.NodePrivate, address tailcat.A
 	if err != nil {
 		return fmt.Errorf("序列化服务端身份：%w", err)
 	}
-	return config.WritePrivateFile(path, append(data, '\n'))
+	return privatefile.Write(path, append(data, '\n'))
 }
 
 func LoadOrCreateClientIdentity(path string) (key.NodePrivate, error) {
-	data, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	data, err := privatefile.Read(path)
 	if errors.Is(err, os.ErrNotExist) {
 		privateKey := key.NewNode()
 		if err := saveClientIdentity(path, privateKey); err != nil {
@@ -104,7 +104,7 @@ func saveClientIdentity(path string, privateKey key.NodePrivate) error {
 	if err != nil {
 		return fmt.Errorf("序列化客户端身份：%w", err)
 	}
-	return config.WritePrivateFile(path, append(data, '\n'))
+	return privatefile.Write(path, append(data, '\n'))
 }
 
 func ParsePublicKey(value string) (key.NodePublic, error) {

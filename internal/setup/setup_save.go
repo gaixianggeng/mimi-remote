@@ -130,6 +130,7 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 			return Result{}, saveFailure("config_commit_failed", err)
 		}
 	}
+	var verifiedHost PreflightHost
 	if !o.SaveOnly && !o.RequireExisting && !config.SupportsManagedAppServer() {
 		target := strings.TrimSpace(o.AppServerSSHTarget)
 		if target == "" {
@@ -145,6 +146,7 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 			if err := sshPreflight(ctx, transport); err != nil {
 				return Result{}, &SaveError{Code: "codex_upstream_unavailable", Step: "assistant_codex", Cause: err}
 			}
+			verifiedHost.Accounts = map[string]string{"codex": "connected"}
 			p.set("ssh", "app_server", "transport")
 			p.set(target, "app_server", "ssh_target")
 			p.set(true, "app_server", "pin_transport")
@@ -154,7 +156,7 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		if err = p.selectRoots(o); err != nil {
 			return Result{}, err
 		}
-		if err = p.applyAssistants(ctx, o); err != nil {
+		if err = p.applyAssistants(ctx, o, verifiedHost); err != nil {
 			return Result{}, err
 		}
 	}

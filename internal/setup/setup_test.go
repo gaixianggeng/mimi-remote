@@ -19,6 +19,52 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 )
 
+func TestFreshExplicitSSHUsesOnlySuccessfulPreflight(t *testing.T) {
+	if config.SupportsManagedAppServer() {
+		t.Skip("explicit SSH setup requires a non-managed platform")
+	}
+	clearSetupEnv(t)
+	for _, tc := range []struct {
+		name      string
+		saveOnly  bool
+		wantCalls int
+	}{
+		{"verified SSH", false, 1},
+		{"save without preflight", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			opts := Options{
+				ConfigPath: path, ScanRoot: t.TempDir(), Listen: "127.0.0.1:8787",
+				AppServerSSHTarget: "mimi-local", SaveOnly: tc.saveOnly,
+				Assistants:       map[string]string{"claude": "disabled", "agy": "disabled"},
+				ObserveAssistant: inspectPreflightRuntime,
+			}
+			original := sshPreflight
+			t.Cleanup(func() { sshPreflight = original })
+			calls := 0
+			sshPreflight = func(_ context.Context, transport *appserver.SSHTransport) error {
+				calls++
+				if transport.Target() != opts.AppServerSSHTarget {
+					t.Fatalf("unexpected SSH target %q", transport.Target())
+				}
+				return nil
+			}
+			result, err := Run(t.Context(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != tc.wantCalls || (!tc.saveOnly && result.PairURL == "") {
+				t.Fatalf("SSH preflight calls = %d, pairing available = %t", calls, result.PairURL != "")
+			}
+			cfg := config.ParseSetupDocument(readPublicationBytes(t, path)).Config
+			if cfg.AppServer.Transport != "ssh" || cfg.Codex.Enabled == nil || *cfg.Codex.Enabled != (tc.wantCalls == 1) {
+				t.Fatalf("transport = %q, codex enabled = %t", cfg.AppServer.Transport, cfg.Codex.IsEnabled())
+			}
+		})
+	}
+}
+
 func TestLegacyExplicitSSHOnExistingLocalHost(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("legacy macOS local-to-SSH setup")

@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/privatefile"
 	"github.com/gaixianggeng/mimi-remote/experiments/tailcat/internal/tunnel"
-	mimiconfig "github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/tailscale/tailcat"
 	"tailscale.com/tailcfg"
 )
@@ -98,7 +98,7 @@ func Start(config Config) (*Manager, error) {
 	if config.StateDir == "" || config.ControlPath == "" {
 		return nil, errors.New("Tailcat 托管服务需要状态目录和控制 socket")
 	}
-	if err := mimiconfig.CheckTailcatIdentityPermissions(config.StateDir); err != nil {
+	if err := checkIdentityPermissions(config.StateDir); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
@@ -216,7 +216,7 @@ func (m *Manager) StartPairing(ttl time.Duration) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := mimiconfig.CheckTailcatIdentityPermissions(m.config.StateDir); err != nil {
+	if err := checkIdentityPermissions(m.config.StateDir); err != nil {
 		return Status{}, err
 	}
 
@@ -314,7 +314,7 @@ func (m *Manager) AllowClient(rawKey string) (Status, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := mimiconfig.CheckTailcatIdentityPermissions(m.config.StateDir); err != nil {
+	if err := checkIdentityPermissions(m.config.StateDir); err != nil {
 		return Status{}, err
 	}
 
@@ -693,8 +693,22 @@ func writeJSON(w http.ResponseWriter, code int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// Check all identity files before a sidecar operation can replace or remove any of them.
+func checkIdentityPermissions(dir string) error {
+	for _, name := range []string{
+		"host.private.json", "host.address", "clients.json",
+		"pair.private.json", "pair.address", "free.private.json", "free.address",
+		"free-pair.private.json", "free-pair.address",
+	} {
+		if err := privatefile.Check(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadClients(path string) ([]string, error) {
-	data, err := mimiconfig.ReadPrivatePreflightFile(path, 4<<20)
+	data, err := privatefile.Read(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -718,7 +732,7 @@ func saveClients(path string, clients []string) error {
 	if err != nil {
 		return err
 	}
-	return mimiconfig.WritePrivateFile(path, data)
+	return privatefile.Write(path, data)
 }
 
 func normalizeClientKeys(rawKeys []string) ([]string, error) {
