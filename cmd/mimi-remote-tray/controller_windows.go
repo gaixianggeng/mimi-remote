@@ -78,13 +78,9 @@ func (p *terminalProcess) Wait() error {
 
 type agentController struct {
 	agentPath          string
-	trayPath           string
 	statusGate         chan struct{}
 	statusRunner       func(context.Context, ...string) ([]byte, error)
 	commandRunner      func(context.Context, ...string) ([]byte, error)
-	modifyResolver     func() (innoModifyTarget, error)
-	modifyVerifier     func(candidatePath, currentExecutable string) error
-	modifyRunner       func(context.Context, string, []string) error
 	cachedNetwork      *networkStatus
 	networkLastChecked time.Time
 	stateMu            sync.RWMutex
@@ -128,7 +124,6 @@ func newAgentController() (*agentController, error) {
 	}
 	return &agentController{
 		agentPath:  agentPath,
-		trayPath:   executable,
 		statusGate: make(chan struct{}, 1),
 	}, nil
 }

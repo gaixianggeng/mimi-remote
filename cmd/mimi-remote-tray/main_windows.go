@@ -734,7 +734,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 	case menuControlPanel:
 		a.showControlPanel()
 	case menuFirstSetup:
-		a.runFirstSetup()
+		a.showFirstSetupInstructions(showMessage)
 	case menuRefresh:
 		a.refreshStatusInteractive()
 	case menuStart:
@@ -816,71 +816,13 @@ func (a *trayApplication) runDoctor(fix bool) {
 	}()
 }
 
-func (a *trayApplication) runFirstSetup() {
-	if !a.firstSetupRequired() {
-		return
+// BE-6 must identify the single authenticated Inno maintenance image before
+// the tray can launch it. Any future launcher must start the exact file it
+// verified. Until then this action only displays local instructions.
+func (a *trayApplication) showFirstSetupInstructions(show func(uintptr, string, string, uint32) int) {
+	if a.firstSetupRequired() {
+		show(a.window, "完成首次设置", "请手动运行 Mimi Remote 安装程序，选择“修改”，按提示确认代码目录。完成后，回到托盘并点击“刷新状态”。", mbOK|mbIconInfo)
 	}
-	if !a.beginBusy() {
-		return
-	}
-	go func() {
-		defer a.endBusy()
-		err := a.executeFirstSetup()
-		if err != nil {
-			if isFirstSetupRecoverableViaDesktop(err) {
-				choice := showMessage(
-					a.window,
-					"需要重新获取安装包",
-					formatTrayUserError(err)+"\r\n\r\n是否打开 Mimi Remote 官方发布页下载安装包？",
-					mbYesNo|mbIconWarning,
-				)
-				if choice == idYes {
-					if openErr := openApprovedOnboardingURLWindows(onboardingURLDesktop); openErr != nil {
-						a.showError(openErr)
-					}
-				}
-				return
-			}
-			a.showError(err)
-			return
-		}
-		a.mu.RLock()
-		confirmed := a.statusErr == nil && a.status.workspaceConfirmedKnownTrue()
-		a.mu.RUnlock()
-		if confirmed {
-			a.showBalloon("Mimi Remote", "首次设置已完成，现在可以配对设备。", niifInfo)
-		}
-	}()
-}
-
-// executeFirstSetup enforces the confirmed-workspace guard, invokes the
-// publisher-verified Inno Modify launcher, and rereads agentd status so the
-// tray reflects workspace_confirmed immediately after completion.
-func (a *trayApplication) executeFirstSetup() error {
-	if !a.firstSetupRequired() {
-		return nil
-	}
-	// Confirmation can change outside the tray while its menu is open.
-	a.refreshStatus()
-	if !a.firstSetupRequired() {
-		a.mu.RLock()
-		defer a.mu.RUnlock()
-		return a.statusErr
-	}
-	err := a.controller.launchFirstSetup(context.Background())
-	a.refreshStatus()
-	if err != nil {
-		return err
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.statusErr != nil {
-		return a.statusErr
-	}
-	if !a.status.workspaceConfirmedKnownTrue() {
-		return errors.New("尚未确认代码目录，请重新检查首次设置")
-	}
-	return nil
 }
 
 func (a *trayApplication) requestPairing() {

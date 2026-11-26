@@ -1179,7 +1179,7 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		if firstSetupNeeded {
 			presentation.StateTitle = "待完成首次设置"
 			presentation.StateBadge = "待设置"
-			presentation.StateSummary = "请点击“完成首次设置…”确认代码目录并初始化服务。"
+			presentation.StateSummary = "点击“完成首次设置…”查看安装程序的修改步骤。"
 			presentation.StatusColor = rgbColor(154, 91, 0)
 			presentation.StatusBackground = rgbColor(255, 245, 226)
 		}
@@ -1205,7 +1205,7 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		case firstSetupNeeded:
 			presentation.StateTitle = "待完成首次设置"
 			presentation.StateBadge = "待设置"
-			presentation.StateSummary = "请点击“完成首次设置…”确认代码目录，再连接手机。"
+			presentation.StateSummary = "点击“完成首次设置…”查看安装程序的修改步骤。"
 			presentation.StatusColor = rgbColor(154, 91, 0)
 			presentation.StatusBackground = rgbColor(255, 245, 226)
 		case status.lifecycleTitle() == "运行正常":
@@ -1845,7 +1845,7 @@ func (p *controlPanel) dispatch(command uint32) {
 		p.openSelfHostedRelayGuide()
 		p.syncFromApplication()
 	case panelFirstSetup:
-		p.app.runFirstSetup()
+		p.app.showFirstSetupInstructions(showMessage)
 	case panelRefresh:
 		p.app.refreshStatusInteractive()
 	case panelStart:
