@@ -691,13 +691,20 @@ struct SessionIndexRow: View {
             Spacer(minLength: 12)
 
             if session.cwdMissing == true {
-                Text(L10n.text("ui.session_cwd_missing_badge"))
+                // 完整说明比原来的短徽标长，尤其是英文；限制最大宽度并截断，
+                // 避免把同一行的会话标题挤没。VoiceOver 仍读完整文案。
+                let badgeText = L10n.text("ui.session_cwd_missing_badge")
+                Text(badgeText)
                     .font(themeStore.uiFont(.caption2, weight: .medium))
                     .foregroundStyle(tokens.warning)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: cwdMissingBadgeMaxWidth, alignment: .leading)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(tokens.warning.opacity(0.12), in: Capsule())
                     .accessibilityIdentifier("session.cwdMissingBadge")
+                    .accessibilityLabel(badgeText)
                     .layoutPriority(2)
             }
 
@@ -994,6 +1001,11 @@ struct SessionIndexRow: View {
     private var rowMinimumHeight: CGFloat {
         if isSessionLibrary && !showsSessionPreview { return Self.libraryRowMinimumHeight }
         return density.minimumHeight
+    }
+
+    /// 中文完整徽标大约 15 字宽；英文更长，超出后截断，给标题留位置。
+    private var cwdMissingBadgeMaxWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 280 : 200
     }
 
     private var status: AgentSessionDisplayStatus {
