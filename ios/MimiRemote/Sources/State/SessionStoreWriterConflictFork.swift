@@ -7,6 +7,15 @@ enum WriterConflictForkAvailability: Hashable {
     case failed
 }
 
+enum WriterConflictSharedGuideStatus: Equatable {
+    case activeConflict
+    case retrying
+    case duplicating
+    case offline
+    case connectionTerminated(ConnectionTerminationStatus)
+    case unavailable
+}
+
 struct WriterConflictForkPreparationID: Hashable {
     let lease: HostSessionLease
     let revision: UInt64
@@ -15,6 +24,15 @@ struct WriterConflictForkPreparationID: Hashable {
 }
 
 extension SessionStore {
+    var activeHostPlatform: HostPlatform {
+        appStore.activeConnectionProfile?.hostPlatform ?? .unknown
+    }
+
+    var selectedWriterConflictLease: HostSessionLease? {
+        guard let selectedSessionID else { return nil }
+        return writerConflictForkLease(for: selectedSessionID)
+    }
+
     var selectedWriterConflictForkAvailability: WriterConflictForkAvailability? {
         guard let session = selectedSession,
               hasActiveWriterConflict(sessionID: session.id),
@@ -23,9 +41,52 @@ extension SessionStore {
 
         let lease = writerConflictForkLease(for: session.id)
         if let availability = writerConflictForkAvailabilityByLease[lease] {
+            // 空闲时缓存的 .available(lastTurnID: nil) 不能复用于刚转入运行中的会话；
+            // 在重新探测到最近已完成回合前统一映射为 .checking，避免界面短暂承诺可分支。
+            if session.isRunning, availability == .available(lastTurnID: nil) {
+                return .checking
+            }
             return availability
         }
         return session.isRunning ? .checking : .available(lastTurnID: nil)
+    }
+
+    /// 引导弹层打开期间实时判定当前引导状态：连接终止（例如凭据失效）、断网、正在重试或复制中
+    /// 都不能误报为「可马上分支」；冲突提示消失后也不断言写入权已恢复，统一退回 `.unavailable`
+    /// 提示返回会话页查看最新连接与锁定状态。
+    func writerConflictSharedGuideStatus(
+        originLease: HostSessionLease?
+    ) -> WriterConflictSharedGuideStatus {
+        if let connectionTermination {
+            return .connectionTerminated(connectionTermination)
+        }
+        if appStore.requiresRePairing {
+            return .connectionTerminated(.credentialsInvalid)
+        }
+        if isNetworkUnavailable {
+            return .offline
+        }
+        if let originLease,
+           let session = selectedSession,
+           writerConflictForkLease(for: session.id) != originLease {
+            return .unavailable
+        }
+        if selectedSessionShowsWriterConflictCard {
+            if isDuplicatingSelectedWriterConflictSession {
+                return .duplicating
+            }
+            if isRetryingSelectedWriterConflict {
+                return .retrying
+            }
+            return .activeConflict
+        }
+        guard let session = selectedSession else {
+            return .unavailable
+        }
+        if case .unavailable(let reason) = conversationReadiness(for: session) {
+            return .connectionTerminated(reason)
+        }
+        return .unavailable
     }
 
     var selectedWriterConflictForkErrorMessage: String? {

@@ -18,6 +18,8 @@ struct ConversationView: View {
     // 内容真实排版宽度才是唯一可信来源，提案算术只用于测量到达前的首帧。
     @State private var measuredContentWidth: CGFloat?
     @State private var measuredTopStatusHeight: CGFloat = 0
+    @State private var showingWriterConflictSharedGuide = false
+    @State private var writerConflictSharedGuideOriginLease: HostSessionLease?
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -115,6 +117,7 @@ struct ConversationView: View {
                                 errorMessage: sessionStore.selectedWriterConflictForkErrorMessage,
                                 isDuplicating: sessionStore.isDuplicatingSelectedWriterConflictSession,
                                 isRetrying: sessionStore.isRetryingSelectedWriterConflict,
+                                hostPlatform: sessionStore.activeHostPlatform,
                                 onFork: {
                                     Task { await sessionStore.duplicateSelectedWriterConflictSession() }
                                 },
@@ -127,6 +130,10 @@ struct ConversationView: View {
                                 },
                                 onRetry: {
                                     Task { await sessionStore.retrySelectedSessionWriterAccess() }
+                                },
+                                onOpenSharedGuide: {
+                                    writerConflictSharedGuideOriginLease = sessionStore.selectedWriterConflictLease
+                                    showingWriterConflictSharedGuide = true
                                 }
                             )
                             .task(id: sessionStore.selectedWriterConflictForkPreparationID) {
@@ -156,6 +163,19 @@ struct ConversationView: View {
             .task(id: isPhoneDetailActive ? sessionStore.selectedSession?.id : nil) {
                 guard isPhoneDetailActive else { return }
                 await sessionStore.warmSelectedClaudeAuthentication()
+            }
+            .sheet(
+                isPresented: $showingWriterConflictSharedGuide,
+                onDismiss: { writerConflictSharedGuideOriginLease = nil }
+            ) {
+                WriterConflictSharedGuideSheet(
+                    sourceIsRunning: sessionStore.selectedSession?.isRunning == true,
+                    availability: sessionStore.selectedWriterConflictForkAvailability,
+                    status: sessionStore.writerConflictSharedGuideStatus(
+                        originLease: writerConflictSharedGuideOriginLease
+                    ),
+                    hostPlatform: sessionStore.activeHostPlatform
+                )
             }
         }
     }

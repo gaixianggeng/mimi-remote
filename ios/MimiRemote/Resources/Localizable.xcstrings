@@ -52560,6 +52560,23 @@
         }
       }
     },
+    "ui.writer_conflict_fork_checking_explanation": {
+      "comment": "Explains that Mimi is still checking the latest completed turn boundary before promising a branch point.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking the last completed turn available to copy. Please wait."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在检查可复制的回合边界，请稍候。"
+          }
+        }
+      }
+    },
     "ui.writer_conflict_fork_continue": {
       "comment": "Primary action that branches a writer-conflicted Thread and opens it as a new chat.",
       "localizations": {
@@ -52590,6 +52607,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在创建分支…"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_fork_failed_explanation": {
+      "comment": "Explains that Mimi could not verify a safe fork turn boundary yet and prompts the user to check again or retry after closing the holding Codex instance.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t confirm a safe turn to copy yet. Tap “Check again” before branching, or close the Codex instance holding this chat and tap “Retry”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂未能确认可复制的回合边界，请先点「重新检查」后再分支，或结束持有该会话的 Codex 实例后点「重试」。"
           }
         }
       }
@@ -52675,6 +52709,346 @@
           "stringUnit": {
             "state": "translated",
             "value": "未能加载最新消息，请重试。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_link": {
+      "comment": "Compact link button inside WriterConflictCard header that opens the guide on sharing live Codex chats between Mac and phone.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How to share"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何共享"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_mac_body": {
+      "comment": "Explains the one-time Mac setup using verbatim Chinese UI labels that currently exist on main in Mimi Remote Mac (MenuBarContentView, SessionsWindowView, CodexSharedSetupView), scoping 127.0.0.1 loopback steps to a local agentd backend, directing explicit remote SSH backends to use the same SSH target and account, noting Remote Login and non-interactive SSH authentication prerequisites for Homebrew-only or missing-menu installs, and noting quitting any lock-holding local Codex process before reopening over SSH.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac only (note: Mimi Remote Mac’s UI is currently in Chinese): the 127.0.0.1 loopback steps below apply only when agentd uses this Mac’s local backend; if agentd is configured with an explicit remote SSH backend, do not connect to 127.0.0.1—connect Codex Desktop to that same SSH target and account instead. For a local backend, open Mimi Remote Mac from the menu bar and choose “会话…” (Sessions). In the “会话” window, right-click any Codex session (or open its “打开” menu) and choose “让 Codex 桌面版和手机同时使用…”, then follow the on-screen 3-step setup: turn on Remote Login (“远程登录” via “打开共享设置”), complete local passwordless SSH (“允许本机免密登录”), and click “打开 Codex 桌面版” to go to Settings → Connections (“设置 → 连接”), add an SSH connection to this Mac (“来自这台 Mac 的 SSH 连接” → “添加”) with hostname 127.0.0.1 (display name e.g. “本机”), save, and wait for it to connect. If you installed Homebrew only or that menu item isn’t shown, first turn on Remote Login and set up non-interactive SSH authentication for the same Mac account, then verify or add the 127.0.0.1 local SSH host directly in Codex Desktop. Once connected, if a local Codex process is still holding this chat’s write lock, let the current task finish and quit the lock-holding Codex process first, then reopen the project and chat in Codex Desktop through that matching shared SSH connection to share it live with your phone."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅支持 Mac：以下 127.0.0.1 回环步骤仅适用于 agentd 使用本机后端；若 agentd 配置了显式远端 SSH，请勿连接 127.0.0.1，改在 Codex 桌面版连接同一 SSH 目标和账号。使用本机后端时，在 Mac 菜单栏打开 Mimi Remote Mac，点「会话…」，在「会话」窗口右键任意一条 Codex 会话（或展开行尾「打开」菜单），选「让 Codex 桌面版和手机同时使用…」，按页面 3 步指引完成一次配置：点「打开共享设置」开启「远程登录」、完成「允许本机免密登录」，再点「打开 Codex 桌面版」，进入「设置 → 连接」，在「来自这台 Mac 的 SSH 连接」旁点「添加」，主机名填 127.0.0.1（显示名称填「本机」），保存后等待连上。若仅安装 Homebrew 版或菜单未显示该项，请先在这台 Mac 开启「远程登录」并配置同一账号的非交互 SSH 认证，再直接在 Codex 桌面版核对或添加 127.0.0.1 本机 SSH 连接。配置完成后，若当前会话仍被本地 Codex 占用，请先等当前任务完成并退出占锁的 Codex 进程（例如完全退出默认本地模式的 Codex 桌面版或结束对应终端 / 后台进程），再在 Codex 桌面版通过对应的共享 SSH 连接重新打开项目与同一条会话，即可与手机实时共享。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_mac_title": {
+      "comment": "Section heading for Mac live chat sharing setup inside the writer conflict guide sheet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share live chats with your Mac"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如何与电脑实时共享（Mac）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_non_mac_body": {
+      "comment": "Explains that guided live Codex Desktop sharing via Mimi Remote Mac is unavailable on Windows/Linux and directs users to the live status section below for current actions.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your connected computer isn’t a Mac, so guided live Codex Desktop sharing via Mimi Remote Mac isn’t available here yet. Follow the live status section below for the actions currently available for this chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前连接的电脑不是 Mac，暂不支持通过 Mimi Remote Mac 引导接入 Codex 桌面版双端共享。当前可执行的恢复或继续操作，请以下方「现在想立刻继续怎么办？」中的实时状态为准。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_non_mac_title": {
+      "comment": "Section heading for live chat sharing status when connected to a non-Mac computer.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About live desktop sharing"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关于双端实时共享"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_body": {
+      "comment": "Explains immediate options when branching is available for an idle locked chat.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap “Branch to new chat” to copy the saved progress into a new chat and continue right away. To continue the original chat, make sure no task is running there, close the Codex instance holding this chat on your computer (for example, quit Codex Desktop completely or stop the other Codex process), and tap “Retry”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点「分支到新聊天」可基于已保存的进度复制出新会话马上继续；如果要继续原会话，请先确认没有运行中的任务，结束电脑上实际持有该会话的 Codex 实例（例如完全退出 Codex 桌面版或结束对应 Codex 进程），再回来点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_credentials_invalid_body": {
+      "comment": "Explains that connection credentials expired while the shared guide sheet was open and points directly to the Re-pair button in the top banner.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your connection credentials have expired and automatic retries have stopped. Tap “Done” to return, tap “Re-pair” in the top banner to rescan the pairing QR code on your computer, and then resume this chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前连接凭据已失效，已停止自动重试。点「完成」返回后，点击顶部横幅中的「重新配对」即可重新扫描电脑上的配对二维码，恢复连接后再继续当前会话。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_duplicating_body": {
+      "comment": "Explains that a branched copy of the locked chat is currently being created.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creating a new branched chat right now—please wait. Tap “Done” to return and check progress."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在为你创建新的分支会话，请稍候。点「完成」返回即可查看创建进度。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_no_fork_body": {
+      "comment": "Explains immediate options when branching is not available for the locked chat.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Branching isn’t available for this chat. To continue the original chat, make sure any active task has finished, close the Codex instance holding this chat on your computer (for example, quit Codex Desktop completely or stop the other Codex process), and tap “Retry”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话暂不支持分支复制。要继续原会话，请先确认任务已结束，结束电脑上实际持有该会话的 Codex 实例（例如完全退出 Codex 桌面版或结束对应 Codex 进程），再回来点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_no_terminal_turn_body": {
+      "comment": "Explains immediate options when a running locked chat has no completed turn to branch from yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“Branch to new chat” isn’t available yet because this running chat has no completed turn to copy. Wait for the current reply to finish before branching, or after confirming the task has finished, close the Codex instance holding this chat on your computer (for example, quit Codex Desktop completely or stop the other Codex process) and tap “Retry” to continue the original chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话正在运行且尚无已完成回合，暂时无法使用「分支到新聊天」。请等待当前回复完成后再分支；若要继续原会话，请确认任务已结束，结束电脑上实际持有该会话的 Codex 实例（例如完全退出 Codex 桌面版或结束对应 Codex 进程）后回来点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_offline_body": {
+      "comment": "Explains that branching and retrying require a network connection when the device is currently offline.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your network is currently unavailable, so “Branch to new chat” and “Retry” can’t run right now. Reconnect to the network, tap “Done” to return, and then retry or branch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前网络不可用，暂时无法发起「分支到新聊天」或「重试」。请先恢复网络连接，点「完成」返回后再重试或创建分支。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_pending_body": {
+      "comment": "Explains immediate options while branch availability is still checking or needs rechecking.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Once branching is ready, tap “Branch to new chat” to continue in a copy (while running, only up to the last completed turn is copied; if the check failed, tap “Check again”). To continue the original chat, make sure tasks have finished, close the Codex instance holding this chat on your computer (for example, quit Codex Desktop completely or stop the other Codex process), and tap “Retry”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分支可用后可点「分支到新聊天」复制到新会话继续（运行中时仅会复制到最近已完成的回合，不含进行中的回复）；若检查失败，可先点「重新检查」。要继续原会话，请先确认任务已结束，结束电脑上实际持有该会话的 Codex 实例（例如完全退出 Codex 桌面版或结束对应 Codex 进程）后再回来点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_retrying_body": {
+      "comment": "Explains that Mimi is refreshing messages and retrying write access, so branching is temporarily disabled until the retry finishes.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing the latest messages and retrying write access—branching is paused until this finishes. Wait for the retry to complete; if the chat is still locked, tap “Done” to branch or close the Codex instance holding this chat on your computer and tap “Retry” again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在刷新最新消息并重试写入权限，期间暂时无法使用「分支到新聊天」。请等待本次重试完成；若仍处于锁定状态，点「完成」返回后可选择分支，或在结束电脑上实际持有该会话的 Codex 实例后再次点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_running_body": {
+      "comment": "Explains immediate options when branching is available for a running locked chat, noting the copy stops at the last completed turn.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap “Branch to new chat” to continue in a copy up to the last completed turn—the in-progress reply won’t be included. To continue the original chat, make sure tasks have finished, close the Codex instance holding this chat on your computer (for example, quit Codex Desktop completely or stop the other Codex process), and tap “Retry”."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点「分支到新聊天」可复制出新会话继续，但运行中时仅会复制到最近已完成的回合，不会包含当前进行中的回复。要继续原会话，请先确认任务已结束，结束电脑上实际持有该会话的 Codex 实例（例如完全退出 Codex 桌面版或结束对应 Codex 进程）后再回来点「重试」。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_title": {
+      "comment": "Section heading for immediate continuation options inside the writer conflict guide sheet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Need to continue right now?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "现在想立刻继续怎么办？"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_unavailable_body": {
+      "comment": "Explains that the chat status changed while the shared guide sheet was open and write access cannot be confirmed yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This chat’s status has changed and write access can’t be confirmed right now. Tap “Done” to return to the chat and check the latest connection and lock status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话状态已变化，暂无法确认是否已恢复可写。点「完成」返回会话页查看最新连接与锁定状态。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_title": {
+      "comment": "Navigation title of the sheet explaining how to share Codex sessions between desktop and mobile.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share chats with your computer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与电脑共享同一会话"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_unknown_platform_body": {
+      "comment": "Platform-neutral guidance shown when the connection profile has no host platform metadata yet, avoiding Mac-only instructions for legacy Windows or Linux profiles.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This connection hasn’t reported your computer’s operating system yet, so Mac-only setup steps aren’t shown here. Guided live Codex Desktop sharing via Mimi Remote Mac and local SSH is currently available only on Mac; if this computer is a Mac, update and reconnect to refresh host details. Follow the live status section below for the actions currently available for this chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前连接尚未上报电脑系统类型，无法确认主机是否为 Mac，因此不在此展示 Mac 专用配置步骤。通过 Mimi Remote Mac 与本机 SSH 接入 Codex 桌面版的双端实时共享目前仅支持 Mac；若这台电脑是 Mac，请更新并重新连接以同步主机信息。当前可执行的恢复或继续操作，请以下方「现在想立刻继续怎么办？」中的实时状态为准。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_why_body": {
+      "comment": "General plain-language explanation that Codex allows only one active writer per chat at a time, remaining accurate both during a conflict and after recovery.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex allows only one active writer per chat at a time. When another Codex instance on your computer—such as Codex Desktop in its default local mode or another terminal/background Codex process—holds the exclusive write lock, mobile can read the chat but cannot write to it directly."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 同一条会话同一时间只允许一个活跃写入方。当电脑上的另一个 Codex 实例（例如处于默认本地模式的 Codex 桌面版，或其他终端 / 后台 Codex 进程）持有该会话的独占写入锁时，手机端只能查看，无法直接继续写入。"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_why_title": {
+      "comment": "General section heading explaining why a Codex chat can be locked.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Why can a chat be locked?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "为什么会被锁定？"
           }
         }
       }

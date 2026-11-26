@@ -371,5 +371,67 @@
       "value": "•",
       "reason": "Markdown list marker."
     }
+  ],
+  "englishVerbatimHostLabelAllowlist": [
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "会话…",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac menu bar item label (MenuBarContentView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "会话",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Sessions window title (SessionsWindowView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac session row menu button label (SessionOpenTarget.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "让 Codex 桌面版和手机同时使用…",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Codex session menu item label (SessionsWindowView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "远程登录",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 1 label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开共享设置",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 1 button label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "允许本机免密登录",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 2 heading label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开 Codex 桌面版",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 3 button label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "设置 → 连接",
+      "reason": "Verbatim Chinese Codex Desktop navigation path shown in Mimi Remote Mac Step 3 (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "来自这台 Mac 的 SSH 连接",
+      "reason": "Verbatim Chinese Codex Desktop SSH section label shown in Mimi Remote Mac Step 3 (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "添加",
+      "reason": "Verbatim Chinese Codex Desktop add-host button label shown in Mimi Remote Mac Step 3 (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "本机",
+      "reason": "Verbatim Chinese example display name shown in Mimi Remote Mac Step 3 (CodexSharedSetupView.swift)."
+    }
   ]
 }

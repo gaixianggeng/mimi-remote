@@ -617,6 +617,8 @@ struct MimiRemoteApp: App {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--debug-image-recovery-fixture") {
             DebugImageRecoveryFixture(appStore: appStore)
+        } else if ProcessInfo.processInfo.arguments.contains("--debug-writer-conflict-guide-fixture") {
+            DebugWriterConflictGuideFixture(appStore: appStore)
         } else {
             RootView()
         }

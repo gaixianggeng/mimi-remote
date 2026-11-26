@@ -154,11 +154,195 @@ final class LocalizationTests: XCTestCase {
                 "ui.retry_writer_access",
                 "Reload messages and retry writer access",
                 "重新加载消息并重试写入权限"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_link",
+                "How to share",
+                "如何共享"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_title",
+                "Share chats with your computer",
+                "与电脑共享同一会话"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_why_title",
+                "Why can a chat be locked?",
+                "为什么会被锁定？"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_mac_title",
+                "Share live chats with your Mac",
+                "如何与电脑实时共享（Mac）"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_non_mac_title",
+                "About live desktop sharing",
+                "关于双端实时共享"
+            ),
+            (
+                "ui.writer_conflict_shared_guide_now_title",
+                "Need to continue right now?",
+                "现在想立刻继续怎么办？"
             )
         ]
         for (key, english, simplifiedChinese) in writerConflictForkValues {
             XCTAssertEqual(L10n.text(key, language: .english), english)
             XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
+        }
+        for bodyKey in [
+            "ui.writer_conflict_fork_checking_explanation",
+            "ui.writer_conflict_fork_failed_explanation",
+            "ui.writer_conflict_shared_guide_why_body",
+            "ui.writer_conflict_shared_guide_mac_body",
+            "ui.writer_conflict_shared_guide_non_mac_body",
+            "ui.writer_conflict_shared_guide_unknown_platform_body",
+            "ui.writer_conflict_shared_guide_now_body",
+            "ui.writer_conflict_shared_guide_now_credentials_invalid_body",
+            "ui.writer_conflict_shared_guide_now_duplicating_body",
+            "ui.writer_conflict_shared_guide_now_no_fork_body",
+            "ui.writer_conflict_shared_guide_now_no_terminal_turn_body",
+            "ui.writer_conflict_shared_guide_now_offline_body",
+            "ui.writer_conflict_shared_guide_now_pending_body",
+            "ui.writer_conflict_shared_guide_now_retrying_body",
+            "ui.writer_conflict_shared_guide_now_running_body",
+            "ui.writer_conflict_shared_guide_now_unavailable_body"
+        ] {
+            let english = L10n.text(bodyKey, language: .english)
+            let simplifiedChinese = L10n.text(bodyKey, language: .simplifiedChinese)
+            XCTAssertNotEqual(english, bodyKey)
+            XCTAssertNotEqual(simplifiedChinese, bodyKey)
+            XCTAssertFalse(english.isEmpty)
+            XCTAssertFalse(simplifiedChinese.isEmpty)
+            XCTAssertFalse(
+                english.localizedCaseInsensitiveContains("unlocked"),
+                "\(bodyKey) 英文文案不得断言写入权已解除锁定：\(english)"
+            )
+            XCTAssertFalse(
+                simplifiedChinese.contains("已解除锁定"),
+                "\(bodyKey) 中文文案不得断言写入权已解除锁定：\(simplifiedChinese)"
+            )
+        }
+        // Mac 端目前仅提供中文界面：中英文引导都必须逐字引用 main 上 Mac 端真实存在的入口与按钮文案，
+        // 禁止引用尚未合入（#1115）的按钮文案或不存在的英文 Mac 按钮名。
+        let requiredMacTokens = [
+            "会话…",
+            "会话",
+            "打开",
+            "让 Codex 桌面版和手机同时使用…",
+            "打开共享设置",
+            "远程登录",
+            "允许本机免密登录",
+            "打开 Codex 桌面版",
+            "设置 → 连接",
+            "来自这台 Mac 的 SSH 连接",
+            "添加",
+            "127.0.0.1",
+            "本机"
+        ]
+        let forbiddenUnmergedMacTokens = [
+            "v1.1.19",
+            "连接 Codex 桌面版…",
+            "连接 Codex 桌面版",
+            "一键配置本机 SSH",
+            "打开 Codex SSH 设置",
+            "打开 Codex 连接设置",
+            "mimi-local"
+        ]
+        for language in [AppLanguage.simplifiedChinese, .english] {
+            let macGuide = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: language)
+            for token in requiredMacTokens {
+                XCTAssertTrue(
+                    macGuide.contains(token),
+                    "Mac 引导 [\(language.rawValue)] 缺少实机文案「\(token)」：\(macGuide)"
+                )
+            }
+            for token in forbiddenUnmergedMacTokens {
+                XCTAssertFalse(
+                    macGuide.contains(token),
+                    "Mac 引导 [\(language.rawValue)] 不得引用尚未合入的 Mac 文案「\(token)」：\(macGuide)"
+                )
+            }
+            XCTAssertFalse(macGuide.contains("ssh-keygen"))
+            XCTAssertFalse(macGuide.contains("authorized_keys"))
+            XCTAssertFalse(macGuide.contains("~/.ssh"))
+            XCTAssertFalse(macGuide.contains("mimi_codex_local_ed25519"))
+            XCTAssertFalse(macGuide.contains("复制命令"))
+        }
+        let macGuideZh = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .simplifiedChinese)
+        XCTAssertTrue(macGuideZh.contains("退出占锁的 Codex 进程"))
+        XCTAssertTrue(macGuideZh.contains("仅适用于 agentd 使用本机后端"))
+        XCTAssertTrue(macGuideZh.contains("同一 SSH 目标和账号"))
+        XCTAssertTrue(macGuideZh.contains("Homebrew"))
+        XCTAssertTrue(macGuideZh.contains("非交互 SSH 认证"))
+        let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
+        XCTAssertTrue(macGuideEn.contains("quit the lock-holding Codex process"))
+        XCTAssertTrue(macGuideEn.contains("only when agentd uses this Mac’s local backend"))
+        XCTAssertTrue(macGuideEn.contains("same SSH target and account"))
+        XCTAssertTrue(macGuideEn.contains("Homebrew"))
+        XCTAssertTrue(macGuideEn.contains("non-interactive SSH authentication"))
+
+        let nonMacGuideZh = L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .simplifiedChinese)
+        let nonMacGuideEn = L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .english)
+        XCTAssertFalse(nonMacGuideZh.contains("一键"))
+        XCTAssertFalse(nonMacGuideZh.contains("分支复制"))
+        XCTAssertFalse(nonMacGuideZh.contains("重试"))
+        XCTAssertFalse(nonMacGuideEn.localizedCaseInsensitiveContains("one-click"))
+        XCTAssertFalse(nonMacGuideEn.localizedCaseInsensitiveContains("use branching"))
+        XCTAssertFalse(nonMacGuideEn.localizedCaseInsensitiveContains("tap “Retry”"))
+
+        let unknownGuideZh = L10n.text("ui.writer_conflict_shared_guide_unknown_platform_body", language: .simplifiedChinese)
+        let unknownGuideEn = L10n.text("ui.writer_conflict_shared_guide_unknown_platform_body", language: .english)
+        XCTAssertFalse(unknownGuideZh.contains("让 Codex 桌面版和手机同时使用…"))
+        XCTAssertFalse(unknownGuideZh.contains("当前连接的电脑不是 Mac"))
+        XCTAssertFalse(unknownGuideEn.contains("让 Codex 桌面版和手机同时使用…"))
+        XCTAssertFalse(unknownGuideEn.contains("isn’t a Mac"))
+
+        // 通用锁机制说明在恢复可写后仍需成立，不得写死“当前正持有锁”。
+        XCTAssertFalse(
+            L10n.text("ui.writer_conflict_shared_guide_why_body", language: .simplifiedChinese)
+                .contains("正持有")
+        )
+        XCTAssertFalse(
+            L10n.text("ui.writer_conflict_shared_guide_why_body", language: .english)
+                .localizedCaseInsensitiveContains("currently holds")
+        )
+        XCTAssertTrue(macGuideEn.contains("Settings → Connections"))
+        for nonexistentEnglishMacLabel in [
+            "Connect Codex Desktop…",
+            "Connect Codex Desktop",
+            "Open Sharing Settings",
+            "Copy Command",
+            "Open Codex Desktop",
+            "One-Click Local SSH Setup",
+            "Open Codex SSH Settings",
+            "Open Codex Connection Settings"
+        ] {
+            XCTAssertFalse(
+                macGuideEn.contains(nonexistentEnglishMacLabel),
+                "英文 Mac 引导不得引导用户寻找 Mac 上不存在的英文按钮「\(nonexistentEnglishMacLabel)」"
+            )
+        }
+        // 凭据失效引导直接指向工作台顶部横幅中的实际「重新配对」/「Re-pair」按钮。
+        XCTAssertTrue(
+            L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body", language: .simplifiedChinese)
+                .contains(L10n.text("ui.re_pair", language: .simplifiedChinese))
+        )
+        XCTAssertTrue(
+            L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body", language: .english)
+                .contains(L10n.text("ui.re_pair", language: .english))
+        )
+        // 检查中与检查失败的卡片正文不得承诺可复制到上一轮结束位置。
+        for key in [
+            "ui.writer_conflict_fork_checking_explanation",
+            "ui.writer_conflict_fork_failed_explanation"
+        ] {
+            XCTAssertFalse(
+                L10n.text(key, language: .simplifiedChinese).contains("将复制到上一轮结束的位置")
+            )
+            XCTAssertFalse(
+                L10n.text(key, language: .english).contains("The copy will end at the previous finished turn")
+            )
         }
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")

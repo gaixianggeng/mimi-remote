@@ -29,7 +29,7 @@ macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的�
 }
 ```
 
-agentd 直接连接标准 control socket。Mac App 安装版启动服务前自动登记登录用户的 launchd 前门；由它持有标准 socket，并在 Aqua 环境启动独立的 Codex backend。前门未就绪时 agentd 只报告 Codex 不可用，不自行争夺标准 socket。Linux 的 socket 缺失时仍由 agentd 优先通过独立 user-systemd scope 启动 resident；macOS Homebrew 版沿用已登录用户的 Aqua 启动方式。三种方式都把 open-file soft limit 提到至少 8192；agentd 重启不终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
+agentd 直接连接标准 control socket。Mac App 安装版启动服务前自动登记登录用户的 launchd 前门；由它持有标准 socket，并在 Aqua 环境启动独立的 Codex backend。前门未就绪时 agentd 只报告 Codex 不可用，不自行争夺标准 socket。Linux 的 socket 缺失时仍由 agentd 优先通过独立 user-systemd scope 启动 resident；macOS Homebrew 版沿用已登录用户的 Aqua 启动方式。三种方式都把 open-file soft limit 提到至少 8192；agentd 重启不终止 resident。在共享同一公共 `CODEX_HOME`（默认 `~/.codex`）的前提下，Codex `0.157+` 的终端接入分为三种情况：显式执行 `codex --remote unix://` 会直接按指定端点连接；普通终端 `codex` 符合隐式复用条件时（例如未传 `--no-daemon`、`--profile`，且未设置 `CODEX_EXEC_SERVER_URL`），会尝试连接已运行的标准 control socket，即使关闭 `daemon_auto_start` 也会优先复用已有服务；默认开启的 `daemon_auto_start` 控制的是标准 socket 尚未运行且满足隐式自动启动条件时，普通 `codex` 是否主动启动后台服务（传入 `--no-daemon` 等不满足隐式复用条件时既不复用也不自动启动）。
 
 ### macOS Mac App 前门
 
