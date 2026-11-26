@@ -42,10 +42,10 @@ final class WriterConflictSharedGuideUITests: XCTestCase {
             app.staticTexts["如何与电脑实时共享（Mac）"].waitForExistence(timeout: 5),
             "共享引导应展示 Mac 共享说明标题"
         )
-        let macSetupPredicate = NSPredicate(format: "label CONTAINS %@", "打开 Codex SSH 设置")
+        let macSetupPredicate = NSPredicate(format: "label CONTAINS %@", "让 Codex 桌面版和手机同时使用…")
         XCTAssertTrue(
             app.staticTexts.containing(macSetupPredicate).firstMatch.waitForExistence(timeout: 5),
-            "共享引导正文应对齐 Mac 一键配置成功后的「打开 Codex SSH 设置」按钮文案"
+            "共享引导正文应对齐 main 上 Mac 端真实存在的「让 Codex 桌面版和手机同时使用…」入口文案"
         )
 
         let doneButton = button("writerConflict.sharedGuideDoneButton")

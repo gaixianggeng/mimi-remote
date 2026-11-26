@@ -573,7 +573,9 @@ final class WriterConflictForkStoreTests: XCTestCase {
             hostPlatform: .apple
         )
         XCTAssertEqual(appleSections.map(\.id), ["why", "mac", "now"])
-        XCTAssertTrue(appleSections[1].body.contains("一键配置本机 SSH"))
+        XCTAssertTrue(appleSections[1].body.contains("让 Codex 桌面版和手机同时使用…"))
+        XCTAssertTrue(appleSections[1].body.contains("打开 Codex 桌面版"))
+        XCTAssertFalse(appleSections[1].body.contains("一键配置本机 SSH"))
 
         for nonMac in [HostPlatform.windows, .linux] {
             let sections = WriterConflictSharedGuideSheet.sections(
@@ -584,12 +586,16 @@ final class WriterConflictForkStoreTests: XCTestCase {
             XCTAssertEqual(sections.map(\.id), ["why", "nonMac", "now"])
             XCTAssertEqual(sections[1].title, L10n.text("ui.writer_conflict_shared_guide_non_mac_title"))
             XCTAssertFalse(
-                sections[1].body.contains("一键配置本机 SSH"),
-                "\(nonMac.rawValue) 主机不应展示 Mac 专用的一键配置步骤"
+                sections[1].body.contains("让 Codex 桌面版和手机同时使用…"),
+                "\(nonMac.rawValue) 主机不应展示 Mac 专用的配置入口"
             )
             XCTAssertFalse(
-                sections[1].body.contains("连接 Codex 桌面版…"),
-                "\(nonMac.rawValue) 主机不应展示 Mac 菜单栏入口"
+                sections[1].body.contains("打开 Codex 桌面版"),
+                "\(nonMac.rawValue) 主机不应展示 Mac 专用步骤"
+            )
+            XCTAssertFalse(
+                sections[1].body.contains("一键"),
+                "\(nonMac.rawValue) 主机不应引用尚未合入的一键配置文案"
             )
         }
     }

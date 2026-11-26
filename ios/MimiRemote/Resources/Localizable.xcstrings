@@ -52731,18 +52731,18 @@
       }
     },
     "ui.writer_conflict_shared_guide_mac_body": {
-      "comment": "Explains the one-time Mac one-click safe SSH setup (PR #1115) with verbatim Chinese Mac UI labels, minimum Mac version v1.1.19, Check for Updates entry, missing-entry fallback, legacy 127.0.0.1 reuse when Step 2 is already done, and manual Settings -> Connections -> SSH path.",
+      "comment": "Explains the one-time Mac setup using verbatim Chinese UI labels that currently exist on main in Mimi Remote Mac (MenuBarContentView, SessionsWindowView, CodexSharedSetupView), without referencing PR #1115 entries.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac only (requires Mimi Remote Mac v1.1.19 or later): click “检查更新” (Check for Updates) in the Mimi Remote Mac menu bar to update first. If that setup entry isn’t shown yet, use branching or Retry below for now. Note: Mimi Remote Mac’s UI is currently in Chinese. Open Mimi Remote Mac from the menu bar and choose “连接 Codex 桌面版…” (or click “连接 Codex 桌面版” in the Sessions toolbar). Turn on Remote Login (“远程登录”, via “打开共享设置”). For Step 2, click “一键配置本机 SSH” to set up mimi-local automatically (no manual terminal commands), then click “打开 Codex SSH 设置” in Step 3 and choose mimi-local. If Step 2 is already marked done because an existing verified 127.0.0.1 passwordless connection works, you can reuse it—follow Mac’s current Step 3 prompt, click “打开 Codex 连接设置”, and connect to 127.0.0.1. If Codex Desktop doesn’t open the SSH page automatically, go to Settings → Connections → SSH (“设置 → 连接 → SSH”) manually, add the host, and choose your project. Once configured, open your project in Codex Desktop through that local SSH connection instead of default local mode to share the live chat with your phone."
+            "value": "Mac only (note: Mimi Remote Mac’s UI is currently in Chinese): open Mimi Remote Mac from the menu bar and choose “会话…” (Sessions). In the “会话” window, right-click any Codex session (or open its “打开” menu) and choose “让 Codex 桌面版和手机同时使用…”, then finish the one-time 3-step setup: Step 1, click “打开共享设置” and turn on Remote Login (“远程登录”); Step 2, click “复制命令” and run the copied command in Terminal on your Mac to allow local passwordless SSH; Step 3, click “打开 Codex 桌面版”, go to Settings → Connections (“设置 → 连接”), add an SSH connection to this Mac (“来自这台 Mac 的 SSH 连接” → “添加”) with hostname 127.0.0.1 (display name e.g. “本机”), save, and wait for it to connect. If that menu item isn’t shown, follow Step 3 directly in Codex Desktop to verify or add the 127.0.0.1 local SSH host. Once connected, open your project in Codex Desktop through that local SSH connection instead of default local mode to share the live chat with your phone."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅支持 Mac（需要 Mimi Remote Mac v1.1.19 及以上版本）：请先在 Mac 菜单栏点「检查更新」升级；若当前版本暂未看到该入口，可先使用下方的分支或重试。在 Mac 菜单栏打开 Mimi Remote Mac，点「连接 Codex 桌面版…」（或在「会话」窗口工具栏点「连接 Codex 桌面版」）：先打开「远程登录」（可点「打开共享设置」）；第 2 步点「一键配置本机 SSH」（自动配置 mimi-local，无需手动执行终端命令），完成后点第 3 步的「打开 Codex SSH 设置」并选择 mimi-local。若 Mac 检测到已验证的 127.0.0.1 免密连接可用、第 2 步已直接标为完成，可直接复用该连接，按 Mac 当前第 3 步提示点「打开 Codex 连接设置」并输入 127.0.0.1 接入。若桌面版未自动跳转，也可手动进入「设置 → 连接 → SSH」添加主机并选择项目。已配置好时，改在 Codex 桌面版通过该本机 SSH 连接打开项目，即可与手机实时共用同一条会话。"
+            "value": "仅支持 Mac：在 Mac 菜单栏打开 Mimi Remote Mac，点「会话…」。在「会话」窗口右键任意一条 Codex 会话（或展开行尾「打开」菜单），选「让 Codex 桌面版和手机同时使用…」，按 3 步完成一次配置：第 1 步点「打开共享设置」开启「远程登录」；第 2 步点「复制命令」并在 Mac 终端运行以允许本机免密登录；第 3 步点「打开 Codex 桌面版」，进入「设置 → 连接」，在「来自这台 Mac 的 SSH 连接」旁点「添加」，主机名填 127.0.0.1（显示名称填「本机」），保存后等待连上。若菜单未显示该项，也可直接按第 3 步在 Codex 桌面版核对或添加 127.0.0.1 本机 SSH 连接。配置完成后，改在 Codex 桌面版通过该本机 SSH 连接打开项目，即可与手机实时共用同一条会话。"
           }
         }
       }
@@ -52765,18 +52765,18 @@
       }
     },
     "ui.writer_conflict_shared_guide_non_mac_body": {
-      "comment": "Explains that one-click live Codex Desktop sharing via Mimi Remote Mac is unavailable on non-Mac computers and directs the user to branch or stop the holding Codex instance.",
+      "comment": "Explains that guided live Codex Desktop sharing via Mimi Remote Mac is unavailable on non-Mac computers and directs the user to branch or stop the holding Codex instance.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your connected computer isn’t a Mac, so one-click live Codex Desktop sharing via Mimi Remote Mac isn’t available here yet. Use branching below, or close the Codex instance currently holding this chat (such as Codex Desktop or the terminal/background Codex process) and tap “Retry”."
+            "value": "Your connected computer isn’t a Mac, so guided live Codex Desktop sharing via Mimi Remote Mac isn’t available here yet. Use branching below, or close the Codex instance currently holding this chat (such as Codex Desktop or the terminal/background Codex process) and tap “Retry”."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "当前连接的电脑不是 Mac，暂不支持通过 Mimi Remote Mac 一键接入 Codex 桌面版双端共享。请使用下方的分支复制，或结束电脑上实际持有该会话的 Codex 实例（例如 Codex 桌面版或对应的终端 / 后台 Codex 进程）后再点「重试」。"
+            "value": "当前连接的电脑不是 Mac，暂不支持通过 Mimi Remote Mac 引导接入 Codex 桌面版双端共享。请使用下方的分支复制，或结束电脑上实际持有该会话的 Codex 实例（例如 Codex 桌面版或对应的终端 / 后台 Codex 进程）后再点「重试」。"
           }
         }
       }

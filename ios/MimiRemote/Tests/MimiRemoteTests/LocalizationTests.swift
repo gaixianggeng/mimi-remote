@@ -214,20 +214,31 @@ final class LocalizationTests: XCTestCase {
             XCTAssertFalse(L10n.text(bodyKey, language: .english).isEmpty)
             XCTAssertFalse(L10n.text(bodyKey, language: .simplifiedChinese).isEmpty)
         }
-        // Mac 端目前仅提供中文界面：中英文引导都必须逐字引用实机按钮文案、注明检查更新/最低版本、
-        // 兼容旧 127.0.0.1 免密复用与手动「设置 → 连接 → SSH」路径，禁止引用不存在的英文 Mac 按钮名。
+        // Mac 端目前仅提供中文界面：中英文引导都必须逐字引用 main 上 Mac 端真实存在的入口与按钮文案，
+        // 禁止引用尚未合入（#1115）的按钮文案或不存在的英文 Mac 按钮名。
         let requiredMacTokens = [
+            "会话…",
+            "会话",
+            "打开",
+            "让 Codex 桌面版和手机同时使用…",
+            "打开共享设置",
+            "远程登录",
+            "复制命令",
+            "打开 Codex 桌面版",
+            "设置 → 连接",
+            "来自这台 Mac 的 SSH 连接",
+            "添加",
+            "127.0.0.1",
+            "本机"
+        ]
+        let forbiddenUnmergedMacTokens = [
             "v1.1.19",
-            "检查更新",
             "连接 Codex 桌面版…",
             "连接 Codex 桌面版",
-            "打开共享设置",
             "一键配置本机 SSH",
             "打开 Codex SSH 设置",
             "打开 Codex 连接设置",
-            "mimi-local",
-            "127.0.0.1",
-            "设置 → 连接 → SSH"
+            "mimi-local"
         ]
         for language in [AppLanguage.simplifiedChinese, .english] {
             let macGuide = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: language)
@@ -237,15 +248,31 @@ final class LocalizationTests: XCTestCase {
                     "Mac 引导 [\(language.rawValue)] 缺少实机文案「\(token)」：\(macGuide)"
                 )
             }
+            for token in forbiddenUnmergedMacTokens {
+                XCTAssertFalse(
+                    macGuide.contains(token),
+                    "Mac 引导 [\(language.rawValue)] 不得引用尚未合入的 Mac 文案「\(token)」：\(macGuide)"
+                )
+            }
             XCTAssertFalse(macGuide.contains("ssh-keygen"))
             XCTAssertFalse(macGuide.contains("authorized_keys"))
         }
+        XCTAssertFalse(
+            L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .simplifiedChinese)
+                .contains("一键")
+        )
+        XCTAssertFalse(
+            L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .english)
+                .localizedCaseInsensitiveContains("one-click")
+        )
         let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
-        XCTAssertTrue(macGuideEn.contains("Settings → Connections → SSH"))
+        XCTAssertTrue(macGuideEn.contains("Settings → Connections"))
         for nonexistentEnglishMacLabel in [
             "Connect Codex Desktop…",
             "Connect Codex Desktop",
             "Open Sharing Settings",
+            "Copy Command",
+            "Open Codex Desktop",
             "One-Click Local SSH Setup",
             "Open Codex SSH Settings",
             "Open Codex Connection Settings"
