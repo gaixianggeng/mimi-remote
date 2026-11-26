@@ -4,73 +4,395 @@ import UniformTypeIdentifiers
 
 struct DiagnosticsView: View {
     let store: HostStore
-    @State private var confirmsCodexSessionRepair = false
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
+    @State private var diagnosticsStore: DiagnosticsStore?
+    @State private var expandsDoctorDetails = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                HostStatusHeader(lifecycle: store.lifecycle, compact: true)
-                Button("重新检查") { Task { await store.runDoctor(fix: false) } }
-                Button("修复安全问题") { Task { await store.runDoctor(fix: true) } }
-                    .disabled(store.isBusy)
-                Button("修复共享运行环境…") { confirmsCodexSessionRepair = true }
-                    .disabled(store.isBusy || store.owner != .macApp)
-                Button("登录项设置…") { store.openLoginItemsSettings() }
+                HostStatusHeader(lifecycle: store.lifecycle, compact: true, showsDetail: false)
+                Button("重新检查") {
+                    Task {
+                        await diagnosticsStore?.refreshAll()
+                        await store.refreshDiagnostics()
+                    }
+                }
+                .disabled(diagnosticsStore?.isChecking == true || diagnosticsStore?.isApplyingFix == true)
             }
             .padding(18)
 
             Divider()
 
             HSplitView {
-                List(store.doctor?.checks ?? []) { check in
-                    DiagnosticCheckRow(check: check)
-                }
-                .frame(minWidth: 300)
+                checksPane
+                    .frame(minWidth: 340)
 
                 DiagnosticLogsPane(store: store)
-                    .frame(minWidth: 430)
+                    .frame(minWidth: 420)
             }
 
-            if !store.appliedFixes.isEmpty {
+            if let fixes = diagnosticsStore?.appliedFixes, !fixes.isEmpty {
                 Divider()
-                Text("已修复：\(store.appliedFixes.joined(separator: "；"))")
+                Text("已修复：\(fixes.joined(separator: "；"))")
                     .font(.caption)
                     .foregroundStyle(Color.mimiPrimary)
                     .padding(10)
             }
 
-            if let notice = store.codexSessionRepairNotice {
+            if let errorMessage = visibleBottomError {
                 Divider()
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(Color.mimiPrimary)
-                    .padding(10)
-            }
-
-            if let error = store.lastError {
-                Divider()
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
                     .padding(10)
             }
         }
-        .confirmationDialog(
-            "修复共享运行环境？",
-            isPresented: $confirmsCodexSessionRepair,
-            titleVisibility: .visible
-        ) {
-            Button("停止服务并修复", role: .destructive) {
-                Task { await store.repairSharedCodexRuntime() }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("请先结束所有共享的 Codex 任务和其他 Mimi 活动任务，并关闭 Codex Desktop 的 SSH 共享页面。此操作不会修改钥匙串授权或删除任务历史。检测到活动任务或其他连接时会拒绝修复。")
+        .fileImporter(
+            isPresented: Binding(
+                get: { diagnosticsStore?.isPathPickerPresented ?? false },
+                set: { diagnosticsStore?.isPathPickerPresented = $0 }
+            ),
+            allowedContentTypes: allowedPickerTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            Task { await diagnosticsStore?.completePathPicker(with: try? result.get().first) }
+        } onCancellation: {
+            Task { await diagnosticsStore?.completePathPicker(with: nil) }
         }
         .task {
-            await store.runDoctor(fix: false)
+            let controller = ensureDiagnosticsStore()
+            store.requestedDiagnosticsFocus = nil
+            await controller.runPreflight()
             await store.refreshDiagnostics()
         }
+        .onChange(of: store.requestedDiagnosticsFocus) { _, focus in
+            guard focus != nil else { return }
+            store.requestedDiagnosticsFocus = nil
+            Task { await diagnosticsStore?.runPreflight() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            guard let diagnosticsStore, !diagnosticsStore.isPathPickerPresented, !diagnosticsStore.isApplyingFix else { return }
+            Task { await diagnosticsStore.runPreflight() }
+        }
+        .onDisappear {
+            diagnosticsStore?.cancel()
+        }
+    }
+
+    private var allowedPickerTypes: [UTType] {
+        switch diagnosticsStore?.pendingPathPicker {
+        case .workspaceRoot, .none:
+            [.folder]
+        case .runtimeBinary:
+            [.item]
+        }
+    }
+
+    private var visibleBottomError: String? {
+        if let actionError = diagnosticsStore?.actionError {
+            return actionError.message
+        }
+        if let lastError = store.lastError, !lastError.isEmpty {
+            return "服务操作未完成，请重新检查当前状态。"
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var checksPane: some View {
+        if let diagnosticsStore {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let recovery = diagnosticsStore.recoveryDiagnostic {
+                        HostRecoveryReadOnlyCard(diagnostic: recovery)
+                    }
+
+                    if let preflightError = diagnosticsStore.preflightError,
+                       preflightError != diagnosticsStore.recoveryDiagnostic
+                    {
+                        OnboardingDiagnosticBanner(
+                            diagnostic: preflightError,
+                            isWorking: diagnosticsStore.isChecking || diagnosticsStore.isApplyingFix,
+                            onPrimaryAction: {
+                                Task { await diagnosticsStore.performDiagnosticAction(preflightError) }
+                            },
+                            onRetry: {
+                                Task { await diagnosticsStore.runPreflight() }
+                            }
+                        )
+                    }
+
+                    InfoCard("环境与服务预检") {
+                        if diagnosticsStore.isChecking && diagnosticsStore.checks.isEmpty {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在执行只读预检…")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if diagnosticsStore.checks.isEmpty {
+                            Text("暂未获取到结构化预检结果，请点击「重新检查」。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(diagnosticsStore.checks) { check in
+                                PreflightDiagnosticRow(
+                                    store: diagnosticsStore,
+                                    check: check
+                                )
+                                if check.id != diagnosticsStore.checks.last?.id {
+                                    Divider().opacity(0.35)
+                                }
+                            }
+                        }
+                    }
+
+                    if diagnosticsStore.canReadDoctor {
+                        // doctor --json 仅作只读中文标题与脱敏折叠详情展示，绝不渲染可点击修复按钮。
+                        DisclosureGroup("底层诊断详情（仅展示）", isExpanded: $expandsDoctorDetails) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if diagnosticsStore.doctorChecks.isEmpty {
+                                    Button("读取底层诊断详情") { Task { await diagnosticsStore.runReadOnlyDoctor() } }
+                                }
+                                ForEach(diagnosticsStore.doctorChecks) { check in
+                                    DoctorDisplayCheckRow(check: check)
+                                    if check.id != diagnosticsStore.doctorChecks.last?.id {
+                                        Divider().opacity(0.3)
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
+                        .padding(14)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                }
+                .padding(16)
+            }
+        } else {
+            ProgressView("正在加载诊断信息…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func ensureDiagnosticsStore() -> DiagnosticsStore {
+        if let diagnosticsStore { return diagnosticsStore }
+        let created = DiagnosticsStore(
+            dependencies: .live(hostStore: store, openDashboard: {
+                openWindow(id: AppWindow.dashboard.rawValue)
+                activateApplication()
+            }) { target in
+                handleOpenSettings(target)
+            },
+            verifiedCapability: store.verifiedOnboardingCapability
+        )
+        diagnosticsStore = created
+        return created
+    }
+
+    private func handleOpenSettings(_ target: OnboardingSettingsTarget) {
+        switch target {
+        case .loginItems:
+            store.openLoginItemsSettings()
+        case .filesAndFolders:
+            store.openFilesAndFoldersSettings()
+        case .localNetwork:
+            store.openLocalNetworkSettings()
+        case .photos:
+            store.openPhotosPrivacySettings()
+        case .fullDiskAccess:
+            store.openFullDiskAccessSettings()
+        case .dateTime:
+            store.openDateTimeSettings()
+        case .assistants:
+            store.requestedSettingsSection = .assistants
+            openSettings()
+            activateApplication()
+        case .managedConnection:
+            store.requestedSettingsSection = .connections
+            openSettings()
+            activateApplication()
+        case .connections:
+            openWindow(id: AppWindow.pairing.rawValue)
+            activateApplication()
+        case .hostRecovery, .windowsFirewall, .windowsNetworkProfile:
+            break
+        }
+    }
+
+    private func activateApplication() {
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+private struct HostRecoveryReadOnlyCard: View {
+    let diagnostic: OnboardingResolvedDiagnostic
+
+    var body: some View {
+        InfoCard("只读配置恢复信息") {
+            Text(diagnostic.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let configPath = diagnostic.configPath {
+                KeyValueRow(key: "保留的配置", value: configPath)
+            }
+            if let recoveryPath = diagnostic.recoveryPath {
+                KeyValueRow(key: "恢复参考位置", value: recoveryPath)
+            }
+
+            Text("诊断界面不会自动覆盖配置，也不会轮换宿主配对身份（Token），原有配置文件已完整保留。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct PreflightDiagnosticRow: View {
+    let store: DiagnosticsStore
+    let check: OnboardingCheck
+    @State private var expandsCandidates = false
+
+    var body: some View {
+        let resolved = store.diagnostic(for: check)
+        let primaryFix = store.clickablePrimaryFix(for: check)
+        let secondaryFix = store.clickableSecondaryFix(for: check)
+        let isSkipped = store.skippedCheckIDs.contains(check.id)
+
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 8) {
+                OnboardingStateIcon(state: check.state)
+                    .padding(.top, 2)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(check.id.localizedTitle)
+                            .font(.callout.weight(.semibold))
+                        if let version = check.selectedOrDetectedVersion,
+                           version.range(of: #"^v?[0-9]{1,6}(?:\.[0-9]{1,6}){1,2}(?:-(?:alpha|beta|rc)\.?[0-9]{0,4})?\z"#, options: .regularExpression) != nil {
+                            Text("v\(version)")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        if check.blocking {
+                            Text("需先处理")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.red)
+                        } else if isSkipped {
+                            Text("已跳过")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Text(rowMessage(resolved: resolved))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if primaryFix != nil || secondaryFix != nil {
+                        HStack(spacing: 8) {
+                            if let primaryFix {
+                                Button(OnboardingActionLabels.primaryTitle(
+                                    for: primaryFix,
+                                    code: resolved?.code,
+                                    isConfigured: store.report?.configured ?? false
+                                )) {
+                                    Task { await store.performCheckPrimaryAction(for: check) }
+                                }
+                                .controlSize(.small)
+                                .disabled(store.isChecking || store.isApplyingFix)
+                            }
+                            if let secondaryFix {
+                                Button(secondaryFix.label) {
+                                    Task { await store.performCheckSecondaryAction(for: check) }
+                                }
+                                .controlSize(.small)
+                                .disabled(store.isChecking || store.isApplyingFix)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let candidates = check.candidates, !candidates.isEmpty {
+                DisclosureGroup("已检查的位置（\(candidates.count)）", isExpanded: $expandsCandidates) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
+                            HStack(spacing: 8) {
+                                Text("候选位置 \(index + 1)")
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 6)
+                                Text(OnboardingActionLabels.candidateOutcome(candidate.outcome))
+                                    .font(.caption2)
+                                    .foregroundStyle(candidate.outcome == .selected ? Color.mimiSuccess : .secondary)
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                    .padding(.leading, 20)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func rowMessage(resolved: OnboardingResolvedDiagnostic?) -> String {
+        if check.state == .checking {
+            return "正在检查\(check.id.localizedTitle)…"
+        }
+        if check.state == .ok {
+            return resolved?.message ?? "\(check.id.localizedTitle)已就绪。"
+        }
+        return resolved?.message ?? OnboardingCopyCatalog.safeFallbackCopy
+    }
+}
+
+private struct DoctorDisplayCheckRow: View {
+    let check: DoctorDisplayCheck
+    @State private var expandsDetail = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: check.ok ? "checkmark.circle.fill" : check.isWarning ? "exclamationmark.triangle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(check.ok ? Color.mimiPrimary : check.isWarning ? Color.orange : Color.red)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(check.localizedTitle)
+                        .font(.callout.weight(.medium))
+                    Text(check.sanitizedMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let detail = check.sanitizedDetail, !check.ok {
+                        DisclosureGroup("参考说明（只读）", isExpanded: $expandsDetail) {
+                            Text(detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                .padding(.top, 2)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -80,6 +402,7 @@ private struct DiagnosticLogsPane: View {
     @State private var exportDocument: DiagnosticLogDocument?
     @State private var presentsExporter = false
     @State private var exportError: String?
+    @State private var expandsSanitizedLogs = false
 
     private func revealDebugLog() {
         let url = AgentdSupervisorCommand.debugLogURL(homeDirectoryURL: FileManager.default.homeDirectoryForCurrentUser)
@@ -91,6 +414,8 @@ private struct DiagnosticLogsPane: View {
     }
 
     var body: some View {
+        let sanitizedLogs = DiagnosticLogSanitizer.eventLines(store.recentLogs)
+
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("诊断日志")
@@ -104,7 +429,7 @@ private struct DiagnosticLogsPane: View {
                     exportError = nil
                     Task { await store.refreshDiagnostics() }
                 }
-                    .disabled(isWorking)
+                .disabled(isWorking)
                 Button("导出安全日志…") { Task { await prepareExport() } }
                     .disabled(isWorking)
                 Button("清除…", role: .destructive) { confirmsClear = true }
@@ -121,12 +446,12 @@ private struct DiagnosticLogsPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Label("仅记录在当前 Mac，不会自动上传。", systemImage: "desktopcomputer")
+                    Label("仅记录在当前 Mac，不会自动上传；展示与导出均已脱敏。", systemImage: "desktopcomputer")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     HStack(alignment: .firstTextBaseline) {
-                        Text("详细记录期间，还会在本机调试日志里记下关键处的方法名、会话 ID 与错误原因，便于排查 Claude 通道等问题；不含消息内容，也不会进入安全日志导出。")
+                        Text("详细记录期间，还会在本机调试日志里记下关键处的方法名、会话 ID 与错误原因，便于排查通道问题；不含消息内容，也不会进入安全日志导出。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -154,7 +479,7 @@ private struct DiagnosticLogsPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if store.recentLogs.isEmpty {
+            if sanitizedLogs.isEmpty {
                 ContentUnavailableView(
                     "暂无安全诊断日志",
                     systemImage: "doc.text.magnifyingglass",
@@ -162,18 +487,23 @@ private struct DiagnosticLogsPane: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    Text(store.recentLogs.joined(separator: "\n"))
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                DisclosureGroup("最近安全日志（已脱敏，\(sanitizedLogs.count) 条）", isExpanded: $expandsSanitizedLogs) {
+                    ScrollView {
+                        Text(sanitizedLogs.joined(separator: "\n"))
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.top, 6)
                 }
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            if let error = visibleError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+            if visibleError != nil {
+                Label("诊断日志操作未完成，请刷新后重试。", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -240,7 +570,7 @@ private struct DiagnosticLogsPane: View {
     private func prepareExport() async {
         exportError = nil
         guard let lines = await store.diagnosticExportLines() else { return }
-        exportDocument = DiagnosticLogDocument(lines: lines)
+        exportDocument = DiagnosticLogDocument(lines: DiagnosticLogSanitizer.eventLines(lines))
         presentsExporter = true
     }
 
@@ -311,29 +641,5 @@ private struct DiagnosticLogDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: Data(contents.utf8))
-    }
-}
-
-private struct DiagnosticCheckRow: View {
-    let check: AgentCheck
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: check.ok ? "checkmark.circle.fill" : check.isWarning ? "exclamationmark.triangle.fill" : "xmark.circle.fill")
-                .foregroundStyle(check.ok ? Color.mimiPrimary : check.isWarning ? Color.orange : Color.red)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(check.name)
-                    .font(.headline)
-                Text(check.message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let fix = check.fix, !check.ok {
-                    Text(fix)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
     }
 }

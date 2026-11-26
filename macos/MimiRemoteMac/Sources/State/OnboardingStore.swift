@@ -768,121 +768,21 @@ final class OnboardingStore {
 
     // MARK: - macOS Native Overlay
 
-    private func applyNativeOverlay(to report: OnboardingPreflightReport) -> OnboardingPreflightReport {
-        let usesHomebrew = report.checks.contains { $0.id == .serviceOwnerConflict && $0.code == "homebrew_service_active" }
-        let overlaidChecks = report.checks.map { check in
-            if usesHomebrew, check.id == .permissionPhotos { return check }
-            return applyNativeOverlay(to: check, stage: report.stage)
-        }
-        let firstBlocker = overlaidChecks.first(where: \.blocking)?.id
-        let recomputedOK = firstBlocker == nil
-        let recomputedNext: OnboardingCheckID = firstBlocker
-            ?? (report.stage == .setup && !report.configured ? .configStore : .networkAny)
-        return OnboardingPreflightReport(
-            schema: report.schema,
-            ok: recomputedOK,
-            stage: report.stage,
-            configured: report.configured,
-            workspaceConfirmed: report.workspaceConfirmed,
-            configPath: report.configPath,
-            scanRoot: report.scanRoot,
-            browseRoot: report.browseRoot,
-            scanRootExists: report.scanRootExists,
-            recommendedNext: recomputedNext,
-            recommendedTransport: report.recommendedTransport,
-            checks: overlaidChecks
+    private func currentNativeEvidence() -> MacNativePreflightEvidence {
+        MacNativePreflightEvidence(
+            agentRegistrationState: deps.agentRegistrationState(),
+            mainAppRegistrationState: deps.mainAppRegistrationState(),
+            photosAccessState: deps.photosAccessState(),
+            localNetworkAccessDenied: deps.localNetworkAccessDenied()
         )
     }
 
+    private func applyNativeOverlay(to report: OnboardingPreflightReport) -> OnboardingPreflightReport {
+        MacNativePreflightOverlay.apply(to: report, evidence: currentNativeEvidence())
+    }
+
     private func applyNativeOverlay(to check: OnboardingCheck, stage: OnboardingStage) -> OnboardingCheck {
-        switch check.id {
-        case .serviceDaemon:
-            if deps.agentRegistrationState() == .requiresApproval,
-               check.code == "service_not_running" {
-                return OnboardingCheck(
-                    id: .serviceDaemon,
-                    state: .actionNeeded,
-                    detail: OnboardingCopyCatalog.localizedMessage(
-                        code: "service_requires_approval",
-                        step: .serviceDaemon
-                    ),
-                    blocking: stage == .pair,
-                    code: "service_requires_approval",
-                    fix: .openSettings(.loginItems)
-                )
-            }
-            return check
-
-        case .permissionLoginItem:
-            switch deps.mainAppRegistrationState() {
-            case .enabled:
-                return OnboardingCheck(
-                    id: .permissionLoginItem,
-                    state: .ok,
-                    detail: "已允许登录时启动。",
-                    blocking: false
-                )
-            case .notRegistered, .requiresApproval:
-                return OnboardingCheck(
-                    id: .permissionLoginItem,
-                    state: .optional,
-                    detail: OnboardingCopyCatalog.localizedMessage(
-                        code: "permission_login_item_disabled",
-                        step: .permissionLoginItem
-                    ),
-                    blocking: false,
-                    code: "permission_login_item_disabled",
-                    fix: .openSettings(.loginItems)
-                )
-            case .notFound:
-                return check
-            }
-
-        case .permissionPhotos:
-            switch deps.photosAccessState() {
-            case .authorized, .limited:
-                return OnboardingCheck(
-                    id: .permissionPhotos,
-                    state: .ok,
-                    detail: "已允许访问照片。",
-                    blocking: false
-                )
-            case .denied, .restricted:
-                return OnboardingCheck(
-                    id: .permissionPhotos,
-                    state: .optional,
-                    detail: OnboardingCopyCatalog.localizedMessage(
-                        code: "permission_photos_denied",
-                        step: .permissionPhotos
-                    ),
-                    blocking: false,
-                    code: "permission_photos_denied",
-                    fix: .openSettings(.photos)
-                )
-            case .notDetermined:
-                // 未知状态必须保持 optional（permission_unobserved），绝不主动弹窗或反推。
-                return check
-            }
-
-        case .permissionLocalNetwork:
-            if deps.localNetworkAccessDenied() {
-                return OnboardingCheck(
-                    id: .permissionLocalNetwork,
-                    state: .actionNeeded,
-                    detail: OnboardingCopyCatalog.localizedMessage(
-                        code: "permission_local_network_denied",
-                        step: .permissionLocalNetwork
-                    ),
-                    blocking: false,
-                    code: "permission_local_network_denied",
-                    fix: .openSettings(.localNetwork)
-                )
-            }
-            return check
-
-        default:
-            return check
-        }
+        MacNativePreflightOverlay.apply(to: check, stage: stage, evidence: currentNativeEvidence())
     }
 
     // MARK: - Step 1 & Runtime Pin / Assistant Actions

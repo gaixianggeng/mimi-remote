@@ -78,6 +78,7 @@ struct CodexSessionReleaseResult: Decodable, Equatable, Sendable {
 }
 
 struct AgentCommandClient: Sendable {
+    var verifiedOnboardingCapability: @Sendable () -> String? = { nil }
     var configExists: @Sendable () -> Bool
     var setup: @Sendable (_ workspaceRoot: URL) async throws -> PairingInfo
     var preflight: @Sendable (
@@ -142,16 +143,16 @@ struct AgentCommandClient: Sendable {
     var setLANAccess: @Sendable (_ enabled: Bool) async throws -> NetworkConfigurationResult
     var pair: @Sendable (_ network: PairingNetwork) async throws -> PairingInfo
     var tailcatStatus: @Sendable () async throws -> TailcatStatus = {
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var setTailcatEnabled: @Sendable (_ enabled: Bool) async throws -> TailcatStatus = { _ in
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var configureTailcatDERPMap: @Sendable (_ derpMapURL: String) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 中继配置。")
     }
     var resetTailcat: @Sendable () async throws -> TailcatStatus = {
-        throw AgentClientError.commandFailed("当前 agentd 不支持 Tailcat 实验。")
+        throw AgentClientError.commandFailed("当前 agentd 不支持内置连接（Tailcat）。")
     }
     var setTailcatManagedMode: @Sendable (_ managed: Bool) async throws -> TailcatStatus = { _ in
         throw AgentClientError.commandFailed("当前电脑端不支持 Mimi 中转，请更新后重试。")
@@ -416,7 +417,14 @@ extension AgentCommandClient {
             return receipt.pairingInfo(for: network)
         }
 
+        let capabilityURL = bundle.url(forResource: "agentd-onboarding-capability", withExtension: nil)
         return AgentCommandClient(
+            verifiedOnboardingCapability: {
+                guard binaryOverride == nil, embeddedBinary != nil, let capabilityURL,
+                      let capability = try? String(contentsOf: capabilityURL, encoding: .utf8),
+                      capability == OnboardingSchema.doctorFixCapability else { return nil }
+                return capability
+            },
             configExists: {
                 FileManager.default.fileExists(atPath: configURL.path)
             },
