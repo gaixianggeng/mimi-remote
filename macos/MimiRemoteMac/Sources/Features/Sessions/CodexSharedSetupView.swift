@@ -1,25 +1,24 @@
 import AppKit
 import SwiftUI
 
-/// 让 Codex 桌面版接入 Mimi 的共用服务（#991, #376）。三步实时检测；第 2 步支持零终端一键配置本机 SSH，第 3 步直达 Codex 连接页。
+/// 让 Codex 桌面版接入 Mimi 的共用服务（#991, #376）。三步实时检测；第 2 步支持零终端一键配置本机 SSH，第 3 步直达 Codex SSH 设置页。
 struct CodexSharedSetupView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("sessions.codexDesktopSharedSeen") private var sharedSeen = false
-    @State private var status = CodexSharedSetupStatus()
-    @State private var isChecking = false
-    @State private var isConfiguringSSH = false
-    @State private var isRemovingSSH = false
-    @State private var actionError: String?
+    @Bindable var coordinator: CodexSharedSetupCoordinator
     @State private var showingManualCommand = false
     @State private var showingRemoveConfirm = false
     @State private var copied = false
 
-    /// 检测与配置入口；测试里可注入假实现。
-    var checker: @MainActor () async -> CodexSharedSetupStatus = { await CodexSharedSetupChecks.check() }
-    var configureSSH: @Sendable () async throws -> Void = { try await CodexLocalSSHConfigurator().configure() }
-    var removeSSH: @Sendable () throws -> Void = { try CodexLocalSSHConfigurator().remove() }
+    init(coordinator: CodexSharedSetupCoordinator = .shared) {
+        self.coordinator = coordinator
+    }
+
+    static func stepAccessibilityLabel(number: Int, title: String, state: CodexSharedSetupStatus.Step) -> String {
+        "第 \(number) 步：\(title)，\(state.accessibilityStatusText)"
+    }
 
     var body: some View {
+        let status = coordinator.status
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("让 Codex 桌面版和手机同时使用")
@@ -35,12 +34,23 @@ struct CodexSharedSetupView: View {
                     .accessibilityIdentifier("codexSetup.done")
             }
 
-            if let actionError, !actionError.isEmpty {
+            if let actionError = coordinator.actionError, !actionError.isEmpty {
                 Label(actionError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("codexSetup.error")
+            }
+
+            if let desktopFeedback = coordinator.desktopOpenFeedback, !desktopFeedback.isEmpty {
+                Label(
+                    desktopFeedback,
+                    systemImage: coordinator.desktopOpenFeedbackIsError ? "exclamationmark.triangle.fill" : "info.circle.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(coordinator.desktopOpenFeedbackIsError ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("codexSetup.desktopFeedback")
             }
 
             step(1, title: "打开「远程登录」", state: status.remoteLogin) {
@@ -56,9 +66,9 @@ struct CodexSharedSetupView: View {
 
                 HStack(spacing: 10) {
                     Button {
-                        Task { await runOneClickSSHSetup() }
+                        Task { await coordinator.runOneClickSSHSetup() }
                     } label: {
-                        if isConfiguringSSH {
+                        if coordinator.isConfiguringSSH {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.small)
                                 Text("正在配置并验证…")
@@ -68,7 +78,7 @@ struct CodexSharedSetupView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isConfiguringSSH || isRemovingSSH || status.remoteLogin != .done)
+                    .disabled(coordinator.isMutating || status.remoteLogin != .done)
                     .accessibilityIdentifier("codexSetup.oneClickSSHButton")
 
                     if status.remoteLogin != .done {
@@ -104,31 +114,35 @@ struct CodexSharedSetupView: View {
             }
 
             step(3, title: "在 Codex 桌面版连接本机", state: status.desktopConnected) {
-                if status.localSSHManaged {
-                    Text("点下方按钮直达 Codex 桌面版的「连接」设置页。列表中会自动出现「\(CodexLocalSSHConfigurator.hostAlias)」，点一下连接即可（无需手动填 IP）。")
-                    Text("若列表暂未刷出「\(CodexLocalSSHConfigurator.hostAlias)」，重启一次 Codex 桌面版后就会出现；或者也可以手动添加主机名 127.0.0.1。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if status.managedAliasReady {
+                    Text("点下方按钮打开 Codex 桌面版的 SSH 设置页，按「添加 → 选择 \(CodexLocalSSHConfigurator.hostAlias) → 保存并连接 → 选择项目」完成接入。")
+                    if status.legacyLoopbackReady {
+                        Text("如需，也可改用已验证可用的 127.0.0.1 主机名。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if status.legacyLoopbackReady {
+                    Text("已检测到本机 127.0.0.1 免密登录可用。点下方按钮打开 Codex 桌面版连接设置，在 SSH 页按「添加 → 输入 127.0.0.1 → 保存并连接 → 选择项目」完成接入。")
                 } else {
-                    Text("Codex 桌面版 → 设置 → 连接，添加主机名 127.0.0.1（或连接已自动发现的「\(CodexLocalSSHConfigurator.hostAlias)」），保存后等它连上。")
+                    Text("完成第 2 步后，点下方按钮打开 Codex 桌面版 SSH 设置页，按「添加 → 选择 \(CodexLocalSSHConfigurator.hostAlias) → 保存并连接 → 选择项目」完成接入。")
                 }
                 if status.desktopNotRunning {
-                    Text("Codex 桌面版没有在运行，打开后会自动重新检查。")
+                    Text("Codex 桌面版当前未运行；点击下方按钮会直接启动它，连上项目后回到这里会自动更新状态。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Button("打开 Codex 连接设置") {
-                    Task { await CodexDesktopLink.openConnectionsSettings() }
+                Button(status.managedAliasReady ? "打开 Codex SSH 设置" : "打开 Codex 连接设置") {
+                    Task { await coordinator.openCodexSSHSettings() }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(status.passwordlessLogin != .done && status.remoteLogin != .done)
+                .disabled(status.passwordlessLogin != .done || coordinator.isMutating)
                 .accessibilityIdentifier("codexSetup.openCodexConnectionsButton")
             }
 
             Divider()
 
             HStack {
-                if isChecking {
+                if coordinator.isChecking {
                     ProgressView().controlSize(.small)
                     Text("正在检查…").foregroundStyle(.secondary)
                 } else if status.localSSHManaged {
@@ -137,22 +151,27 @@ struct CodexSharedSetupView: View {
                     }
                     .buttonStyle(.borderless)
                     .font(.caption)
-                    .disabled(isConfiguringSSH || isRemovingSSH)
+                    .disabled(coordinator.isMutating)
                     .accessibilityIdentifier("codexSetup.removeSSHButton")
                 }
                 Spacer()
-                Button("重新检查") { Task { await check() } }
-                    .disabled(isChecking || isConfiguringSSH || isRemovingSSH)
+                Button("重新检查") { Task { await coordinator.refresh(clearErrorWhenAllDone: true) } }
+                    .disabled(coordinator.isChecking || coordinator.isMutating)
                 Button("完成") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(22)
         .frame(width: 560)
-        .task { await check() }
+        .task {
+            if !coordinator.isMutating {
+                await coordinator.refresh(clearErrorWhenAllDone: coordinator.actionError == nil)
+            }
+        }
         // 用户从系统设置、终端或桌面版切回来时自动复查。
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await check() }
+            guard !coordinator.isMutating else { return }
+            Task { await coordinator.refresh(clearErrorWhenAllDone: coordinator.actionError == nil) }
         }
         .confirmationDialog(
             "移除由 Mimi 创建的本机 SSH 配置？",
@@ -160,51 +179,11 @@ struct CodexSharedSetupView: View {
             titleVisibility: .visible
         ) {
             Button("移除配置", role: .destructive) {
-                Task { await runRemoveSSHSetup() }
+                Task { await coordinator.runRemoveSSHSetup() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会删除 Mimi 专用密钥、对应的本机回环授权行，以及 ~/.ssh/config 中的 \(CodexLocalSSHConfigurator.hostAlias) 托管块，不会影响你的其他 SSH 配置。")
-        }
-    }
-
-    private func check() async {
-        guard !isChecking else { return }
-        isChecking = true
-        defer { isChecking = false }
-        status = await checker()
-        if status.allDone {
-            sharedSeen = true
-            actionError = nil
-        }
-    }
-
-    private func runOneClickSSHSetup() async {
-        guard !isConfiguringSSH else { return }
-        isConfiguringSSH = true
-        actionError = nil
-        defer { isConfiguringSSH = false }
-        do {
-            try await configureSSH()
-            await check()
-        } catch {
-            actionError = error.localizedDescription
-            await check()
-        }
-    }
-
-    private func runRemoveSSHSetup() async {
-        guard !isRemovingSSH else { return }
-        isRemovingSSH = true
-        actionError = nil
-        defer { isRemovingSSH = false }
-        do {
-            try removeSSH()
-            sharedSeen = false
-            await check()
-        } catch {
-            actionError = error.localizedDescription
-            await check()
+            Text("会删除经指纹核验确属 Mimi 的专用密钥、对应的本机回环授权行，以及 ~/.ssh/config 中的 \(CodexLocalSSHConfigurator.hostAlias) 托管块，不会影响你的其他 SSH 配置。")
         }
     }
 
@@ -227,11 +206,14 @@ struct CodexSharedSetupView: View {
             }
             .font(.title3)
             .frame(width: 22, height: 22)
+            .accessibilityHidden(true)
             // 做完的步骤只留标题，页面只展开还要做的事。
             VStack(alignment: .leading, spacing: 8) {
                 Text(title)
                     .font(.headline)
                     .foregroundStyle(state == .done ? .secondary : .primary)
+                    .accessibilityLabel(Self.stepAccessibilityLabel(number: number, title: title, state: state))
+                    .accessibilityAddTraits(.isHeader)
                 if state != .done {
                     content()
                         .fixedSize(horizontal: false, vertical: true)

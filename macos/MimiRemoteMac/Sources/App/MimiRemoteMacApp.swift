@@ -117,7 +117,7 @@ struct MimiRemoteMacApp: App {
         .defaultSize(width: 720, height: 560)
 
         Window("连接 Codex 桌面版", id: AppWindow.codexSharedSetup.rawValue) {
-            CodexSharedSetupView()
+            CodexSharedSetupView(coordinator: .shared)
         }
         .windowResizability(.contentSize)
 

@@ -66,7 +66,7 @@ struct SessionsWindowView: View {
                 Text(store.actionError ?? "")
             }
             .sheet(isPresented: $showsSharedSetup) {
-                CodexSharedSetupView()
+                CodexSharedSetupView(coordinator: .shared)
             }
     }
 
