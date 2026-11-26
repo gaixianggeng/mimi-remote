@@ -1889,9 +1889,9 @@ final class SessionListPresentationTests: XCTestCase {
         let session = AgentSession(
             id: cwdMissing ? "cwd-missing-en" : "cwd-present-en",
             projectID: "project-id",
-            project: "mimi-onboarding-plan",
-            dir: "/Users/gaixg/Code/mimi-onboarding-plan/wt-maint",
-            title: "Round 2 fixes for PR 1155 maintenance entry",
+            project: "sample-workspace",
+            dir: "/Users/me/worktrees/sample-workspace/feature-one",
+            title: "Round 2 fixes for sample request review entry",
             status: SessionStatus.history.rawValue,
             source: "agy",
             runtimeProvider: "agy",
