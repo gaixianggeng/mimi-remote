@@ -259,6 +259,23 @@ final class WriterConflictForkStoreTests: XCTestCase {
         runningSource.status = "running"
         fixture.store.sessions = [runningSource]
 
+        XCTAssertEqual(
+            fixture.store.selectedWriterConflictForkAvailability,
+            .checking,
+            "空闲转为运行中后、重新探测完成前不能继续暴露空闲缓存的 .available(lastTurnID: nil)"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: true,
+                availability: fixture.store.selectedWriterConflictForkAvailability
+            ),
+            "ui.writer_conflict_shared_guide_now_pending_body",
+            "过渡期间共享引导不能短暂承诺可分支到最近已完成回合"
+        )
+        let blockedBeforeProbe = await fixture.store.duplicateSelectedWriterConflictSession()
+        XCTAssertFalse(blockedBeforeProbe)
+        XCTAssertTrue(fixture.client.requestedSessionForks.isEmpty)
+
         await fixture.store.prepareSelectedWriterConflictForkAvailability()
 
         XCTAssertEqual(fixture.client.requestedMessageLimits, [2])
@@ -454,10 +471,34 @@ final class WriterConflictForkStoreTests: XCTestCase {
         XCTAssertEqual(
             WriterConflictSharedGuideSheet.nowSectionBodyKey(
                 sourceIsRunning: true,
+                availability: .available(lastTurnID: nil)
+            ),
+            "ui.writer_conflict_shared_guide_now_pending_body",
+            "运行中但尚未确认终态 Turn 时不得承诺可分支"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: true,
                 availability: .available(lastTurnID: "turn-1"),
-                conflictResolved: true
+                status: .resolvedWritable
             ),
             "ui.writer_conflict_shared_guide_now_resolved_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: true,
+                availability: .available(lastTurnID: "turn-1"),
+                status: .connectionTerminated(.credentialsInvalid)
+            ),
+            "ui.writer_conflict_shared_guide_now_credentials_invalid_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: false,
+                availability: nil,
+                status: .unavailable
+            ),
+            "ui.writer_conflict_shared_guide_now_unavailable_body"
         )
     }
 
@@ -683,20 +724,45 @@ final class WriterConflictForkStoreTests: XCTestCase {
     }
 
     func testConflictResolutionWhileSharedGuideSheetIsOpenUpdatesSheetAndDismissesCleanly() async throws {
-        let fixture = makeFixture(sourceStatus: "history")
-        fixture.store.setActiveWriterConflict(true, sessionID: fixture.source.id)
+        let project = makeProject(id: "proj-writer-guide-resolve")
+        let source = makeSession(
+            id: "source-writer-guide-resolve",
+            projectID: project.id,
+            title: "Desktop source",
+            status: "history",
+            source: "codex",
+            resumeID: "source-writer-guide-resolve"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [source])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-guide-resolve-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        select(source: source, project: project, in: store)
+        let originLease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: source.id)
+
         let suiteName = "WriterConflictGuideResolve.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer {
             defaults.removePersistentDomain(forName: suiteName)
-            fixture.store.returnToSessionList()
+            store.returnToSessionList()
         }
         let themeStore = ThemeStore(defaults: defaults)
-        let conversationStore = ConversationStore()
         let bridge = WriterConflictInteractionBridge()
 
         let view = ConversationView()
-            .environmentObject(fixture.store)
+            .environmentObject(store)
             .environmentObject(conversationStore)
             .environmentObject(themeStore)
             .environment(\.writerConflictInteractionBridge, bridge)
@@ -716,7 +782,7 @@ final class WriterConflictForkStoreTests: XCTestCase {
         bridge.openSharedGuide?()
 
         let presented = try await waitForPresentedViewController(on: hosted.controller)
-        XCTAssertTrue(fixture.store.selectedSessionShowsWriterConflictCard)
+        XCTAssertTrue(store.selectedSessionShowsWriterConflictCard)
         try await waitUntil(
             description: "引导弹层显示冲突态恢复文案",
             window: hosted.window,
@@ -726,13 +792,28 @@ final class WriterConflictForkStoreTests: XCTestCase {
                 && bridge.latestGuideNowBody == L10n.text("ui.writer_conflict_shared_guide_now_body")
         }
 
-        // 弹层打开期间冲突解除：冲突卡替换为 ComposerView，挂载在稳定 ConversationView 上的引导弹层保持完好并更新为已解锁提示。
-        fixture.store.setActiveWriterConflict(false, sessionID: fixture.source.id)
-        XCTAssertFalse(fixture.store.selectedSessionShowsWriterConflictCard)
+        // 仅清除冲突标记但尚未建立可写连接时，不能误报已解除锁定。
+        store.setActiveWriterConflict(false, sessionID: source.id)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .unavailable)
+        let unavailableCopy = L10n.text("ui.writer_conflict_shared_guide_now_unavailable_body")
+        try await waitUntil(
+            description: "尚未恢复可写连接时引导弹层不误报已解锁",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            !bridge.cardIsMounted && bridge.latestGuideNowBody == unavailableCopy
+        }
+
+        // 同一会话的前台 WebSocket 确认连上后（.live），才切换为已解除锁定说明。
+        store.connectWebSocket(source, replayBufferedEvents: false, allowNonRunning: true)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .resolvedWritable)
 
         let resolvedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_body")
         try await waitUntil(
-            description: "冲突解除后引导弹层保持挂载并更新为已解锁说明",
+            description: "同一会话恢复可写后引导弹层更新为已解锁说明",
             window: hosted.window,
             extraView: presented.view
         ) {
@@ -745,7 +826,104 @@ final class WriterConflictForkStoreTests: XCTestCase {
         dismissAction()
         try await waitForPresentedViewControllerDismissal(on: hosted.controller)
         XCTAssertFalse(bridge.cardIsMounted, "冲突已解除且关闭引导后，冲突卡不应再显示")
-        XCTAssertFalse(fixture.store.selectedSessionShowsWriterConflictCard)
+        XCTAssertFalse(store.selectedSessionShowsWriterConflictCard)
+    }
+
+    func testCredentialInvalidationWhileSharedGuideSheetIsOpenShowsRePairGuidanceInsteadOfUnlocked() async throws {
+        let project = makeProject(id: "proj-writer-guide-cred-invalid")
+        let source = makeSession(
+            id: "source-writer-guide-cred-invalid",
+            projectID: project.id,
+            title: "Desktop source",
+            status: "history",
+            source: "codex",
+            resumeID: "source-writer-guide-cred-invalid"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [source])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-guide-cred-token"
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+        select(source: source, project: project, in: store)
+        let originLease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: source.id)
+
+        let suiteName = "WriterConflictGuideCredInvalid.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            store.returnToSessionList()
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let bridge = WriterConflictInteractionBridge()
+
+        let view = ConversationView()
+            .environmentObject(store)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.writerConflictInteractionBridge, bridge)
+
+        let hosted = try makeTestWindow(
+            rootView: view,
+            size: CGSize(width: 390, height: 844)
+        )
+        defer { hosted.tearDown() }
+
+        // 重试重连期间用户打开共享引导弹层。
+        store.connectWebSocket(source, replayBufferedEvents: false, allowNonRunning: true)
+        let socket = try XCTUnwrap(sockets.first)
+
+        try await waitUntil(
+            description: "重连期间会话页冲突卡完成挂载并可打开引导",
+            window: hosted.window
+        ) {
+            bridge.cardIsMounted && bridge.openSharedGuide != nil
+        }
+        bridge.openSharedGuide?()
+
+        let presented = try await waitForPresentedViewController(on: hosted.controller)
+        try await waitUntil(
+            description: "引导弹层打开并完成挂载",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.guideIsMounted
+        }
+
+        // 重连过程中 WebSocket 因凭据失效终止：连接逻辑会清除冲突标记并保留当前会话，
+        // 弹层绝不能误报「已解除锁定」，而应显示需要重新配对的恢复提示。
+        socket.emitStatus(.terminated(.credentialsInvalid))
+        let credInvalidCopy = L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body")
+        let unlockedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_body")
+        try await waitUntil(
+            description: "凭据失效后引导弹层显示重新配对提示而非已解锁",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            store.connectionTermination == .credentialsInvalid
+                && bridge.latestGuideNowBody == credInvalidCopy
+        }
+        XCTAssertEqual(store.selectedSessionID, source.id)
+        XCTAssertFalse(store.selectedSessionShowsWriterConflictCard)
+        XCTAssertEqual(
+            store.writerConflictSharedGuideStatus(originLease: originLease),
+            .connectionTerminated(.credentialsInvalid)
+        )
+        XCTAssertNotEqual(bridge.latestGuideNowBody, unlockedCopy)
+
+        let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide)
+        dismissAction()
+        try await waitForPresentedViewControllerDismissal(on: hosted.controller)
     }
 
     private struct WriterConflictTestTimeoutError: Error, CustomStringConvertible {

@@ -51723,18 +51723,18 @@
       }
     },
     "ui.writer_conflict_shared_guide_mac_body": {
-      "comment": "Explains the one-time Mac one-click safe SSH setup (PR #1115) and how already-configured users open projects via the local SSH connection in Codex Desktop.",
+      "comment": "Explains the one-time Mac one-click safe SSH setup (PR #1115) with verbatim Mac UI entry points and before/after button names, plus upgrade guidance for older Mac versions.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "On your Mac, open Mimi Remote Mac from the menu bar and choose “Connect Codex Desktop…” (or click “Connect Codex Desktop” in the Sessions window toolbar). Follow the guided steps to turn on Remote Login, click “One-Click Local SSH Setup” (no manual terminal commands needed), then click “Open Codex Connection Settings” to connect to the local host (mimi-local). If you already set this up, open your project through that local SSH connection in Codex Desktop instead of the default local mode to share the live chat with your phone."
+            "value": "First update Mimi Remote Mac on your Mac to the latest version. Open Mimi Remote Mac from the menu bar and choose “Connect Codex Desktop…” (or click “Connect Codex Desktop” in the Sessions window toolbar). Follow the steps to turn on “Remote Login” (via “Open Sharing Settings”) and click “One-Click Local SSH Setup” (configures mimi-local with no manual terminal commands). Once configured, the Step 3 button changes from “Open Codex Connection Settings” to “Open Codex SSH Settings”—click it, then in Codex Desktop choose “Add → select mimi-local → Save & Connect → choose project”. If already set up, open your project in Codex Desktop through that local SSH connection instead of the default local mode to share the live chat with your phone."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "在 Mac 上打开 Mimi Remote Mac 菜单栏，点「连接 Codex 桌面版…」（或在「会话」窗口工具栏点「连接 Codex 桌面版」），按引导打开「远程登录」、点「一键配置本机 SSH」，再点「打开 Codex 连接设置」连接本机主机（mimi-local），无需手动执行终端命令。若已完成配置，请改在 Codex 桌面版通过该本机 SSH 连接（而非默认本地模式）打开项目，即可与手机实时共用同一条会话。"
+            "value": "请先将 Mac 上的 Mimi Remote Mac 版更新到最新版本。在 Mac 菜单栏打开 Mimi Remote Mac，点「连接 Codex 桌面版…」（或在「会话」窗口工具栏点「连接 Codex 桌面版」），按引导依次完成：打开「远程登录」（可点「打开共享设置」）、点「一键配置本机 SSH」（自动配置 mimi-local，无需手动执行终端命令）；配置成功后，第 3 步按钮会变为「打开 Codex SSH 设置」（配置前为「打开 Codex 连接设置」），点击后在 Codex 桌面版按「添加 → 选择 mimi-local → 保存并连接 → 选择项目」完成接入。若已完成配置，请改在 Codex 桌面版通过该本机 SSH 连接（而非默认本地模式）打开项目，即可与手机实时共用同一条会话。"
           }
         }
       }
@@ -51769,6 +51769,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "点「分支到新聊天」可基于已保存的进度复制出新会话马上继续；如果要继续原会话，请先确认桌面端没有运行中的任务，完全退出电脑上的 Codex 桌面版，再回来点「重试」。（非 Mac 电脑暂不支持桌面版双端共享，可直接用这两种方式。）"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_credentials_invalid_body": {
+      "comment": "Explains that connection credentials expired while the shared guide sheet was open and the user must re-pair instead of assuming the chat is unlocked.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your connection credentials have expired and automatic retries have stopped. Tap “Done”, open connection management to rescan the pairing QR code on your computer, and then resume this chat."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前连接凭据已失效，已停止自动重试。点「完成」返回后，请前往连接管理重新扫描电脑上的配对二维码，恢复连接后再继续当前会话。"
           }
         }
       }
@@ -51871,6 +51888,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "现在想立刻继续怎么办？"
+          }
+        }
+      }
+    },
+    "ui.writer_conflict_shared_guide_now_unavailable_body": {
+      "comment": "Explains that the chat status changed while the shared guide sheet was open and write access cannot be confirmed yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This chat’s status has changed and write access can’t be confirmed right now. Tap “Done” to return to the chat and check the latest connection and lock status."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前会话状态已变化，暂无法确认是否已恢复可写。点「完成」返回会话页查看最新连接与锁定状态。"
           }
         }
       }

@@ -19,6 +19,7 @@ struct ConversationView: View {
     @State private var measuredContentWidth: CGFloat?
     @State private var measuredTopStatusHeight: CGFloat = 0
     @State private var showingWriterConflictSharedGuide = false
+    @State private var writerConflictSharedGuideOriginLease: HostSessionLease?
     private let initialGoalStatusExpanded: Bool
 
     init(initialGoalStatusExpanded: Bool = false) {
@@ -130,6 +131,7 @@ struct ConversationView: View {
                                     Task { await sessionStore.retrySelectedSessionWriterAccess() }
                                 },
                                 onOpenSharedGuide: {
+                                    writerConflictSharedGuideOriginLease = sessionStore.selectedWriterConflictLease
                                     showingWriterConflictSharedGuide = true
                                 }
                             )
@@ -161,11 +163,16 @@ struct ConversationView: View {
                 guard isPhoneDetailActive else { return }
                 await sessionStore.warmSelectedClaudeAuthentication()
             }
-            .sheet(isPresented: $showingWriterConflictSharedGuide) {
+            .sheet(
+                isPresented: $showingWriterConflictSharedGuide,
+                onDismiss: { writerConflictSharedGuideOriginLease = nil }
+            ) {
                 WriterConflictSharedGuideSheet(
                     sourceIsRunning: sessionStore.selectedSession?.isRunning == true,
                     availability: sessionStore.selectedWriterConflictForkAvailability,
-                    conflictResolved: !sessionStore.selectedSessionShowsWriterConflictCard
+                    status: sessionStore.writerConflictSharedGuideStatus(
+                        originLease: writerConflictSharedGuideOriginLease
+                    )
                 )
             }
         }

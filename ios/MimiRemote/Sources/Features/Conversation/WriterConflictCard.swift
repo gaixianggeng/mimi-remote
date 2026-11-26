@@ -431,25 +431,35 @@ struct WriterConflictSharedGuideSheet: View {
 
     let sourceIsRunning: Bool
     let availability: WriterConflictForkAvailability?
-    let conflictResolved: Bool
+    let status: WriterConflictSharedGuideStatus
 
     init(
         sourceIsRunning: Bool = false,
         availability: WriterConflictForkAvailability? = .available(lastTurnID: nil),
-        conflictResolved: Bool = false
+        status: WriterConflictSharedGuideStatus = .activeConflict
     ) {
         self.sourceIsRunning = sourceIsRunning
         self.availability = availability
-        self.conflictResolved = conflictResolved
+        self.status = status
     }
 
     static func nowSectionBodyKey(
         sourceIsRunning: Bool,
         availability: WriterConflictForkAvailability?,
-        conflictResolved: Bool = false
+        status: WriterConflictSharedGuideStatus = .activeConflict
     ) -> String {
-        if conflictResolved {
+        switch status {
+        case .resolvedWritable:
             return "ui.writer_conflict_shared_guide_now_resolved_body"
+        case .connectionTerminated(let termination):
+            switch termination {
+            case .credentialsInvalid:
+                return "ui.writer_conflict_shared_guide_now_credentials_invalid_body"
+            }
+        case .unavailable:
+            return "ui.writer_conflict_shared_guide_now_unavailable_body"
+        case .activeConflict:
+            break
         }
         guard let availability else {
             return "ui.writer_conflict_shared_guide_now_no_fork_body"
@@ -459,22 +469,25 @@ struct WriterConflictSharedGuideSheet: View {
             return "ui.writer_conflict_shared_guide_now_no_terminal_turn_body"
         case .checking, .failed:
             return "ui.writer_conflict_shared_guide_now_pending_body"
-        case .available:
-            return sourceIsRunning
-                ? "ui.writer_conflict_shared_guide_now_running_body"
-                : "ui.writer_conflict_shared_guide_now_body"
+        case .available(let lastTurnID):
+            if sourceIsRunning {
+                return lastTurnID == nil
+                    ? "ui.writer_conflict_shared_guide_now_pending_body"
+                    : "ui.writer_conflict_shared_guide_now_running_body"
+            }
+            return "ui.writer_conflict_shared_guide_now_body"
         }
     }
 
     static func sections(
         sourceIsRunning: Bool,
         availability: WriterConflictForkAvailability?,
-        conflictResolved: Bool = false
+        status: WriterConflictSharedGuideStatus = .activeConflict
     ) -> [SectionModel] {
         let nowBodyKey = nowSectionBodyKey(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
-            conflictResolved: conflictResolved
+            status: status
         )
         return [
             SectionModel(
@@ -509,7 +522,7 @@ struct WriterConflictSharedGuideSheet: View {
         let sections = Self.sections(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
-            conflictResolved: conflictResolved
+            status: status
         )
         let nowBody = sections.last?.body ?? ""
         let headerTitles = sections.filter(\.isAccessibilityHeader).map(\.title)

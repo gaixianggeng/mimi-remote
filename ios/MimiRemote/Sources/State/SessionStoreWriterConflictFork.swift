@@ -7,6 +7,13 @@ enum WriterConflictForkAvailability: Hashable {
     case failed
 }
 
+enum WriterConflictSharedGuideStatus: Equatable {
+    case activeConflict
+    case resolvedWritable
+    case connectionTerminated(ConnectionTerminationStatus)
+    case unavailable
+}
+
 struct WriterConflictForkPreparationID: Hashable {
     let lease: HostSessionLease
     let revision: UInt64
@@ -15,6 +22,11 @@ struct WriterConflictForkPreparationID: Hashable {
 }
 
 extension SessionStore {
+    var selectedWriterConflictLease: HostSessionLease? {
+        guard let selectedSessionID else { return nil }
+        return writerConflictForkLease(for: selectedSessionID)
+    }
+
     var selectedWriterConflictForkAvailability: WriterConflictForkAvailability? {
         guard let session = selectedSession,
               hasActiveWriterConflict(sessionID: session.id),
@@ -23,9 +35,51 @@ extension SessionStore {
 
         let lease = writerConflictForkLease(for: session.id)
         if let availability = writerConflictForkAvailabilityByLease[lease] {
+            // 空闲时缓存的 .available(lastTurnID: nil) 不能复用于刚转入运行中的会话；
+            // 在重新探测到最近已完成回合前统一映射为 .checking，避免界面短暂承诺可分支。
+            if session.isRunning, availability == .available(lastTurnID: nil) {
+                return .checking
+            }
             return availability
         }
         return session.isRunning ? .checking : .available(lastTurnID: nil)
+    }
+
+    /// 引导弹层打开期间实时判定恢复态：连接终止（例如凭据失效）不能误报为「已解除锁定」，
+    /// 只有确认同一会话已无冲突且前台连接恢复可写（`.live`）后，才提示返回直接输入。
+    func writerConflictSharedGuideStatus(
+        originLease: HostSessionLease?
+    ) -> WriterConflictSharedGuideStatus {
+        if let connectionTermination {
+            return .connectionTerminated(connectionTermination)
+        }
+        if appStore.requiresRePairing {
+            return .connectionTerminated(.credentialsInvalid)
+        }
+        if selectedSessionShowsWriterConflictCard {
+            return .activeConflict
+        }
+        guard let session = selectedSession else {
+            return .unavailable
+        }
+        let currentLease = writerConflictForkLease(for: session.id)
+        if let originLease, currentLease != originLease {
+            return .unavailable
+        }
+        guard !hasActiveWriterConflict(sessionID: session.id),
+              selectedOwnershipNotice == nil,
+              canControlSession(session)
+        else {
+            return .unavailable
+        }
+        switch conversationReadiness(for: session) {
+        case .unavailable(let reason):
+            return .connectionTerminated(reason)
+        case .live:
+            return .resolvedWritable
+        case .sending, .loadingHistory, .connecting, .observing, .reconnecting, .disconnected, .failed:
+            return .unavailable
+        }
     }
 
     var selectedWriterConflictForkErrorMessage: String? {
