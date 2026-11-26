@@ -38,6 +38,8 @@ extension CodexLocalSSHConfigurator {
             "    KbdInteractiveAuthentication no",
             "    UserKnownHostsFile \"\(knownHostsFile)\"",
             "    GlobalKnownHostsFile none",
+            "    KnownHostsCommand none",
+            "    VerifyHostKeyDNS no",
             "    ClearAllForwardings yes",
             "    ProxyJump none",
             "    ProxyCommand none",
@@ -279,6 +281,14 @@ extension CodexLocalSSHConfigurator {
 
     static func containsExactLine(_ entry: String, in content: String) -> Bool {
         rawLineSlices(in: content).contains { utf8Substring(content, range: $0.contentRange) == entry }
+    }
+
+    /// 按结构化公钥标识检查 `authorized_keys` 中是否仍存在指定公钥的有效授权（不受注释或选项修改影响）。
+    static func containsAuthorizedKeyBody(_ keyBody: String, in content: String) -> Bool {
+        rawLineSlices(in: content).contains { slice in
+            let lineText = utf8Substring(content, range: slice.contentRange)
+            return parseAuthorizedKeyLine(lineText)?.keyBody == keyBody
+        }
     }
 
     /// 仅移除与记录完全匹配且结构校验通过的托管授权行，保留其余所有原始字节（包括 CRLF、空行与用户同公钥条目）。
@@ -545,6 +555,30 @@ extension CodexLocalSSHConfigurator {
         return tokens
     }
 
+    static func hasUnclosedQuote(inSSHConfigLine rawLine: String) -> Bool {
+        var idx = rawLine.startIndex
+        while idx < rawLine.endIndex, rawLine[idx] == " " || rawLine[idx] == "\t" {
+            idx = rawLine.index(after: idx)
+        }
+        guard idx < rawLine.endIndex, rawLine[idx] != "#" else { return false }
+        var openQuote: Character?
+        while idx < rawLine.endIndex {
+            let ch = rawLine[idx]
+            if let q = openQuote {
+                if ch == q {
+                    openQuote = nil
+                }
+            } else {
+                if ch == "#" { break }
+                if ch == "\"" || ch == "'" {
+                    openQuote = ch
+                }
+            }
+            idx = rawLine.index(after: idx)
+        }
+        return openQuote != nil
+    }
+
     func containsConflictingHostAlias(_ alias: String, in configText: String) -> Bool {
         var visited: Set<String> = []
         return scanConfigForConflictingHostAlias(
@@ -580,10 +614,11 @@ extension CodexLocalSSHConfigurator {
                 for rawPattern in tokens.dropFirst() {
                     let includedFiles = resolveIncludePaths(pattern: rawPattern)
                     for filePath in includedFiles {
-                        let canonical = URL(fileURLWithPath: filePath).standardizedFileURL.path
+                        let url = URL(fileURLWithPath: filePath)
+                        let canonical = url.resolvingSymlinksInPath().standardizedFileURL.path
                         guard !visited.contains(canonical) else { continue }
                         visited.insert(canonical)
-                        guard let data = try? readRegularFileDataIfPresent(URL(fileURLWithPath: canonical)),
+                        guard let data = try? readEvaluationRegularFileIfPresent(at: url),
                               let text = String(data: data, encoding: .utf8) else {
                             continue
                         }
@@ -603,16 +638,27 @@ extension CodexLocalSSHConfigurator {
     }
 
     private func resolveIncludePaths(pattern: String) -> [String] {
-        Self.resolveGlobPaths(pattern: pattern, baseDirectory: sshDirectory, homeDirectory: homeDirectory)
+        (try? Self.resolveGlobPathsStrict(pattern: pattern, baseDirectory: sshDirectory, homeDirectory: homeDirectory)) ?? []
     }
 
-    /// 按 OpenSSH 规则展开 `Include` 模式：绝对路径原样、波浪号基于 homeDirectory、相对路径基于指定 baseDirectory（用户配置为 `~/.ssh`，系统配置为 `/etc/ssh`）。
-    static func resolveGlobPaths(pattern: String, baseDirectory: URL, homeDirectory: URL) -> [String] {
+    /// 严格按 OpenSSH 规则展开 `Include` 模式；对包含动态占位符（`%`）、环境变量（`${...}`）、他人主目录（`~user`）或 glob 异常的模式明确报错，绝不静默丢弃。
+    static func resolveGlobPathsStrict(pattern: String, baseDirectory: URL, homeDirectory: URL) throws -> [String] {
+        guard !pattern.isEmpty else {
+            throw ConfigError.effectiveConfigConflict("SSH Include 包含空路径模式，无法忠实冻结。")
+        }
+        if pattern.contains("%") {
+            throw ConfigError.effectiveConfigConflict("SSH Include 包含 OpenSSH 动态占位符（\(pattern)），无法忠实冻结。")
+        }
+        if pattern.contains("${") {
+            throw ConfigError.effectiveConfigConflict("SSH Include 包含环境变量展开（\(pattern)），无法忠实冻结。")
+        }
         let expanded: String
         if pattern == "~" {
             expanded = homeDirectory.path
         } else if pattern.hasPrefix("~/") {
             expanded = homeDirectory.path + "/" + String(pattern.dropFirst(2))
+        } else if pattern.hasPrefix("~") {
+            throw ConfigError.effectiveConfigConflict("SSH Include 包含其他用户主目录路径（\(pattern)），无法忠实冻结。")
         } else if pattern.hasPrefix("/") {
             expanded = pattern
         } else {
@@ -622,8 +668,11 @@ extension CodexLocalSSHConfigurator {
         var globResult = glob_t()
         let status = Darwin.glob(expanded, 0, nil, &globResult)
         defer { Darwin.globfree(&globResult) }
-        guard status == 0, let pathv = globResult.gl_pathv else {
+        if status == GLOB_NOMATCH {
             return []
+        }
+        guard status == 0, let pathv = globResult.gl_pathv else {
+            throw ConfigError.effectiveConfigConflict("展开 SSH Include 模式 \(pattern) 失败（glob 状态码 \(status)），无法忠实冻结。")
         }
         var results: [String] = []
         for i in 0..<Int(globResult.gl_matchc) {
@@ -718,6 +767,10 @@ extension CodexLocalSSHConfigurator {
                 parsed.userKnownHostsFile = value
             case "globalknownhostsfile":
                 parsed.globalKnownHostsFile = value
+            case "knownhostscommand":
+                parsed.knownHostsCommand = value
+            case "verifyhostkeydns":
+                parsed.verifyHostKeyDNS = value
             case "stricthostkeychecking":
                 parsed.strictHostKeyChecking = value
             case "clearallforwardings":
@@ -771,7 +824,8 @@ extension CodexLocalSSHConfigurator {
         _ config: EffectiveSSHConfig,
         expectedUser: String,
         expectedIdentityFile: String,
-        expectedKnownHostsFile: String
+        expectedKnownHostsFile: String,
+        additionalAllowedIdentityFiles: Set<String> = []
     ) -> String? {
         guard config.hostname == "127.0.0.1" else {
             return "HostName 实际解析为 \(config.hostname ?? "<空>")，预期 127.0.0.1。"
@@ -785,7 +839,10 @@ extension CodexLocalSSHConfigurator {
         guard config.identitiesOnly?.lowercased() == "yes" else {
             return "IdentitiesOnly 未生效。"
         }
-        guard config.identityFiles == [expectedIdentityFile] else {
+        let allowedIdentities = additionalAllowedIdentityFiles.union([expectedIdentityFile])
+        guard !config.identityFiles.isEmpty,
+              config.identityFiles.allSatisfy({ allowedIdentities.contains($0) }),
+              (additionalAllowedIdentityFiles.isEmpty ? config.identityFiles == [expectedIdentityFile] : config.identityFiles.contains(expectedIdentityFile)) else {
             return "有效 IdentityFile 列表为 [\(config.identityFiles.joined(separator: ", "))]，预期仅包含 \(expectedIdentityFile)。"
         }
         guard config.certificateFiles.isEmpty else {
@@ -814,6 +871,12 @@ extension CodexLocalSSHConfigurator {
         }
         if let globalKH = config.globalKnownHostsFile?.lowercased(), !globalKH.isEmpty, globalKH != "none" {
             return "GlobalKnownHostsFile 未禁用（\(globalKH)）。"
+        }
+        if let khCmd = config.knownHostsCommand?.lowercased(), !khCmd.isEmpty, khCmd != "none" {
+            return "存在额外的 KnownHostsCommand（\(khCmd)）。"
+        }
+        if let verifyDNS = config.verifyHostKeyDNS?.lowercased(), !verifyDNS.isEmpty, verifyDNS != "no" && verifyDNS != "false" {
+            return "VerifyHostKeyDNS 未禁用（\(verifyDNS)）。"
         }
         if let strict = config.strictHostKeyChecking?.lowercased(), strict != "accept-new" && strict != "yes" && strict != "true" {
             return "StrictHostKeyChecking 不安全（\(strict)）。"
@@ -925,6 +988,12 @@ extension CodexLocalSSHConfigurator {
             return false
         }
         if let forkAuth = config.forkAfterAuthentication?.lowercased(), !forkAuth.isEmpty, forkAuth != "no" && forkAuth != "false" {
+            return false
+        }
+        if let khCmd = config.knownHostsCommand?.lowercased(), !khCmd.isEmpty, khCmd != "none" {
+            return false
+        }
+        if let verifyDNS = config.verifyHostKeyDNS?.lowercased(), !verifyDNS.isEmpty, verifyDNS != "no" && verifyDNS != "false" {
             return false
         }
         return true

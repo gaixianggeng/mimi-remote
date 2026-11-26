@@ -551,7 +551,13 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             sharedSocketPaths: sharedSockets
         ), "其他账号的 sshd 会话不得标为当前账号已共享")
 
-        // 4. 当前账号（UID 501）经已认证 sshd-session 拉起的 codex 连接到共享控制 socket -> 满足完整共享证据。
+        // 4. 当前账号（UID 501）经同一 TCP 四元组的已认证 sshd-session 拉起的 codex 连接到共享控制 socket -> 满足完整共享证据。
+        let matchedTcpLsof = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
         let verifiedUnix = makeUnixLsof([
             (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
             (pid: 503, cmd: "codex-aarch64-apple-darwin", fd: "8", addr: "0x4444", name: "->0x1111"),
@@ -562,8 +568,118 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
             expectedUsername: "alice",
             expectedUID: 501,
-            tcpLsofOutput: tcpLsof,
+            tcpLsofOutput: matchedTcpLsof,
             unixLsofOutput: verifiedUnix,
+            sharedSocketPaths: sharedSockets
+        ))
+    }
+
+    /// R4 P1-5: 两条独立 SSH 会话并存时（桌面端回环 TCP 仍在认证 + 同账号另一条 SSH 会话已连共享 Codex socket），
+    /// 必须用同一 TCP 四元组关联桌面 ssh、服务端 sshd 与 Codex 后代，绝不能把两条无关会话拼出 .shared。
+    func testR4_P1_5TwoIndependentSSHSessionsDoNotCombineIntoSharedRequiresMatchingTCPFourTuple() {
+        let socketPath = "/Users/alice/.codex/app-server-control/app-server-control.sock"
+        let sharedSockets: Set<String> = [socketPath]
+        let psTwoSessions = """
+          1914     1   501 /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   501 /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+            40   600   501 /usr/bin/ssh -T 127.0.0.1 sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   501 sshd-session: alice@notty
+           502   501   501 /bin/zsh -c exec codex app-server proxy
+           503   502   501 /opt/homebrew/bin/codex app-server proxy
+           510   500   501 sshd-session: alice@notty
+           600     1   501 /Applications/Terminal.app/Contents/MacOS/Terminal
+        """
+
+        func makeUnixLsof(_ entries: [(pid: Int32, cmd: String, fd: String, addr: String, name: String)]) -> Data {
+            var data = Data()
+            for entry in entries {
+                for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                    data.append(contentsOf: field.utf8)
+                    data.append(0)
+                }
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        let codexConnectedUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
+            (pid: 503, cmd: "codex-aarch64-apple-darwin", fd: "8", addr: "0x4444", name: "->0x1111"),
+        ])
+
+        // 负例：桌面 ssh (30) 用源端口 54321，但带 codex 后代的 sshd-session (501) 对应的是另一条终端 ssh (40) 的源端口 59999。
+        let mismatchedSessionsTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p510
+        n127.0.0.1:22->127.0.0.1:54321
+        p40
+        n127.0.0.1:59999->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:59999
+        """
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psTwoSessions,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: mismatchedSessionsTCP,
+            unixLsofOutput: codexConnectedUnix,
+            sharedSocketPaths: sharedSockets
+        ), "两条独立 SSH 会话并存时，绝不能把桌面未认证 TCP 与另一条 SSH 会话的 Codex socket 拼出 .shared")
+
+        // 正例：带 codex 后代的 sshd-session (501) 持有与桌面 ssh (30) 完全镜像的 TCP 四元组 (127.0.0.1:22->127.0.0.1:54321)。
+        let matchedSessionTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psTwoSessions,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: matchedSessionTCP,
+            unixLsofOutput: codexConnectedUnix,
+            sharedSocketPaths: sharedSockets
+        ), "同一 TCP 四元组串联桌面 ssh、sshd-session 与共享 Codex socket 时应判为 .shared")
+
+        // IPv6 回环四元组同样校验精确匹配，不同源端口仍拒绝。
+        let ipv6MismatchedTCP = """
+        p30
+        n[::1]:54321->[::1]:22
+        p501
+        n[::1]:22->[::1]:59999
+        """
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psTwoSessions,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: ipv6MismatchedTCP,
+            unixLsofOutput: codexConnectedUnix,
+            sharedSocketPaths: sharedSockets
+        ))
+
+        let ipv6MatchedTCP = """
+        p30
+        n[::1]:54321->[::1]:22
+        p501
+        n[::1]:22->[::1]:54321
+        """
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psTwoSessions,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: ipv6MatchedTCP,
+            unixLsofOutput: codexConnectedUnix,
             sharedSocketPaths: sharedSockets
         ))
     }

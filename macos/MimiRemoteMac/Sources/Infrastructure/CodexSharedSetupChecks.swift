@@ -193,6 +193,8 @@ enum CodexSharedSetupChecks {
             "-o", "CanonicalizeHostname=no",
             "-o", "PermitLocalCommand=no",
             "-o", "RemoteCommand=none",
+            "-o", "KnownHostsCommand=none",
+            "-o", "VerifyHostKeyDNS=no",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UpdateHostKeys=no",
             "-o", "RequestTTY=no",
@@ -200,7 +202,7 @@ enum CodexSharedSetupChecks {
             "-o", "ForkAfterAuthentication=no",
             "-o", "ConnectTimeout=5",
             target,
-            "/bin/cat",
+            CodexLocalSSHConfigurator.probeRemoteCommand,
         ])
         return args
     }
@@ -208,52 +210,115 @@ enum CodexSharedSetupChecks {
     static func defaultTargetProber(target: String) async -> Bool {
         let currentUser = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !currentUser.isEmpty else { return false }
-
         let configurator = CodexLocalSSHConfigurator(username: currentUser)
-        // 冻结桌面版当前真实配置（~/.ssh/config + 系统 ssh_config 含相对 Include），确保 ssh -G 与实际探测使用同一份认证与信任输入。
+        return await probeTarget(target, configurator: configurator)
+    }
+
+    /// 严格冻结桌面版当前真实配置（无法忠实冻结的 Include 直接报错拒绝），并按基准、/bin/cat、实际探测参数与桌面代理命令分别核验 `ssh -G`，
+    /// 全部通过后才使用同一份冻结快照执行只读双向探测。
+    static func probeTarget(
+        _ target: String,
+        configurator: CodexLocalSSHConfigurator,
+        runProbe: CodexLocalSSHConfigurator.CommandRunner = CodexLocalSSHConfigurator.defaultCommandRunner
+    ) async -> Bool {
+        let currentUser = configurator.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentUser.isEmpty else { return false }
+
         guard let materialized = try? configurator.materializeCurrentSSHConfigForEvaluation(includeSystemConfig: true) else {
             return false
         }
         defer { materialized.cleanup() }
 
-        guard let effective = try? await configurator.resolveEffectiveSSHConfig(
+        let checkRealDesktop = configurator.isDefaultUserHome && configurator.systemSSHConfigPath == "/etc/ssh/ssh_config"
+
+        func validateProfile(_ effective: CodexLocalSSHConfigurator.EffectiveSSHConfig) -> Bool {
+            if target == CodexLocalSSHConfigurator.hostAlias {
+                return CodexLocalSSHConfigurator.validateEffectiveLoopbackConfig(
+                    effective,
+                    expectedUser: currentUser,
+                    expectedIdentityFile: configurator.expectedIdentityFileConfigValue,
+                    expectedKnownHostsFile: configurator.expectedKnownHostsPath
+                ) == nil
+            }
+            return CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser)
+        }
+
+        // 1. 冻结快照：无命令基准 + /bin/cat + 桌面版代理命令画像
+        guard let baseEffective = try? await configurator.resolveEffectiveSSHConfig(
             configPath: materialized.configFileURL.path,
             alias: target,
             includeSystemConfig: false
-        ) else {
+        ), validateProfile(baseEffective) else {
             return false
         }
 
-        if target == CodexLocalSSHConfigurator.hostAlias {
-            guard CodexLocalSSHConfigurator.validateEffectiveLoopbackConfig(
-                effective,
-                expectedUser: currentUser,
-                expectedIdentityFile: configurator.expectedIdentityFileConfigValue,
-                expectedKnownHostsFile: configurator.expectedKnownHostsPath
-            ) == nil else {
+        guard let catEffective = try? await configurator.resolveEffectiveSSHConfig(
+            configPath: materialized.configFileURL.path,
+            alias: target,
+            includeSystemConfig: false,
+            extraOptions: ["-T"],
+            remoteCommand: [CodexLocalSSHConfigurator.probeRemoteCommand]
+        ), validateProfile(catEffective) else {
+            return false
+        }
+
+        for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
+            guard let proxyEffective = try? await configurator.resolveEffectiveSSHConfig(
+                configPath: materialized.configFileURL.path,
+                alias: target,
+                includeSystemConfig: false,
+                extraOptions: ["-T"],
+                remoteCommand: proxyCmd
+            ), validateProfile(proxyEffective) else {
                 return false
             }
-        } else {
-            // 校验真实桌面配置下 127.0.0.1 的路由、认证与双向传输选项均可用，不再改用 -F /dev/null 验证另一套身份和信任设置。
-            guard CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser) else {
+            if target != CodexLocalSSHConfigurator.hostAlias &&
+                proxyEffective.identityFiles != baseEffective.identityFiles {
                 return false
             }
         }
 
-        let resolvedHostName = effective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
+        // 2. 默认主目录下同时校验真实桌面解析路径（防止与冻结器之间出现任何语义偏差）
+        if checkRealDesktop {
+            guard let desktopBase = try? await configurator.resolveEffectiveSSHConfig(
+                configPath: configurator.sshConfigURL.path,
+                alias: target,
+                includeSystemConfig: true
+            ), validateProfile(desktopBase) else {
+                return false
+            }
+            for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
+                guard let desktopProxy = try? await configurator.resolveEffectiveSSHConfig(
+                    configPath: configurator.sshConfigURL.path,
+                    alias: target,
+                    includeSystemConfig: true,
+                    extraOptions: ["-T"],
+                    remoteCommand: proxyCmd
+                ), validateProfile(desktopProxy) else {
+                    return false
+                }
+            }
+        }
+
+        // 3. 实际探测参数 `ssh -G` 核验（确保实际探测命令行与上述配置一致）
+        let resolvedHostName = baseEffective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
         let arguments = buildDirectLoopbackProbeArguments(
             for: target,
             username: currentUser,
             configPath: materialized.configFileURL.path,
             hostName: resolvedHostName
         )
+        guard let probeEffective = try? await configurator.resolveEffectiveSSHConfig(rawArguments: arguments),
+              validateProfile(probeEffective) else {
+            return false
+        }
+
         let probePayload = Data("mimi-ssh-probe-\(UUID().uuidString)\n".utf8)
-        let result = try? await ProcessExecutor.shared.run(
-            executable: URL(fileURLWithPath: "/usr/bin/ssh"),
-            arguments: arguments,
-            timeout: .seconds(10),
-            forceKillAfterTimeout: true,
-            standardInput: probePayload
+        let result = try? await runProbe(
+            URL(fileURLWithPath: "/usr/bin/ssh"),
+            arguments,
+            .seconds(10),
+            probePayload
         )
         return result?.status == 0 && result?.stdout == probePayload
     }

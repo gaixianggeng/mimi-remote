@@ -33,6 +33,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         sshStderr: String = "",
         echoStdinOnVerify: Bool = true,
         beforeAtomicCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
+        afterVerifyBeforeDelete: CodexLocalSSHConfigurator.CommitHook? = nil,
         beforeVerifySSH: (@Sendable () throws -> Void)? = nil
     ) -> (CodexLocalSSHConfigurator, CommandRecorder) {
         let recorder = CommandRecorder()
@@ -66,7 +67,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                     stderr: Data(sshStderr.utf8)
                 )
             },
-            beforeAtomicCommit: beforeAtomicCommit
+            beforeAtomicCommit: beforeAtomicCommit,
+            afterVerifyBeforeDelete: afterVerifyBeforeDelete
         )
         return (configurator, recorder)
     }
@@ -1302,8 +1304,11 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertTrue(args.contains("User=alice"))
         XCTAssertTrue(args.contains("IdentityFile=\"\(configurator.privateKeyURL.path)\""))
         XCTAssertTrue(args.contains("IdentitiesOnly=yes"))
-        XCTAssertTrue(args.contains("UserKnownHostsFile=\"\(configurator.expectedKnownHostsPath)\""))
+        let ukhArg = try XCTUnwrap(args.first(where: { $0.hasPrefix("UserKnownHostsFile=") }))
+        XCTAssertFalse(ukhArg.contains(configurator.expectedKnownHostsPath), "验连必须使用事务内专用信任副本而非实时 known_hosts")
         XCTAssertTrue(args.contains("GlobalKnownHostsFile=none"))
+        XCTAssertTrue(args.contains("KnownHostsCommand=none"))
+        XCTAssertTrue(args.contains("VerifyHostKeyDNS=no"))
         XCTAssertTrue(args.contains("UpdateHostKeys=no"))
         XCTAssertTrue(args.contains("ProxyJump=none"))
         XCTAssertTrue(args.contains("ProxyCommand=none"))
@@ -1476,7 +1481,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             "回滚前托管块已被外部改写，绝不能覆盖外部改动"
         )
 
-        // 3. 回滚时新建的 known_hosts 变为符号链接 -> 不得静默忽略 known_hosts 清理失败。
+        // 3. Phase 4 写回新建的 known_hosts 后，最终状态持久化前 known_hosts 被替换为符号链接 -> 不得静默忽略 known_hosts 回滚失败，也不得动链接目标。
         let freshHome = tempHome.appendingPathComponent("kh-rollback-home", isDirectory: true)
         try FileManager.default.createDirectory(at: freshHome, withIntermediateDirectories: true)
         let sentinel = freshHome.appendingPathComponent("sentinel-kh")
@@ -1496,10 +1501,15 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                         standardInput: standardInput
                     )
                 }
-                // 在验连失败返回前，把刚创建的 known_hosts 替换为符号链接，使回滚清理 known_hosts 失败。
-                try FileManager.default.removeItem(at: khURL)
-                try FileManager.default.createSymbolicLink(at: khURL, withDestinationURL: sentinel)
-                return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            },
+            beforeAtomicCommit: { targetURL in
+                if targetURL.lastPathComponent == stateURL.lastPathComponent {
+                    // Phase 4 刚提交新建 known_hosts 后、最终写状态前，把 known_hosts 替换为符号链接并触发回滚。
+                    try FileManager.default.removeItem(at: khURL)
+                    try FileManager.default.createSymbolicLink(at: khURL, withDestinationURL: sentinel)
+                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟最终状态持久化失败")
+                }
             }
         )
         do {
@@ -1534,6 +1544,423 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let expectedData = Data((originalNoTrailingNewline + "\r\n").utf8)
         XCTAssertEqual(finalData, expectedData, "无尾换行文件转为 CRLF 后撤销不得剥掉 \\r\\n 的 LF 而残留裸 CR")
         XCTAssertFalse(finalData.last == 0x0D, "绝不能在文件末尾留下裸 CR")
+    }
+
+    // MARK: - Round 4 P1 & P2 Structural Regressions
+
+    /// R4 P1-1: ~/.ssh 临时失去目录搜索权限（0600）时，inspect 与 remove 必须区分「无法检查」与「确实缺失」，绝不能清空授权记录或删除状态文件。
+    func testR4_P1_1RevokePreservesAuthRecordAndEntryWhenSSHDirLosesSearchPermission() async throws {
+        let (configurator, _) = makeConfigurator(username: "alice")
+        try FileManager.default.createDirectory(at: configurator.sshDirectory, withIntermediateDirectories: true)
+        let keepAuth = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepSearchPerm12345678901234567890123 alice@host\n"
+        try keepAuth.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
+        try await configurator.configure(verifyConnection: false)
+
+        // 移除 ~/.ssh 目录搜索权限（0600：对 ~/.ssh 自身的 lstat 仍成功，但访问其内部文件报 EACCES）。
+        XCTAssertEqual(Darwin.chmod(configurator.sshDirectory.path, 0o600), 0)
+        defer { _ = Darwin.chmod(configurator.sshDirectory.path, 0o700) }
+
+        let inspectedLocked = await configurator.inspect()
+        XCTAssertTrue(inspectedLocked.hasUnsafeFileSystemState, "目录不可搜索时必须标记不安全/不可检")
+        XCTAssertFalse(inspectedLocked.isReady)
+        XCTAssertTrue(inspectedLocked.isManaged, "目录不可搜索但持久化记录仍在时，必须保留撤销入口")
+        XCTAssertTrue(inspectedLocked.hasRecordedAuthorizedEntry)
+
+        do {
+            try await configurator.remove()
+            XCTFail("~/.ssh 不可搜索时 remove 必须报错，绝不能把 EACCES 当成文件不存在并静默成功")
+        } catch {
+            // 预期抛出文件检查/读取失败错误
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configurator.stateFileURL.path), "未能确认授权已撤销时绝不能删除状态文件")
+
+        // 恢复 ~/.ssh 搜索权限后：原授权仍在，inspect 仍保留撤销入口，重试 remove() 必须彻底撤销！
+        XCTAssertEqual(Darwin.chmod(configurator.sshDirectory.path, 0o700), 0)
+        let authBeforeRetry = try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8)
+        XCTAssertTrue(authBeforeRetry.contains(CodexLocalSSHConfigurator.keyComment))
+        let inspectedRestored = await configurator.inspect()
+        XCTAssertTrue(inspectedRestored.isManaged, "恢复权限后撤销重试入口绝不能丢失")
+        XCTAssertTrue(inspectedRestored.hasRecordedAuthorizedEntry)
+
+        try await configurator.remove()
+        XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), keepAuth)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.stateFileURL.path))
+    }
+
+    /// R4 P1-2: 核验后、删除前被原子替换为同名文件时，隔离-核验-删除模型必须拒绝误删并无覆盖恢复替换文件。
+    func testR4_P1_2PostVerifySwapNeverDeletesReplacementAndQuarantineRestoresSafely() async throws {
+        let (setupConfigurator, _) = makeConfigurator(username: "alice")
+        try await setupConfigurator.configure(verifyConnection: false)
+
+        let replacementSentinel = Data("USER-POST-VERIFY-SWAP-SENTINEL\n".utf8)
+        let (racyRemover, _) = makeConfigurator(
+            username: "alice",
+            afterVerifyBeforeDelete: { targetURL in
+                if targetURL.lastPathComponent == CodexLocalSSHConfigurator.keyFileName {
+                    try FileManager.default.removeItem(at: targetURL)
+                    try replacementSentinel.write(to: targetURL)
+                    _ = Darwin.chmod(targetURL.path, 0o600)
+                }
+            }
+        )
+
+        do {
+            try await racyRemover.remove()
+            XCTFail("预核验后被替换为不同文件时必须中止删除并报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .conflictingKeyFiles = error else {
+                return XCTFail("期望 conflictingKeyFiles，实际：\(error)")
+            }
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: setupConfigurator.privateKeyURL.path),
+            "核验后被同名替换的文件绝不能被 unlinkat 误删"
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: setupConfigurator.privateKeyURL),
+            replacementSentinel,
+            "替换文件必须被无覆盖地完整恢复在原路径"
+        )
+    }
+
+    /// R4 P1-3: 托管块与验连必须禁用 KnownHostsCommand，且验连必须使用事务内信任副本、经归属核验后再写回首次登记的主机密钥。
+    func testR4_P1_3VerifyDisablesKnownHostsCommandAndUsesTransactionalKnownHostsCopy() async throws {
+        let sshDir = tempHome.appendingPathComponent(".ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        let hostileTrustConfig = """
+        Host *
+            KnownHostsCommand /usr/bin/true
+        """
+        try hostileTrustConfig.write(to: sshDir.appendingPathComponent("config"), atomically: true, encoding: .utf8)
+
+        let fakeHostKeyLine = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITxKnownHostsCommitKey1234567890123456\n"
+        let recorder = CommandRecorder()
+        let configurator = CodexLocalSSHConfigurator(
+            homeDirectory: tempHome,
+            username: "alice",
+            runCommand: { executable, arguments, timeout, standardInput in
+                await recorder.record(executable: executable.path, arguments: arguments)
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                // 模拟 ssh 首次验连把主机密钥写入其收到的 UserKnownHostsFile 路径。
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try fakeHostKeyLine.write(to: URL(fileURLWithPath: rawPath), atomically: true, encoding: .utf8)
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
+        )
+
+        try await configurator.configure(verifyConnection: true)
+
+        // 1. 托管块必须禁用 KnownHostsCommand，且 ssh -G 确认未继承 Host * 的 KnownHostsCommand。
+        let configText = try String(contentsOf: configurator.sshConfigURL, encoding: .utf8)
+        XCTAssertTrue(configText.contains("KnownHostsCommand none"), "托管块必须显式禁用 KnownHostsCommand")
+
+        // 2. 验连参数必须显式禁用 KnownHostsCommand 且使用事务内副本而非实时 knownHostsURL。
+        let calls = await recorder.calls
+        let verifyCall = try XCTUnwrap(calls.last(where: { $0.executable == "/usr/bin/ssh" && $0.arguments.first != "-G" }))
+        let args = verifyCall.arguments
+        XCTAssertTrue(args.contains("KnownHostsCommand=none"), "验连参数必须显式禁用 KnownHostsCommand")
+        let ukhArg = try XCTUnwrap(args.first(where: { $0.hasPrefix("UserKnownHostsFile=") }))
+        XCTAssertFalse(
+            ukhArg.contains(configurator.expectedKnownHostsPath),
+            "验连必须使用事务内的专用信任副本，不得直接打开实时 knownHostsURL：\(ukhArg)"
+        )
+
+        // 3. 首次验连写入事务副本的主机密钥必须在归属核验后提交回应用专用 knownHostsURL。
+        XCTAssertEqual(
+            try String(contentsOf: configurator.knownHostsURL, encoding: .utf8),
+            fakeHostKeyLine,
+            "事务副本中首次登记的主机密钥必须经归属核验后写回 knownHostsURL"
+        )
+    }
+
+    /// R4 P1-4: Match command 让桌面代理命令加载额外 IdentityFile/StdinNull 或存在无法忠实冻结的 Include 时，必须明确报错。
+    func testR4_P1_4DetectsMatchCommandDesktopProxyDivergenceAndRejectsUnfreezableIncludes() async throws {
+        // 1. Match command "*codex*" 仅在桌面版实际代理命令下注入额外 IdentityFile -> 写入前必须检出并拒绝。
+        let (matchCmdConfig, _) = makeConfigurator(username: "alice")
+        try FileManager.default.createDirectory(at: matchCmdConfig.sshDirectory, withIntermediateDirectories: true)
+        let matchCmdText = """
+        Match command "*codex*"
+            IdentityFile ~/.ssh/match_cmd_extra
+        """
+        try matchCmdText.write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        do {
+            try await matchCmdConfig.configure(verifyConnection: false)
+            XCTFail("Match command 导致桌面代理命令加载额外 IdentityFile 时必须在写入前停止")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .effectiveConfigConflict(let detail) = error else {
+                return XCTFail("期望 effectiveConfigConflict，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("IdentityFile"), "错误信息应指出 IdentityFile 冲突：\(detail)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: matchCmdConfig.privateKeyURL.path))
+
+        // 2. 无法忠实冻结的动态 Include（环境变量 / token）-> 绝不能静默丢弃，必须明确报错。
+        let envIncConfigText = "Include ${MIMI_DYNAMIC_SSH_INCLUDE}\n"
+        try envIncConfigText.write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        do {
+            try await matchCmdConfig.configure(verifyConnection: false)
+            XCTFail("包含环境变量的无法忠实冻结 Include 必须明确报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .effectiveConfigConflict = error else {
+                return XCTFail("期望 effectiveConfigConflict，实际：\(error)")
+            }
+        }
+
+        // 3. 用户配置 Include 指向符号链接文件（OpenSSH 可读取）-> 绝不能静默丢弃其中额外的 IdentityFile。
+        let dotfilesDir = tempHome.appendingPathComponent("dotfiles-inc", isDirectory: true)
+        let confD = matchCmdConfig.sshDirectory.appendingPathComponent("conf.d", isDirectory: true)
+        try FileManager.default.createDirectory(at: dotfilesDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: confD, withIntermediateDirectories: true)
+        let dotfileTarget = dotfilesDir.appendingPathComponent("extra.conf")
+        try "Host *\n    IdentityFile ~/.ssh/from_symlink_include\n".write(to: dotfileTarget, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: confD.appendingPathComponent("extra.conf"),
+            withDestinationURL: dotfileTarget
+        )
+        try "Include conf.d/*.conf\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        do {
+            try await matchCmdConfig.configure(verifyConnection: false)
+            XCTFail("符号链接 Include 中的额外 IdentityFile 绝不能被静默丢弃")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .effectiveConfigConflict(let detail) = error else {
+                return XCTFail("期望 effectiveConfigConflict，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("IdentityFile"), "应检出符号链接 Include 中的额外 IdentityFile：\(detail)")
+        }
+
+        // 4. 旧式 127.0.0.1 探测同样必须拒绝 Match command 导致的桌面代理配置偏移与无法忠实冻结的 Include。
+        try "Match command \"*codex*\"\n    StdinNull yes\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        let probeRejectedMatchCmd = await CodexSharedSetupChecks.probeTarget(
+            "127.0.0.1",
+            configurator: matchCmdConfig,
+            runProbe: { _, _, _, stdin in
+                CommandResult(status: 0, stdout: stdin ?? Data(), stderr: Data())
+            }
+        )
+        XCTAssertFalse(probeRejectedMatchCmd, "旧式 127.0.0.1 探测在 Match command 切断桌面代理 Stdin 时绝不能误报免密就绪")
+
+        try "Include ${MIMI_UNFREEZABLE_INCLUDE}\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        let probeRejectedUnfreezableInc = await CodexSharedSetupChecks.probeTarget(
+            "127.0.0.1",
+            configurator: matchCmdConfig,
+            runProbe: { _, _, _, stdin in
+                CommandResult(status: 0, stdout: stdin ?? Data(), stderr: Data())
+            }
+        )
+        XCTAssertFalse(probeRejectedUnfreezableInc, "旧式 127.0.0.1 探测遇到无法忠实冻结的 Include 时绝不能误报免密就绪")
+    }
+
+    /// R4 P1-6: 回滚遇到外部改写新增授权行注释时必须按公钥标识检出残留并保留记录；known_hosts 回滚绝不删除同名替换文件或覆盖外部更新。
+    func testR4_P1_6RollbackDetectsEditedAddedAuthKeyAndProtectsExternalKnownHosts() async throws {
+        // 1. 外部编辑只改了本次新增授权行的注释 -> 精确删除失败，但该公钥仍有效授权，回滚绝不能标记成功或丢弃状态记录！
+        let authURL = tempHome.appendingPathComponent(".ssh/authorized_keys")
+        let (editedCommentConfig, _) = makeConfigurator(
+            username: "alice",
+            sshExitStatus: 255,
+            sshStderr: "Connection refused",
+            beforeVerifySSH: {
+                let current = try String(contentsOf: authURL, encoding: .utf8)
+                let edited = current.replacingOccurrences(of: CodexLocalSSHConfigurator.keyComment, with: "user-edited-comment")
+                try edited.write(to: authURL, atomically: true, encoding: .utf8)
+            }
+        )
+        do {
+            try await editedCommentConfig.configure(verifyConnection: true)
+            XCTFail("新增授权行注释被外部修改导致未能撤销时，绝不能标记回滚成功")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .fileOperationFailed(let detail) = error else {
+                return XCTFail("期望 fileOperationFailed 报告残留授权，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("authorized_keys"), "应明确报告 authorized_keys 残留：\(detail)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: editedCommentConfig.stateFileURL.path), "残留有效授权时绝不能丢弃状态记录")
+        let inspectedAfterEdited = await editedCommentConfig.inspect()
+        XCTAssertTrue(inspectedAfterEdited.isManaged, "残留授权时必须保留撤销入口")
+        XCTAssertTrue(inspectedAfterEdited.hasRecordedAuthorizedEntry)
+
+        // 2. 已有 known_hosts 在事务期间被外部更新 -> 验连失败回滚绝不能用旧内容覆盖外部更新！
+        let khUpdateHome = tempHome.appendingPathComponent("kh-ext-update", isDirectory: true)
+        try FileManager.default.createDirectory(at: khUpdateHome, withIntermediateDirectories: true)
+        let stateURL = khUpdateHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
+        let khURL = stateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
+        try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let originalKH = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldHostKey12345678901234567890123456\n"
+        let externallyUpdatedKH = originalKH + "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExternalUpdateKey1234567890123456\n"
+        try originalKH.write(to: khURL, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(khURL.path, 0o600)
+
+        let khExtConfig = CodexLocalSSHConfigurator(
+            homeDirectory: khUpdateHome,
+            username: "alice",
+            stateFileURL: stateURL,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                // 模拟外部进程在验连期间更新了 known_hosts，随后验连失败触发回滚。
+                try externallyUpdatedKH.write(to: khURL, atomically: true, encoding: .utf8)
+                return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+            }
+        )
+        do {
+            try await khExtConfig.configure(verifyConnection: true)
+            XCTFail("验连失败必须抛错")
+        } catch {
+            // 预期失败
+        }
+        XCTAssertEqual(
+            try String(contentsOf: khURL, encoding: .utf8),
+            externallyUpdatedKH,
+            "known_hosts 发生外部更新后，回滚绝不能用旧内容覆盖外部更新"
+        )
+
+        // 3. 新建 known_hosts 后在回滚前被替换为同名普通文件 -> 回滚绝不能删除同名替换文件！
+        let khReplaceHome = tempHome.appendingPathComponent("kh-ext-replace", isDirectory: true)
+        try FileManager.default.createDirectory(at: khReplaceHome, withIntermediateDirectories: true)
+        let replaceStateURL = khReplaceHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
+        let replaceKHURL = replaceStateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
+        let replacementKHContent = "EXTERNAL-REPLACEMENT-KNOWN-HOSTS-DO-NOT-DELETE\n"
+
+        let khReplaceConfig = CodexLocalSSHConfigurator(
+            homeDirectory: khReplaceHome,
+            username: "alice",
+            stateFileURL: replaceStateURL,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                // 模拟事务写入后/失败前，known_hosts 被替换为外部普通文件。
+                if FileManager.default.fileExists(atPath: replaceKHURL.path) {
+                    try FileManager.default.removeItem(at: replaceKHURL)
+                }
+                try replacementKHContent.write(to: replaceKHURL, atomically: true, encoding: .utf8)
+                return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+            }
+        )
+        do {
+            try await khReplaceConfig.configure(verifyConnection: true)
+            XCTFail("验连失败必须抛错")
+        } catch {
+            // 预期失败
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: replaceKHURL.path),
+            "被外部替换的同名 known_hosts 绝不能被回滚删除"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: replaceKHURL, encoding: .utf8),
+            replacementKHContent,
+            "同名替换文件的内容必须原样保留"
+        )
+
+        // 4. Phase 4 实际写回 known_hosts 后，在状态落盘失败触发回滚前被外部更新/替换 -> 同样绝不覆盖外部更新或删除替换文件！
+        let p4UpdateHome = tempHome.appendingPathComponent("kh-p4-update", isDirectory: true)
+        try FileManager.default.createDirectory(at: p4UpdateHome, withIntermediateDirectories: true)
+        let p4StateURL = p4UpdateHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
+        let p4KHURL = p4StateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
+        try FileManager.default.createDirectory(at: p4StateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try originalKH.write(to: p4KHURL, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(p4KHURL.path, 0o600)
+
+        let p4NewKey = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPhase4TxKey1234567890123456789012345678\n"
+        let p4ExternalAfterCommit = originalKH + p4NewKey + "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfterCommitExt1234567890123456789012345\n"
+        let p4UpdateConfig = CodexLocalSSHConfigurator(
+            homeDirectory: p4UpdateHome,
+            username: "alice",
+            stateFileURL: p4StateURL,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try (originalKH + p4NewKey).write(to: URL(fileURLWithPath: rawPath), atomically: true, encoding: .utf8)
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            },
+            beforeAtomicCommit: { targetURL in
+                if targetURL.lastPathComponent == p4StateURL.lastPathComponent {
+                    // Phase 4 提交 known_hosts 后，外部再追加一行，然后最终状态落盘失败触发回滚。
+                    try p4ExternalAfterCommit.write(to: p4KHURL, atomically: true, encoding: .utf8)
+                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟 Phase 4 状态落盘失败")
+                }
+            }
+        )
+        do {
+            try await p4UpdateConfig.configure(verifyConnection: true)
+            XCTFail("Phase 4 状态落盘失败必须报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .fileOperationFailed(let detail) = error else {
+                return XCTFail("期望 fileOperationFailed 报告 known_hosts 外部更新冲突，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("codex-local-known-hosts"))
+        }
+        XCTAssertEqual(
+            try String(contentsOf: p4KHURL, encoding: .utf8),
+            p4ExternalAfterCommit,
+            "Phase 4 提交 known_hosts 后若发生外部更新，回滚绝不能覆盖外部更新"
+        )
+    }
+
+    /// R4 P2-1: 授权、密钥和配置都已清空，仅应用专用 known_hosts 清理失败时，必须保留状态与重试入口。
+    func testR4_P2_1KnownHostsCleanupFailurePreservesRetryEntry() async throws {
+        let (configurator, _) = makeConfigurator(username: "alice")
+        try await configurator.configure(verifyConnection: false)
+
+        let sentinel = tempHome.appendingPathComponent("p2-sentinel")
+        try "KEEP\n".write(to: sentinel, atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: configurator.knownHostsURL)
+        try FileManager.default.createSymbolicLink(at: configurator.knownHostsURL, withDestinationURL: sentinel)
+
+        do {
+            try await configurator.remove()
+            XCTFail("known_hosts 为符号链接时必须报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .unsafeFileSystemTarget = error else {
+                return XCTFail("期望 unsafeFileSystemTarget，实际：\(error)")
+            }
+        }
+
+        // 即使 authorized_keys、密钥与 config 已清理，因 known_hosts 清理失败仍必须保留状态文件与移除重试入口。
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configurator.stateFileURL.path), "known_hosts 清理失败时必须保留状态文件")
+        let inspectedMid = await configurator.inspect()
+        XCTAssertTrue(inspectedMid.isManaged, "known_hosts 单独清理失败时必须保留重试入口")
+        XCTAssertTrue(inspectedMid.hasUnsafeFileSystemState)
+
+        // 手动清除异常符号链接后再次 remove() 应彻底清空状态文件。
+        try FileManager.default.removeItem(at: configurator.knownHostsURL)
+        try await configurator.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.stateFileURL.path))
+        let inspectedAfter = await configurator.inspect()
+        XCTAssertFalse(inspectedAfter.isManaged)
     }
 
     // MARK: - Helpers

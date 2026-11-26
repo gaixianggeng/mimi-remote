@@ -122,6 +122,44 @@ enum CodexDesktopLink {
         }
     }
 
+    /// 完整 TCP 四元组（本端 IP:端口 -> 对端 IP:端口），用于将桌面 `ssh` 与服务端 `sshd`/`sshd-session` 精确关联到同一连接。
+    struct TCPConnection: Equatable, Hashable, Sendable {
+        let localHost: String
+        let localPort: String
+        let remoteHost: String
+        let remotePort: String
+
+        var isLocalLoopback: Bool {
+            localHost == "127.0.0.1" || localHost == "::1"
+        }
+
+        var isRemoteLoopback: Bool {
+            remoteHost == "127.0.0.1" || remoteHost == "::1"
+        }
+
+        var isLoopbackToSSHPort: Bool {
+            isLocalLoopback && isRemoteLoopback && remotePort == "22"
+        }
+
+        var isLoopbackFromSSHPort: Bool {
+            isLocalLoopback && isRemoteLoopback && localPort == "22"
+        }
+
+        var peer: TCPPeer {
+            TCPPeer(remoteHost: remoteHost, remotePort: remotePort)
+        }
+
+        /// 同一 TCP 连接对端视角下的镜像四元组：`(A:p1 -> B:p2)` <-> `(B:p2 -> A:p1)`。
+        var mirrored: TCPConnection {
+            TCPConnection(
+                localHost: remoteHost,
+                localPort: remotePort,
+                remoteHost: localHost,
+                remotePort: localPort
+            )
+        }
+    }
+
     static func url(threadID: String) -> URL? {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
         guard !threadID.isEmpty, threadID.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
@@ -153,9 +191,9 @@ enum CodexDesktopLink {
         return candidates
     }
 
-    /// 从 `lsof -nP -a -p <pids> -iTCP -sTCP:ESTABLISHED -F pn` 输出解析每个进程的实际已建立 TCP 对端。
-    static func parseEstablishedTCPPeers(lsofOutput: String) -> [Int32: [TCPPeer]] {
-        var result: [Int32: [TCPPeer]] = [:]
+    /// 从 `lsof -nP -a -p <pids> -iTCP -sTCP:ESTABLISHED -F pn` 输出解析每个进程的完整已建立 TCP 四元组。
+    static func parseEstablishedTCPConnections(lsofOutput: String) -> [Int32: [TCPConnection]] {
+        var result: [Int32: [TCPConnection]] = [:]
         var currentPID: Int32?
         for line in lsofOutput.split(whereSeparator: \.isNewline) {
             guard let first = line.first else { continue }
@@ -166,9 +204,16 @@ enum CodexDesktopLink {
             case "n":
                 guard let pid = currentPID,
                       let arrowRange = value.range(of: "->") else { continue }
+                let localEndpoint = String(value[..<arrowRange.lowerBound])
                 let remoteEndpoint = String(value[arrowRange.upperBound...])
-                if let peer = parseEndpoint(remoteEndpoint) {
-                    result[pid, default: []].append(peer)
+                if let local = parseHostPort(localEndpoint),
+                   let remote = parseHostPort(remoteEndpoint) {
+                    result[pid, default: []].append(TCPConnection(
+                        localHost: local.host,
+                        localPort: local.port,
+                        remoteHost: remote.host,
+                        remotePort: remote.port
+                    ))
                 }
             default:
                 break
@@ -177,7 +222,20 @@ enum CodexDesktopLink {
         return result
     }
 
-    private static func parseEndpoint(_ endpoint: String) -> TCPPeer? {
+    /// 从 `lsof -nP -a -p <pids> -iTCP -sTCP:ESTABLISHED -F pn` 输出解析每个进程的实际已建立 TCP 对端。
+    static func parseEstablishedTCPPeers(lsofOutput: String) -> [Int32: [TCPPeer]] {
+        parseEstablishedTCPConnections(lsofOutput: lsofOutput).mapValues { $0.map(\.peer) }
+    }
+
+    private static func normalizeLoopbackHost(_ rawHost: String) -> String {
+        let lower = rawHost.lowercased()
+        if lower == "::ffff:127.0.0.1" {
+            return "127.0.0.1"
+        }
+        return lower
+    }
+
+    private static func parseHostPort(_ endpoint: String) -> (host: String, port: String)? {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if trimmed.hasPrefix("[") {
@@ -187,13 +245,13 @@ enum CodexDesktopLink {
             guard afterBracket.hasPrefix(":") else { return nil }
             let port = String(afterBracket.dropFirst())
             guard !host.isEmpty, !port.isEmpty else { return nil }
-            return TCPPeer(remoteHost: host.lowercased(), remotePort: port)
+            return (normalizeLoopbackHost(host), port)
         }
         guard let colon = trimmed.lastIndex(of: ":") else { return nil }
         let host = String(trimmed[..<colon])
         let port = String(trimmed[trimmed.index(after: colon)...])
         guard !host.isEmpty, !port.isEmpty else { return nil }
-        return TCPPeer(remoteHost: host.lowercased(), remotePort: port)
+        return (normalizeLoopbackHost(host), port)
     }
 
     /// 从 `ps` 输出与（可选）`lsof` 实际已建立对端输出判断桌面版是否确实经直连回环 SSH 22 端口接入。
@@ -403,30 +461,50 @@ enum CodexDesktopLink {
         return base == "sshd" || base == "sshd-session"
     }
 
-    /// 校验存在至少一个属于当前用户、由已认证 `sshd` 会话拉起、且已接入共享 Codex 控制 socket 的 `codex` 客户端进程。
-    static func hasSSHAuthenticatedCodexSession(
+    /// 提取指定当前用户 `codex` 进程祖先链中的所有 `sshd` / `sshd-session` PID。
+    static func sshdAncestorPIDs(
+        for codexPID: Int32,
+        processes: [Int32: ProcessSnapshotEntry],
+        expectedUID: uid_t
+    ) -> [Int32] {
+        guard let start = processes[codexPID], start.uid == expectedUID else { return [] }
+        var ancestors: [Int32] = []
+        var cursor = start.ppid
+        var hops = 0
+        while cursor > 1 && hops < 16 {
+            guard let parent = processes[cursor] else { break }
+            if isSSHServerExecutable(parent.executable) {
+                ancestors.append(parent.pid)
+            }
+            if parent.ppid == cursor { break }
+            cursor = parent.ppid
+            hops += 1
+        }
+        return ancestors
+    }
+
+    /// 校验存在至少一个属于当前用户、由与桌面回环 `ssh` 共享同一 TCP 四元组的 `sshd` 会话拉起、且已接入共享 Codex 控制 socket 的 `codex` 客户端进程。
+    static func hasCorrelatedSSHAuthenticatedCodexSession(
         processes: [Int32: ProcessSnapshotEntry],
         expectedUID: uid_t,
-        connectedCodexPIDs: Set<Int32>
+        connectedCodexPIDs: Set<Int32>,
+        verifiedClientTuples: Set<TCPConnection>,
+        serverConnectionsByPID: [Int32: [TCPConnection]]
     ) -> Bool {
+        guard !verifiedClientTuples.isEmpty else { return false }
         for pid in connectedCodexPIDs {
-            guard let start = processes[pid], start.uid == expectedUID else { continue }
-            var cursor = start.ppid
-            var hops = 0
-            while cursor > 1 && hops < 16 {
-                guard let parent = processes[cursor] else { break }
-                if isSSHServerExecutable(parent.executable) {
+            let ancestors = sshdAncestorPIDs(for: pid, processes: processes, expectedUID: expectedUID)
+            for sshdPID in ancestors {
+                guard let serverConns = serverConnectionsByPID[sshdPID] else { continue }
+                if serverConns.contains(where: { $0.isLoopbackFromSSHPort && verifiedClientTuples.contains($0.mirrored) }) {
                     return true
                 }
-                if parent.ppid == cursor { break }
-                cursor = parent.ppid
-                hops += 1
             }
         }
         return false
     }
 
-    /// 综合校验客户端回环 SSH 已建立连接 + 服务端当前账号经 SSH 认证接入共享 Codex App Server 控制 socket 的完整证据。
+    /// 综合校验：同一 TCP 四元组必须把桌面 `ssh` 子进程、服务端 `sshd`/`sshd-session` 及其当前账号下已连共享 Codex 控制 socket 的 `codex` 后代串联在一起。
     static func hasVerifiedSharedConnection(
         psWithUIDOutput: String,
         desktopPIDs: Set<Int32>,
@@ -445,22 +523,26 @@ enum CodexDesktopLink {
             expectedUsername: expectedUsername
         )
         guard !candidates.isEmpty else { return false }
-        let peersByPID = parseEstablishedTCPPeers(lsofOutput: tcpLsofOutput)
-        let hasLoopbackTCP = candidates.contains { candidate in
-            guard let peers = peersByPID[candidate.pid], !peers.isEmpty else { return false }
-            let hasLoopbackSSH = peers.contains { $0.isLoopbackSSH }
-            let hasRemotePeer = peers.contains { !$0.isLoopbackHost }
-            return hasLoopbackSSH && !hasRemotePeer
+        let connectionsByPID = parseEstablishedTCPConnections(lsofOutput: tcpLsofOutput)
+        var verifiedClientTuples: Set<TCPConnection> = []
+        for candidate in candidates {
+            guard let conns = connectionsByPID[candidate.pid], !conns.isEmpty else { continue }
+            let hasRemotePeer = conns.contains { !$0.isRemoteLoopback }
+            guard !hasRemotePeer else { continue }
+            let loopbackSSH = conns.filter(\.isLoopbackToSSHPort)
+            verifiedClientTuples.formUnion(loopbackSSH)
         }
-        guard hasLoopbackTCP else { return false }
+        guard !verifiedClientTuples.isEmpty else { return false }
         let connectedCodexPIDs = parseConnectedCodexClientPIDs(
             unixLsofOutput: unixLsofOutput,
             sharedSocketPaths: sharedSocketPaths
         )
-        return hasSSHAuthenticatedCodexSession(
+        return hasCorrelatedSSHAuthenticatedCodexSession(
             processes: processes,
             expectedUID: expectedUID,
-            connectedCodexPIDs: connectedCodexPIDs
+            connectedCodexPIDs: connectedCodexPIDs,
+            verifiedClientTuples: verifiedClientTuples,
+            serverConnectionsByPID: connectionsByPID
         )
     }
 
@@ -723,7 +805,7 @@ enum CodexDesktopLink {
         )
         guard !candidates.isEmpty else { return .separate }
 
-        // 1. 核验每个候选 ssh 子进程的实际已建立 TCP 对端为本机回环 22 端口，防止把配置改写前已建立的远端连接误报为共享。
+        // 1. 核验每个候选 ssh 子进程的实际已建立 TCP 四元组为本机回环 22 端口，防止把远端连接误报为共享。
         let pidList = candidates.map { String($0.pid) }.joined(separator: ",")
         let lsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
@@ -732,17 +814,18 @@ enum CodexDesktopLink {
             outputLimit: 1_048_576
         )
         guard let lsofResult, lsofResult.status == 0 else { return .separate }
-        let peersByPID = parseEstablishedTCPPeers(lsofOutput: lsofResult.stdoutText)
+        let clientConnsByPID = parseEstablishedTCPConnections(lsofOutput: lsofResult.stdoutText)
 
         let configurator = CodexLocalSSHConfigurator()
-        var hasVerifiedLoopbackCandidate = false
+        var verifiedClientTuples: Set<TCPConnection> = []
         for candidate in candidates {
-            guard let peers = peersByPID[candidate.pid], !peers.isEmpty else { continue }
-            let hasLoopbackSSH = peers.contains { $0.isLoopbackSSH }
-            let hasRemotePeer = peers.contains { !$0.isLoopbackHost }
-            guard hasLoopbackSSH && !hasRemotePeer else { continue }
+            guard let conns = clientConnsByPID[candidate.pid], !conns.isEmpty else { continue }
+            let hasRemotePeer = conns.contains { !$0.isRemoteLoopback }
+            guard !hasRemotePeer else { continue }
+            let loopbackSSH = conns.filter(\.isLoopbackToSSHPort)
+            guard !loopbackSSH.isEmpty else { continue }
 
-            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G` 确认实际解析用户为当前用户且认证/传输无重定向。
+            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G`（含桌面代理命令）确认无重定向。
             let lowerDest = candidate.invocation.destinationHost.lowercased()
             if lowerDest != CodexLocalSSHConfigurator.hostAlias && candidate.invocation.explicitConfigPath != "/dev/null" {
                 guard let effective = try? await configurator.resolveEffectiveSSHConfig(
@@ -753,14 +836,28 @@ enum CodexDesktopLink {
                 CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser) else {
                     continue
                 }
+                var proxyMatchesLoopback = true
+                for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
+                    guard let proxyEffective = try? await configurator.resolveEffectiveSSHConfig(
+                        configPath: configurator.sshConfigURL.path,
+                        alias: candidate.invocation.destinationHost,
+                        includeSystemConfig: true,
+                        extraOptions: ["-T"],
+                        remoteCommand: proxyCmd
+                    ),
+                    CodexLocalSSHConfigurator.isDirectLoopbackConfig(proxyEffective, expectedUser: currentUser) else {
+                        proxyMatchesLoopback = false
+                        break
+                    }
+                }
+                guard proxyMatchesLoopback else { continue }
             }
-            hasVerifiedLoopbackCandidate = true
-            break
+            verifiedClientTuples.formUnion(loopbackSSH)
         }
-        guard hasVerifiedLoopbackCandidate else { return .separate }
+        guard !verifiedClientTuples.isEmpty else { return .separate }
 
-        // 2. 仅有回环 TCP ESTABLISHED 尚早于 SSH 认证且不证明共享后端已接入；
-        // 必须同时确认当前账号存在经已认证 sshd 会话接入共享 Codex App Server 控制 socket 的 codex 客户端进程。
+        // 2. 查询当前账号已连共享 Codex 控制 socket 的 codex 客户端进程，收集其当前用户持有的 sshd/sshd-session 祖先 PID，
+        //    并通过服务端 TCP 四元组与桌面 ssh 客户端四元组精确镜像匹配，确保二者属于同一条已认证 SSH 会话。
         let unixLsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
             arguments: ["-nP", "-a", "-U", "-u", String(currentUID), "-F0pcfdtn"],
@@ -773,10 +870,31 @@ enum CodexDesktopLink {
             unixLsofOutput: unixLsofResult.stdout,
             sharedSocketPaths: sharedSockets
         )
-        guard hasSSHAuthenticatedCodexSession(
+        var sshdAncestorSet: Set<Int32> = []
+        for codexPID in connectedCodexPIDs {
+            let ancestors = sshdAncestorPIDs(for: codexPID, processes: processes, expectedUID: currentUID)
+            // 过滤为当前用户可检视的 sshd-session PID，避免非 root 调用 lsof 因 root sshd 父进程返回非零退出码。
+            let inspectable = ancestors.filter { processes[$0]?.uid == currentUID }
+            sshdAncestorSet.formUnion(inspectable.isEmpty ? ancestors : inspectable)
+        }
+        guard !sshdAncestorSet.isEmpty else { return .separate }
+
+        let sshdPIDList = sshdAncestorSet.sorted().map(String.init).joined(separator: ",")
+        let serverLsofResult = try? await ProcessExecutor.shared.run(
+            executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-a", "-p", sshdPIDList, "-iTCP", "-sTCP:ESTABLISHED", "-F", "pn"],
+            timeout: .seconds(5),
+            outputLimit: 1_048_576
+        )
+        guard let serverLsofResult, serverLsofResult.status == 0 else { return .separate }
+        let serverConnsByPID = parseEstablishedTCPConnections(lsofOutput: serverLsofResult.stdoutText)
+
+        guard hasCorrelatedSSHAuthenticatedCodexSession(
             processes: processes,
             expectedUID: currentUID,
-            connectedCodexPIDs: connectedCodexPIDs
+            connectedCodexPIDs: connectedCodexPIDs,
+            verifiedClientTuples: verifiedClientTuples,
+            serverConnectionsByPID: serverConnsByPID
         ) else {
             return .separate
         }
