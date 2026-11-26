@@ -46,6 +46,13 @@ export function resolveAgyDataPaths(env: NodeJS.ProcessEnv = process.env): AgyDa
 }
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/;
+const ASCII_ONLY = /^[\x00-\x7f]*$/;
+const PURE_ASCII_NON_DB_EXT = /\.[A-Za-z0-9_-]+$/;
+
+function foldFilenameCase(name: string): string {
+  // 对齐 APFS/HFS+ 等大小写不敏感卷的 Unicode simple case-folding（例如 U+017F `ſ` -> `s`、U+212A `K` -> `k`、`.DB` -> `.db`）。
+  return name.toUpperCase().toLowerCase();
+}
 
 export function conversationDbPath(
   sessionId: string,
@@ -83,9 +90,21 @@ async function isSameDirectoryIdentity(
 ): Promise<boolean> {
   if (path.resolve(pathA) === path.resolve(pathB)) return true;
   try {
-    const [statA, statB] = await Promise.all([statFn(pathA), statFn(pathB)]);
+    // 必须使用 `{ bigint: true }` 比较 64 位 APFS inode/dev，避免 JS Number 精度舍入导致两个不同目录误判相同。
+    const [statA, statB] = await Promise.all([
+      statFn(pathA, { bigint: true }),
+      statFn(pathB, { bigint: true }),
+    ]);
     if (!statA.isDirectory() || !statB.isDirectory()) return false;
-    return statA.dev === statB.dev && statA.ino === statB.ino && statA.ino !== 0;
+    if (
+      typeof statA.dev !== "bigint"
+      || typeof statB.dev !== "bigint"
+      || typeof statA.ino !== "bigint"
+      || typeof statB.ino !== "bigint"
+    ) {
+      return false;
+    }
+    return statA.dev === statB.dev && statA.ino === statB.ino && statA.ino !== 0n;
   } catch {
     return false;
   }
@@ -207,9 +226,10 @@ export async function probeOtherConversations(
       return "present";
     }
     for (const name of entries) {
-      if (!name.toLowerCase().endsWith(".db")) continue;
-      const stem = name.slice(0, -3);
-      if (SAFE_SESSION_ID.test(stem) && (await fileExists(path.join(dir, `${stem}.db`), ops.access))) {
+      const folded = foldFilenameCase(name);
+      if (!folded.endsWith(".db")) continue;
+      const foldedStem = folded.slice(0, -3);
+      if (SAFE_SESSION_ID.test(foldedStem) && (await fileExists(path.join(dir, `${foldedStem}.db`), ops.access))) {
         return "present";
       }
     }
@@ -239,6 +259,7 @@ type DirOriginIndex =
       directDbIds: Set<string>;
       verifyAccessDbIds: Set<string>;
       caseAliasLowerIds: Set<string>;
+      hasUnindexedNonAsciiCandidate: boolean;
     };
 
 async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
@@ -254,23 +275,42 @@ async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
     const directDbIds = new Set<string>();
     const verifyAccessDbIds = new Set<string>();
     const caseAliasLowerIds = new Set<string>();
+    let hasUnindexedNonAsciiCandidate = false;
     for (const entry of entries) {
-      if (!entry.name.toLowerCase().endsWith(".db")) continue;
-      const sessionId = entry.name.slice(0, -3);
-      if (!SAFE_SESSION_ID.test(sessionId)) continue;
-      // 同时索引小写别名，确保大小写不敏感卷上 `abcd.db` 与摘要 `ABCD` 可由 access(path) 核验一致。
-      caseAliasLowerIds.add(sessionId.toLowerCase());
-      if (!entry.name.endsWith(".db")) continue;
-      if (entry.isSymbolicLink()) {
-        // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
-        verifyAccessDbIds.add(sessionId);
-      } else if (entry.isFile() || entry.isDirectory()) {
-        directDbIds.add(sessionId);
-      } else {
-        verifyAccessDbIds.add(sessionId);
+      const folded = foldFilenameCase(entry.name);
+      if (folded.endsWith(".db")) {
+        const foldedStem = folded.slice(0, -3);
+        if (SAFE_SESSION_ID.test(foldedStem)) {
+          // 索引大小写与 Unicode 折叠后的别名（含 `abcd.db`/`upper.DB`/`ſ-test.db`/`K-test.db`），
+          // 命中时由 access(path) 按底层卷规则实时核验，保持与逐文件 lookup 完全一致。
+          caseAliasLowerIds.add(foldedStem);
+          if (entry.name.endsWith(".db")) {
+            const exactStem = entry.name.slice(0, -3);
+            if (SAFE_SESSION_ID.test(exactStem)) {
+              if (entry.isSymbolicLink()) {
+                // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
+                verifyAccessDbIds.add(exactStem);
+              } else if (entry.isFile() || entry.isDirectory()) {
+                directDbIds.add(exactStem);
+              } else {
+                verifyAccessDbIds.add(exactStem);
+              }
+            }
+          }
+          continue;
+        }
+        // 非 ASCII 条目若未折叠为 SAFE_SESSION_ID（如 HFS+ 可忽略字符或其他卷规范化），
+        // 标记未命中时回退 access(path)，避免丢弃真实可访问会话。
+        if (!ASCII_ONLY.test(entry.name)) {
+          hasUnindexedNonAsciiCandidate = true;
+        }
+        continue;
+      }
+      if (!ASCII_ONLY.test(entry.name) && !PURE_ASCII_NON_DB_EXT.test(entry.name)) {
+        hasUnindexedNonAsciiCandidate = true;
       }
     }
-    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds, caseAliasLowerIds };
+    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds, caseAliasLowerIds, hasUnindexedNonAsciiCandidate };
   } catch {
     // 例如 0111 目录允许穿越（X_OK 成功）但禁止 readdir，回退逐文件 access(path) 保持等价。
     return { kind: "fallback_access", dir };
@@ -290,19 +330,23 @@ async function hasIndexedConversationDb(index: DirOriginIndex, sessionId: string
   if (index.caseAliasLowerIds.has(sessionId.toLowerCase())) {
     return fileExists(path.join(index.dir, `${sessionId}.db`));
   }
+  if (index.hasUnindexedNonAsciiCandidate) {
+    return fileExists(path.join(index.dir, `${sessionId}.db`));
+  }
   return false;
 }
 
 /**
- * 批量识别会话来源（与逐条 `resolveSessionOrigin` 在 `0444`/`0111`/`0000`/悬空符号链接/大小写不敏感卷下完全等价）。
+ * 批量识别会话来源（与逐条 `resolveSessionOrigin` 在 `0444`/`0111`/`0000`/悬空符号链接/大小写与 Unicode 折叠卷下完全等价）。
  */
 export async function createBatchSessionOriginResolver(
   env: NodeJS.ProcessEnv = process.env,
+  ops: Pick<ProbeFsOps, "stat"> = defaultProbeFsOps,
 ): Promise<(sessionId: string) => Promise<AgySessionOrigin | null>> {
   const paths = resolveAgyDataPaths(env);
   const cliDir = path.join(paths.appDataRoot, "conversations");
   const otherDir = path.join(paths.otherAppDataRoot, "conversations");
-  const sameRoot = await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot);
+  const sameRoot = await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot, ops.stat);
 
   const [cliIndex, otherIndex] = sameRoot
     ? [await buildDirOriginIndex(cliDir), { kind: "inaccessible" } as const]

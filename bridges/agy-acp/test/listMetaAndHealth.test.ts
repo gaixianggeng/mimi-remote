@@ -200,6 +200,126 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         restoreModes.push({ target: parentRoot, mode: 0o755 });
         expect(await probeOtherConversations(envForHome(parentPermHome))).toBe("permission_denied");
       }
+
+      // 10b) 64-bit APFS inode precision: numeric stat rounds distinct 64-bit inodes to identical Numbers,
+      // so probeOtherConversations and createBatchSessionOriginResolver MUST compare with `{ bigint: true }`.
+      const bigintHome = path.join(tmp, "h-bigint-inode");
+      const bigintCliRoot = path.join(bigintHome, ".gemini", "antigravity-cli");
+      const bigintOtherRoot = path.join(bigintHome, ".gemini", "antigravity");
+      const bigintCliConv = path.join(bigintCliRoot, "conversations");
+      const bigintOtherConv = path.join(bigintOtherRoot, "conversations");
+      await mkdir(bigintCliConv, { recursive: true });
+      await mkdir(bigintOtherConv, { recursive: true });
+      await writeFile(path.join(bigintCliConv, "cli-big.db"), "");
+      await writeFile(path.join(bigintOtherConv, "other-big.db"), "");
+
+      const bigInoA = 9007199254740992n; // 2^53
+      const bigInoB = 9007199254740993n; // 2^53 + 1 -> Number(bigInoA) === Number(bigInoB)
+      expect(Number(bigInoA)).toBe(Number(bigInoB));
+      const statCallsWithBigint: boolean[] = [];
+      const makeBigintStat = (inoForCli: bigint, inoForOther: bigint): typeof stat =>
+        (async (target: Parameters<typeof stat>[0], options?: Parameters<typeof stat>[1]) => {
+          const targetStr = String(target);
+          const wantsBigint = Boolean(options && typeof options === "object" && "bigint" in options && options.bigint);
+          statCallsWithBigint.push(wantsBigint);
+          const real = await stat(target, options as Parameters<typeof stat>[1]);
+          if (targetStr === bigintCliRoot || targetStr === bigintOtherRoot) {
+            const chosenIno = targetStr === bigintCliRoot ? inoForCli : inoForOther;
+            const chosenDev = 16777233n;
+            return Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+              dev: wantsBigint ? chosenDev : Number(chosenDev),
+              ino: wantsBigint ? chosenIno : Number(chosenIno),
+              isDirectory: () => true,
+            });
+          }
+          return real;
+        }) as unknown as typeof stat;
+
+      const distinctBigintOps: ProbeFsOps = {
+        access,
+        lstat,
+        readdir,
+        stat: makeBigintStat(bigInoA, bigInoB),
+      };
+      const bigintEnv = envForHome(bigintHome);
+      expect(await probeOtherConversations(bigintEnv, distinctBigintOps)).toBe("present");
+      expect(statCallsWithBigint.length).toBeGreaterThanOrEqual(2);
+      expect(statCallsWithBigint.every(Boolean)).toBe(true);
+
+      const batchBigintResolver = await createBatchSessionOriginResolver(bigintEnv, {
+        stat: makeBigintStat(bigInoA, bigInoB),
+      });
+      expect(await batchBigintResolver("cli-big")).toBe("cli");
+      expect(await batchBigintResolver("other-big")).toBe("other");
+
+      // Matching 64-bit bigint inodes on the same device ARE recognized as the same directory.
+      const sameBigintOps: ProbeFsOps = {
+        access,
+        lstat,
+        readdir,
+        stat: makeBigintStat(bigInoB, bigInoB),
+      };
+      expect(await probeOtherConversations(bigintEnv, sameBigintOps)).toBe("absent_or_empty");
+
+      // Zero inode (0n) must never be treated as equal identity.
+      const zeroInoOps: ProbeFsOps = {
+        access,
+        lstat,
+        readdir,
+        stat: makeBigintStat(0n, 0n),
+      };
+      expect(await probeOtherConversations(bigintEnv, zeroInoOps)).toBe("present");
+
+      // End-to-end: distinct 64-bit APFS roots keep Other active instead of caching CLI-only as complete.
+      const wsBigint = path.join(tmp, "ws-bigint");
+      await mkdir(wsBigint, { recursive: true });
+      const bigintWorld = new FakeAgyWorld({
+        sessions: [
+          {
+            sessionId: "cli-big",
+            cwd: wsBigint,
+            title: "CLI Bigint",
+            updatedAt: "2026-11-22T01:00:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity-cli",
+          },
+          {
+            sessionId: "other-big",
+            cwd: wsBigint,
+            title: "Other Bigint",
+            updatedAt: "2026-11-22T01:01:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity",
+          },
+        ],
+      });
+      const cliBigAcp = new SharedReadonlyAcp(() => "fake-agy", (o) => bigintWorld.spawnTransport(o), () => bigintEnv, "antigravity-cli");
+      const otherBigAcp = new SharedReadonlyAcp(() => "fake-agy", (o) => bigintWorld.spawnTransport(o), () => bigintEnv, "antigravity");
+      try {
+        const backendBig = createAcpSessionBackend(
+          cliBigAcp,
+          otherBigAcp,
+          () => bigintEnv,
+          undefined,
+          undefined,
+          (e) => probeOtherConversations(e, distinctBigintOps),
+        );
+        const catalogBig = new AgyCatalog(
+          { backend: backendBig, git: new GitRepoIndex(), overlay: new AgyOverlay(path.join(tmp, "overlay-big.json")) },
+          60_000,
+        );
+        const listedBig = await catalogBig.list();
+        expect(listedBig.listMeta).toEqual({ schemaVersion: 1, complete: true, sources: ["cli", "other"] });
+        expect(listedBig.records.map((r) => r.id).sort()).toEqual(["cli-big", "other-big"]);
+      } finally {
+        await Promise.all([cliBigAcp.close(), otherBigAcp.close()]);
+      }
     } finally {
       for (const item of restoreModes.reverse()) {
         await chmod(item.target, item.mode).catch(() => {});
@@ -280,7 +400,8 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           }
         }
       }
-      // Case D: case-insensitive volume aliases (`abcd.db` queried as `ABCD`, uppercase `.DB`, dangling alias, same-root case alias)
+      // Case D: case-insensitive & Unicode-folded volume aliases (`abcd.db` -> `ABCD`, uppercase `.DB`,
+      // `ſ-test.db` -> `s-test`, `K-test.db` -> `k-test`, dangling alias, same-root case alias)
       const homeCase = path.join(tmp, "home-case");
       const cliCase = path.join(homeCase, ".gemini", "antigravity-cli", "conversations");
       const otherCase = path.join(homeCase, ".gemini", "antigravity", "conversations");
@@ -288,8 +409,11 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       await mkdir(otherCase, { recursive: true });
       await writeFile(path.join(cliCase, "abcd.db"), "");
       await writeFile(path.join(cliCase, "upper-ext.DB"), "");
+      await writeFile(path.join(cliCase, "\u017f-test.db"), "");
       await writeFile(path.join(otherCase, "efgh.db"), "");
+      await writeFile(path.join(otherCase, "\u212a-test.db"), "");
       await symlink(path.join(tmp, "missing-case-target.db"), path.join(cliCase, "dangling-case.db"));
+      await symlink(path.join(tmp, "missing-longs-target.db"), path.join(cliCase, "\u017f-dangling.db"));
 
       const envCase = envForHome(homeCase);
       await checkEquivalence(envCase, [
@@ -299,11 +423,22 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         "EFGH",
         "upper-ext",
         "UPPER-EXT",
+        "s-test",
+        "S-TEST",
+        "k-test",
+        "K-TEST",
         "dangling-case",
         "DANGLING-CASE",
+        "s-dangling",
       ]);
 
       const isCaseInsensitiveVolume = await access(path.join(cliCase, "ABCD.db"))
+        .then(() => true)
+        .catch(() => false);
+      const isUnicodeFoldedLongS = await access(path.join(cliCase, "s-test.db"))
+        .then(() => true)
+        .catch(() => false);
+      const isUnicodeFoldedKelvin = await access(path.join(otherCase, "k-test.db"))
         .then(() => true)
         .catch(() => false);
       if (isCaseInsensitiveVolume) {
@@ -312,32 +447,72 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         expect(await batchCase("EFGH")).toBe("other");
         expect(await batchCase("upper-ext")).toBe("cli");
         expect(await batchCase("DANGLING-CASE")).toBeNull();
+        expect(await batchCase("s-dangling")).toBeNull();
+        if (isUnicodeFoldedLongS) {
+          expect(await batchCase("s-test")).toBe("cli");
+          expect(await batchCase("S-TEST")).toBe("cli");
+          // probeOtherConversations also recognizes `ſ-only.DB` (Unicode folded stem + uppercase extension).
+          const homeLongSProbe = path.join(tmp, "home-longs-probe");
+          const otherLongSConv = path.join(homeLongSProbe, ".gemini", "antigravity", "conversations");
+          await mkdir(otherLongSConv, { recursive: true });
+          await writeFile(path.join(otherLongSConv, "\u017f-only.DB"), "");
+          expect(await probeOtherConversations(envForHome(homeLongSProbe))).toBe("present");
+        }
+        if (isUnicodeFoldedKelvin) {
+          expect(await batchCase("k-test")).toBe("other");
+          expect(await batchCase("K-TEST")).toBe("other");
+        }
 
         // Same-root with different casing on a case-insensitive volume must be recognized as same root.
         const sameRootDiffCaseEnv = envForHome(homeCase, {
           AGY_ADAPTER_OTHER_APP_DATA_DIR: "ANTIGRAVITY-CLI",
         });
         expect(await probeOtherConversations(sameRootDiffCaseEnv)).toBe("absent_or_empty");
-        await checkEquivalence(sameRootDiffCaseEnv, ["ABCD", "abcd", "efgh"]);
+        await checkEquivalence(sameRootDiffCaseEnv, ["ABCD", "abcd", "efgh", "s-test"]);
 
-        // End-to-end catalog.list must keep `ABCD` session when disk has `abcd.db` (matching thread/read).
+        // End-to-end catalog.list must keep `ABCD` and Unicode-folded `s-test`/`k-test` sessions (matching thread/read).
         const wsCase = path.join(tmp, "ws-case");
         await mkdir(wsCase, { recursive: true });
-        const caseWorld = new FakeAgyWorld({
-          sessions: [
-            {
-              sessionId: "ABCD",
-              cwd: wsCase,
-              title: "Case Alias Session",
-              updatedAt: "2026-11-22T01:00:00Z",
-              modeId: "default",
-              model: "gemini-4-carbon",
-              thoughtLevel: "medium",
-              replayUpdates: [],
-              appDataDirName: "antigravity-cli",
-            },
-          ],
-        });
+        const caseSessions: FakeStoredSession[] = [
+          {
+            sessionId: "ABCD",
+            cwd: wsCase,
+            title: "Case Alias Session",
+            updatedAt: "2026-11-22T01:00:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity-cli",
+          },
+        ];
+        if (isUnicodeFoldedLongS) {
+          caseSessions.push({
+            sessionId: "s-test",
+            cwd: wsCase,
+            title: "Long-S Folded Session",
+            updatedAt: "2026-11-22T01:01:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity-cli",
+          });
+        }
+        if (isUnicodeFoldedKelvin) {
+          caseSessions.push({
+            sessionId: "k-test",
+            cwd: wsCase,
+            title: "Kelvin Folded Session",
+            updatedAt: "2026-11-22T01:02:00Z",
+            modeId: "default",
+            model: "gemini-4-carbon",
+            thoughtLevel: "medium",
+            replayUpdates: [],
+            appDataDirName: "antigravity",
+          });
+        }
+        const caseWorld = new FakeAgyWorld({ sessions: caseSessions });
         const cliAcpCase = new SharedReadonlyAcp(
           () => "fake-agy",
           (o) => caseWorld.spawnTransport(o),
@@ -361,6 +536,14 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           expect(listed.records.map((r) => r.id)).toContain("ABCD");
           const readRecord = await catalogCase.get("ABCD");
           expect(readRecord?.id).toBe("ABCD");
+          if (isUnicodeFoldedLongS) {
+            expect(listed.records.map((r) => r.id)).toContain("s-test");
+            expect((await catalogCase.get("s-test"))?.id).toBe("s-test");
+          }
+          if (isUnicodeFoldedKelvin) {
+            expect(listed.records.map((r) => r.id)).toContain("k-test");
+            expect((await catalogCase.get("k-test"))?.id).toBe("k-test");
+          }
         } finally {
           await Promise.all([cliAcpCase.close(), otherAcpCase.close()]);
         }
@@ -1149,24 +1332,36 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const baselinePath = path.join(tmp, "baseline.json");
       await writeFile(baselinePath, JSON.stringify(baselinePayload));
 
-      const runVerifier = async (name: string, payload: unknown, extraArgs: string[] = ["--baseline-json", baselinePath]) => {
+      const runVerifier = async (
+        name: string,
+        payload: unknown,
+        extraArgs: string[] = ["--baseline-json", baselinePath],
+        envOverride?: NodeJS.ProcessEnv,
+      ) => {
         const jsonPath = path.join(tmp, `${name}.json`);
         await writeFile(jsonPath, JSON.stringify(payload));
-        return spawnSync(process.execPath, [scriptPath, "--check-json", jsonPath, ...extraArgs], { encoding: "utf8" });
+        return spawnSync(process.execPath, [scriptPath, "--check-json", jsonPath, ...extraArgs], {
+          encoding: "utf8",
+          ...(envOverride ? { env: envOverride } : {}),
+        });
       };
 
-      const makeBatches = (coldPerBatch: number[][], warmTotals = [0, 0, 0]) =>
+      const makeBatches = (
+        coldPerBatch: number[][],
+        warmTotals = [0, 0, 0],
+        opts: { concurrency?: number; warmRuns?: number } = {},
+      ) =>
         coldPerBatch.map((perRun, idx) => ({
           batch: idx + 1,
           concurrentCold: {
             runs: perRun.length,
-            concurrency: 4,
+            concurrency: opts.concurrency ?? 4,
             gitSpawnsPerRun: perRun,
             gitSpawnsMean: Number((perRun.reduce((a, b) => a + b, 0) / perRun.length).toFixed(3)),
             gitSpawnsTotal: perRun.reduce((a, b) => a + b, 0),
           },
           sequentialWarm: {
-            runs: 20,
+            runs: opts.warmRuns ?? 20,
             gitSpawnsAbsoluteTotal: warmTotals[idx] ?? 0,
           },
         }));
@@ -1188,7 +1383,9 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         ]),
       };
 
-      expect((await runVerifier("pass", base)).status).toBe(0);
+      const rPass = await runVerifier("pass", base);
+      expect(rPass.status).toBe(0);
+      expect(rPass.stdout).toContain("mean_of_batch_p95");
 
       // Fail 1: single cold round exceeds cap (52 > 32) even though overall mean (28.667) is <= 32!
       const failSingleRoundCold = structuredClone(base);
@@ -1209,6 +1406,51 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const rMissingBatches = await runVerifier("fail-missing-batches", failMissingBatches);
       expect(rMissingBatches.status).toBe(1);
       expect(rMissingBatches.stderr).toContain("concurrent_cold_git_spawns");
+
+      // Fail 1c: incomplete batch data (deleting the 52-spawn sample so only 14/15 cold rounds remain) must fail closed!
+      const failTruncatedRounds = structuredClone(base);
+      failTruncatedRounds.batches = makeBatches([
+        [27, 27, 27, 27],
+        [27, 27, 27, 27, 27],
+        [27, 27, 27, 27, 27],
+      ]);
+      const rTruncatedRounds = await runVerifier("fail-truncated-rounds", failTruncatedRounds);
+      expect(rTruncatedRounds.status).toBe(1);
+      expect(rTruncatedRounds.stderr).toContain("cold_round_count_mismatch");
+
+      // Fail 1d: missing a batch (only 2 batches while config.batches === 3) must fail closed.
+      const failMissingOneBatch = structuredClone(base);
+      failMissingOneBatch.batches = failMissingOneBatch.batches.slice(0, 2);
+      const rMissingOneBatch = await runVerifier("fail-missing-one-batch", failMissingOneBatch);
+      expect(rMissingOneBatch.status).toBe(1);
+      expect(rMissingOneBatch.stderr).toContain("batch_count_mismatch");
+
+      // Fail 1e: warm round count mismatch vs config.warm must fail closed.
+      const failWarmRunsMismatch = structuredClone(base);
+      failWarmRunsMismatch.batches = makeBatches(
+        [
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+        ],
+        [0, 0, 0],
+        { warmRuns: 19 },
+      );
+      const rWarmRunsMismatch = await runVerifier("fail-warm-runs-mismatch", failWarmRunsMismatch);
+      expect(rWarmRunsMismatch.status).toBe(1);
+      expect(rWarmRunsMismatch.stderr).toContain("warm_round_count_mismatch");
+
+      // Fail 1f: missing report.config must fail closed.
+      const failMissingConfig = structuredClone(base) as Record<string, unknown>;
+      delete failMissingConfig.config;
+      const rMissingConfig = await runVerifier("fail-missing-config", failMissingConfig, [
+        "--baseline-cold-spawns",
+        "128",
+        "--baseline-warm-p95-ms",
+        "41.228",
+      ]);
+      expect(rMissingConfig.status).toBe(1);
+      expect(rMissingConfig.stderr).toContain("missing_or_invalid_config");
 
       // Fail 2: warm git spawns != 0
       const failWarmSpawns = structuredClone(base);
@@ -1242,7 +1484,18 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       const rPartialCli = await runVerifier("fail-partial-cli", base, ["--baseline-cold-spawns", "128"]);
       expect(rPartialCli.status).not.toBe(0);
 
-      // Live local baseline measurement (no hardcoded baseline constants): small config to stay fast.
+      // Live local baseline measurement using `--baseline-ref HEAD` (works in shallow detached CI checkouts)
+      // AND proves ambient `ps` on PATH is isolated by the verifier's controlled deterministic `ps` shim.
+      const fakePsDir = path.join(tmp, "ambient-slow-ps");
+      await mkdir(fakePsDir, { recursive: true });
+      const fakePsMarker = path.join(tmp, "ambient-ps-was-invoked.log");
+      const fakePsPath = path.join(fakePsDir, "ps");
+      await writeFile(
+        fakePsPath,
+        `#!/bin/sh\nprintf 'invoked\\n' >> "${fakePsMarker}"\nsleep 0.25\nprintf '999999 agy\\n'\n`,
+      );
+      await chmod(fakePsPath, 0o755);
+
       const liveRegressed = {
         seed: 20260410,
         config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
@@ -1252,14 +1505,26 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
           sequentialWarmP95MsMean: 999.0,
         },
-        batches: makeBatches([[27]], [0]),
+        batches: makeBatches([[27]], [0], { concurrency: 2, warmRuns: 2 }),
       };
-      const rLiveFail = await runVerifier("live-regressed", liveRegressed, []);
+      const rLiveFail = await runVerifier("live-regressed", liveRegressed, ["--baseline-ref", "HEAD"], {
+        ...process.env,
+        PATH: `${fakePsDir}:${process.env.PATH ?? ""}`,
+      });
       expect(rLiveFail.status).toBe(1);
-      const liveParsed = JSON.parse(rLiveFail.stdout) as { baseline: { source: string; ref?: string }; passed: boolean };
+      const liveParsed = JSON.parse(rLiveFail.stdout) as {
+        processScan: { controlled: boolean; mode: string };
+        baseline: { source: string; ref?: string; warmP95MsMean: number };
+        passed: boolean;
+      };
+      expect(liveParsed.processScan).toEqual({ controlled: true, mode: "deterministic_ps_shim" });
       expect(liveParsed.baseline.source).toBe("live_measured");
       expect(typeof liveParsed.baseline.ref).toBe("string");
       expect(liveParsed.passed).toBe(false);
+      // Ambient slow `ps` in PATH must NEVER have been invoked during live baseline measurement.
+      const ambientPsInvoked = await access(fakePsMarker).then(() => true, () => false);
+      expect(ambientPsInvoked).toBe(false);
+      expect(liveParsed.baseline.warmP95MsMean).toBeLessThan(200);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
