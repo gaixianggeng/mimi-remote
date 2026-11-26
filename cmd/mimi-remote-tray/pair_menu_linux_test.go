@@ -3,135 +3,220 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"image/png"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
-func inlinePairFixture(t *testing.T) *linuxTrayApplication {
-	t.Helper()
-	screen, _ := linuxTerminalFixture(t)
-	a := screen.app
-	a.state.InlineQR = true
-	a.state.Tailcat.Enabled, a.state.Tailcat.Running = true, true
-	t.Cleanup(a.clearMenuPair)
-	return a
+func TestLinuxMenuUsesD2OrderAndTranslatesFourAssistants(t *testing.T) {
+	state := readyLinuxSnapshot()
+	state.Status.NetworkStatus = &networkStatus{Mode: "tailscale", AllowLAN: true}
+	state.Status.RuntimeStatus = &runtimeStatus{Runtimes: []runtimeEntry{
+		{ID: "codex", Title: "Codex", Enabled: true, State: "connected"},
+		{ID: "claude", Title: "Claude Code", Enabled: true, State: "signed_out"},
+		{ID: "agy", Title: "Antigravity", Enabled: true, State: "available"},
+		{ID: "deepseek", Title: "DeepSeek", Enabled: true, State: "unavailable"},
+	}}
+	items := flattenLinuxMenu(linuxMenuItems(state))
+	pos := map[string]int{}
+	labels := make([]string, 0, len(items))
+	for i, item := range items {
+		if item.Action != "" {
+			pos[item.Action] = i
+		}
+		labels = append(labels, item.Label)
+	}
+	if _, found := pos["pair-tailscale"]; !found || !(pos["pair-tailscale"] < pos["pair-tailcat"] && pos["pair-tailcat"] < pos["pair-lan"]) {
+		t.Fatalf("Linux pairing menu does not follow D2 order (Tailscale > Tailcat > LAN): %+v", pos)
+	}
+	joined := strings.Join(labels, "\n")
+	for _, want := range []string{"Codex · 已连接", "Claude Code · 未登录", "Antigravity · 运行时可用", "DeepSeek · 不可用"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Linux menu missing translated assistant label %q in:\n%s", want, joined)
+		}
+	}
 }
 
-func TestLinuxInlinePairExpandCollapseSwitchAndExpiry(t *testing.T) {
-	a := inlinePairFixture(t)
-	for _, network := range []string{"tailcat", "tailscale", "lan"} {
-		a.dispatch("pair-" + network)
-		pair := a.snapshot().PairMenu
-		if pair == nil || pair.Error != "" || pair.Loading || len(pair.PNG) == 0 {
-			t.Fatal("pair image was not generated")
+func TestLinuxPairMenuCopiesExactLinkAndExposesOnlyMenuControls(t *testing.T) {
+	screen, calls := linuxTerminalFixture(t)
+	a := screen.app
+	t.Cleanup(a.clearMenuPair)
+	a.state.Tailcat.Enabled, a.state.Tailcat.Running = true, true
+	runner := a.controller.runner
+	var issued linuxPairingInfo
+	a.controller.runner = func(ctx context.Context, args ...string) ([]byte, error) {
+		payload, err := runner(ctx, args...)
+		if err == nil && json.Unmarshal(payload, &issued) != nil {
+			t.Fatal("invalid test receipt")
 		}
-		img, err := png.Decode(bytes.NewReader(pair.PNG))
-		if err != nil || img.Bounds().Dx() != img.Bounds().Dy() || img.Bounds().Dx()%6 != 0 {
-			t.Fatal("invalid integer-scale PNG", err)
+		return payload, err
+	}
+	var copied string
+	a.clipboardCopy = func(_ context.Context, value string) error { copied = value; return nil }
+	a.terminalOpener = func(string) { t.Fatal("pairing menu opened a terminal") }
+	menu := &linuxDBusMenu{dispatch: a.dispatch}
+	items := linuxMenuItems(a.snapshot())
+	menu.update(linuxMenuItems(a.snapshot()))
+	expected := &linuxDBusMenu{}
+	for i := range items {
+		if items[i].Action == "copy-pair-link" {
+			items[i].Enabled = true
 		}
-		for x := 0; x < img.Bounds().Dx(); x++ {
-			for y := 0; y < 4*6; y++ {
-				r, g, b, _ := img.At(x, y).RGBA()
-				if r != 65535 || g != r || b != r {
-					t.Fatal("quiet zone was cropped")
-				}
+	}
+	expected.update(items)
+	_, want, _ := expected.GetLayout(0, -1, nil)
+	for i, id := range []int32{410, 402, 411} {
+		copied = ""
+		menu.Event(id, "clicked", dbus.MakeVariant(""), 0)
+		if len(*calls) != i+1 || copied == "" || copied != issued.PairURL || copied == a.snapshot().Status.Endpoint {
+			t.Fatal("channel selection did not copy exactly one newly issued ticket")
+		}
+		state := a.snapshot()
+		if !state.HasPairLink || state.UIError != "" {
+			t.Fatal("current ticket unavailable for another copy")
+		}
+		// Starting from the pre-issuance menu, only enable the copy control.
+		// Compare full wire layouts including nested properties and binary data.
+		menu.update(linuxMenuItems(state))
+		_, layout, err := menu.GetLayout(0, -1, nil)
+		if err != nil || !reflect.DeepEqual(layout, want) {
+			t.Fatal("issuing a ticket added data to the public D-Bus layout")
+		}
+		props, groupErr := menu.GetGroupProperties(nil, []string{"icon-data"})
+		if groupErr != nil || len(props) == 0 {
+			t.Fatal("missing D-Bus menu properties")
+		}
+		for _, row := range props {
+			if len(row.Properties) != 0 {
+				t.Fatal("menu exported an image over D-Bus")
+			}
+			if _, propErr := menu.GetProperty(row.ID, "icon-data"); propErr == nil {
+				t.Fatal("icon-data was readable for a menu item")
 			}
 		}
-		m := &linuxDBusMenu{}
-		m.update(linuxMenuItems(a.snapshot()))
-		icon, dbusErr := m.GetProperty(200, "icon-data")
-		if dbusErr != nil || icon.Signature().String() != "ay" || !bytes.Equal(icon.Value().([]byte), pair.PNG) {
-			t.Fatal("host cannot receive the PNG")
-		}
-		a.dispatch("refresh-pair")
-		refreshed := a.snapshot().PairMenu
-		if refreshed == pair || len(refreshed.PNG) == 0 {
-			t.Fatal("refresh failed")
-		}
-		a.expireMenuPair(pair)
-		if a.snapshot().PairMenu != refreshed {
-			t.Fatal("old expiration removed a new ticket")
-		}
-		a.expireMenuPair(refreshed)
-		if len(a.snapshot().PairMenu.PNG) != 0 || !strings.Contains(a.snapshot().PairMenu.Error, "过期") {
-			t.Fatal("expired image remains visible")
-		}
-		a.dispatch("pair-" + network)
-		if a.snapshot().PairMenu != nil {
-			t.Fatal("collapse retained ticket")
+		copied = ""
+		menu.Event(119, "clicked", dbus.MakeVariant(""), 0)
+		if copied != issued.PairURL || len(*calls) != i+1 {
+			t.Fatal("copy-current used a different ticket or issued another")
 		}
 	}
-	a.dispatch("pair-tailcat")
-	a.dispatch("pair-tailscale")
-	if a.snapshot().PairMenu.Action != "pair-tailscale" {
-		t.Fatal("network switch failed")
+	menu.Event(0, "closed", dbus.MakeVariant(""), 0)
+	copied = ""
+	a.dispatch("copy-pair-link")
+	if copied != "" || a.snapshot().HasPairLink || a.pairVault.HasActive("") {
+		t.Fatal("menu close retained a copyable ticket")
 	}
 }
 
-func TestLinuxInlinePairCloseDuringGeneration(t *testing.T) {
-	a := inlinePairFixture(t)
+func TestLinuxPairMenuNeverPublishesIssuanceOrClipboardErrors(t *testing.T) {
+	screen, _ := linuxTerminalFixture(t)
+	a := screen.app
+	t.Cleanup(a.clearMenuPair)
 	runner := a.controller.runner
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	a.controller.runner = func(ctx context.Context, args ...string) ([]byte, error) {
-		close(entered)
-		<-release
-		return runner(ctx, args...)
-	}
-	go func() { defer close(done); a.dispatch("pair-tailcat") }()
-	<-entered
-	a.dispatch("pair-tailcat")
-	close(release)
-	<-done
-	if a.snapshot().PairMenu != nil {
-		t.Fatal("late CLI response reopened the code")
-	}
-}
-
-func TestLinuxInlinePairFailureDoesNotLeakOrEnableTailcat(t *testing.T) {
-	a := inlinePairFixture(t)
-	a.state.Tailcat.Enabled = false
 	a.controller.runner = func(context.Context, ...string) ([]byte, error) {
 		t.Fatal("disabled Tailcat invoked a command")
 		return nil, nil
 	}
 	a.dispatch("pair-tailcat")
-	if a.snapshot().PairMenu.Error == "" {
+	if !strings.Contains(a.snapshot().UIError, "Tailcat 尚未就绪") {
 		t.Fatal("missing not-ready explanation")
 	}
+
+	a.terminalOpener = func(string) { t.Fatal("clipboard failure opened a terminal") }
+	const private = "fixture-secret"
+	a.clipboardCopy = func(_ context.Context, link string) error { return errors.New(link + private) }
+	a.controller.runner = runner
+	a.dispatch("pair-tailscale")
+	if a.snapshot().UIError != "无法复制配对链接，请检查剪贴板工具后重试" {
+		t.Fatal("clipboard error reached the public UI")
+	}
 	a.controller.runner = func(context.Context, ...string) ([]byte, error) {
-		return nil, errors.New("mimiremote://pair?pair_sig=secret\x1b[2J")
+		return []byte(private), errors.New(private)
 	}
-	a.dispatch("pair-tailscale")
-	for _, item := range linuxMenuItems(a.snapshot()) {
-		if strings.Contains(item.Label, "secret") || strings.Contains(item.Label, "\x1b") || len(item.IconData) > 0 {
-			t.Fatal("failed request published credentials or an image")
-		}
+	a.dispatch("pair-lan")
+	if a.snapshot().UIError != "无法生成配对链接，请刷新状态后重试" || a.pairVault.HasActive("") {
+		t.Fatal("failed channel switch exposed CLI output or retained the previous ticket")
 	}
-	a.clearMenuPair()
 	a.state.Error = "stale status"
+	a.controller.runner = func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("stale status permitted pairing")
+		return nil, nil
+	}
 	a.dispatch("pair-tailscale")
-	if !strings.Contains(a.snapshot().PairMenu.Error, "不可用") {
-		t.Fatal("expanded button bypassed status guard")
+}
+
+func TestLinuxMenuPairExpires(t *testing.T) {
+	screen, _ := linuxTerminalFixture(t)
+	a := screen.app
+	t.Cleanup(a.clearMenuPair)
+	var mu sync.Mutex
+	now := time.Now()
+	a.pairVault.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	a.pairTickInterval = 10 * time.Millisecond
+	copies := 0
+	a.clipboardCopy = func(context.Context, string) error { copies++; return nil }
+	a.dispatch("pair-lan")
+	if !a.snapshot().HasPairLink || copies != 1 {
+		t.Fatal("ticket did not become copyable")
+	}
+	mu.Lock()
+	now = now.Add(5 * time.Minute)
+	mu.Unlock()
+	deadline := time.Now().Add(time.Second)
+	for a.snapshot().HasPairLink && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.snapshot().HasPairLink {
+		t.Fatal("expiry watcher left copy enabled")
+	}
+	a.dispatch("copy-pair-link")
+	if copies != 1 || a.pairVault.HasActive("") {
+		t.Fatal("expired ticket remained copyable")
 	}
 }
 
-func TestLinuxInlinePairTimerRemovesImage(t *testing.T) {
-	a := inlinePairFixture(t)
-	pair := &linuxMenuPair{Action: "pair-tailcat", PNG: []byte("test")}
-	a.state.PairMenu = pair
-	done := make(chan struct{})
-	a.pairTimer = time.AfterFunc(time.Millisecond, func() { a.expireMenuPair(pair); close(done) })
-	<-done
-	if len(a.snapshot().PairMenu.PNG) > 0 {
-		t.Fatal("timer did not remove image")
-	}
-	a.clearMenuPair()
-	if a.snapshot().PairMenu != nil || a.pairTimer != nil {
-		t.Fatal("shutdown retained pairing state")
+func TestLinuxPairMenuPendingCopyLifetime(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		copies int
+	}{
+		{"menu-closed", 1}, // Auto-closing desktops deliver the requested copy once.
+		{"leave-pair-page", 0},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			screen, _ := linuxTerminalFixture(t)
+			a := screen.app
+			t.Cleanup(a.clearMenuPair)
+			runner := a.controller.runner
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			a.controller.runner = func(ctx context.Context, args ...string) ([]byte, error) {
+				close(entered)
+				<-release
+				return runner(ctx, args...)
+			}
+			copies := 0
+			a.clipboardCopy = func(context.Context, string) error { copies++; return nil }
+			menu := &linuxDBusMenu{dispatch: a.dispatch}
+			menu.update(linuxMenuItems(a.snapshot()))
+			go func() { defer close(done); menu.Event(410, "clicked", dbus.MakeVariant(""), 0) }()
+			<-entered
+			if tc.action == "menu-closed" {
+				menu.Event(0, "closed", dbus.MakeVariant(""), 0)
+			} else {
+				a.dispatch(tc.action)
+			}
+			close(release)
+			<-done
+			if copies != tc.copies || a.snapshot().HasPairLink || a.pairVault.HasActive("") {
+				t.Fatal("late response retained a ticket or copied unexpectedly")
+			}
+		})
 	}
 }

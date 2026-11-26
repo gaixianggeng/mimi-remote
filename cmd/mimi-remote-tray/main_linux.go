@@ -19,14 +19,19 @@ import (
 )
 
 type linuxTrayApplication struct {
-	ctx        context.Context
-	controller *linuxController
-	notifier   *linuxNotifier
-	mu         sync.Mutex
-	state      linuxTraySnapshot
-	operation  chan struct{}
-	cancel     context.CancelFunc
-	pairTimer  *time.Timer
+	ctx              context.Context
+	controller       *linuxController
+	notifier         *linuxNotifier
+	mu               sync.Mutex
+	state            linuxTraySnapshot
+	operation        chan struct{}
+	cancel           context.CancelFunc
+	pairRequest      *linuxPairCopyRequest
+	pairExpiryCancel context.CancelFunc
+	pairTickInterval time.Duration
+	pairVault        pairingLinkVault
+	clipboardCopy    func(context.Context, string) error
+	terminalOpener   func(string)
 }
 
 func main() {
@@ -37,7 +42,8 @@ func main() {
 	fs := flag.NewFlagSet("mimi-remote-tray", flag.ExitOnError)
 	agent := fs.String("agent", "", "agentd 的绝对路径（默认与托盘二进制同目录）")
 	show := fs.Bool("show", false, "在终端中打开管理界面")
-	inlineQR := fs.Bool("inline-qr", false, "在已适配的桌面托盘菜单中展开二维码")
+	// Older desktop entries may still pass this flag. All menus now use clipboard pairing.
+	fs.Bool("inline-qr", false, "兼容旧版桌面入口")
 	terminal := fs.String("terminal", "", "在当前终端中打开指定管理页面")
 	quit := fs.Bool("quit", false, "退出现有托盘实例，保持 agentd 运行")
 	_ = fs.Parse(os.Args[1:])
@@ -48,12 +54,12 @@ func main() {
 		}
 		return
 	}
-	if err := runLinuxTray(*agent, *show, *quit, *inlineQR); err != nil {
+	if err := runLinuxTray(*agent, *show, *quit); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
+func runLinuxTray(agent string, show, quit bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		if quit {
@@ -84,9 +90,8 @@ func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	app := &linuxTrayApplication{ctx: ctx, cancel: cancel, controller: controller, operation: make(chan struct{}, 1)}
-	app.state.InlineQR = len(inlineQR) > 0 && inlineQR[0]
 	defer app.clearMenuPair()
-	notifier, err := newLinuxNotifier(conn, app.dispatch, app.showTerminal, cancel)
+	notifier, err := newLinuxNotifier(conn, app.dispatchMenuEvent, app.dispatch, cancel)
 	if err != nil {
 		return err
 	}
@@ -141,7 +146,7 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 	status, err := a.controller.status(ctx, manual)
 	a.update(func(s *linuxTraySnapshot) {
 		if err != nil {
-			s.Error = redactTrayText(err.Error())
+			s.Error = redactTrayText(formatTrayUserError(err))
 			return
 		}
 		s.Status = status
@@ -153,7 +158,7 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 		a.update(func(s *linuxTraySnapshot) {
 			s.TailcatError = ""
 			if tailcatErr != nil {
-				s.TailcatError = redactTrayText(tailcatErr.Error())
+				s.TailcatError = redactTrayText(formatTrayUserError(tailcatErr))
 				return
 			}
 			s.Tailcat, s.HasTailcat = tailcat, true
@@ -162,26 +167,73 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 	return err
 }
 func (a *linuxTrayApplication) dispatch(action string) {
-	if a.snapshot().InlineQR && (strings.HasPrefix(action, "pair-") || action == "refresh-pair") {
-		a.toggleMenuPair(action)
-		return
-	}
-	switch action {
-	case "quit":
-		a.cancel()
-	case "refresh":
-		a.refresh(true)
-	case "copy":
-		if err := copyLinuxEndpoint(a.ctx, a.snapshot().Status.Endpoint); err != nil {
-			a.showTerminal("status")
-		}
-	default:
-		a.showTerminal(linuxTerminalPairAction(action))
+	if run := a.prepareMenuAction(action); run != nil {
+		run()
 	}
 }
-func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
+
+func (a *linuxTrayApplication) dispatchMenuEvent(action string) {
+	if run := a.prepareMenuAction(action); run != nil {
+		go run()
+	}
+}
+
+// Reserve or clear the ticket before acknowledging the menu event. Only the
+// slow CLI and terminal work runs asynchronously for D-Bus callers.
+func (a *linuxTrayApplication) prepareMenuAction(action string) func() {
+	switch action {
+	case "pair-tailcat", "pair-tailscale", "pair-lan":
+		return a.prepareMenuPair(action)
+	case "quit":
+		a.clearMenuPair()
+		a.cancel()
+	case "refresh":
+		return func() { a.refresh(true) }
+	case "copy-pair-link", "copy":
+		a.update(a.copyPairLinkLocked)
+	case "copy-endpoint":
+		return a.copyEndpoint
+	case "leave-pair-page":
+		a.clearMenuPair()
+	case "menu-closed":
+		a.closeMenuPair()
+	default:
+		a.clearMenuPair()
+		return func() { a.showTerminal(action) }
+	}
+	return nil
+}
+
+func (a *linuxTrayApplication) copyEndpoint() {
+	endpoint := strings.TrimSpace(a.snapshot().Status.Endpoint)
 	if endpoint == "" {
-		return errors.New("连接地址尚不可用")
+		a.update(func(s *linuxTraySnapshot) {
+			s.UIError = "连接地址尚不可用，请刷新状态后重试"
+		})
+		return
+	}
+	copyFn := a.clipboardCopy
+	if copyFn == nil {
+		copyFn = copyLinuxClipboardText
+	}
+	if err := copyFn(a.ctx, endpoint); err != nil {
+		// Stay in the tray so the user can retry without opening a terminal.
+		a.update(func(s *linuxTraySnapshot) {
+			s.UIError = "无法复制连接地址，请检查剪贴板工具后重试"
+		})
+		return
+	}
+	a.update(func(s *linuxTraySnapshot) {
+		s.UIError = ""
+	})
+}
+
+func copyLinuxClipboardText(ctx context.Context, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return errors.New("没有可复制的内容")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -193,12 +245,15 @@ func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
 	} else if os.Getenv("DISPLAY") != "" {
 		if path, err := exec.LookPath("xclip"); err == nil {
 			cmd = exec.CommandContext(ctx, path, "-selection", "clipboard")
+		} else if path, err := exec.LookPath("xsel"); err == nil {
+			cmd = exec.CommandContext(ctx, path, "--clipboard", "--input")
 		}
 	}
 	if cmd == nil {
-		return errors.New("请在终端中复制连接地址")
+		return errors.New("未找到剪贴板工具（wl-copy / xclip / xsel）")
 	}
-	cmd.Stdin = strings.NewReader(endpoint)
+	// Pass content exclusively via stdin so short-lived tickets never appear in argv.
+	cmd.Stdin = strings.NewReader(text)
 	cmd.WaitDelay = time.Second
 	return cmd.Run()
 }
@@ -228,7 +283,6 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 	}
 	allowed := false
 	state := a.snapshot()
-	state.PairMenu = nil // A visible collapse button is not permission to create a ticket.
 	for _, item := range flattenLinuxMenu(linuxMenuItems(state)) {
 		if item.Action == action && item.Enabled {
 			allowed = true
@@ -267,9 +321,13 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 }
 
 func (a *linuxTrayApplication) showTerminal(action string) {
+	if a.terminalOpener != nil {
+		a.terminalOpener(action)
+		return
+	}
 	if err := launchLinuxTerminal(a.controller.agentPath, action); err != nil {
-		a.update(func(s *linuxTraySnapshot) { s.UIError = err.Error() })
-		fmt.Fprintln(os.Stderr, err)
+		a.update(func(s *linuxTraySnapshot) { s.UIError = redactTrayText(err.Error()) })
+		fmt.Fprintln(os.Stderr, redactTrayText(err.Error()))
 	} else {
 		a.update(func(s *linuxTraySnapshot) { s.UIError = "" })
 	}

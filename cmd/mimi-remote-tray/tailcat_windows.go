@@ -270,13 +270,17 @@ func (a *trayApplication) setTailcatForPairing(window uintptr) {
 }
 
 func (a *trayApplication) requestTailcatPairing() {
+	if a.firstSetupRequired() {
+		a.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))
+		return
+	}
 	status, has, err := a.tailcatSnapshot()
 	if !has || err != nil || !status.ready() {
 		a.showError(errors.New("Tailcat 尚未运行，请先在控制面板或托盘菜单中开启 Tailcat"))
 		return
 	}
 	a.mu.RLock()
-	ready := a.status.ServiceOK
+	ready := a.statusErr == nil && a.status.ServiceOK
 	a.mu.RUnlock()
 	if !ready {
 		a.showError(errors.New("服务尚未就绪，请先启动服务并等待状态变为“运行正常”"))
