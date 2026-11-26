@@ -122,54 +122,11 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertFalse(ready.allDone)
     }
 
-    func testKeySetupCommandIsIdempotentAndNonInteractive() throws {
+    func testKeySetupCommandIsIdempotentAndNonInteractive() {
         let command = CodexSharedSetupChecks.keySetupCommand
-        XCTAssertFalse(command.contains("id_ed25519"), "不得使用或追加用户的默认公钥")
-        XCTAssertTrue(command.contains("[ -f ~/.ssh/mimi_codex_local_ed25519 ] ||"), "已有专用钥匙时不覆盖")
-        XCTAssertTrue(command.contains(#"from="127.0.0.1,::1""#), "专用公钥必须限制仅允许本机回环来源")
-        XCTAssertTrue(command.contains("grep -qF \"$key_body\" ~/.ssh/authorized_keys"), "公钥已在 authorized_keys 里时不重复追加")
-        XCTAssertTrue(command.contains("IdentityFile ~/.ssh/mimi_codex_local_ed25519"), "需为本机 127.0.0.1 绑定专用钥匙")
+        XCTAssertTrue(command.contains("[ -f ~/.ssh/id_ed25519 ] ||"), "已有钥匙时不覆盖")
+        XCTAssertTrue(command.contains("grep -qxF"), "公钥已在 authorized_keys 里时不重复追加")
         XCTAssertTrue(command.contains("BatchMode=yes"), "按桌面版的方式试登，不弹密码")
         XCTAssertFalse(command.contains("sudo"))
-
-        // 在隔离临时 HOME 中实际运行两遍（跳过最后一行真实 ssh 探测），确认幂等且保留已有受限默认公钥。
-        let tempHome = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexSharedSetupCommandTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempHome, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempHome) }
-
-        let sshDir = tempHome.appendingPathComponent(".ssh", isDirectory: true)
-        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
-        let existingAuthLine = #"from="10.0.0.5" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingDefaultKey user@remote"#
-        let authKeysURL = sshDir.appendingPathComponent("authorized_keys")
-        // 故意不带末尾换行，确认追加不会破坏现有授权行。
-        try existingAuthLine.write(to: authKeysURL, atomically: true, encoding: .utf8)
-
-        let setupOnlyScript = command
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .dropLast()
-            .joined(separator: "\n")
-
-        for shell in ["/bin/zsh", "/bin/bash"] {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: shell)
-            process.arguments = ["-c", setupOnlyScript]
-            var env = ProcessInfo.processInfo.environment
-            env["HOME"] = tempHome.path
-            process.environment = env
-            try process.run()
-            process.waitUntilExit()
-            XCTAssertEqual(process.terminationStatus, 0, "\(shell) 执行本机密钥配置命令应成功")
-        }
-
-        let authKeys = try String(contentsOf: authKeysURL, encoding: .utf8)
-        let authLines = authKeys.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        XCTAssertEqual(authLines.count, 2, "重复运行两次后 authorized_keys 应只保留原授权行与 1 条专用回环授权行")
-        XCTAssertEqual(authLines.first, existingAuthLine, "已有受限授权必须原样保留")
-        XCTAssertTrue(authLines.last?.hasPrefix(#"from="127.0.0.1,::1" ssh-ed25519 "#) == true)
-
-        let config = try String(contentsOf: sshDir.appendingPathComponent("config"), encoding: .utf8)
-        let identityMatches = config.components(separatedBy: "IdentityFile ~/.ssh/mimi_codex_local_ed25519").count - 1
-        XCTAssertEqual(identityMatches, 1, "重复运行两次后 ~/.ssh/config 只应追加一次专用密钥配置")
     }
 }

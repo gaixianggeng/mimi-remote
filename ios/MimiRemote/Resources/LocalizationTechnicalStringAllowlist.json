@@ -405,8 +405,8 @@
     },
     {
       "key": "ui.writer_conflict_shared_guide_mac_body",
-      "value": "复制命令",
-      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 2 button label (CodexSharedSetupView.swift)."
+      "value": "允许本机免密登录",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 2 heading label (CodexSharedSetupView.swift)."
     },
     {
       "key": "ui.writer_conflict_shared_guide_mac_body",

@@ -37,15 +37,12 @@ struct CodexSharedSetupStatus: Equatable, Sendable {
 enum CodexSharedSetupChecks {
     static let sharingSettingsURL = URL(string: "x-apple.systempreferences:com.apple.Sharing-Settings.extension")!
 
-    /// 生成仅限本机回环（127.0.0.1 / ::1）使用的专用登录钥匙，不改动默认公钥或已有授权；
-    /// 重复运行只追加一次；最后试登一次并记下本机的主机指纹。
+    /// 生成本机登录钥匙并允许自己登录自己。只追加一行公钥，已有就跳过；最后试登一次并记下本机的主机指纹。
     static let keySetupCommand = """
     mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    [ -f ~/.ssh/mimi_codex_local_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -C mimi-codex-local -f ~/.ssh/mimi_codex_local_ed25519
-    touch ~/.ssh/authorized_keys ~/.ssh/config && chmod 600 ~/.ssh/authorized_keys ~/.ssh/config
-    key_body="$(awk '{print $1" "$2}' ~/.ssh/mimi_codex_local_ed25519.pub)"
-    grep -qF "$key_body" ~/.ssh/authorized_keys || printf '\\nfrom="127.0.0.1,::1" %s\\n' "$(cat ~/.ssh/mimi_codex_local_ed25519.pub)" >> ~/.ssh/authorized_keys
-    grep -qF "IdentityFile ~/.ssh/mimi_codex_local_ed25519" ~/.ssh/config || printf '\\nHost 127.0.0.1\\n  IdentityFile ~/.ssh/mimi_codex_local_ed25519\\n' >> ~/.ssh/config
+    [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+    touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+    grep -qxF "$(cat ~/.ssh/id_ed25519.pub)" ~/.ssh/authorized_keys || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
     ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new 127.0.0.1 true && echo "完成"
     """
 

@@ -224,7 +224,7 @@ final class LocalizationTests: XCTestCase {
             "让 Codex 桌面版和手机同时使用…",
             "打开共享设置",
             "远程登录",
-            "复制命令",
+            "允许本机免密登录",
             "打开 Codex 桌面版",
             "设置 → 连接",
             "来自这台 Mac 的 SSH 连接",
@@ -257,16 +257,13 @@ final class LocalizationTests: XCTestCase {
             }
             XCTAssertFalse(macGuide.contains("ssh-keygen"))
             XCTAssertFalse(macGuide.contains("authorized_keys"))
-            XCTAssertTrue(
-                macGuide.contains("127.0.0.1 / ::1"),
-                "Mac 引导 [\(language.rawValue)] 应说明仅限本机回环的专用密钥范围"
-            )
+            XCTAssertFalse(macGuide.contains("~/.ssh"))
+            XCTAssertFalse(macGuide.contains("mimi_codex_local_ed25519"))
+            XCTAssertFalse(macGuide.contains("复制命令"))
         }
         let macGuideZh = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .simplifiedChinese)
-        XCTAssertTrue(macGuideZh.contains("只追加一次"))
         XCTAssertTrue(macGuideZh.contains("退出占锁的 Codex 进程"))
         let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
-        XCTAssertTrue(macGuideEn.contains("dedicated loopback-only"))
         XCTAssertTrue(macGuideEn.contains("quit the lock-holding Codex process"))
 
         let nonMacGuideZh = L10n.text("ui.writer_conflict_shared_guide_non_mac_body", language: .simplifiedChinese)

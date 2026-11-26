@@ -579,8 +579,10 @@ final class WriterConflictForkStoreTests: XCTestCase {
         XCTAssertEqual(appleSections.map(\.id), ["why", "mac", "now"])
         XCTAssertTrue(appleSections[1].body.contains("让 Codex 桌面版和手机同时使用…"))
         XCTAssertTrue(appleSections[1].body.contains("打开 Codex 桌面版"))
-        XCTAssertTrue(appleSections[1].body.contains("127.0.0.1 / ::1"))
+        XCTAssertTrue(appleSections[1].body.contains("允许本机免密登录"))
         XCTAssertTrue(appleSections[1].body.contains("退出占锁的 Codex 进程"))
+        XCTAssertFalse(appleSections[1].body.contains("~/.ssh"))
+        XCTAssertFalse(appleSections[1].body.contains("复制命令"))
         XCTAssertFalse(appleSections[1].body.contains("一键配置本机 SSH"))
 
         for nonMac in [HostPlatform.windows, .linux] {

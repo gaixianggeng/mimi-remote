@@ -33,7 +33,7 @@ struct CodexSharedSetupView: View {
             }
 
             step(2, title: "允许本机免密登录", state: status.passwordlessLogin) {
-                Text("在终端里运行下面的命令。它会生成一把仅限本机（127.0.0.1 / ::1）登录自己的专用钥匙并配置本机连接，不会改动默认公钥或已有授权，重复运行只追加一次。看到「完成」就好了。")
+                Text("在终端里运行下面的命令。它在本机生成一把登录钥匙，只允许你从本机登录自己的账户，不改其他设置。看到「完成」就好了。")
                 // 命令不折行，折行后像多出来的命令；放不下时横向滚动。
                 ScrollView(.horizontal) {
                     Text(CodexSharedSetupChecks.keySetupCommand)

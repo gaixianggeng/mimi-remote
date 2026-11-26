@@ -52731,18 +52731,18 @@
       }
     },
     "ui.writer_conflict_shared_guide_mac_body": {
-      "comment": "Explains the one-time Mac setup using verbatim Chinese UI labels that currently exist on main in Mimi Remote Mac (MenuBarContentView, SessionsWindowView, CodexSharedSetupView), without referencing PR #1115 entries; notes dedicated loopback-only key preservation and quitting any lock-holding local Codex process before reopening over SSH.",
+      "comment": "Explains the one-time Mac setup using verbatim Chinese UI labels that currently exist on main in Mimi Remote Mac (MenuBarContentView, SessionsWindowView, CodexSharedSetupView), without referencing PR #1115 entries or prescribing ~/.ssh commands; notes quitting any lock-holding local Codex process before reopening over SSH.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mac only (note: Mimi Remote Mac’s UI is currently in Chinese): open Mimi Remote Mac from the menu bar and choose “会话…” (Sessions). In the “会话” window, right-click any Codex session (or open its “打开” menu) and choose “让 Codex 桌面版和手机同时使用…”, then finish the one-time 3-step setup: Step 1, click “打开共享设置” and turn on Remote Login (“远程登录”); Step 2, click “复制命令” and run the copied command in Terminal on your Mac to set up a dedicated loopback-only (127.0.0.1 / ::1) SSH key for local passwordless login without modifying your default key or existing SSH authorizations (idempotent, appends once); Step 3, click “打开 Codex 桌面版”, go to Settings → Connections (“设置 → 连接”), add an SSH connection to this Mac (“来自这台 Mac 的 SSH 连接” → “添加”) with hostname 127.0.0.1 (display name e.g. “本机”), save, and wait for it to connect. If that menu item isn’t shown, follow Step 3 directly in Codex Desktop to verify or add the 127.0.0.1 local SSH host. Once connected, if a local Codex process is still holding this chat’s write lock, let the current task finish and quit the lock-holding Codex process first, then reopen the project and chat in Codex Desktop through that local SSH connection to share it live with your phone."
+            "value": "Mac only (note: Mimi Remote Mac’s UI is currently in Chinese): open Mimi Remote Mac from the menu bar and choose “会话…” (Sessions). In the “会话” window, right-click any Codex session (or open its “打开” menu) and choose “让 Codex 桌面版和手机同时使用…”, then follow the on-screen 3-step setup: turn on Remote Login (“远程登录” via “打开共享设置”), complete local passwordless SSH (“允许本机免密登录”), and click “打开 Codex 桌面版” to go to Settings → Connections (“设置 → 连接”), add an SSH connection to this Mac (“来自这台 Mac 的 SSH 连接” → “添加”) with hostname 127.0.0.1 (display name e.g. “本机”), save, and wait for it to connect. If that menu item isn’t shown, verify or add the 127.0.0.1 local SSH host directly in Codex Desktop. Once connected, if a local Codex process is still holding this chat’s write lock, let the current task finish and quit the lock-holding Codex process first, then reopen the project and chat in Codex Desktop through that local SSH connection to share it live with your phone."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅支持 Mac：在 Mac 菜单栏打开 Mimi Remote Mac，点「会话…」。在「会话」窗口右键任意一条 Codex 会话（或展开行尾「打开」菜单），选「让 Codex 桌面版和手机同时使用…」，按 3 步完成一次配置：第 1 步点「打开共享设置」开启「远程登录」；第 2 步点「复制命令」并在 Mac 终端运行，以生成仅限本机回环（127.0.0.1 / ::1）的专用密钥并允许本机免密登录（不改动默认密钥，保留已有 SSH 授权，重复运行只追加一次）；第 3 步点「打开 Codex 桌面版」，进入「设置 → 连接」，在「来自这台 Mac 的 SSH 连接」旁点「添加」，主机名填 127.0.0.1（显示名称填「本机」），保存后等待连上。若菜单未显示该项，也可直接按第 3 步在 Codex 桌面版核对或添加 127.0.0.1 本机 SSH 连接。配置完成后，若当前会话仍被本地 Codex 占用，请先等当前任务完成并退出占锁的 Codex 进程（例如完全退出默认本地模式的 Codex 桌面版或结束对应终端 / 后台进程），再在 Codex 桌面版通过该本机 SSH 连接重新打开项目与同一条会话，即可与手机实时共享。"
+            "value": "仅支持 Mac：在 Mac 菜单栏打开 Mimi Remote Mac，点「会话…」。在「会话」窗口右键任意一条 Codex 会话（或展开行尾「打开」菜单），选「让 Codex 桌面版和手机同时使用…」，按页面 3 步指引完成一次配置：点「打开共享设置」开启「远程登录」、完成「允许本机免密登录」，再点「打开 Codex 桌面版」，进入「设置 → 连接」，在「来自这台 Mac 的 SSH 连接」旁点「添加」，主机名填 127.0.0.1（显示名称填「本机」），保存后等待连上。若菜单未显示该项，也可直接在 Codex 桌面版核对或添加 127.0.0.1 本机 SSH 连接。配置完成后，若当前会话仍被本地 Codex 占用，请先等当前任务完成并退出占锁的 Codex 进程（例如完全退出默认本地模式的 Codex 桌面版或结束对应终端 / 后台进程），再在 Codex 桌面版通过该本机 SSH 连接重新打开项目与同一条会话，即可与手机实时共享。"
           }
         }
       }
