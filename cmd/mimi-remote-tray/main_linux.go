@@ -19,14 +19,19 @@ import (
 )
 
 type linuxTrayApplication struct {
-	ctx        context.Context
-	controller *linuxController
-	notifier   *linuxNotifier
-	mu         sync.Mutex
-	state      linuxTraySnapshot
-	operation  chan struct{}
-	cancel     context.CancelFunc
-	pairTimer  *time.Timer
+	ctx              context.Context
+	controller       *linuxController
+	notifier         *linuxNotifier
+	mu               sync.Mutex
+	state            linuxTraySnapshot
+	operation        chan struct{}
+	cancel           context.CancelFunc
+	pairTimer        *time.Timer
+	pairExpiryCancel context.CancelFunc
+	pairTickInterval time.Duration
+	pairVault        pairingLinkVault
+	clipboardCopy    func(context.Context, string) error
+	terminalOpener   func(string)
 }
 
 func main() {
@@ -141,7 +146,7 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 	status, err := a.controller.status(ctx, manual)
 	a.update(func(s *linuxTraySnapshot) {
 		if err != nil {
-			s.Error = redactTrayText(err.Error())
+			s.Error = redactTrayText(formatTrayUserError(err))
 			return
 		}
 		s.Status = status
@@ -153,7 +158,7 @@ func (a *linuxTrayApplication) readStatus(manual bool) error {
 		a.update(func(s *linuxTraySnapshot) {
 			s.TailcatError = ""
 			if tailcatErr != nil {
-				s.TailcatError = redactTrayText(tailcatErr.Error())
+				s.TailcatError = redactTrayText(formatTrayUserError(tailcatErr))
 				return
 			}
 			s.Tailcat, s.HasTailcat = tailcat, true
@@ -168,20 +173,90 @@ func (a *linuxTrayApplication) dispatch(action string) {
 	}
 	switch action {
 	case "quit":
+		a.clearMenuPair()
 		a.cancel()
 	case "refresh":
 		a.refresh(true)
-	case "copy":
-		if err := copyLinuxEndpoint(a.ctx, a.snapshot().Status.Endpoint); err != nil {
-			a.showTerminal("status")
-		}
+	case "copy-pair-link", "copy":
+		a.copyActivePairLink()
+	case "copy-endpoint":
+		a.copyEndpoint()
+	case "leave-pair-page":
+		a.clearMenuPair()
 	default:
+		// Leaving the inline pairing view for another page clears any active
+		// short-lived pairing ticket immediately.
+		a.clearMenuPair()
 		a.showTerminal(linuxTerminalPairAction(action))
 	}
 }
-func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
+
+func (a *linuxTrayApplication) copyActivePairLink() {
+	pairURL, ok := a.pairVault.RedeemableURL("")
+	if !ok {
+		a.update(func(s *linuxTraySnapshot) {
+			a.stopPairWatchersLocked()
+			s.HasPairLink = false
+			if s.PairMenu != nil {
+				s.PairMenu.CanCopyLink = false
+				if len(s.PairMenu.PNG) > 0 {
+					s.PairMenu = &linuxMenuPair{Action: s.PairMenu.Action, Error: "二维码已过期，请重新生成"}
+				}
+			}
+			s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
+		})
+		return
+	}
+	copyFn := a.clipboardCopy
+	if copyFn == nil {
+		copyFn = copyLinuxClipboardText
+	}
+	if err := copyFn(a.ctx, pairURL); err != nil {
+		// Stay in the tray and surface a safe retry hint; NEVER open a terminal
+		// and NEVER include the ticket URL in UIError, D-Bus, or logs.
+		a.update(func(s *linuxTraySnapshot) {
+			s.UIError = "无法复制配对链接，请检查剪贴板工具后重试"
+		})
+		return
+	}
+	a.update(func(s *linuxTraySnapshot) {
+		s.UIError = ""
+		if s.PairMenu != nil {
+			s.PairMenu.Copied = true
+		}
+	})
+}
+
+func (a *linuxTrayApplication) copyEndpoint() {
+	endpoint := strings.TrimSpace(a.snapshot().Status.Endpoint)
 	if endpoint == "" {
-		return errors.New("连接地址尚不可用")
+		a.update(func(s *linuxTraySnapshot) {
+			s.UIError = "连接地址尚不可用，请刷新状态后重试"
+		})
+		return
+	}
+	copyFn := a.clipboardCopy
+	if copyFn == nil {
+		copyFn = copyLinuxClipboardText
+	}
+	if err := copyFn(a.ctx, endpoint); err != nil {
+		// Stay in the tray so the user can retry without opening a terminal.
+		a.update(func(s *linuxTraySnapshot) {
+			s.UIError = "无法复制连接地址，请检查剪贴板工具后重试"
+		})
+		return
+	}
+	a.update(func(s *linuxTraySnapshot) {
+		s.UIError = ""
+	})
+}
+
+func copyLinuxClipboardText(ctx context.Context, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return errors.New("没有可复制的内容")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -193,12 +268,15 @@ func copyLinuxEndpoint(ctx context.Context, endpoint string) error {
 	} else if os.Getenv("DISPLAY") != "" {
 		if path, err := exec.LookPath("xclip"); err == nil {
 			cmd = exec.CommandContext(ctx, path, "-selection", "clipboard")
+		} else if path, err := exec.LookPath("xsel"); err == nil {
+			cmd = exec.CommandContext(ctx, path, "--clipboard", "--input")
 		}
 	}
 	if cmd == nil {
-		return errors.New("请在终端中复制连接地址")
+		return errors.New("未找到剪贴板工具（wl-copy / xclip / xsel）")
 	}
-	cmd.Stdin = strings.NewReader(endpoint)
+	// Pass content exclusively via stdin so short-lived tickets never appear in argv.
+	cmd.Stdin = strings.NewReader(text)
 	cmd.WaitDelay = time.Second
 	return cmd.Run()
 }
@@ -267,9 +345,13 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 }
 
 func (a *linuxTrayApplication) showTerminal(action string) {
+	if a.terminalOpener != nil {
+		a.terminalOpener(action)
+		return
+	}
 	if err := launchLinuxTerminal(a.controller.agentPath, action); err != nil {
-		a.update(func(s *linuxTraySnapshot) { s.UIError = err.Error() })
-		fmt.Fprintln(os.Stderr, err)
+		a.update(func(s *linuxTraySnapshot) { s.UIError = redactTrayText(err.Error()) })
+		fmt.Fprintln(os.Stderr, redactTrayText(err.Error()))
 	} else {
 		a.update(func(s *linuxTraySnapshot) { s.UIError = "" })
 	}

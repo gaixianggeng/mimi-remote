@@ -209,3 +209,37 @@ func TestLinuxFailedActionsOnlyDisplayTheLocalizedError(t *testing.T) {
 		t.Fatal("legacy read-only doctor report lost")
 	}
 }
+
+func TestLinuxCopyFailureNeverOpensTerminalOrCopiesEndpointAsPairLink(t *testing.T) {
+	state := readyLinuxSnapshot()
+	var copied []string
+	terminalOpens := 0
+	app := &linuxTrayApplication{
+		ctx:       context.Background(),
+		state:     state,
+		operation: make(chan struct{}, 1),
+		clipboardCopy: func(_ context.Context, value string) error {
+			copied = append(copied, value)
+			return fmt.Errorf("clipboard failed")
+		},
+		terminalOpener: func(string) {
+			terminalOpens++
+		},
+	}
+
+	app.dispatch("copy")
+	app.dispatch("copy-pair-link")
+	if len(copied) != 0 {
+		t.Fatalf("copy-pair-link must never fall back to Status.Endpoint: %v", copied)
+	}
+	app.dispatch("copy-endpoint")
+	if len(copied) != 1 || copied[0] != state.Status.Endpoint {
+		t.Fatalf("copy-endpoint got %v, want [%s]", copied, state.Status.Endpoint)
+	}
+	if terminalOpens != 0 {
+		t.Fatalf("copy failure accidentally opened terminal %d times", terminalOpens)
+	}
+	if app.snapshot().UIError == "" {
+		t.Fatal("copy failure must surface a retryable UIError in tray")
+	}
+}

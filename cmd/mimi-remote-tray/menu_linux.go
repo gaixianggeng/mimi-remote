@@ -32,6 +32,7 @@ type linuxTraySnapshot struct {
 	TailcatError string
 	UIError      string
 	InlineQR     bool
+	HasPairLink  bool
 	PairMenu     *linuxMenuPair
 }
 
@@ -59,7 +60,7 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 				if !runtime.Enabled {
 					continue
 				}
-				items = append(items, linuxMenuItem{ID: int32(20 + i), Label: fmt.Sprintf("%s · %s", runtime.Title, linuxRuntimeLabel(runtime.State))})
+				items = append(items, linuxMenuItem{ID: int32(20 + i), Label: fmt.Sprintf("%s · %s", trayAssistantTitle(runtime.ID, runtime.Title), linuxRuntimeLabel(runtime.State))})
 			}
 			if s.Status.RuntimeStatus.Stale || s.Status.RuntimeStatus.Refreshing {
 				items = append(items, linuxMenuItem{ID: 7, Label: "Runtime 状态正在刷新或已过期"})
@@ -73,10 +74,12 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 90, Separator: true},
 		linuxMenuItem{ID: 100, Label: "在终端中打开", Action: "status", Enabled: true},
 		linuxMenuItem{ID: 101, Label: "刷新状态", Action: "refresh", Enabled: available},
-		linuxMenuItem{ID: 102, Label: "Tailcat 配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
+		// D2 channel ordering: Tailscale > Built-in connection (Tailcat) > Same LAN.
 		linuxMenuItem{ID: 110, Label: "Tailscale 配对…", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
-		linuxMenuItem{ID: 111, Label: "局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
-		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy", Enabled: s.HasStatus && s.Status.Endpoint != ""},
+		linuxMenuItem{ID: 102, Label: "内置连接（Tailcat）配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
+		linuxMenuItem{ID: 111, Label: "同一局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
+		linuxMenuItem{ID: 119, Label: "复制配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink},
+		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy-endpoint", Enabled: s.HasStatus && s.Status.Endpoint != ""},
 		linuxMenuItem{ID: 91, Separator: true},
 		linuxMenuItem{ID: 112, Label: "服务管理", Enabled: true, Children: []linuxMenuItem{
 			{ID: 106, Label: "启动服务…", Action: "start", Enabled: fresh && !s.Status.ProcessOK},
@@ -98,10 +101,17 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 	if s.InlineQR {
 		items = linuxPairMenuItems(items, s)
 	}
+	redactLinuxMenuItems(items)
+	return items
+}
+
+func redactLinuxMenuItems(items []linuxMenuItem) {
 	for i := range items {
 		items[i].Label = truncateUTF16Text(redactTrayText(items[i].Label), 150)
+		if len(items[i].Children) > 0 {
+			redactLinuxMenuItems(items[i].Children)
+		}
 	}
-	return items
 }
 
 func (s linuxTraySnapshot) tailcatTitle() string {
@@ -124,12 +134,22 @@ func linuxRuntimeLabel(state string) string {
 	switch state {
 	case "connected", "ready":
 		return "已连接"
+	case "available":
+		return "运行时可用"
+	case "signed_out":
+		return "未登录"
+	case "unavailable":
+		return "不可用"
 	case "disconnected":
 		return "未连接"
 	case "connecting":
 		return "连接中"
+	case "disabled":
+		return "未启用"
+	case "unsupported", "unsupported_platform":
+		return "此平台不支持"
 	}
-	return state
+	return "状态未知"
 }
 
 func flattenLinuxMenu(items []linuxMenuItem) []linuxMenuItem {

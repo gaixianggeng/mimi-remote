@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestControlPanelPresentationForReadyService(t *testing.T) {
@@ -218,9 +219,113 @@ func TestMakePairingMatrixBuildsDrawableQRCode(t *testing.T) {
 }
 
 func TestFormatPairingExpiryExplainsShortLifetime(t *testing.T) {
-	formatted := formatPairingExpiry("2026-08-09T18:00:00+08:00")
-	if !strings.Contains(formatted, "约 10 分钟") {
+	now := time.Date(2026, 8, 9, 17, 55, 30, 0, time.FixedZone("CST", 8*3600))
+	formatted := formatPairingExpiryAt("2026-08-09T18:00:00+08:00", now)
+	if !strings.Contains(formatted, "剩余 4 分 30 秒") || strings.Contains(formatted, "10 分钟") {
 		t.Fatalf("pairing expiry = %q", formatted)
+	}
+	if expired := formatPairingExpiryAt("2026-08-09T17:55:00+08:00", now); expired != "已过期" {
+		t.Fatalf("expired pairing expiry = %q, want 已过期", expired)
+	}
+}
+
+func TestControlPanelPresentationShowsAllFourAssistantsAndFirstSetupGate(t *testing.T) {
+	pending := false
+	confirmed := true
+	status := agentStatus{
+		Version:            "1.2.3",
+		ProcessOK:          true,
+		ServiceOK:          true,
+		DoctorOK:           true,
+		WorkspaceConfirmed: &pending,
+		RuntimeStatus: &runtimeStatus{Runtimes: []runtimeEntry{
+			{ID: "codex", Enabled: true, State: "ready"},
+			{ID: "claude", Enabled: true, State: "signed_out"},
+			{ID: "agy", Enabled: true, State: "unsupported_platform"},
+			{ID: "deepseek", Enabled: true, State: "available"},
+		}},
+	}
+	pPending := makeControlPanelPresentation(status, nil, false, false)
+	if pPending.CodexValue != "已连接" || pPending.ClaudeValue != "未登录" ||
+		pPending.AgyValue != "此平台不支持" || pPending.DeepSeekValue != "运行时可用" {
+		t.Fatalf("four assistants presentation = %+v", pPending)
+	}
+	if !pPending.FirstSetupVisible || !pPending.FirstSetupEnabled || pPending.PairEnabled {
+		t.Fatalf("pending workspace must show 完成首次设置… and disable pairing: %+v", pPending)
+	}
+
+	status.WorkspaceConfirmed = &confirmed
+	pConfirmed := makeControlPanelPresentation(status, nil, false, false)
+	if pConfirmed.FirstSetupVisible || pConfirmed.FirstSetupEnabled || !pConfirmed.PairEnabled {
+		t.Fatalf("confirmed workspace must hide 完成首次设置… and allow pairing: %+v", pConfirmed)
+	}
+
+	status.WorkspaceConfirmed = nil
+	pLegacy := makeControlPanelPresentation(status, nil, false, false)
+	if pLegacy.FirstSetupVisible || !pLegacy.PairEnabled {
+		t.Fatalf("omitted workspace_confirmed on valid legacy status must stay confirmed: %+v", pLegacy)
+	}
+
+	if panelActionLabel(panelPair) != "配对设备…" ||
+		panelActionLabel(panelPairCopy) != "复制配对链接" ||
+		panelActionLabel(panelFirstSetup) != "完成首次设置…" {
+		t.Fatal("unified Windows control panel action labels drifted")
+	}
+}
+
+func TestControlPanelTypedErrorAndPairingVaultFakeClipboard(t *testing.T) {
+	typedErr := &onboardingCLIError{
+		Diagnostic: onboardingResolvedDiagnostic{
+			Code:    "no_enabled_assistant",
+			Step:    "assistant_any",
+			Message: "尚未启用任何可用的 AI 助手，请至少启用一个助手后重试。",
+			Trusted: true,
+		},
+	}
+	summary := compactControlPanelError(typedErr)
+	if !strings.Contains(summary, "尚未启用任何可用的 AI 助手") {
+		t.Fatalf("typed error lost localized message: %q", summary)
+	}
+
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	var copied []string
+	panel := &controlPanel{
+		pairingView:    true,
+		pairingNetwork: "tailscale",
+		pairingVault:   pairingLinkVault{now: func() time.Time { return now }},
+		clipboardCopy: func(_ uintptr, value string) error {
+			copied = append(copied, value)
+			return nil
+		},
+	}
+	if err := panel.copyActivePairingLink(); err == nil || len(copied) != 0 {
+		t.Fatal("copy succeeded before pairing ticket was issued")
+	}
+
+	url1 := "mimiremote://pair?endpoint=http%3A%2F%2F100.64.0.1%3A8787&pair_sig=win-ticket-1"
+	gen := panel.pairingVault.Begin("tailscale")
+	panel.pairingGen = gen
+	if !panel.pairingVault.Store(gen, "tailscale", url1, now.Add(2*time.Minute)) {
+		t.Fatal("failed to store Windows pairing link")
+	}
+	panel.pairingInfo = pairingInfo{Endpoint: "http://100.64.0.1:8787", PairExpiresAt: now.Add(2 * time.Minute).Format(time.RFC3339)}
+	if err := panel.copyActivePairingLink(); err != nil || len(copied) != 1 || copied[0] != url1 {
+		t.Fatalf("fake clipboard got %v, err=%v", copied, err)
+	}
+
+	// Expiry tick wipes the link so it is no longer copyable.
+	now = now.Add(3 * time.Minute)
+	panel.handlePairingTick()
+	if err := panel.copyActivePairingLink(); err == nil || len(copied) != 1 {
+		t.Fatalf("expired link remained copyable: err=%v copied=%v", err, copied)
+	}
+
+	// Leaving pairing view clears the link.
+	gen2 := panel.pairingVault.Begin("tailscale")
+	panel.pairingVault.Store(gen2, "tailscale", url1, now.Add(2*time.Minute))
+	panel.showDashboardView()
+	if err := panel.copyActivePairingLink(); err == nil || len(copied) != 1 {
+		t.Fatalf("link remained copyable after leaving pairing view: err=%v copied=%v", err, copied)
 	}
 }
 

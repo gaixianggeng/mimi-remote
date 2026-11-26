@@ -1,6 +1,9 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -118,5 +121,104 @@ func TestAgentStatusStoppedDetailsUsesSanitizedError(t *testing.T) {
 	if status.lifecycleTitle() != "服务已停止" ||
 		!strings.Contains(status.details(), "connection refused") {
 		t.Fatalf("unexpected stopped presentation: %s", status.details())
+	}
+}
+
+func TestParseAgentStatusWorkspaceConfirmedAndAbsenceHandling(t *testing.T) {
+	pending, err := parseAgentStatus([]byte(`{
+		"version":"1.2.3",
+		"process_ok":true,
+		"service_ok":true,
+		"doctor_ok":true,
+		"workspace_confirmed":false
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending.workspacePendingConfirmation() || pending.workspaceConfirmedKnownTrue() {
+		t.Fatalf("pending status misclassified: %+v", pending)
+	}
+	if !needsFirstSetup(pending, nil, false) {
+		t.Fatal("workspace_confirmed=false must require first setup")
+	}
+	if !strings.Contains(pending.details(), "待确认") {
+		t.Fatalf("pending details missing confirmation hint: %s", pending.details())
+	}
+
+	confirmed, err := parseAgentStatus([]byte(`{
+		"version":"1.2.3",
+		"process_ok":true,
+		"service_ok":true,
+		"doctor_ok":true,
+		"workspace_confirmed":true
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmed.workspacePendingConfirmation() || !confirmed.workspaceConfirmedKnownTrue() {
+		t.Fatalf("confirmed status misclassified: %+v", confirmed)
+	}
+	if needsFirstSetup(confirmed, errors.New("transient"), true) {
+		t.Fatal("confirmed workspace must NEVER trigger first setup")
+	}
+
+	fixtureBytes, err := os.ReadFile(filepath.Join("..", "..", "contracts", "host-cli", "status-ready.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := parseAgentStatus(fixtureBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.WorkspaceConfirmed != nil {
+		t.Fatalf("expected omitted workspace_confirmed in status-ready.json, got %v", *legacy.WorkspaceConfirmed)
+	}
+	if needsFirstSetup(legacy, nil, true) {
+		t.Fatal("omitted workspace_confirmed on valid legacy status must be handled safely without forcing first setup")
+	}
+
+	configMissingErr := &onboardingCLIError{
+		Diagnostic: onboardingResolvedDiagnostic{
+			Code:    "config_missing",
+			Step:    "config_store",
+			Message: "尚未保存首次设置。",
+			Trusted: true,
+		},
+	}
+	if !needsFirstSetup(agentStatus{}, configMissingErr, false) {
+		t.Fatal("unconfigured config_missing error must trigger first setup")
+	}
+	if !needsFirstSetup(agentStatus{}, errors.New("status failed"), true) {
+		t.Fatal("unconfigured preflightPending must trigger first setup")
+	}
+	if needsFirstSetup(agentStatus{}, errors.New("temporary timeout"), false) {
+		t.Fatal("unknown transient status error without unconfigured evidence must not trigger first setup")
+	}
+}
+
+func TestFormatTrayUserErrorUsesTypedCopyAndScrubsSecrets(t *testing.T) {
+	recoveryFix := onboardingFix{Kind: "open_settings", Target: "host_recovery"}
+	typed := &onboardingCLIError{
+		Diagnostic: onboardingResolvedDiagnostic{
+			Code:         "config_invalid",
+			Step:         "config_store",
+			Message:      "配置文件格式损坏，已保留原文件。",
+			AllowedFix:   &recoveryFix,
+			ConfigPath:   "~/.config/mimi-remote/config.json",
+			RecoveryPath: "~/.config/mimi-remote/config.json.bak",
+			Trusted:      true,
+		},
+	}
+	got := formatTrayUserError(typed)
+	if !strings.Contains(got, "配置文件格式损坏") || !strings.Contains(got, "config.json.bak") {
+		t.Fatalf("typed error lost recovery context: %q", got)
+	}
+
+	leaky := errors.New("raw stderr: mimiremote://pair?pair_sig=secret123 Bearer tok_9876543210abcdef /Users/alice/private/config.json")
+	scrubbed := formatTrayUserError(leaky)
+	for _, secret := range []string{"secret123", "tok_9876543210abcdef", "/Users/alice", "mimiremote://"} {
+		if strings.Contains(scrubbed, secret) {
+			t.Fatalf("formatTrayUserError leaked %q in %q", secret, scrubbed)
+		}
 	}
 }

@@ -28,6 +28,9 @@ func TestMenuPairCommandIDIsStable(t *testing.T) {
 	if menuControlPanel != 110 {
 		t.Fatalf("menu control-panel command ID = %d, want 110", menuControlPanel)
 	}
+	if menuFirstSetup != 115 {
+		t.Fatalf("menu first-setup command ID = %d, want 115", menuFirstSetup)
+	}
 }
 
 func TestDoctorArgumentsOnlyRequestFixWhenSelected(t *testing.T) {

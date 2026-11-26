@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -23,8 +24,22 @@ import (
 const linuxServiceReadyWait = 60 * time.Second
 
 type linuxController struct {
-	agentPath string
-	runner    func(context.Context, ...string) ([]byte, error)
+	agentPath  string
+	runner     func(context.Context, ...string) ([]byte, error)
+	stateMu    sync.RWMutex
+	configured bool
+}
+
+func (c *linuxController) setConfigured(value bool) {
+	c.stateMu.Lock()
+	c.configured = value
+	c.stateMu.Unlock()
+}
+
+func (c *linuxController) isConfigured() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.configured
 }
 
 func newLinuxController(agentPath string) (*linuxController, error) {
@@ -84,7 +99,7 @@ func (c *linuxController) runWithProgress(
 		return nil, errors.New("agentd 输出过大，请使用本机诊断工具检查")
 	}
 	if err != nil {
-		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args), args...); cliErr != nil {
+		if cliErr := decodeTrayCommandError(stdout, stderr, err, trayValidationContextForArgs("linux", args, c.isConfigured()), args...); cliErr != nil {
 			return stdout, cliErr
 		}
 		return stdout, newTrayUnknownCommandError(err, trayActiveStepForArgs(args))
@@ -100,7 +115,11 @@ func (c *linuxController) preflight(
 	onProgress func(onboardingCheck),
 	extraArgs ...string,
 ) (onboardingPreflightReport, error) {
-	return runTrayPreflight(ctx, "linux", stage, progress, generation, onProgress, c.runWithProgress, extraArgs...)
+	report, err := runTrayPreflight(ctx, "linux", stage, progress, generation, onProgress, c.runWithProgress, extraArgs...)
+	if err == nil && report.Configured != nil {
+		c.setConfigured(*report.Configured)
+	}
+	return report, err
 }
 
 func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus, error) {
@@ -112,7 +131,12 @@ func (c *linuxController) status(ctx context.Context, refresh bool) (agentStatus
 	if err != nil {
 		return agentStatus{}, err
 	}
-	return parseAgentStatus(payload)
+	status, err := parseAgentStatus(payload)
+	if err != nil {
+		return agentStatus{}, err
+	}
+	c.setConfigured(true)
+	return status, nil
 }
 
 func (c *linuxController) action(ctx context.Context, action string) (string, error) {
@@ -196,7 +220,10 @@ func (c *linuxController) pairing(ctx context.Context, network string) (linuxPai
 		}
 	}
 	u, err := url.Parse(result.PairURL)
-	expires, dateErr := time.Parse(time.RFC3339, result.PairExpiresAt)
+	expires, dateErr := time.Parse(time.RFC3339Nano, result.PairExpiresAt)
+	if dateErr != nil {
+		expires, dateErr = time.Parse(time.RFC3339, result.PairExpiresAt)
+	}
 	if err != nil || u.Scheme != "mimiremote" || u.Host != "pair" ||
 		u.Query().Get("pair_sig") == "" || u.Query().Get("token") != "" ||
 		u.Query().Get("issued_at") == "" ||

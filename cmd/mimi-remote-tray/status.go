@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -9,18 +10,92 @@ import (
 )
 
 type agentStatus struct {
-	Version       string         `json:"version"`
-	ServerVersion string         `json:"server_version"`
-	Endpoint      string         `json:"endpoint"`
-	Projects      int            `json:"projects"`
-	ProcessOK     bool           `json:"process_ok"`
-	ServiceOK     bool           `json:"service_ok"`
-	DoctorOK      bool           `json:"doctor_ok"`
-	ProcessError  string         `json:"process_error"`
-	ServiceError  string         `json:"service_error"`
-	RuntimeStatus *runtimeStatus `json:"runtime_status"`
-	NetworkStatus *networkStatus `json:"network_status"`
-	ModuleStatus  *moduleStatus  `json:"module_status"`
+	Version            string         `json:"version"`
+	ServerVersion      string         `json:"server_version"`
+	Endpoint           string         `json:"endpoint"`
+	Projects           int            `json:"projects"`
+	ProcessOK          bool           `json:"process_ok"`
+	ServiceOK          bool           `json:"service_ok"`
+	DoctorOK           bool           `json:"doctor_ok"`
+	WorkspaceConfirmed *bool          `json:"workspace_confirmed,omitempty"`
+	ProcessError       string         `json:"process_error"`
+	ServiceError       string         `json:"service_error"`
+	RuntimeStatus      *runtimeStatus `json:"runtime_status"`
+	NetworkStatus      *networkStatus `json:"network_status"`
+	ModuleStatus       *moduleStatus  `json:"module_status"`
+}
+
+func (s agentStatus) workspacePendingConfirmation() bool {
+	return s.WorkspaceConfirmed != nil && !*s.WorkspaceConfirmed
+}
+
+func (s agentStatus) workspaceConfirmedKnownTrue() bool {
+	return s.WorkspaceConfirmed != nil && *s.WorkspaceConfirmed
+}
+
+func isFirstSetupError(err error) bool {
+	var cliErr *onboardingCLIError
+	if !errors.As(err, &cliErr) {
+		return false
+	}
+	return cliErr.Diagnostic.Code == "config_missing" ||
+		cliErr.Diagnostic.Code == "workspace_confirmation_required"
+}
+
+// needsFirstSetup reports whether the release tray should show the "完成首次设置…"
+// entry. A confirmed workspace (workspace_confirmed == true) NEVER shows it, and
+// omitting workspace_confirmed on a valid legacy status is handled safely as
+// already confirmed rather than forcing re-setup.
+func needsFirstSetup(status agentStatus, statusErr error, preflightPending bool) bool {
+	if status.workspaceConfirmedKnownTrue() {
+		return false
+	}
+	if status.workspacePendingConfirmation() {
+		return true
+	}
+	if status.Version != "" {
+		return false
+	}
+	if isFirstSetupError(statusErr) {
+		return true
+	}
+	return preflightPending
+}
+
+// formatTrayUserError renders typed onboarding CLI errors using their validated
+// localized copy and scrubs untyped errors so raw stderr, paths, and tokens
+// never leak into tray dialogs, panels, or D-Bus state.
+func formatTrayUserError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var cliErr *onboardingCLIError
+	if errors.As(err, &cliErr) {
+		message := strings.TrimSpace(cliErr.Diagnostic.Message)
+		if message == "" {
+			message = onboardingSafeFallbackCopy
+		}
+		if cliErr.Diagnostic.AllowedFix != nil &&
+			cliErr.Diagnostic.AllowedFix.Kind == "open_settings" &&
+			cliErr.Diagnostic.AllowedFix.Target == "host_recovery" {
+			var refs []string
+			if cliErr.Diagnostic.ConfigPath != "" {
+				refs = append(refs, "配置文件："+cliErr.Diagnostic.ConfigPath)
+			}
+			if cliErr.Diagnostic.RecoveryPath != "" {
+				refs = append(refs, "备份文件："+cliErr.Diagnostic.RecoveryPath)
+			}
+			if len(refs) > 0 {
+				message += "（" + strings.Join(refs, "，") + "）"
+			}
+		}
+		return message
+	}
+	sanitized := sanitizeTrayDiagnostic(err.Error(), 180)
+	if sanitized == "" {
+		return onboardingSafeFallbackCopy
+	}
+	return sanitized
 }
 
 // moduleStatus 来自正在运行的 agentd，只读取连接方式是否开启、是否可用。
@@ -117,6 +192,9 @@ func (s agentStatus) details() string {
 		"Endpoint：" + fallbackText(s.Endpoint, "尚不可用"),
 		fmt.Sprintf("项目：%d", s.Projects),
 		"agentd：" + fallbackText(firstNonEmpty(s.ServerVersion, s.Version), "未知"),
+	}
+	if s.workspacePendingConfirmation() {
+		lines = append(lines, "代码目录：待确认（请完成首次设置）")
 	}
 	if s.NetworkStatus != nil {
 		lines = append(lines, s.NetworkStatus.detailLines()...)
