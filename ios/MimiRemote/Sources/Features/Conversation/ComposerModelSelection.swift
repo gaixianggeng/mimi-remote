@@ -244,21 +244,22 @@ extension ComposerView {
         .help(ComposerTurnSettingsPolicy.unavailableMenuNotice)
     }
 
+    /// 与 `composerInputRow` / `phoneComposerCardBox` 一致：只有 iPhone 悬浮输入卡启用透明玻璃，
+    /// iPad 常规宽档与分屏窄档输入卡均使用实色底板。
+    var composerUsesFloatingGlassSurface: Bool {
+        usesNarrowComposerLayout && phoneKeyboardVisible != nil
+    }
+
     private var modelGridPickerPopoverContent: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let increasedContrast = colorSchemeContrast == .increased
-        let panelShape = RoundedRectangle(
-            cornerRadius: ModelReasoningGridMetrics.panelCornerRadius,
-            style: .continuous
-        )
-        return ModelReasoningGridPicker(
+        ModelReasoningGridPopoverHost(
             options: modelOptionsForMenu,
             layout: modelReasoningGridLayout,
             selection: selectedModelGridSelection,
             selectedModelID: composerState.turnOptions.model,
             isRefreshing: sessionStore.isRefreshingAppServerModels,
             selectedServiceTier: composerState.turnOptions.serviceTier,
-            surfaceMode: .presentationChrome,
+            presentingHorizontalSizeClass: horizontalSizeClass,
+            usesFloatingGlass: composerUsesFloatingGlassSurface,
             onSelectModel: { option, effort in
                 selectModel(option, effort: effort)
             },
@@ -272,29 +273,13 @@ extension ComposerView {
             },
             onRefresh: {
                 Task { await refreshModelOptionsForComposerRuntime(force: true) }
+            },
+            onAppearEnsureCatalog: {
+                await ensureModelOptionsForComposerRuntime()
             }
         )
-        // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
-        .task { await ensureModelOptionsForComposerRuntime() }
         .environmentObject(themeStore)
         .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
-        .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
-        // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
-        // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
-        // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
-        .presentationDetents(modelPickerPresentationDetents)
-        .presentationDragIndicator(.visible)
-        .presentationCornerRadius(ModelReasoningGridMetrics.panelCornerRadius)
-        .presentationBackground {
-            ModelReasoningGridPresentationBackground(
-                shape: panelShape,
-                tokens: tokens,
-                colorScheme: colorScheme,
-                reduceTransparency: reduceTransparency,
-                increasedContrast: increasedContrast
-            )
-            .environment(\.themeInterfaceStyle, themeStore.interfaceStyle)
-        }
     }
 
     /// 聚合刷新之后按当前会话的 Runtime 补齐目录：次要通道这次没进聚合目录（#778），或启动时
@@ -308,10 +293,10 @@ extension ComposerView {
     }
 
     var modelPickerPresentationDetents: Set<PresentationDetent> {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [.large]
-        }
-        return [.height(modelReasoningGridLayout.standardContentHeight)]
+        ModelReasoningGridPresentationChrome.presentationDetents(
+            layout: modelReasoningGridLayout,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
     }
 
     var effectiveModelID: String? {
@@ -663,5 +648,107 @@ extension ComposerView {
 
     func normalizedRuntimeProvider(_ rawValue: String?) -> String {
         CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
+    }
+}
+
+/// 模型切换面板的展示容器：按呈现时的尺寸档位和当前输入卡形态，分别为紧凑 Sheet 和常规 iPad Popover
+/// 配置共享表面与背景承载路径，避免常规 Popover 清除自身底色后依赖宿主决定材质。
+struct ModelReasoningGridPopoverHost: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.themeInterfaceStyle) private var interfaceStyle
+
+    let options: [CodexAppServerModelOption]
+    let layout: ModelReasoningGridLayout
+    let selection: ModelReasoningGridSelection
+    let selectedModelID: String?
+    let isRefreshing: Bool
+    let selectedServiceTier: String?
+    let presentingHorizontalSizeClass: UserInterfaceSizeClass?
+    let usesFloatingGlass: Bool
+    let onSelectModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
+    let onSelectDefaultModel: (CodexAppServerModelOption, CodexAppServerReasoningEffort?) -> Void
+    let onServiceTierChange: (String?) -> Void
+    let onRefresh: () -> Void
+    let onAppearEnsureCatalog: () async -> Void
+
+    private var presentationContainer: ModelReasoningGridPresentationContainer {
+        ModelReasoningGridPresentationContainer.resolve(
+            horizontalSizeClass: presentingHorizontalSizeClass,
+            verticalSizeClass: verticalSizeClass
+        )
+    }
+
+    private var surfaceMode: ModelReasoningGridSurfaceMode {
+        .presentation(
+            container: presentationContainer,
+            usesFloatingGlass: usesFloatingGlass
+        )
+    }
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let increasedContrast = colorSchemeContrast == .increased
+        let policy = ModelReasoningGridPresentationChrome.resolvePolicy(
+            surfaceMode: surfaceMode,
+            interfaceStyle: interfaceStyle,
+            reduceTransparency: reduceTransparency,
+            increasedContrast: increasedContrast
+        )
+        let picker = ModelReasoningGridPicker(
+            options: options,
+            layout: layout,
+            selection: selection,
+            selectedModelID: selectedModelID,
+            isRefreshing: isRefreshing,
+            selectedServiceTier: selectedServiceTier,
+            surfaceMode: surfaceMode,
+            onSelectModel: onSelectModel,
+            onSelectDefaultModel: onSelectDefaultModel,
+            onServiceTierChange: onServiceTierChange,
+            onRefresh: onRefresh
+        )
+        // 两个打开入口（按钮与布局交接）都经过这里；目录缺当前 Runtime 时打开即补齐。
+        .task { await onAppearEnsureCatalog() }
+        .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
+        // compact popover 转成 sheet 后，iOS 26 不会稳定采用 fitted 内容高度。
+        // 标准字号只保留与实际模型行数一致的 detent；辅助功能字号则使用
+        // large detent，并继续由 Picker 内部滚动，避免放大文字被裁切。
+        .presentationDetents(
+            ModelReasoningGridPresentationChrome.presentationDetents(
+                layout: layout,
+                isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+            )
+        )
+        .presentationDragIndicator(.visible)
+
+        if policy.backgroundOwner == .sheetPresentationBackground {
+            picker
+                .presentationCornerRadius(policy.cornerRadius)
+                .presentationBackground {
+                    ModelReasoningGridPresentationBackground(
+                        policy: policy,
+                        tokens: tokens,
+                        colorScheme: colorScheme,
+                        reduceTransparency: reduceTransparency,
+                        increasedContrast: increasedContrast
+                    )
+                    .environment(\.themeInterfaceStyle, interfaceStyle)
+                }
+        } else {
+            // 常规 iPad Popover：面板自身根视图已通过 `.popoverContentSurface` 绘制共享实色表面，
+            // 同时声明 `.presentationBackground` 让支持该修饰符的宿主把箭头底色一并对齐。
+            picker
+                .presentationBackground(
+                    ModelReasoningGridPresentationChrome.solidFillColor(
+                        tokens: tokens,
+                        colorScheme: colorScheme
+                    )
+                )
+        }
     }
 }
