@@ -105,7 +105,124 @@ final class SessionOpenTargetTests: XCTestCase {
             localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true)
         ))
 
-        XCTAssertEqual(CodexDesktopLink.sshSettingsURL.absoluteString, "codex://settings/ssh")
+        // R2 P1-6: 进程参数包含 -F / -o HostName / -o ProxyCommand / -o ProxyJump / -p 非22 / -l 非当前用户 覆盖时必须拒绝。
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 20 1914 /usr/bin/ssh -F /tmp/custom.conf 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "自定义 -F 可能重定向目标，不得判为本机共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 21 1914 /usr/bin/ssh -o HostName=remote.example.com 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "-o HostName 重定向到远端不得判为本机共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 22 1914 /usr/bin/ssh -o ProxyCommand=nc 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "-o ProxyCommand 不得判为本机共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 23 1914 /usr/bin/ssh -o ProxyJump=bastion 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "-o ProxyJump 不得判为本机共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 24 1914 /usr/bin/ssh -p 2222 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "非 22 端口（如本地端口转发）不得判为本机共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 25 1914 /usr/bin/ssh -l bob 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "其他用户不得判为当前用户共享")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 26 1914 /usr/bin/ssh -o User=bob 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ))
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 27 1914 /usr/bin/ssh -Tp 2222 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "合并短选项 -Tp 2222 必须识别出非 22 端口")
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: " 28 1914 /usr/bin/ssh -Tl bob 127.0.0.1 sh",
+            desktopPIDs: [1914],
+            localHosts: hosts,
+            expectedUsername: "alice"
+        ), "合并短选项 -Tl bob 必须识别出非当前用户")
+
+        // R2 P1-6: 结合 lsof 实际已建立 TCP 对端校验，拒绝配置改写前连向远端的 mimi-local 进程。
+        let mimiPS = " 30 1914 /usr/bin/ssh -T -v -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'"
+        let remotePeerLsof = """
+        p30
+        n192.168.1.5:54321->198.51.100.10:22
+        """
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: mimiPS,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            lsofOutput: remotePeerLsof
+        ), "实际 TCP 对端为远端 IP 时，即使当前配置已改写，也不得误报为共享")
+
+        let noSocketLsof = "p30\n"
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: mimiPS,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            lsofOutput: noSocketLsof
+        ), "无已建立回环 22 端口连接时不得误报共享")
+
+        let mixedRemoteAndLocalLsof = """
+        p30
+        n127.0.0.1:50000->127.0.0.1:22
+        n192.168.1.5:50001->198.51.100.10:443
+        """
+        XCTAssertFalse(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: mimiPS,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            lsofOutput: mixedRemoteAndLocalLsof
+        ))
+
+        let loopbackV4Lsof = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        """
+        XCTAssertTrue(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: mimiPS,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            lsofOutput: loopbackV4Lsof
+        ))
+
+        let loopbackV6Lsof = """
+        p30
+        n[::1]:54321->[::1]:22
+        """
+        XCTAssertTrue(CodexDesktopLink.hasLocalSSHChild(
+            psOutput: mimiPS,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            lsofOutput: loopbackV6Lsof
+        ))
+
+        // R2 P1-8: 官方 Codex 桌面版 SSH 设置页深链。
+        XCTAssertEqual(CodexDesktopLink.sshSettingsURL.absoluteString, "codex://settings/connections/ssh")
         XCTAssertEqual(CodexDesktopLink.connectionsSettingsURL.absoluteString, "codex://settings/connections")
     }
 
@@ -258,17 +375,66 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertEqual(managedTargets, [CodexLocalSSHConfigurator.hostAlias])
     }
 
+    func testR2_P1_6DirectLoopbackProbeRestrictsTargetAndRejectsRedirection() {
+        let bareArgs = CodexSharedSetupChecks.buildDirectLoopbackProbeArguments(for: "127.0.0.1", username: "alice")
+        XCTAssertEqual(Array(bareArgs.prefix(2)), ["-F", "/dev/null"], "裸 127.0.0.1 探测必须忽略用户 SSH 配置防重定向")
+        XCTAssertTrue(bareArgs.contains("HostName=127.0.0.1"))
+        XCTAssertTrue(bareArgs.contains("Port=22"))
+        XCTAssertTrue(bareArgs.contains("User=alice"))
+        XCTAssertTrue(bareArgs.contains("ProxyJump=none"))
+        XCTAssertTrue(bareArgs.contains("ProxyCommand=none"))
+        XCTAssertTrue(bareArgs.contains("ControlMaster=no"))
+        XCTAssertTrue(bareArgs.contains("ControlPath=none"))
+        XCTAssertTrue(bareArgs.contains("ClearAllForwardings=yes"))
+        XCTAssertTrue(bareArgs.contains("BatchMode=yes"))
+
+        let redirected = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "remote.example.com",
+            port: "22",
+            user: "alice"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(redirected, expectedUser: "alice"))
+
+        let proxied = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            proxyJump: "bastion.example.com"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(proxied, expectedUser: "alice"))
+
+        let wrongUser = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "bob"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(wrongUser, expectedUser: "alice"))
+
+        let directLoopback = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            proxyJump: "none",
+            proxyCommand: "none",
+            controlMaster: "false",
+            controlPath: "none"
+        )
+        XCTAssertTrue(CodexLocalSSHConfigurator.isDirectLoopbackConfig(directLoopback, expectedUser: "alice"))
+    }
+
     @MainActor
     func testP1_6CoordinatorSerializesDualEntryAndDiscardsOutOfOrderChecksAndPreservesRemoveError() async {
-        // 1. 乱序检查：先发起慢检查（返回旧状态），再发起快检查（返回新状态），慢检查晚到不得覆盖新状态。
+        // 1. 乱序检查（确定性信号调度）：显式等待第一个慢检查进入挂起点后再发起第二个快检查。
         var checkIndex = 0
         var slowContinuation: CheckedContinuation<CodexSharedSetupStatus, Never>?
+        let firstEnteredSlowBranch = SetupAsyncGate()
         let outOfOrderCoordinator = CodexSharedSetupCoordinator(
             checker: {
                 checkIndex += 1
                 if checkIndex == 1 {
                     return await withCheckedContinuation { cont in
                         slowContinuation = cont
+                        Task { await firstEnteredSlowBranch.open() }
                     }
                 }
                 return CodexSharedSetupStatus.make(
@@ -283,7 +449,7 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         )
 
         let firstTask = Task { await outOfOrderCoordinator.refresh() }
-        await Task.yield()
+        await firstEnteredSlowBranch.wait()
         let secondTask = Task { await outOfOrderCoordinator.refresh() }
         await secondTask.value
         XCTAssertEqual(outOfOrderCoordinator.status.passwordlessLogin, .done)
@@ -299,8 +465,9 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertEqual(outOfOrderCoordinator.status.passwordlessLogin, .done, "旧检查结果不得覆盖更新的快照")
         XCTAssertTrue(outOfOrderCoordinator.status.managedAliasReady)
 
-        // 2. 双入口并发触发一键配置 -> 协调器只执行一次，避免菜单窗口和会话弹窗并发写盘。
-        let gate = SetupAsyncGate()
+        // 2. 双入口并发触发一键配置（确定性信号调度）：等入口 A 确已进入配置且被阻塞后，再触发入口 B 并等入口 B 返回，最后释放入口 A。
+        let entryAEntered = SetupAsyncGate()
+        let releaseEntryA = SetupAsyncGate()
         let counter = SetupCallCounter()
         let concurrentCoordinator = CodexSharedSetupCoordinator(
             checker: {
@@ -308,17 +475,22 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             },
             configureSSH: {
                 await counter.increment()
-                await gate.wait()
+                await entryAEntered.open()
+                await releaseEntryA.wait()
             },
             sharedSeenSetter: { _ in }
         )
 
         let entryA = Task { await concurrentCoordinator.runOneClickSSHSetup() }
-        await Task.yield()
+        await entryAEntered.wait()
+        // 入口 A 仍被 releaseEntryA 阻塞时，入口 B 必须被协调器直接拦截并立即返回。
         let entryB = Task { await concurrentCoordinator.runOneClickSSHSetup() }
-        await gate.open()
-        await entryA.value
         await entryB.value
+        let countWhileABlocked = await counter.count
+        XCTAssertEqual(countWhileABlocked, 1, "入口 A 进行中时，入口 B 必须被拦截而不得重复触发配置")
+
+        await releaseEntryA.open()
+        await entryA.value
         let configureCount = await counter.count
         XCTAssertEqual(configureCount, 1, "共享协调器应拦住双入口并发配置")
 

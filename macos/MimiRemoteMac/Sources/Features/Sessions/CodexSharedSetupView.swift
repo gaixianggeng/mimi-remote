@@ -116,15 +116,18 @@ struct CodexSharedSetupView: View {
             step(3, title: "在 Codex 桌面版连接本机", state: status.desktopConnected) {
                 if status.managedAliasReady {
                     Text("点下方按钮打开 Codex 桌面版的 SSH 设置页，按「添加 → 选择 \(CodexLocalSSHConfigurator.hostAlias) → 保存并连接 → 选择项目」完成接入。")
+                    Text("如果桌面版没有直接跳到 SSH 页，可手动进入「设置 → 连接 → SSH」。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     if status.legacyLoopbackReady {
                         Text("如需，也可改用已验证可用的 127.0.0.1 主机名。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 } else if status.legacyLoopbackReady {
-                    Text("已检测到本机 127.0.0.1 免密登录可用。点下方按钮打开 Codex 桌面版连接设置，在 SSH 页按「添加 → 输入 127.0.0.1 → 保存并连接 → 选择项目」完成接入。")
+                    Text("已检测到本机 127.0.0.1 免密登录可用。点下方按钮打开 Codex 桌面版连接设置，在「设置 → 连接 → SSH」按「添加 → 输入 127.0.0.1 → 保存并连接 → 选择项目」完成接入。")
                 } else {
-                    Text("完成第 2 步后，点下方按钮打开 Codex 桌面版 SSH 设置页，按「添加 → 选择 \(CodexLocalSSHConfigurator.hostAlias) → 保存并连接 → 选择项目」完成接入。")
+                    Text("完成第 2 步后，点下方按钮打开 Codex 桌面版 SSH 设置页，按「添加 → 选择 \(CodexLocalSSHConfigurator.hostAlias) → 保存并连接 → 选择项目」完成接入（也可手动进入「设置 → 连接 → SSH」）。")
                 }
                 if status.desktopNotRunning {
                     Text("Codex 桌面版当前未运行；点击下方按钮会直接启动它，连上项目后回到这里会自动更新状态。")

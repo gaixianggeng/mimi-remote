@@ -162,10 +162,58 @@ enum CodexSharedSetupChecks {
         return outcome
     }
 
+    /// 构造直连当前用户本机回环 22 端口的探测参数，禁止被用户或系统 SSH 配置的 HostName/ProxyJump/Port/User 重定向到远端。
+    static func buildDirectLoopbackProbeArguments(for target: String, username: String) -> [String] {
+        var args: [String] = []
+        if target != CodexLocalSSHConfigurator.hostAlias {
+            args.append(contentsOf: ["-F", "/dev/null"])
+        }
+        args.append(contentsOf: [
+            "-o", "BatchMode=yes",
+            "-o", "PasswordAuthentication=no",
+            "-o", "KbdInteractiveAuthentication=no",
+            "-o", "HostName=127.0.0.1",
+            "-o", "Port=22",
+            "-o", "User=\(username)",
+            "-o", "ProxyJump=none",
+            "-o", "ProxyCommand=none",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "-o", "ControlPersist=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "CanonicalizeHostname=no",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RemoteCommand=none",
+            "-o", "ConnectTimeout=5",
+            target,
+            "true",
+        ])
+        return args
+    }
+
     static func defaultTargetProber(target: String) async -> Bool {
+        let currentUser = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentUser.isEmpty else { return false }
+
+        // 探测裸 127.0.0.1 前，先确认用户与系统 SSH 配置未将 127.0.0.1 重定向到远端主机、非 22 端口、其他用户或代理。
+        if target != CodexLocalSSHConfigurator.hostAlias {
+            let resolveResult = try? await ProcessExecutor.shared.run(
+                executable: URL(fileURLWithPath: "/usr/bin/ssh"),
+                arguments: ["-G", target],
+                timeout: .seconds(5),
+                forceKillAfterTimeout: true
+            )
+            guard let resolveResult, resolveResult.status == 0 else { return false }
+            let effective = CodexLocalSSHConfigurator.parseEffectiveSSHConfig(resolveResult.stdoutText)
+            guard CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser) else {
+                return false
+            }
+        }
+
+        let arguments = buildDirectLoopbackProbeArguments(for: target, username: currentUser)
         let result = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/bin/ssh"),
-            arguments: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "true"],
+            arguments: arguments,
             timeout: .seconds(10),
             forceKillAfterTimeout: true
         )

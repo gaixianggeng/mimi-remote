@@ -19,23 +19,33 @@ extension CodexLocalSSHConfigurator {
         alias: String,
         username: String,
         identityFile: String,
+        knownHostsFile: String,
         appendGlobalHostReset: Bool = false
     ) -> String {
         var lines = [
             managedBlockStart,
             "Host \(alias)",
             "    HostName 127.0.0.1",
+            "    AddressFamily inet",
             "    Port 22",
             "    User \(username)",
             "    IdentityFile \(identityFile)",
             "    IdentitiesOnly yes",
             "    IdentityAgent none",
+            "    PubkeyAuthentication yes",
+            "    PreferredAuthentications publickey",
+            "    PasswordAuthentication no",
+            "    KbdInteractiveAuthentication no",
+            "    UserKnownHostsFile \"\(knownHostsFile)\"",
+            "    GlobalKnownHostsFile none",
+            "    ClearAllForwardings yes",
             "    ProxyJump none",
             "    ProxyCommand none",
             "    ControlMaster no",
             "    ControlPath none",
             "    ControlPersist no",
             "    ForwardAgent no",
+            "    ForwardX11 no",
             "    CanonicalizeHostname no",
             "    PermitLocalCommand no",
             "    RemoteCommand none",
@@ -73,10 +83,11 @@ extension CodexLocalSSHConfigurator {
 
     /// 按 OpenSSH `authorized_keys` 语法结构化解析单行；空行、注释行或非法行返回 nil。
     static func parseAuthorizedKeyLine(_ rawLine: String) -> ParsedAuthorizedKeyLine? {
-        var line = rawLine
-        if line.hasSuffix("\r") {
-            line.removeLast()
+        var utf8Bytes = Array(rawLine.utf8)
+        while let last = utf8Bytes.last, last == 0x0A || last == 0x0D {
+            utf8Bytes.removeLast()
         }
+        let line = String(decoding: utf8Bytes, as: UTF8.self)
         var index = line.startIndex
         while index < line.endIndex, line[index] == " " || line[index] == "\t" {
             index = line.index(after: index)
@@ -220,7 +231,7 @@ extension CodexLocalSSHConfigurator {
     ) -> AuthorizedKeysEvaluation {
         var hasValidLoopback = false
         for slice in rawLineSlices(in: content) {
-            let lineText = String(content[slice.contentRange])
+            let lineText = utf8Substring(content, range: slice.contentRange)
             guard let parsed = parseAuthorizedKeyLine(lineText), parsed.keyBody == keyBody else {
                 continue
             }
@@ -252,14 +263,15 @@ extension CodexLocalSSHConfigurator {
         if existing.isEmpty {
             return (entry + "\n", false)
         }
-        if existing.hasSuffix("\n") {
+        // 按 UTF-8 字节判断尾换行，避免 Swift Character 把 "\r\n" 当单个字符导致 hasSuffix("\n") 误判。
+        if existing.utf8.last == 0x0A {
             return (existing + entry + "\n", false)
         }
         return (existing + "\n" + entry + "\n", true)
     }
 
     static func containsExactLine(_ entry: String, in content: String) -> Bool {
-        rawLineSlices(in: content).contains { String(content[$0.contentRange]) == entry }
+        rawLineSlices(in: content).contains { utf8Substring(content, range: $0.contentRange) == entry }
     }
 
     /// 仅移除与记录完全匹配且结构校验通过的托管授权行，保留其余所有原始字节（包括 CRLF、空行与用户同公钥条目）。
@@ -274,7 +286,7 @@ extension CodexLocalSSHConfigurator {
         var removedTrailingLineAtEOF = false
 
         for (idx, slice) in slices.enumerated() {
-            let lineText = String(content[slice.contentRange])
+            let lineText = utf8Substring(content, range: slice.contentRange)
             guard lineText == recordedEntry,
                   let parsed = parseAuthorizedKeyLine(lineText),
                   parsed.keyBody == expectedKeyBody,
@@ -295,8 +307,10 @@ extension CodexLocalSSHConfigurator {
         for range in targetRanges.reversed() {
             result.removeSubrange(range)
         }
-        if addedLeadingNewline && removedTrailingLineAtEOF && result.hasSuffix("\n") {
-            result.removeLast()
+        if addedLeadingNewline && removedTrailingLineAtEOF && result.utf8.last == 0x0A {
+            var bytes = Array(result.utf8)
+            bytes.removeLast()
+            result = String(decoding: bytes, as: UTF8.self)
         }
         return (result, true)
     }
@@ -310,23 +324,29 @@ extension CodexLocalSSHConfigurator {
         let contentRange: Range<String.Index>
     }
 
+    static func utf8Substring(_ text: String, range: Range<String.Index>) -> String {
+        String(decoding: text.utf8[range], as: UTF8.self)
+    }
+
+    /// 按 UTF-8 字节 `0x0A` / `0x0D` 分行，避免 Swift `Character` 把 CRLF 合并成单字符而漏检行边界。
     static func rawLineSlices(in text: String) -> [RawLineSlice] {
-        guard !text.isEmpty else { return [] }
+        let utf8 = text.utf8
+        guard !utf8.isEmpty else { return [] }
         var slices: [RawLineSlice] = []
-        var cursor = text.startIndex
-        while cursor < text.endIndex {
+        var cursor = utf8.startIndex
+        while cursor < utf8.endIndex {
             let lineStart = cursor
-            while cursor < text.endIndex && text[cursor] != "\n" {
-                cursor = text.index(after: cursor)
+            while cursor < utf8.endIndex && utf8[cursor] != 0x0A {
+                cursor = utf8.index(after: cursor)
             }
             var contentEnd = cursor
             if contentEnd > lineStart {
-                let before = text.index(before: contentEnd)
-                if text[before] == "\r" {
+                let before = utf8.index(before: contentEnd)
+                if utf8[before] == 0x0D {
                     contentEnd = before
                 }
             }
-            let fullEnd = cursor < text.endIndex ? text.index(after: cursor) : cursor
+            let fullEnd = cursor < utf8.endIndex ? utf8.index(after: cursor) : cursor
             slices.append(RawLineSlice(fullRange: lineStart..<fullEnd, contentRange: lineStart..<contentEnd))
             cursor = fullEnd
         }
@@ -336,6 +356,8 @@ extension CodexLocalSSHConfigurator {
     struct StrippedConfig: Equatable {
         let remaining: String
         let hadManagedBlock: Bool
+        /// 原始托管块精确字节片段（不含额外分隔空行），用于更新失败回滚时恢复旧托管块。
+        let originalManagedBlock: String?
     }
 
     /// 仅移除托管标记区间及其自带的一条分隔空行，逐字节保留其余所有内容（CRLF、空行、有无尾换行）。
@@ -345,7 +367,7 @@ extension CodexLocalSSHConfigurator {
         var blockRanges: [(startSlice: Int, endSlice: Int)] = []
 
         for (i, slice) in slices.enumerated() {
-            let trimmed = text[slice.contentRange].trimmingCharacters(in: .whitespaces)
+            let trimmed = utf8Substring(text, range: slice.contentRange).trimmingCharacters(in: .whitespaces)
             if trimmed == managedBlockStart {
                 if startIndex != nil { throw ConfigError.invalidManagedBlock }
                 startIndex = i
@@ -358,11 +380,14 @@ extension CodexLocalSSHConfigurator {
         if startIndex != nil { throw ConfigError.invalidManagedBlock }
         if blockRanges.count > 1 { throw ConfigError.invalidManagedBlock }
         guard let block = blockRanges.first else {
-            return StrippedConfig(remaining: text, hadManagedBlock: false)
+            return StrippedConfig(remaining: text, hadManagedBlock: false, originalManagedBlock: nil)
         }
 
-        var removeStart = slices[block.startSlice].fullRange.lowerBound
-        var removeEnd = slices[block.endSlice].fullRange.upperBound
+        let exactBlockRange = slices[block.startSlice].fullRange.lowerBound..<slices[block.endSlice].fullRange.upperBound
+        let originalManagedBlock = utf8Substring(text, range: exactBlockRange)
+
+        var removeStart = exactBlockRange.lowerBound
+        var removeEnd = exactBlockRange.upperBound
 
         if block.startSlice == 0 {
             // 托管块在开头：仅吞掉紧随其后的最多一个分隔空行。
@@ -387,7 +412,39 @@ extension CodexLocalSSHConfigurator {
 
         var remaining = text
         remaining.removeSubrange(removeStart..<removeEnd)
-        return StrippedConfig(remaining: remaining, hadManagedBlock: true)
+        return StrippedConfig(remaining: remaining, hadManagedBlock: true, originalManagedBlock: originalManagedBlock)
+    }
+
+    /// 仅替换现有托管块精确区间（保留托管块外部所有外部编辑与原始字节格式）。
+    static func replaceManagedBlock(in text: String, with replacementBlock: String) throws -> String? {
+        let slices = rawLineSlices(in: text)
+        var startIndex: Int?
+        var blockRanges: [(startSlice: Int, endSlice: Int)] = []
+
+        for (i, slice) in slices.enumerated() {
+            let trimmed = utf8Substring(text, range: slice.contentRange).trimmingCharacters(in: .whitespaces)
+            if trimmed == managedBlockStart {
+                if startIndex != nil { throw ConfigError.invalidManagedBlock }
+                startIndex = i
+            } else if trimmed == managedBlockEnd {
+                guard let open = startIndex else { throw ConfigError.invalidManagedBlock }
+                blockRanges.append((open, i))
+                startIndex = nil
+            }
+        }
+        if startIndex != nil { throw ConfigError.invalidManagedBlock }
+        if blockRanges.count > 1 { throw ConfigError.invalidManagedBlock }
+        guard let block = blockRanges.first else { return nil }
+
+        let exactRange = slices[block.startSlice].fullRange.lowerBound..<slices[block.endSlice].fullRange.upperBound
+        let existingEndsWithLF = text.utf8[exactRange].last == 0x0A
+        var normalizedReplacement = replacementBlock
+        if existingEndsWithLF && normalizedReplacement.utf8.last != 0x0A {
+            normalizedReplacement.append("\n")
+        }
+        var updated = text
+        updated.replaceSubrange(exactRange, with: normalizedReplacement)
+        return updated
     }
 
     /// 将托管块置于文件顶部（优先于后续 `Host *`），并逐字节保留原配置其余内容。
@@ -400,7 +457,7 @@ extension CodexLocalSSHConfigurator {
 
     static func hasTopLevelDirectivesBeforeFirstHostOrMatch(_ configText: String) -> Bool {
         for slice in rawLineSlices(in: configText) {
-            let tokens = tokenizeSSHConfigLine(String(configText[slice.contentRange]))
+            let tokens = tokenizeSSHConfigLine(utf8Substring(configText, range: slice.contentRange))
             guard let keyword = tokens.first?.lowercased() else { continue }
             if keyword == "host" || keyword == "match" {
                 return false
@@ -480,7 +537,7 @@ extension CodexLocalSSHConfigurator {
     ) -> Bool {
         guard depth <= 16 else { return false }
         for slice in Self.rawLineSlices(in: configText) {
-            let tokens = Self.tokenizeSSHConfigLine(String(configText[slice.contentRange]))
+            let tokens = Self.tokenizeSSHConfigLine(Self.utf8Substring(configText, range: slice.contentRange))
             guard tokens.count >= 2 else { continue }
             let keyword = tokens[0].lowercased()
 
@@ -599,7 +656,7 @@ extension CodexLocalSSHConfigurator {
     static func parseEffectiveSSHConfig(_ output: String) -> EffectiveSSHConfig {
         var parsed = EffectiveSSHConfig()
         for slice in rawLineSlices(in: output) {
-            let line = String(output[slice.contentRange])
+            let line = utf8Substring(output, range: slice.contentRange)
             guard let spaceIdx = line.firstIndex(where: { $0 == " " || $0 == "\t" }) else { continue }
             let key = String(line[..<spaceIdx]).lowercased()
             let value = String(line[spaceIdx...]).trimmingCharacters(in: .whitespaces)
@@ -616,6 +673,34 @@ extension CodexLocalSSHConfigurator {
                 parsed.identityAgent = value
             case "identityfile":
                 parsed.identityFiles.append(value)
+            case "certificatefile":
+                if !value.isEmpty, value.lowercased() != "none" {
+                    parsed.certificateFiles.append(value)
+                }
+            case "pubkeyauthentication":
+                parsed.pubkeyAuthentication = value
+            case "preferredauthentications":
+                parsed.preferredAuthentications = value
+            case "pubkeyacceptedalgorithms", "pubkeyacceptedkeytypes":
+                parsed.pubkeyAcceptedAlgorithms = value
+            case "userknownhostsfile":
+                parsed.userKnownHostsFile = value
+            case "globalknownhostsfile":
+                parsed.globalKnownHostsFile = value
+            case "stricthostkeychecking":
+                parsed.strictHostKeyChecking = value
+            case "clearallforwardings":
+                parsed.clearAllForwardings = value
+            case "forwardagent":
+                parsed.forwardAgent = value
+            case "forwardx11":
+                parsed.forwardX11 = value
+            case "localforward":
+                parsed.localForwards.append(value)
+            case "remoteforward":
+                parsed.remoteForwards.append(value)
+            case "dynamicforward":
+                parsed.dynamicForwards.append(value)
             case "proxyjump":
                 parsed.proxyJump = value
             case "proxycommand":
@@ -626,6 +711,10 @@ extension CodexLocalSSHConfigurator {
                 parsed.controlPath = value
             case "remotecommand":
                 parsed.remoteCommand = value
+            case "permitlocalcommand":
+                parsed.permitLocalCommand = value
+            case "canonicalizehostname":
+                parsed.canonicalizeHostname = value
             default:
                 break
             }
@@ -636,7 +725,8 @@ extension CodexLocalSSHConfigurator {
     static func validateEffectiveLoopbackConfig(
         _ config: EffectiveSSHConfig,
         expectedUser: String,
-        expectedIdentityFile: String
+        expectedIdentityFile: String,
+        expectedKnownHostsFile: String
     ) -> String? {
         guard config.hostname == "127.0.0.1" else {
             return "HostName 实际解析为 \(config.hostname ?? "<空>")，预期 127.0.0.1。"
@@ -650,11 +740,50 @@ extension CodexLocalSSHConfigurator {
         guard config.identitiesOnly?.lowercased() == "yes" else {
             return "IdentitiesOnly 未生效。"
         }
-        guard config.identityFiles.first == expectedIdentityFile else {
-            return "首选 IdentityFile 为 \(config.identityFiles.first ?? "<空>")，预期 \(expectedIdentityFile)。"
+        guard config.identityFiles == [expectedIdentityFile] else {
+            return "有效 IdentityFile 列表为 [\(config.identityFiles.joined(separator: ", "))]，预期仅包含 \(expectedIdentityFile)。"
+        }
+        guard config.certificateFiles.isEmpty else {
+            return "存在额外的 CertificateFile（\(config.certificateFiles.joined(separator: ", "))）。"
         }
         if let agent = config.identityAgent?.lowercased(), !agent.isEmpty, agent != "none" {
             return "IdentityAgent 未禁用（\(agent)）。"
+        }
+        if let pubkey = config.pubkeyAuthentication?.lowercased(), pubkey != "yes" && pubkey != "true" {
+            return "PubkeyAuthentication 未启用（\(pubkey)）。"
+        }
+        if let preferred = config.preferredAuthentications, !preferred.isEmpty {
+            let methods = preferred.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            if !methods.contains("publickey") {
+                return "PreferredAuthentications 未允许 publickey（\(preferred)）。"
+            }
+        }
+        if let algos = config.pubkeyAcceptedAlgorithms, !algos.isEmpty {
+            let allowed = algos.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            if !allowed.contains("ssh-ed25519") {
+                return "PubkeyAcceptedAlgorithms 未允许 ssh-ed25519（\(algos)）。"
+            }
+        }
+        guard config.userKnownHostsFile == expectedKnownHostsFile else {
+            return "UserKnownHostsFile 实际解析为 \(config.userKnownHostsFile ?? "<空>")，预期 \(expectedKnownHostsFile)。"
+        }
+        if let strict = config.strictHostKeyChecking?.lowercased(), strict != "accept-new" && strict != "yes" {
+            return "StrictHostKeyChecking 不安全（\(strict)）。"
+        }
+        guard config.localForwards.isEmpty else {
+            return "存在生效的 LocalForward（\(config.localForwards.joined(separator: "; "))）。"
+        }
+        guard config.remoteForwards.isEmpty else {
+            return "存在生效的 RemoteForward（\(config.remoteForwards.joined(separator: "; "))）。"
+        }
+        guard config.dynamicForwards.isEmpty else {
+            return "存在生效的 DynamicForward（\(config.dynamicForwards.joined(separator: "; "))）。"
+        }
+        if let forwardAgent = config.forwardAgent?.lowercased(), !forwardAgent.isEmpty, forwardAgent != "no" && forwardAgent != "false" {
+            return "ForwardAgent 未禁用（\(forwardAgent)）。"
+        }
+        if let forwardX11 = config.forwardX11?.lowercased(), !forwardX11.isEmpty, forwardX11 != "no" && forwardX11 != "false" {
+            return "ForwardX11 未禁用（\(forwardX11)）。"
         }
         if let proxyJump = config.proxyJump?.lowercased(), !proxyJump.isEmpty, proxyJump != "none" {
             return "存在 ProxyJump（\(proxyJump)）。"
@@ -671,6 +800,46 @@ extension CodexLocalSSHConfigurator {
         if let rc = config.remoteCommand?.lowercased(), !rc.isEmpty, rc != "none" {
             return "存在 RemoteCommand（\(rc)）。"
         }
+        if let permitLocal = config.permitLocalCommand?.lowercased(), !permitLocal.isEmpty, permitLocal != "no" && permitLocal != "false" {
+            return "PermitLocalCommand 未禁用（\(permitLocal)）。"
+        }
+        if let canon = config.canonicalizeHostname?.lowercased(), !canon.isEmpty, canon != "no" && canon != "false" {
+            return "CanonicalizeHostname 未禁用（\(canon)）。"
+        }
         return nil
+    }
+
+    /// 校验目标（如裸 127.0.0.1）在用户与系统 SSH 配置下是否直连当前用户的回环 22 端口，无重定向或代理。
+    static func isDirectLoopbackConfig(
+        _ config: EffectiveSSHConfig,
+        expectedUser: String,
+        allowedLoopbackHosts: Set<String> = ["127.0.0.1", "::1"]
+    ) -> Bool {
+        guard let hostname = config.hostname?.lowercased(),
+              allowedLoopbackHosts.contains(hostname) else {
+            return false
+        }
+        guard config.port == "22", config.user == expectedUser else {
+            return false
+        }
+        if let proxyJump = config.proxyJump?.lowercased(), !proxyJump.isEmpty, proxyJump != "none" {
+            return false
+        }
+        if let proxyCommand = config.proxyCommand?.lowercased(), !proxyCommand.isEmpty, proxyCommand != "none" {
+            return false
+        }
+        if let cm = config.controlMaster?.lowercased(), !cm.isEmpty, cm != "false" && cm != "no" {
+            return false
+        }
+        if let cp = config.controlPath?.lowercased(), !cp.isEmpty, cp != "none" {
+            return false
+        }
+        if let rc = config.remoteCommand?.lowercased(), !rc.isEmpty, rc != "none" {
+            return false
+        }
+        if let permitLocal = config.permitLocalCommand?.lowercased(), !permitLocal.isEmpty, permitLocal != "no" && permitLocal != "false" {
+            return false
+        }
+        return true
     }
 }

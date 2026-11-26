@@ -75,6 +75,7 @@
 		E9A8B8DA59B78B70513CE94B /* ModuleChangePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 509C3157F7B0D582B0E2633D /* ModuleChangePresentation.swift */; };
 		EAF0B28EEE703268BDFCF8F1 /* SessionOpenSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF40145148CD10F034DD74FB /* SessionOpenSupport.swift */; };
 		EB40EB38AC0DD1E7C9C3B21E /* MenuRuntimePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B78765A951C28D21B18CCFAF /* MenuRuntimePresentation.swift */; };
+		EF133E542A756D908D42473C /* CodexLocalSSHFileOps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 461A450D07FAE23EDEF4EE8C /* CodexLocalSSHFileOps.swift */; };
 		F0B1F99A2045339CB960772E /* AgentCommandClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFA410B972FDE86680731233 /* AgentCommandClientTests.swift */; };
 		F496A4E680E86AEC0F3AB5E9 /* MimiRemoteMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0665418B45A53032B38134E3 /* MimiRemoteMacApp.swift */; };
 /* End PBXBuildFile section */
@@ -114,6 +115,7 @@
 		420B2B044A245D8F755DB795 /* HostStoreControlErrors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreControlErrors.swift; sourceTree = "<group>"; };
 		425D1AFDB58612825840CB62 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		447B388701B8AB3C05F64328 /* HostStoreTailcatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTailcatTests.swift; sourceTree = "<group>"; };
+		461A450D07FAE23EDEF4EE8C /* CodexLocalSSHFileOps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocalSSHFileOps.swift; sourceTree = "<group>"; };
 		47FFCBD7F69A1A4EAA2D1871 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
 		48A9036500B5DFE5E395598B /* SessionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsStore.swift; sourceTree = "<group>"; };
 		4970FED3A0AD33401F1DFE86 /* ProcessExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExecutor.swift; sourceTree = "<group>"; };
@@ -373,6 +375,7 @@
 				CC34FFFDD49F996F5FB064A2 /* AgentLogClient.swift */,
 				B0E629BBF09C51B704E1BEBD /* CodexDesktopLink.swift */,
 				C1625E3C9D703C66D27720DE /* CodexLocalSSHConfigurator.swift */,
+				461A450D07FAE23EDEF4EE8C /* CodexLocalSSHFileOps.swift */,
 				D95BCE89CDCE43AA153C4074 /* CodexLocalSSHParsing.swift */,
 				25EBCDE4E2ED753E9E5882B5 /* CodexSharedSetupChecks.swift */,
 				6FF645CF76E8BD94261F54A9 /* HealthClient.swift */,
@@ -513,6 +516,7 @@
 				1A8CB50439D0E08A8514EA5B /* BrandColors.swift in Sources */,
 				E1ABB08A98F543D0B14D9A0C /* CodexDesktopLink.swift in Sources */,
 				72A89B1755755BEA24D3E8F6 /* CodexLocalSSHConfigurator.swift in Sources */,
+				EF133E542A756D908D42473C /* CodexLocalSSHFileOps.swift in Sources */,
 				C5FF4FEE13BFCD5C284E0712 /* CodexLocalSSHParsing.swift in Sources */,
 				C2D5B5B9EC630C7ED336CB91 /* CodexRuntimeUpdateNotice.swift in Sources */,
 				55890CE55F1490D69AEE1311 /* CodexRuntimeUpdateStore.swift in Sources */,
