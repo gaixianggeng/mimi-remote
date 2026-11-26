@@ -12,7 +12,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     static let managedBlockEnd = "# <<< mimi-remote local codex ssh <<<"
     static let loopbackAuthorizedKeyOption = #"from="127.0.0.1,::1""#
 
-    typealias CommandRunner = @Sendable (_ executable: URL, _ arguments: [String], _ timeout: Duration) async throws -> CommandResult
+    typealias CommandRunner = @Sendable (_ executable: URL, _ arguments: [String], _ timeout: Duration, _ standardInput: Data?) async throws -> CommandResult
     typealias CommitHook = @Sendable (_ targetURL: URL) throws -> Void
 
     struct ManagedState: Codable, Equatable, Sendable {
@@ -52,6 +52,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         var keyExists: Bool = false
         var authorizedKeyInstalled: Bool = false
         var hasRecordedAuthorizedEntry: Bool = false
+        var hasPersistedManagedState: Bool = false
         var sshConfigInstalled: Bool = false
         var effectiveLoopbackVerified: Bool = false
         var hasConflictingHostAlias: Bool = false
@@ -60,7 +61,11 @@ struct CodexLocalSSHConfigurator: Sendable {
         var hasUnsafeFileSystemState: Bool = false
 
         var isManaged: Bool {
-            keyExists || authorizedKeyInstalled || hasRecordedAuthorizedEntry || sshConfigInstalled
+            keyExists ||
+                authorizedKeyInstalled ||
+                hasRecordedAuthorizedEntry ||
+                sshConfigInstalled ||
+                hasPersistedManagedState
         }
 
         var hasAnyConflict: Bool {
@@ -177,6 +182,13 @@ struct CodexLocalSSHConfigurator: Sendable {
         var remoteCommand: String?
         var permitLocalCommand: String?
         var canonicalizeHostname: String?
+        var stdinNull: String?
+        var requestTTY: String?
+        var sessionType: String?
+        var forkAfterAuthentication: String?
+        var updateHostKeys: String?
+        var escapeChar: String?
+        var enableEscapeCommandline: String?
     }
 
     let homeDirectory: URL
@@ -226,98 +238,189 @@ struct CodexLocalSSHConfigurator: Sendable {
         stateFileURL.deletingLastPathComponent().appendingPathComponent(".codex-local-ssh.lock")
     }
 
-    static func defaultCommandRunner(executable: URL, arguments: [String], timeout: Duration) async throws -> CommandResult {
+    static func defaultCommandRunner(
+        executable: URL,
+        arguments: [String],
+        timeout: Duration,
+        standardInput: Data? = nil
+    ) async throws -> CommandResult {
         try await ProcessExecutor.shared.run(
             executable: executable,
             arguments: arguments,
             timeout: timeout,
-            forceKillAfterTimeout: true
+            forceKillAfterTimeout: true,
+            standardInput: standardInput
         )
     }
 
     // MARK: - Public API
 
     /// 只读检查当前本机 SSH 托管配置状态。
+    /// 各文件与专用 `known_hosts` 独立校验：任一文件异常（符号链接、不可读、非 UTF-8）均标记不就绪，但基于持久化记录保留撤销入口。
     func inspect() async -> Inspection {
         let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
         var result = Inspection()
 
+        // 0. 优先独立校验并读取持久化状态，确保即便 known_hosts 或 ~/.ssh 异常，仍可判断是否存在待撤销记录。
+        var state: ManagedState?
         do {
-            try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
-            try validateRegularFileIfPresent(privateKeyURL, label: Self.keyFileName)
-            try validateRegularFileIfPresent(publicKeyURL, label: "\(Self.keyFileName).pub")
-            try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
-            try validateRegularFileIfPresent(sshConfigURL, label: "config")
-            try validateStateDirectoryAndFile()
+            try validateStateDirectoryAndStateFile()
+            state = try loadManagedState()
         } catch {
             result.hasUnsafeFileSystemState = true
+        }
+
+        do {
+            try validateKnownHostsFile()
+        } catch {
+            result.hasUnsafeFileSystemState = true
+        }
+
+        var sshDirectorySafe = true
+        do {
+            try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
+        } catch {
+            result.hasUnsafeFileSystemState = true
+            sshDirectorySafe = false
+        }
+
+        if let state, !state.isEmpty {
+            if !sshDirectorySafe {
+                // ~/.ssh 目录本身异常，无法证明持久化记录对应的授权/密钥/配置已清理，必须保留撤销入口。
+                result.hasPersistedManagedState = true
+                if state.authorizedKeyEntry != nil {
+                    result.hasRecordedAuthorizedEntry = true
+                }
+                return result
+            }
+            if lstatInfo(for: knownHostsURL) != nil {
+                result.hasPersistedManagedState = true
+            }
+        } else if !sshDirectorySafe {
             return result
         }
 
-        let state = (try? loadManagedState()) ?? nil
+        // 1. 独立校验并核验密钥归属与公私钥匹配
+        var privateSafe = true
+        var publicSafe = true
+        do {
+            try validateRegularFileIfPresent(privateKeyURL, label: Self.keyFileName)
+        } catch {
+            result.hasUnsafeFileSystemState = true
+            privateSafe = false
+        }
+        do {
+            try validateRegularFileIfPresent(publicKeyURL, label: "\(Self.keyFileName).pub")
+        } catch {
+            result.hasUnsafeFileSystemState = true
+            publicSafe = false
+        }
+
         let privateExists = lstatInfo(for: privateKeyURL) != nil
         let publicExists = lstatInfo(for: publicKeyURL) != nil
-
-        // 1. 核验密钥归属与公私钥匹配
-        if let state, let expectedBody = state.publicKeyBody, let expectedFingerprint = state.keyFingerprint {
-            if privateExists && publicExists {
-                if await verifyOwnedKeyPair(expectedBody: expectedBody, expectedFingerprint: expectedFingerprint) {
-                    result.keyExists = true
-                } else {
-                    result.hasConflictingKeyFiles = true
-                }
-            } else if privateExists || publicExists {
-                let singleOwned = await verifyPartialOwnedKey(
-                    privateExists: privateExists,
-                    publicExists: publicExists,
-                    expectedBody: expectedBody,
-                    expectedFingerprint: expectedFingerprint
-                )
-                if !singleOwned {
-                    result.hasConflictingKeyFiles = true
-                }
-            }
-        } else if privateExists || publicExists {
-            result.hasConflictingKeyFiles = true
-        }
-
-        // 2. 核验 authorized_keys（使用独立保存的授权公钥标识，即使密钥已被删除也能识别残留托管授权以保留撤销入口）
-        if let state, let expectedAuthBody = state.effectiveAuthorizedKeyBody,
-           let authorizedData = try? readRegularFileDataIfPresent(authorizedKeysURL),
-           let authorizedContent = String(data: authorizedData, encoding: .utf8) {
-            let evaluation = Self.evaluateAuthorizedKeys(
-                content: authorizedContent,
-                keyBody: expectedAuthBody,
-                recordedEntry: state.authorizedKeyEntry
-            )
-            result.hasConflictingAuthorizedKey = evaluation.hasConflict
-            result.authorizedKeyInstalled = evaluation.hasValidLoopbackEntry && !evaluation.hasConflict
-            if let recorded = state.authorizedKeyEntry,
-               Self.containsExactLine(recorded, in: authorizedContent) {
-                result.hasRecordedAuthorizedEntry = true
-            }
-        }
-
-        // 3. 核验 ~/.ssh/config 托管块、冲突与桌面版实际解析路径的 ssh -G 有效目标
-        if let configData = try? readRegularFileDataIfPresent(sshConfigURL),
-           let configContent = String(data: configData, encoding: .utf8) {
-            if let stripped = try? Self.stripManagedBlock(from: configContent) {
-                let hasConflict = containsConflictingHostAlias(Self.hostAlias, in: stripped.remaining)
-                result.hasConflictingHostAlias = hasConflict
-                let managedByState = state?.managedHostAlias == Self.hostAlias
-                result.sshConfigInstalled = stripped.hadManagedBlock && managedByState
-                if result.sshConfigInstalled && !hasConflict && !trimmedUser.isEmpty {
-                    if let effective = try? await resolveEffectiveSSHConfig(configPath: sshConfigURL.path, alias: Self.hostAlias, includeSystemConfig: true) {
-                        result.effectiveLoopbackVerified = Self.validateEffectiveLoopbackConfig(
-                            effective,
-                            expectedUser: trimmedUser,
-                            expectedIdentityFile: expectedIdentityFileConfigValue,
-                            expectedKnownHostsFile: expectedKnownHostsPath
-                        ) == nil
+        if privateSafe && publicSafe {
+            if let state, let expectedBody = state.publicKeyBody, let expectedFingerprint = state.keyFingerprint {
+                if privateExists && publicExists {
+                    if await verifyOwnedKeyPair(expectedBody: expectedBody, expectedFingerprint: expectedFingerprint) {
+                        result.keyExists = true
+                    } else {
+                        result.hasConflictingKeyFiles = true
+                    }
+                } else if privateExists || publicExists {
+                    let singleOwned = await verifyPartialOwnedKey(
+                        privateExists: privateExists,
+                        publicExists: publicExists,
+                        expectedBody: expectedBody,
+                        expectedFingerprint: expectedFingerprint
+                    )
+                    if singleOwned {
+                        result.hasPersistedManagedState = true
+                    } else {
+                        result.hasConflictingKeyFiles = true
                     }
                 }
-            } else {
-                result.hasConflictingHostAlias = true
+            } else if privateExists || publicExists {
+                result.hasConflictingKeyFiles = true
+            }
+        } else if state?.keyFingerprint != nil && (privateExists || publicExists) {
+            result.hasPersistedManagedState = true
+        }
+
+        // 2. 独立校验并核验 authorized_keys：存在且无法读取/解码/非普通文件时，若持久化记录仍有授权项则必须保留撤销入口。
+        let authExists = lstatInfo(for: authorizedKeysURL) != nil
+        if authExists {
+            do {
+                try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
+                let authorizedData = try captureSnapshot(of: authorizedKeysURL).data
+                let authorizedContent = try decodeUTF8(authorizedData, label: "~/.ssh/authorized_keys")
+                if let state, let expectedAuthBody = state.effectiveAuthorizedKeyBody {
+                    let evaluation = Self.evaluateAuthorizedKeys(
+                        content: authorizedContent,
+                        keyBody: expectedAuthBody,
+                        recordedEntry: state.authorizedKeyEntry
+                    )
+                    result.hasConflictingAuthorizedKey = evaluation.hasConflict
+                    result.authorizedKeyInstalled = evaluation.hasValidLoopbackEntry && !evaluation.hasConflict
+                    if let recorded = state.authorizedKeyEntry,
+                       Self.containsExactLine(recorded, in: authorizedContent) {
+                        result.hasRecordedAuthorizedEntry = true
+                    }
+                }
+            } catch let error as ConfigError {
+                if case .unsafeFileSystemTarget = error {
+                    result.hasUnsafeFileSystemState = true
+                }
+                if state?.authorizedKeyEntry != nil {
+                    result.hasRecordedAuthorizedEntry = true
+                    result.hasPersistedManagedState = true
+                }
+            } catch {
+                if state?.authorizedKeyEntry != nil {
+                    result.hasRecordedAuthorizedEntry = true
+                    result.hasPersistedManagedState = true
+                }
+            }
+        }
+
+        // 3. 独立校验并核验 ~/.ssh/config 托管块、冲突与桌面版实际解析路径的 ssh -G 有效目标
+        let configExists = lstatInfo(for: sshConfigURL) != nil
+        if configExists {
+            do {
+                try validateRegularFileIfPresent(sshConfigURL, label: "config")
+                let configData = try captureSnapshot(of: sshConfigURL).data
+                let configContent = try decodeUTF8(configData, label: "~/.ssh/config")
+                if let stripped = try? Self.stripManagedBlock(from: configContent) {
+                    let hasConflict = containsConflictingHostAlias(Self.hostAlias, in: stripped.remaining)
+                    result.hasConflictingHostAlias = hasConflict
+                    let managedByState = state?.managedHostAlias == Self.hostAlias
+                    result.sshConfigInstalled = stripped.hadManagedBlock && managedByState
+                    if result.sshConfigInstalled && !hasConflict && !trimmedUser.isEmpty && !result.hasUnsafeFileSystemState {
+                        if let effective = try? await resolveEffectiveSSHConfig(configPath: sshConfigURL.path, alias: Self.hostAlias, includeSystemConfig: true) {
+                            result.effectiveLoopbackVerified = Self.validateEffectiveLoopbackConfig(
+                                effective,
+                                expectedUser: trimmedUser,
+                                expectedIdentityFile: expectedIdentityFileConfigValue,
+                                expectedKnownHostsFile: expectedKnownHostsPath
+                            ) == nil
+                        }
+                    }
+                } else {
+                    result.hasConflictingHostAlias = true
+                    if state?.managedHostAlias == Self.hostAlias {
+                        result.hasPersistedManagedState = true
+                    }
+                }
+            } catch let error as ConfigError {
+                if case .unsafeFileSystemTarget = error {
+                    result.hasUnsafeFileSystemState = true
+                }
+                if state?.managedHostAlias == Self.hostAlias {
+                    result.hasPersistedManagedState = true
+                }
+            } catch {
+                if state?.managedHostAlias == Self.hostAlias {
+                    result.hasPersistedManagedState = true
+                }
             }
         }
 
@@ -452,6 +555,8 @@ struct CodexLocalSSHConfigurator: Sendable {
                 rollback.originalConfigMode = configSnapshot.mode
                 rollback.originalHadManagedBlock = strippedConfig.hadManagedBlock
                 rollback.originalManagedBlockRaw = strippedConfig.originalManagedBlock
+                rollback.writtenManagedBlockRaw = managedBlock
+                rollback.writtenUsername = trimmedUser
                 rollback.writtenConfigData = configData
                 rollback.createdBackupURL = backupURL
             } else if configSnapshot.exists {
@@ -536,14 +641,25 @@ struct CodexLocalSSHConfigurator: Sendable {
             // 9. 持久化归属状态文件。
             try saveManagedState(nextState)
 
-            // 10. 在回滚事务内按桌面版实际解析路径再次确认 ~/.ssh/config 有效目标，并按托管别名执行免密验连。
-            let postEffective = try await resolveEffectiveSSHConfig(
-                configPath: sshConfigURL.path,
-                alias: Self.hostAlias,
+            // 10. 在回滚事务内冻结当前配置快照，先按桌面版解析路径与冻结快照做 ssh -G 校验，再用同一份已核验快照执行绑定目标/信任文件的双向验连。
+            let finalConfigSnapshot = try captureSnapshot(of: sshConfigURL)
+            guard finalConfigSnapshot.exists else {
+                throw ConfigError.effectiveConfigConflict("写入后未能读取 ~/.ssh/config。")
+            }
+            let finalConfigText = try decodeUTF8(finalConfigSnapshot.data, label: "~/.ssh/config")
+            let verifiedSnapshotConfig = try materializeEvaluationSSHConfig(
+                userConfigText: finalConfigText,
                 includeSystemConfig: true
             )
+            defer { verifiedSnapshotConfig.cleanup() }
+
+            let snapshotEffective = try await resolveEffectiveSSHConfig(
+                configPath: verifiedSnapshotConfig.configFileURL.path,
+                alias: Self.hostAlias,
+                includeSystemConfig: false
+            )
             if let reason = Self.validateEffectiveLoopbackConfig(
-                postEffective,
+                snapshotEffective,
                 expectedUser: trimmedUser,
                 expectedIdentityFile: expectedIdentityFileConfigValue,
                 expectedKnownHostsFile: expectedKnownHostsPath
@@ -551,8 +667,27 @@ struct CodexLocalSSHConfigurator: Sendable {
                 throw ConfigError.effectiveConfigConflict(reason)
             }
 
+            if isDefaultUserHome && systemSSHConfigPath == "/etc/ssh/ssh_config" {
+                let desktopEffective = try await resolveEffectiveSSHConfig(
+                    configPath: sshConfigURL.path,
+                    alias: Self.hostAlias,
+                    includeSystemConfig: true
+                )
+                if let reason = Self.validateEffectiveLoopbackConfig(
+                    desktopEffective,
+                    expectedUser: trimmedUser,
+                    expectedIdentityFile: expectedIdentityFileConfigValue,
+                    expectedKnownHostsFile: expectedKnownHostsPath
+                ) {
+                    throw ConfigError.effectiveConfigConflict(reason)
+                }
+            }
+
             if verifyConnection {
-                try await verifyLoopbackSSH(username: trimmedUser)
+                try await verifyLoopbackSSH(
+                    username: trimmedUser,
+                    verifiedConfigPath: verifiedSnapshotConfig.configFileURL.path
+                )
             }
         } catch {
             let rollbackOutcome = await performRollback(rollback)
@@ -566,84 +701,97 @@ struct CodexLocalSSHConfigurator: Sendable {
     }
 
     private func removeLocked() async throws {
-        try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
-        try validateStateDirectoryAndFile()
+        // 先独立校验并读取状态文件，不被专用 known_hosts 异常阻断授权撤销。
+        try validateStateDirectoryAndStateFile()
 
         var state = (try loadManagedState()) ?? ManagedState()
         var errors: [ConfigError] = []
 
-        // 1. 优先撤销 authorized_keys 中可核验的 Mimi 托管行（使用独立保存的 authorizedKeyBody，不受密钥或 config 状态阻断）。
-        if lstatInfo(for: authorizedKeysURL) != nil {
-            do {
-                try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
-                if let recordedEntry = state.authorizedKeyEntry {
-                    guard let recordedBody = state.effectiveAuthorizedKeyBody else {
-                        throw ConfigError.fileOperationFailed("Mimi 状态记录缺少托管授权对应的公钥标识，无法安全撤销。")
-                    }
-                    try removeRecordedAuthorizedEntryIfPresent(
-                        entry: recordedEntry,
-                        expectedKeyBody: recordedBody,
-                        addedLeadingNewline: state.authorizedKeyAddedLeadingNewline
-                    )
-                    // 仅确认授权已从 authorized_keys 移除后才清除记录。
-                    state.authorizedKeyEntry = nil
-                    state.authorizedKeyBody = nil
-                    state.authorizedKeyAddedLeadingNewline = false
-                }
-            } catch let error as ConfigError {
-                errors.append(error)
-            } catch {
-                errors.append(.fileOperationFailed(error.localizedDescription))
-            }
-        } else {
-            state.authorizedKeyEntry = nil
-            state.authorizedKeyBody = nil
-            state.authorizedKeyAddedLeadingNewline = false
-        }
-
-        // 2. 仅删除经指纹、公私钥匹配与删除前快照核验确属 Mimi 的专用密钥文件。
+        var sshDirectorySafe = true
         do {
-            let removedKeys = try await removeOwnedKeyFilesIfVerified(state: state)
-            if removedKeys {
-                state.keyFingerprint = nil
-                state.publicKeyBody = nil
-            }
+            try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
         } catch let error as ConfigError {
             errors.append(error)
+            sshDirectorySafe = false
         } catch {
             errors.append(.fileOperationFailed(error.localizedDescription))
+            sshDirectorySafe = false
         }
 
-        // 3. 移除 ~/.ssh/config 中的托管块（逐字节保留托管块之外的格式）。
-        if lstatInfo(for: sshConfigURL) != nil {
-            do {
-                try validateRegularFileIfPresent(sshConfigURL, label: "config")
-                let snapshot = try captureSnapshot(of: sshConfigURL)
-                let content = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
-                let stripped = try Self.stripManagedBlock(from: content)
-                if stripped.hadManagedBlock {
-                    let targetMode = Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
-                    try writeFileAtomically(
-                        Data(stripped.remaining.utf8),
-                        to: sshConfigURL,
-                        mode: targetMode,
-                        expectedSnapshot: snapshot,
-                        label: "~/.ssh/config"
-                    )
+        if sshDirectorySafe {
+            // 1. 优先撤销 authorized_keys 中可核验的 Mimi 托管行（使用独立保存的 authorizedKeyBody，不受密钥、config 或 known_hosts 状态阻断）。
+            if lstatInfo(for: authorizedKeysURL) != nil {
+                do {
+                    try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
+                    if let recordedEntry = state.authorizedKeyEntry {
+                        guard let recordedBody = state.effectiveAuthorizedKeyBody else {
+                            throw ConfigError.fileOperationFailed("Mimi 状态记录缺少托管授权对应的公钥标识，无法安全撤销。")
+                        }
+                        try removeRecordedAuthorizedEntryIfPresent(
+                            entry: recordedEntry,
+                            expectedKeyBody: recordedBody,
+                            addedLeadingNewline: state.authorizedKeyAddedLeadingNewline
+                        )
+                        // 仅确认授权已从 authorized_keys 移除后才清除记录。
+                        state.authorizedKeyEntry = nil
+                        state.authorizedKeyBody = nil
+                        state.authorizedKeyAddedLeadingNewline = false
+                    }
+                } catch let error as ConfigError {
+                    errors.append(error)
+                } catch {
+                    errors.append(.fileOperationFailed(error.localizedDescription))
                 }
-                state.managedHostAlias = nil
-                state.managedUsername = nil
+            } else {
+                state.authorizedKeyEntry = nil
+                state.authorizedKeyBody = nil
+                state.authorizedKeyAddedLeadingNewline = false
+            }
+
+            // 2. 仅删除经指纹、公私钥匹配与删除前快照核验确属 Mimi 的专用密钥文件。
+            do {
+                let removedKeys = try await removeOwnedKeyFilesIfVerified(state: state)
+                if removedKeys {
+                    state.keyFingerprint = nil
+                    state.publicKeyBody = nil
+                }
             } catch let error as ConfigError {
                 errors.append(error)
             } catch {
                 errors.append(.fileOperationFailed(error.localizedDescription))
             }
-        } else {
-            state.managedHostAlias = nil
-            state.managedUsername = nil
+
+            // 3. 移除 ~/.ssh/config 中的托管块（逐字节保留托管块之外的格式）。
+            if lstatInfo(for: sshConfigURL) != nil {
+                do {
+                    try validateRegularFileIfPresent(sshConfigURL, label: "config")
+                    let snapshot = try captureSnapshot(of: sshConfigURL)
+                    let content = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
+                    let stripped = try Self.stripManagedBlock(from: content)
+                    if stripped.hadManagedBlock {
+                        let targetMode = Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
+                        try writeFileAtomically(
+                            Data(stripped.remaining.utf8),
+                            to: sshConfigURL,
+                            mode: targetMode,
+                            expectedSnapshot: snapshot,
+                            label: "~/.ssh/config"
+                        )
+                    }
+                    state.managedHostAlias = nil
+                    state.managedUsername = nil
+                } catch let error as ConfigError {
+                    errors.append(error)
+                } catch {
+                    errors.append(.fileOperationFailed(error.localizedDescription))
+                }
+            } else {
+                state.managedHostAlias = nil
+                state.managedUsername = nil
+            }
         }
 
-        // 4. 安全清理应用专用主机信任文件。
+        // 4. 独立安全清理应用专用主机信任文件，异常独立报告而不阻断上面的授权撤销。
         if lstatInfo(for: knownHostsURL) != nil {
             do {
                 try removeRegularFileIfPresent(knownHostsURL)
@@ -654,11 +802,17 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
         }
 
-        // 5. 按实际清理结果更新或移除状态文件。
-        if state.isEmpty {
-            try? removeRegularFileIfPresent(stateFileURL)
-        } else {
-            try? saveManagedState(state)
+        // 5. 按实际清理结果更新或移除状态文件，不静默忽略持久化错误。
+        do {
+            if state.isEmpty {
+                try removeRegularFileIfPresent(stateFileURL)
+            } else {
+                try saveManagedState(state)
+            }
+        } catch let error as ConfigError {
+            errors.append(error)
+        } catch {
+            errors.append(.fileOperationFailed(error.localizedDescription))
         }
 
         if let firstError = errors.first {
@@ -671,7 +825,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     private enum KeyPlanAction {
         case reuseExisting(body: String, fingerprint: String)
         case reconstructPublicKey(body: String, fingerprint: String)
-        case regenerateAfterRemovingOwnedPublicKey
+        case regenerateAfterRemovingOwnedPublicKey(verifiedPublicKeySnapshot: FileSnapshot)
         case generateFresh
     }
 
@@ -736,14 +890,19 @@ struct CodexLocalSSHConfigurator: Sendable {
             return KeyPlan(action: .reconstructPublicKey(body: expectedBody, fingerprint: expectedFingerprint), shouldRemovePreviousAuthorizedEntry: false)
         }
 
-        // !hasPrivate && hasPublic
-        let existingPubBody = readPublicKeyBody()
-        guard let existingPubBody,
+        // !hasPrivate && hasPublic：直接捕获并在执行阶段贯穿使用该已核验快照，绝不二次按路径重抓快照删除。
+        let pubSnapshot = try captureSnapshot(of: publicKeyURL)
+        guard pubSnapshot.exists,
+              let rawPub = String(data: pubSnapshot.data, encoding: .utf8),
+              let existingPubBody = Self.extractPublicKeyBody(from: rawPub.trimmingCharacters(in: .whitespacesAndNewlines)),
               existingPubBody == expectedBody,
               Self.computeOpenSSHSHA256Fingerprint(fromKeyBody: existingPubBody) == expectedFingerprint else {
             throw ConfigError.conflictingKeyFiles("仅存在公钥 \(Self.keyFileName).pub，且与 Mimi 记录的密钥指纹不一致。")
         }
-        return KeyPlan(action: .regenerateAfterRemovingOwnedPublicKey, shouldRemovePreviousAuthorizedEntry: true)
+        return KeyPlan(
+            action: .regenerateAfterRemovingOwnedPublicKey(verifiedPublicKeySnapshot: pubSnapshot),
+            shouldRemovePreviousAuthorizedEntry: true
+        )
     }
 
     private func materializeKeyPair(plan: KeyPlan, rollback: inout RollbackRecord) async throws -> KeyMaterial {
@@ -768,15 +927,18 @@ struct CodexLocalSSHConfigurator: Sendable {
             rollback.createdPublicKey = true
             rollback.createdPublicKeySnapshot = publishedSnapshot
             rollback.generatedKeyBody = body
+            rollback.generatedKeyFingerprint = fingerprint
             return KeyMaterial(publicKeyBody: body, fingerprint: fingerprint)
 
-        case .regenerateAfterRemovingOwnedPublicKey:
-            let pubSnapshot = try captureSnapshot(of: publicKeyURL)
-            if pubSnapshot.exists {
-                try removeFileMatchingSnapshot(publicKeyURL, expectedSnapshot: pubSnapshot, label: "\(Self.keyFileName).pub", invokeHook: false)
-                rollback.removedOwnedPublicKeyData = pubSnapshot.data
-                rollback.removedOwnedPublicKeyMode = pubSnapshot.mode
-            }
+        case .regenerateAfterRemovingOwnedPublicKey(let verifiedPublicKeySnapshot):
+            try removeFileMatchingSnapshot(
+                publicKeyURL,
+                expectedSnapshot: verifiedPublicKeySnapshot,
+                label: "\(Self.keyFileName).pub",
+                invokeHook: true
+            )
+            rollback.removedOwnedPublicKeyData = verifiedPublicKeySnapshot.data
+            rollback.removedOwnedPublicKeyMode = verifiedPublicKeySnapshot.mode
             return try await generateNewKeyPair(rollback: &rollback)
 
         case .generateFresh:
@@ -809,7 +971,8 @@ struct CodexLocalSSHConfigurator: Sendable {
             result = try await runCommand(
                 URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
                 ["-q", "-t", "ed25519", "-N", "", "-C", Self.keyComment, "-f", stagingPrivateURL.path],
-                .seconds(15)
+                .seconds(15),
+                nil
             )
         } catch {
             throw ConfigError.keyGenerationFailed(error.localizedDescription)
@@ -854,6 +1017,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         rollback.createdPrivateKey = true
         rollback.createdPrivateKeySnapshot = publishedPrivateSnapshot
         rollback.generatedKeyBody = pubBody
+        rollback.generatedKeyFingerprint = fingerprint
 
         let publishedPublicSnapshot = try publishStagedKeyFile(
             from: stagingPublicURL,
@@ -990,7 +1154,8 @@ struct CodexLocalSSHConfigurator: Sendable {
         guard let result = try? await runCommand(
             URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
             ["-y", "-P", "", "-f", tempKeyURL.path],
-            .seconds(10)
+            .seconds(10),
+            nil
         ), result.status == 0 else {
             return nil
         }
@@ -1008,6 +1173,7 @@ struct CodexLocalSSHConfigurator: Sendable {
         var createdPublicKey: Bool = false
         var createdPublicKeySnapshot: FileSnapshot?
         var generatedKeyBody: String?
+        var generatedKeyFingerprint: String?
         var removedOwnedPublicKeyData: Data?
         var removedOwnedPublicKeyMode: mode_t?
         var wroteSSHConfig: Bool = false
@@ -1016,6 +1182,8 @@ struct CodexLocalSSHConfigurator: Sendable {
         var originalConfigMode: mode_t?
         var originalHadManagedBlock: Bool = false
         var originalManagedBlockRaw: String?
+        var writtenManagedBlockRaw: String?
+        var writtenUsername: String?
         var writtenConfigData: Data?
         var createdBackupURL: URL?
         var wroteAuthorizedKeys: Bool = false
@@ -1038,29 +1206,47 @@ struct CodexLocalSSHConfigurator: Sendable {
     }
 
     private func performRollback(_ rollback: RollbackRecord) async -> RollbackOutcome {
-        var outcome = RollbackOutcome()
+        var failures: [String] = []
         var fallbackState = rollback.previousState ?? ManagedState()
         var residualAuthorizedEntry: String?
+        var residualConfigManaged = false
+        var residualNewKeyManaged = false
 
-        // 1. 回滚本次对 authorized_keys 的写入：若无外部编辑则精确恢复原始字节；若有外部编辑则仅撤回本次条目并保留外部修改。
+        // 1. 回滚本次对 authorized_keys 的写入：明确区分文件不存在与读取失败，绝不把读取失败当成已清理。
         if rollback.wroteAuthorizedKeys {
             var authReverted = false
-            if let snapshot = try? captureSnapshot(of: authorizedKeysURL), snapshot.exists {
-                if let written = rollback.writtenAuthData, snapshot.data == written {
+            do {
+                let snapshot = try captureSnapshot(of: authorizedKeysURL)
+                if !snapshot.exists {
                     if !rollback.originalAuthExisted {
-                        authReverted = (try? removeRegularFileIfPresent(authorizedKeysURL)) != nil
+                        authReverted = true
+                    } else {
+                        _ = try publishExclusiveNewFile(
+                            rollback.originalAuthData,
+                            to: authorizedKeysURL,
+                            mode: rollback.originalAuthMode ?? 0o600,
+                            label: "~/.ssh/authorized_keys",
+                            invokeHook: false
+                        )
+                        authReverted = true
+                    }
+                } else if let written = rollback.writtenAuthData, snapshot.data == written {
+                    if !rollback.originalAuthExisted {
+                        try removeRegularFileIfPresent(authorizedKeysURL)
                     } else {
                         let mode = rollback.originalAuthMode ?? 0o600
-                        authReverted = (try? writeFileAtomically(
+                        try writeFileAtomically(
                             rollback.originalAuthData,
                             to: authorizedKeysURL,
                             mode: mode,
                             expectedSnapshot: snapshot,
                             label: "~/.ssh/authorized_keys",
                             invokeHook: false
-                        )) != nil
+                        )
                     }
-                } else if let text = String(data: snapshot.data, encoding: .utf8) {
+                    authReverted = true
+                } else {
+                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/authorized_keys")
                     var working = text
                     var changed = false
                     if let entry = rollback.addedAuthorizedKeyEntry,
@@ -1083,172 +1269,222 @@ struct CodexLocalSSHConfigurator: Sendable {
                     }
                     if changed {
                         let mode = Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
-                        authReverted = (try? writeFileAtomically(
+                        try writeFileAtomically(
                             Data(working.utf8),
                             to: authorizedKeysURL,
                             mode: mode,
                             expectedSnapshot: snapshot,
                             label: "~/.ssh/authorized_keys",
                             invokeHook: false
-                        )) != nil
-                    } else {
-                        authReverted = true
+                        )
                     }
+                    authReverted = true
                 }
-            } else {
-                authReverted = !rollback.originalAuthExisted
+            } catch {
+                authReverted = false
+                failures.append("未能自动回滚 ~/.ssh/authorized_keys（\(error.localizedDescription)）")
             }
 
             if !authReverted {
-                outcome.fullyRolledBack = false
-                outcome.detail = "未能自动回滚 ~/.ssh/authorized_keys，请点击「移除本机 SSH 配置」清理。"
                 residualAuthorizedEntry = rollback.addedAuthorizedKeyEntry
             }
         }
 
-        // 2. 回滚本次对 ~/.ssh/config 的写入：若更新过原有托管块则恢复旧块，同时保留外部编辑。
+        // 2. 回滚本次对 ~/.ssh/config 的写入：明确区分读取失败与不存在；发生外部编辑时先比对托管块是否仍是本次写入内容，绝不盲目覆盖。
         if rollback.wroteSSHConfig {
             var configReverted = false
-            if let snapshot = try? captureSnapshot(of: sshConfigURL), snapshot.exists {
-                if let written = rollback.writtenConfigData, snapshot.data == written {
+            do {
+                let snapshot = try captureSnapshot(of: sshConfigURL)
+                if !snapshot.exists {
                     if !rollback.originalConfigExisted {
-                        configReverted = (try? removeRegularFileIfPresent(sshConfigURL)) != nil
+                        configReverted = true
+                    } else {
+                        _ = try publishExclusiveNewFile(
+                            rollback.originalConfigData,
+                            to: sshConfigURL,
+                            mode: rollback.originalConfigMode ?? 0o600,
+                            label: "~/.ssh/config",
+                            invokeHook: false
+                        )
+                        configReverted = true
+                    }
+                } else if let written = rollback.writtenConfigData, snapshot.data == written {
+                    if !rollback.originalConfigExisted {
+                        try removeRegularFileIfPresent(sshConfigURL)
                     } else {
                         let mode = rollback.originalConfigMode ?? 0o600
-                        configReverted = (try? writeFileAtomically(
+                        try writeFileAtomically(
                             rollback.originalConfigData,
                             to: sshConfigURL,
                             mode: mode,
                             expectedSnapshot: snapshot,
                             label: "~/.ssh/config",
                             invokeHook: false
-                        )) != nil
+                        )
                     }
-                } else if let text = String(data: snapshot.data, encoding: .utf8) {
+                    configReverted = true
+                } else {
+                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
+                    let currentStripped = try Self.stripManagedBlock(from: text)
+                    guard currentStripped.hadManagedBlock,
+                          Self.managedBlocksMatch(currentStripped.originalManagedBlock, expected: rollback.writtenManagedBlockRaw) else {
+                        throw ConfigError.concurrentModification("~/.ssh/config 中的托管块在回滚前已被外部修改，已保留外部改动未覆盖。")
+                    }
                     if rollback.originalHadManagedBlock, let oldBlock = rollback.originalManagedBlockRaw {
-                        if let restoredText = try? Self.replaceManagedBlock(in: text, with: oldBlock) {
-                            let mode = rollback.originalConfigMode ?? Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
-                            configReverted = (try? writeFileAtomically(
-                                Data(restoredText.utf8),
-                                to: sshConfigURL,
-                                mode: mode,
-                                expectedSnapshot: snapshot,
-                                label: "~/.ssh/config",
-                                invokeHook: false
-                            )) != nil
+                        guard let restoredText = try Self.replaceManagedBlock(in: text, with: oldBlock) else {
+                            throw ConfigError.invalidManagedBlock
                         }
-                    } else if let stripped = try? Self.stripManagedBlock(from: text), stripped.hadManagedBlock {
-                        if !rollback.originalConfigExisted && stripped.remaining.isEmpty {
-                            configReverted = (try? removeRegularFileIfPresent(sshConfigURL)) != nil
-                        } else {
-                            let mode = rollback.originalConfigMode ?? Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
-                            configReverted = (try? writeFileAtomically(
-                                Data(stripped.remaining.utf8),
-                                to: sshConfigURL,
-                                mode: mode,
-                                expectedSnapshot: snapshot,
-                                label: "~/.ssh/config",
-                                invokeHook: false
-                            )) != nil
-                        }
+                        let mode = rollback.originalConfigMode ?? Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
+                        try writeFileAtomically(
+                            Data(restoredText.utf8),
+                            to: sshConfigURL,
+                            mode: mode,
+                            expectedSnapshot: snapshot,
+                            label: "~/.ssh/config",
+                            invokeHook: false
+                        )
+                    } else if !rollback.originalConfigExisted && currentStripped.remaining.isEmpty {
+                        try removeRegularFileIfPresent(sshConfigURL)
+                    } else {
+                        let mode = rollback.originalConfigMode ?? Self.tightenedFileMode(existing: snapshot.mode, maxMode: 0o600)
+                        try writeFileAtomically(
+                            Data(currentStripped.remaining.utf8),
+                            to: sshConfigURL,
+                            mode: mode,
+                            expectedSnapshot: snapshot,
+                            label: "~/.ssh/config",
+                            invokeHook: false
+                        )
                     }
+                    configReverted = true
                 }
-            } else {
-                configReverted = !rollback.originalConfigExisted
+            } catch {
+                configReverted = false
+                failures.append("未能自动回滚 ~/.ssh/config（\(error.localizedDescription)）")
             }
 
             if !configReverted {
-                outcome.fullyRolledBack = false
-                if outcome.detail == nil {
-                    outcome.detail = "未能自动回滚 ~/.ssh/config，请核对或点击「移除本机 SSH 配置」清理。"
-                }
+                residualConfigManaged = true
             } else if let backupURL = rollback.createdBackupURL {
                 try? removeRegularFileIfPresent(backupURL)
             }
         }
 
-        // 3. 回滚应用专用 known_hosts 文件
+        // 3. 逐项回滚应用专用 known_hosts 文件并记录错误，不再静默忽略。
         if rollback.createdKnownHostsFile {
-            try? removeRegularFileIfPresent(knownHostsURL)
-        } else if let origKH = rollback.originalKnownHostsData,
-                  let currentKH = try? captureSnapshot(of: knownHostsURL),
-                  currentKH.exists,
-                  currentKH.data != origKH {
-            try? writeFileAtomically(
-                origKH,
-                to: knownHostsURL,
-                mode: rollback.originalKnownHostsMode ?? 0o600,
-                expectedSnapshot: currentKH,
-                label: knownHostsURL.lastPathComponent,
-                invokeHook: false
-            )
+            do {
+                try removeRegularFileIfPresent(knownHostsURL)
+            } catch {
+                failures.append("未能清理新建的 \(knownHostsURL.lastPathComponent)（\(error.localizedDescription)）")
+            }
+        } else if let origKH = rollback.originalKnownHostsData {
+            do {
+                let currentKH = try captureSnapshot(of: knownHostsURL)
+                if !currentKH.exists {
+                    _ = try publishExclusiveNewFile(
+                        origKH,
+                        to: knownHostsURL,
+                        mode: rollback.originalKnownHostsMode ?? 0o600,
+                        label: knownHostsURL.lastPathComponent,
+                        invokeHook: false
+                    )
+                } else if currentKH.data != origKH {
+                    try writeFileAtomically(
+                        origKH,
+                        to: knownHostsURL,
+                        mode: rollback.originalKnownHostsMode ?? 0o600,
+                        expectedSnapshot: currentKH,
+                        label: knownHostsURL.lastPathComponent,
+                        invokeHook: false
+                    )
+                }
+            } catch {
+                failures.append("未能恢复 \(knownHostsURL.lastPathComponent)（\(error.localizedDescription)）")
+            }
         }
 
-        // 4. 按发布快照安全回滚本次新建的密钥文件（绝不删外部替换的同名文件）
+        // 4. 按发布快照安全回滚本次新建的密钥文件并逐项记录失败（绝不删外部替换的同名文件）。
         if rollback.createdPrivateKey, let snapshot = rollback.createdPrivateKeySnapshot {
             do {
                 try removeFileMatchingSnapshot(privateKeyURL, expectedSnapshot: snapshot, label: Self.keyFileName, invokeHook: false)
+            } catch ConfigError.conflictingKeyFiles {
+                failures.append("私钥 \(Self.keyFileName) 在回滚前已被外部替换，已保留未删除")
             } catch {
-                // 若文件已被外部替换，不删除并保留状态提醒。
+                residualNewKeyManaged = true
+                failures.append("未能回滚新建私钥 \(Self.keyFileName)（\(error.localizedDescription)）")
             }
         }
         if rollback.createdPublicKey, let snapshot = rollback.createdPublicKeySnapshot {
             do {
                 try removeFileMatchingSnapshot(publicKeyURL, expectedSnapshot: snapshot, label: "\(Self.keyFileName).pub", invokeHook: false)
+            } catch ConfigError.conflictingKeyFiles {
+                failures.append("公钥 \(Self.keyFileName).pub 在回滚前已被外部替换，已保留未删除")
             } catch {
-                // 若文件已被外部替换，不删除。
+                residualNewKeyManaged = true
+                failures.append("未能回滚新建公钥 \(Self.keyFileName).pub（\(error.localizedDescription)）")
             }
         }
-        if let oldPubData = rollback.removedOwnedPublicKeyData, lstatInfo(for: publicKeyURL) == nil {
-            _ = try? publishExclusiveNewFile(
-                oldPubData,
-                to: publicKeyURL,
-                mode: rollback.removedOwnedPublicKeyMode ?? 0o644,
-                label: "\(Self.keyFileName).pub",
-                invokeHook: false
-            )
+        if let oldPubData = rollback.removedOwnedPublicKeyData {
+            do {
+                _ = try publishExclusiveNewFile(
+                    oldPubData,
+                    to: publicKeyURL,
+                    mode: rollback.removedOwnedPublicKeyMode ?? 0o644,
+                    label: "\(Self.keyFileName).pub",
+                    invokeHook: false
+                )
+            } catch {
+                failures.append("未能恢复原有公钥 \(Self.keyFileName).pub（\(error.localizedDescription)）")
+            }
         }
 
-        // 5. 恢复之前的 state 文件；若授权回滚失败则保留残留授权记录以便后续 remove() 撤销。
-        if !outcome.fullyRolledBack, let residualAuthorizedEntry {
+        // 5. 恢复或保留可撤销的 state 文件，并显式记录持久化错误。
+        if let residualAuthorizedEntry {
             fallbackState.authorizedKeyEntry = residualAuthorizedEntry
             fallbackState.authorizedKeyBody = rollback.addedAuthorizedKeyBody ?? rollback.generatedKeyBody
             fallbackState.authorizedKeyAddedLeadingNewline = rollback.addedAuthorizedKeyLeadingNewline
-            try? saveManagedState(fallbackState)
-        } else if let previousState = rollback.previousState {
-            try? saveManagedState(previousState)
-        } else {
-            try? removeRegularFileIfPresent(stateFileURL)
+        }
+        if residualConfigManaged && fallbackState.managedHostAlias == nil {
+            fallbackState.managedHostAlias = Self.hostAlias
+            fallbackState.managedUsername = rollback.writtenUsername
+        }
+        if residualNewKeyManaged {
+            if let fp = rollback.generatedKeyFingerprint { fallbackState.keyFingerprint = fp }
+            if let body = rollback.generatedKeyBody { fallbackState.publicKeyBody = body }
         }
 
-        return outcome
+        do {
+            if !failures.isEmpty && !fallbackState.isEmpty {
+                try saveManagedState(fallbackState)
+            } else if let previousState = rollback.previousState {
+                try saveManagedState(previousState)
+            } else {
+                try removeRegularFileIfPresent(stateFileURL)
+            }
+        } catch {
+            failures.append("未能恢复 Mimi SSH 状态文件（\(error.localizedDescription)）")
+        }
+
+        if failures.isEmpty {
+            return RollbackOutcome(fullyRolledBack: true, detail: nil)
+        }
+        return RollbackOutcome(
+            fullyRolledBack: false,
+            detail: "部分已写入项未能自动回滚，请点击「移除本机 SSH 配置」清理：\(failures.joined(separator: "；"))"
+        )
     }
 
     // MARK: - OpenSSH Effective Config & Desktop-Path Verification
 
-    private func buildCombinedSSHConfigForEvaluation(userConfigText: String) -> String {
-        guard let sysPath = systemSSHConfigPath,
-              !sysPath.isEmpty,
-              FileManager.default.isReadableFile(atPath: sysPath) else {
-            return userConfigText
-        }
-        var combined = userConfigText
-        if !combined.isEmpty && combined.utf8.last != 0x0A {
-            combined.append("\n")
-        }
-        combined.append("Host *\nInclude \"\(sysPath)\"\n")
-        return combined
-    }
-
     private func validateCandidateSSHConfig(_ candidateText: String, expectedUser: String) async throws {
-        let evalText = buildCombinedSSHConfigForEvaluation(userConfigText: candidateText)
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(".mimi-ssh-candidate-\(UUID().uuidString).conf")
-        try writeExclusiveTempFile(Data(evalText.utf8), to: tempURL, mode: 0o600)
-        defer { _ = Darwin.unlink(tempURL.path) }
+        let materialized = try materializeEvaluationSSHConfig(
+            userConfigText: candidateText,
+            includeSystemConfig: true
+        )
+        defer { materialized.cleanup() }
 
         let effective = try await resolveEffectiveSSHConfig(
-            configPath: tempURL.path,
+            configPath: materialized.configFileURL.path,
             alias: Self.hostAlias,
             includeSystemConfig: false
         )
@@ -1267,12 +1503,8 @@ struct CodexLocalSSHConfigurator: Sendable {
         alias: String,
         includeSystemConfig: Bool = true
     ) async throws -> EffectiveSSHConfig {
-        var tempCombinedURL: URL?
-        defer {
-            if let tempCombinedURL {
-                _ = Darwin.unlink(tempCombinedURL.path)
-            }
-        }
+        var materialized: MaterializedSSHConfig?
+        defer { materialized?.cleanup() }
 
         let arguments: [String]
         if includeSystemConfig,
@@ -1281,18 +1513,20 @@ struct CodexLocalSSHConfigurator: Sendable {
            systemSSHConfigPath == "/etc/ssh/ssh_config" {
             // 默认用户主目录直接走不带 -F 的真实桌面版解析路径（同时加载 ~/.ssh/config 与 /etc/ssh/ssh_config）。
             arguments = ["-G", alias]
-        } else if includeSystemConfig,
-                  let sysPath = systemSSHConfigPath,
-                  !sysPath.isEmpty,
-                  FileManager.default.isReadableFile(atPath: sysPath),
-                  let rawData = try? readRegularFileDataIfPresent(URL(fileURLWithPath: configPath)),
-                  let rawText = String(data: rawData, encoding: .utf8) {
-            let combined = buildCombinedSSHConfigForEvaluation(userConfigText: rawText)
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(".mimi-ssh-eval-\(UUID().uuidString).conf")
-            try writeExclusiveTempFile(Data(combined.utf8), to: tempURL, mode: 0o600)
-            tempCombinedURL = tempURL
-            arguments = ["-G", "-F", tempURL.path, alias]
+        } else if includeSystemConfig {
+            let rawText: String
+            if let rawData = try? readRegularFileDataIfPresent(URL(fileURLWithPath: configPath)),
+               let decoded = String(data: rawData, encoding: .utf8) {
+                rawText = decoded
+            } else {
+                rawText = ""
+            }
+            let snapshot = try materializeEvaluationSSHConfig(
+                userConfigText: rawText,
+                includeSystemConfig: true
+            )
+            materialized = snapshot
+            arguments = ["-G", "-F", snapshot.configFileURL.path, alias]
         } else {
             arguments = ["-G", "-F", configPath, alias]
         }
@@ -1302,7 +1536,8 @@ struct CodexLocalSSHConfigurator: Sendable {
             result = try await runCommand(
                 URL(fileURLWithPath: "/usr/bin/ssh"),
                 arguments,
-                .seconds(10)
+                .seconds(10),
+                nil
             )
         } catch {
             throw ConfigError.effectiveConfigConflict("无法解析 SSH 配置：\(error.localizedDescription)")
@@ -1314,50 +1549,56 @@ struct CodexLocalSSHConfigurator: Sendable {
         return Self.parseEffectiveSSHConfig(result.stdoutText)
     }
 
-    /// 使用桌面版实际调用的托管别名 `mimi-local`（经 ssh -G 验证直连当前用户 127.0.0.1:22、仅专用私钥与应用专用 known_hosts）验证免密连通。
-    private func verifyLoopbackSSH(username: String) async throws {
+    /// 绑定到刚经 `ssh -G` 核验的同一份冻结配置快照，固定回环地址、当前用户、专用身份与专用信任文件，并执行双向 stdin/stdout 握手验证。
+    private func verifyLoopbackSSH(username: String, verifiedConfigPath: String) async throws {
         try validateStateDirectoryAndFile()
 
-        var tempCombinedURL: URL?
-        defer {
-            if let tempCombinedURL {
-                _ = Darwin.unlink(tempCombinedURL.path)
-            }
-        }
-
-        var arguments: [String] = []
-        if isDefaultUserHome, systemSSHConfigPath == "/etc/ssh/ssh_config" {
-            // 与 Codex 桌面版完全一致的默认配置加载路径（~/.ssh/config + /etc/ssh/ssh_config）。
-        } else if let sysPath = systemSSHConfigPath,
-                  !sysPath.isEmpty,
-                  FileManager.default.isReadableFile(atPath: sysPath),
-                  let rawData = try? readRegularFileDataIfPresent(sshConfigURL),
-                  let rawText = String(data: rawData, encoding: .utf8) {
-            let combined = buildCombinedSSHConfigForEvaluation(userConfigText: rawText)
-            let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(".mimi-ssh-verify-\(UUID().uuidString).conf")
-            try writeExclusiveTempFile(Data(combined.utf8), to: tempURL, mode: 0o600)
-            tempCombinedURL = tempURL
-            arguments.append(contentsOf: ["-F", tempURL.path])
-        } else {
-            arguments.append(contentsOf: ["-F", sshConfigURL.path])
-        }
-
-        arguments.append(contentsOf: [
+        let probePayload = Data("mimi-ssh-probe-\(UUID().uuidString)\n".utf8)
+        let arguments = [
+            "-F", verifiedConfigPath,
+            "-T",
             "-o", "BatchMode=yes",
+            "-o", "HostName=127.0.0.1",
+            "-o", "AddressFamily=inet",
+            "-o", "Port=22",
+            "-o", "User=\(username)",
+            "-o", "IdentityFile=\"\(privateKeyURL.path)\"",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "IdentityAgent=none",
+            "-o", "PubkeyAuthentication=yes",
+            "-o", "PreferredAuthentications=publickey",
             "-o", "PasswordAuthentication=no",
             "-o", "KbdInteractiveAuthentication=no",
+            "-o", "UserKnownHostsFile=\"\(expectedKnownHostsPath)\"",
+            "-o", "GlobalKnownHostsFile=none",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "UpdateHostKeys=no",
+            "-o", "ClearAllForwardings=yes",
+            "-o", "ForwardAgent=no",
+            "-o", "ForwardX11=no",
+            "-o", "ProxyJump=none",
+            "-o", "ProxyCommand=none",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "-o", "ControlPersist=no",
+            "-o", "CanonicalizeHostname=no",
+            "-o", "PermitLocalCommand=no",
+            "-o", "RemoteCommand=none",
+            "-o", "RequestTTY=no",
+            "-o", "SessionType=default",
+            "-o", "ForkAfterAuthentication=no",
             "-o", "ConnectTimeout=5",
             Self.hostAlias,
-            "true",
-        ])
+            "/bin/cat",
+        ]
 
         let result: CommandResult
         do {
             result = try await runCommand(
                 URL(fileURLWithPath: "/usr/bin/ssh"),
                 arguments,
-                .seconds(12)
+                .seconds(12),
+                probePayload
             )
         } catch {
             throw ConfigError.verificationFailed(error.localizedDescription)
@@ -1369,7 +1610,9 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
             throw ConfigError.verificationFailed(stderr)
         }
-        _ = username
+        guard result.stdout == probePayload else {
+            throw ConfigError.verificationFailed("本机 SSH 双向输入输出握手未通过，Codex 桌面版代理可能无法正常通信（请检查 StdinNull 或 shell 启动输出）。")
+        }
     }
 
     // MARK: - Authorized Keys Helpers

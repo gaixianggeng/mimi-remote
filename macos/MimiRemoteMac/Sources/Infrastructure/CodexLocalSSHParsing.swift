@@ -49,6 +49,13 @@ extension CodexLocalSSHConfigurator {
             "    CanonicalizeHostname no",
             "    PermitLocalCommand no",
             "    RemoteCommand none",
+            "    StdinNull no",
+            "    RequestTTY auto",
+            "    SessionType default",
+            "    ForkAfterAuthentication no",
+            "    EscapeChar none",
+            "    EnableEscapeCommandline no",
+            "    UpdateHostKeys no",
             "    StrictHostKeyChecking accept-new",
         ]
         if appendGlobalHostReset {
@@ -307,10 +314,13 @@ extension CodexLocalSSHConfigurator {
         for range in targetRanges.reversed() {
             result.removeSubrange(range)
         }
-        if addedLeadingNewline && removedTrailingLineAtEOF && result.utf8.last == 0x0A {
+        if addedLeadingNewline && removedTrailingLineAtEOF {
             var bytes = Array(result.utf8)
-            bytes.removeLast()
-            result = String(decoding: bytes, as: UTF8.self)
+            // 仅在末尾确认为 Mimi 追加时插入的独立 LF（非已被外部转为 CRLF 的 \r\n）时才移除，避免残留裸 CR。
+            if bytes.last == 0x0A && (bytes.count < 2 || bytes[bytes.count - 2] != 0x0D) {
+                bytes.removeLast()
+                result = String(decoding: bytes, as: UTF8.self)
+            }
         }
         return (result, true)
     }
@@ -447,6 +457,22 @@ extension CodexLocalSSHConfigurator {
         return updated
     }
 
+    /// 精确比对两个托管块内容是否一致（仅忽略末尾单次换行符差异），用于回滚替换前确认托管块未被外部改写。
+    static func managedBlocksMatch(_ currentBlock: String?, expected writtenBlock: String?) -> Bool {
+        guard let currentBlock, let writtenBlock else { return false }
+        func stripSingleTrailingLineEnding(_ text: String) -> [UInt8] {
+            var bytes = Array(text.utf8)
+            if bytes.last == 0x0A {
+                bytes.removeLast()
+                if bytes.last == 0x0D {
+                    bytes.removeLast()
+                }
+            }
+            return bytes
+        }
+        return stripSingleTrailingLineEnding(currentBlock) == stripSingleTrailingLineEnding(writtenBlock)
+    }
+
     /// 将托管块置于文件顶部（优先于后续 `Host *`），并逐字节保留原配置其余内容。
     static func composeSSHConfig(remaining: String, managedBlock: String) -> String {
         if remaining.isEmpty {
@@ -577,6 +603,11 @@ extension CodexLocalSSHConfigurator {
     }
 
     private func resolveIncludePaths(pattern: String) -> [String] {
+        Self.resolveGlobPaths(pattern: pattern, baseDirectory: sshDirectory, homeDirectory: homeDirectory)
+    }
+
+    /// 按 OpenSSH 规则展开 `Include` 模式：绝对路径原样、波浪号基于 homeDirectory、相对路径基于指定 baseDirectory（用户配置为 `~/.ssh`，系统配置为 `/etc/ssh`）。
+    static func resolveGlobPaths(pattern: String, baseDirectory: URL, homeDirectory: URL) -> [String] {
         let expanded: String
         if pattern == "~" {
             expanded = homeDirectory.path
@@ -585,7 +616,7 @@ extension CodexLocalSSHConfigurator {
         } else if pattern.hasPrefix("/") {
             expanded = pattern
         } else {
-            expanded = sshDirectory.appendingPathComponent(pattern).path
+            expanded = baseDirectory.appendingPathComponent(pattern).path
         }
 
         var globResult = glob_t()
@@ -715,6 +746,20 @@ extension CodexLocalSSHConfigurator {
                 parsed.permitLocalCommand = value
             case "canonicalizehostname":
                 parsed.canonicalizeHostname = value
+            case "stdinnull":
+                parsed.stdinNull = value
+            case "requesttty":
+                parsed.requestTTY = value
+            case "sessiontype":
+                parsed.sessionType = value
+            case "forkafterauthentication":
+                parsed.forkAfterAuthentication = value
+            case "updatehostkeys":
+                parsed.updateHostKeys = value
+            case "escapechar":
+                parsed.escapeChar = value
+            case "enableescapecommandline":
+                parsed.enableEscapeCommandline = value
             default:
                 break
             }
@@ -767,7 +812,10 @@ extension CodexLocalSSHConfigurator {
         guard config.userKnownHostsFile == expectedKnownHostsFile else {
             return "UserKnownHostsFile 实际解析为 \(config.userKnownHostsFile ?? "<空>")，预期 \(expectedKnownHostsFile)。"
         }
-        if let strict = config.strictHostKeyChecking?.lowercased(), strict != "accept-new" && strict != "yes" {
+        if let globalKH = config.globalKnownHostsFile?.lowercased(), !globalKH.isEmpty, globalKH != "none" {
+            return "GlobalKnownHostsFile 未禁用（\(globalKH)）。"
+        }
+        if let strict = config.strictHostKeyChecking?.lowercased(), strict != "accept-new" && strict != "yes" && strict != "true" {
             return "StrictHostKeyChecking 不安全（\(strict)）。"
         }
         guard config.localForwards.isEmpty else {
@@ -806,10 +854,25 @@ extension CodexLocalSSHConfigurator {
         if let canon = config.canonicalizeHostname?.lowercased(), !canon.isEmpty, canon != "no" && canon != "false" {
             return "CanonicalizeHostname 未禁用（\(canon)）。"
         }
+        if let stdinNull = config.stdinNull?.lowercased(), !stdinNull.isEmpty, stdinNull != "no" && stdinNull != "false" {
+            return "StdinNull 已启用（\(stdinNull)），会阻断 Codex 桌面版 App Server 代理的双向输入。"
+        }
+        if let requestTTY = config.requestTTY?.lowercased(), !requestTTY.isEmpty, requestTTY != "no" && requestTTY != "auto" && requestTTY != "false" {
+            return "RequestTTY 强制分配终端（\(requestTTY)），会破坏 Codex 桌面版代理流。"
+        }
+        if let sessionType = config.sessionType?.lowercased(), !sessionType.isEmpty, sessionType != "default" {
+            return "SessionType 异常（\(sessionType)），无法执行 Codex 桌面版代理命令。"
+        }
+        if let forkAuth = config.forkAfterAuthentication?.lowercased(), !forkAuth.isEmpty, forkAuth != "no" && forkAuth != "false" {
+            return "ForkAfterAuthentication 已启用（\(forkAuth)），会阻断会话输入输出。"
+        }
+        if let escapeCmd = config.enableEscapeCommandline?.lowercased(), !escapeCmd.isEmpty, escapeCmd != "no" && escapeCmd != "false" {
+            return "EnableEscapeCommandline 未禁用（\(escapeCmd)）。"
+        }
         return nil
     }
 
-    /// 校验目标（如裸 127.0.0.1）在用户与系统 SSH 配置下是否直连当前用户的回环 22 端口，无重定向或代理。
+    /// 校验目标（如裸 127.0.0.1）在用户与系统 SSH 配置下是否直连当前用户的回环 22 端口，无重定向或代理，且认证与双向传输选项对 Codex 桌面版可用。
     static func isDirectLoopbackConfig(
         _ config: EffectiveSSHConfig,
         expectedUser: String,
@@ -821,6 +884,15 @@ extension CodexLocalSSHConfigurator {
         }
         guard config.port == "22", config.user == expectedUser else {
             return false
+        }
+        if let pubkey = config.pubkeyAuthentication?.lowercased(), !pubkey.isEmpty, pubkey != "yes" && pubkey != "true" {
+            return false
+        }
+        if let preferred = config.preferredAuthentications, !preferred.isEmpty {
+            let methods = preferred.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            if !methods.contains("publickey") {
+                return false
+            }
         }
         if let proxyJump = config.proxyJump?.lowercased(), !proxyJump.isEmpty, proxyJump != "none" {
             return false
@@ -838,6 +910,21 @@ extension CodexLocalSSHConfigurator {
             return false
         }
         if let permitLocal = config.permitLocalCommand?.lowercased(), !permitLocal.isEmpty, permitLocal != "no" && permitLocal != "false" {
+            return false
+        }
+        if let canon = config.canonicalizeHostname?.lowercased(), !canon.isEmpty, canon != "no" && canon != "false" {
+            return false
+        }
+        if let stdinNull = config.stdinNull?.lowercased(), !stdinNull.isEmpty, stdinNull != "no" && stdinNull != "false" {
+            return false
+        }
+        if let requestTTY = config.requestTTY?.lowercased(), !requestTTY.isEmpty, requestTTY != "no" && requestTTY != "auto" && requestTTY != "false" {
+            return false
+        }
+        if let sessionType = config.sessionType?.lowercased(), !sessionType.isEmpty, sessionType != "default" {
+            return false
+        }
+        if let forkAuth = config.forkAfterAuthentication?.lowercased(), !forkAuth.isEmpty, forkAuth != "no" && forkAuth != "false" {
             return false
         }
         return true

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 /// 在 Codex 桌面版打开一条会话（#991）。只开深链、只读进程列表，不读写桌面版的私有数据。
@@ -218,6 +219,249 @@ enum CodexDesktopLink {
             let hasRemotePeer = peers.contains { !$0.isLoopbackHost }
             return hasLoopbackSSH && !hasRemotePeer
         }
+    }
+
+    struct ProcessSnapshotEntry: Equatable, Sendable {
+        let pid: Int32
+        let ppid: Int32
+        let uid: uid_t
+        let executable: String
+        let arguments: [Substring]
+    }
+
+    /// 解析 `ps -axo pid=,ppid=,uid=,command=` 输出，用于校验进程归属当前用户及 `sshd` 祖先链。
+    static func parseProcessesWithUID(psOutput: String) -> [Int32: ProcessSnapshotEntry] {
+        var table: [Int32: ProcessSnapshotEntry] = [:]
+        for line in psOutput.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 4,
+                  let pid = Int32(fields[0]),
+                  let ppid = Int32(fields[1]),
+                  let uidValue = UInt32(fields[2]) else { continue }
+            table[pid] = ProcessSnapshotEntry(
+                pid: pid,
+                ppid: ppid,
+                uid: uid_t(uidValue),
+                executable: String(fields[3]),
+                arguments: Array(fields.dropFirst(4))
+            )
+        }
+        return table
+    }
+
+    /// 从带 UID 的 `ps` 表中提取桌面版名下满足直连回环条件的 ssh 子进程候选列表。
+    static func localSSHChildCandidates(
+        processes: [Int32: ProcessSnapshotEntry],
+        desktopPIDs: Set<Int32>,
+        localHosts: Set<String>,
+        expectedUsername: String? = nil
+    ) -> [SSHChildCandidate] {
+        guard !desktopPIDs.isEmpty else { return [] }
+        let hosts = Set(localHosts.map { $0.lowercased() })
+        var candidates: [SSHChildCandidate] = []
+        for entry in processes.values where desktopPIDs.contains(entry.ppid) {
+            guard entry.executable == "ssh" || entry.executable.hasSuffix("/ssh") else { continue }
+            guard let invocation = parseSSHInvocation(from: entry.arguments) else { continue }
+            if invocation.isDirectLoopbackInvocation(localHosts: hosts, expectedUsername: expectedUsername) {
+                candidates.append(SSHChildCandidate(pid: entry.pid, invocation: invocation))
+            }
+        }
+        return candidates
+    }
+
+    /// 解析当前用户共享 Codex App Server 控制 socket 路径集合（包含标准路径及经归属校验的 Codex 0.161+ 私有 socket 符号链接目标）。
+    static func sharedCodexControlSocketPaths(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        expectedUID: uid_t = Darwin.geteuid()
+    ) -> Set<String> {
+        var roots: [URL] = []
+        if let configuredHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !configuredHome.isEmpty {
+            roots.append(URL(fileURLWithPath: configuredHome, isDirectory: true))
+        }
+        roots.append(homeDirectory.appendingPathComponent(".codex", isDirectory: true))
+
+        var paths: Set<String> = []
+        for root in roots {
+            let controlDir = root.appendingPathComponent("app-server-control", isDirectory: true)
+            let socketURL = controlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
+            paths.insert(socketURL.standardizedFileURL.path)
+
+            let resolvedDir = controlDir.resolvingSymlinksInPath()
+            let canonicalSocket = resolvedDir.appendingPathComponent("app-server-control.sock", isDirectory: false).path
+            paths.insert(canonicalSocket)
+
+            var st = stat()
+            if Darwin.lstat(socketURL.path, &st) == 0,
+               (st.st_mode & S_IFMT) == S_IFLNK,
+               st.st_uid == expectedUID {
+                var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+                let len = Darwin.readlink(socketURL.path, &buf, buf.count - 1)
+                if len > 0 {
+                    let target = String(cString: buf)
+                    let daemonPrefix1 = "/tmp/codex-daemon-\(expectedUID)/"
+                    let daemonPrefix2 = "/private/tmp/codex-daemon-\(expectedUID)/"
+                    if target.hasPrefix(daemonPrefix1) || target.hasPrefix(daemonPrefix2) {
+                        paths.insert(target)
+                        if target.hasPrefix(daemonPrefix1) {
+                            paths.insert("/private" + target)
+                        }
+                    }
+                }
+            }
+        }
+        return paths
+    }
+
+    /// 从 `lsof -nP -a -U -u <uid> -F0pcfdtn` 输出解析当前已连接到共享 Codex 控制 socket 的 `codex` 客户端进程 PID 集合。
+    static func parseConnectedCodexClientPIDs(
+        unixLsofOutput: Data,
+        sharedSocketPaths: Set<String>
+    ) -> Set<Int32> {
+        guard !sharedSocketPaths.isEmpty, !unixLsofOutput.isEmpty else { return [] }
+        struct UnixSocketFile {
+            var pid: Int32 = 0
+            var command: String = ""
+            var kind: String = ""
+            var address: String = ""
+            var name: String = ""
+        }
+
+        var files: [UnixSocketFile] = []
+        var current = UnixSocketFile()
+        var hasFile = false
+        func flush() {
+            if hasFile && current.kind == "unix" && current.pid > 1 {
+                files.append(current)
+            }
+        }
+
+        for rawField in unixLsofOutput.split(separator: 0, omittingEmptySubsequences: true) {
+            let trimmed = String(decoding: rawField, as: UTF8.self)
+                .drop(while: { $0 == "\n" || $0 == "\r" })
+            guard let tag = trimmed.first else { continue }
+            let value = String(trimmed.dropFirst())
+            switch tag {
+            case "p":
+                flush()
+                guard let pid = Int32(value), pid > 1 else {
+                    current = UnixSocketFile()
+                    hasFile = false
+                    continue
+                }
+                current = UnixSocketFile(pid: pid)
+                hasFile = false
+            case "c":
+                current.command = value
+            case "f":
+                flush()
+                guard current.pid > 1, !current.command.isEmpty else {
+                    hasFile = false
+                    continue
+                }
+                current = UnixSocketFile(pid: current.pid, command: current.command)
+                hasFile = true
+            case "t":
+                current.kind = value
+            case "d":
+                current.address = value
+            case "n":
+                current.name = value
+            default:
+                break
+            }
+        }
+        flush()
+
+        var serverAddresses: Set<String> = []
+        for file in files where file.address.hasPrefix("0x") && sharedSocketPaths.contains(file.name) {
+            serverAddresses.insert(file.address)
+        }
+        guard !serverAddresses.isEmpty else { return [] }
+
+        var connectedCodexPIDs: Set<Int32> = []
+        for file in files where file.name.hasPrefix("->") {
+            let peerAddress = String(file.name.dropFirst(2))
+            guard serverAddresses.contains(peerAddress) else { continue }
+            let cmd = file.command
+            let isCodexCommand = cmd == "codex" ||
+                cmd.hasPrefix("codex-aarch64") ||
+                cmd.hasPrefix("codex-x86_64") ||
+                cmd == "codex-aar" ||
+                cmd == "codex-x86"
+            if isCodexCommand {
+                connectedCodexPIDs.insert(file.pid)
+            }
+        }
+        return connectedCodexPIDs
+    }
+
+    private static func isSSHServerExecutable(_ executable: String) -> Bool {
+        let base = URL(fileURLWithPath: executable).lastPathComponent
+            .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+        return base == "sshd" || base == "sshd-session"
+    }
+
+    /// 校验存在至少一个属于当前用户、由已认证 `sshd` 会话拉起、且已接入共享 Codex 控制 socket 的 `codex` 客户端进程。
+    static func hasSSHAuthenticatedCodexSession(
+        processes: [Int32: ProcessSnapshotEntry],
+        expectedUID: uid_t,
+        connectedCodexPIDs: Set<Int32>
+    ) -> Bool {
+        for pid in connectedCodexPIDs {
+            guard let start = processes[pid], start.uid == expectedUID else { continue }
+            var cursor = start.ppid
+            var hops = 0
+            while cursor > 1 && hops < 16 {
+                guard let parent = processes[cursor] else { break }
+                if isSSHServerExecutable(parent.executable) {
+                    return true
+                }
+                if parent.ppid == cursor { break }
+                cursor = parent.ppid
+                hops += 1
+            }
+        }
+        return false
+    }
+
+    /// 综合校验客户端回环 SSH 已建立连接 + 服务端当前账号经 SSH 认证接入共享 Codex App Server 控制 socket 的完整证据。
+    static func hasVerifiedSharedConnection(
+        psWithUIDOutput: String,
+        desktopPIDs: Set<Int32>,
+        localHosts: Set<String>,
+        expectedUsername: String?,
+        expectedUID: uid_t,
+        tcpLsofOutput: String,
+        unixLsofOutput: Data,
+        sharedSocketPaths: Set<String>
+    ) -> Bool {
+        let processes = parseProcessesWithUID(psOutput: psWithUIDOutput)
+        let candidates = localSSHChildCandidates(
+            processes: processes,
+            desktopPIDs: desktopPIDs,
+            localHosts: localHosts,
+            expectedUsername: expectedUsername
+        )
+        guard !candidates.isEmpty else { return false }
+        let peersByPID = parseEstablishedTCPPeers(lsofOutput: tcpLsofOutput)
+        let hasLoopbackTCP = candidates.contains { candidate in
+            guard let peers = peersByPID[candidate.pid], !peers.isEmpty else { return false }
+            let hasLoopbackSSH = peers.contains { $0.isLoopbackSSH }
+            let hasRemotePeer = peers.contains { !$0.isLoopbackHost }
+            return hasLoopbackSSH && !hasRemotePeer
+        }
+        guard hasLoopbackTCP else { return false }
+        let connectedCodexPIDs = parseConnectedCodexClientPIDs(
+            unixLsofOutput: unixLsofOutput,
+            sharedSocketPaths: sharedSocketPaths
+        )
+        return hasSSHAuthenticatedCodexSession(
+            processes: processes,
+            expectedUID: expectedUID,
+            connectedCodexPIDs: connectedCodexPIDs
+        )
     }
 
     static func parseSSHInvocation(from args: [Substring]) -> ParsedSSHInvocation? {
@@ -462,22 +706,24 @@ enum CodexDesktopLink {
         }
         let result = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-axo", "pid=,ppid=,command="],
+            arguments: ["-axo", "pid=,ppid=,uid=,command="],
             timeout: .seconds(5),
             outputLimit: 4_194_304
         )
         guard let result, result.status == 0 else { return .separate }
         let currentUser = NSUserName()
+        let currentUID = Darwin.geteuid()
+        let processes = parseProcessesWithUID(psOutput: result.stdoutText)
         let allowedHosts = localHosts(includeManagedAlias: allowManagedAlias)
         let candidates = localSSHChildCandidates(
-            psOutput: result.stdoutText,
+            processes: processes,
             desktopPIDs: pids,
             localHosts: allowedHosts,
             expectedUsername: currentUser
         )
         guard !candidates.isEmpty else { return .separate }
 
-        // 核验每个候选 ssh 子进程的实际已建立 TCP 对端为本机回环 22 端口，防止把配置改写前已建立的远端连接误报为共享。
+        // 1. 核验每个候选 ssh 子进程的实际已建立 TCP 对端为本机回环 22 端口，防止把配置改写前已建立的远端连接误报为共享。
         let pidList = candidates.map { String($0.pid) }.joined(separator: ",")
         let lsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
@@ -489,13 +735,14 @@ enum CodexDesktopLink {
         let peersByPID = parseEstablishedTCPPeers(lsofOutput: lsofResult.stdoutText)
 
         let configurator = CodexLocalSSHConfigurator()
+        var hasVerifiedLoopbackCandidate = false
         for candidate in candidates {
             guard let peers = peersByPID[candidate.pid], !peers.isEmpty else { continue }
             let hasLoopbackSSH = peers.contains { $0.isLoopbackSSH }
             let hasRemotePeer = peers.contains { !$0.isLoopbackHost }
             guard hasLoopbackSSH && !hasRemotePeer else { continue }
 
-            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G` 确认实际解析用户为当前用户且无代理重定向。
+            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G` 确认实际解析用户为当前用户且认证/传输无重定向。
             let lowerDest = candidate.invocation.destinationHost.lowercased()
             if lowerDest != CodexLocalSSHConfigurator.hostAlias && candidate.invocation.explicitConfigPath != "/dev/null" {
                 guard let effective = try? await configurator.resolveEffectiveSSHConfig(
@@ -507,9 +754,33 @@ enum CodexDesktopLink {
                     continue
                 }
             }
-            return .shared
+            hasVerifiedLoopbackCandidate = true
+            break
         }
-        return .separate
+        guard hasVerifiedLoopbackCandidate else { return .separate }
+
+        // 2. 仅有回环 TCP ESTABLISHED 尚早于 SSH 认证且不证明共享后端已接入；
+        // 必须同时确认当前账号存在经已认证 sshd 会话接入共享 Codex App Server 控制 socket 的 codex 客户端进程。
+        let unixLsofResult = try? await ProcessExecutor.shared.run(
+            executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-a", "-U", "-u", String(currentUID), "-F0pcfdtn"],
+            timeout: .seconds(5),
+            outputLimit: 1_048_576
+        )
+        guard let unixLsofResult, unixLsofResult.status == 0 else { return .separate }
+        let sharedSockets = sharedCodexControlSocketPaths(expectedUID: currentUID)
+        let connectedCodexPIDs = parseConnectedCodexClientPIDs(
+            unixLsofOutput: unixLsofResult.stdout,
+            sharedSocketPaths: sharedSockets
+        )
+        guard hasSSHAuthenticatedCodexSession(
+            processes: processes,
+            expectedUID: currentUID,
+            connectedCodexPIDs: connectedCodexPIDs
+        ) else {
+            return .separate
+        }
+        return .shared
     }
 
     @MainActor

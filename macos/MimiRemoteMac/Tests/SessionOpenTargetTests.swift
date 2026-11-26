@@ -376,8 +376,13 @@ final class CodexSharedSetupStatusTests: XCTestCase {
     }
 
     func testR2_P1_6DirectLoopbackProbeRestrictsTargetAndRejectsRedirection() {
-        let bareArgs = CodexSharedSetupChecks.buildDirectLoopbackProbeArguments(for: "127.0.0.1", username: "alice")
-        XCTAssertEqual(Array(bareArgs.prefix(2)), ["-F", "/dev/null"], "裸 127.0.0.1 探测必须忽略用户 SSH 配置防重定向")
+        let bareArgs = CodexSharedSetupChecks.buildDirectLoopbackProbeArguments(
+            for: "127.0.0.1",
+            username: "alice",
+            configPath: "/tmp/verified-desktop.conf"
+        )
+        XCTAssertEqual(Array(bareArgs.prefix(2)), ["-F", "/tmp/verified-desktop.conf"], "自动探测必须绑定到已核验的桌面配置快照，不得改用 -F /dev/null 验另一套身份")
+        XCTAssertTrue(bareArgs.contains("-T"))
         XCTAssertTrue(bareArgs.contains("HostName=127.0.0.1"))
         XCTAssertTrue(bareArgs.contains("Port=22"))
         XCTAssertTrue(bareArgs.contains("User=alice"))
@@ -386,7 +391,10 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         XCTAssertTrue(bareArgs.contains("ControlMaster=no"))
         XCTAssertTrue(bareArgs.contains("ControlPath=none"))
         XCTAssertTrue(bareArgs.contains("ClearAllForwardings=yes"))
+        XCTAssertTrue(bareArgs.contains("StrictHostKeyChecking=yes"), "自动探测必须只读，不得自动写入 known_hosts")
+        XCTAssertTrue(bareArgs.contains("UpdateHostKeys=no"), "自动探测必须禁用 UpdateHostKeys，防止认证后写回用户 known_hosts")
         XCTAssertTrue(bareArgs.contains("BatchMode=yes"))
+        XCTAssertEqual(bareArgs.last, "/bin/cat", "自动探测应验证双向输入输出而非仅执行 true")
 
         let redirected = CodexLocalSSHConfigurator.EffectiveSSHConfig(
             hostname: "remote.example.com",
@@ -410,16 +418,154 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         )
         XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(wrongUser, expectedUser: "alice"))
 
+        let pubkeyDisabled = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            pubkeyAuthentication: "no"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(pubkeyDisabled, expectedUser: "alice"))
+
+        let stdinNullEnabled = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            stdinNull: "yes"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(stdinNullEnabled, expectedUser: "alice"))
+
+        let forceTTY = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            requestTTY: "force"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(forceTTY, expectedUser: "alice"))
+
+        let noSession = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            sessionType: "none"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(noSession, expectedUser: "alice"))
+
+        let forkAfterAuth = CodexLocalSSHConfigurator.EffectiveSSHConfig(
+            hostname: "127.0.0.1",
+            port: "22",
+            user: "alice",
+            forkAfterAuthentication: "yes"
+        )
+        XCTAssertFalse(CodexLocalSSHConfigurator.isDirectLoopbackConfig(forkAfterAuth, expectedUser: "alice"))
+
         let directLoopback = CodexLocalSSHConfigurator.EffectiveSSHConfig(
             hostname: "127.0.0.1",
             port: "22",
             user: "alice",
+            pubkeyAuthentication: "true",
             proxyJump: "none",
             proxyCommand: "none",
             controlMaster: "false",
-            controlPath: "none"
+            controlPath: "none",
+            stdinNull: "no",
+            requestTTY: "auto",
+            sessionType: "default",
+            forkAfterAuthentication: "no"
         )
         XCTAssertTrue(CodexLocalSSHConfigurator.isDirectLoopbackConfig(directLoopback, expectedUser: "alice"))
+    }
+
+    func testR3_P1_5LoopbackTCPAloneIsNotSharedRequiresAuthenticatedCurrentUserSharedBackendEvidence() {
+        let socketPath = "/Users/alice/.codex/app-server-control/app-server-control.sock"
+        let sharedSockets: Set<String> = [socketPath]
+        let tcpLsof = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        """
+        let psBase = """
+          1914     1   501 /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   501 /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   501 sshd-session: alice@notty
+           502   501   501 /bin/zsh -c exec codex app-server proxy
+           503   502   501 /opt/homebrew/bin/codex app-server proxy
+           600     1   501 /Applications/Terminal.app/Contents/MacOS/Terminal
+           601   600   501 /opt/homebrew/bin/codex app-server proxy
+           700   500   502 sshd-session: bob@notty
+           701   700   502 /opt/homebrew/bin/codex app-server proxy
+        """
+
+        func makeUnixLsof(_ entries: [(pid: Int32, cmd: String, fd: String, addr: String, name: String)]) -> Data {
+            var data = Data()
+            for entry in entries {
+                for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                    data.append(contentsOf: field.utf8)
+                    data.append(0)
+                }
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        // 1. 仅有回环 TCP ESTABLISHED（认证未完成或共享后端未接入）-> 绝不能标为 .shared。
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psBase,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: tcpLsof,
+            unixLsofOutput: Data(),
+            sharedSocketPaths: sharedSockets
+        ), "仅建立回环 TCP 连接但尚无共享后端连接证据时不得标为已共享")
+
+        // 2. 只有本地终端里的 codex 接了共享 socket（非 sshd 后代）-> 不能把未认证完的桌面版 SSH 标为 .shared。
+        let terminalOnlyUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
+            (pid: 601, cmd: "codex", fd: "7", addr: "0x2222", name: "->0x1111"),
+        ])
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psBase,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: tcpLsof,
+            unixLsofOutput: terminalOnlyUnix,
+            sharedSocketPaths: sharedSockets
+        ), "非 sshd 拉起的本地终端 codex 连接不得误证桌面版 SSH 已接入共享后端")
+
+        // 3. 其他账号（UID 502）经 sshd 接入 -> 属于他人账号，不得标为当前账号已共享。
+        let otherUserUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
+            (pid: 701, cmd: "codex", fd: "7", addr: "0x3333", name: "->0x1111"),
+        ])
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psBase,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: tcpLsof,
+            unixLsofOutput: otherUserUnix,
+            sharedSocketPaths: sharedSockets
+        ), "其他账号的 sshd 会话不得标为当前账号已共享")
+
+        // 4. 当前账号（UID 501）经已认证 sshd-session 拉起的 codex 连接到共享控制 socket -> 满足完整共享证据。
+        let verifiedUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
+            (pid: 503, cmd: "codex-aarch64-apple-darwin", fd: "8", addr: "0x4444", name: "->0x1111"),
+        ])
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psBase,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: tcpLsof,
+            unixLsofOutput: verifiedUnix,
+            sharedSocketPaths: sharedSockets
+        ))
     }
 
     @MainActor
@@ -474,9 +620,12 @@ final class CodexSharedSetupStatusTests: XCTestCase {
                 CodexSharedSetupStatus.make(desktop: .separate, remoteLogin: true, passwordless: true, localSSHManaged: true, managedAliasReady: true)
             },
             configureSSH: {
-                await counter.increment()
-                await entryAEntered.open()
-                await releaseEntryA.wait()
+                let callNumber = await counter.increment()
+                // 仅阻塞第一次调用：若序列化回归让入口 B 意外进入，重复调用会立即返回并确定性触发计数断言，而不会死锁到超时。
+                if callNumber == 1 {
+                    await entryAEntered.open()
+                    await releaseEntryA.wait()
+                }
             },
             sharedSeenSetter: { _ in }
         )
@@ -535,7 +684,11 @@ private actor ProbeTargetRecorder {
 
 private actor SetupCallCounter {
     var count = 0
-    func increment() { count += 1 }
+    @discardableResult
+    func increment() -> Int {
+        count += 1
+        return count
+    }
 }
 
 private actor SetupAsyncGate {

@@ -162,17 +162,24 @@ enum CodexSharedSetupChecks {
         return outcome
     }
 
-    /// 构造直连当前用户本机回环 22 端口的探测参数，禁止被用户或系统 SSH 配置的 HostName/ProxyJump/Port/User 重定向到远端。
-    static func buildDirectLoopbackProbeArguments(for target: String, username: String) -> [String] {
+    /// 构造直连当前用户本机回环 22 端口的只读探测参数：
+    /// 绑定到刚经 `ssh -G` 核验的冻结配置快照（保留桌面版实际认证与信任输入），禁用主机密钥更新（`UpdateHostKeys=no`）与自动写入（`StrictHostKeyChecking=yes`），并执行双向 stdin/stdout 探测。
+    static func buildDirectLoopbackProbeArguments(
+        for target: String,
+        username: String,
+        configPath: String? = nil,
+        hostName: String = "127.0.0.1"
+    ) -> [String] {
         var args: [String] = []
-        if target != CodexLocalSSHConfigurator.hostAlias {
-            args.append(contentsOf: ["-F", "/dev/null"])
+        if let configPath, !configPath.isEmpty {
+            args.append(contentsOf: ["-F", configPath])
         }
         args.append(contentsOf: [
+            "-T",
             "-o", "BatchMode=yes",
             "-o", "PasswordAuthentication=no",
             "-o", "KbdInteractiveAuthentication=no",
-            "-o", "HostName=127.0.0.1",
+            "-o", "HostName=\(hostName)",
             "-o", "Port=22",
             "-o", "User=\(username)",
             "-o", "ProxyJump=none",
@@ -181,12 +188,19 @@ enum CodexSharedSetupChecks {
             "-o", "ControlPath=none",
             "-o", "ControlPersist=no",
             "-o", "ClearAllForwardings=yes",
+            "-o", "ForwardAgent=no",
+            "-o", "ForwardX11=no",
             "-o", "CanonicalizeHostname=no",
             "-o", "PermitLocalCommand=no",
             "-o", "RemoteCommand=none",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UpdateHostKeys=no",
+            "-o", "RequestTTY=no",
+            "-o", "SessionType=default",
+            "-o", "ForkAfterAuthentication=no",
             "-o", "ConnectTimeout=5",
             target,
-            "true",
+            "/bin/cat",
         ])
         return args
     }
@@ -195,29 +209,53 @@ enum CodexSharedSetupChecks {
         let currentUser = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !currentUser.isEmpty else { return false }
 
-        // 探测裸 127.0.0.1 前，先确认用户与系统 SSH 配置未将 127.0.0.1 重定向到远端主机、非 22 端口、其他用户或代理。
-        if target != CodexLocalSSHConfigurator.hostAlias {
-            let resolveResult = try? await ProcessExecutor.shared.run(
-                executable: URL(fileURLWithPath: "/usr/bin/ssh"),
-                arguments: ["-G", target],
-                timeout: .seconds(5),
-                forceKillAfterTimeout: true
-            )
-            guard let resolveResult, resolveResult.status == 0 else { return false }
-            let effective = CodexLocalSSHConfigurator.parseEffectiveSSHConfig(resolveResult.stdoutText)
+        let configurator = CodexLocalSSHConfigurator(username: currentUser)
+        // 冻结桌面版当前真实配置（~/.ssh/config + 系统 ssh_config 含相对 Include），确保 ssh -G 与实际探测使用同一份认证与信任输入。
+        guard let materialized = try? configurator.materializeCurrentSSHConfigForEvaluation(includeSystemConfig: true) else {
+            return false
+        }
+        defer { materialized.cleanup() }
+
+        guard let effective = try? await configurator.resolveEffectiveSSHConfig(
+            configPath: materialized.configFileURL.path,
+            alias: target,
+            includeSystemConfig: false
+        ) else {
+            return false
+        }
+
+        if target == CodexLocalSSHConfigurator.hostAlias {
+            guard CodexLocalSSHConfigurator.validateEffectiveLoopbackConfig(
+                effective,
+                expectedUser: currentUser,
+                expectedIdentityFile: configurator.expectedIdentityFileConfigValue,
+                expectedKnownHostsFile: configurator.expectedKnownHostsPath
+            ) == nil else {
+                return false
+            }
+        } else {
+            // 校验真实桌面配置下 127.0.0.1 的路由、认证与双向传输选项均可用，不再改用 -F /dev/null 验证另一套身份和信任设置。
             guard CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser) else {
                 return false
             }
         }
 
-        let arguments = buildDirectLoopbackProbeArguments(for: target, username: currentUser)
+        let resolvedHostName = effective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
+        let arguments = buildDirectLoopbackProbeArguments(
+            for: target,
+            username: currentUser,
+            configPath: materialized.configFileURL.path,
+            hostName: resolvedHostName
+        )
+        let probePayload = Data("mimi-ssh-probe-\(UUID().uuidString)\n".utf8)
         let result = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/bin/ssh"),
             arguments: arguments,
             timeout: .seconds(10),
-            forceKillAfterTimeout: true
+            forceKillAfterTimeout: true,
+            standardInput: probePayload
         )
-        return result?.status == 0
+        return result?.status == 0 && result?.stdout == probePayload
     }
 
     static func passwordlessLoginWorks(managedAliasVerified: Bool = false) async -> Bool {
