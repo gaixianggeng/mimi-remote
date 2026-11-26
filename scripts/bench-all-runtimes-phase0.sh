@@ -276,13 +276,16 @@ print("\n=== Phase 0 性能基线摘要 ===")
 print(f"固定种子：{agy['seed']} | 批次：{agy['config']['batches']} × (冷 {agy['config']['cold']} / 热 {agy['config']['warm']})")
 print("\n[Antigravity bridges/agy-acp]")
 ps_info = agy["processScan"]
-p1 = agy["summary"]["phase1Comparison"]
+latency = agy["summary"]["latency"]
 print(
     f"- 数据集：{agy['dataset']['totalSummaries']} 全局 / {agy['dataset']['targetRepoSessions']} 目标仓 "
     f"(非孤儿唯一 raw cwd={agy['dataset']['uniqueNonOrphanRawCwds']}, 可查 Git 目录={agy['dataset']['existingUniqueCwdsEligibleForGitInspect']})"
 )
 print(
-    f"- 进程扫描(ps)：{ps_info['note']}（status={ps_info['status']}，Phase 1 对比不依赖进程扫描）"
+    f"- 进程扫描(ps)：{ps_info['note']}（status={ps_info['status']}）"
+)
+print(
+    f"- 延迟口径：{latency['status']}（不作为 Phase 1 门槛判定依据；{latency['note']}）"
 )
 for b in agy["batches"]:
     cc = b["concurrentCold"]
@@ -294,10 +297,11 @@ for b in agy["batches"]:
         f"p50={sw['latencyMs']['p50']}ms, p95={sw['latencyMs']['p95']}ms"
     )
 print(
-    f"- 汇总（Phase 1 可比，不依赖进程扫描）：并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
+    f"- 汇总：并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
     f"顺序热态总 git spawn={agy['summary']['sequentialWarmGitSpawnsAbsoluteAcrossAllBatches']}，"
     f"顺序热态总 ACP RPC 增量={agy['summary']['sequentialWarmAcpRpcsDeltaAcrossAllBatches']}，"
-    f"热态 p95 均值={p1['sequentialWarmP95MsMean']}ms（批间极差波动 {p1['sequentialWarmP95SpreadPct']}%）"
+    f"热态 p95 均值={latency['sequentialWarmP95MsMean']}ms（批间极差波动 {latency['sequentialWarmP95SpreadPct']}%，"
+    f"status={latency['status']}；{latency['note']}）"
 )
 
 print("\n[Claude SDK bridges/claude-sdk]")

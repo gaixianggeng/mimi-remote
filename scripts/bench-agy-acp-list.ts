@@ -618,10 +618,11 @@ try {
   const warmP95Mean = mean(warmP95s);
   const warmP95Spread = variancePct(warmP95s);
   const processScanNote = "Phase 0 未计量，留待后续 issue";
+  const latencyNote = "基线与对比运行的扫描条件对齐前，延迟仅供参考";
 
   const report = {
     benchmark: "agy-acp-list-phase0",
-    backendScope: "production createAcpSessionBackend + SharedReadonlyAcp + AcpClient + AgyCatalog + GitRepoIndex + createThreadHandlers over controlled in-memory ACP transport (excludes upstream agy daemon SQLite/RPC I/O; process scan unmeasured in Phase 0)",
+    backendScope: "production createAcpSessionBackend + SharedReadonlyAcp + AcpClient + AgyCatalog + GitRepoIndex + createThreadHandlers over controlled in-memory ACP transport (excludes upstream agy daemon SQLite/RPC I/O; host ps runs unmeasured so Phase 0 latency is informational only)",
     seed: opts.seed,
     config: { batches: opts.batches, cold: opts.cold, warm: opts.warm, concurrency: opts.concurrency },
     dataset: {
@@ -637,10 +638,11 @@ try {
     processScan: {
       status: "unmeasured",
       note: processScanNote,
-      affectsPhase1Comparison: false,
     },
     summary: {
       processScanStatus: "unmeasured",
+      latencyStatus: "informational",
+      latencyNote,
       concurrentColdGitSpawnsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.gitSpawnsMean)),
       concurrentColdAcpRpcsMeanPerRun: mean(batchResults.map((b) => b.concurrentCold.acpSessionListRpcsMean)),
       concurrentColdP95MsMean: coldP95Mean,
@@ -655,10 +657,10 @@ try {
       ),
       sequentialWarmP95MsMean: warmP95Mean,
       sequentialWarmP95SpreadPct: warmP95Spread,
-      phase1Comparison: {
-        eligible: true,
-        status: "valid",
-        dependsOnProcessScan: false,
+      latency: {
+        status: "informational",
+        note: latencyNote,
+        usedForPhase1Gate: false,
         processScanStatus: "unmeasured",
         processScanNote,
         concurrentColdP95MsMean: coldP95Mean,

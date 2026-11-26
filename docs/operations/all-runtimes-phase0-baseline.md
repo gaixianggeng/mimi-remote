@@ -50,27 +50,27 @@ bash ./scripts/bench-all-runtimes-phase0.sh --seed 20260410 --batches 3 --cold 5
 
 - 入口脚本：`scripts/bench-all-runtimes-phase0.sh`
 - 隔离性：两个基准脚本在夹具初始化与全部计时调用前均清空宿主 `GIT_*` 仓库变量并禁用全局/系统 Git 配置，退出时恢复，不污染外部仓库。
-- Antigravity 基准：`scripts/bench-agy-acp-list.ts`（通过临时 `PATH` 静态 `git` 包装器按环境变量传递路径计数 OS 级 `git` spawn，计数读写失败即报错中止；进程扫描在「Phase 0 未计量，留待后续 issue」，不在计时路径中插入 `ps` 包装器或其临时文件/辅助进程，Phase 1 对比不依赖进程扫描；运行生产 `createAcpSessionBackend` + `SharedReadonlyAcp` + `AcpClient` + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers` 完整链路，底层使用受控内存 ACP 传输 `FakeAgyWorld` 隔离上游 `agy` 守护进程 SQLite/RPC I/O）
+- Antigravity 基准：`scripts/bench-agy-acp-list.ts`（通过临时 `PATH` 静态 `git` 包装器按环境变量传递路径计数 OS 级 `git` spawn，计数读写失败即报错中止；进程扫描在「Phase 0 未计量，留待后续 issue」，不在计时路径中插入 `ps` 包装器或其临时文件/辅助进程；Phase 0 延迟结果一律标为 `informational`，不作为 Phase 1 门槛判定依据，基线与对比运行的扫描条件对齐前，延迟仅供参考；运行生产 `createAcpSessionBackend` + `SharedReadonlyAcp` + `AcpClient` + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers` 完整链路，底层使用受控内存 ACP 传输 `FakeAgyWorld` 隔离上游 `agy` 守护进程 SQLite/RPC I/O）
 - Claude SDK 基准：`scripts/bench-claude-sdk-list.ts`（在隔离临时 `CLAUDE_CONFIG_DIR` 运行真实 `@anthropic-ai/claude-agent-sdk` `listSessions`、`TranscriptIndex`、`ActivityClock`、`WorkingDirectories`、`Overlay`、`Catalog` 与 `createThreadHandlers`，并在计时循环外全量翻页校验完整目标会话集含全部 worktree）
 
 ### 3.2 Antigravity（`bridges/agy-acp`）基线数据
 
-**度量边界**：本节实测的是 `bridges/agy-acp` 适配器侧完整生产链路（`createAcpSessionBackend` 含 `hasOtherConversations`、`diskRevision`、`resolveSessionOrigin`、`inspectExternalActivity`、双 `SharedReadonlyAcp` JSON-RPC `session/list` 收发与合并 + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers`），通过受控内存 ACP 传输排除外部 `agy` 守护进程自身 I/O 抖动。**进程扫描（`ps`）**：Phase 0 未计量，留待后续 issue；基准脚本不在计时路径中插入 `ps` 包装器及其临时文件/辅助进程，Phase 1 对比不依赖进程扫描。下文 Phase 1 的性能目标仅针对该已度量适配器链路。
+**度量边界**：本节实测的是 `bridges/agy-acp` 适配器侧完整生产链路（`createAcpSessionBackend` 含 `hasOtherConversations`、`diskRevision`、`resolveSessionOrigin`、`inspectExternalActivity`、双 `SharedReadonlyAcp` JSON-RPC `session/list` 收发与合并 + `AgyCatalog` + `GitRepoIndex` + `createThreadHandlers`），通过受控内存 ACP 传输排除外部 `agy` 守护进程自身 I/O 抖动。**进程扫描（`ps`）与延迟口径**：进程扫描在 Phase 0 未计量，留待后续 issue；基准脚本不在计时路径中插入 `ps` 包装器及其临时文件/辅助进程，但计时查询仍会等待宿主 `ps` 执行（且失败会跳过进程快照缓存）。因此 Phase 0 的延迟结果一律标为 `informational`，不作为 Phase 1 的 30% 门槛判定依据——基线与对比运行的扫描条件对齐前，延迟仅供参考。
 
 **固定种子数据集（`seed=20260410`）**：500 条全局会话摘要（30 条目标仓会话分布于主仓、2 个 worktree、symlink 与 `file://` 百分号编码路径；360 条其他 12 个 Git 仓及 6 个 worktree 会话；50 条非 Git 目录会话含编码 URI；30 条缺失目录会话；30 条无 `.db` 孤儿会话）。计时循环外全量翻页已验证精确返回全部 30 条目标会话（无遗漏、无重复、无越界）。非孤儿唯一原始 `cwd` 为 `33` 个，经 `normalizeNativeCwd` 规范化后参与 `git.inspect` 的唯一目录为 `32` 个（其中磁盘存在 `28` 个 + 缺失目录 `4` 个在 `matchesAnyRoot` 中仍触发 `git.inspect`）。
 
-**执行方式**：连续 3 批，每批先跑 5 次并发冷查（每次新建 `SharedReadonlyAcp`/`GitRepoIndex`/`AgyCatalog`，4 路并发触发目标仓 `thread/list`），再预热常驻 ACP 连接与 30s Git 缓存后顺序跑 20 次目标仓 `thread/list`。
+**执行方式**：连续 3 批，每批先跑 5 次并发冷查（每次新建 `SharedReadonlyAcp`/`GitRepoIndex`/`AgyCatalog`，4 路并发触发目标仓 `thread/list`），再预热常驻 ACP 连接与 30s Git 缓存后顺序跑 20 次目标仓 `thread/list`。下表中的延迟数据均为 `informational`（基线与对比运行的扫描条件对齐前，延迟仅供参考）。
 
 | 批次 | 并发冷查（x4, n=5）`git` spawn / 轮 | 并发冷查 ACP `session/list` RPC / 轮 | 并发冷查 p50 (ms) | 并发冷查 p95 (ms) | 顺序热态（n=20）`git` spawn 绝对次数 | 顺序热态 ACP RPC 增量 | 顺序热态 p50 (ms) | 顺序热态 p95 (ms) | 顺序热态 max (ms) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Batch 1 | `128`（5 轮共 `640`） | `5`（4 CLI + 1 Other） | 977.447 | 1159.785 | `0` | `2`（1 CLI + 1 Other） | 40.061 | 194.893 | 198.413 |
 | Batch 2 | `128`（5 轮共 `640`） | `5`（4 CLI + 1 Other） | 1092.242 | 1112.648 | `0` | `2`（1 CLI + 1 Other） | 39.594 | 195.312 | 196.174 |
 | Batch 3 | `128`（5 轮共 `640`） | `5`（4 CLI + 1 Other） | 971.532 | 1114.897 | `0` | `2`（1 CLI + 1 Other） | 38.760 | 189.995 | 206.802 |
-| **3 批汇总** | **均值 `128` / 轮（总 `1920`）** | **均值 `5` / 轮** | **均值 1013.740** | **均值 1129.110（波动 4.24%）** | **绝对 `0`（60 次共 `0`）** | **总 `6`（每批 `2`）** | **均值 39.472** | **均值 193.400（波动 2.80%）** | **max 206.802** |
+| **3 批汇总** | **均值 `128` / 轮（总 `1920`）** | **均值 `5` / 轮** | **均值 1013.740** | **均值 1129.110（波动 4.24%，informational）** | **绝对 `0`（60 次共 `0`）** | **总 `6`（每批 `2`）** | **均值 39.472** | **均值 193.400（波动 2.80%，informational）** | **max 206.802** |
 
-**基线洞察（对应 Phase 1 适配器侧门禁）**：
+**基线洞察**：
 1. **并发冷查放大效应明确**：`GitRepoIndex` 缺少在途合并（`inflight` Map），4 路并发冷查对 32 个唯一规范化目录产生精确 `4 × 32 = 128` 次真实 `git` spawn；同时 `cliSharedAcp` 的 `session/list` 无并发合并，4 路冷查发出 `4` 次 CLI RPC + `1` 次经 `otherQueryInFlight` 合并的 Other RPC（共 `5` 次）。Phase 1 引入 `inflight` 合并与先筛选唯一 `cwd` 后，目标为单轮 `git` spawn `<=` 唯一候选 `cwd` 数且降幅 `>= 50%`。
-2. **顺序热态缓存与生产残留瓶颈分离清晰**：在 30s Git TTL 内，顺序热态的 `git` spawn 绝对次数保持 `0`；但接入生产 `createAcpSessionBackend` 后，顺序热态中位耗时为 `39.472ms`、p95 达 `193.400ms`（批间波动 `2.80% <= 15%`），且每 20 次顺序查询因总耗时越过 `1.5s` `listCacheMs` 窗口触发 `1` 次 CLI + `1` 次 Other 的 ACP `session/list` 刷新（每批增量 `2` 次）。实测适配器侧主要瓶颈为：① `AgyCatalog.list()` 在按 `dirs` 过滤前对全部 470 条非孤儿会话逐条串行执行 `resolveSessionOrigin`、`diskRevision`（`resolveTranscriptPath` + `.db`/`.db-wal` `stat`）与 `directoryExists`；② `createThreadHandlers.list()` 对返回的 20 条记录逐条调用 `inspectExternalActivity`（每 300ms `PS_CACHE_TTL_MS` 过期触发 `ps` 扫描，形成 ~190ms 长尾尖峰；进程扫描自身成功/降级状态在 Phase 0 未计量，留待后续 issue，Phase 1 对比不依赖进程扫描计量）。Phase 1 在同一生产后端基准口径下，以批量来源索引、先按唯一 `cwd` 裁剪再执行 `diskRevision` 核验适配器侧热态耗时 `>= 30%` 改善。
+2. **顺序热态缓存与生产残留瓶颈观察（延迟仅供参考）**：在 30s Git TTL 内，顺序热态的 `git` spawn 绝对次数保持 `0`；接入生产 `createAcpSessionBackend` 后，本轮观测到的顺序热态中位耗时为 `39.472ms`、p95 为 `193.400ms`（批间波动 `2.80%`），且每 20 次顺序查询因总耗时越过 `1.5s` `listCacheMs` 窗口触发 `1` 次 CLI + `1` 次 Other 的 ACP `session/list` 刷新（每批增量 `2` 次）。实测适配器侧主要瓶颈为：① `AgyCatalog.list()` 在按 `dirs` 过滤前对全部 470 条非孤儿会话逐条串行执行 `resolveSessionOrigin`、`diskRevision`（`resolveTranscriptPath` + `.db`/`.db-wal` `stat`）与 `directoryExists`；② `createThreadHandlers.list()` 对返回的 20 条记录逐条调用 `inspectExternalActivity`（每 300ms `PS_CACHE_TTL_MS` 过期触发宿主 `ps` 扫描，形成 ~190ms 长尾尖峰，且 `ps` 失败会跳过进程快照缓存）。由于进程扫描在 Phase 0 未计量且宿主扫描条件未固定，上述延迟结果一律标为 `informational`，**不作为 Phase 1 的 30% 门槛判定依据**（基线与对比运行的扫描条件对齐前，延迟仅供参考）；Phase 1 仍可推进批量来源索引、先按唯一 `cwd` 裁剪再执行 `diskRevision` 等优化，并在扫描条件对齐后再进行延迟对比评估。
 
 ### 3.3 Claude SDK（`bridges/claude-sdk`）200+ 会话分页基线数据
 
