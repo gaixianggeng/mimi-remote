@@ -23,6 +23,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     static let knownHostsFileName = "known_hosts"
     static let keyFileName = "mimi_codex_local_ed25519"
     static let keyComment = "mimi-codex-local"
+    static let keyStagingDirectoryPrefix = ".mimi-keygen-"
     static let managedIncludeMarker = "# mimi-remote-local-ssh"
     static let managedIncludePath = "~/.ssh/mimi/config"
     static let managedIncludeLine = "Include \"\(managedIncludePath)\" \(managedIncludeMarker)"
@@ -63,6 +64,17 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
     }
 
+    struct TrackedKeyIdentity: Codable, Equatable, Sendable {
+        var keyFingerprint: String
+        var publicKeyBody: String
+    }
+
+    struct TrackedAuthorizedEntry: Codable, Equatable, Sendable {
+        var entry: String
+        var keyBody: String
+        var addedLeadingNewline: Bool = false
+    }
+
     /// 首次持久变更前落盘的预写事务意图（WAL）：保证进程在任意写盘点被强杀后，重启仍能识别归属并安全撤销，绝不产生孤儿授权。
     struct PendingTransaction: Codable, Equatable, Sendable {
         var transactionID: String
@@ -75,59 +87,78 @@ struct CodexLocalSSHConfigurator: Sendable {
         var plannedUsername: String
         var plannedMimiConfigVersion: FileVersionFingerprint?
         var plannedKnownHostsVersion: FileVersionFingerprint?
+        var stagedKeyDirectoryName: String? = nil
     }
 
     struct ManagedState: Codable, Equatable, Sendable {
         var version: Int = 2
         var keyFingerprint: String?
         var publicKeyBody: String?
+        /// 轮换密钥崩溃恢复期间保留新旧全部受管密钥身份，直到核验清理完成才销账。
+        var additionalKeyIdentities: [TrackedKeyIdentity] = []
         var authorizedKeyEntry: String?
         /// 独立保存托管授权行对应的公钥主体，确保即使密钥已被删除、授权写回失败后重试仍能核验并撤销残留授权。
         var authorizedKeyBody: String?
         var authorizedKeyAddedLeadingNewline: Bool = false
+        /// 轮换密钥崩溃恢复期间保留新旧精确托管授权行（含前导换行记录），避免丢失替换密钥的精确撤销记录。
+        var additionalAuthorizedEntries: [TrackedAuthorizedEntry] = []
         /// 跨回滚、重配、撤销记录未能清除的同一/历史公钥主体，避免任何入口静默丢弃有效授权记录。
         var residualAuthorizedKeyBodies: [String] = []
         var managedHostAlias: String?
         var managedUsername: String?
         var mimiConfigVersion: FileVersionFingerprint?
+        var additionalMimiConfigVersions: [FileVersionFingerprint] = []
         var mimiConfigConflict: Bool = false
         /// 记录独立主机信任文件是否仍待管理/清理，并配对已证实归属的版本指纹与冲突标记。
         var managedKnownHosts: Bool = false
         var knownHostsVersion: FileVersionFingerprint?
+        var additionalKnownHostsVersions: [FileVersionFingerprint] = []
         var knownHostsConflict: Bool = false
+        /// 密钥生成前登记的 `~/.ssh/mimi/.mimi-keygen-*` 暂存目录名，确保进程异常终止后移除流程可完整清理私钥产物。
+        var stagedKeyDirectories: [String] = []
         var pendingTransaction: PendingTransaction?
 
         init(
             version: Int = 2,
             keyFingerprint: String? = nil,
             publicKeyBody: String? = nil,
+            additionalKeyIdentities: [TrackedKeyIdentity] = [],
             authorizedKeyEntry: String? = nil,
             authorizedKeyBody: String? = nil,
             authorizedKeyAddedLeadingNewline: Bool = false,
+            additionalAuthorizedEntries: [TrackedAuthorizedEntry] = [],
             residualAuthorizedKeyBodies: [String] = [],
             managedHostAlias: String? = nil,
             managedUsername: String? = nil,
             mimiConfigVersion: FileVersionFingerprint? = nil,
+            additionalMimiConfigVersions: [FileVersionFingerprint] = [],
             mimiConfigConflict: Bool = false,
             managedKnownHosts: Bool = false,
             knownHostsVersion: FileVersionFingerprint? = nil,
+            additionalKnownHostsVersions: [FileVersionFingerprint] = [],
             knownHostsConflict: Bool = false,
+            stagedKeyDirectories: [String] = [],
             pendingTransaction: PendingTransaction? = nil
         ) {
             self.version = version
             self.keyFingerprint = keyFingerprint
             self.publicKeyBody = publicKeyBody
+            self.additionalKeyIdentities = additionalKeyIdentities
             self.authorizedKeyEntry = authorizedKeyEntry
             self.authorizedKeyBody = authorizedKeyBody
             self.authorizedKeyAddedLeadingNewline = authorizedKeyAddedLeadingNewline
+            self.additionalAuthorizedEntries = additionalAuthorizedEntries
             self.residualAuthorizedKeyBodies = residualAuthorizedKeyBodies
             self.managedHostAlias = managedHostAlias
             self.managedUsername = managedUsername
             self.mimiConfigVersion = mimiConfigVersion
+            self.additionalMimiConfigVersions = additionalMimiConfigVersions
             self.mimiConfigConflict = mimiConfigConflict
             self.managedKnownHosts = managedKnownHosts
             self.knownHostsVersion = knownHostsVersion
+            self.additionalKnownHostsVersions = additionalKnownHostsVersions
             self.knownHostsConflict = knownHostsConflict
+            self.stagedKeyDirectories = stagedKeyDirectories
             self.pendingTransaction = pendingTransaction
         }
 
@@ -135,17 +166,22 @@ struct CodexLocalSSHConfigurator: Sendable {
             case version
             case keyFingerprint
             case publicKeyBody
+            case additionalKeyIdentities
             case authorizedKeyEntry
             case authorizedKeyBody
             case authorizedKeyAddedLeadingNewline
+            case additionalAuthorizedEntries
             case residualAuthorizedKeyBodies
             case managedHostAlias
             case managedUsername
             case mimiConfigVersion
+            case additionalMimiConfigVersions
             case mimiConfigConflict
             case managedKnownHosts
             case knownHostsVersion
+            case additionalKnownHostsVersions
             case knownHostsConflict
+            case stagedKeyDirectories
             case pendingTransaction
         }
 
@@ -154,35 +190,57 @@ struct CodexLocalSSHConfigurator: Sendable {
             version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 2
             keyFingerprint = try container.decodeIfPresent(String.self, forKey: .keyFingerprint)
             publicKeyBody = try container.decodeIfPresent(String.self, forKey: .publicKeyBody)
+            additionalKeyIdentities = try container.decodeIfPresent([TrackedKeyIdentity].self, forKey: .additionalKeyIdentities) ?? []
             authorizedKeyEntry = try container.decodeIfPresent(String.self, forKey: .authorizedKeyEntry)
             authorizedKeyBody = try container.decodeIfPresent(String.self, forKey: .authorizedKeyBody)
             authorizedKeyAddedLeadingNewline = try container.decodeIfPresent(Bool.self, forKey: .authorizedKeyAddedLeadingNewline) ?? false
+            additionalAuthorizedEntries = try container.decodeIfPresent([TrackedAuthorizedEntry].self, forKey: .additionalAuthorizedEntries) ?? []
             residualAuthorizedKeyBodies = try container.decodeIfPresent([String].self, forKey: .residualAuthorizedKeyBodies) ?? []
             managedHostAlias = try container.decodeIfPresent(String.self, forKey: .managedHostAlias)
             managedUsername = try container.decodeIfPresent(String.self, forKey: .managedUsername)
             mimiConfigVersion = try container.decodeIfPresent(FileVersionFingerprint.self, forKey: .mimiConfigVersion)
+            additionalMimiConfigVersions = try container.decodeIfPresent([FileVersionFingerprint].self, forKey: .additionalMimiConfigVersions) ?? []
             mimiConfigConflict = try container.decodeIfPresent(Bool.self, forKey: .mimiConfigConflict) ?? false
             managedKnownHosts = try container.decodeIfPresent(Bool.self, forKey: .managedKnownHosts) ?? false
             knownHostsVersion = try container.decodeIfPresent(FileVersionFingerprint.self, forKey: .knownHostsVersion)
+            additionalKnownHostsVersions = try container.decodeIfPresent([FileVersionFingerprint].self, forKey: .additionalKnownHostsVersions) ?? []
             knownHostsConflict = try container.decodeIfPresent(Bool.self, forKey: .knownHostsConflict) ?? false
+            stagedKeyDirectories = try container.decodeIfPresent([String].self, forKey: .stagedKeyDirectories) ?? []
             pendingTransaction = try container.decodeIfPresent(PendingTransaction.self, forKey: .pendingTransaction)
         }
 
+        var allTrackedKeyIdentities: [TrackedKeyIdentity] {
+            var identities: [TrackedKeyIdentity] = []
+            func appendUnique(fingerprint: String?, body: String?) {
+                guard let fingerprint, !fingerprint.isEmpty,
+                      let body, !body.isEmpty else { return }
+                let item = TrackedKeyIdentity(keyFingerprint: fingerprint, publicKeyBody: body)
+                if !identities.contains(item) {
+                    identities.append(item)
+                }
+            }
+            appendUnique(fingerprint: keyFingerprint, body: publicKeyBody)
+            for item in additionalKeyIdentities {
+                appendUnique(fingerprint: item.keyFingerprint, body: item.publicKeyBody)
+            }
+            if let pending = pendingTransaction {
+                appendUnique(fingerprint: pending.keyFingerprint, body: pending.publicKeyBody)
+            }
+            return identities
+        }
+
         var effectiveKeyBody: String? {
-            if let publicKeyBody, !publicKeyBody.isEmpty { return publicKeyBody }
-            if let pendingBody = pendingTransaction?.publicKeyBody, !pendingBody.isEmpty { return pendingBody }
-            return nil
+            allTrackedKeyIdentities.first?.publicKeyBody
         }
 
         var effectiveKeyFingerprint: String? {
-            if let keyFingerprint, !keyFingerprint.isEmpty { return keyFingerprint }
-            if let pendingFP = pendingTransaction?.keyFingerprint, !pendingFP.isEmpty { return pendingFP }
-            return nil
+            allTrackedKeyIdentities.first?.keyFingerprint
         }
 
         var effectiveAuthorizedKeyBody: String? {
             if let authorizedKeyBody, !authorizedKeyBody.isEmpty { return authorizedKeyBody }
             if let pendingBody = pendingTransaction?.plannedAuthorizedKeyBody, !pendingBody.isEmpty { return pendingBody }
+            if let additionalBody = additionalAuthorizedEntries.first?.keyBody, !additionalBody.isEmpty { return additionalBody }
             if let publicKeyBody, !publicKeyBody.isEmpty { return publicKeyBody }
             if let entry = authorizedKeyEntry {
                 return CodexLocalSSHConfigurator.parseAuthorizedKeyLine(entry)?.keyBody
@@ -201,6 +259,12 @@ struct CodexLocalSSHConfigurator: Sendable {
             if let entry = authorizedKeyEntry {
                 appendUnique(CodexLocalSSHConfigurator.parseAuthorizedKeyLine(entry)?.keyBody)
             }
+            for item in additionalKeyIdentities {
+                appendUnique(item.publicKeyBody)
+            }
+            for item in additionalAuthorizedEntries {
+                appendUnique(item.keyBody)
+            }
             for body in residualAuthorizedKeyBodies {
                 appendUnique(body)
             }
@@ -211,14 +275,26 @@ struct CodexLocalSSHConfigurator: Sendable {
             return bodies
         }
 
-        var allTrackedAuthorizedEntries: [(entry: String, keyBody: String, addedLeadingNewline: Bool)] {
-            var items: [(entry: String, keyBody: String, addedLeadingNewline: Bool)] = []
-            if let entry = authorizedKeyEntry, let body = authorizedKeyBody ?? CodexLocalSSHConfigurator.parseAuthorizedKeyLine(entry)?.keyBody {
-                items.append((entry, body, authorizedKeyAddedLeadingNewline))
+        var allTrackedAuthorizedEntries: [TrackedAuthorizedEntry] {
+            var items: [TrackedAuthorizedEntry] = []
+            func appendUnique(_ item: TrackedAuthorizedEntry) {
+                guard !item.entry.isEmpty, !item.keyBody.isEmpty else { return }
+                if !items.contains(where: { $0.entry == item.entry && $0.keyBody == item.keyBody }) {
+                    items.append(item)
+                }
             }
-            if let pending = pendingTransaction,
-               !items.contains(where: { $0.entry == pending.plannedAuthorizedKeyEntry }) {
-                items.append((pending.plannedAuthorizedKeyEntry, pending.plannedAuthorizedKeyBody, pending.authorizedKeyAddedLeadingNewline))
+            if let entry = authorizedKeyEntry, let body = authorizedKeyBody ?? CodexLocalSSHConfigurator.parseAuthorizedKeyLine(entry)?.keyBody {
+                appendUnique(TrackedAuthorizedEntry(entry: entry, keyBody: body, addedLeadingNewline: authorizedKeyAddedLeadingNewline))
+            }
+            for item in additionalAuthorizedEntries {
+                appendUnique(item)
+            }
+            if let pending = pendingTransaction {
+                appendUnique(TrackedAuthorizedEntry(
+                    entry: pending.plannedAuthorizedKeyEntry,
+                    keyBody: pending.plannedAuthorizedKeyBody,
+                    addedLeadingNewline: pending.authorizedKeyAddedLeadingNewline
+                ))
             }
             return items
         }
@@ -227,26 +303,65 @@ struct CodexLocalSSHConfigurator: Sendable {
             managedHostAlias ?? pendingTransaction?.plannedHostAlias
         }
 
+        var allTrackedMimiConfigVersions: [FileVersionFingerprint] {
+            var versions: [FileVersionFingerprint] = []
+            func appendUnique(_ ver: FileVersionFingerprint?) {
+                guard let ver, !versions.contains(ver) else { return }
+                versions.append(ver)
+            }
+            appendUnique(mimiConfigVersion)
+            for ver in additionalMimiConfigVersions { appendUnique(ver) }
+            appendUnique(pendingTransaction?.plannedMimiConfigVersion)
+            return versions
+        }
+
         var effectiveMimiConfigVersion: FileVersionFingerprint? {
-            mimiConfigVersion ?? pendingTransaction?.plannedMimiConfigVersion
+            allTrackedMimiConfigVersions.first
+        }
+
+        var allTrackedKnownHostsVersions: [FileVersionFingerprint] {
+            var versions: [FileVersionFingerprint] = []
+            func appendUnique(_ ver: FileVersionFingerprint?) {
+                guard let ver, !versions.contains(ver) else { return }
+                versions.append(ver)
+            }
+            appendUnique(knownHostsVersion)
+            for ver in additionalKnownHostsVersions { appendUnique(ver) }
+            appendUnique(pendingTransaction?.plannedKnownHostsVersion)
+            return versions
         }
 
         var effectiveKnownHostsVersion: FileVersionFingerprint? {
-            knownHostsVersion ?? pendingTransaction?.plannedKnownHostsVersion
+            allTrackedKnownHostsVersions.first
+        }
+
+        var allTrackedStagedKeyDirectories: [String] {
+            var dirs = stagedKeyDirectories
+            if let pendingDir = pendingTransaction?.stagedKeyDirectoryName,
+               !pendingDir.isEmpty,
+               !dirs.contains(pendingDir) {
+                dirs.append(pendingDir)
+            }
+            return dirs
         }
 
         var isEmpty: Bool {
             keyFingerprint == nil &&
                 publicKeyBody == nil &&
+                additionalKeyIdentities.isEmpty &&
                 authorizedKeyEntry == nil &&
                 authorizedKeyBody == nil &&
+                additionalAuthorizedEntries.isEmpty &&
                 residualAuthorizedKeyBodies.isEmpty &&
                 managedHostAlias == nil &&
                 mimiConfigVersion == nil &&
+                additionalMimiConfigVersions.isEmpty &&
                 !mimiConfigConflict &&
                 !managedKnownHosts &&
                 knownHostsVersion == nil &&
+                additionalKnownHostsVersions.isEmpty &&
                 !knownHostsConflict &&
+                stagedKeyDirectories.isEmpty &&
                 pendingTransaction == nil
         }
     }
@@ -511,7 +626,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             if !state.isEmpty {
                 result.hasPersistedManagedState = true
             }
-            if state.pendingTransaction != nil {
+            if state.pendingTransaction != nil || !state.stagedKeyDirectories.isEmpty {
                 result.hasPendingTransaction = true
             }
             if state.knownHostsConflict || state.mimiConfigConflict {
@@ -521,7 +636,9 @@ struct CodexLocalSSHConfigurator: Sendable {
 
         var sshDirectorySafe = true
         do {
-            _ = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
+            if let info = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh") {
+                try ensureNotGroupOrWorldWritable(info, label: "~/.ssh", reason: "目录对组或其他用户可写。")
+            }
         } catch {
             result.hasUnsafeFileSystemState = true
             sshDirectorySafe = false
@@ -537,7 +654,10 @@ struct CodexLocalSSHConfigurator: Sendable {
         var mimiDirSafe = true
         var mimiDirExists = false
         do {
-            mimiDirExists = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") != nil
+            if let info = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+                try ensureNotGroupOrWorldWritable(info, label: "~/.ssh/mimi", reason: "目录对组或其他用户可写。")
+                mimiDirExists = true
+            }
         } catch {
             result.hasUnsafeFileSystemState = true
             mimiDirSafe = false
@@ -548,8 +668,9 @@ struct CodexLocalSSHConfigurator: Sendable {
             do {
                 let khSnap = try captureSnapshot(of: knownHostsURL, label: "~/.ssh/mimi/\(Self.knownHostsFileName)")
                 if khSnap.exists {
-                    if let expectedVer = state?.effectiveKnownHostsVersion {
-                        if !expectedVer.matches(data: khSnap.data) {
+                    let trackedKHVersions = state?.allTrackedKnownHostsVersions ?? []
+                    if !trackedKHVersions.isEmpty {
+                        if !trackedKHVersions.contains(where: { $0.matches(data: khSnap.data) }) {
                             result.hasUnsafeFileSystemState = true
                         }
                     } else if state?.managedKnownHosts != true {
@@ -581,21 +702,34 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
 
             if privateSafe && publicSafe {
-                if let expectedBody = state?.effectiveKeyBody,
-                   let expectedFingerprint = state?.effectiveKeyFingerprint {
+                let trackedIdentities = state?.allTrackedKeyIdentities ?? []
+                if !trackedIdentities.isEmpty {
                     if privateExists && publicExists {
-                        if await verifyOwnedKeyPair(expectedBody: expectedBody, expectedFingerprint: expectedFingerprint) {
+                        var matched = false
+                        for identity in trackedIdentities {
+                            if await verifyOwnedKeyPair(expectedBody: identity.publicKeyBody, expectedFingerprint: identity.keyFingerprint) {
+                                matched = true
+                                break
+                            }
+                        }
+                        if matched {
                             result.keyExists = true
                         } else {
                             result.hasConflictingKeyFiles = true
                         }
                     } else if privateExists || publicExists {
-                        let singleOwned = await verifyPartialOwnedKey(
-                            privateExists: privateExists,
-                            publicExists: publicExists,
-                            expectedBody: expectedBody,
-                            expectedFingerprint: expectedFingerprint
-                        )
+                        var singleOwned = false
+                        for identity in trackedIdentities {
+                            if await verifyPartialOwnedKey(
+                                privateExists: privateExists,
+                                publicExists: publicExists,
+                                expectedBody: identity.publicKeyBody,
+                                expectedFingerprint: identity.keyFingerprint
+                            ) {
+                                singleOwned = true
+                                break
+                            }
+                        }
                         if singleOwned {
                             result.hasPersistedManagedState = true
                         } else {
@@ -610,10 +744,13 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
         }
 
-        // 3. 独立三态探测并核验 authorized_keys（含共用按公钥残留检查）
+        // 3. 独立三态探测并核验 authorized_keys（含 StrictModes 权限检查与共用按公钥残留检查）
         do {
             let authSnapshot = try captureSnapshot(of: authorizedKeysURL, label: "authorized_keys")
             if authSnapshot.exists {
+                if let info = authSnapshot.info {
+                    try ensureNotGroupOrWorldWritable(info, label: "~/.ssh/authorized_keys", reason: "文件对组或其他用户可写。")
+                }
                 let authorizedContent = try decodeUTF8(authSnapshot.data, label: "~/.ssh/authorized_keys")
                 if let state {
                     let trackedBodies = state.allTrackedAuthorizedKeyBodies
@@ -646,10 +783,14 @@ struct CodexLocalSSHConfigurator: Sendable {
         // 4. 独立三态探测并核验 ~/.ssh/config 单行 Include、~/.ssh/mimi/config 与多画像 ssh -G 有效目标
         do {
             let configSnapshot = try captureSnapshot(of: sshConfigURL, label: "config")
+            if configSnapshot.exists, let info = configSnapshot.info {
+                try ensureNotGroupOrWorldWritable(info, label: "~/.ssh/config", reason: "文件对组或其他用户可写。")
+            }
             let mimiConfigSnap = mimiDirSafe && mimiDirExists
                 ? try captureSnapshot(of: mimiConfigURL, label: "~/.ssh/mimi/config")
                 : .missing
-            if mimiConfigSnap.exists, let expectedVer = state?.effectiveMimiConfigVersion, !expectedVer.matches(data: mimiConfigSnap.data) {
+            let trackedMimiVersions = state?.allTrackedMimiConfigVersions ?? []
+            if mimiConfigSnap.exists, !trackedMimiVersions.isEmpty, !trackedMimiVersions.contains(where: { $0.matches(data: mimiConfigSnap.data) }) {
                 result.hasConflictingKeyFiles = true
             }
             if configSnapshot.exists {
@@ -727,8 +868,21 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
         }
 
-        try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
+        if let sshDirInfo = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh") {
+            try ensureNotGroupOrWorldWritable(
+                sshDirInfo,
+                label: "~/.ssh",
+                reason: "为避免收紧权限后激活原本被 StrictModes 拒绝的授权或采纳不安全配置，已拒绝采纳，请先手工修复权限。"
+            )
+        }
         try validateMimiDirectoryAndFiles()
+        if let mimiDirInfo = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+            try ensureNotGroupOrWorldWritable(
+                mimiDirInfo,
+                label: "~/.ssh/mimi",
+                reason: "请先手工修复 ~/.ssh/mimi 权限后再试。"
+            )
+        }
         try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
         try validateRegularFileIfPresent(sshConfigURL, label: "config")
         try validateStateDirectoryAndStateFile()
@@ -739,13 +893,28 @@ struct CodexLocalSSHConfigurator: Sendable {
         let authSnapshot = try captureSnapshot(of: authorizedKeysURL, label: "~/.ssh/authorized_keys")
         let initialKnownHostsSnapshot = try captureSnapshot(of: knownHostsURL, label: "~/.ssh/mimi/\(Self.knownHostsFileName)")
 
+        if configSnapshot.exists, let info = configSnapshot.info {
+            try ensureNotGroupOrWorldWritable(
+                info,
+                label: "~/.ssh/config",
+                reason: "OpenSSH 会拒绝组或其他用户可写的配置文件，已拒绝复制到快照进行评估或修改。"
+            )
+        }
+        if authSnapshot.exists, let info = authSnapshot.info {
+            try ensureNotGroupOrWorldWritable(
+                info,
+                label: "~/.ssh/authorized_keys",
+                reason: "为避免收紧权限后激活原本被 StrictModes 拒绝的授权，已拒绝采纳，请先手工核对并修复权限。"
+            )
+        }
+
         // 若上次存在未解冲突或 ~/.ssh/mimi/ 内的 config/known_hosts 与 Mimi 归属版本不匹配，拒绝盲目覆盖。
         if mimiConfigSnapshot.exists {
             if previousState?.mimiConfigConflict == true {
                 throw ConfigError.conflictingKeyFiles("~/.ssh/mimi/config 存在待核对的外部修改冲突，请先手工核对或移除。")
             }
-            guard let expectedVer = previousState?.effectiveMimiConfigVersion,
-                  expectedVer.matches(data: mimiConfigSnapshot.data) else {
+            let trackedMimiVersions = previousState?.allTrackedMimiConfigVersions ?? []
+            guard trackedMimiVersions.contains(where: { $0.matches(data: mimiConfigSnapshot.data) }) else {
                 throw ConfigError.conflictingKeyFiles("~/.ssh/mimi/config 已存在且与 Mimi 记录版本不一致，已停止以免覆盖外部改动。")
             }
         }
@@ -753,8 +922,8 @@ struct CodexLocalSSHConfigurator: Sendable {
             if previousState?.knownHostsConflict == true {
                 throw ConfigError.conflictingKeyFiles("~/.ssh/mimi/\(Self.knownHostsFileName) 存在待核对的外部替换/更新冲突，请先手工核对或移除。")
             }
-            guard let expectedVer = previousState?.effectiveKnownHostsVersion,
-                  expectedVer.matches(data: initialKnownHostsSnapshot.data) else {
+            let trackedKHVersions = previousState?.allTrackedKnownHostsVersions ?? []
+            guard trackedKHVersions.contains(where: { $0.matches(data: initialKnownHostsSnapshot.data) }) else {
                 throw ConfigError.conflictingKeyFiles("~/.ssh/mimi/\(Self.knownHostsFileName) 已存在且与 Mimi 记录版本不一致，已停止以免覆盖外部文件。")
             }
         }
@@ -794,15 +963,43 @@ struct CodexLocalSSHConfigurator: Sendable {
         )
 
         // =========================================================================
-        // Phase 1 · Stage Key Material & Persist Write-Ahead Transaction Intent (WAL)
-        // 在任何持久化文件写入 `~/.ssh` 或 `~/.ssh/mimi` 之前，先在状态账本保存完整可恢复的事务意图！
+        // Phase 1 · Register Staging Artifact, Generate Key & Persist Write-Ahead Intent (WAL)
+        // 密钥生成前先将暂存目录名写入状态账本，并在发布前写入完整事务意图，确保进程在任意时刻被终止均无孤儿私钥或授权。
         // =========================================================================
         let createdSSHDirectory = try ensureSSHDirectory()
         let createdMimiDirectory = try ensureMimiSSHDirectory()
         try ensureStateDirectory()
 
-        let stagedKeyBundle = try await stageKeyPairIfNeeded(plan: keyPlan)
-        defer { stagedKeyBundle?.cleanup() }
+        var stagedKeyBundle: StagedKeyPairBundle?
+        var trackedStagingDirName: String?
+        switch keyPlan.action {
+        case .reuseExisting, .reconstructPublicKey:
+            break
+        case .regenerateAfterRemovingOwnedPublicKey, .generateFresh:
+            let dirName = "\(Self.keyStagingDirectoryPrefix)\(UUID().uuidString)"
+            trackedStagingDirName = dirName
+            var preStageState = previousState ?? ManagedState()
+            if !preStageState.stagedKeyDirectories.contains(dirName) {
+                preStageState.stagedKeyDirectories.append(dirName)
+            }
+            try saveManagedState(preStageState, invokeHook: false)
+            do {
+                stagedKeyBundle = try await stageFreshKeyPair(directoryName: dirName)
+            } catch {
+                let cleaned = cleanupStagedKeyDirectory(named: dirName)
+                if cleaned {
+                    if let prev = previousState {
+                        try? saveManagedState(prev, invokeHook: false)
+                    } else {
+                        try? removeRegularFileIfPresent(stateFileURL, label: stateFileURL.lastPathComponent)
+                    }
+                }
+                if createdMimiDirectory {
+                    removeDirectoryIfEmpty(mimiSSHDirectory, label: "~/.ssh/mimi")
+                }
+                throw error
+            }
+        }
 
         let plannedKeyBody: String
         let plannedKeyFingerprint: String
@@ -824,6 +1021,9 @@ struct CodexLocalSSHConfigurator: Sendable {
         let plannedAuthAddedLeadingNewline = !existingAuthText.isEmpty && existingAuthText.utf8.last != 0x0A
 
         var intentState = previousState ?? ManagedState()
+        if let dirName = trackedStagingDirName, !intentState.stagedKeyDirectories.contains(dirName) {
+            intentState.stagedKeyDirectories.append(dirName)
+        }
         intentState.pendingTransaction = PendingTransaction(
             transactionID: UUID().uuidString,
             keyFingerprint: plannedKeyFingerprint,
@@ -834,9 +1034,10 @@ struct CodexLocalSSHConfigurator: Sendable {
             plannedHostAlias: Self.hostAlias,
             plannedUsername: trimmedUser,
             plannedMimiConfigVersion: plannedMimiConfigVersion,
-            plannedKnownHostsVersion: nil
+            plannedKnownHostsVersion: nil,
+            stagedKeyDirectoryName: trackedStagingDirName
         )
-        // 预写 WAL：从此行之后任意时刻进程被强杀，重启均可通过 stateFileURL 精准撤销，不留孤儿授权。
+        // 预写 WAL：从此行之后任意时刻进程被强杀，重启均可通过 stateFileURL 精准撤销，不留孤儿授权或暂存私钥。
         try saveManagedState(intentState, invokeHook: false)
 
         // =========================================================================
@@ -892,6 +1093,13 @@ struct CodexLocalSSHConfigurator: Sendable {
             // 2c. 重新核验 authorized_keys 快照后单次原子写入（仅追加带标记 restrict,from= 行，轮换时仅移除旧标记行）
             let latestAuthSnapshot = try captureSnapshot(of: authorizedKeysURL, label: "~/.ssh/authorized_keys")
             try verifySnapshotUnchanged(authSnapshot, current: latestAuthSnapshot, label: "~/.ssh/authorized_keys")
+            if latestAuthSnapshot.exists, let info = latestAuthSnapshot.info {
+                try ensureNotGroupOrWorldWritable(
+                    info,
+                    label: "~/.ssh/authorized_keys",
+                    reason: "为避免收紧权限后激活原本被 StrictModes 拒绝的授权，已拒绝采纳，请先手工核对并修复权限。"
+                )
+            }
             let latestAuthText = try decodeUTF8(latestAuthSnapshot.data, label: "~/.ssh/authorized_keys")
             let authEvaluation = Self.evaluateAuthorizedKeys(
                 content: latestAuthText,
@@ -906,12 +1114,16 @@ struct CodexLocalSSHConfigurator: Sendable {
             nextState.pendingTransaction = nil
             nextState.keyFingerprint = keyMaterial.fingerprint
             nextState.publicKeyBody = keyMaterial.publicKeyBody
+            nextState.additionalKeyIdentities = []
+            nextState.additionalAuthorizedEntries = []
             nextState.managedHostAlias = Self.hostAlias
             nextState.managedUsername = trimmedUser
             nextState.mimiConfigVersion = plannedMimiConfigVersion
+            nextState.additionalMimiConfigVersions = []
             nextState.mimiConfigConflict = false
             nextState.managedKnownHosts = initialKnownHostsSnapshot.exists || (previousState?.managedKnownHosts ?? false)
             nextState.knownHostsVersion = previousState?.effectiveKnownHostsVersion
+            nextState.additionalKnownHostsVersions = []
             nextState.knownHostsConflict = false
             nextState.residualAuthorizedKeyBodies = []
 
@@ -1049,11 +1261,21 @@ struct CodexLocalSSHConfigurator: Sendable {
                 nextState.knownHostsConflict = false
             }
 
+            // 确认清理本次及历史遗留的密钥暂存目录，仅对确认删除的条目销账。
+            var allTrackedStagingDirs = nextState.allTrackedStagedKeyDirectories
+            if let dirName = trackedStagingDirName, !allTrackedStagingDirs.contains(dirName) {
+                allTrackedStagingDirs.append(dirName)
+            }
+            nextState.stagedKeyDirectories = allTrackedStagingDirs.filter { !cleanupStagedKeyDirectory(named: $0) }
+
             try saveManagedState(nextState, invokeHook: true)
         } catch let crash as SimulatedHardCrashError {
-            // 仅测试崩溃模拟：跳过内存回滚，直接模拟进程被 SIGKILL 终止后的落盘现场。
+            // 仅测试崩溃模拟：跳过内存回滚与暂存清理，直接模拟进程被 SIGKILL 终止后的落盘现场。
             throw crash
         } catch {
+            if let dirName = trackedStagingDirName, !cleanupStagedKeyDirectory(named: dirName) {
+                rollback.residualStagedKeyDirectories.append(dirName)
+            }
             let rollbackOutcome = await performRollback(rollback)
             if !rollbackOutcome.fullyRolledBack {
                 let baseMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -1157,28 +1379,60 @@ struct CodexLocalSSHConfigurator: Sendable {
         try validateStateDirectoryAndStateFile()
 
         var state = (try loadManagedState()) ?? ManagedState()
-        // 将任何中断的 WAL 意图合并为待清理目标，然后统一按实际清理结果逐项消账。
+        // 将任何中断的 WAL 意图完整合并为待清理目标（同时保留新旧两代密钥身份、精确授权行、版本指纹与暂存目录，直至核验清理完成）。
         if let pending = state.pendingTransaction {
-            if state.keyFingerprint == nil { state.keyFingerprint = pending.keyFingerprint }
-            if state.publicKeyBody == nil { state.publicKeyBody = pending.publicKeyBody }
+            if state.keyFingerprint == nil || state.publicKeyBody == nil {
+                state.keyFingerprint = pending.keyFingerprint
+                state.publicKeyBody = pending.publicKeyBody
+            } else if state.keyFingerprint != pending.keyFingerprint || state.publicKeyBody != pending.publicKeyBody {
+                let replacementIdentity = TrackedKeyIdentity(
+                    keyFingerprint: pending.keyFingerprint,
+                    publicKeyBody: pending.publicKeyBody
+                )
+                if !state.additionalKeyIdentities.contains(replacementIdentity) {
+                    state.additionalKeyIdentities.append(replacementIdentity)
+                }
+            }
             if state.authorizedKeyEntry == nil {
                 state.authorizedKeyEntry = pending.plannedAuthorizedKeyEntry
                 state.authorizedKeyBody = pending.plannedAuthorizedKeyBody
                 state.authorizedKeyAddedLeadingNewline = pending.authorizedKeyAddedLeadingNewline
-            } else if state.authorizedKeyBody != pending.plannedAuthorizedKeyBody,
-                      !state.residualAuthorizedKeyBodies.contains(pending.plannedAuthorizedKeyBody) {
-                state.residualAuthorizedKeyBodies.append(pending.plannedAuthorizedKeyBody)
+            } else if state.authorizedKeyEntry != pending.plannedAuthorizedKeyEntry ||
+                        state.authorizedKeyBody != pending.plannedAuthorizedKeyBody {
+                let replacementEntry = TrackedAuthorizedEntry(
+                    entry: pending.plannedAuthorizedKeyEntry,
+                    keyBody: pending.plannedAuthorizedKeyBody,
+                    addedLeadingNewline: pending.authorizedKeyAddedLeadingNewline
+                )
+                if !state.additionalAuthorizedEntries.contains(where: { $0.entry == replacementEntry.entry && $0.keyBody == replacementEntry.keyBody }) {
+                    state.additionalAuthorizedEntries.append(replacementEntry)
+                }
             }
             if state.managedHostAlias == nil {
                 state.managedHostAlias = pending.plannedHostAlias
                 state.managedUsername = pending.plannedUsername
             }
-            if state.mimiConfigVersion == nil {
-                state.mimiConfigVersion = pending.plannedMimiConfigVersion
+            if let plannedMimiVer = pending.plannedMimiConfigVersion {
+                if state.mimiConfigVersion == nil {
+                    state.mimiConfigVersion = plannedMimiVer
+                } else if state.mimiConfigVersion != plannedMimiVer,
+                          !state.additionalMimiConfigVersions.contains(plannedMimiVer) {
+                    state.additionalMimiConfigVersions.append(plannedMimiVer)
+                }
             }
-            if state.knownHostsVersion == nil, let khVer = pending.plannedKnownHostsVersion {
-                state.knownHostsVersion = khVer
+            if let khVer = pending.plannedKnownHostsVersion {
+                if state.knownHostsVersion == nil {
+                    state.knownHostsVersion = khVer
+                } else if state.knownHostsVersion != khVer,
+                          !state.additionalKnownHostsVersions.contains(khVer) {
+                    state.additionalKnownHostsVersions.append(khVer)
+                }
                 state.managedKnownHosts = true
+            }
+            if let stagedDir = pending.stagedKeyDirectoryName,
+               !stagedDir.isEmpty,
+               !state.stagedKeyDirectories.contains(stagedDir) {
+                state.stagedKeyDirectories.append(stagedDir)
             }
             state.pendingTransaction = nil
         }
@@ -1187,7 +1441,13 @@ struct CodexLocalSSHConfigurator: Sendable {
 
         var sshDirectorySafe = true
         do {
-            _ = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh")
+            if let sshDirInfo = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh") {
+                try ensureNotGroupOrWorldWritable(
+                    sshDirInfo,
+                    label: "~/.ssh",
+                    reason: "为避免收紧或操作不安全目录，请先手工核对并修复 ~/.ssh 权限。"
+                )
+            }
         } catch let error as ConfigError {
             errors.append(error)
             sshDirectorySafe = false
@@ -1197,13 +1457,14 @@ struct CodexLocalSSHConfigurator: Sendable {
         }
 
         if sshDirectorySafe {
-            // 1. 优先撤销 authorized_keys：仅删带 Mimi 标记的精确行，并共用按公钥检查残留逻辑。
+            // 1. 优先撤销 authorized_keys：仅删带 Mimi 标记的精确行（含轮换新旧精确条目），并共用按公钥检查残留逻辑。
             do {
                 switch try probePath(authorizedKeysURL, label: "authorized_keys") {
                 case .missing:
                     state.authorizedKeyEntry = nil
                     state.authorizedKeyBody = nil
                     state.authorizedKeyAddedLeadingNewline = false
+                    state.additionalAuthorizedEntries = []
                     state.residualAuthorizedKeyBodies = []
                 case .present:
                     try validateRegularFileIfPresent(authorizedKeysURL, label: "authorized_keys")
@@ -1214,13 +1475,19 @@ struct CodexLocalSSHConfigurator: Sendable {
                             trackedEntries: trackedEntries,
                             trackedBodies: trackedBodies
                         )
-                        state.authorizedKeyEntry = nil
-                        state.authorizedKeyAddedLeadingNewline = false
                         if outcome.residualBodies.isEmpty {
+                            state.authorizedKeyEntry = nil
                             state.authorizedKeyBody = nil
+                            state.authorizedKeyAddedLeadingNewline = false
+                            state.additionalAuthorizedEntries = []
                             state.residualAuthorizedKeyBodies = []
                         } else {
                             // 绝不丢失残留同公钥授权记录！
+                            state.authorizedKeyEntry = nil
+                            state.authorizedKeyAddedLeadingNewline = false
+                            state.additionalAuthorizedEntries = state.additionalAuthorizedEntries.filter {
+                                outcome.residualBodies.contains($0.keyBody)
+                            }
                             state.authorizedKeyBody = outcome.residualBodies.first
                             state.residualAuthorizedKeyBodies = outcome.residualBodies
                             throw ConfigError.conflictingAuthorizedKey(
@@ -1235,7 +1502,7 @@ struct CodexLocalSSHConfigurator: Sendable {
                 errors.append(.fileOperationFailed(error.localizedDescription))
             }
 
-            // 2. 检查 ~/.ssh/mimi 目录，独立安全清理密钥、mimi/config 与 mimi/known_hosts
+            // 2. 检查 ~/.ssh/mimi 目录，独立安全清理密钥、已登记暂存目录、mimi/config 与 mimi/known_hosts
             var mimiDirSafe = true
             var mimiDirPresent = false
             do {
@@ -1244,13 +1511,23 @@ struct CodexLocalSSHConfigurator: Sendable {
                     mimiDirPresent = false
                     state.keyFingerprint = nil
                     state.publicKeyBody = nil
+                    state.additionalKeyIdentities = []
+                    state.stagedKeyDirectories = []
                     state.mimiConfigVersion = nil
+                    state.additionalMimiConfigVersions = []
                     state.mimiConfigConflict = false
                     state.managedKnownHosts = false
                     state.knownHostsVersion = nil
+                    state.additionalKnownHostsVersions = []
                     state.knownHostsConflict = false
                 case .present:
-                    _ = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi")
+                    if let mimiDirInfo = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+                        try ensureNotGroupOrWorldWritable(
+                            mimiDirInfo,
+                            label: "~/.ssh/mimi",
+                            reason: "请先手工核对并修复 ~/.ssh/mimi 目录权限。"
+                        )
+                    }
                     mimiDirPresent = true
                 }
             } catch let error as ConfigError {
@@ -1262,17 +1539,32 @@ struct CodexLocalSSHConfigurator: Sendable {
             }
 
             if mimiDirSafe && mimiDirPresent {
-                // 2a. 仅删除经指纹、公私钥匹配与隔离快照核验确属 Mimi 的专用密钥文件。
+                // 2a. 仅删除经指纹、公私钥匹配（支持轮换新旧身份）与隔离快照核验确属 Mimi 的专用密钥文件。
                 do {
                     let removedKeys = try await removeOwnedKeyFilesIfVerified(state: state)
                     if removedKeys {
                         state.keyFingerprint = nil
                         state.publicKeyBody = nil
+                        state.additionalKeyIdentities = []
                     }
                 } catch let error as ConfigError {
                     errors.append(error)
                 } catch {
                     errors.append(.fileOperationFailed(error.localizedDescription))
+                }
+
+                // 2b. 清理进程异常终止前登记在状态文件中的 `~/.ssh/mimi/.mimi-keygen-*` 暂存产物。
+                if !state.stagedKeyDirectories.isEmpty {
+                    var remainingStaged: [String] = []
+                    for dirName in state.stagedKeyDirectories {
+                        if !cleanupStagedKeyDirectory(named: dirName) {
+                            remainingStaged.append(dirName)
+                        }
+                    }
+                    state.stagedKeyDirectories = remainingStaged
+                    if !remainingStaged.isEmpty {
+                        errors.append(.fileOperationFailed("未能清理残留密钥暂存目录：\(remainingStaged.joined(separator: "、"))"))
+                    }
                 }
             }
 
@@ -1312,10 +1604,11 @@ struct CodexLocalSSHConfigurator: Sendable {
                     try removeVersionVerifiedManagedFile(
                         at: mimiConfigURL,
                         label: "~/.ssh/mimi/config",
-                        expectedVersion: state.mimiConfigVersion,
+                        expectedVersions: state.allTrackedMimiConfigVersions,
                         hasConflictFlag: state.mimiConfigConflict
                     )
                     state.mimiConfigVersion = nil
+                    state.additionalMimiConfigVersions = []
                     state.mimiConfigConflict = false
                 } catch let error as ConfigError {
                     state.mimiConfigConflict = true
@@ -1330,11 +1623,12 @@ struct CodexLocalSSHConfigurator: Sendable {
                     try removeVersionVerifiedManagedFile(
                         at: knownHostsURL,
                         label: "~/.ssh/mimi/\(Self.knownHostsFileName)",
-                        expectedVersion: state.knownHostsVersion,
+                        expectedVersions: state.allTrackedKnownHostsVersions,
                         hasConflictFlag: state.knownHostsConflict
                     )
                     state.managedKnownHosts = false
                     state.knownHostsVersion = nil
+                    state.additionalKnownHostsVersions = []
                     state.knownHostsConflict = false
                 } catch let error as ConfigError {
                     state.managedKnownHosts = true
@@ -1372,7 +1666,7 @@ struct CodexLocalSSHConfigurator: Sendable {
     private func removeVersionVerifiedManagedFile(
         at url: URL,
         label: String,
-        expectedVersion: FileVersionFingerprint?,
+        expectedVersions: [FileVersionFingerprint],
         hasConflictFlag: Bool
     ) throws {
         switch try probePath(url, label: label) {
@@ -1383,8 +1677,7 @@ struct CodexLocalSSHConfigurator: Sendable {
             let snapshot = try captureSnapshot(of: url, label: label)
             guard snapshot.exists else { return }
             guard !hasConflictFlag,
-                  let expectedVersion,
-                  expectedVersion.matches(data: snapshot.data) else {
+                  expectedVersions.contains(where: { $0.matches(data: snapshot.data) }) else {
                 throw ConfigError.conflictingKeyFiles(
                     "\(label) 已被外部修改、替换或缺少已证实的 Mimi 版本归属记录，撤销时已保留未删除，请手工核对。"
                 )

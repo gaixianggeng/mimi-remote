@@ -327,44 +327,195 @@ enum CodexDesktopLink {
         return candidates
     }
 
-    /// 解析当前用户共享 Codex App Server 控制 socket 路径集合（包含标准路径及经归属校验的 Codex 0.161+ 私有 socket 符号链接目标）。
-    static func sharedCodexControlSocketPaths(
+    private struct AgentdCodexConfigFile: Decodable {
+        struct CodexSection: Decodable {
+            let enabled: Bool?
+            let env: [String: String]?
+        }
+
+        struct AppServerSection: Decodable {
+            let transport: String?
+        }
+
+        let codex: CodexSection?
+        let appServer: AppServerSection?
+
+        enum CodingKeys: String, CodingKey {
+            case codex
+            case appServer = "app_server"
+        }
+    }
+
+    private static func expandHomePrefix(_ path: String, homeDirectory: URL) -> String {
+        if path == "~" {
+            return homeDirectory.path
+        }
+        if path.hasPrefix("~/") {
+            return homeDirectory.path + "/" + String(path.dropFirst(2))
+        }
+        return path
+    }
+
+    /// 定位当前用户运行中的 `agentd serve` 实际使用的配置文件路径（优先运行中进程的 `--config`，其次 `AGENTD_CONFIG`，最后默认配置路径）。
+    static func agentdConfigURL(
+        processes: [Int32: ProcessSnapshotEntry] = [:],
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         expectedUID: uid_t = Darwin.geteuid()
-    ) -> Set<String> {
-        var roots: [URL] = []
-        if let configuredHome = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !configuredHome.isEmpty {
-            roots.append(URL(fileURLWithPath: configuredHome, isDirectory: true))
+    ) -> URL {
+        for entry in processes.values.sorted(by: { $0.pid < $1.pid }) where entry.uid == expectedUID {
+            let base = URL(fileURLWithPath: entry.executable).lastPathComponent
+            guard base == "agentd", entry.arguments.first == "serve" else { continue }
+            let args = entry.arguments.dropFirst().map(String.init)
+            var idx = 0
+            while idx < args.count {
+                let arg = args[idx]
+                if arg == "--config" || arg == "-config" {
+                    if idx + 1 < args.count {
+                        let rawPath = args[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !rawPath.isEmpty {
+                            return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                        }
+                    }
+                    idx += 2
+                    continue
+                }
+                if arg.hasPrefix("--config=") {
+                    let rawPath = String(arg.dropFirst("--config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty {
+                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                    }
+                } else if arg.hasPrefix("-config=") {
+                    let rawPath = String(arg.dropFirst("-config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty {
+                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
+                    }
+                }
+                idx += 1
+            }
         }
-        roots.append(homeDirectory.appendingPathComponent(".codex", isDirectory: true))
+
+        if let envConfig = environment["AGENTD_CONFIG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envConfig.isEmpty {
+            return URL(fileURLWithPath: expandHomePrefix(envConfig, homeDirectory: homeDirectory), isDirectory: false)
+        }
+        return homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("mimi-remote", isDirectory: true)
+            .appendingPathComponent("config.json", isDirectory: false)
+    }
+
+    private enum LoadedAgentdConfig {
+        case missing
+        case loaded(AgentdCodexConfigFile)
+        case invalid
+    }
+
+    private static func loadAgentdCodexConfig(at url: URL, expectedUID: uid_t) -> LoadedAgentdConfig {
+        var lst = stat()
+        if Darwin.lstat(url.path, &lst) != 0 {
+            return errno == ENOENT ? .missing : .invalid
+        }
+        let fd = Darwin.open(url.path, O_RDONLY | O_NONBLOCK)
+        guard fd >= 0 else { return .invalid }
+        defer { Darwin.close(fd) }
+
+        var st = stat()
+        guard Darwin.fstat(fd, &st) == 0,
+              (st.st_mode & S_IFMT) == S_IFREG,
+              st.st_uid == expectedUID,
+              st.st_size >= 0,
+              st.st_size <= 4 * 1024 * 1024 else {
+            return .invalid
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count > 0 {
+                if data.count + count > 4 * 1024 * 1024 { return .invalid }
+                data.append(buffer, count: count)
+            } else if count == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                return .invalid
+            }
+        }
+        guard let decoded = try? JSONDecoder().decode(AgentdCodexConfigFile.self, from: data) else {
+            return .invalid
+        }
+        return .loaded(decoded)
+    }
+
+    /// 按 `agentd` 实际配置的 transport 与公共 `CODEX_HOME` 解析共享 Codex App Server 控制 socket 路径集合（不读取 GUI 的 `CODEX_HOME`，也不在配置自定义目录时额外放行默认 `~/.codex`）。
+    /// 当 `agentd` 禁用 Codex、使用非 `local` transport（如 `ssh`）或配置损坏时返回空集合，避免把独立后端误判为共享。
+    static func sharedCodexControlSocketPaths(
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        expectedUID: uid_t = Darwin.geteuid(),
+        agentdConfigURL: URL? = nil,
+        processes: [Int32: ProcessSnapshotEntry] = [:]
+    ) -> Set<String> {
+        let configURL = agentdConfigURL ?? Self.agentdConfigURL(
+            processes: processes,
+            homeDirectory: homeDirectory,
+            environment: environment,
+            expectedUID: expectedUID
+        )
+
+        let effectiveCodexHome: URL
+        switch loadAgentdCodexConfig(at: configURL, expectedUID: expectedUID) {
+        case .invalid:
+            return []
+        case .missing:
+            effectiveCodexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+        case .loaded(let cfg):
+            if cfg.codex?.enabled == false {
+                return []
+            }
+            let rawTransport = cfg.appServer?.transport?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            let effectiveTransport = rawTransport.isEmpty ? "local" : rawTransport
+            guard effectiveTransport == "local" else {
+                return []
+            }
+            // 与 Go `SharedLocalSocketPath` 一致：保留目录名原样空格，要求显式 CODEX_HOME 为绝对路径，且不再追加默认 ~/.codex。
+            if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
+                guard configuredHome.hasPrefix("/") else {
+                    return []
+                }
+                effectiveCodexHome = URL(fileURLWithPath: configuredHome, isDirectory: true)
+            } else {
+                effectiveCodexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
+            }
+        }
 
         var paths: Set<String> = []
-        for root in roots {
-            let controlDir = root.appendingPathComponent("app-server-control", isDirectory: true)
-            let socketURL = controlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
-            paths.insert(socketURL.standardizedFileURL.path)
+        let controlDir = effectiveCodexHome.appendingPathComponent("app-server-control", isDirectory: true)
+        let socketURL = controlDir.appendingPathComponent("app-server-control.sock", isDirectory: false)
+        paths.insert(socketURL.standardizedFileURL.path)
 
-            let resolvedDir = controlDir.resolvingSymlinksInPath()
-            let canonicalSocket = resolvedDir.appendingPathComponent("app-server-control.sock", isDirectory: false).path
-            paths.insert(canonicalSocket)
+        let resolvedDir = controlDir.resolvingSymlinksInPath()
+        let canonicalSocket = resolvedDir.appendingPathComponent("app-server-control.sock", isDirectory: false).path
+        paths.insert(canonicalSocket)
 
-            var st = stat()
-            if Darwin.lstat(socketURL.path, &st) == 0,
-               (st.st_mode & S_IFMT) == S_IFLNK,
-               st.st_uid == expectedUID {
-                var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
-                let len = Darwin.readlink(socketURL.path, &buf, buf.count - 1)
-                if len > 0 {
-                    let target = String(cString: buf)
-                    let daemonPrefix1 = "/tmp/codex-daemon-\(expectedUID)/"
-                    let daemonPrefix2 = "/private/tmp/codex-daemon-\(expectedUID)/"
-                    if target.hasPrefix(daemonPrefix1) || target.hasPrefix(daemonPrefix2) {
-                        paths.insert(target)
-                        if target.hasPrefix(daemonPrefix1) {
-                            paths.insert("/private" + target)
-                        }
+        var st = stat()
+        if Darwin.lstat(socketURL.path, &st) == 0,
+           (st.st_mode & S_IFMT) == S_IFLNK,
+           st.st_uid == expectedUID {
+            var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+            let len = Darwin.readlink(socketURL.path, &buf, buf.count - 1)
+            if len > 0 {
+                let target = String(cString: buf)
+                let daemonPrefix1 = "/tmp/codex-daemon-\(expectedUID)/"
+                let daemonPrefix2 = "/private/tmp/codex-daemon-\(expectedUID)/"
+                if target.hasPrefix(daemonPrefix1) || target.hasPrefix(daemonPrefix2) {
+                    paths.insert(target)
+                    if target.hasPrefix(daemonPrefix1) {
+                        paths.insert("/private" + target)
                     }
                 }
             }
@@ -773,6 +924,20 @@ enum CodexDesktopLink {
         await openSSHSettings(preferSSHSubpage: false)
     }
 
+    /// 活动连接检查允许的主机名集合：已同时核验回环 TCP 四元组与共享后端关联，故允许 `ssh -G localhost` 报告的 `hostname localhost`。
+    static let activeConnectionAllowedLoopbackHosts: Set<String> = ["127.0.0.1", "::1", "localhost"]
+
+    static func isDirectActiveLoopbackConfig(
+        _ config: CodexLocalSSHConfigurator.EffectiveSSHConfig,
+        expectedUser: String
+    ) -> Bool {
+        CodexLocalSSHConfigurator.isDirectLoopbackConfig(
+            config,
+            expectedUser: expectedUser,
+            allowedLoopbackHosts: activeConnectionAllowedLoopbackHosts
+        )
+    }
+
     @MainActor
     static func connection(includeManagedAlias: Bool? = nil) async -> Connection {
         let pids = Set(
@@ -825,7 +990,7 @@ enum CodexDesktopLink {
             let loopbackSSH = conns.filter(\.isLoopbackToSSHPort)
             guard !loopbackSSH.isEmpty else { continue }
 
-            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G`（含桌面代理命令）确认无重定向。
+            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G`（含桌面代理命令）确认无重定向（活动连接检查接受 localhost）。
             let lowerDest = candidate.invocation.destinationHost.lowercased()
             if lowerDest != CodexLocalSSHConfigurator.hostAlias && candidate.invocation.explicitConfigPath != "/dev/null" {
                 guard let effective = try? await configurator.resolveEffectiveSSHConfig(
@@ -833,7 +998,7 @@ enum CodexDesktopLink {
                     alias: candidate.invocation.destinationHost,
                     includeSystemConfig: true
                 ),
-                CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser) else {
+                isDirectActiveLoopbackConfig(effective, expectedUser: currentUser) else {
                     continue
                 }
                 var proxyMatchesLoopback = true
@@ -845,7 +1010,7 @@ enum CodexDesktopLink {
                         extraOptions: ["-T"],
                         remoteCommand: proxyCmd
                     ),
-                    CodexLocalSSHConfigurator.isDirectLoopbackConfig(proxyEffective, expectedUser: currentUser) else {
+                    isDirectActiveLoopbackConfig(proxyEffective, expectedUser: currentUser) else {
                         proxyMatchesLoopback = false
                         break
                     }
@@ -856,7 +1021,7 @@ enum CodexDesktopLink {
         }
         guard !verifiedClientTuples.isEmpty else { return .separate }
 
-        // 2. 查询当前账号已连共享 Codex 控制 socket 的 codex 客户端进程，收集其当前用户持有的 sshd/sshd-session 祖先 PID，
+        // 2. 查询当前账号已连 agentd 实际共享 Codex 控制 socket 的 codex 客户端进程，收集其当前用户持有的 sshd/sshd-session 祖先 PID，
         //    并通过服务端 TCP 四元组与桌面 ssh 客户端四元组精确镜像匹配，确保二者属于同一条已认证 SSH 会话。
         let unixLsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
@@ -865,7 +1030,7 @@ enum CodexDesktopLink {
             outputLimit: 1_048_576
         )
         guard let unixLsofResult, unixLsofResult.status == 0 else { return .separate }
-        let sharedSockets = sharedCodexControlSocketPaths(expectedUID: currentUID)
+        let sharedSockets = sharedCodexControlSocketPaths(expectedUID: currentUID, processes: processes)
         let connectedCodexPIDs = parseConnectedCodexClientPIDs(
             unixLsofOutput: unixLsofResult.stdout,
             sharedSocketPaths: sharedSockets

@@ -128,8 +128,21 @@ extension CodexLocalSSHConfigurator {
         try validateRegularFileIfPresent(knownHostsURL, label: "~/.ssh/mimi/\(Self.knownHostsFileName)")
     }
 
+    func ensureNotGroupOrWorldWritable(_ info: LStatInfo, label: String, reason: String) throws {
+        guard (info.permissions & 0o022) == 0 else {
+            throw ConfigError.unsafeFileSystemTarget(
+                "\(label) 权限不安全（组或其他用户可写，当前权限 \(String(format: "%04o", info.permissions))）：\(reason)"
+            )
+        }
+    }
+
     func ensureSSHDirectory() throws -> Bool {
         if let info = try validateDirectoryIfPresent(sshDirectory, label: "~/.ssh") {
+            try ensureNotGroupOrWorldWritable(
+                info,
+                label: "~/.ssh",
+                reason: "为避免收紧权限后激活原本被 StrictModes 拒绝的授权，已拒绝采纳，请先手工修复权限。"
+            )
             try tightenExistingDirectoryIfNeeded(sshDirectory, currentMode: info.permissions)
             return false
         }
@@ -138,6 +151,11 @@ extension CodexLocalSSHConfigurator {
 
     func ensureMimiSSHDirectory() throws -> Bool {
         if let info = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+            try ensureNotGroupOrWorldWritable(
+                info,
+                label: "~/.ssh/mimi",
+                reason: "请先手工修复 ~/.ssh/mimi 目录权限后再试。"
+            )
             try tightenExistingDirectoryIfNeeded(mimiSSHDirectory, currentMode: info.permissions)
             return false
         }
@@ -943,10 +961,10 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    /// 冻结当前 `~/.ssh/config`（缺失视为空）与系统 `ssh_config`（含相对 `Include` 解析基准），用于只读探测和验连绑定同一份快照。
+    /// 冻结当前 `~/.ssh/config`（缺失视为空；只读评估允许可信的普通符号链接，仍严格校验属主与权限）与系统 `ssh_config`，用于只读探测和验连绑定同一份快照。
     func materializeCurrentSSHConfigForEvaluation(includeSystemConfig: Bool = true) throws -> MaterializedSSHConfig {
         let userText: String
-        if let data = try readRegularFileDataIfPresent(sshConfigURL, label: "~/.ssh/config") {
+        if let data = try readEvaluationRegularFileIfPresent(at: sshConfigURL, label: "~/.ssh/config") {
             userText = try decodeUTF8(data, label: "~/.ssh/config")
         } else {
             userText = ""
@@ -1051,7 +1069,16 @@ extension CodexLocalSSHConfigurator {
             let rawLine = Self.utf8Substring(text, range: slice.contentRange)
             let parsedLine = Self.parseSSHConfigLineStrict(rawLine)
             let tokens = parsedLine.tokens
-            if let keyword = tokens.first?.lowercased(), keyword == "include" {
+            if let keyword = tokens.first?.lowercased(), keyword == "match" {
+                guard !parsedLine.hasSyntaxError else {
+                    throw ConfigError.effectiveConfigConflict("SSH 配置 Match 指令引号未闭合或存在悬空转义，无法安全评估。")
+                }
+                if Self.matchCriteriaContainsExec(Array(tokens.dropFirst())) {
+                    throw ConfigError.effectiveConfigConflict("SSH 配置包含 Match exec 条件命令，只读评估拒绝执行外部 shell 命令。")
+                }
+                output.append(rawLine)
+                output.append("\n")
+            } else if let keyword = tokens.first?.lowercased(), keyword == "include" {
                 guard !parsedLine.hasSyntaxError else {
                     throw ConfigError.effectiveConfigConflict("SSH 配置 Include 指令引号未闭合或存在悬空转义，无法忠实冻结。")
                 }
@@ -1128,41 +1155,115 @@ extension CodexLocalSSHConfigurator {
         return output
     }
 
-    /// 只读评估读取：严格匹配 OpenSSH 读取行为（允许跟随符号链接读取普通文件，支持用户与系统属主，但拒绝非常规文件与不可读目标，绝不静默丢弃）。
-    func readEvaluationRegularFileIfPresent(at url: URL) throws -> Data? {
-        var st = stat()
-        if Darwin.fstatat(AT_FDCWD, url.path, &st, 0) != 0 {
-            let err = errno
-            if err == ENOENT {
-                // 若路径本身是悬空符号链接，lstat 会成功，不应误判为缺失。
-                var lst = stat()
-                if Darwin.lstat(url.path, &lst) == 0 {
-                    throw ConfigError.effectiveConfigConflict("SSH 评估配置 \(url.path) 为悬空符号链接，无法忠实读取。")
-                }
-                return nil
-            }
-            throw ConfigError.effectiveConfigConflict("无法读取 SSH 配置 \(url.path)：\(Self.posixErrorMessage(err))")
+    /// 校验只读评估目录安全性：必须为当前用户或 root 拥有的普通目录，且不得为非粘滞位的组/全局可写目录。
+    private func validateEvaluationParentDirectory(at dirURL: URL, label: String) throws {
+        var dirSt = stat()
+        guard Darwin.fstatat(AT_FDCWD, dirURL.path, &dirSt, 0) == 0 else {
+            throw ConfigError.unsafeFileSystemTarget("无法检查 \(label) 所在目录（\(dirURL.path)）：\(Self.posixErrorMessage())")
         }
-        return try readEvaluationRegularFileRequired(at: url)
+        guard (dirSt.st_mode & S_IFMT) == S_IFDIR else {
+            throw ConfigError.unsafeFileSystemTarget("\(label) 所在路径不是目录（\(dirURL.path)）。")
+        }
+        let currentUID = Darwin.geteuid()
+        guard dirSt.st_uid == currentUID || dirSt.st_uid == 0 else {
+            throw ConfigError.unsafeFileSystemTarget("\(label) 所在目录属主不受信任（\(dirURL.path)）。")
+        }
+        let mode = dirSt.st_mode & 0o7777
+        let isRootStickyDir = dirSt.st_uid == 0 && (mode & S_ISVTX) != 0
+        guard (mode & 0o022) == 0 || isRootStickyDir else {
+            throw ConfigError.unsafeFileSystemTarget(
+                "\(label) 所在目录权限不安全（组或其他用户可写，当前权限 \(String(format: "%04o", mode))）：\(dirURL.path)"
+            )
+        }
     }
 
-    func readEvaluationRegularFileRequired(at url: URL) throws -> Data {
+    /// 沿符号链接链逐跳核验每一跳链接本身的属主与所在目录安全性（允许当前用户或 root 拥有的可信符号链接，阻断他人的链接劫持与循环链接）。
+    private func validateEvaluationSymlinkChain(at url: URL, label: String) throws {
+        let currentUID = Darwin.geteuid()
+        var currentURL = url
+        var hops = 0
+        while true {
+            try validateEvaluationParentDirectory(at: currentURL.deletingLastPathComponent(), label: label)
+            var lst = stat()
+            guard Darwin.lstat(currentURL.path, &lst) == 0 else {
+                let err = errno
+                if err == ENOENT {
+                    throw ConfigError.effectiveConfigConflict("SSH 评估配置 \(label) 为悬空符号链接，无法忠实读取。")
+                }
+                throw ConfigError.unsafeFileSystemTarget("无法检查 SSH 评估配置 \(label)：\(Self.posixErrorMessage(err))")
+            }
+            guard (lst.st_mode & S_IFMT) == S_IFLNK else {
+                return
+            }
+            guard lst.st_uid == currentUID || lst.st_uid == 0 else {
+                throw ConfigError.unsafeFileSystemTarget("SSH 评估配置 \(label) 的符号链接属主不受信任。")
+            }
+            hops += 1
+            guard hops <= 16 else {
+                throw ConfigError.effectiveConfigConflict("SSH 评估配置 \(label) 符号链接层级过深或存在循环。")
+            }
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+            let len = Darwin.readlink(currentURL.path, &buffer, buffer.count - 1)
+            guard len > 0 else {
+                throw ConfigError.unsafeFileSystemTarget("无法解析 SSH 评估配置 \(label) 的符号链接：\(Self.posixErrorMessage())")
+            }
+            let target = String(cString: buffer)
+            if target.hasPrefix("/") {
+                currentURL = URL(fileURLWithPath: target)
+            } else {
+                currentURL = currentURL.deletingLastPathComponent().appendingPathComponent(target)
+            }
+        }
+    }
+
+    /// 只读评估读取：严格匹配 OpenSSH 权限与属主边界（允许可信普通符号链接目标，要求当前用户或 root 属主且禁止组/全局可写，拒绝非常规文件与不可读目标，绝不复制到 0600 快照绕过 OpenSSH 校验）。
+    func readEvaluationRegularFileIfPresent(at url: URL, label: String? = nil) throws -> Data? {
+        let effectiveLabel = label ?? url.path
+        var lst = stat()
+        if Darwin.lstat(url.path, &lst) != 0 {
+            let err = errno
+            if err == ENOENT {
+                return nil
+            }
+            throw ConfigError.unsafeFileSystemTarget("无法检查 SSH 配置 \(effectiveLabel)：\(Self.posixErrorMessage(err))")
+        }
+        return try readEvaluationRegularFileRequired(at: url, label: effectiveLabel)
+    }
+
+    func readEvaluationRegularFileRequired(at url: URL, label: String? = nil) throws -> Data {
+        let effectiveLabel = label ?? url.path
+        try validateEvaluationSymlinkChain(at: url, label: effectiveLabel)
+
         let fd = Darwin.open(url.path, O_RDONLY | O_NONBLOCK)
         guard fd >= 0 else {
-            throw ConfigError.effectiveConfigConflict("无法打开 SSH Include 文件 \(url.path)：\(Self.posixErrorMessage())")
+            throw ConfigError.effectiveConfigConflict("无法打开 SSH 配置文件 \(effectiveLabel)：\(Self.posixErrorMessage())")
         }
         defer { Darwin.close(fd) }
         var st = stat()
         guard Darwin.fstat(fd, &st) == 0 else {
-            throw ConfigError.effectiveConfigConflict("无法检查 SSH Include 文件 \(url.path)：\(Self.posixErrorMessage())")
+            throw ConfigError.effectiveConfigConflict("无法检查 SSH 配置文件 \(effectiveLabel)：\(Self.posixErrorMessage())")
         }
         guard (st.st_mode & S_IFMT) == S_IFREG else {
-            throw ConfigError.effectiveConfigConflict("SSH Include 文件 \(url.path) 不是普通文件，无法忠实冻结。")
+            throw ConfigError.unsafeFileSystemTarget("SSH 配置文件 \(effectiveLabel) 不是普通文件，无法忠实冻结。")
         }
+        let currentUID = Darwin.geteuid()
+        guard st.st_uid == currentUID || st.st_uid == 0 else {
+            throw ConfigError.unsafeFileSystemTarget("SSH 配置文件 \(effectiveLabel) 属主不受信任（uid=\(st.st_uid)），已拒绝评估。")
+        }
+        let mode = st.st_mode & 0o7777
+        guard (mode & 0o022) == 0 else {
+            throw ConfigError.unsafeFileSystemTarget(
+                "SSH 配置文件 \(effectiveLabel) 权限不安全（组或其他用户可写，当前权限 \(String(format: "%04o", mode))），已拒绝评估。"
+            )
+        }
+        // 同时核验最终解析后目标所在目录，防止通过软链指向组/全局可写目录内的文件。
+        let resolvedParent = url.resolvingSymlinksInPath().deletingLastPathComponent()
+        try validateEvaluationParentDirectory(at: resolvedParent, label: effectiveLabel)
+
         do {
             return try readAllBytes(from: fd, label: url.lastPathComponent, maxBytes: 4 * 1024 * 1024)
         } catch {
-            throw ConfigError.effectiveConfigConflict("读取 SSH Include 文件 \(url.path) 失败：\(error.localizedDescription)")
+            throw ConfigError.effectiveConfigConflict("读取 SSH 配置文件 \(effectiveLabel) 失败：\(error.localizedDescription)")
         }
     }
 

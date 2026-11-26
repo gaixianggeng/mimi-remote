@@ -791,6 +791,258 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             "第 3 步：在 Codex 桌面版连接本机，已完成"
         )
     }
+
+    // MARK: - Final Round P1-5: Match Shared Session Against agentd Effective Transport & Public Socket
+
+    func testFinal_P1_5SharedSessionDetectionMatchesAgentdEffectiveTransportAndPublicSocket() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-agentd-sock-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let fakeHome = tempRoot.appendingPathComponent("home", isDirectory: true)
+        let customCodexHome = tempRoot.appendingPathComponent("custom-codex", isDirectory: true)
+        let guiCodexHome = tempRoot.appendingPathComponent("gui-codex", isDirectory: true)
+        let configDir = fakeHome.appendingPathComponent("Library/Application Support/mimi-remote", isDirectory: true)
+        try FileManager.default.createDirectory(at: fakeHome.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: customCodexHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: guiCodexHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        let configURL = configDir.appendingPathComponent("config.json")
+        let currentUID = Darwin.geteuid()
+
+        func makeUnixLsof(_ entries: [(pid: Int32, cmd: String, fd: String, addr: String, name: String)]) -> Data {
+            var data = Data()
+            for entry in entries {
+                for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                    data.append(contentsOf: field.utf8)
+                    data.append(0)
+                }
+                data.append(0x0A)
+            }
+            return data
+        }
+
+        // 1. agentd 配置了自定义 CODEX_HOME 且 transport=local，同时 GUI 环境变量有另一个 CODEX_HOME：
+        //    只匹配 agentd 的自定义公共 socket，绝不回退或放行默认 ~/.codex 或 GUI 的 CODEX_HOME！
+        let customCfg = """
+        {
+          "app_server": { "transport": "local" },
+          "codex": { "enabled": true, "env": { "CODEX_HOME": "\(customCodexHome.path)" } }
+        }
+        """
+        try customCfg.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let sockets = CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: ["CODEX_HOME": guiCodexHome.path],
+            expectedUID: currentUID
+        )
+        let customSock = customCodexHome.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
+        let defaultSock = fakeHome.appendingPathComponent(".codex/app-server-control/app-server-control.sock").standardizedFileURL.path
+        let guiSock = guiCodexHome.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
+        XCTAssertTrue(sockets.contains(customSock), "必须包含 agentd 实际配置的 CODEX_HOME 公共 socket")
+        XCTAssertFalse(sockets.contains(defaultSock), "agentd 配置自定义 CODEX_HOME 时绝不得额外接受默认 ~/.codex socket")
+        XCTAssertFalse(sockets.contains(guiSock), "绝不得采用 GUI 进程的 CODEX_HOME")
+
+        let psOutput = """
+          1914     1   \(currentUID) /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   \(currentUID) /usr/bin/ssh -T -o BatchMode=yes mimi-local sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   \(currentUID) sshd-session: alice@notty
+           502   501   \(currentUID) /opt/homebrew/bin/codex app-server proxy
+        """
+        let matchedTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+        // 连接到默认 ~/.codex（与 agentd 不同后端）-> 必须判为 false！
+        let defaultBackendUnix = makeUnixLsof([
+            (pid: 900, cmd: "codex", fd: "5", addr: "0x1111", name: defaultSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+        ])
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psOutput,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: currentUID,
+            tcpLsofOutput: matchedTCP,
+            unixLsofOutput: defaultBackendUnix,
+            sharedSocketPaths: sockets
+        ), "桌面 SSH 连到默认 ~/.codex 而 agentd 使用自定义 CODEX_HOME 时不得误判为共享")
+
+        // 连接到 agentd 实际配置的自定义 CODEX_HOME socket -> 必须判为 true！
+        let customBackendUnix = makeUnixLsof([
+            (pid: 900, cmd: "agentd", fd: "5", addr: "0x1111", name: customSock),
+            (pid: 502, cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+        ])
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psOutput,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: true),
+            expectedUsername: "alice",
+            expectedUID: currentUID,
+            tcpLsofOutput: matchedTCP,
+            unixLsofOutput: customBackendUnix,
+            sharedSocketPaths: sockets
+        ), "桌面 SSH 连接到 agentd 实际公共 socket 时应判为共享")
+
+        // 2. agentd 使用 ssh transport 时不共享本机 socket -> 返回空集合！
+        try #"{"app_server":{"transport":"ssh","ssh_target":"remote-box"},"codex":{"enabled":true}}"#
+            .write(to: configURL, atomically: true, encoding: .utf8)
+        XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        ).isEmpty, "agentd 使用 ssh transport 时不得匹配任何本机 socket")
+
+        // 3. agentd 禁用 codex 或配置文件损坏时 fail-closed 返回空集合！
+        try #"{"app_server":{"transport":"local"},"codex":{"enabled":false}}"#
+            .write(to: configURL, atomically: true, encoding: .utf8)
+        XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        ).isEmpty)
+
+        try "{invalid json".write(to: configURL, atomically: true, encoding: .utf8)
+        XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        ).isEmpty, "agentd 配置损坏时不得回退到默认 ~/.codex")
+
+        // 4. 运行中 agentd serve 带显式 --config 参数时优先读取该配置文件。
+        let altConfigURL = tempRoot.appendingPathComponent("alt-agentd.json")
+        try customCfg.write(to: altConfigURL, atomically: true, encoding: .utf8)
+        let psWithAltAgentd = CodexDesktopLink.parseProcessesWithUID(psOutput: """
+          888     1   \(currentUID) /Applications/MimiRemoteMac/agentd serve --config \(altConfigURL.path)
+        """)
+        let altSockets = CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID,
+            processes: psWithAltAgentd
+        )
+        XCTAssertTrue(altSockets.contains(customSock))
+        XCTAssertFalse(altSockets.contains(defaultSock))
+    }
+
+    // MARK: - Final Round P1-6: Active Connection Check Accepts localhost
+
+    func testFinal_P1_6ActiveConnectionCheckAcceptsLocalhostWhileKeepingLoopbackAndCorrelationGuards() async throws {
+        let tempHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-localhost-active-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempHome) }
+
+        let configurator = CodexLocalSSHConfigurator(
+            homeDirectory: tempHome,
+            username: "alice",
+            systemSSHConfigPath: nil
+        )
+        try "Host localhost\n    User alice\n".write(to: configurator.sshConfigURL, atomically: true, encoding: .utf8)
+
+        // 1. 真实 `ssh -G localhost` 报告 `hostname localhost`：活动连接检查接受 localhost，而只读探测默认 numeric-only 保持不变。
+        let effective = try await configurator.resolveEffectiveSSHConfig(
+            configPath: configurator.sshConfigURL.path,
+            alias: "localhost",
+            includeSystemConfig: true
+        )
+        XCTAssertEqual(effective.hostname?.lowercased(), "localhost")
+        XCTAssertTrue(
+            CodexDesktopLink.isDirectActiveLoopbackConfig(effective, expectedUser: "alice"),
+            "活动连接检查必须接受 ssh -G 报告的 hostname localhost"
+        )
+        XCTAssertFalse(
+            CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: "alice"),
+            "非活动探测默认仍仅接受数字回环地址"
+        )
+
+        // 2. 被重定向到远端主机或 ProxyJump 的 localhost 仍被拒绝！
+        try "Host localhost\n    HostName remote.example.com\n    User alice\n"
+            .write(to: configurator.sshConfigURL, atomically: true, encoding: .utf8)
+        let redirected = try await configurator.resolveEffectiveSSHConfig(
+            configPath: configurator.sshConfigURL.path,
+            alias: "localhost",
+            includeSystemConfig: true
+        )
+        XCTAssertFalse(CodexDesktopLink.isDirectActiveLoopbackConfig(redirected, expectedUser: "alice"))
+
+        // 3. 完整活动连接链路：ssh localhost 仍要求本机回环 TCP 22 与服务端 sshd + 共享后端四元组关联！
+        let socketPath = "/Users/alice/.codex/app-server-control/app-server-control.sock"
+        let sharedSockets: Set<String> = [socketPath]
+        let psLocalhost = """
+          1914     1   501 /Applications/Codex.app/Contents/MacOS/Codex
+            30  1914   501 /usr/bin/ssh -T -o BatchMode=yes localhost sh -c 'codex app-server proxy'
+           500     1     0 /usr/sbin/sshd
+           501   500   501 sshd-session: alice@notty
+           502   501   501 /opt/homebrew/bin/codex app-server proxy
+        """
+        var unixLsof = Data()
+        for entry in [
+            (pid: Int32(900), cmd: "agentd", fd: "5", addr: "0x1111", name: socketPath),
+            (pid: Int32(502), cmd: "codex", fd: "8", addr: "0x2222", name: "->0x1111"),
+        ] {
+            for field in ["p\(entry.pid)", "c\(entry.cmd)", "f\(entry.fd)", "tunix", "d\(entry.addr)", "n\(entry.name)"] {
+                unixLsof.append(contentsOf: field.utf8)
+                unixLsof.append(0)
+            }
+            unixLsof.append(0x0A)
+        }
+
+        // 远端 TCP 对端 -> 拒绝
+        let remoteTCP = """
+        p30
+        n10.0.0.2:54321->198.51.100.10:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psLocalhost,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: false),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: remoteTCP,
+            unixLsofOutput: unixLsof,
+            sharedSocketPaths: sharedSockets
+        ))
+
+        // 缺少后端关联 -> 拒绝
+        let loopbackTCP = """
+        p30
+        n127.0.0.1:54321->127.0.0.1:22
+        p501
+        n127.0.0.1:22->127.0.0.1:54321
+        """
+        XCTAssertFalse(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psLocalhost,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: false),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: loopbackTCP,
+            unixLsofOutput: Data(),
+            sharedSocketPaths: sharedSockets
+        ))
+
+        // 回环 TCP + 镜像四元组 + 共享后端关联 -> 通过
+        XCTAssertTrue(CodexDesktopLink.hasVerifiedSharedConnection(
+            psWithUIDOutput: psLocalhost,
+            desktopPIDs: [1914],
+            localHosts: CodexDesktopLink.localHosts(includeManagedAlias: false),
+            expectedUsername: "alice",
+            expectedUID: 501,
+            tcpLsofOutput: loopbackTCP,
+            unixLsofOutput: unixLsof,
+            sharedSocketPaths: sharedSockets
+        ))
+    }
 }
 
 private actor ProbeTargetRecorder {

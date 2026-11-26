@@ -7,6 +7,12 @@ import SwiftUI
 enum MimiRemoteMacMain {
     @MainActor
     static func main() {
+#if DEBUG
+        if let testHome = ProcessInfo.processInfo.environment["MIMI_TEST_SSH_CRASH_STAGING_HOME"],
+           !testHome.isEmpty {
+            runDebugSSHStagingCrashHelper(homePath: testHome)
+        }
+#endif
         // 覆盖升级后，旧 LaunchAgent 可能仍带着该参数启动新二进制。
         // 这里只退出，绝不恢复已移除的共享 daemon，也不误开第二个菜单栏 App。
         if CommandLine.arguments.contains("--codex-daemon-supervisor") {
@@ -45,6 +51,36 @@ enum MimiRemoteMacMain {
         }
         MimiRemoteMacApp.main()
     }
+
+#if DEBUG
+    /// 仅 Debug 单测使用：在独立子进程中执行真实密钥暂存后立即 `SIGKILL` 自杀，验证跳过 Swift `defer` 时的磁盘残留可被 `remove()` 完整清理。
+    private static func runDebugSSHStagingCrashHelper(homePath: String) -> Never {
+        let homeURL = URL(fileURLWithPath: homePath, isDirectory: true)
+        Task.detached {
+            let configurator = CodexLocalSSHConfigurator(
+                homeDirectory: homeURL,
+                username: "alice",
+                runCommand: { executable, arguments, timeout, standardInput in
+                    let result = try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                    if executable.lastPathComponent == "ssh-keygen",
+                       arguments.contains("-t"),
+                       result.status == 0 {
+                        Darwin.kill(Darwin.getpid(), SIGKILL)
+                    }
+                    return result
+                }
+            )
+            _ = try? await configurator.configure(verifyConnection: false)
+            Darwin._exit(2)
+        }
+        dispatchMain()
+    }
+#endif
 }
 
 struct MimiRemoteMacApp: App {

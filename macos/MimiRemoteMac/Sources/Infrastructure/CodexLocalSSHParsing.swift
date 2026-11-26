@@ -788,6 +788,28 @@ extension CodexLocalSSHConfigurator {
         return false
     }
 
+    /// 检测 OpenSSH `Match` 条件中是否包含 `exec` 或 `!exec`，用于在被动只读评估（`ssh -G`）前阻断外部 shell 执行。
+    static func matchCriteriaContainsExec(_ criteria: [String]) -> Bool {
+        var idx = 0
+        while idx < criteria.count {
+            let raw = criteria[idx]
+            let lower = raw.lowercased()
+            let unnegated = lower.hasPrefix("!") ? String(lower.dropFirst()) : lower
+            if unnegated == "exec" || unnegated.hasPrefix("exec=") {
+                return true
+            }
+            if unnegated == "all" || unnegated == "canonical" || unnegated == "final" {
+                idx += 1
+            } else if raw.contains("=") {
+                idx += 1
+            } else {
+                // 其余带参条件（host、originalhost、user、localuser、tagged、localnetwork、command 等）消费下一个参数。
+                idx += 2
+            }
+        }
+        return false
+    }
+
     private static func wildcardMatches(pattern: String, string: String) -> Bool {
         Darwin.fnmatch(pattern, string, 0) == 0
     }
