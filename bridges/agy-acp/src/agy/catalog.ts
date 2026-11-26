@@ -60,16 +60,32 @@ export type AgyListDegradedReason =
 
 export type AgyThreadListMeta =
   | {
-      schemaVersion: 1;
-      complete: true;
-      sources: ("cli" | "other")[];
+      readonly schemaVersion: 1;
+      readonly complete: true;
+      readonly sources: readonly ("cli" | "other")[];
     }
   | {
-      schemaVersion: 1;
-      complete: false;
-      degradedReason: AgyListDegradedReason;
-      degradedSources: ["other"];
+      readonly schemaVersion: 1;
+      readonly complete: false;
+      readonly degradedReason: AgyListDegradedReason;
+      readonly degradedSources: readonly ["other"];
     };
+
+function freezeListMeta(meta: AgyThreadListMeta): AgyThreadListMeta {
+  if (meta.complete) {
+    return Object.freeze({
+      schemaVersion: 1 as const,
+      complete: true as const,
+      sources: Object.freeze([...meta.sources]),
+    });
+  }
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    complete: false as const,
+    degradedReason: meta.degradedReason,
+    degradedSources: Object.freeze(["other"] as const),
+  });
+}
 
 export interface AgyListSummariesResult {
   readonly summaries: AcpSessionSummary[];
@@ -257,7 +273,7 @@ export function createAcpSessionBackend(
         const cliList = await cliSharedAcp.use((client) => client.sessionList());
         return {
           summaries: cliList,
-          listMeta: { schemaVersion: 1, complete: true, sources: ["cli"] },
+          listMeta: freezeListMeta({ schemaVersion: 1, complete: true, sources: ["cli"] }),
         };
       }
       if (probeStatus === "permission_denied" || probeStatus === "io_error") {
@@ -267,12 +283,12 @@ export function createAcpSessionBackend(
         const cliList = await cliSharedAcp.use((client) => client.sessionList());
         return {
           summaries: cliList,
-          listMeta: {
+          listMeta: freezeListMeta({
             schemaVersion: 1,
             complete: false,
             degradedReason,
             degradedSources: ["other"],
-          },
+          }),
         };
       }
 
@@ -324,14 +340,16 @@ export function createAcpSessionBackend(
         queryOtherBounded(),
       ]);
       const summaries = mergeSessionSummaries(cliList, otherOutcome.summaries);
-      const listMeta: AgyThreadListMeta = otherOutcome.ok
-        ? { schemaVersion: 1, complete: true, sources: ["cli", "other"] }
-        : {
-            schemaVersion: 1,
-            complete: false,
-            degradedReason: otherOutcome.reason,
-            degradedSources: ["other"],
-          };
+      const listMeta: AgyThreadListMeta = freezeListMeta(
+        otherOutcome.ok
+          ? { schemaVersion: 1, complete: true, sources: ["cli", "other"] }
+          : {
+              schemaVersion: 1,
+              complete: false,
+              degradedReason: otherOutcome.reason,
+              degradedSources: ["other"],
+            },
+      );
       return { summaries, listMeta };
     },
 
@@ -579,7 +597,7 @@ export class AgyCatalog {
         }),
       ),
     );
-    return { records, listMeta };
+    return { records, listMeta: freezeListMeta(listMeta) };
   }
 
   async get(sessionId: string): Promise<SessionRecord | undefined> {
@@ -609,13 +627,23 @@ export class AgyCatalog {
     const now = Date.now();
     // 仅复用完整健康快照；任何降级或探测失败均不写入健康缓存，保证下一次查询立即重试恢复（C10 / C3）。
     if (this.cachedList && this.cachedList.result.listMeta.complete && now - this.cachedList.at < this.listCacheMs) {
-      return this.cachedList.result;
+      return {
+        summaries: this.cachedList.result.summaries,
+        listMeta: freezeListMeta(this.cachedList.result.listMeta),
+      };
     }
-    const result = await this.deps.backend.listSummaries();
+    const raw = await this.deps.backend.listSummaries();
+    const result: AgyListSummariesResult = {
+      summaries: raw.summaries,
+      listMeta: freezeListMeta(raw.listMeta),
+    };
     if (result.listMeta.complete) {
       this.cachedList = { at: Date.now(), result };
     }
-    return result;
+    return {
+      summaries: result.summaries,
+      listMeta: freezeListMeta(result.listMeta),
+    };
   }
 
   private async toRecord(

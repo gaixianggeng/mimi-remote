@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile, access } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -117,6 +117,34 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         path.join(danglingRootHome, ".gemini", "antigravity"),
       );
       expect(await probeOtherConversations(envForHome(danglingRootHome))).toBe("io_error");
+
+      // 7b) io_error: dangling symlink higher up in a deeply nested Other path (above 2 ancestors)
+      const deepDanglingHome = path.join(tmp, "h-deep-dangling");
+      await mkdir(path.join(deepDanglingHome, ".gemini"), { recursive: true });
+      await symlink(
+        path.join(tmp, "does-not-exist-deep-target"),
+        path.join(deepDanglingHome, ".gemini", "layer1"),
+      );
+      const deepNestedEnv = envForHome(deepDanglingHome, {
+        AGY_ADAPTER_OTHER_APP_DATA_DIR: path.join("layer1", "layer2", "layer3", "antigravity"),
+      });
+      expect(await probeOtherConversations(deepNestedEnv)).toBe("io_error");
+
+      // 7c) io_error: dangling symlink at HOME itself (above .gemini)
+      const danglingHomeLink = path.join(tmp, "h-dangling-home-link");
+      await symlink(path.join(tmp, "does-not-exist-home"), danglingHomeLink);
+      expect(await probeOtherConversations(envForHome(danglingHomeLink))).toBe("io_error");
+
+      // 7d) absent_or_empty: deeply nested Other path under a real existing ancestor directory
+      const deepMissingHome = path.join(tmp, "h-deep-missing");
+      await mkdir(path.join(deepMissingHome, ".gemini", "layer1"), { recursive: true });
+      expect(
+        await probeOtherConversations(
+          envForHome(deepMissingHome, {
+            AGY_ADAPTER_OTHER_APP_DATA_DIR: path.join("layer1", "layer2", "layer3", "antigravity"),
+          }),
+        ),
+      ).toBe("absent_or_empty");
 
       // 8) io_error: conversations is a regular file (ENOTDIR), or symlink to a 0644 regular file
       const fileConvHome = path.join(tmp, "h-file-conv");
@@ -252,6 +280,91 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           }
         }
       }
+      // Case D: case-insensitive volume aliases (`abcd.db` queried as `ABCD`, uppercase `.DB`, dangling alias, same-root case alias)
+      const homeCase = path.join(tmp, "home-case");
+      const cliCase = path.join(homeCase, ".gemini", "antigravity-cli", "conversations");
+      const otherCase = path.join(homeCase, ".gemini", "antigravity", "conversations");
+      await mkdir(cliCase, { recursive: true });
+      await mkdir(otherCase, { recursive: true });
+      await writeFile(path.join(cliCase, "abcd.db"), "");
+      await writeFile(path.join(cliCase, "upper-ext.DB"), "");
+      await writeFile(path.join(otherCase, "efgh.db"), "");
+      await symlink(path.join(tmp, "missing-case-target.db"), path.join(cliCase, "dangling-case.db"));
+
+      const envCase = envForHome(homeCase);
+      await checkEquivalence(envCase, [
+        "abcd",
+        "ABCD",
+        "efgh",
+        "EFGH",
+        "upper-ext",
+        "UPPER-EXT",
+        "dangling-case",
+        "DANGLING-CASE",
+      ]);
+
+      const isCaseInsensitiveVolume = await access(path.join(cliCase, "ABCD.db"))
+        .then(() => true)
+        .catch(() => false);
+      if (isCaseInsensitiveVolume) {
+        const batchCase = await createBatchSessionOriginResolver(envCase);
+        expect(await batchCase("ABCD")).toBe("cli");
+        expect(await batchCase("EFGH")).toBe("other");
+        expect(await batchCase("upper-ext")).toBe("cli");
+        expect(await batchCase("DANGLING-CASE")).toBeNull();
+
+        // Same-root with different casing on a case-insensitive volume must be recognized as same root.
+        const sameRootDiffCaseEnv = envForHome(homeCase, {
+          AGY_ADAPTER_OTHER_APP_DATA_DIR: "ANTIGRAVITY-CLI",
+        });
+        expect(await probeOtherConversations(sameRootDiffCaseEnv)).toBe("absent_or_empty");
+        await checkEquivalence(sameRootDiffCaseEnv, ["ABCD", "abcd", "efgh"]);
+
+        // End-to-end catalog.list must keep `ABCD` session when disk has `abcd.db` (matching thread/read).
+        const wsCase = path.join(tmp, "ws-case");
+        await mkdir(wsCase, { recursive: true });
+        const caseWorld = new FakeAgyWorld({
+          sessions: [
+            {
+              sessionId: "ABCD",
+              cwd: wsCase,
+              title: "Case Alias Session",
+              updatedAt: "2026-11-22T01:00:00Z",
+              modeId: "default",
+              model: "gemini-4-carbon",
+              thoughtLevel: "medium",
+              replayUpdates: [],
+              appDataDirName: "antigravity-cli",
+            },
+          ],
+        });
+        const cliAcpCase = new SharedReadonlyAcp(
+          () => "fake-agy",
+          (o) => caseWorld.spawnTransport(o),
+          () => envCase,
+          "antigravity-cli",
+        );
+        const otherAcpCase = new SharedReadonlyAcp(
+          () => "fake-agy",
+          (o) => caseWorld.spawnTransport(o),
+          () => envCase,
+          "antigravity",
+        );
+        try {
+          const backendCase = createAcpSessionBackend(cliAcpCase, otherAcpCase, () => envCase);
+          const catalogCase = new AgyCatalog({
+            backend: backendCase,
+            git: new GitRepoIndex(),
+            overlay: new AgyOverlay(path.join(tmp, "overlay-case.json")),
+          });
+          const listed = await catalogCase.list();
+          expect(listed.records.map((r) => r.id)).toContain("ABCD");
+          const readRecord = await catalogCase.get("ABCD");
+          expect(readRecord?.id).toBe("ABCD");
+        } finally {
+          await Promise.all([cliAcpCase.close(), otherAcpCase.close()]);
+        }
+      }
     } finally {
       for (const item of restoreModes.reverse()) {
         await chmod(item.target, item.mode).catch(() => {});
@@ -282,14 +395,20 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       // Ordering 1: slow healthy call + fast degraded call concurrently -> degraded must NOT pollute cache.
       const gateHealthy1 = deferred<AgyListSummariesResult>();
       const gateDegraded1 = deferred<AgyListSummariesResult>();
+      const firstEntered1 = deferred<void>();
       const bothEntered1 = deferred<void>();
       let calls1 = 0;
       const backend1: AgySessionBackend = {
         async listSummaries() {
           calls1 += 1;
-          if (calls1 === 2) bothEntered1.resolve();
-          if (calls1 === 1) return gateHealthy1.promise;
-          if (calls1 === 2) return gateDegraded1.promise;
+          if (calls1 === 1) {
+            firstEntered1.resolve();
+            return gateHealthy1.promise;
+          }
+          if (calls1 === 2) {
+            bothEntered1.resolve();
+            return gateDegraded1.promise;
+          }
           return {
             summaries: [healthySummary],
             listMeta: { schemaVersion: 1, complete: true, sources: ["cli", "other"] },
@@ -311,6 +430,7 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         60_000,
       );
       const pHealthy1 = catalog1.list();
+      await firstEntered1.promise;
       const pDegraded1 = catalog1.list();
       await bothEntered1.promise;
 
@@ -349,13 +469,19 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       // healthy must NOT whitewash degraded, and degraded must NOT overwrite healthy cache!
       const gateHealthy2 = deferred<AgyListSummariesResult>();
       const gateDegraded2 = deferred<AgyListSummariesResult>();
+      const firstEntered2 = deferred<void>();
       const bothEntered2 = deferred<void>();
       let calls2 = 0;
       const backend2: AgySessionBackend = {
         async listSummaries() {
           calls2 += 1;
-          if (calls2 === 2) bothEntered2.resolve();
-          if (calls2 === 1) return gateHealthy2.promise;
+          if (calls2 === 1) {
+            firstEntered2.resolve();
+            return gateHealthy2.promise;
+          }
+          if (calls2 === 2) {
+            bothEntered2.resolve();
+          }
           return gateDegraded2.promise;
         },
         async loadReplay() {
@@ -373,6 +499,7 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
         60_000,
       );
       const pHealthy2 = catalog2.list();
+      await firstEntered2.promise;
       const pDegraded2 = catalog2.list();
       await bothEntered2.promise;
 
@@ -405,6 +532,72 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       expect(calls2).toBe(2);
       expect(cached2.listMeta).toEqual({ schemaVersion: 1, complete: true, sources: ["cli", "other"] });
       expect(cached2.records.map((r) => r.id)).toEqual(["s-healthy"]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("catalog.list returns frozen isolated listMeta that callers or mock mutations cannot corrupt", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-immutable-meta-"));
+    try {
+      const ws = path.join(tmp, "ws");
+      await mkdir(ws, { recursive: true });
+      const mutableSources: ("cli" | "other")[] = ["cli", "other"];
+      const mutableBackendMeta = {
+        schemaVersion: 1 as const,
+        complete: true as const,
+        sources: mutableSources,
+      };
+      let listCalls = 0;
+      const backend: AgySessionBackend = {
+        async listSummaries() {
+          listCalls += 1;
+          return {
+            summaries: [{ sessionId: "s-1", cwd: ws, title: "S1", updatedAt: "2026-11-22T01:00:00Z" }],
+            listMeta: mutableBackendMeta,
+          };
+        },
+        async loadReplay() {
+          return [];
+        },
+        async resolveSessionOrigin() {
+          return "cli";
+        },
+        conversationFilePath() {
+          return null;
+        },
+      };
+
+      const catalog = new AgyCatalog(
+        { backend, git: new GitRepoIndex(), overlay: new AgyOverlay(path.join(tmp, "o.json")) },
+        60_000,
+      );
+      const first = await catalog.list();
+      expect(listCalls).toBe(1);
+      expect(Object.isFrozen(first.listMeta)).toBe(true);
+      expect(first.listMeta.complete).toBe(true);
+      if (first.listMeta.complete) {
+        expect(Object.isFrozen(first.listMeta.sources)).toBe(true);
+      }
+
+      // Mutating the caller's returned object/array must throw in strict mode and never affect cached state.
+      expect(() => {
+        (first.listMeta as unknown as { complete: boolean }).complete = false;
+      }).toThrow(TypeError);
+      expect(() => {
+        if (first.listMeta.complete) {
+          (first.listMeta.sources as string[]).push("tampered");
+        }
+      }).toThrow(TypeError);
+
+      // Even mutating the backend's original object after returning must not affect the cached snapshot.
+      mutableSources.push("cli");
+      (mutableBackendMeta as unknown as { complete: boolean }).complete = false;
+
+      const second = await catalog.list();
+      expect(listCalls).toBe(1);
+      expect(second.listMeta).toEqual({ schemaVersion: 1, complete: true, sources: ["cli", "other"] });
+      expect(second.listMeta).not.toBe(first.listMeta);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -517,6 +710,91 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       expect(results[dirs.length * 3]?.repoKey).toBe(results[0]?.repoKey);
       // Missing dir never spawned git.
       expect(seenDirs.some((d) => d.endsWith("does-not-exist"))).toBe(false);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("GitRepoIndex stats exact canonical path with trailing whitespace and preserves canonical TTL for symlink aliases", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-git-space-ttl-"));
+    try {
+      // 1) Real git repo + linked worktree ending with a trailing space + symlink pointing to it.
+      const mainRepo = path.join(tmp, "main-repo");
+      await mkdir(mainRepo, { recursive: true });
+      const gitEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+      };
+      for (const key of Object.keys(gitEnv)) {
+        if (key.startsWith("GIT_") && !["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_TERMINAL_PROMPT"].includes(key)) {
+          delete gitEnv[key];
+        }
+      }
+      execFileSync("git", ["init", "-q", "--template=", "-b", "main"], { cwd: mainRepo, env: gitEnv });
+      execFileSync(
+        "git",
+        [
+          "-c", "user.name=Test",
+          "-c", "user.email=test@example.invalid",
+          "-c", "core.hooksPath=/dev/null",
+          "-c", "commit.gpgsign=false",
+          "-c", "tag.gpgsign=false",
+          "commit", "-q", "--allow-empty", "-m", "init",
+        ],
+        { cwd: mainRepo, env: gitEnv },
+      );
+
+      const trailingSpaceWt = path.join(tmp, "linked-wt ");
+      execFileSync(
+        "git",
+        ["-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", "feat-space", trailingSpaceWt],
+        { cwd: mainRepo, env: gitEnv },
+      );
+      const wtSymlink = path.join(tmp, "wt-link");
+      await symlink(trailingSpaceWt, wtSymlink);
+
+      const gitReal = new GitRepoIndex(30_000);
+      const wtInfo = await gitReal.inspect(wtSymlink);
+      expect(wtInfo.canonicalDir).toBe(await realpath(trailingSpaceWt));
+      expect(wtInfo.canonicalDir.endsWith(" ")).toBe(true);
+      expect(wtInfo.branch).toBe("feat-space");
+      expect(await gitReal.matchesAnyRoot(wtSymlink, [mainRepo])).toBe(true);
+
+      // 2) Symlink alias must inherit canonical entry's expiration instead of resetting TTL.
+      const ttlDir = path.join(tmp, "ttl-repo");
+      await mkdir(ttlDir, { recursive: true });
+      const ttlLink = path.join(tmp, "ttl-link");
+      await symlink(ttlDir, ttlLink);
+
+      let inspectCalls = 0;
+      let currentBranch = "v1";
+      const gitTtl = new GitRepoIndex({
+        ttlMs: 120,
+        runGitRevParse: async (canonicalDir) => {
+          inspectCalls += 1;
+          return `${canonicalDir}/.git\n${currentBranch}\n`;
+        },
+      });
+
+      const first = await gitTtl.inspect(ttlDir);
+      expect(first.branch).toBe("v1");
+      expect(inspectCalls).toBe(1);
+
+      // Mid-TTL: encounter symlink alias -> hits canonical cache without extending expiration.
+      await new Promise((r) => setTimeout(r, 70));
+      currentBranch = "v2";
+      const viaAliasMid = await gitTtl.inspect(ttlLink);
+      expect(viaAliasMid.branch).toBe("v1");
+      expect(inspectCalls).toBe(1);
+
+      // Past canonical TTL (70 + 70 = 140ms > 120ms), even though < 120ms since alias was cached.
+      await new Promise((r) => setTimeout(r, 70));
+      const viaAliasExpired = await gitTtl.inspect(ttlLink);
+      expect(viaAliasExpired.branch).toBe("v2");
+      expect(inspectCalls).toBe(2);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -738,6 +1016,57 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
       assertListMetaWhitelist(resDangling.listMeta);
       expect(worldDangling.spawns.some((s) => s.appDataDirName === "antigravity")).toBe(false);
 
+      // 5b) Degraded: higher-level dangling symlink in nested Other path does NOT cache CLI-only as complete
+      const homeDeepDangling = path.join(tmp, "h-deep-dangling-e2e");
+      await mkdir(path.join(homeDeepDangling, ".gemini", "antigravity-cli", "conversations"), { recursive: true });
+      await writeFile(path.join(homeDeepDangling, ".gemini", "antigravity-cli", "conversations", "cli-s1.db"), "");
+      const deepLinkPath = path.join(homeDeepDangling, ".gemini", "nested-root");
+      const missingDeepTarget = path.join(tmp, "missing-deep-e2e");
+      await symlink(missingDeepTarget, deepLinkPath);
+      const deepEnvExtra = { AGY_ADAPTER_OTHER_APP_DATA_DIR: path.join("nested-root", "a", "b", "antigravity") };
+      const deepWorld = new FakeAgyWorld({ sessions: [cliSession, otherSession] });
+      const deepCliAcp = new SharedReadonlyAcp(
+        () => "fake-agy",
+        (o) => deepWorld.spawnTransport(o),
+        () => envForHome(homeDeepDangling, deepEnvExtra),
+        "antigravity-cli",
+      );
+      const deepOtherAcp = new SharedReadonlyAcp(
+        () => "fake-agy",
+        (o) => deepWorld.spawnTransport(o),
+        () => envForHome(homeDeepDangling, deepEnvExtra),
+        path.join("nested-root", "a", "b", "antigravity"),
+      );
+      try {
+        const deepBackend = createAcpSessionBackend(
+          deepCliAcp,
+          deepOtherAcp,
+          () => envForHome(homeDeepDangling, deepEnvExtra),
+        );
+        const deepCatalog = new AgyCatalog(
+          { backend: deepBackend, git: new GitRepoIndex(), overlay: new AgyOverlay(path.join(tmp, "o-deep.json")) },
+          60_000,
+        );
+        const firstDeep = await deepCatalog.list();
+        expect(firstDeep.listMeta).toEqual({
+          schemaVersion: 1,
+          complete: false,
+          degradedReason: "other_probe_io_error",
+          degradedSources: ["other"],
+        });
+        // Fix the dangling link target; because degraded response was NOT cached as complete, next call recovers immediately!
+        await mkdir(path.join(missingDeepTarget, "a", "b", "antigravity", "conversations"), { recursive: true });
+        await writeFile(path.join(missingDeepTarget, "a", "b", "antigravity", "conversations", "other-s1.db"), "");
+        const recoveredDeep = await deepCatalog.list();
+        expect(recoveredDeep.listMeta).toEqual({
+          schemaVersion: 1,
+          complete: true,
+          sources: ["cli", "other"],
+        });
+      } finally {
+        await Promise.all([deepCliAcp.close(), deepOtherAcp.close()]);
+      }
+
       // 6) Degraded: other_probe_permission_denied (0444 conversations dir)
       if (process.getuid?.() !== 0) {
         const homePerm = path.join(tmp, "h-perm-e2e");
@@ -803,18 +1132,48 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
     }
   });
 
-  test("verify-thread-list-perf.ts exits non-zero when any hard threshold fails and 0 when all pass", async () => {
+  test("verify-thread-list-perf.ts enforces per-round cold caps, baseline alignment, live baseline measurement, and non-zero exit", async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), "agy-1a1-perf-cli-"));
     const scriptPath = path.resolve(import.meta.dir, "..", "scripts", "verify-thread-list-perf.ts");
     try {
-      const runVerifier = async (name: string, payload: unknown) => {
+      const baselinePayload = {
+        seed: 20260410,
+        config: { batches: 3, cold: 5, warm: 20, concurrency: 4 },
+        dataset: { uniqueNonOrphanRawCwds: 33 },
+        summary: {
+          concurrentColdGitSpawnsMeanPerRun: 128,
+          sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
+          sequentialWarmP95MsMean: 41.228,
+        },
+      };
+      const baselinePath = path.join(tmp, "baseline.json");
+      await writeFile(baselinePath, JSON.stringify(baselinePayload));
+
+      const runVerifier = async (name: string, payload: unknown, extraArgs: string[] = ["--baseline-json", baselinePath]) => {
         const jsonPath = path.join(tmp, `${name}.json`);
         await writeFile(jsonPath, JSON.stringify(payload));
-        return spawnSync(process.execPath, [scriptPath, "--check-json", jsonPath], { encoding: "utf8" });
+        return spawnSync(process.execPath, [scriptPath, "--check-json", jsonPath, ...extraArgs], { encoding: "utf8" });
       };
+
+      const makeBatches = (coldPerBatch: number[][], warmTotals = [0, 0, 0]) =>
+        coldPerBatch.map((perRun, idx) => ({
+          batch: idx + 1,
+          concurrentCold: {
+            runs: perRun.length,
+            concurrency: 4,
+            gitSpawnsPerRun: perRun,
+            gitSpawnsMean: Number((perRun.reduce((a, b) => a + b, 0) / perRun.length).toFixed(3)),
+            gitSpawnsTotal: perRun.reduce((a, b) => a + b, 0),
+          },
+          sequentialWarm: {
+            runs: 20,
+            gitSpawnsAbsoluteTotal: warmTotals[idx] ?? 0,
+          },
+        }));
 
       const base = {
         seed: 20260410,
+        config: { batches: 3, cold: 5, warm: 20, concurrency: 4 },
         dataset: { uniqueNonOrphanRawCwds: 33 },
         summary: {
           concurrentColdGitSpawnsMeanPerRun: 27,
@@ -822,30 +1181,85 @@ describe("PR 1a-1: Agy listMeta, health probe, timestamps, git concurrency & pag
           sequentialWarmP95MsMean: 12.5,
           sequentialWarmP95SpreadPct: 2.1,
         },
+        batches: makeBatches([
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+        ]),
       };
 
       expect((await runVerifier("pass", base)).status).toBe(0);
 
-      // Fail 1: cold git spawns > unique cwds cap
-      const failCold = structuredClone(base);
-      failCold.summary.concurrentColdGitSpawnsMeanPerRun = 65;
-      const rCold = await runVerifier("fail-cold", failCold);
-      expect(rCold.status).toBe(1);
-      expect(rCold.stderr).toContain("concurrent_cold_git_spawns");
+      // Fail 1: single cold round exceeds cap (52 > 32) even though overall mean (28.667) is <= 32!
+      const failSingleRoundCold = structuredClone(base);
+      failSingleRoundCold.batches = makeBatches([
+        [52, 27, 27, 27, 27],
+        [27, 27, 27, 27, 27],
+        [27, 27, 27, 27, 27],
+      ]);
+      failSingleRoundCold.summary.concurrentColdGitSpawnsMeanPerRun = 28.667;
+      const rSingleRound = await runVerifier("fail-single-round-cold", failSingleRoundCold);
+      expect(rSingleRound.status).toBe(1);
+      expect(rSingleRound.stderr).toContain("concurrent_cold_git_spawns");
+      expect(rSingleRound.stderr).toContain("b1#1:52");
+
+      // Fail 1b: missing batches / per-round counts must fail closed.
+      const failMissingBatches = structuredClone(base) as Record<string, unknown>;
+      delete failMissingBatches.batches;
+      const rMissingBatches = await runVerifier("fail-missing-batches", failMissingBatches);
+      expect(rMissingBatches.status).toBe(1);
+      expect(rMissingBatches.stderr).toContain("concurrent_cold_git_spawns");
 
       // Fail 2: warm git spawns != 0
       const failWarmSpawns = structuredClone(base);
       failWarmSpawns.summary.sequentialWarmGitSpawnsAbsoluteAcrossAllBatches = 1;
+      failWarmSpawns.batches = makeBatches(
+        [
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+          [27, 27, 27, 27, 27],
+        ],
+        [0, 1, 0],
+      );
       const rWarmSpawns = await runVerifier("fail-warm-spawns", failWarmSpawns);
       expect(rWarmSpawns.status).toBe(1);
       expect(rWarmSpawns.stderr).toContain("sequential_warm_git_spawns");
 
-      // Fail 3: warm p95 fails >= 30% improvement threshold (> 123.470ms)
+      // Fail 3: warm p95 regression (50ms > 41.228ms * 0.7 = 28.860ms on this host baseline)
       const failWarmP95 = structuredClone(base);
-      failWarmP95.summary.sequentialWarmP95MsMean = 140.0;
+      failWarmP95.summary.sequentialWarmP95MsMean = 50.0;
       const rWarmP95 = await runVerifier("fail-warm-p95", failWarmP95);
       expect(rWarmP95.status).toBe(1);
       expect(rWarmP95.stderr).toContain("sequential_warm_p95_ms");
+
+      // Fail 4: baseline seed mismatch must fail.
+      const mismatchSeed = structuredClone(base);
+      mismatchSeed.seed = 999;
+      const rMismatch = await runVerifier("fail-seed-mismatch", mismatchSeed);
+      expect(rMismatch.status).not.toBe(0);
+
+      // Fail 5: partial manual baseline override without the other side must fail (no hardcoded fallback).
+      const rPartialCli = await runVerifier("fail-partial-cli", base, ["--baseline-cold-spawns", "128"]);
+      expect(rPartialCli.status).not.toBe(0);
+
+      // Live local baseline measurement (no hardcoded baseline constants): small config to stay fast.
+      const liveRegressed = {
+        seed: 20260410,
+        config: { batches: 1, cold: 1, warm: 2, concurrency: 2 },
+        dataset: { uniqueNonOrphanRawCwds: 33 },
+        summary: {
+          concurrentColdGitSpawnsMeanPerRun: 27,
+          sequentialWarmGitSpawnsAbsoluteAcrossAllBatches: 0,
+          sequentialWarmP95MsMean: 999.0,
+        },
+        batches: makeBatches([[27]], [0]),
+      };
+      const rLiveFail = await runVerifier("live-regressed", liveRegressed, []);
+      expect(rLiveFail.status).toBe(1);
+      const liveParsed = JSON.parse(rLiveFail.stdout) as { baseline: { source: string; ref?: string }; passed: boolean };
+      expect(liveParsed.baseline.source).toBe("live_measured");
+      expect(typeof liveParsed.baseline.ref).toBe("string");
+      expect(liveParsed.passed).toBe(false);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

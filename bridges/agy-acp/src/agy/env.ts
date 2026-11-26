@@ -63,11 +63,29 @@ export function appDataDirForOrigin(origin: AgySessionOrigin, env: NodeJS.Proces
   return origin === "other" ? paths.otherAppDataDirName : paths.appDataDirName;
 }
 
-async function fileExists(targetPath: string | undefined): Promise<boolean> {
+async function fileExists(
+  targetPath: string | undefined,
+  accessFn: typeof access = access,
+): Promise<boolean> {
   if (!targetPath) return false;
   try {
-    await access(targetPath);
+    await accessFn(targetPath);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isSameDirectoryIdentity(
+  pathA: string,
+  pathB: string,
+  statFn: typeof stat = stat,
+): Promise<boolean> {
+  if (path.resolve(pathA) === path.resolve(pathB)) return true;
+  try {
+    const [statA, statB] = await Promise.all([statFn(pathA), statFn(pathB)]);
+    if (!statA.isDirectory() || !statB.isDirectory()) return false;
+    return statA.dev === statB.dev && statA.ino === statB.ino && statA.ino !== 0;
   } catch {
     return false;
   }
@@ -136,7 +154,9 @@ export async function probeOtherConversations(
   ops: ProbeFsOps = defaultProbeFsOps,
 ): Promise<OtherConversationsProbeStatus> {
   const paths = resolveAgyDataPaths(env);
-  if (paths.otherAppDataRoot === paths.appDataRoot) return "absent_or_empty";
+  if (await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot, ops.stat)) {
+    return "absent_or_empty";
+  }
   const dir = path.join(paths.otherAppDataRoot, "conversations");
 
   let isSymlink = false;
@@ -151,15 +171,17 @@ export async function probeOtherConversations(
     if (isPermissionError(code)) return "permission_denied";
     if (code !== "ENOENT") return "io_error";
 
-    // `lstat(dir)` 返回 ENOENT 时，进一步检查父级是否为悬空链接或非目录，避免误判为健康缺目录。
-    const rootState = await classifyMissingAncestor(paths.otherAppDataRoot, ops);
-    if (rootState === "permission_denied") return "permission_denied";
-    if (rootState === "io_error") return "io_error";
-    if (rootState === "absent") {
-      const geminiRoot = path.dirname(paths.otherAppDataRoot);
-      const geminiState = await classifyMissingAncestor(geminiRoot, ops);
-      if (geminiState === "permission_denied") return "permission_denied";
-      if (geminiState === "io_error") return "io_error";
+    // `lstat(dir)` 返回 ENOENT 时，沿祖先链一直向上检查到首个存在的祖先，
+    // 防止更高层祖先存在悬空符号链接、非目录或权限错误时被误判为健康缺目录。
+    let current = path.dirname(dir);
+    while (true) {
+      const ancestorState = await classifyMissingAncestor(current, ops);
+      if (ancestorState === "permission_denied") return "permission_denied";
+      if (ancestorState === "io_error") return "io_error";
+      if (ancestorState === "present_dir") break;
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
     return "absent_or_empty";
   }
@@ -181,7 +203,17 @@ export async function probeOtherConversations(
   try {
     await ops.access(dir, constants.X_OK);
     const entries = await ops.readdir(dir);
-    return entries.some((name) => name.endsWith(".db")) ? "present" : "absent_or_empty";
+    if (entries.some((name) => name.endsWith(".db"))) {
+      return "present";
+    }
+    for (const name of entries) {
+      if (!name.toLowerCase().endsWith(".db")) continue;
+      const stem = name.slice(0, -3);
+      if (SAFE_SESSION_ID.test(stem) && (await fileExists(path.join(dir, `${stem}.db`), ops.access))) {
+        return "present";
+      }
+    }
+    return "absent_or_empty";
   } catch (error) {
     const code = errorCode(error);
     if (isPermissionError(code)) return "permission_denied";
@@ -201,7 +233,13 @@ export async function hasOtherConversations(env: NodeJS.ProcessEnv = process.env
 type DirOriginIndex =
   | { kind: "inaccessible" }
   | { kind: "fallback_access"; dir: string }
-  | { kind: "indexed"; dir: string; directDbIds: Set<string>; verifyAccessDbIds: Set<string> };
+  | {
+      kind: "indexed";
+      dir: string;
+      directDbIds: Set<string>;
+      verifyAccessDbIds: Set<string>;
+      caseAliasLowerIds: Set<string>;
+    };
 
 async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
   try {
@@ -215,10 +253,14 @@ async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
     const entries = await readdir(dir, { withFileTypes: true });
     const directDbIds = new Set<string>();
     const verifyAccessDbIds = new Set<string>();
+    const caseAliasLowerIds = new Set<string>();
     for (const entry of entries) {
-      if (!entry.name.endsWith(".db")) continue;
+      if (!entry.name.toLowerCase().endsWith(".db")) continue;
       const sessionId = entry.name.slice(0, -3);
       if (!SAFE_SESSION_ID.test(sessionId)) continue;
+      // 同时索引小写别名，确保大小写不敏感卷上 `abcd.db` 与摘要 `ABCD` 可由 access(path) 核验一致。
+      caseAliasLowerIds.add(sessionId.toLowerCase());
+      if (!entry.name.endsWith(".db")) continue;
       if (entry.isSymbolicLink()) {
         // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
         verifyAccessDbIds.add(sessionId);
@@ -228,7 +270,7 @@ async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
         verifyAccessDbIds.add(sessionId);
       }
     }
-    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds };
+    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds, caseAliasLowerIds };
   } catch {
     // 例如 0111 目录允许穿越（X_OK 成功）但禁止 readdir，回退逐文件 access(path) 保持等价。
     return { kind: "fallback_access", dir };
@@ -245,11 +287,14 @@ async function hasIndexedConversationDb(index: DirOriginIndex, sessionId: string
   if (index.verifyAccessDbIds.has(sessionId)) {
     return fileExists(path.join(index.dir, `${sessionId}.db`));
   }
+  if (index.caseAliasLowerIds.has(sessionId.toLowerCase())) {
+    return fileExists(path.join(index.dir, `${sessionId}.db`));
+  }
   return false;
 }
 
 /**
- * 批量识别会话来源（与逐条 `resolveSessionOrigin` 在 `0444`/`0111`/`0000`/悬空符号链接下完全等价）。
+ * 批量识别会话来源（与逐条 `resolveSessionOrigin` 在 `0444`/`0111`/`0000`/悬空符号链接/大小写不敏感卷下完全等价）。
  */
 export async function createBatchSessionOriginResolver(
   env: NodeJS.ProcessEnv = process.env,
@@ -257,7 +302,7 @@ export async function createBatchSessionOriginResolver(
   const paths = resolveAgyDataPaths(env);
   const cliDir = path.join(paths.appDataRoot, "conversations");
   const otherDir = path.join(paths.otherAppDataRoot, "conversations");
-  const sameRoot = paths.otherAppDataRoot === paths.appDataRoot;
+  const sameRoot = await isSameDirectoryIdentity(paths.otherAppDataRoot, paths.appDataRoot);
 
   const [cliIndex, otherIndex] = sameRoot
     ? [await buildDirOriginIndex(cliDir), { kind: "inaccessible" } as const]

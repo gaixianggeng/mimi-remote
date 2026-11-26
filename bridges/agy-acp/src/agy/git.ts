@@ -6,15 +6,18 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
 
-export async function directoryExists(dir: string): Promise<boolean> {
-  const trimmed = dir.trim();
-  if (!trimmed) return false;
+async function exactDirectoryExists(dir: string): Promise<boolean> {
+  if (!dir) return false;
   try {
-    const info = await stat(trimmed);
+    const info = await stat(dir);
     return info.isDirectory();
   } catch {
     return false;
   }
+}
+
+export async function directoryExists(dir: string): Promise<boolean> {
+  return exactDirectoryExists(dir.trim());
 }
 
 function decodePercentEncodedSegment(segment: string): { value: string; unsafe: boolean } {
@@ -154,14 +157,19 @@ async function defaultRunGitRevParse(canonicalDir: string): Promise<string> {
   return stdout;
 }
 
+interface GitCacheEntry {
+  expiresAt: number;
+  info: GitDirectoryInfo;
+}
+
 /**
  * 解析目录所属的 Git common-dir 与当前分支，供 `thread/list({ cwd })` 把同一仓库下所有
  * Worktree 的会话归并展示（与 Claude SDK 和 Codex 的仓库分组语义一致）。
  */
 export class GitRepoIndex {
-  private readonly cache = new Map<string, { expiresAt: number; info: GitDirectoryInfo }>();
+  private readonly cache = new Map<string, GitCacheEntry>();
   private readonly inflight = new Map<string, Promise<GitDirectoryInfo>>();
-  private readonly canonicalInflight = new Map<string, Promise<GitDirectoryInfo>>();
+  private readonly canonicalInflight = new Map<string, Promise<GitCacheEntry>>();
   private readonly ttlMs: number;
   private readonly maxConcurrent: number;
   private readonly runGitRevParse: (canonicalDir: string) => Promise<string>;
@@ -200,39 +208,39 @@ export class GitRepoIndex {
     }
   }
 
-  private inspectCanonical(canonicalDir: string): Promise<GitDirectoryInfo> {
+  private inspectCanonical(canonicalDir: string): Promise<GitCacheEntry> {
     const cached = this.cache.get(canonicalDir);
     if (cached && cached.expiresAt > Date.now()) {
-      return Promise.resolve(cached.info);
+      return Promise.resolve(cached);
     }
     const existing = this.canonicalInflight.get(canonicalDir);
     if (existing) {
       return existing;
     }
 
-    const work = (async (): Promise<GitDirectoryInfo> => {
+    const work = (async (): Promise<GitCacheEntry> => {
       let repoKey = canonicalDir;
       let branch: string | null = null;
-      if (await directoryExists(canonicalDir)) {
+      // 对 realpath 返回的精确规范路径直接 stat，不剥离合法的前导/尾部空白字符。
+      if (await exactDirectoryExists(canonicalDir)) {
         try {
           const stdout = await this.withInspectSlot(() => this.runGitRevParse(canonicalDir));
-          const lines = stdout
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean);
+          const lines = stdout.split(/\r?\n/).filter((line) => line.length > 0);
           if (lines[0]) {
             repoKey = await realpath(lines[0]).catch(() => path.resolve(lines[0]!));
           }
-          if (lines[1] && lines[1] !== "HEAD") {
-            branch = lines[1];
+          const rawBranch = lines[1]?.trim();
+          if (rawBranch && rawBranch !== "HEAD") {
+            branch = rawBranch;
           }
         } catch {
           // 非 Git 目录或命令失败时退回规范化路径匹配。
         }
       }
       const info: GitDirectoryInfo = { canonicalDir, repoKey, branch };
-      this.cache.set(canonicalDir, { expiresAt: Date.now() + this.ttlMs, info });
-      return info;
+      const entry: GitCacheEntry = { expiresAt: Date.now() + this.ttlMs, info };
+      this.cache.set(canonicalDir, entry);
+      return entry;
     })().finally(() => {
       if (this.canonicalInflight.get(canonicalDir) === work) {
         this.canonicalInflight.delete(canonicalDir);
@@ -259,9 +267,12 @@ export class GitRepoIndex {
 
     const work = (async (): Promise<GitDirectoryInfo> => {
       const canonicalDir = await canonicalPathPreservingMissing(trimmed);
-      const info = await this.inspectCanonical(canonicalDir);
-      this.cache.set(trimmed, { expiresAt: Date.now() + this.ttlMs, info });
-      return info;
+      const entry = await this.inspectCanonical(canonicalDir);
+      // 别名缓存沿用规范条目的剩余过期时间，避免新遇到的 symlink 把旧结果 TTL 续命近两倍。
+      if (trimmed !== canonicalDir) {
+        this.cache.set(trimmed, { expiresAt: entry.expiresAt, info: entry.info });
+      }
+      return entry.info;
     })().finally(() => {
       if (this.inflight.get(trimmed) === work) {
         this.inflight.delete(trimmed);
