@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,66 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+func writeMarkerAtomically(path, content string) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func TestTrayBoundProcessHelper(t *testing.T) {
+	sep := -1
+	for i, arg := range os.Args {
+		if arg == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 || sep+2 >= len(os.Args) || os.Args[sep+1] != "tray-bound-helper" {
+		return
+	}
+	mode := os.Args[sep+2]
+	args := os.Args[sep+3:]
+	switch mode {
+	case "echo":
+		if len(args) != 1 {
+			os.Exit(2)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, args[0])
+		os.Exit(0)
+	case "touch":
+		if len(args) != 1 {
+			os.Exit(2)
+		}
+		if err := writeMarkerAtomically(args[0], "touched"); err != nil {
+			os.Exit(3)
+		}
+		os.Exit(0)
+	case "modify":
+		if len(args) != 3 {
+			os.Exit(2)
+		}
+		startedMarker, proceedMarker, finishedMarker := args[0], args[1], args[2]
+		if err := writeMarkerAtomically(startedMarker, "started"); err != nil {
+			os.Exit(3)
+		}
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(proceedMarker); err == nil {
+				if err := writeMarkerAtomically(finishedMarker, "done"); err != nil {
+					os.Exit(4)
+				}
+				os.Exit(0)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		os.Exit(5)
+	default:
+		os.Exit(2)
+	}
+}
 
 func inspectNativeBrokerImage(t *testing.T, exePath string) pinnedBrokerImage {
 	t.Helper()
@@ -52,23 +113,53 @@ func inspectNativeBrokerImage(t *testing.T, exePath string) pinnedBrokerImage {
 }
 
 func TestBoundTrayBrokerVerifiesImageIdentityBeforeResume(t *testing.T) {
-	systemDir, err := windows.GetSystemDirectory()
+	selfExe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdPath := filepath.Join(systemDir, "cmd.exe")
-	valid := inspectNativeBrokerImage(t, cmdPath)
+	workDir := t.TempDir()
+	valid := inspectNativeBrokerImage(t, selfExe)
 
-	stdout, _, exitCode, err := runBoundTrayProcess(context.Background(), valid, []string{"/c", "echo", "bound-ok"}, systemDir, 4096, 4096)
+	stdout, _, exitCode, err := runBoundTrayProcess(
+		context.Background(),
+		valid,
+		[]string{"-test.run=^TestTrayBoundProcessHelper$", "--", "tray-bound-helper", "echo", "bound-ok"},
+		workDir,
+		4096,
+		4096,
+	)
 	if err != nil || exitCode != 0 || !strings.Contains(string(stdout), "bound-ok") {
 		t.Fatalf("valid bound broker failed: exit=%d err=%v stdout=%q", exitCode, err, string(stdout))
+	}
+
+	allowedMarker := filepath.Join(workDir, "allowed marker.txt")
+	_, _, exitCode, err = runBoundTrayProcess(
+		context.Background(),
+		valid,
+		[]string{"-test.run=^TestTrayBoundProcessHelper$", "--", "tray-bound-helper", "touch", allowedMarker},
+		workDir,
+		4096,
+		4096,
+	)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("valid bound helper touch failed: exit=%d err=%v", exitCode, err)
+	}
+	if _, statErr := os.Stat(allowedMarker); statErr != nil {
+		t.Fatalf("valid bound helper did not create marker: %v", statErr)
 	}
 
 	// Mismatched file index must terminate suspended process BEFORE code runs.
 	tampered := valid
 	tampered.FileIndexLow ^= 1
-	blockedMarker := filepath.Join(t.TempDir(), "should-not-exist.txt")
-	_, _, _, err = runBoundTrayProcess(context.Background(), tampered, []string{"/c", "echo pwn > " + blockedMarker}, systemDir, 4096, 4096)
+	blockedMarker := filepath.Join(workDir, "should not exist.txt")
+	_, _, _, err = runBoundTrayProcess(
+		context.Background(),
+		tampered,
+		[]string{"-test.run=^TestTrayBoundProcessHelper$", "--", "tray-bound-helper", "touch", blockedMarker},
+		workDir,
+		4096,
+		4096,
+	)
 	var maintErr *maintenanceError
 	if !errors.As(err, &maintErr) || maintErr.Kind != maintenanceFailureIdentityMismatch {
 		t.Fatalf("expected identity_mismatch for tampered file ID, got %v", err)
@@ -80,7 +171,14 @@ func TestBoundTrayBrokerVerifiesImageIdentityBeforeResume(t *testing.T) {
 	// Mismatched native NT path must also fail closed before resume.
 	tamperedPath := valid
 	tamperedPath.NativeImagePath = `\Device\HarddiskVolume99\fake\agentd.exe`
-	_, _, _, err = runBoundTrayProcess(context.Background(), tamperedPath, []string{"/c", "echo pwn > " + blockedMarker}, systemDir, 4096, 4096)
+	_, _, _, err = runBoundTrayProcess(
+		context.Background(),
+		tamperedPath,
+		[]string{"-test.run=^TestTrayBoundProcessHelper$", "--", "tray-bound-helper", "touch", blockedMarker},
+		workDir,
+		4096,
+		4096,
+	)
 	if !errors.As(err, &maintErr) || maintErr.Kind != maintenanceFailureIdentityMismatch {
 		t.Fatalf("expected identity_mismatch for tampered native path, got %v", err)
 	}
@@ -175,16 +273,19 @@ func TestBoundTrayBrokerTimeoutTerminatesEntireJobTreeBeforeReturning(t *testing
 }
 
 func TestBoundTrayModifyModeCompletesDespiteContextCancellation(t *testing.T) {
-	systemDir, err := windows.GetSystemDirectory()
+	selfExe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdPath := filepath.Join(systemDir, "cmd.exe")
-	valid := inspectNativeBrokerImage(t, cmdPath)
+	valid := inspectNativeBrokerImage(t, selfExe)
 
-	tempDir := t.TempDir()
-	startedMarker := filepath.Join(tempDir, "started.txt")
-	finishedMarker := filepath.Join(tempDir, "finished.txt")
+	tempDir := filepath.Join(t.TempDir(), "modify handshake dir")
+	if err := os.MkdirAll(tempDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	startedMarker := filepath.Join(tempDir, "started marker.txt")
+	proceedMarker := filepath.Join(tempDir, "proceed marker.txt")
+	finishedMarker := filepath.Join(tempDir, "finished marker.txt")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -198,8 +299,8 @@ func TestBoundTrayModifyModeCompletesDespiteContextCancellation(t *testing.T) {
 		_, _, code, runErr := runBoundTrayProcessWithMode(
 			ctx,
 			valid,
-			[]string{"/c", `echo started > "` + startedMarker + `" && ping -n 2 127.0.0.1 >nul && echo done > "` + finishedMarker + `"`},
-			systemDir,
+			[]string{"-test.run=^TestTrayBoundProcessHelper$", "--", "tray-bound-helper", "modify", startedMarker, proceedMarker, finishedMarker},
+			tempDir,
 			4096,
 			4096,
 			false,
@@ -207,21 +308,42 @@ func TestBoundTrayModifyModeCompletesDespiteContextCancellation(t *testing.T) {
 		done <- runOutcome{exitCode: code, err: runErr}
 	}()
 
-	waitDeadline := time.Now().Add(10 * time.Second)
+	startedFound := false
+	waitDeadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(waitDeadline) {
 		if _, statErr := os.Stat(startedMarker); statErr == nil {
+			startedFound = true
 			break
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case res := <-done:
+			t.Fatalf("modify-mode helper exited before start handshake: code=%d err=%v", res.exitCode, res.err)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
-	// Cancel caller context AFTER the process has started; modify mode must let
-	// it complete cleanly instead of killing it mid-apply.
+	if !startedFound {
+		_ = writeMarkerAtomically(proceedMarker, "abort")
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for modify-mode helper start handshake")
+	}
+
+	// Cancel caller context AFTER the start handshake; modify mode must keep
+	// the helper alive until we explicitly signal it to proceed and finish.
 	cancel()
+	select {
+	case res := <-done:
+		t.Fatalf("modify mode aborted on post-launch cancel: code=%d err=%v", res.exitCode, res.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := writeMarkerAtomically(proceedMarker, "go"); err != nil {
+		t.Fatal(err)
+	}
 	res := <-done
 	if res.err != nil || res.exitCode != 0 {
-		t.Fatalf("modify mode aborted on post-launch cancel: code=%d err=%v", res.exitCode, res.err)
+		t.Fatalf("modify mode did not finish cleanly after cancel: code=%d err=%v", res.exitCode, res.err)
 	}
 	if _, statErr := os.Stat(finishedMarker); statErr != nil {
-		t.Fatalf("modify mode process did not finish cleanly: %v", statErr)
+		t.Fatalf("modify mode process did not write finished marker: %v", statErr)
 	}
 }

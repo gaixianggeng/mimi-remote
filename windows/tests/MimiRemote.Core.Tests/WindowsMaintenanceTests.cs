@@ -331,6 +331,94 @@ public sealed class WindowsMaintenanceTests
     }
 
     [Fact]
+    public async Task UacCancellationFollowedByRejectedReadbackTakesIdentityRejectionPrecedence()
+    {
+        var fixture = new FakeMaintenancePlatform
+        {
+            BrokerResult = new MaintenanceBrokerProcessResult("", "错误：管理员授权已取消", 1223),
+            StatusException = new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch),
+        };
+
+        var result = await fixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, result.FailureKind);
+        Assert.False(result.BrokerVerified);
+        Assert.True(result.FallbackToDownload);
+        Assert.Null(result.PostRunStatus);
+        Assert.Null(result.PostRunPreflight);
+        Assert.Equal(2, fixture.LaunchedCalls.Count);
+        Assert.Equal(["installer-maintenance", "modify"], fixture.LaunchedCalls[0].Args);
+        Assert.Equal(["status", "--json", "--runtime", "--network-policy"], fixture.LaunchedCalls[1].Args);
+    }
+
+    [Fact]
+    public async Task CandidateInstallDiscoveryPrefersCustomInstallLocationAndStillEnforcesFullVerification()
+    {
+        const string customDir = @"D:\Tools\Mimi Remote";
+        const string defaultDir = @"C:\Users\tester\AppData\Local\Programs\Mimi Remote";
+        const string appBaseDir = @"C:\Apps\MimiRemote";
+        var probedPaths = new List<string>();
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.Combine(customDir, WindowsMaintenanceClient.BrokerRole),
+            Path.Combine(defaultDir, WindowsMaintenanceClient.BrokerRole),
+        };
+
+        bool Probe(string path)
+        {
+            probedPaths.Add(path);
+            return existing.Contains(path);
+        }
+
+        // Custom Setup destination wins over a stale copy in the default directory.
+        var discoveredCustom = AgentClient.ResolveCandidateInstallDirectory(
+            customDir + @"\",
+            defaultDir,
+            appBaseDir,
+            Probe);
+        Assert.Equal(customDir, discoveredCustom);
+
+        // Passing the discovered custom candidate into WindowsMaintenanceClient
+        // still applies the full pinning, CMS receipt, publisher, version, and image checks.
+        var fixture = new FakeMaintenancePlatform { InstallDirectory = discoveredCustom };
+        var validResult = await fixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+        Assert.True(validResult.Succeeded);
+        Assert.Equal(customDir, fixture.PinnedInstallDirectory);
+
+        // Tampered custom candidate fails closed without falling back to the default directory.
+        var tamperedFixture = new FakeMaintenancePlatform
+        {
+            InstallDirectory = discoveredCustom,
+            CmsException = new MaintenanceFailureException(MaintenanceFailureKind.IdentityMismatch),
+        };
+        var rejectedResult = await tamperedFixture.CreateClient().RunModifyAsync(MaintenancePurpose.ConfirmWorkspace, "setup", null);
+        Assert.False(rejectedResult.Succeeded);
+        Assert.Equal(MaintenanceFailureKind.IdentityMismatch, rejectedResult.FailureKind);
+        Assert.False(rejectedResult.BrokerVerified);
+        Assert.Empty(tamperedFixture.LaunchedCalls);
+
+        // UNC registry paths are rejected before probing the filesystem.
+        probedPaths.Clear();
+        var discoveredFromUnc = AgentClient.ResolveCandidateInstallDirectory(
+            @"\\attacker.invalid\share\Mimi Remote",
+            defaultDir,
+            appBaseDir,
+            Probe);
+        Assert.Equal(defaultDir, discoveredFromUnc);
+        Assert.DoesNotContain(probedPaths, path => path.Contains("attacker.invalid", StringComparison.OrdinalIgnoreCase));
+
+        // Missing custom destination falls back to the active default copy.
+        existing.Remove(Path.Combine(customDir, WindowsMaintenanceClient.BrokerRole));
+        var discoveredFallback = AgentClient.ResolveCandidateInstallDirectory(
+            customDir,
+            defaultDir,
+            appBaseDir,
+            Probe);
+        Assert.Equal(defaultDir, discoveredFallback);
+    }
+
+    [Fact]
     public void ResolvePreTrustedPublisherSha256RequiresEmbeddedMetadataWithoutSelfSignerFallback()
     {
         var formalBuild = ClientBuild.Parse("1.2.3");
@@ -484,30 +572,41 @@ public sealed class WindowsMaintenanceTests
             return;
         }
 
-        var cmdPath = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        var powershellPath = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
         PinnedBrokerImage valid;
-        using (var handle = File.OpenHandle(cmdPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var handle = File.OpenHandle(powershellPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, cmdPath);
+            valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, powershellPath);
         }
 
-        var ok = await WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
-            valid,
-            ["/c", "echo", "bound-ok"],
-            CancellationToken.None);
-        Assert.Equal(0, ok.ExitCode);
-        Assert.Contains("bound-ok", ok.StdOut, StringComparison.Ordinal);
-
-        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint-bind-" + Guid.NewGuid().ToString("N"));
+        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint bind-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         try
         {
-            var blockedMarker = Path.Combine(tempDir, "must-not-exist.txt");
+            var touchScript = Path.Combine(tempDir, "touch helper.ps1");
+            await File.WriteAllTextAsync(
+                touchScript,
+                "param([string]$Target)\n"
+                + "$tmp = $Target + '.tmp'\n"
+                + "[IO.File]::WriteAllText($tmp, 'bound-ok')\n"
+                + "[IO.File]::Move($tmp, $Target)\n"
+                + "Write-Output 'bound-ok'\n");
+
+            var allowedMarker = Path.Combine(tempDir, "allowed marker.txt");
+            var ok = await WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
+                valid,
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", touchScript, allowedMarker],
+                CancellationToken.None);
+            Assert.Equal(0, ok.ExitCode);
+            Assert.Contains("bound-ok", ok.StdOut, StringComparison.Ordinal);
+            Assert.True(File.Exists(allowedMarker));
+
+            var blockedMarker = Path.Combine(tempDir, "must not exist.txt");
             var tamperedFileId = valid with { FileIndexLow = valid.FileIndexLow ^ 1u };
             var fileIdEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() =>
                 WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
                     tamperedFileId,
-                    ["/c", $"echo pwn > \"{blockedMarker}\""],
+                    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", touchScript, blockedMarker],
                     CancellationToken.None));
             Assert.Equal(MaintenanceFailureKind.IdentityMismatch, fileIdEx.FailureKind);
             Assert.False(File.Exists(blockedMarker));
@@ -516,7 +615,7 @@ public sealed class WindowsMaintenanceTests
             var pathEx = await Assert.ThrowsAsync<MaintenanceFailureException>(() =>
                 WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
                     tamperedNativePath,
-                    ["/c", $"echo pwn > \"{blockedMarker}\""],
+                    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", touchScript, blockedMarker],
                     CancellationToken.None));
             Assert.Equal(MaintenanceFailureKind.IdentityMismatch, pathEx.FailureKind);
             Assert.False(File.Exists(blockedMarker));
@@ -613,35 +712,84 @@ public sealed class WindowsMaintenanceTests
             return;
         }
 
-        var cmdPath = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        var powershellPath = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
         PinnedBrokerImage valid;
-        using (var handle = File.OpenHandle(cmdPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var handle = File.OpenHandle(powershellPath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, cmdPath);
+            valid = WindowsMaintenanceProcessRunner.ReadFileIdentity(handle, powershellPath);
         }
 
-        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint-modify-" + Guid.NewGuid().ToString("N"));
+        var tempDir = Path.Combine(Path.GetTempPath(), "mimi-maint modify-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         try
         {
-            var startedMarker = Path.Combine(tempDir, "started.txt");
-            var doneMarker = Path.Combine(tempDir, "done.txt");
+            var helperScript = Path.Combine(tempDir, "modify handshake.ps1");
+            await File.WriteAllTextAsync(
+                helperScript,
+                "param([string]$Started, [string]$Proceed, [string]$Done)\n"
+                + "$tmpStarted = $Started + '.tmp'\n"
+                + "[IO.File]::WriteAllText($tmpStarted, 'started')\n"
+                + "[IO.File]::Move($tmpStarted, $Started)\n"
+                + "$deadline = [DateTime]::UtcNow.AddSeconds(15)\n"
+                + "while (-not (Test-Path -LiteralPath $Proceed) -and [DateTime]::UtcNow -lt $deadline) {\n"
+                + "    Start-Sleep -Milliseconds 25\n"
+                + "}\n"
+                + "if (-not (Test-Path -LiteralPath $Proceed)) { exit 2 }\n"
+                + "$tmpDone = $Done + '.tmp'\n"
+                + "[IO.File]::WriteAllText($tmpDone, 'done')\n"
+                + "[IO.File]::Move($tmpDone, $Done)\n"
+                + "exit 0\n");
+
+            var startedMarker = Path.Combine(tempDir, "started marker.txt");
+            var proceedMarker = Path.Combine(tempDir, "proceed marker.txt");
+            var doneMarker = Path.Combine(tempDir, "done marker.txt");
             using var cts = new CancellationTokenSource();
             var runTask = WindowsMaintenanceProcessRunner.RunBoundProcessAsync(
                 valid,
-                ["/c", $"echo started > \"{startedMarker}\" && ping -n 2 127.0.0.1 >nul && echo done > \"{doneMarker}\""],
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helperScript, startedMarker, proceedMarker, doneMarker],
                 killOnCancel: false,
                 cts.Token);
-
-            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
-            while (!File.Exists(startedMarker) && DateTimeOffset.UtcNow < deadline)
+            try
             {
-                await Task.Delay(25);
+                var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
+                while (!File.Exists(startedMarker) && DateTimeOffset.UtcNow < deadline)
+                {
+                    Assert.False(runTask.IsCompleted, "Modify-mode helper exited before completing start handshake.");
+                    await Task.Delay(25);
+                }
+                Assert.True(File.Exists(startedMarker), "Timed out waiting for modify-mode helper start handshake.");
+
+                // Cancel AFTER the start handshake and verify the helper remains alive
+                // until we signal it to proceed and finish cleanly.
+                await cts.CancelAsync();
+                await Task.Delay(150);
+                Assert.False(runTask.IsCompleted, "Modify-mode helper was aborted after caller cancellation.");
+
+                var proceedTmp = proceedMarker + ".tmp";
+                await File.WriteAllTextAsync(proceedTmp, "go");
+                File.Move(proceedTmp, proceedMarker);
+
+                var result = await runTask;
+                Assert.Equal(0, result.ExitCode);
+                Assert.True(File.Exists(doneMarker));
             }
-            await cts.CancelAsync();
-            var result = await runTask;
-            Assert.Equal(0, result.ExitCode);
-            Assert.True(File.Exists(doneMarker));
+            finally
+            {
+                if (!runTask.IsCompleted)
+                {
+                    if (!File.Exists(proceedMarker))
+                    {
+                        await File.WriteAllTextAsync(proceedMarker, "cleanup");
+                    }
+                    try
+                    {
+                        await runTask.WaitAsync(TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception error) when (error is OperationCanceledException or TimeoutException or MaintenanceFailureException or IOException)
+                    {
+                    }
+                }
+            }
         }
         finally
         {
@@ -1022,6 +1170,8 @@ public sealed class WindowsMaintenanceTests
         public Exception? PinException { get; set; }
         public Exception? CmsException { get; set; }
         public Exception? ModifyException { get; set; }
+        public Exception? StatusException { get; set; }
+        public string? PinnedInstallDirectory { get; private set; }
         public Func<byte[], byte[], byte[]>? CmsVerifierOverride { get; set; }
         public FakePinnedDirectory PinnedDir { get; } = new();
         public List<(PinnedBrokerImage Broker, string[] Args)> LaunchedCalls { get; } = [];
@@ -1058,6 +1208,7 @@ public sealed class WindowsMaintenanceTests
 
         public async Task WithPinnedInstallAsync(string installDirectory, Func<IPinnedMaintenanceDirectory, Task> action, CancellationToken cancellationToken)
         {
+            PinnedInstallDirectory = installDirectory;
             if (PinException is not null)
             {
                 throw PinException;
@@ -1097,6 +1248,10 @@ public sealed class WindowsMaintenanceTests
             if (arguments.Length > 0 && string.Equals(arguments[0], "status", StringComparison.Ordinal))
             {
                 StatusReadWhilePinned = PinnedDir.Pinned;
+                if (StatusException is not null)
+                {
+                    throw StatusException;
+                }
                 if (StatusResult is { } customStatus)
                 {
                     return Task.FromResult(customStatus);

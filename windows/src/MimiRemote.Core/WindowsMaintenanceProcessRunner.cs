@@ -293,6 +293,7 @@ public static class WindowsMaintenanceProcessRunner
                 workingDirectory,
                 ref startupInfo,
                 out var processInfo);
+            var createError = created ? 0 : Marshal.GetLastWin32Error();
 
             CloseHandleIfOpen(ref nulStdin);
             CloseHandleIfOpen(ref stdoutWrite);
@@ -300,8 +301,7 @@ public static class WindowsMaintenanceProcessRunner
 
             if (!created)
             {
-                var err = Marshal.GetLastWin32Error();
-                throw new MaintenanceFailureException(err == ErrorCancelled
+                throw new MaintenanceFailureException(createError == ErrorCancelled
                     ? MaintenanceFailureKind.UacCancelled
                     : MaintenanceFailureKind.LaunchFailed);
             }

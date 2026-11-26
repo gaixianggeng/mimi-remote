@@ -214,6 +214,8 @@ type trayApplication struct {
 	tailcatErr                  error
 	maintenanceIdentityRejected bool
 	maintenanceOverride         *maintenanceRunner
+	showDialogFn                func(uintptr, string, string, uint32) int
+	openURLFn                   func(string) error
 }
 
 var currentTray *trayApplication
@@ -621,7 +623,7 @@ func (a *trayApplication) refreshStatusWithRuntimeRefresh(refreshRuntime bool) {
 		}
 	}
 	a.completeStatusRequestWithSetup(request, status, err, preflightPending)
-	if err == nil {
+	if err == nil && !a.isMaintenanceIdentityRejected() {
 		a.refreshTailcat(status.ProcessOK)
 	}
 	if a.window != 0 {
@@ -810,8 +812,7 @@ func (a *trayApplication) dispatchMenu(command uint32) {
 }
 
 func (a *trayApplication) refreshStatusInteractive() {
-	if a.controller == nil {
-		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+	if a.blockIfBrokerUnavailable() {
 		return
 	}
 	if !a.beginBusy() {
@@ -824,8 +825,7 @@ func (a *trayApplication) refreshStatusInteractive() {
 }
 
 func (a *trayApplication) runAction(label string, action string) {
-	if a.controller == nil {
-		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+	if a.blockIfBrokerUnavailable() {
 		return
 	}
 	if !a.beginBusy() {
@@ -833,6 +833,9 @@ func (a *trayApplication) runAction(label string, action string) {
 	}
 	go func() {
 		defer a.endBusy()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		ctx, cancel := actionContext()
 		err := a.controller.action(ctx, action)
 		cancel()
@@ -846,8 +849,7 @@ func (a *trayApplication) runAction(label string, action string) {
 }
 
 func (a *trayApplication) runDoctor(fix bool) {
-	if a.controller == nil {
-		a.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+	if a.blockIfBrokerUnavailable() {
 		return
 	}
 	if !a.beginBusy() {
@@ -855,6 +857,9 @@ func (a *trayApplication) runDoctor(fix bool) {
 	}
 	go func() {
 		defer a.endBusy()
+		if a.isMaintenanceIdentityRejected() {
+			return
+		}
 		ctx, cancel := actionContext()
 		result, err := a.controller.doctor(ctx, fix)
 		cancel()
@@ -874,6 +879,9 @@ func (a *trayApplication) runDoctor(fix bool) {
 }
 
 func (a *trayApplication) requestPairing() {
+	if a.blockIfBrokerUnavailable() {
+		return
+	}
 	if a.firstSetupRequired() {
 		trayLogf("pairing request rejected because workspace confirmation is pending")
 		a.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))

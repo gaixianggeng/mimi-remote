@@ -27,6 +27,7 @@ public abstract class ClientPageViewModel : PageState, IDisposable
         }
     }
     protected virtual void OnActiveChanged() { }
+    public virtual void OnNavigatedFrom() { }
     private async void ContextChanged(object? sender, EventArgs args)
     {
         await WhenIdle;

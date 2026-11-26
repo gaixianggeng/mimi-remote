@@ -39,6 +39,53 @@ func (a *trayApplication) setMaintenanceIdentityRejected(value bool) {
 	a.mu.Unlock()
 }
 
+func (a *trayApplication) dialogFunc() func(uintptr, string, string, uint32) int {
+	if a != nil && a.showDialogFn != nil {
+		return a.showDialogFn
+	}
+	return showMessage
+}
+
+func (a *trayApplication) openURLFunc() func(string) error {
+	if a != nil && a.openURLFn != nil {
+		return a.openURLFn
+	}
+	return shellOpenPath
+}
+
+func (a *trayApplication) isBrokerBlocked() bool {
+	return a == nil || a.controller == nil || a.isMaintenanceIdentityRejected()
+}
+
+func (a *trayApplication) blockIfBrokerUnavailable() bool {
+	if a == nil {
+		return true
+	}
+	if a.controller == nil {
+		a.promptMissingBrokerRecovery(a.dialogFunc(), a.openURLFunc())
+		return true
+	}
+	if a.isMaintenanceIdentityRejected() {
+		a.promptIdentityRejectedRecovery(a.dialogFunc(), a.openURLFunc())
+		return true
+	}
+	return false
+}
+
+func (a *trayApplication) promptIdentityRejectedRecovery(
+	show func(uintptr, string, string, uint32) int,
+	openURL func(string) error,
+) {
+	if show == nil {
+		return
+	}
+	maintErr := newMaintenanceError(maintenanceFailureIdentityMismatch)
+	body := maintErr.Message + "\r\n\r\n是否立即打开官方下载页面？"
+	if show(a.window, "Mimi Remote 恢复", body, mbYesNo|mbIconWarning) == idYes && openURL != nil {
+		_ = openURL(maintenanceOfficialDownloadURL)
+	}
+}
+
 func statusHasLANEnabled(status agentStatus) bool {
 	return (status.ModuleStatus != nil && status.ModuleStatus.LANEnabled) ||
 		(status.NetworkStatus != nil && status.NetworkStatus.AllowLAN)
@@ -167,6 +214,10 @@ func (a *trayApplication) executeFirstSetupMaintenance(
 	show func(uintptr, string, string, uint32) int,
 	openURL func(string) error,
 ) {
+	if a.isMaintenanceIdentityRejected() {
+		a.promptIdentityRejectedRecovery(show, openURL)
+		return
+	}
 	if !a.firstSetupRequired() {
 		return
 	}
@@ -201,6 +252,10 @@ func (a *trayApplication) executeLanFirewallMaintenance(
 	show func(uintptr, string, string, uint32) int,
 	openURL func(string) error,
 ) {
+	if a.isMaintenanceIdentityRejected() {
+		a.promptIdentityRejectedRecovery(show, openURL)
+		return
+	}
 	if a.firstSetupRequired() {
 		return
 	}

@@ -40,6 +40,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     private DateTimeOffset? issuedExpiresAt;
     private string? issuedNetwork;
     private ulong generation;
+    private ulong maintenanceSessionGeneration;
+    private PairingTicketReceipt? pendingVerifiedTicket;
+    private string? pendingVerifiedTicketNetwork;
     private CancellationTokenSource? issueCts;
 
     private TailcatStatus? tailcatStatus;
@@ -215,7 +218,17 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             Clear();
         }
+        else
+        {
+            TryActivatePendingVerifiedTicket();
+        }
         NotifyActionState();
+    }
+
+    public void InvalidateForNavigation()
+    {
+        ClearPendingVerifiedTicket();
+        Clear();
     }
 
     /// <summary>Selecting a transport clears any active ticket and NEVER writes or enables anything.</summary>
@@ -233,6 +246,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         SelectedTransport = transportId;
         preservedMaintenanceNote = null;
         FallbackDownloadUrl = null;
+        ClearPendingVerifiedTicket();
         Clear();
         UpdateIdleNote();
     }
@@ -259,6 +273,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             }
             if (!RouteReady || IsExpired)
             {
+                ClearPendingVerifiedTicket();
                 Clear();
             }
             UpdateIdleNote();
@@ -278,6 +293,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             Transports = [];
             BlockingRows = [];
             OnPropertyChanged(nameof(HasBlockingRows));
+            ClearPendingVerifiedTicket();
             Clear();
             Note = error is OnboardingCliException { Diagnostic: { } diag }
                 ? diag.Message
@@ -301,9 +317,12 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         {
             return;
         }
+        hasUserSelectedTransport = true;
+        ClearPendingVerifiedTicket();
         Clear();
         preservedMaintenanceNote = null;
         FallbackDownloadUrl = null;
+        var maintenanceSelection = maintenanceSessionGeneration;
         var selection = generation;
         if (string.Equals(target, "lan", StringComparison.Ordinal))
         {
@@ -366,12 +385,19 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 FallbackDownloadUrl = null;
                 ApplyReport(verifiedReport);
                 UpdateIdleNote();
-                if (selection == generation
-                    && CanGenerate
+                if (maintenanceSelection == maintenanceSessionGeneration
                     && string.Equals(SelectedTransport, target, StringComparison.Ordinal)
                     && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
                 {
-                    ApplyVerifiedPairingTicket(target, verifiedTicket);
+                    if (active && CanGenerate)
+                    {
+                        ApplyVerifiedPairingTicket(target, verifiedTicket);
+                    }
+                    else if (RouteReady && IsVerifiedTicketValid(target, verifiedTicket, out _))
+                    {
+                        pendingVerifiedTicket = verifiedTicket;
+                        pendingVerifiedTicketNetwork = target;
+                    }
                 }
                 return;
             }
@@ -411,16 +437,51 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         }
     }
 
+    private void ClearPendingVerifiedTicket()
+    {
+        maintenanceSessionGeneration++;
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+    }
+
+    private void TryActivatePendingVerifiedTicket()
+    {
+        if (pendingVerifiedTicket is not { } pending || pendingVerifiedTicketNetwork is not { } pendingNetwork)
+        {
+            return;
+        }
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+        if (disposed
+            || !active
+            || !CanGenerate
+            || !string.Equals(SelectedTransport, pendingNetwork, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!IsVerifiedTicketValid(pendingNetwork, pending, out _))
+        {
+            return;
+        }
+        ApplyVerifiedPairingTicket(pendingNetwork, pending);
+    }
+
+    private bool IsVerifiedTicketValid(string target, PairingTicketReceipt receipt, out DateTimeOffset expiry)
+    {
+        expiry = default;
+        return (receipt.Network is null || string.Equals(receipt.Network, target, StringComparison.Ordinal))
+            && OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            && OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out expiry)
+            && expiry > backend.Now();
+    }
+
     private void ApplyVerifiedPairingTicket(string target, PairingTicketReceipt receipt)
     {
         if (disposed || !active || !RouteReady || !string.Equals(SelectedTransport, target, StringComparison.Ordinal))
         {
             return;
         }
-        if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
-            || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
-            || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
-            || expiry <= backend.Now())
+        if (!IsVerifiedTicketValid(target, receipt, out var expiry))
         {
             Note = "配对信息无效或已经过期，请刷新二维码。";
             return;
@@ -444,6 +505,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         var target = SelectedTransport;
+        ClearPendingVerifiedTicket();
         Clear();
         var request = ++generation;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -562,6 +624,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             }
             await backend.SetTailcatRelayAsync(arguments, cancellationToken);
             relayEdited = false;
+            ClearPendingVerifiedTicket();
             Clear();
             await RefreshTailcatRelayAsync(cancellationToken);
             ReportRelay(
@@ -690,6 +753,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             && OnboardingWizardStateMachine.OrderedTransportIds.Contains(recommended, StringComparer.Ordinal)
             && !string.Equals(SelectedTransport, recommended, StringComparison.Ordinal))
         {
+            ClearPendingVerifiedTicket();
             Clear();
             SelectedTransport = recommended;
         }
@@ -841,6 +905,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         disposed = true;
+        ClearPendingVerifiedTicket();
         Clear();
     }
 }

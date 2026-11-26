@@ -86,6 +86,9 @@ func (p *controlPanel) syncTailcatRow(presentation tailcatPresentation) {
 }
 
 func (p *controlPanel) pairNetworkEnabled() bool {
+	if p == nil || p.app.isBrokerBlocked() {
+		return false
+	}
 	p.app.mu.RLock()
 	busy := p.app.busy
 	p.app.mu.RUnlock()

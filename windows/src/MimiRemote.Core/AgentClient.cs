@@ -17,17 +17,109 @@ public sealed class AgentClient(string executable) : IAgentCommand
 
     public static string FindExecutable()
     {
-        var installed = FindInstallDirectory();
-        var defaultInstall = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
-        string[] candidates =
+        var candidateDir = ResolveCandidateInstallDirectory(
+            FindInstallDirectory(),
+            DefaultInstallDirectory(),
+            AppContext.BaseDirectory,
+            File.Exists,
+            fallbackWhenMissing: false);
+        return candidateDir is not null
+            ? Path.Combine(candidateDir, WindowsMaintenanceClient.BrokerRole)
+            : throw new FileNotFoundException("未找到 agentd.exe。请先安装 Mimi Remote 电脑端，然后重新打开此窗口。");
+    }
+
+    /// <summary>
+    /// Discovers the active Windows installation directory using the same
+    /// candidate sources as ordinary WinUI operations. The returned directory
+    /// is strictly an untrusted candidate and must pass full receipt,
+    /// publisher, version, reparse-point, and pinned-image checks before
+    /// executing maintenance.
+    /// </summary>
+    public static string? FindCandidateInstallDirectory() =>
+        ResolveCandidateInstallDirectory(
+            FindInstallDirectory(),
+            DefaultInstallDirectory(),
+            AppContext.BaseDirectory,
+            File.Exists,
+            fallbackWhenMissing: true);
+
+    internal static string DefaultInstallDirectory() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
+
+    internal static string? ResolveCandidateInstallDirectory(
+        string? registryInstallLocation,
+        string defaultInstallDirectory,
+        string appBaseDirectory,
+        Func<string, bool> fileExists,
+        bool fallbackWhenMissing = true)
+    {
+        ArgumentNullException.ThrowIfNull(fileExists);
+        var normalizedRegistry = NormalizeLocalCandidateDirectory(registryInstallLocation);
+        var normalizedDefault = NormalizeLocalCandidateDirectory(defaultInstallDirectory);
+        var normalizedBase = NormalizeLocalCandidateDirectory(appBaseDirectory);
+        var normalizedParent = NormalizeLocalCandidateDirectory(GetParentDirectory(appBaseDirectory));
+        string?[] candidateDirs =
         [
-            Path.Combine(installed ?? defaultInstall, "agentd.exe"),
-            Path.Combine(defaultInstall, "agentd.exe"),
-            Path.Combine(AppContext.BaseDirectory, "agentd.exe"),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "agentd.exe")),
+            normalizedRegistry,
+            normalizedDefault,
+            normalizedBase,
+            normalizedParent,
         ];
-        return candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("未找到 agentd.exe。请先安装 Mimi Remote 电脑端，然后重新打开此窗口。");
+        foreach (var dir in candidateDirs)
+        {
+            if (dir is not null && fileExists(Path.Combine(dir, WindowsMaintenanceClient.BrokerRole)))
+            {
+                return dir;
+            }
+        }
+        return fallbackWhenMissing ? normalizedRegistry ?? normalizedDefault : null;
+    }
+
+    private static string? GetParentDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+        var trimmed = directory.Trim().TrimEnd('\\', '/');
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+        try
+        {
+            return Path.GetFullPath(Path.Combine(trimmed, ".."));
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static string? NormalizeLocalCandidateDirectory(string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return null;
+        }
+        var trimmed = rawPath.Trim().TrimEnd('\\', '/');
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return null;
+        }
+        // Reject UNC/network paths (\\server\share) before probing the filesystem.
+        if (trimmed.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed.IndexOf('\\', 4) > 0 ? trimmed : null;
+        }
+        if (trimmed.Length >= 3
+            && char.IsAsciiLetter(trimmed[0])
+            && trimmed[1] == ':'
+            && (trimmed[2] == '\\' || trimmed[2] == '/'))
+        {
+            return trimmed;
+        }
+        return null;
     }
 
     private static string? FindInstallDirectory()
@@ -40,7 +132,7 @@ public sealed class AgentClient(string executable) : IAgentCommand
         const string uninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{7D413E71-19C5-4F02-8AFC-437E1B8019FD}_is1";
         using var key = Registry.CurrentUser.OpenSubKey(uninstallKey);
         var path = key?.GetValue("InstallLocation") as string;
-        return Path.IsPathFullyQualified(path ?? "") ? path : null;
+        return NormalizeLocalCandidateDirectory(path);
     }
 
     public static string[] PreflightArguments(OnboardingPreflightOptions options)

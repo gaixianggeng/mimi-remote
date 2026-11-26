@@ -356,13 +356,15 @@ func (r maintenanceRunner) RunModifyForPurpose(ctx context.Context, purpose main
 				} else if modifyErr == nil {
 					return newMaintenanceError(maintenanceFailureStatusReadFailed)
 				}
-			} else if modifyErr == nil {
+			} else {
 				var statusMaintErr *maintenanceError
 				if statusRunErr != nil && errors.As(statusRunErr, &statusMaintErr) && isMaintenanceIdentityRejection(statusMaintErr.Kind) {
-					outcome.BrokerVerified = false
+					outcome = maintenanceRunOutcome{}
 					return statusMaintErr
 				}
-				return newMaintenanceError(maintenanceFailureStatusReadFailed)
+				if modifyErr == nil {
+					return newMaintenanceError(maintenanceFailureStatusReadFailed)
+				}
 			}
 		} else if modifyErr == nil {
 			return newMaintenanceError(maintenanceFailureStatusReadFailed)

@@ -176,17 +176,20 @@ public sealed class SetupViewModel : ClientPageViewModel
         };
     }
 
+    public override void OnNavigatedFrom() => wizard.InvalidateForNavigation();
+
     protected override void OnActiveChanged()
     {
         if (Active)
         {
             wizard.ReopenIfCompleted();
+            wizard.SetPairingActive(true);
             timer.Start();
         }
         else
         {
             timer.Stop();
-            wizard.InvalidateIssuedPairing();
+            wizard.SetPairingActive(false);
         }
     }
 

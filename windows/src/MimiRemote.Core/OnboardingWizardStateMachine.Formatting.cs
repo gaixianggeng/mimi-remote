@@ -89,18 +89,78 @@ public sealed partial class OnboardingWizardStateMachine
         Trusted = true,
     };
 
+    public void SetPairingActive(bool isActive)
+    {
+        if (pairingActive == isActive)
+        {
+            return;
+        }
+        pairingActive = isActive;
+        if (!isActive)
+        {
+            InvalidateIssuedPairing();
+        }
+        else
+        {
+            TryActivatePendingVerifiedTicket();
+        }
+    }
+
+    public void InvalidateForNavigation()
+    {
+        ClearPendingVerifiedTicket();
+        InvalidateIssuedPairing();
+    }
+
+    private void ClearPendingVerifiedTicket()
+    {
+        maintenanceSessionGeneration++;
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+    }
+
+    private void TryActivatePendingVerifiedTicket()
+    {
+        if (pendingVerifiedTicket is not { } pending || pendingVerifiedTicketNetwork is not { } pendingNetwork)
+        {
+            return;
+        }
+        pendingVerifiedTicket = null;
+        pendingVerifiedTicketNetwork = null;
+        if (disposed
+            || IsCompleted
+            || !pairingActive
+            || CurrentStep != OnboardingWizardStep.ConnectPhone
+            || !CanIssuePairingQr
+            || !string.Equals(SelectedTransport, pendingNetwork, StringComparison.Ordinal))
+        {
+            return;
+        }
+        if (!IsVerifiedTicketValid(pendingNetwork, pending, out _))
+        {
+            return;
+        }
+        ApplyVerifiedPairingTicket(pendingNetwork, pending);
+    }
+
+    private bool IsVerifiedTicketValid(string target, PairingTicketReceipt receipt, out DateTimeOffset expiry)
+    {
+        expiry = default;
+        return (receipt.Network is null || string.Equals(receipt.Network, target, StringComparison.Ordinal))
+            && OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            && OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out expiry)
+            && expiry > backend.Now();
+    }
+
     private void ApplyVerifiedPairingTicket(string target, PairingTicketReceipt receipt)
     {
-        if (disposed || IsCompleted || CurrentStep != OnboardingWizardStep.ConnectPhone
+        if (disposed || IsCompleted || !pairingActive || CurrentStep != OnboardingWizardStep.ConnectPhone
             || !string.Equals(SelectedTransport, target, StringComparison.Ordinal)
             || !CanIssuePairingQr)
         {
             return;
         }
-        if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
-            || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
-            || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
-            || expiry <= backend.Now())
+        if (!IsVerifiedTicketValid(target, receipt, out var expiry))
         {
             PairingError = new OnboardingResolvedDiagnostic
             {

@@ -69,7 +69,7 @@ public sealed class ClientContext : IDisposable
         {
             var native = new WindowsMaintenanceNative();
             var client = new WindowsMaintenanceClient(
-                WindowsMaintenanceNative.ResolveTrustedInstallDirectory,
+                WindowsMaintenanceNative.ResolveCandidateInstallDirectory,
                 () => WindowsMaintenanceNative.ResolveExpectedVersion(Build),
                 () => WindowsMaintenanceNative.ResolvePreTrustedPublisherSha256(Build, typeof(App).Assembly),
                 native);

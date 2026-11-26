@@ -161,8 +161,7 @@ func (p *controlPanel) chooseRelayService() {
 }
 
 func (p *controlPanel) applyRelay(choice, relayURL string) {
-	if p.app.controller == nil || p.app.isMaintenanceIdentityRejected() {
-		p.app.promptMissingBrokerRecovery(showMessage, shellOpenPath)
+	if p.app.blockIfBrokerUnavailable() {
 		return
 	}
 	status, _, _ := p.app.tailcatSnapshot()

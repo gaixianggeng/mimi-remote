@@ -9,5 +9,10 @@ public abstract class ClientPage : Page
     public static InfoBarSeverity NoticeSeverity(bool failed) => failed ? InfoBarSeverity.Error : InfoBarSeverity.Informational;
     public abstract ClientPageViewModel Model { get; }
     protected ClientPage() { NavigationCacheMode = NavigationCacheMode.Required; }
-    protected override void OnNavigatedFrom(NavigationEventArgs e) { _ = Model.SetActiveAsync(false); base.OnNavigatedFrom(e); }
+    protected override void OnNavigatedFrom(NavigationEventArgs e)
+    {
+        Model.OnNavigatedFrom();
+        _ = Model.SetActiveAsync(false);
+        base.OnNavigatedFrom(e);
+    }
 }

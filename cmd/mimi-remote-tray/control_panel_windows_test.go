@@ -357,3 +357,37 @@ func TestControlPanelScalesLayoutFor4KDisplayDPI(t *testing.T) {
 		t.Fatalf("control panel bounds at 200%% DPI = %dx%d, want 1200x1260", width, height)
 	}
 }
+
+func TestControlPanelPresentationIdentityRejectionOverridesPriorStatusError(t *testing.T) {
+	priorErr := errors.New("refresh timed out")
+	for _, tc := range []struct {
+		name      string
+		processOK bool
+	}{
+		{name: "stopped cached status with prior error", processOK: false},
+		{name: "running cached status with prior error", processOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			confirmed := true
+			status := agentStatus{
+				Version:            "1.2.3",
+				ProcessOK:          tc.processOK,
+				ServiceOK:          tc.processOK,
+				WorkspaceConfirmed: &confirmed,
+			}
+			presentation := makeControlPanelPresentationWithMaintenance(status, priorErr, false, true, false, false)
+			if presentation.RefreshEnabled || presentation.StartEnabled || presentation.RestartEnabled ||
+				presentation.StopEnabled || presentation.PairEnabled || presentation.DoctorEnabled ||
+				presentation.FixEnabled || presentation.LanMaintenanceVisible || presentation.LanMaintenanceEnabled {
+				t.Fatalf("identity rejection with prior status error left executable action enabled: %+v", presentation)
+			}
+			if !presentation.FirstSetupVisible || !presentation.FirstSetupEnabled || !presentation.LogsEnabled {
+				t.Fatalf("identity-rejected panel must keep download recovery and local logs actionable: %+v", presentation)
+			}
+			if presentation.StateTitle != "维护身份校验失败" || presentation.StateBadge != "需重新安装" {
+				t.Fatalf("prior status error masked maintenance identity rejection: title=%q badge=%q summary=%q",
+					presentation.StateTitle, presentation.StateBadge, presentation.StateSummary)
+			}
+		})
+	}
+}

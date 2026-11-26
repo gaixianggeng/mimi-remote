@@ -811,23 +811,26 @@ func (p *controlPanel) syncFromApplication() {
 	identityRejected := p.app.maintenanceIdentityRejected
 	tailcat, hasTailcat, tailcatErr := p.app.tailcat, p.app.hasTailcat, p.app.tailcatErr
 	p.app.mu.RUnlock()
-	if identityRejected && statusErr == nil {
-		statusErr = newMaintenanceError(maintenanceFailureIdentityMismatch)
-	}
-	presentation := makeControlPanelPresentationWithSetup(
+	brokerBlocked := p.app.controller == nil || identityRejected
+	presentation := makeControlPanelPresentationWithMaintenance(
 		status,
 		statusErr,
 		preflightPending,
+		identityRejected,
 		busy,
 		pairingBusy,
 	)
 	p.firstSetupVisible = presentation.FirstSetupVisible
 	p.lanMaintenanceVisible = presentation.LanMaintenanceVisible
 	p.lanMaintenanceLabel = presentation.LanMaintenanceLabel
-	if p.pairingView && (statusErr != nil || !status.ServiceOK || p.firstSetupVisible) {
+	if p.pairingView && (brokerBlocked || statusErr != nil || !status.ServiceOK || p.firstSetupVisible) {
 		p.showDashboardView()
 	}
-	p.syncTailcatRow(makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy))
+	tailcatPresentation := makeTailcatPresentation(status, tailcat, hasTailcat, tailcatErr, busy)
+	if brokerBlocked {
+		tailcatPresentation.ToggleEnabled = false
+	}
+	p.syncTailcatRow(tailcatPresentation)
 	if p.pairingView {
 		setControlPanelEnabled(p.pairNetwork, p.pairNetworkEnabled())
 		procPanelInvalidateRect.Call(p.pairNetwork, 0, 1)
@@ -956,6 +959,9 @@ func (p *controlPanel) showPairingView(preferTailcat bool) {
 	if p == nil || p.window == 0 {
 		return
 	}
+	if p.app.blockIfBrokerUnavailable() {
+		return
+	}
 	if p.app.firstSetupRequired() {
 		p.app.showError(errors.New("请先完成首次设置并确认代码目录，再配对设备。"))
 		return
@@ -985,8 +991,11 @@ func (p *controlPanel) refreshPairing() {
 	if p == nil || p.window == 0 {
 		return
 	}
+	if p.app.blockIfBrokerUnavailable() {
+		return
+	}
 	p.app.mu.Lock()
-	if p.app.pairingBusy || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
+	if p.app.pairingBusy || p.app.maintenanceIdentityRejected || p.app.statusErr != nil || !p.app.status.ServiceOK || p.app.status.workspacePendingConfirmation() {
 		p.app.mu.Unlock()
 		return
 	}
@@ -1159,14 +1168,18 @@ func makeControlPanelPresentation(status agentStatus, statusErr error, busy bool
 }
 
 func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, preflightPending bool, busy bool, pairingBusy bool) controlPanelPresentation {
+	return makeControlPanelPresentationWithMaintenance(status, statusErr, preflightPending, false, busy, pairingBusy)
+}
+
+func makeControlPanelPresentationWithMaintenance(status agentStatus, statusErr error, preflightPending bool, identityRejected bool, busy bool, pairingBusy bool) controlPanelPresentation {
 	neutralRuntimeColor := rgbColor(101, 101, 110)
 	firstSetupNeeded := needsFirstSetup(status, statusErr, preflightPending)
 	var maintErr *maintenanceError
 	brokerMissing := errors.As(statusErr, &maintErr) && maintErr.Kind == maintenanceFailureImageMissing
-	identityRejected := errors.As(statusErr, &maintErr) && isMaintenanceIdentityRejection(maintErr.Kind) && maintErr.Kind != maintenanceFailureElevatedSession
-	brokerBlocked := brokerMissing || identityRejected
+	rejected := identityRejected || (errors.As(statusErr, &maintErr) && isMaintenanceIdentityRejection(maintErr.Kind) && maintErr.Kind != maintenanceFailureElevatedSession)
+	brokerBlocked := brokerMissing || rejected
 	firstSetupVisible := firstSetupNeeded || brokerBlocked
-	lanMaintenanceVisible := !firstSetupVisible && canRunLanMaintenance(status, statusErr, preflightPending, brokerMissing, identityRejected)
+	lanMaintenanceVisible := !firstSetupVisible && canRunLanMaintenance(status, statusErr, preflightPending, brokerMissing, rejected)
 	lanMaintenanceLabel := ""
 	if lanMaintenanceVisible {
 		lanMaintenanceLabel = lanMaintenanceMenuLabel(status)
@@ -1272,6 +1285,13 @@ func makeControlPanelPresentationWithSetup(status agentStatus, statusErr error, 
 		if statusErr != nil {
 			presentation.StateSummary = "刷新失败，当前显示上次状态：" + compactControlPanelError(statusErr)
 		}
+	}
+	if rejected {
+		presentation.StateTitle = "维护身份校验失败"
+		presentation.StateBadge = "需重新安装"
+		presentation.StateSummary = compactControlPanelError(newMaintenanceError(maintenanceFailureIdentityMismatch))
+		presentation.StatusColor = rgbColor(184, 42, 50)
+		presentation.StatusBackground = rgbColor(255, 239, 240)
 	}
 	if busy {
 		presentation.StateBadge = "处理中"

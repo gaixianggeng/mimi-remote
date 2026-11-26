@@ -262,6 +262,10 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
     private ulong preflightGeneration;
     private CancellationTokenSource? preflightCts;
     private ulong pairingGeneration;
+    private bool pairingActive = true;
+    private ulong maintenanceSessionGeneration;
+    private PairingTicketReceipt? pendingVerifiedTicket;
+    private string? pendingVerifiedTicketNetwork;
     private CancellationTokenSource? pairingCts;
 
     public event EventHandler<OnboardingGateState>? GateEvaluated;
@@ -679,6 +683,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
         }
         if (CurrentStep == OnboardingWizardStep.ConnectPhone)
         {
+            ClearPendingVerifiedTicket();
             InvalidateIssuedPairing();
         }
         CancelPreflight();
@@ -781,6 +786,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
                 return;
             }
             IsCheckingPreflight = false;
+            ClearPendingVerifiedTicket();
             InvalidateIssuedPairing();
             var diag = DiagnosticFromException(error, "service_daemon");
             Report = null;
@@ -1143,6 +1149,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
             return;
         }
         SelectedTransport = transport;
+        ClearPendingVerifiedTicket();
         InvalidateIssuedPairing();
     }
 
@@ -1163,7 +1170,9 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
         SelectedTransport = target;
         hasUserSelectedTransport = true;
         PairingError = null;
+        ClearPendingVerifiedTicket();
         InvalidateIssuedPairing();
+        var maintenanceSelection = maintenanceSessionGeneration;
         var selection = pairingGeneration;
 
         if (string.Equals(target, "lan", StringComparison.Ordinal))
@@ -1232,9 +1241,21 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
                     return;
                 }
                 ApplyVerifiedPreflightReport(verifiedReport);
-                if (selection == pairingGeneration && IsTransportReady("lan") && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
+                if (maintenanceSelection == maintenanceSessionGeneration
+                    && CurrentStep == OnboardingWizardStep.ConnectPhone
+                    && string.Equals(SelectedTransport, "lan", StringComparison.Ordinal)
+                    && IsTransportReady("lan")
+                    && maintenanceResult.PostRunPairingTicket is { } verifiedTicket)
                 {
-                    ApplyVerifiedPairingTicket("lan", verifiedTicket);
+                    if (pairingActive && CanIssuePairingQr)
+                    {
+                        ApplyVerifiedPairingTicket("lan", verifiedTicket);
+                    }
+                    else if (CanIssuePairingQr && IsVerifiedTicketValid("lan", verifiedTicket, out _))
+                    {
+                        pendingVerifiedTicket = verifiedTicket;
+                        pendingVerifiedTicketNetwork = "lan";
+                    }
                 }
                 return;
             }
@@ -1282,6 +1303,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
             InvalidateIssuedPairing();
             return;
         }
+        ClearPendingVerifiedTicket();
         InvalidateIssuedPairing();
         var generation = ++pairingGeneration;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1400,6 +1422,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
     {
         if (IsCompleted)
         {
+            ClearPendingVerifiedTicket();
             IsCompleted = false;
             hasUserEditedScanRoot = false;
             hasCommittedCurrentDraft = false;
@@ -1418,6 +1441,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
             return false;
         }
         CancelPreflight();
+        ClearPendingVerifiedTicket();
         InvalidateIssuedPairing();
         IsCompleted = true;
         WizardCompleted?.Invoke(this, EventArgs.Empty);
@@ -1565,6 +1589,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
             && OrderedTransportIds.Contains(recommended, StringComparer.Ordinal)
             && !string.Equals(SelectedTransport, recommended, StringComparison.Ordinal))
         {
+            ClearPendingVerifiedTicket();
             InvalidateIssuedPairing();
             SelectedTransport = recommended;
         }
@@ -1574,6 +1599,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
         RebuildRowsAndTransports();
         if (CurrentStep == OnboardingWizardStep.ConnectPhone && !CanIssuePairingQr)
         {
+            ClearPendingVerifiedTicket();
             InvalidateIssuedPairing();
         }
         NotifyDerivedProperties();
@@ -1934,6 +1960,7 @@ public sealed partial class OnboardingWizardStateMachine : ObservableObject, IDi
         }
         disposed = true;
         CancelPreflight();
+        ClearPendingVerifiedTicket();
         InvalidateIssuedPairing();
     }
 }

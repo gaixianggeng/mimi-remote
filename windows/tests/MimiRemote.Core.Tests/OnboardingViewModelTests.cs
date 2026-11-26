@@ -582,6 +582,240 @@ public sealed class OnboardingViewModelTests
     }
 
     [Fact]
+    public async Task 局域网维护期间窗口失焦保留已验证票据并在重新激活时展示而导航切传输或过期则作废()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+        var blockedReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true,
+            lanFirewallBlocked: true);
+        var readyLanReport = BuildWindowsReport(
+            stage: "pair",
+            configured: true,
+            workspaceConfirmed: true,
+            serviceOk: true,
+            tailcatReady: true);
+        readyLanReport = readyLanReport with
+        {
+            Checks =
+            [
+                .. readyLanReport.Checks.Select(c => string.Equals(c.Id, "network_lan", StringComparison.Ordinal)
+                    ? new OnboardingCheck { Id = "network_lan", Group = "network", State = "ok", Title = "同一局域网", Detail = "ok", Blocking = false, Enabled = true, Available = true, HasAvailableKey = true }
+                    : c),
+            ],
+        };
+
+        MaintenanceRunResult BuildSuccessResult(string sig, DateTimeOffset expiresAt) =>
+            MaintenanceRunResult.Success(
+                new HostStatus
+                {
+                    Version = "1.2.3",
+                    ProcessOk = true,
+                    ServiceOk = true,
+                    WorkspaceConfirmed = true,
+                    ModuleStatus = new ModuleStatus { LanEnabled = true, LanAvailable = true },
+                    NetworkStatus = new HostNetworkStatus { Mode = "lan", AllowLan = true, PolicyChecked = true, PolicyOk = true, FirewallValid = true },
+                },
+                "专用网络防火墙与局域网访问已生效。",
+                readyLanReport,
+                new PairingTicketReceipt
+                {
+                    Ok = true,
+                    Endpoint = "http://192.168.1.20:8787",
+                    PairUrl = $"mimiremote://pair?pair_sig={sig}",
+                    PairExpiresAt = expiresAt.ToString("O", CultureInfo.InvariantCulture),
+                    Network = "lan",
+                });
+
+        // 1) PairingSessionController: focus lost to wizard while maintenance runs,
+        // maintenance finishes while inactive, returning focus activates the held verified ticket.
+        TaskCompletionSource<MaintenanceRunResult> pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pairingBackend = new FakePairingBackend(() => now)
+        {
+            Report = blockedReport,
+            RunLanFirewallMaintenance = _ => pendingPairingMaintenance.Task,
+        };
+        using var controller = new PairingSessionController(pairingBackend);
+        var observedTickets = new List<string?>();
+        controller.TicketChanged += (_, url) => observedTickets.Add(url);
+        controller.SetActive(true);
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        var preflightsBefore = pairingBackend.PreflightCalls;
+        var pairsBefore = pairingBackend.PairCalls;
+
+        var enableTask = controller.EnableSelectedTransportAsync();
+        // Maintenance wizard takes focus from WinUI.
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("focus-held-lan", now.AddMinutes(5)));
+        await enableTask;
+        // Must NOT expose the QR/copyable link while window is deactivated.
+        Assert.False(controller.HasActiveTicket);
+        Assert.False(controller.CanCopyLink);
+        Assert.Empty(observedTickets);
+
+        // Returning focus to the same page and transport promotes the held verified receipt.
+        controller.SetActive(true);
+        Assert.True(controller.HasActiveTicket);
+        Assert.True(controller.CanCopyLink);
+        Assert.Equal("mimiremote://pair?pair_sig=focus-held-lan", Assert.Single(observedTickets));
+        Assert.Equal(preflightsBefore, pairingBackend.PreflightCalls);
+        Assert.Equal(pairsBefore, pairingBackend.PairCalls);
+
+        // 2) PairingSessionController: focus lost and regained BEFORE maintenance completes.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableBeforeReturn = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        controller.SetActive(true);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("focus-returned-early", now.AddMinutes(5)));
+        await enableBeforeReturn;
+        Assert.True(controller.HasActiveTicket);
+        Assert.Equal("mimiremote://pair?pair_sig=focus-returned-early", Assert.Single(observedTickets));
+
+        // 3) PairingSessionController: navigation away invalidates the held receipt.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableNavAway = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("nav-away-discarded", now.AddMinutes(5)));
+        await enableNavAway;
+        controller.InvalidateForNavigation();
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 4) PairingSessionController: transport change invalidates the held receipt even if switched back.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableSwitch = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("transport-switch-discarded", now.AddMinutes(5)));
+        await enableSwitch;
+        controller.SelectTransport("tailcat");
+        controller.SelectTransport("lan");
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 5) PairingSessionController: expiry before reactivation invalidates the held receipt.
+        pairingBackend.Report = blockedReport;
+        await controller.RefreshAsync();
+        controller.SelectTransport("lan");
+        observedTickets.Clear();
+        pendingPairingMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enableExpiry = controller.EnableSelectedTransportAsync();
+        controller.SetActive(false);
+        pendingPairingMaintenance.SetResult(BuildSuccessResult("expired-discarded", now.AddMinutes(2)));
+        await enableExpiry;
+        now = now.AddMinutes(3);
+        controller.SetActive(true);
+        Assert.False(controller.HasActiveTicket);
+        Assert.Empty(observedTickets);
+
+        // 6) OnboardingWizardStateMachine (Setup Step 4): focus lost while wizard runs,
+        // held until reactivation, and invalidated on navigation, transport change, or expiry.
+        TaskCompletionSource<MaintenanceRunResult> pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardBackend = new FakeWizardBackend
+        {
+            Clock = () => now,
+            OnPreflight = (_, _, _) => Task.FromResult(blockedReport),
+            RunLanFirewallMaintenance = _ => pendingWizardMaintenance.Task,
+        };
+        using var wizard = new OnboardingWizardStateMachine(wizardBackend);
+        var wizardTickets = new List<string?>();
+        wizard.IssuedTicketChanged += (_, url) => wizardTickets.Add(url);
+        await wizard.ProceedToConnectStepAsync();
+        wizard.SelectTransport("lan");
+        var wizardEnable = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-focus-held", now.AddMinutes(5)));
+        await wizardEnable;
+        Assert.False(wizard.HasIssuedTicket);
+        Assert.Empty(wizardTickets);
+
+        wizard.SetPairingActive(true);
+        Assert.True(wizard.HasIssuedTicket);
+        Assert.Equal("mimiremote://pair?pair_sig=wizard-focus-held", Assert.Single(wizardTickets));
+
+        // Navigation invalidates held wizard ticket.
+        wizardTickets.Clear();
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardNav = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-nav-discarded", now.AddMinutes(5)));
+        await wizardNav;
+        wizard.InvalidateForNavigation();
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // Transport switch invalidates held wizard ticket.
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardSwitch = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-switch-discarded", now.AddMinutes(5)));
+        await wizardSwitch;
+        wizard.SelectTransport("tailcat");
+        wizard.SelectTransport("lan");
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // Expiry invalidates held wizard ticket.
+        wizard.ApplyVerifiedPreflightReport(blockedReport);
+        pendingWizardMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wizardExpiry = wizard.EnableSelectedTransportAsync();
+        wizard.SetPairingActive(false);
+        pendingWizardMaintenance.SetResult(BuildSuccessResult("wizard-expired-discarded", now.AddMinutes(1)));
+        await wizardExpiry;
+        now = now.AddMinutes(2);
+        wizard.SetPairingActive(true);
+        Assert.False(wizard.HasIssuedTicket);
+
+        // 7) SetupViewModel full focus transition via SetActiveAsync(false) -> SetActiveAsync(true).
+        var setupContext = new ClientContext();
+        var lanReadyForSetupVm = false;
+        setupContext.Agent.PreflightHandler = (_, _, _) => Task.FromResult(lanReadyForSetupVm ? readyLanReport : blockedReport);
+        TaskCompletionSource<MaintenanceRunResult> pendingVmMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        setupContext.RunInstallerMaintenance = (_, _) => pendingVmMaintenance.Task;
+
+        using var setupVm = new SetupViewModel(setupContext);
+        var vmQrPayloads = new List<string?>();
+        setupVm.QrPayloadChanged += (_, url) => vmQrPayloads.Add(url);
+        await setupVm.SetActiveAsync(true);
+        await setupVm.Wizard.ProceedToConnectStepAsync();
+        setupVm.SelectTransportCommand.Execute("lan");
+
+        var vmEnable = setupVm.EnableTransportCommand.ExecuteAsync(null);
+        await setupVm.SetActiveAsync(false);
+        lanReadyForSetupVm = true;
+        pendingVmMaintenance.SetResult(BuildSuccessResult("setup-vm-focus-held", DateTimeOffset.UtcNow.AddMinutes(5)));
+        await vmEnable;
+        Assert.False(setupVm.Wizard.HasIssuedTicket);
+
+        await setupVm.SetActiveAsync(true);
+        Assert.True(setupVm.Wizard.HasIssuedTicket);
+        Assert.Contains(vmQrPayloads, url => string.Equals(url, "mimiremote://pair?pair_sig=setup-vm-focus-held", StringComparison.Ordinal));
+
+        // Navigating away from SetupViewModel discards any held ticket.
+        setupVm.OnNavigatedFrom();
+        Assert.False(setupVm.Wizard.HasIssuedTicket);
+    }
+
+    [Fact]
     public async Task BlockedPrivateLanShowsGuidanceOnBothPagesWhenMaintenanceIsUnavailable()
     {
         var report = BuildWindowsReport("pair", true, true, serviceOk: true, tailcatReady: true, lanFirewallBlocked: true);
@@ -1649,12 +1883,14 @@ public sealed class OnboardingViewModelTests
             return OnRestart?.Invoke() ?? Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
         }
         public Func<CancellationToken, Task<MaintenanceRunResult>>? RunLanFirewallMaintenance { get; init; }
+        public Action<string>? OnOpenUrl { get; init; }
+        public Func<DateTimeOffset>? Clock { get; init; }
         public bool DirectoryExists(string path) => ExistingDirs.Contains(path);
         public void CreateDirectory(string path) => ExistingDirs.Add(path);
-        public void OpenUrl(string url) { }
+        public void OpenUrl(string url) => OnOpenUrl?.Invoke(url);
         public void OpenSettings(string target) { }
         public bool CopyToClipboard(string text) => true;
-        public DateTimeOffset Now() => DateTimeOffset.UtcNow;
+        public DateTimeOffset Now() => Clock?.Invoke() ?? DateTimeOffset.UtcNow;
     }
 
     private sealed class FakePairingBackend(Func<DateTimeOffset> clock) : IPairingSessionBackend

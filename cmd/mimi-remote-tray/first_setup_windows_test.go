@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -393,5 +394,95 @@ func TestMaintenanceIdentityRejectionBlocksSubsequentPeriodicRefresh(t *testing.
 	}
 	if canRunLanMaintenance(app.status, nil, false, false, true) {
 		t.Fatal("identity-rejected tray must not expose LAN maintenance button")
+	}
+}
+
+func TestMaintenanceIdentityRejectionBlocksEveryExecutableActionHandler(t *testing.T) {
+	confirmed := true
+	runner, _, _, _ := makeValidMaintenanceFixture(t)
+	runner.ops.runBroker = func(_ context.Context, _ pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
+		if len(args) > 0 && args[0] == "status" {
+			return nil, nil, -1, newMaintenanceError(maintenanceFailureIdentityMismatch)
+		}
+		// UAC cancellation followed by rejected status readback must still latch identity rejection.
+		return nil, []byte("错误：管理员授权已取消"), 1223, errors.New("exit 1223")
+	}
+
+	unverifiedCalls := 0
+	controller := &agentController{
+		statusGate: make(chan struct{}, 1),
+		statusRunner: func(context.Context, ...string) ([]byte, error) {
+			unverifiedCalls++
+			return nil, nil
+		},
+		commandRunner: func(context.Context, ...string) ([]byte, error) {
+			unverifiedCalls++
+			return nil, nil
+		},
+	}
+
+	dialogs := 0
+	opened := []string{}
+	app := &trayApplication{
+		controller: controller,
+		status: agentStatus{
+			Version:            "1.2.3",
+			ProcessOK:          true,
+			ServiceOK:          true,
+			WorkspaceConfirmed: &confirmed,
+		},
+		statusErr:           errors.New("prior status timeout"),
+		tailcat:             tailcatTrayStatus{Enabled: true, Running: true},
+		hasTailcat:          true,
+		maintenanceOverride: &runner,
+		showDialogFn: func(_ uintptr, _, _ string, _ uint32) int {
+			dialogs++
+			return idYes
+		},
+		openURLFn: func(url string) error {
+			opened = append(opened, url)
+			return nil
+		},
+	}
+	panel := &controlPanel{app: app, window: 1}
+	app.panel = panel
+
+	app.executeLanFirewallMaintenance(app.showDialogFn, app.openURLFn)
+	if !app.isMaintenanceIdentityRejected() {
+		t.Fatal("UAC cancel followed by readback identity rejection must latch maintenanceIdentityRejected")
+	}
+	if panel.pairNetworkEnabled() {
+		t.Fatal("pairNetworkEnabled must be false after maintenance identity rejection")
+	}
+
+	dialogsBefore := dialogs
+	app.refreshStatusInteractive()
+	app.runAction("启动", "start")
+	app.runAction("重新启动", "restart")
+	app.runAction("停止", "stop")
+	app.runDoctor(false)
+	app.runDoctor(true)
+	app.requestPairing()
+	app.toggleTailcat()
+	app.confirmAndSetTailcat(true, 0)
+	app.setTailcatForPairing(0)
+	app.requestTailcatPairing()
+	app.refreshTailcat(true)
+	panel.applyRelay("default", "")
+	panel.refreshPairing()
+
+	if unverifiedCalls != 0 {
+		t.Fatalf("executable action handler launched rejected agentd.exe %d times", unverifiedCalls)
+	}
+	if app.busy || app.pairingBusy {
+		t.Fatalf("blocked action handlers must not enter busy state: busy=%v pairingBusy=%v", app.busy, app.pairingBusy)
+	}
+	if dialogs <= dialogsBefore {
+		t.Fatal("blocked executable handlers should offer official download recovery")
+	}
+	for _, url := range opened {
+		if url != maintenanceOfficialDownloadURL {
+			t.Fatalf("unexpected recovery URL: %q", url)
+		}
 	}
 }

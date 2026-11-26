@@ -65,6 +65,8 @@ public sealed class PairingViewModel : ClientPageViewModel
         OpenConnectionCommand = new RelayCommand(() => Context.NavigateRoute(OnboardingNavigationGate.RouteConnection));
     }
 
+    public override void OnNavigatedFrom() => session.InvalidateForNavigation();
+
     protected override void OnActiveChanged()
     {
         session.SetActive(Active);

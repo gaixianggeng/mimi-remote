@@ -80,7 +80,7 @@ function RunMaintenance(const Action: String): Boolean;
 var
   Code: Integer;
 begin
-  if ExecConsoleHidden(InstallDirectory + '\agentd.exe', 'installer-maintenance ' + Action, Code) then begin
+  if ExecConsoleHidden(AgentExecutable, 'installer-maintenance ' + Action, Code) then begin
     LastMaintenanceExitCode := Code;
     Result := Code = 0;
   end else begin
@@ -173,17 +173,23 @@ begin
   if RequireExistingConfig then Parameters := Parameters + ' --require-existing';
   if SelectedRoot <> '' then
     Parameters := Parameters + ' --scan-root ' + Quote(AddBackslash(SelectedRoot) + '.');
-  if not ExecAndCaptureOutput(InstallDirectory + '\agentd.exe', Parameters, ExpandConstant('{sys}'), SW_HIDE,
+  if not ExecAndCaptureOutput(AgentExecutable, Parameters, ExpandConstant('{sys}'), SW_HIDE,
     ewWaitUntilTerminated, Code, Output) then Code := -1;
   if (Code = 0) or FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) then
     RegDeleteValue(HKCU, ProductRegistryKey, PendingBootstrapName);
   if Code <> 0 then begin
-    if NewRule and RunMaintenance('disable-lan') then
-      RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
-    MaintenanceUacCancelled := False;
+    if NewRule then begin
+      if RunMaintenance('disable-lan') then
+        RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName)
+      else if LastMaintenanceExitCode = MaintenanceUacCancelledExitCode then
+        MaintenanceUacCancelled := True;
+    end;
     PostInstallFailed := True;
     Failure := BootstrapFailure(Output);
-    Log('Installer bootstrap: ' + Failure);
+    if MaintenanceUacCancelled then
+      Log('Installer bootstrap: ' + Failure + ' (lan_firewall_blocked: ERROR_CANCELLED)')
+    else
+      Log('Installer bootstrap: ' + Failure);
     if not WizardSilent then
       MsgBox('Setup could not verify the service or selected policy (' + Failure + '). Keep your configuration and check Mimi Remote diagnostics.', mbError, MB_OK);
     Exit;

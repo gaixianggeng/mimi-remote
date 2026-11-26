@@ -8,8 +8,11 @@ namespace MimiRemote.App;
 
 /// <summary>
 /// Windows native verification and pinning implementation for the trusted
-/// maintenance contract (mimi.windows.maintenance/v1). Never consults PATH,
-/// registry uninstall keys, uninstaller executables, Downloads, or diagnostics.
+/// maintenance contract (mimi.windows.maintenance/v1). Discovers the active
+/// installation directory strictly as an untrusted candidate (never reading
+/// uninstall/modify commands, uninstaller executables, PATH, Downloads, or
+/// diagnostics) and applies full reparse-point, receipt, publisher, version,
+/// and pinned-image checks before execution.
 /// </summary>
 internal sealed class WindowsMaintenanceNative : IWindowsMaintenancePlatform
 {
@@ -40,8 +43,8 @@ internal sealed class WindowsMaintenanceNative : IWindowsMaintenancePlatform
 
     private static readonly Guid WinTrustActionGenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
-    internal static string ResolveTrustedInstallDirectory() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Mimi Remote");
+    internal static string? ResolveCandidateInstallDirectory() =>
+        AgentClient.FindCandidateInstallDirectory();
 
     internal static string? ResolveExpectedVersion(ClientBuild build) =>
         WindowsMaintenanceClient.ResolveExpectedVersion(build);

@@ -359,6 +359,25 @@ func TestMaintenanceRunnerFailurePathsFallBackWithTypedErrors(t *testing.T) {
 			wantDownload:     true,
 			expectBrokerCall: true,
 		},
+		{
+			name: "uac cancelled followed by rejected readback takes identity rejection precedence",
+			mutate: func(r *maintenanceRunner, d *fakePinnedMaintenanceDir) {
+				calls := 0
+				r.ops.runBroker = func(_ context.Context, _ pinnedBrokerImage, args []string) ([]byte, []byte, int, error) {
+					if !d.pinned {
+						t.Error("broker ran after pins were released")
+					}
+					calls++
+					if len(args) > 0 && args[0] == "status" {
+						return nil, nil, -1, newMaintenanceError(maintenanceFailureIdentityMismatch)
+					}
+					return nil, []byte("错误：管理员授权已取消，请回到桌面应用检查局域网设置"), 1223, errors.New("exit 1223")
+				}
+			},
+			wantKind:         maintenanceFailureIdentityMismatch,
+			wantDownload:     true,
+			expectBrokerCall: true,
+		},
 	}
 
 	for _, tc := range tests {
