@@ -23,6 +23,15 @@ enum ModelReasoningGridMetrics {
     static let gridSpacing: CGFloat = 8
     static let fastModeHitTarget: CGFloat = 44
     static let fastModeVisualDiameter: CGFloat = 36
+    static let selectionLensDiameter: CGFloat = 26
+    static let selectionLensHaloDiameter: CGFloat = 38
+    /// 选中带内联档位标签（如 Luna `max`）的格子时，选中圆点收紧并上移，彻底避开底部标签文字。
+    static let inlineLabelSelectionLensDiameter: CGFloat = 14
+    static let inlineLabelSelectionLensHaloDiameter: CGFloat = 20
+    static let inlineLabelSelectionLensTopInset: CGFloat = 8
+    static let inlineLabelSelectedBottomPadding: CGFloat = 6
+    static let inlineLabelEstimatedHeight: CGFloat = 14
+    static let dragCancellationMargin: CGFloat = 12
     /// 与手机底部展开态输入卡保持一致的连续圆角半径。
     static let panelCornerRadius: CGFloat = 26
     /// 与 iPad 常规宽档实色输入卡保持一致的连续圆角半径。
@@ -68,7 +77,7 @@ enum ModelReasoningGridSurfaceMode: Equatable {
     }
 }
 
-/// 生产渲染直接消费的表面材质结果，与 `ComposerCardSurfaceModifier` 分支一一对应。
+/// 生产渲染直接消费的表面材质结果，与 `ComposerCardResolvedSurface` 一一对应。
 enum ModelReasoningGridSurfaceStyle: Equatable {
     /// 独立嵌入默认实色（`tokens.surface`）。
     case standaloneSurface
@@ -78,6 +87,17 @@ enum ModelReasoningGridSurfaceStyle: Equatable {
     case liquidGlass
     /// iOS 26 以下玻璃模式下与悬浮输入卡一致的 `.ultraThinMaterial`。
     case ultraThinMaterial
+
+    var composerCardSurface: ComposerCardResolvedSurface {
+        switch self {
+        case .liquidGlass:
+            return .liquidGlass
+        case .ultraThinMaterial:
+            return .ultraThinMaterial
+        case .solidComposerCard, .standaloneSurface:
+            return .solidCard
+        }
+    }
 }
 
 /// 共享背景的实际承载者：Sheet 与 Popover 各自明确归属，避免常规 Popover 清除自身底色后依赖宿主材质。
@@ -126,16 +146,19 @@ enum ModelReasoningGridPresentationChrome {
             let cornerRadius = container == .compactSheet
                 ? ModelReasoningGridMetrics.panelCornerRadius
                 : ModelReasoningGridMetrics.regularPopoverCornerRadius
-            let usesActiveGlass = usesFloatingGlass
-                && interfaceStyle == .glass
-                && !reduceTransparency
-                && !increasedContrast
-            let surfaceStyle: ModelReasoningGridSurfaceStyle
-            if usesActiveGlass {
-                surfaceStyle = supportsLiquidGlass ? .liquidGlass : .ultraThinMaterial
-            } else {
-                surfaceStyle = .solidComposerCard
+            let resolvedCardSurface = ComposerCardResolvedSurface.resolve(
+                usesFloatingGlass: usesFloatingGlass,
+                interfaceStyle: interfaceStyle,
+                reduceTransparency: reduceTransparency,
+                increasedContrast: increasedContrast,
+                supportsLiquidGlass: supportsLiquidGlass
+            )
+            let surfaceStyle: ModelReasoningGridSurfaceStyle = switch resolvedCardSurface {
+            case .liquidGlass: .liquidGlass
+            case .ultraThinMaterial: .ultraThinMaterial
+            case .solidCard: .solidComposerCard
             }
+            let usesActiveGlass = resolvedCardSurface != .solidCard
             return ModelReasoningGridSurfacePolicy(
                 surfaceStyle: surfaceStyle,
                 backgroundOwner: backgroundOwner,
@@ -376,8 +399,13 @@ struct ModelReasoningGridPresentationBackground: View {
     var usesPopoverSurfaceChrome: Bool = false
 
     var body: some View {
-        if usesPopoverSurfaceChrome && policy.surfaceStyle == .solidComposerCard {
-            Rectangle()
+        let resolvedSurface = policy.surfaceStyle.composerCardSurface
+        let shape = RoundedRectangle(
+            cornerRadius: policy.cornerRadius,
+            style: .continuous
+        )
+        if usesPopoverSurfaceChrome && resolvedSurface == .solidCard {
+            shape
                 .fill(
                     ModelReasoningGridPresentationChrome.solidFillColor(
                         tokens: tokens,
@@ -388,7 +416,7 @@ struct ModelReasoningGridPresentationBackground: View {
             Color.clear
                 .modifier(
                     ComposerCardSurfaceModifier(
-                        shape: Rectangle(),
+                        shape: shape,
                         tokens: tokens,
                         colorScheme: colorScheme,
                         reduceTransparency: reduceTransparency,
@@ -396,14 +424,11 @@ struct ModelReasoningGridPresentationBackground: View {
                         usesFloatingGlass: policy.usesFloatingGlass,
                         voiceAccentBorderColor: nil,
                         solidBorderColor: .clear,
-                        borderWidth: 0
+                        borderWidth: 0,
+                        explicitResolvedSurface: resolvedSurface
                     )
                 )
         } else {
-            let shape = RoundedRectangle(
-                cornerRadius: policy.cornerRadius,
-                style: .continuous
-            )
             Color.clear
                 .modifier(
                     ComposerCardSurfaceModifier(
@@ -419,7 +444,8 @@ struct ModelReasoningGridPresentationBackground: View {
                             colorScheme: colorScheme,
                             increasedContrast: increasedContrast
                         ),
-                        borderWidth: policy.borderWidth
+                        borderWidth: policy.borderWidth,
+                        explicitResolvedSurface: resolvedSurface
                     )
                 )
         }
@@ -508,6 +534,147 @@ struct ModelReasoningGridLayout: Equatable {
         return ModelReasoningGridSelection(
             modelID: models[modelRow].model,
             effort: effort
+        )
+    }
+
+    /// 选中圆点（及外环光晕）的几何位置：普通格居中 26pt；带内联档位标签（如 Luna `max`）的格子
+    /// 收紧至 14pt 并上移到格顶，与格底标签彻底错开，避免不透明圆点遮挡内联文字。
+    func selectionLensGeometry(
+        for selection: ModelReasoningGridSelection,
+        size: CGSize
+    ) -> ModelReasoningGridLensGeometry? {
+        guard let effort = selection.effort,
+              effortColumnCount > 0,
+              modelRowCount > 0,
+              size.width > 0,
+              size.height > 0,
+              let row = models.firstIndex(where: { $0.model == selection.modelID }),
+              let column = effortColumn(for: effort, option: models[row]),
+              ModelReasoningGridCatalog.isStandardEffortAvailable(
+                  effort,
+                  option: models[row],
+                  layout: self
+              )
+        else {
+            return nil
+        }
+        let cellWidth = size.width / CGFloat(effortColumnCount)
+        let cellHeight = size.height / CGFloat(modelRowCount)
+        let cellMinX = CGFloat(column) * cellWidth
+        let cellMinY = CGFloat(row) * cellHeight
+        let avoidsInlineLabel = inlineEffortLabel(for: models[row], column: column) != nil
+        let lensDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensDiameter
+            : ModelReasoningGridMetrics.selectionLensDiameter
+        let haloDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensHaloDiameter
+            : ModelReasoningGridMetrics.selectionLensHaloDiameter
+        let centerY = avoidsInlineLabel
+            ? cellMinY + ModelReasoningGridMetrics.inlineLabelSelectionLensTopInset + lensDiameter / 2
+            : cellMinY + cellHeight / 2
+        return ModelReasoningGridLensGeometry(
+            center: CGPoint(x: cellMinX + cellWidth / 2, y: centerY),
+            lensDiameter: lensDiameter,
+            haloDiameter: haloDiameter,
+            avoidsInlineLabel: avoidsInlineLabel
+        )
+    }
+
+    /// 带内联档位标签的格子中文字占据区域，供生产布局校验与无遮挡测试复用。
+    func inlineEffortLabelFrame(
+        for selection: ModelReasoningGridSelection,
+        isSelected: Bool,
+        size: CGSize
+    ) -> CGRect? {
+        guard let effort = selection.effort,
+              effortColumnCount > 0,
+              modelRowCount > 0,
+              size.width > 0,
+              size.height > 0,
+              let row = models.firstIndex(where: { $0.model == selection.modelID }),
+              let column = effortColumn(for: effort, option: models[row]),
+              inlineEffortLabel(for: models[row], column: column) != nil
+        else {
+            return nil
+        }
+        let cellWidth = size.width / CGFloat(effortColumnCount)
+        let cellHeight = size.height / CGFloat(modelRowCount)
+        let cellMinX = CGFloat(column) * cellWidth
+        let cellMinY = CGFloat(row) * cellHeight
+        let labelHeight = ModelReasoningGridMetrics.inlineLabelEstimatedHeight
+        let labelMinY = isSelected
+            ? cellMinY + cellHeight - ModelReasoningGridMetrics.inlineLabelSelectedBottomPadding - labelHeight
+            : cellMinY + (cellHeight - labelHeight) / 2
+        return CGRect(
+            x: cellMinX + 4,
+            y: labelMinY,
+            width: max(cellWidth - 8, 1),
+            height: labelHeight
+        )
+    }
+
+    func dragCandidate(
+        at point: CGPoint,
+        size: CGSize,
+        cancellationMargin: CGFloat = ModelReasoningGridMetrics.dragCancellationMargin
+    ) -> ModelReasoningGridSelection? {
+        guard !models.isEmpty,
+              !efforts.isEmpty,
+              size.width > 0,
+              size.height > 0,
+              point.x >= -cancellationMargin,
+              point.x <= size.width + cancellationMargin,
+              point.y >= -cancellationMargin,
+              point.y <= size.height + cancellationMargin
+        else {
+            return nil
+        }
+
+        let x = min(max(point.x, 0), size.width - 0.001)
+        let y = min(max(point.y, 0), size.height - 0.001)
+        let column = min(
+            effortColumnCount - 1,
+            max(0, Int(x / (size.width / CGFloat(effortColumnCount))))
+        )
+        let row = min(
+            modelRowCount - 1,
+            max(0, Int(y / (size.height / CGFloat(modelRowCount))))
+        )
+        guard let candidate = selection(modelRow: row, effortColumn: column),
+              let effort = candidate.effort,
+              ModelReasoningGridCatalog.isStandardEffortAvailable(
+                  effort,
+                  option: models[row],
+                  layout: self
+              )
+        else {
+            return nil
+        }
+        return candidate
+    }
+}
+
+struct ModelReasoningGridLensGeometry: Equatable {
+    let center: CGPoint
+    let lensDiameter: CGFloat
+    let haloDiameter: CGFloat
+    let avoidsInlineLabel: Bool
+
+    var lensFrame: CGRect {
+        CGRect(
+            x: center.x - lensDiameter / 2,
+            y: center.y - lensDiameter / 2,
+            width: lensDiameter,
+            height: lensDiameter
+        )
+    }
+
+    var haloFrame: CGRect {
+        CGRect(
+            x: center.x - haloDiameter / 2,
+            y: center.y - haloDiameter / 2,
+            width: haloDiameter,
+            height: haloDiameter
         )
     }
 }
@@ -1451,8 +1618,10 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                     }
                 }
 
-                if let lensPosition = dragPoint ?? center(for: activeSelection, size: size) {
-                    selectionLens(tokens: tokens)
+                let settledLens = layout.selectionLensGeometry(for: activeSelection, size: size)
+                if let lensPosition = dragPoint ?? settledLens?.center {
+                    let avoidsInlineLabel = !isDragging && (settledLens?.avoidsInlineLabel == true)
+                    selectionLens(tokens: tokens, avoidsInlineLabel: avoidsInlineLabel)
                         .position(lensPosition)
                         .allowsHitTesting(false)
                 }
@@ -1505,6 +1674,15 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
                         )
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: selected ? .bottom : .center
+                        )
+                        .padding(
+                            .bottom,
+                            selected ? ModelReasoningGridMetrics.inlineLabelSelectedBottomPadding : 0
+                        )
                 } else {
                     Circle()
                         .fill(
@@ -1553,23 +1731,33 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
         .stroke(palette.gridLine, lineWidth: 0.75)
     }
 
-    private func selectionLens(tokens: ThemeTokens) -> some View {
-        ZStack {
+    private func selectionLens(tokens: ThemeTokens, avoidsInlineLabel: Bool) -> some View {
+        let lensDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensDiameter
+            : ModelReasoningGridMetrics.selectionLensDiameter
+        let haloDiameter = avoidsInlineLabel
+            ? ModelReasoningGridMetrics.inlineLabelSelectionLensHaloDiameter
+            : ModelReasoningGridMetrics.selectionLensHaloDiameter
+        let highlightSize: CGFloat = avoidsInlineLabel ? 2.5 : 4
+        let highlightOffset: CGFloat = avoidsInlineLabel ? -2.5 : -5
+        let haloBlur: CGFloat = avoidsInlineLabel ? 2 : 4
+
+        return ZStack {
             Circle()
                 .fill(tokens.accent.opacity(0.13))
-                .frame(width: 38, height: 38)
-                .blur(radius: 4)
+                .frame(width: haloDiameter, height: haloDiameter)
+                .blur(radius: haloBlur)
             Circle()
                 .fill(tokens.accent.gradient)
-                .frame(width: 26, height: 26)
+                .frame(width: lensDiameter, height: lensDiameter)
                 .overlay {
                     Circle().strokeBorder(Color.white.opacity(0.58), lineWidth: 1)
                 }
-                .shadow(color: tokens.accent.opacity(0.28), radius: 5, y: 2)
+                .shadow(color: tokens.accent.opacity(0.28), radius: avoidsInlineLabel ? 3 : 5, y: avoidsInlineLabel ? 1 : 2)
             Circle()
                 .fill(Color.white.opacity(0.48))
-                .frame(width: 4, height: 4)
-                .offset(x: -5, y: -5)
+                .frame(width: highlightSize, height: highlightSize)
+                .offset(x: highlightOffset, y: highlightOffset)
         }
         .scaleEffect(!isDragging || reduceMotion ? 1 : 1.06)
         .animation(
@@ -1646,66 +1834,18 @@ private struct ModelReasoningStandardGrid<CornerContent: View>: View {
         at point: CGPoint,
         size: CGSize
     ) -> ModelReasoningGridSelection? {
-        guard !layout.models.isEmpty,
-              !layout.efforts.isEmpty,
-              size.width > 0,
-              size.height > 0
-        else {
-            return nil
-        }
-        guard point.x >= -dragCancellationMargin,
-              point.x <= size.width + dragCancellationMargin,
-              point.y >= -dragCancellationMargin,
-              point.y <= size.height + dragCancellationMargin
-        else {
-            return nil
-        }
-
-        let x = min(max(point.x, 0), size.width - 0.001)
-        let y = min(max(point.y, 0), size.height - 0.001)
-        let column = min(
-            layout.effortColumnCount - 1,
-            max(0, Int(x / (size.width / CGFloat(layout.effortColumnCount))))
+        layout.dragCandidate(
+            at: point,
+            size: size,
+            cancellationMargin: dragCancellationMargin
         )
-        let row = min(
-            layout.modelRowCount - 1,
-            max(0, Int(y / (size.height / CGFloat(layout.modelRowCount))))
-        )
-        guard let candidate = layout.selection(modelRow: row, effortColumn: column),
-              let effort = candidate.effort
-        else {
-            return nil
-        }
-        let option = layout.models[row]
-        guard ModelReasoningGridCatalog.isStandardEffortAvailable(
-            effort,
-            option: option,
-            layout: layout
-        ) else {
-            return nil
-        }
-        return candidate
     }
 
     private func center(
         for selection: ModelReasoningGridSelection,
         size: CGSize
     ) -> CGPoint? {
-        guard let effort = selection.effort,
-              let row = layout.models.firstIndex(where: { $0.model == selection.modelID }),
-              let column = layout.effortColumn(for: effort, option: layout.models[row]),
-              ModelReasoningGridCatalog.isStandardEffortAvailable(
-                  effort,
-                  option: layout.models[row],
-                  layout: layout
-              )
-        else {
-            return nil
-        }
-        return CGPoint(
-            x: (CGFloat(column) + 0.5) * size.width / CGFloat(layout.effortColumnCount),
-            y: (CGFloat(row) + 0.5) * size.height / CGFloat(layout.modelRowCount)
-        )
+        layout.selectionLensGeometry(for: selection, size: size)?.center
     }
 
     private func commit(

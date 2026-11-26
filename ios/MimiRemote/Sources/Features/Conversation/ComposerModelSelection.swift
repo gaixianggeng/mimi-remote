@@ -133,6 +133,9 @@ extension ComposerView {
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
         .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
         .accessibilityIdentifier("composer.model")
+        #if DEBUG
+        .modifier(ComposerModelEntryTriggerRegistration(action: { showsModelGridPicker.toggle() }))
+        #endif
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
             modelGridPickerPopoverContent
         }
@@ -189,6 +192,9 @@ extension ComposerView {
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
         .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
         .accessibilityIdentifier("composer.model")
+        #if DEBUG
+        .modifier(ComposerModelEntryTriggerRegistration(action: { showsModelGridPicker.toggle() }))
+        #endif
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
             modelGridPickerPopoverContent
         }
@@ -726,9 +732,11 @@ struct ModelReasoningGridPopoverHost: View {
         )
         .presentationDragIndicator(.visible)
 
+        let presentedPicker = picker
+            .presentationCornerRadius(policy.cornerRadius)
+
         if policy.backgroundOwner == .sheetPresentationBackground {
-            picker
-                .presentationCornerRadius(policy.cornerRadius)
+            presentedPicker
                 .presentationBackground {
                     ModelReasoningGridPresentationBackground(
                         policy: policy,
@@ -740,9 +748,9 @@ struct ModelReasoningGridPopoverHost: View {
                     .environment(\.themeInterfaceStyle, interfaceStyle)
                 }
         } else {
-            // 常规 iPad Popover：面板自身根视图已通过 `.popoverContentSurface` 绘制共享实色表面，
-            // 同时声明 `.presentationBackground` 让支持该修饰符的宿主把箭头底色一并对齐。
-            picker
+            // 常规 iPad Popover：统一应用 `policy.cornerRadius`（20pt）并由面板自身根视图绘制共享实色表面，
+            // 同时声明 `.presentationBackground` 让宿主把箭头底色一并对齐。
+            presentedPicker
                 .presentationBackground(
                     ModelReasoningGridPresentationChrome.solidFillColor(
                         tokens: tokens,
@@ -752,3 +760,56 @@ struct ModelReasoningGridPopoverHost: View {
         }
     }
 }
+
+#if DEBUG
+/// 仅用于 Debug 测试中直接驱动真实 `ComposerView` 内的 `composer.model` 按钮，
+/// 避免单元测试无 VoiceOver 时无法定位 SwiftUI Button 节点而退回到假按钮。
+@MainActor
+final class ComposerModelEntryTriggerBridge {
+    private(set) var triggerFrameInGlobal: CGRect = .zero
+    private var toggleAction: (() -> Void)?
+
+    var isRegistered: Bool {
+        toggleAction != nil && triggerFrameInGlobal.width > 0 && triggerFrameInGlobal.height > 0
+    }
+
+    func register(frame: CGRect, action: @escaping () -> Void) {
+        triggerFrameInGlobal = frame
+        toggleAction = action
+    }
+
+    func activate() -> Bool {
+        guard let toggleAction else { return false }
+        toggleAction()
+        return true
+    }
+}
+
+private struct ComposerModelEntryTriggerBridgeKey: EnvironmentKey {
+    static let defaultValue: ComposerModelEntryTriggerBridge? = nil
+}
+
+extension EnvironmentValues {
+    var composerModelEntryTriggerBridge: ComposerModelEntryTriggerBridge? {
+        get { self[ComposerModelEntryTriggerBridgeKey.self] }
+        set { self[ComposerModelEntryTriggerBridgeKey.self] = newValue }
+    }
+}
+
+private struct ComposerModelEntryTriggerRegistration: ViewModifier {
+    @Environment(\.composerModelEntryTriggerBridge) private var bridge
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if let bridge {
+            content.onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)
+            } action: { frame in
+                bridge.register(frame: frame, action: action)
+            }
+        } else {
+            content
+        }
+    }
+}
+#endif
