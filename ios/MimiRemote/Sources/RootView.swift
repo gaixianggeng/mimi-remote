@@ -447,7 +447,7 @@ struct RootView: View {
         await lockScreenApprovalStore.reconcileDeliveredNotifications()
         do {
             try await appStore.restoreCredentialsForForeground()
-        } catch is CancellationError {
+        } catch where AppStore.isConnectionProbeCancellation(error) {
             // 真取消，或凭据代次/活动档案在等待期间已变：由最新的生命周期操作接管。
             return .cancelled
         } catch {

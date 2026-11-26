@@ -697,6 +697,31 @@ func makeCodexChannelMetadata() -> CodexAppServerChannelMetadata {
     )
 }
 
+func makeNativeHarnessChannelMetadata(
+    enabled: Bool = true,
+    type: String = "harness_native",
+    protocolName: String = AppServerRuntimeBundle.nativeHarnessProtocol,
+    gatewayAvailable: Bool = true
+) -> CodexAppServerChannelMetadata {
+    CodexAppServerChannelMetadata(
+        id: "deepseek",
+        runtimeID: "deepseek",
+        title: "DeepSeek Harness",
+        provider: "deepseek",
+        type: type,
+        protocolName: protocolName,
+        enabled: enabled,
+        gatewayWSURL: "ws://127.0.0.1:7777/api/harness/ws",
+        gatewayAvailable: gatewayAvailable,
+        managed: false,
+        experimental: false,
+        lifecycle: "shared_native_client",
+        bridge: nil,
+        methods: ["session/list", "session/follow", "session/page", "session/prompt"],
+        capabilities: ["history": true, "streaming": true, "approval": true]
+    )
+}
+
 func appServerThreadListResult(_ rows: [String], nextCursor: String?) -> String {
     let encodedCursor = nextCursor.map { #","nextCursor":"\#($0)""# } ?? #","nextCursor":null"#
     return #"{"data":[\#(rows.joined(separator: ","))]\#(encodedCursor)}"#

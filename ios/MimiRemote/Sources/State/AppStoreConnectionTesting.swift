@@ -150,9 +150,6 @@ extension AppStore {
     }
 
     static func isConnectionProbeCancellation(_ error: Error) -> Bool {
-        if Task.isCancelled || error is CancellationError {
-            return true
-        }
-        return (error as? URLError)?.code == .cancelled
+        Task.isCancelled || isCancellationError(error)
     }
 }

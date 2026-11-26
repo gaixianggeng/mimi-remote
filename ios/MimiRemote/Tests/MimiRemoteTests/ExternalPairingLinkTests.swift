@@ -48,6 +48,76 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertEqual(appStore.connectionProfiles.count, 1)
     }
 
+    func testCancelledPairingLinkRestoresPriorStateWithoutReportingFailure() async throws {
+        // 1) 首次配对进行中被任务取消：不写 .failed / lastError / pairingLinkAttempt = .failed，
+        //    进度回退到 .idle，路由恢复进入前状态。
+        let gate = RouteProbeGate()
+        let (store, appStore) = makeStores(routeProbe: { _, _, _ in try await gate.wait() })
+
+        let opening = Task { await store.openPairingLink(Self.tokenLink) }
+        try await waitUntil { gate.isWaiting }
+        XCTAssertEqual(store.pairingLinkAttempt, .connecting)
+
+        opening.cancel()
+        await opening.value
+
+        XCTAssertEqual(appStore.connectionStatus, .idle, "取消配对不得写入 .failed")
+        XCTAssertNil(appStore.lastError, "取消配对不得写入 lastError")
+        XCTAssertEqual(store.pairingLinkAttempt, .idle, "取消后应把 .connecting 恢复为 .idle")
+        XCTAssertNil(store.lastPairingLinkRoute, "取消后应恢复进入前的路由状态")
+
+        // 2) 底层传输以 URLError.cancelled 结束同样视为取消，绝不展示原始取消文本。
+        let (urlCancelStore, urlCancelAppStore) = makeStores(routeProbe: { _, _, _ in
+            throw URLError(.cancelled)
+        })
+        await urlCancelStore.openPairingLink(Self.tokenLink)
+        XCTAssertEqual(urlCancelAppStore.connectionStatus, .idle)
+        XCTAssertNil(urlCancelAppStore.lastError)
+        XCTAssertEqual(urlCancelStore.pairingLinkAttempt, .idle)
+        XCTAssertNil(urlCancelStore.lastPairingLinkRoute)
+
+        // 3) 场景切回后台导致 beginPreparedConnectionChange 抛出 CancellationError：同样恢复先前状态。
+        let (bgStore, bgAppStore) = makeStores(routeProbe: { _, _, _ in })
+        bgStore.suspendForBackground()
+        await bgStore.openPairingLink(Self.tokenLink, foregroundWaitTimeoutNanoseconds: 10_000_000)
+        XCTAssertEqual(bgAppStore.connectionStatus, .idle)
+        XCTAssertNil(bgAppStore.lastError)
+        XCTAssertEqual(bgStore.pairingLinkAttempt, .idle)
+        XCTAssertNil(bgStore.lastPairingLinkRoute)
+
+        // 4) 已有已连接档案时取消外部链接配对：保留原有已连接状态，不覆盖 lastError。
+        let connectedGate = RouteProbeGate()
+        let (connectedStore, connectedAppStore) = makeStores(routeProbe: { _, _, _ in try await connectedGate.wait() })
+        _ = try await connectedAppStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.30:8787",
+            token: "existing-token"
+        ))
+        connectedAppStore.markLiveConnectionEstablished()
+        let previousStatus = connectedAppStore.connectionStatus
+        XCTAssertTrue(previousStatus.isConnected)
+
+        let connectedOpening = Task { await connectedStore.openPairingLink(Self.tokenLink) }
+        try await waitUntil { connectedGate.isWaiting }
+        connectedOpening.cancel()
+        await connectedOpening.value
+
+        XCTAssertEqual(connectedAppStore.connectionStatus, previousStatus)
+        XCTAssertNil(connectedAppStore.lastError)
+        XCTAssertEqual(connectedStore.pairingLinkAttempt, .idle)
+        XCTAssertNil(connectedStore.lastPairingLinkRoute)
+    }
+
+    func testConnectionProbeCancellationClassifierCoversAllCancellationTypes() {
+        XCTAssertTrue(AppStore.isConnectionProbeCancellation(CancellationError()))
+        XCTAssertTrue(AppStore.isConnectionProbeCancellation(URLError(.cancelled)))
+        XCTAssertTrue(AppStore.isConnectionProbeCancellation(
+            NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+        ))
+        XCTAssertTrue(AppStore.isConnectionProbeCancellation(HarnessTransportError.cancelled))
+        XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.cannotConnectToHost)))
+        XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.timedOut)))
+    }
+
     func testConfiguredAppLeavesFirstConnectionPageStateUntouched() async throws {
         let (store, appStore) = makeStores(routeProbe: { _, _, _ in })
         _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
@@ -402,10 +472,25 @@ private final class RouteProbeGate {
         if let failure {
             throw failure
         }
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            isWaiting = true
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                self.continuation = continuation
+                isWaiting = true
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.cancel()
+            }
         }
+    }
+
+    func cancel() {
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
     }
 
     func fail(_ error: Error) {

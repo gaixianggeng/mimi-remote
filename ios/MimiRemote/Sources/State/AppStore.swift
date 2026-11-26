@@ -1271,7 +1271,7 @@ final class AppStore: ObservableObject {
                 try await connectToLocalAgentWithAutomaticPairing()
                 return true
             } catch {
-                if Task.isCancelled || error is CancellationError {
+                if Self.isConnectionProbeCancellation(error) {
                     restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
@@ -1351,7 +1351,7 @@ final class AppStore: ObservableObject {
                 lastError = nil
                 return true
             } catch {
-                if Task.isCancelled || error is CancellationError {
+                if Self.isConnectionProbeCancellation(error) {
                     restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }
@@ -1370,7 +1370,7 @@ final class AppStore: ObservableObject {
                 try await connectToLocalAgentWithAutomaticPairing()
                 return true
             } catch {
-                if Task.isCancelled || error is CancellationError {
+                if Self.isConnectionProbeCancellation(error) {
                     restoreConnectionStatusAfterCancelledProbe(probeSnapshot)
                     return false
                 }

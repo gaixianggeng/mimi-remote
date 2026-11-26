@@ -591,6 +591,178 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         XCTAssertEqual(offlineFake.channelAvailableCallCount, 1, "能力兼容后健康状态由真实原生探测决定")
     }
 
+    /// Codex-only 宿主（`/api-app-server/config` 不含 `deepseek` channel，或 `enabled == false`）
+    /// 不得触发任何 `POST /api/harness/rpc` 请求（#1157）。
+    func testCodexOnlyHostWithoutDeepSeekChannelNeverIssuesHarnessRPC() async throws {
+        let rpcSpy = FailingHarnessRPCTransport(
+            error: HarnessTransportError.server(status: 503, message: "DeepSeek Harness runtime 未启用")
+        )
+        let harnessAPI = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: rpcSpy
+        )
+        let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
+        let workspace = AgentWorkspace(project: project)
+        let codexTransport = FakeCodexAppServerTransport()
+        let bundle = makeCodexOnlyBundle(codexTransport: codexTransport, harness: harnessAPI)
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+
+        // 1) 通道探测直接返回 false，不发 RPC。
+        let available = try await client.runtimeChannelAvailable(runtimeProvider: "deepseek")
+        XCTAssertFalse(available)
+        XCTAssertEqual(rpcSpy.callCount, 0)
+
+        // 2) 全局列表、工作区列表、定向模型目录、创建/停止/历史读取全部在路由层门控，不发 RPC。
+        do {
+            _ = try await client.controlledGlobalSessionsPage(runtimeProvider: "deepseek", cursor: nil, limit: 50)
+            XCTFail("未启用 DeepSeek 时受控全局发现不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            _ = try await client.sessionsPage(
+                projectID: nil, runtimeProvider: "deepseek", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+            XCTFail("未启用 DeepSeek 时列表请求不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            _ = try await client.sessionsPage(
+                workspace: workspace, runtimeProvider: "deepseek", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+            XCTFail("未启用 DeepSeek 时工作区列表请求不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            _ = try await client.modelOptions(runtimeProvider: "deepseek")
+            XCTFail("未启用 DeepSeek 时模型目录请求不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            _ = try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                projectPath: project.path,
+                projectName: project.name,
+                prompt: "hi",
+                turnOptions: CodexAppServerTurnOptions(runtimeProvider: "deepseek"),
+                resumeID: "",
+                clientMessageID: "req-disabled"
+            ))
+            XCTFail("未启用 DeepSeek 时创建会话不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        client.rememberRuntimeRoute("deepseek", forSessionID: "stale-deepseek-session")
+        do {
+            try await client.stopSession(id: "stale-deepseek-session")
+            XCTFail("未启用 DeepSeek 时停止会话不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            _ = try await client.messagesPage(sessionID: "stale-deepseek-session", before: nil, limit: nil)
+            XCTFail("未启用 DeepSeek 时历史分页不得放行到 Harness")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 0, "上述未启用路径均不得发出任何 /api/harness/rpc")
+
+        // 3) 聚合搜索与聚合模型目录只查 Codex，不探测 Harness，且不把未启用的 deepseek 标为 unavailable。
+        let searchTask = Task { try await client.searchSessions(query: "q", cursor: nil, limit: 50) }
+        try await initialize(codexTransport)
+        let searchRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search")
+        transportResponse(
+            codexTransport,
+            id: searchRequest.id,
+            result: #"{"data":[{"thread":{"id":"codex-only-hit","cwd":"/tmp/seam"},"snippet":"codex"}],"nextCursor":null}"#
+        )
+        let searchPage = try await searchTask.value
+        XCTAssertEqual(searchPage.sessions.map(\.id), ["codex-only-hit"])
+        XCTAssertTrue(searchPage.unavailableRuntimeProviders.isEmpty)
+        XCTAssertEqual(rpcSpy.callCount, 0, "Codex-only 搜索不得调用 Harness RPC")
+
+        let beforeModelList = await codexTransport.sentMessages().count
+        let modelsTask = Task { try await client.modelOptions() }
+        let modelRequest = try await waitForFakeAppServerRequest(codexTransport, method: "model/list", after: beforeModelList)
+        transportResponse(
+            codexTransport,
+            id: modelRequest.id,
+            result: #"{"models":[{"id":"gpt-5-codex","title":"GPT-5 Codex","provider":"openai","isDefault":true}]}"#
+        )
+        let models = try await modelsTask.value
+        XCTAssertEqual(models.map(\.model), ["gpt-5-codex"])
+        XCTAssertEqual(rpcSpy.callCount, 0, "Codex-only 模型目录不得调用 Harness RPC")
+
+        // 4) 端到端模拟 SessionStore 周期性会话库刷新（含受控全局发现遍历全部 runtimeProviders）：零 Harness RPC。
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.rebuildWorkspaceIndex()
+        let codexRow = appServerThreadJSON(
+            id: "codex-only-hit",
+            cwd: workspace.path,
+            source: "cli",
+            updatedAt: 100
+        )
+        let beforeRefresh = await codexTransport.sentMessages().count
+        let refreshTask = Task { await store.refreshSessionLibraryIndex() }
+        let workspaceList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: beforeRefresh)
+        transportResponse(codexTransport, id: workspaceList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        let afterWorkspaceList = await codexTransport.sentMessages().count
+        let globalList = try await waitForFakeAppServerRequest(codexTransport, method: "thread/list", after: afterWorkspaceList)
+        transportResponse(codexTransport, id: globalList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        await refreshTask.value
+        XCTAssertTrue(store.sessions.contains { $0.id == "codex-only-hit" })
+        XCTAssertEqual(rpcSpy.callCount, 0, "Codex-only 宿主周期性刷新会话库不得发出 /api/harness/rpc")
+    }
+
+    func testDisabledDeepSeekChannelNeverIssuesHarnessRPC() async throws {
+        let rpcSpy = FailingHarnessRPCTransport(
+            error: HarnessTransportError.server(status: 503, message: "DeepSeek Harness runtime 未启用")
+        )
+        let harnessAPI = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: rpcSpy
+        )
+        let codexTransport = FakeCodexAppServerTransport()
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: makeBundle(
+            codexTransport: codexTransport,
+            harness: harnessAPI,
+            nativeChannel: makeNativeChannel(enabled: false)
+        ))
+
+        let available = try await client.runtimeChannelAvailable(runtimeProvider: "deepseek")
+        XCTAssertFalse(available)
+
+        do {
+            _ = try await client.controlledGlobalSessionsPage(runtimeProvider: "deepseek", cursor: nil, limit: 50)
+            XCTFail("enabled == false 时不得发起 Harness 全局发现")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+
+        let searchTask = Task { try await client.searchSessions(query: "q", cursor: nil, limit: 50) }
+        try await initialize(codexTransport)
+        let searchRequest = try await waitForFakeAppServerRequest(codexTransport, method: "thread/search")
+        transportResponse(
+            codexTransport,
+            id: searchRequest.id,
+            result: #"{"data":[],"nextCursor":null}"#
+        )
+        let page = try await searchTask.value
+        XCTAssertTrue(page.unavailableRuntimeProviders.isEmpty)
+        XCTAssertEqual(rpcSpy.callCount, 0, "channel.enabled == false 时不得发出任何 /api/harness/rpc")
+    }
+
     // MARK: - 事件客户端与骨架
 
     /// 原生事件客户端必须显式拒绝 guidance，且**不得**把它当成 prompt 发出去。
@@ -784,6 +956,45 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         return AppServerRuntimeBundle(
             codexRuntime: runtime("codex", codexTransport),
             claudeRuntime: runtime("claude", FakeCodexAppServerTransport()),
+            harness: harness
+        )
+    }
+
+    private func assertGatewayUnavailable(
+        _ error: Error,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case .gatewayUnavailable? = error as? CodexAppServerSessionRuntimeError else {
+            XCTFail("预期 gatewayUnavailable，实际是 \(error)", file: file, line: line)
+            return
+        }
+    }
+
+    private func makeCodexOnlyBundle(
+        codexTransport: FakeCodexAppServerTransport = FakeCodexAppServerTransport(),
+        harness: HarnessSessionClient? = nil
+    ) -> AppServerRuntimeBundle {
+        let project = AgentProject(id: "seam", name: "Seam", path: "/tmp/seam")
+        let methods = ["initialize", "initialized", "model/list", "thread/list", "thread/search"]
+        let config = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: methods,
+            channels: [makeCodexChannel(methods: methods)]
+        )
+        func runtime(_ provider: String, _ transport: FakeCodexAppServerTransport) -> CodexAppServerSessionRuntime {
+            CodexAppServerSessionRuntime(
+                endpoint: "http://127.0.0.1:8787",
+                token: "fixture",
+                runtimeProvider: provider,
+                transportFactory: { transport },
+                configProvider: { config }
+            )
+        }
+        return AppServerRuntimeBundle(
+            codexRuntime: runtime("codex", codexTransport),
+            claudeRuntime: runtime("claude", FakeCodexAppServerTransport()),
+            additionalRuntimes: ["agy": runtime("agy", FakeCodexAppServerTransport())],
             harness: harness
         )
     }

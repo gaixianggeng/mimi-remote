@@ -320,7 +320,10 @@ extension SessionStore {
         foregroundWaitTimeoutNanoseconds: UInt64 = 5_000_000_000
     ) async {
         let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
-        lastPairingLinkRoute = ConnectionProfileRoute.fromPairingURL(url)
+        let previousPairingLinkRoute = lastPairingLinkRoute
+        let previousPairingOnboardingError = lastPairingOnboardingError
+        let attemptedRoute = ConnectionProfileRoute.fromPairingURL(url)
+        lastPairingLinkRoute = attemptedRoute
         lastPairingOnboardingError = nil
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
@@ -328,6 +331,7 @@ extension SessionStore {
         await waitForForegroundResumeIfNeeded(timeoutNanoseconds: foregroundWaitTimeoutNanoseconds)
         let wasConfigured = appStore.isConfigured
         do {
+            try Task.checkCancellation()
             _ = try await applyPairingURL(url)
             lastPairingLinkRoute = nil
             lastPairingOnboardingError = nil
@@ -339,6 +343,18 @@ extension SessionStore {
             }
             // 首次 URL 配对要覆盖 Tailscale / gateway 冷启动窗口；已有档案修复只做短等待。
             _ = await refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+        } catch where AppStore.isConnectionProbeCancellation(error) {
+            // 场景切换、退后台或任务被取代导致的取消不是配对失败：不覆盖连接状态与全局错误，
+            // 只恢复本轮写入的进度与路由，避免界面露出 Swift.CancellationError。
+            if lastPairingLinkRoute == attemptedRoute {
+                lastPairingLinkRoute = previousPairingLinkRoute
+            }
+            if lastPairingOnboardingError == nil {
+                lastPairingOnboardingError = previousPairingOnboardingError
+            }
+            if reportsToFirstConnectionPage, pairingLinkAttempt == .connecting {
+                pairingLinkAttempt = .idle
+            }
         } catch let pairingError as PairingOnboardingAPIError {
             lastPairingOnboardingError = pairingError.mapped
             let message = pairingError.userFacingMessage
@@ -519,7 +535,7 @@ extension SessionStore {
             }
             // 被改选、取消或退后台撤销的候选，底层可能以 URLError.cancelled 等形式结束；
             // 统一按取消上报，界面不把用户自己的改选显示成切换失败（#801）。
-            if Task.isCancelled || error is CancellationError || operationGeneration != connectionChangeGeneration {
+            if AppStore.isConnectionProbeCancellation(error) || operationGeneration != connectionChangeGeneration {
                 throw CancellationError()
             }
             throw error

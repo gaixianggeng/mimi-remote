@@ -121,7 +121,10 @@ final class HarnessDirectoryWiringTests: XCTestCase {
         let harness = FakeHarnessSessionClient()
         harness.sessionsPageResult = .success(page([session(id: "h05-native-route")]))
         let codexSpy = HarnessDirectoryCodexTransportSpy()
-        let config = makeDirectAppServerConfig(project: project)
+        let config = makeDirectAppServerConfig(
+            project: project,
+            channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
+        )
         func runtime(_ provider: String, transport: CodexAppServerTransport) -> CodexAppServerSessionRuntime {
             CodexAppServerSessionRuntime(
                 endpoint: "http://127.0.0.1:8787",

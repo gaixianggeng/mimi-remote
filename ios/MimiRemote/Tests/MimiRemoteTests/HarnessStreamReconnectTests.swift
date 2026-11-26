@@ -356,11 +356,17 @@ final class HarnessSnapshotBaselineTests: XCTestCase {
         let api = HarnessSessionAPIClient(
             endpoint: "http://127.0.0.1:8787", token: "fixture", rpc: rpc, stream: stream
         )
+        let project = AgentProject(id: "native-history", name: "Native", path: "/tmp/native-history")
         let bundle = AppServerRuntimeBundle(
-            endpoint: "http://127.0.0.1:8787", token: "fixture", harnessFactory: { _, _ in api }
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            preparedConfig: makeDirectAppServerConfig(
+                project: project,
+                channels: [makeCodexChannelMetadata(), makeNativeHarnessChannelMetadata(enabled: true)]
+            ),
+            harnessFactory: { _, _ in api }
         )
         let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
-        let project = AgentProject(id: "native-history", name: "Native", path: "/tmp/native-history")
         let session = AgentSession(
             id: "native-history-thread", projectID: project.id, project: project.name, dir: project.path,
             title: "Native history", status: "history", source: "deepseek", resumeID: nil,
