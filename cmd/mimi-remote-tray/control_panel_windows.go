@@ -874,7 +874,7 @@ func (p *controlPanel) clearPairingState() {
 }
 
 func (p *controlPanel) copyActivePairingLink() error {
-	link, ok := p.pairingVault.RedeemableURL(p.currentPairingChannel())
+	link, _, ok := p.pairingVault.RedeemableURL(p.currentPairingChannel())
 	if !ok {
 		p.clearPairingState()
 		p.pairingErr = errors.New("二维码已过期，请点击“刷新二维码”重新生成")

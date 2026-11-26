@@ -94,27 +94,27 @@ func (v *pairingLinkVault) Store(generation uint64, channel, pairURL string, exp
 
 // RedeemableURL returns the active unexpired pair_url (optionally verified
 // against channel). If the stored ticket has expired, it is wiped immediately.
-func (v *pairingLinkVault) RedeemableURL(channel string) (string, bool) {
+func (v *pairingLinkVault) RedeemableURL(channel string) (string, time.Time, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.pairURL == "" {
-		return "", false
+		return "", time.Time{}, false
 	}
 	if channel != "" && v.channel != channel {
-		return "", false
+		return "", time.Time{}, false
 	}
 	if !v.expiresAt.After(v.currentTime()) {
 		v.pairURL = ""
 		v.expiresAt = time.Time{}
-		return "", false
+		return "", time.Time{}, false
 	}
-	return v.pairURL, true
+	return v.pairURL, v.expiresAt, true
 }
 
 // HasActive reports whether an unexpired pair_url is currently copyable without
 // exposing the secret link itself.
 func (v *pairingLinkVault) HasActive(channel string) bool {
-	_, ok := v.RedeemableURL(channel)
+	_, _, ok := v.RedeemableURL(channel)
 	return ok
 }
 

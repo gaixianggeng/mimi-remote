@@ -26,7 +26,7 @@ type linuxTrayApplication struct {
 	state            linuxTraySnapshot
 	operation        chan struct{}
 	cancel           context.CancelFunc
-	pairTimer        *time.Timer
+	pairRequest      *linuxPairCopyRequest
 	pairExpiryCancel context.CancelFunc
 	pairTickInterval time.Duration
 	pairVault        pairingLinkVault
@@ -42,7 +42,8 @@ func main() {
 	fs := flag.NewFlagSet("mimi-remote-tray", flag.ExitOnError)
 	agent := fs.String("agent", "", "agentd 的绝对路径（默认与托盘二进制同目录）")
 	show := fs.Bool("show", false, "在终端中打开管理界面")
-	inlineQR := fs.Bool("inline-qr", false, "在已适配的桌面托盘菜单中展开二维码")
+	// Older desktop entries may still pass this flag. All menus now use clipboard pairing.
+	fs.Bool("inline-qr", false, "兼容旧版桌面入口")
 	terminal := fs.String("terminal", "", "在当前终端中打开指定管理页面")
 	quit := fs.Bool("quit", false, "退出现有托盘实例，保持 agentd 运行")
 	_ = fs.Parse(os.Args[1:])
@@ -53,12 +54,12 @@ func main() {
 		}
 		return
 	}
-	if err := runLinuxTray(*agent, *show, *quit, *inlineQR); err != nil {
+	if err := runLinuxTray(*agent, *show, *quit); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
+func runLinuxTray(agent string, show, quit bool) error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		if quit {
@@ -89,7 +90,6 @@ func runLinuxTray(agent string, show, quit bool, inlineQR ...bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	app := &linuxTrayApplication{ctx: ctx, cancel: cancel, controller: controller, operation: make(chan struct{}, 1)}
-	app.state.InlineQR = len(inlineQR) > 0 && inlineQR[0]
 	defer app.clearMenuPair()
 	notifier, err := newLinuxNotifier(conn, app.dispatchMenuEvent, app.dispatch, cancel)
 	if err != nil {
@@ -181,67 +181,27 @@ func (a *linuxTrayApplication) dispatchMenuEvent(action string) {
 // Reserve or clear the ticket before acknowledging the menu event. Only the
 // slow CLI and terminal work runs asynchronously for D-Bus callers.
 func (a *linuxTrayApplication) prepareMenuAction(action string) func() {
-	if channelAction, ok := strings.CutPrefix(action, "issue-copy-"); ok {
-		return a.prepareMenuPair(channelAction, true)
-	}
-	if a.snapshot().InlineQR && (strings.HasPrefix(action, "pair-") || action == "refresh-pair") {
-		return a.prepareMenuPair(action, false)
-	}
 	switch action {
+	case "pair-tailcat", "pair-tailscale", "pair-lan":
+		return a.prepareMenuPair(action)
 	case "quit":
 		a.clearMenuPair()
 		a.cancel()
 	case "refresh":
 		return func() { a.refresh(true) }
 	case "copy-pair-link", "copy":
-		a.copyActivePairLink()
+		a.update(a.copyPairLinkLocked)
 	case "copy-endpoint":
 		return a.copyEndpoint
 	case "leave-pair-page":
 		a.clearMenuPair()
 	case "menu-closed":
-		if a.snapshot().InlineQR {
-			a.clearMenuPair()
-		}
+		a.closeMenuPair()
 	default:
 		a.clearMenuPair()
-		return func() { a.showTerminal(linuxTerminalPairAction(action)) }
+		return func() { a.showTerminal(action) }
 	}
 	return nil
-}
-
-func (a *linuxTrayApplication) copyActivePairLink() {
-	// Serialize selecting and handing off a ticket with switching or leaving
-	// the page. The clipboard process has a bounded lifetime.
-	a.update(a.copyPairLinkLocked)
-}
-
-func (a *linuxTrayApplication) copyPairLinkLocked(s *linuxTraySnapshot) {
-	pair := s.PairMenu
-	if pair == nil || !s.HasPairLink {
-		s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
-		return
-	}
-	pairURL, ok := a.pairVault.RedeemableURL(pair.Action)
-	if !ok {
-		a.stopPairWatchersLocked()
-		s.PairMenu = &linuxMenuPair{Action: pair.Action, Error: "二维码已过期，请重新生成"}
-		s.HasPairLink = false
-		s.UIError = "当前没有可复制的有效配对链接，请先重新生成二维码"
-		return
-	}
-	copyFn := a.clipboardCopy
-	if copyFn == nil {
-		copyFn = copyLinuxClipboardText
-	}
-	ctx, cancel := context.WithTimeout(a.ctx, pair.Expires.Sub(a.pairVault.currentTime()))
-	defer cancel()
-	if ctx.Err() != nil || copyFn(ctx, pairURL) != nil {
-		s.UIError = "无法复制配对链接，请检查剪贴板工具后重试"
-		return
-	}
-	s.UIError = ""
-	s.PairCopied = true
 }
 
 func (a *linuxTrayApplication) copyEndpoint() {
@@ -323,7 +283,6 @@ func (a *linuxTrayApplication) perform(action string) (string, *linuxPairingInfo
 	}
 	allowed := false
 	state := a.snapshot()
-	state.PairMenu = nil // A visible collapse button is not permission to create a ticket.
 	for _, item := range flattenLinuxMenu(linuxMenuItems(state)) {
 		if item.Action == action && item.Enabled {
 			allowed = true

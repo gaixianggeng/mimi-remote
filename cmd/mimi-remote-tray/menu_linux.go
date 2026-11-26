@@ -18,7 +18,6 @@ type linuxMenuItem struct {
 	Action    string
 	Enabled   bool
 	Separator bool
-	IconData  []byte
 	Children  []linuxMenuItem
 }
 
@@ -31,10 +30,7 @@ type linuxTraySnapshot struct {
 	HasTailcat   bool
 	TailcatError string
 	UIError      string
-	InlineQR     bool
 	HasPairLink  bool
-	PairCopied   bool
-	PairMenu     *linuxMenuPair
 }
 
 func (s linuxTraySnapshot) title() string {
@@ -76,27 +72,13 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 100, Label: "在终端中打开", Action: "status", Enabled: true},
 		linuxMenuItem{ID: 101, Label: "刷新状态", Action: "refresh", Enabled: available},
 	)
-	channels := []linuxMenuItem{
-		{ID: 110, Label: "Tailscale 配对…", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
-		{ID: 102, Label: "内置连接（Tailcat）配对…", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
-		{ID: 111, Label: "同一局域网配对…", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
-	}
-	items = append(items, channels...)
-	if !s.InlineQR {
-		// Standard menus close on selection, so offer issuance and copy as one click.
-		links := linuxMenuItem{ID: 120, Label: "生成并复制配对链接", Enabled: fresh && s.Status.ServiceOK}
-		for _, item := range channels {
-			links.Children = append(links.Children, linuxMenuItem{
-				ID: 300 + item.ID, Label: linuxPairNetworkName(item.Action),
-				Action: "issue-copy-" + item.Action, Enabled: item.Enabled,
-			})
-		}
-		items = append(items, links)
-	}
-	if s.InlineQR {
-		items = append(items, linuxMenuItem{ID: 119, Label: "复制配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink})
-	}
 	items = append(items,
+		linuxMenuItem{ID: 120, Label: "生成并复制配对链接", Enabled: fresh && s.Status.ServiceOK, Children: []linuxMenuItem{
+			{ID: 410, Label: "Tailscale", Action: "pair-tailscale", Enabled: fresh && s.Status.ServiceOK},
+			{ID: 402, Label: "内置连接（Tailcat）", Action: "pair-tailcat", Enabled: fresh && s.Status.ServiceOK},
+			{ID: 411, Label: "同一局域网", Action: "pair-lan", Enabled: fresh && s.Status.ServiceOK && s.Status.NetworkStatus != nil && s.Status.NetworkStatus.AllowLAN},
+		}},
+		linuxMenuItem{ID: 119, Label: "复制当前配对链接", Action: "copy-pair-link", Enabled: available && s.HasPairLink},
 		linuxMenuItem{ID: 103, Label: "复制连接地址", Action: "copy-endpoint", Enabled: s.HasStatus && s.Status.Endpoint != ""},
 		linuxMenuItem{ID: 91, Separator: true},
 		linuxMenuItem{ID: 112, Label: "服务管理", Enabled: true, Children: []linuxMenuItem{
@@ -116,9 +98,6 @@ func linuxMenuItems(s linuxTraySnapshot) []linuxMenuItem {
 		linuxMenuItem{ID: 92, Separator: true},
 		linuxMenuItem{ID: 109, Label: "退出托盘", Action: "quit", Enabled: true},
 	)
-	if s.InlineQR {
-		items = linuxPairMenuItems(items, s)
-	}
 	redactLinuxMenuItems(items)
 	return items
 }
@@ -214,9 +193,6 @@ func menuProperties(item linuxMenuItem, names []string) map[string]dbus.Variant 
 	all := map[string]dbus.Variant{"label": dbus.MakeVariant(item.Label), "enabled": dbus.MakeVariant(item.Enabled), "visible": dbus.MakeVariant(true)}
 	if item.Separator {
 		all["type"] = dbus.MakeVariant("separator")
-	}
-	if len(item.IconData) > 0 {
-		all["icon-data"] = dbus.MakeVariant(item.IconData)
 	}
 	if len(item.Children) > 0 {
 		all["children-display"] = dbus.MakeVariant("submenu")

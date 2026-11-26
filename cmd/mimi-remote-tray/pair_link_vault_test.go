@@ -30,7 +30,7 @@ func TestPairingLinkVaultFakeClipboardLifecycle(t *testing.T) {
 	var clipboard string
 	copyCount := 0
 	copyFromVault := func(channel string) bool {
-		link, ok := vault.RedeemableURL(channel)
+		link, _, ok := vault.RedeemableURL(channel)
 		if !ok {
 			return false
 		}

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,5 +90,29 @@ fi
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("terminal did not quit")
+	}
+}
+
+func TestLinuxTerminalRejectsRedirectedPairingOutput(t *testing.T) {
+	if os.Getenv("MIMI_TRAY_TEST_REDIRECT") != "" {
+		err := runLinuxTerminal("", "pair-lan")
+		if err == nil || !strings.Contains(err.Error(), "请在交互终端运行") {
+			t.Fatal("terminal did not reject redirected output before starting pairing")
+		}
+		return
+	}
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLinuxTerminalRejectsRedirectedPairingOutput$")
+	cmd.Env = append(os.Environ(), "MIMI_TRAY_TEST_REDIRECT=1")
+	cmd.Stdin = slave
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
 	}
 }

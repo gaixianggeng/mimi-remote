@@ -28,8 +28,11 @@ func runLinuxTerminal(agent, action string) error {
 	if !validLinuxTerminalAction(action) {
 		return errors.New("未知终端页面")
 	}
-	if _, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS); err != nil {
-		return errors.New("请在交互终端运行 mimi-remote-tray --terminal status")
+	// The pairing screen may render a ticket. Require a terminal for its output too.
+	for _, stream := range []*os.File{os.Stdin, os.Stdout} {
+		if _, err := unix.IoctlGetTermios(int(stream.Fd()), unix.TCGETS); err != nil {
+			return errors.New("请在交互终端运行 mimi-remote-tray --terminal status")
+		}
 	}
 	controller, err := newLinuxController(agent)
 	if err != nil {

@@ -40,35 +40,20 @@ bash "$HOME/.local/share/mimi-remote/install-linux-tray.sh" uninstall
 
 托盘二进制、图标、桌面/自启动入口和安装助手使用同一快照回滚。升级失败会恢复原文件；首次安装的前一状态是“无托盘”。托盘日志为 `~/.local/share/mimi-remote/tray.log`。主安装器不修改桌面栏、Hyprland 或网络配置。
 
-## Omarchy 菜单内二维码
+## 在托盘中复制配对链接
 
-固定平铺终端可能放不下字符二维码。Omarchy 可选适配支持直接在右上角菜单点击 **展开 Tailcat 二维码**，再次点击 **收起 Tailcat 二维码**；Tailscale 和局域网使用相同交互。展开或重新生成时菜单保持打开，二维码按屏幕像素整倍数绘制，保留白色边缘和完整图像。有效期显示在图片下方，过期自动移除图片并提示重新生成。
+在 **生成并复制配对链接** 下选择 Tailscale、内置连接（Tailcat）或同一局域网。托盘会为所选网络生成短期链接，并把 agentd 返回的 `pair_url` 交给剪贴板。Tailcat 需要先在服务管理中启用。**复制连接地址** 单独提供服务地址。
 
-标准 DBusMenu 只能提供图片数据，图片大小和点击后是否关闭由桌面宿主控制。Omarchy 默认把菜单图片缩为小图标，因此需要对用户托盘副本安装显示适配。需要 Python 3；已有托盘副本时直接使用其目录，不重复克隆：
+菜单保持打开时，**复制当前配对链接** 可再次复制同一张有效票据。切换网络或关闭菜单会清除托盘保存的链接。托盘每秒清理过期票据，每次复制前也会检查有效期。如果桌面在选中网络时自动关闭菜单，托盘会完成这一次复制，然后立即丢弃链接。
 
-```bash
-# 仅在尚未克隆托盘时执行；Omarchy 会将其加入当前栏布局
-omarchy plugin clone omarchy.tray
-
-# 将 <插件ID> 替换为上一步返回或当前栏正在使用的托盘副本 ID
-python3 ./scripts/install-omarchy-tray-qr.py "$HOME/.config/omarchy/plugins/<插件ID>"
-MIMI_TRAY_INLINE_QR=1 bash ./scripts/install-linux-tray.sh upgrade
-
-# 宿主可能保留 QML 缓存；重启桌面栏后使用新版组件
-omarchy restart shell
-```
-
-适配只修改指定用户插件中的菜单显示，首次备份为 `Tray.qml.before-mimi-qr`；不覆盖系统插件，也不替换用户原有托盘定制。遇到不兼容的菜单结构会拒绝写入。菜单二维码模式使用 `--inline-qr`，安装器将选择保存在桌面入口和自启动参数中，后续升级保留选择，回滚恢复先前选择。未选择此模式的桌面继续使用原终端配对。
-
-二维码只通过会话 D-Bus 传递短期 PNG，不保存票据文件；收起、切换网络和退出清除当前图片。Tailcat 未就绪时只提示检查服务，不自动启用。菜单保留 **在终端中配对…** 入口。撤销适配：
+Omarchy 也使用这个标准菜单。链接和有效期只保存在进程内，D-Bus 菜单与托盘日志都不会收到票据内容或二维码。以后要恢复菜单内扫码，需要实现私有的二维码渲染通道。已安装旧版 Omarchy 适配的用户可以撤销原先的菜单修改，再重启桌面栏：
 
 ```bash
-MIMI_TRAY_INLINE_QR=0 bash ./scripts/install-linux-tray.sh upgrade
 python3 ./scripts/install-omarchy-tray-qr.py "$HOME/.config/omarchy/plugins/<插件ID>" --uninstall
 omarchy restart shell
 ```
 
-撤销只移除适配代码，保留其他定制及备份；未使用的 `MimiPairingQR.qml` 组件不含用户数据，可在桌面栏重启后删除。
+升级托盘会更新桌面和自启动入口。旧入口中的 `--inline-qr` 仍可用于启动新版托盘。
 
 ## 终端界面与配对
 
@@ -84,13 +69,13 @@ Tailcat 是 main 已支持的内置连接功能，与外部 Tailscale 网络独�
 
 | 环境 | 支持边界 |
 | --- | --- |
-| Omarchy / Quickshell | 使用现有 StatusNotifier 托盘，图标可能在折叠区；可选安装上述菜单内二维码适配 |
+| Omarchy / Quickshell | 使用标准配对链接菜单，图标可能在折叠区 |
 | Waybar | 需要已有 `tray` 模块；遵循相同协议，独立 Waybar 会话仍需视觉验收 |
 | KDE Plasma | 使用系统 StatusNotifier 托盘；独立 KDE 会话仍需视觉验收 |
 | GNOME | 需要提供 AppIndicator/StatusNotifier 支持的扩展；不自动安装或配置扩展 |
 | 无托盘宿主 / SSH | agentd 可以独立工作；使用 `--terminal status` 在当前交互终端管理；桌面托盘进程等待宿主出现 |
 
-托盘为纯 Go 构建，不依赖 GTK 开发库。终端入口优先使用 `xdg-terminal-exec`，支持回退到 Foot、Kitty、Alacritty、Konsole、GNOME Terminal、XTerm 等。菜单直接复制地址在 Wayland 使用 `wl-copy`、在 X11 使用 `xclip`；缺少工具时打开终端概览，可使用终端的文字选择和复制功能。
+托盘为纯 Go 构建，不依赖 GTK 开发库。终端入口优先使用 `xdg-terminal-exec`，支持回退到 Foot、Kitty、Alacritty、Konsole、GNOME Terminal、XTerm 等。菜单直接复制地址在 Wayland 使用 `wl-copy`、在 X11 使用 `xclip`；缺少工具时在菜单中提示检查剪贴板工具。
 
 ## 开发验证
 
