@@ -166,9 +166,18 @@ for language in ("en", "zh-Hans"):
     if not all(language in entry.get("localizations", {}) for entry in translatable_strings.values()):
         errors.append(f"String Catalog has an entry without {language} translation")
 
+allowlist_data = json.loads(allowlist_path.read_text())
+english_verbatim_host_labels = {}
+for item in allowlist_data.get("englishVerbatimHostLabelAllowlist", []):
+    english_verbatim_host_labels.setdefault(item["key"], []).append(item["value"])
+
 for key, entry in translatable_strings.items():
+    allowed_labels = sorted(english_verbatim_host_labels.get(key, []), key=len, reverse=True)
     for value in localized_values(entry, "en"):
-        if re.search(r"[\u3400-\u9fff]", value):
+        remaining = value
+        for label in allowed_labels:
+            remaining = remaining.replace(label, "")
+        if re.search(r"[\u3400-\u9fff]", remaining):
             errors.append(f"English catalog value contains Chinese text: {key}")
 
 # Product terms with protocol significance must remain stable in English. `turn/steer`
@@ -214,10 +223,10 @@ for key in (
     if "ipad" in strings[key]["localizations"]["en"]["stringUnit"]["value"].lower():
         errors.append(f"Cross-device diagnostic must not be iPad-specific: {key}")
 
-allowlist = {item["value"] for item in json.loads(allowlist_path.read_text()).get("items", [])}
+allowlist = {item["value"] for item in allowlist_data.get("items", [])}
 ui_literal_allowlist = {
     item["value"]
-    for item in json.loads(allowlist_path.read_text()).get("uiLiteralAllowlist", [])
+    for item in allowlist_data.get("uiLiteralAllowlist", [])
 }
 used_keys = set()
 key_usage = {}

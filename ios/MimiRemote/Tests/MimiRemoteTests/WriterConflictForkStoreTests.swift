@@ -488,6 +488,39 @@ final class WriterConflictForkStoreTests: XCTestCase {
             WriterConflictSharedGuideSheet.nowSectionBodyKey(
                 sourceIsRunning: true,
                 availability: .available(lastTurnID: "turn-1"),
+                status: .resolvedWritable,
+                hostPlatform: .windows
+            ),
+            "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: false,
+                availability: .available(lastTurnID: nil),
+                status: .offline
+            ),
+            "ui.writer_conflict_shared_guide_now_offline_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: false,
+                availability: .available(lastTurnID: nil),
+                status: .retrying
+            ),
+            "ui.writer_conflict_shared_guide_now_retrying_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: false,
+                availability: .available(lastTurnID: nil),
+                status: .duplicating
+            ),
+            "ui.writer_conflict_shared_guide_now_duplicating_body"
+        )
+        XCTAssertEqual(
+            WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                sourceIsRunning: true,
+                availability: .available(lastTurnID: "turn-1"),
                 status: .connectionTerminated(.credentialsInvalid)
             ),
             "ui.writer_conflict_shared_guide_now_credentials_invalid_body"
@@ -500,6 +533,65 @@ final class WriterConflictForkStoreTests: XCTestCase {
             ),
             "ui.writer_conflict_shared_guide_now_unavailable_body"
         )
+    }
+
+    func testConflictCardMessageBodyOnlyPromisesTurnBoundaryWhenConfirmed() {
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: false, availability: nil),
+            "ui.codex_active_writer_conflict"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: true, availability: .unavailableNoTerminalTurn),
+            "ui.writer_conflict_fork_no_terminal_turn"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: true, availability: .checking),
+            "ui.writer_conflict_fork_checking_explanation"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: true, availability: .failed),
+            "ui.writer_conflict_fork_failed_explanation"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: true, availability: .available(lastTurnID: nil)),
+            "ui.writer_conflict_fork_checking_explanation"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: true, availability: .available(lastTurnID: "turn-1")),
+            "ui.writer_conflict_fork_running_explanation"
+        )
+        XCTAssertEqual(
+            WriterConflictCard.messageBodyKey(sourceIsRunning: false, availability: .available(lastTurnID: nil)),
+            "ui.writer_conflict_fork_idle_explanation"
+        )
+    }
+
+    func testSharedGuideSectionsAdaptToHostPlatform() {
+        let appleSections = WriterConflictSharedGuideSheet.sections(
+            sourceIsRunning: false,
+            availability: .available(lastTurnID: nil),
+            hostPlatform: .apple
+        )
+        XCTAssertEqual(appleSections.map(\.id), ["why", "mac", "now"])
+        XCTAssertTrue(appleSections[1].body.contains("一键配置本机 SSH"))
+
+        for nonMac in [HostPlatform.windows, .linux] {
+            let sections = WriterConflictSharedGuideSheet.sections(
+                sourceIsRunning: false,
+                availability: .available(lastTurnID: nil),
+                hostPlatform: nonMac
+            )
+            XCTAssertEqual(sections.map(\.id), ["why", "nonMac", "now"])
+            XCTAssertEqual(sections[1].title, L10n.text("ui.writer_conflict_shared_guide_non_mac_title"))
+            XCTAssertFalse(
+                sections[1].body.contains("一键配置本机 SSH"),
+                "\(nonMac.rawValue) 主机不应展示 Mac 专用的一键配置步骤"
+            )
+            XCTAssertFalse(
+                sections[1].body.contains("连接 Codex 桌面版…"),
+                "\(nonMac.rawValue) 主机不应展示 Mac 菜单栏入口"
+            )
+        }
     }
 
     func testWriterConflictCardHitTargetsAndSharedGuideAccessibilityLabel() async throws {
@@ -920,6 +1012,192 @@ final class WriterConflictForkStoreTests: XCTestCase {
             .connectionTerminated(.credentialsInvalid)
         )
         XCTAssertNotEqual(bridge.latestGuideNowBody, unlockedCopy)
+
+        let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide)
+        dismissAction()
+        try await waitForPresentedViewControllerDismissal(on: hosted.controller)
+    }
+
+    func testRetryingIdleConflictShowsRetryingGuideInsteadOfImmediateFork() async throws {
+        let project = makeProject(id: "proj-writer-guide-retrying")
+        let source = makeSession(
+            id: "source-writer-guide-retrying",
+            projectID: project.id,
+            title: "Idle conflict source",
+            status: "history",
+            source: "codex",
+            resumeID: "source-writer-guide-retrying"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [source])
+        )
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-guide-retrying-token"
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        select(source: source, project: project, in: store)
+        let originLease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: source.id)
+
+        let suiteName = "WriterConflictGuideRetrying.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            store.returnToSessionList()
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let bridge = WriterConflictInteractionBridge()
+
+        let view = ConversationView()
+            .environmentObject(store)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.writerConflictInteractionBridge, bridge)
+
+        let hosted = try makeTestWindow(rootView: view, size: CGSize(width: 390, height: 844))
+        defer { hosted.tearDown() }
+
+        try await waitUntil(
+            description: "空闲冲突卡完成挂载并可打开引导",
+            window: hosted.window
+        ) {
+            bridge.cardIsMounted && bridge.openSharedGuide != nil
+        }
+
+        // 空闲冲突卡点击「重试」后、历史刷新尚未返回时，卡片已禁用分支；
+        // 此时打开共享引导必须提示等待重试完成，不能误报可马上分支。
+        let retryTask = Task { await store.retrySelectedSessionWriterAccess() }
+        await client.waitForHistoryRequestCount(1)
+
+        XCTAssertTrue(store.isRetryingSelectedWriterConflict)
+        XCTAssertEqual(store.selectedWriterConflictForkAvailability, .available(lastTurnID: nil))
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .retrying)
+
+        bridge.openSharedGuide?()
+        let presented = try await waitForPresentedViewController(on: hosted.controller)
+        let retryingCopy = L10n.text("ui.writer_conflict_shared_guide_now_retrying_body")
+        let immediateForkCopy = L10n.text("ui.writer_conflict_shared_guide_now_body")
+        try await waitUntil(
+            description: "重试刷新期间引导弹层显示等待重试文案而非可马上分支",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.guideIsMounted && bridge.latestGuideNowBody == retryingCopy
+        }
+        XCTAssertNotEqual(bridge.latestGuideNowBody, immediateForkCopy)
+
+        client.failHistoryRequest(at: 0, with: MockError.timeout)
+        await retryTask.value
+
+        try await waitUntil(
+            description: "重试失败结束后引导弹层恢复为空闲可分支文案",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            !store.isRetryingSelectedWriterConflict && bridge.latestGuideNowBody == immediateForkCopy
+        }
+
+        let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide)
+        dismissAction()
+        try await waitForPresentedViewControllerDismissal(on: hosted.controller)
+    }
+
+    func testOfflineWriterConflictShowsOfflineGuideAndRecoversWhenBackOnline() async throws {
+        let project = makeProject(id: "proj-writer-guide-offline")
+        let source = makeSession(
+            id: "source-writer-guide-offline",
+            projectID: project.id,
+            title: "Offline conflict source",
+            status: "history",
+            source: "codex",
+            resumeID: "source-writer-guide-offline"
+        )
+        let client = MockSessionStoreClient(projects: [project], sessions: [source])
+        let appStore = makeIsolatedAppStore()
+        appStore.token = "writer-guide-offline-token"
+        _ = try await appStore.commitConnectionSettings(PreparedConnectionSettings(
+            endpoint: "http://100.64.0.219:8787",
+            token: "writer-guide-offline-token",
+            profileTarget: .newProfile(id: "writer-host-windows", displayName: "Windows PC"),
+            installationID: "writer-host-windows-installation",
+            hostPlatform: .windows
+        ))
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        select(source: source, project: project, in: store)
+        let originLease = HostSessionLease(hostScope: appStore.activeHostScope, sessionID: source.id)
+
+        // 断网后冲突标记仍保留，但复制分支需要远端请求；引导必须提示先恢复网络，且 Windows 主机不显示 Mac 专用步骤。
+        store.networkReachabilityStatus = .unsatisfied
+        XCTAssertTrue(store.isNetworkUnavailable)
+        XCTAssertTrue(store.selectedSessionShowsWriterConflictCard)
+        XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .offline)
+        XCTAssertEqual(store.activeHostPlatform, .windows)
+
+        let suiteName = "WriterConflictGuideOffline.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            store.returnToSessionList()
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let bridge = WriterConflictInteractionBridge()
+
+        let view = ConversationView()
+            .environmentObject(store)
+            .environmentObject(conversationStore)
+            .environmentObject(themeStore)
+            .environment(\.writerConflictInteractionBridge, bridge)
+
+        let hosted = try makeTestWindow(rootView: view, size: CGSize(width: 390, height: 844))
+        defer { hosted.tearDown() }
+
+        try await waitUntil(
+            description: "断网状态冲突卡完成挂载并可打开引导",
+            window: hosted.window
+        ) {
+            bridge.cardIsMounted && bridge.openSharedGuide != nil
+        }
+        bridge.openSharedGuide?()
+
+        let presented = try await waitForPresentedViewController(on: hosted.controller)
+        let offlineCopy = L10n.text("ui.writer_conflict_shared_guide_now_offline_body")
+        let immediateForkCopy = L10n.text("ui.writer_conflict_shared_guide_now_body")
+        let expectedWindowsHeaders = [
+            L10n.text("ui.writer_conflict_shared_guide_why_title"),
+            L10n.text("ui.writer_conflict_shared_guide_non_mac_title"),
+            L10n.text("ui.writer_conflict_shared_guide_now_title")
+        ]
+        try await waitUntil(
+            description: "断网时引导弹层显示恢复网络提示，且 Windows 主机展示非 Mac 段落标题",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.guideIsMounted
+                && bridge.latestGuideNowBody == offlineCopy
+                && bridge.latestGuideHeaderTitles == expectedWindowsHeaders
+        }
+        XCTAssertNotEqual(bridge.latestGuideNowBody, immediateForkCopy)
+
+        store.networkReachabilityStatus = .satisfied
+        try await waitUntil(
+            description: "恢复网络后引导弹层切回冲突可分支文案",
+            window: hosted.window,
+            extraView: presented.view
+        ) {
+            bridge.latestGuideNowBody == immediateForkCopy
+        }
 
         let dismissAction = try XCTUnwrap(bridge.dismissSharedGuide)
         dismissAction()

@@ -176,6 +176,11 @@ final class LocalizationTests: XCTestCase {
                 "如何与电脑实时共享（Mac）"
             ),
             (
+                "ui.writer_conflict_shared_guide_non_mac_title",
+                "About live desktop sharing",
+                "关于双端实时共享"
+            ),
+            (
                 "ui.writer_conflict_shared_guide_now_title",
                 "Need to continue right now?",
                 "现在想立刻继续怎么办？"
@@ -186,15 +191,22 @@ final class LocalizationTests: XCTestCase {
             XCTAssertEqual(L10n.text(key, language: .simplifiedChinese), simplifiedChinese)
         }
         for bodyKey in [
+            "ui.writer_conflict_fork_checking_explanation",
+            "ui.writer_conflict_fork_failed_explanation",
             "ui.writer_conflict_shared_guide_why_body",
             "ui.writer_conflict_shared_guide_mac_body",
+            "ui.writer_conflict_shared_guide_non_mac_body",
             "ui.writer_conflict_shared_guide_now_body",
             "ui.writer_conflict_shared_guide_now_credentials_invalid_body",
-            "ui.writer_conflict_shared_guide_now_running_body",
+            "ui.writer_conflict_shared_guide_now_duplicating_body",
             "ui.writer_conflict_shared_guide_now_no_fork_body",
             "ui.writer_conflict_shared_guide_now_no_terminal_turn_body",
+            "ui.writer_conflict_shared_guide_now_offline_body",
             "ui.writer_conflict_shared_guide_now_pending_body",
             "ui.writer_conflict_shared_guide_now_resolved_body",
+            "ui.writer_conflict_shared_guide_now_resolved_non_mac_body",
+            "ui.writer_conflict_shared_guide_now_retrying_body",
+            "ui.writer_conflict_shared_guide_now_running_body",
             "ui.writer_conflict_shared_guide_now_unavailable_body"
         ] {
             XCTAssertNotEqual(L10n.text(bodyKey, language: .english), bodyKey)
@@ -202,28 +214,68 @@ final class LocalizationTests: XCTestCase {
             XCTAssertFalse(L10n.text(bodyKey, language: .english).isEmpty)
             XCTAssertFalse(L10n.text(bodyKey, language: .simplifiedChinese).isEmpty)
         }
-        let macGuideZh = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .simplifiedChinese)
-        XCTAssertTrue(macGuideZh.contains("Mimi Remote Mac 版更新到最新版本"))
-        XCTAssertTrue(macGuideZh.contains("连接 Codex 桌面版…"))
-        XCTAssertTrue(macGuideZh.contains("连接 Codex 桌面版"))
-        XCTAssertTrue(macGuideZh.contains("打开共享设置"))
-        XCTAssertTrue(macGuideZh.contains("一键配置本机 SSH"))
-        XCTAssertTrue(macGuideZh.contains("打开 Codex SSH 设置"))
-        XCTAssertTrue(macGuideZh.contains("打开 Codex 连接设置"))
-        XCTAssertTrue(macGuideZh.contains("mimi-local"))
-        XCTAssertFalse(macGuideZh.contains("ssh-keygen"))
-        XCTAssertFalse(macGuideZh.contains("authorized_keys"))
+        // Mac 端目前仅提供中文界面：中英文引导都必须逐字引用实机按钮文案、注明检查更新/最低版本、
+        // 兼容旧 127.0.0.1 免密复用与手动「设置 → 连接 → SSH」路径，禁止引用不存在的英文 Mac 按钮名。
+        let requiredMacTokens = [
+            "v1.1.19",
+            "检查更新",
+            "连接 Codex 桌面版…",
+            "连接 Codex 桌面版",
+            "打开共享设置",
+            "一键配置本机 SSH",
+            "打开 Codex SSH 设置",
+            "打开 Codex 连接设置",
+            "mimi-local",
+            "127.0.0.1",
+            "设置 → 连接 → SSH"
+        ]
+        for language in [AppLanguage.simplifiedChinese, .english] {
+            let macGuide = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: language)
+            for token in requiredMacTokens {
+                XCTAssertTrue(
+                    macGuide.contains(token),
+                    "Mac 引导 [\(language.rawValue)] 缺少实机文案「\(token)」：\(macGuide)"
+                )
+            }
+            XCTAssertFalse(macGuide.contains("ssh-keygen"))
+            XCTAssertFalse(macGuide.contains("authorized_keys"))
+        }
         let macGuideEn = L10n.text("ui.writer_conflict_shared_guide_mac_body", language: .english)
-        XCTAssertTrue(macGuideEn.contains("update Mimi Remote Mac"))
-        XCTAssertTrue(macGuideEn.contains("Connect Codex Desktop…"))
-        XCTAssertTrue(macGuideEn.contains("Connect Codex Desktop"))
-        XCTAssertTrue(macGuideEn.contains("Open Sharing Settings"))
-        XCTAssertTrue(macGuideEn.contains("One-Click Local SSH Setup"))
-        XCTAssertTrue(macGuideEn.contains("Open Codex SSH Settings"))
-        XCTAssertTrue(macGuideEn.contains("Open Codex Connection Settings"))
-        XCTAssertTrue(macGuideEn.contains("mimi-local"))
-        XCTAssertFalse(macGuideEn.contains("ssh-keygen"))
-        XCTAssertFalse(macGuideEn.contains("authorized_keys"))
+        XCTAssertTrue(macGuideEn.contains("Settings → Connections → SSH"))
+        for nonexistentEnglishMacLabel in [
+            "Connect Codex Desktop…",
+            "Connect Codex Desktop",
+            "Open Sharing Settings",
+            "One-Click Local SSH Setup",
+            "Open Codex SSH Settings",
+            "Open Codex Connection Settings"
+        ] {
+            XCTAssertFalse(
+                macGuideEn.contains(nonexistentEnglishMacLabel),
+                "英文 Mac 引导不得引导用户寻找 Mac 上不存在的英文按钮「\(nonexistentEnglishMacLabel)」"
+            )
+        }
+        // 凭据失效引导直接指向工作台顶部横幅中的实际「重新配对」/「Re-pair」按钮。
+        XCTAssertTrue(
+            L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body", language: .simplifiedChinese)
+                .contains(L10n.text("ui.re_pair", language: .simplifiedChinese))
+        )
+        XCTAssertTrue(
+            L10n.text("ui.writer_conflict_shared_guide_now_credentials_invalid_body", language: .english)
+                .contains(L10n.text("ui.re_pair", language: .english))
+        )
+        // 检查中与检查失败的卡片正文不得承诺可复制到上一轮结束位置。
+        for key in [
+            "ui.writer_conflict_fork_checking_explanation",
+            "ui.writer_conflict_fork_failed_explanation"
+        ] {
+            XCTAssertFalse(
+                L10n.text(key, language: .simplifiedChinese).contains("将复制到上一轮结束的位置")
+            )
+            XCTAssertFalse(
+                L10n.text(key, language: .english).contains("The copy will end at the previous finished turn")
+            )
+        }
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .english), "Load full content")
         XCTAssertEqual(L10n.text("ui.load_full_history", language: .simplifiedChinese), "加载完整内容")
         XCTAssertEqual(

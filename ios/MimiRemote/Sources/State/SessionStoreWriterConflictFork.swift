@@ -9,6 +9,9 @@ enum WriterConflictForkAvailability: Hashable {
 
 enum WriterConflictSharedGuideStatus: Equatable {
     case activeConflict
+    case retrying
+    case duplicating
+    case offline
     case resolvedWritable
     case connectionTerminated(ConnectionTerminationStatus)
     case unavailable
@@ -22,6 +25,10 @@ struct WriterConflictForkPreparationID: Hashable {
 }
 
 extension SessionStore {
+    var activeHostPlatform: HostPlatform {
+        appStore.activeConnectionProfile?.hostPlatform ?? .unknown
+    }
+
     var selectedWriterConflictLease: HostSessionLease? {
         guard let selectedSessionID else { return nil }
         return writerConflictForkLease(for: selectedSessionID)
@@ -45,8 +52,9 @@ extension SessionStore {
         return session.isRunning ? .checking : .available(lastTurnID: nil)
     }
 
-    /// 引导弹层打开期间实时判定恢复态：连接终止（例如凭据失效）不能误报为「已解除锁定」，
-    /// 只有确认同一会话已无冲突且前台连接恢复可写（`.live`）后，才提示返回直接输入。
+    /// 引导弹层打开期间实时判定恢复态：连接终止（例如凭据失效）、断网、正在重试或复制中
+    /// 都不能误报为「可马上分支」或「已解除锁定」；只有确认同一会话已无冲突且前台连接恢复可写（`.live`）后，
+    /// 才提示返回直接输入。
     func writerConflictSharedGuideStatus(
         originLease: HostSessionLease?
     ) -> WriterConflictSharedGuideStatus {
@@ -56,7 +64,21 @@ extension SessionStore {
         if appStore.requiresRePairing {
             return .connectionTerminated(.credentialsInvalid)
         }
+        if isNetworkUnavailable {
+            return .offline
+        }
+        if let originLease,
+           let session = selectedSession,
+           writerConflictForkLease(for: session.id) != originLease {
+            return .unavailable
+        }
         if selectedSessionShowsWriterConflictCard {
+            if isDuplicatingSelectedWriterConflictSession {
+                return .duplicating
+            }
+            if isRetryingSelectedWriterConflict {
+                return .retrying
+            }
             return .activeConflict
         }
         guard let session = selectedSession else {

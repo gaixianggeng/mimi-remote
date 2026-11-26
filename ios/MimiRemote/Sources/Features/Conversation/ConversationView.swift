@@ -117,6 +117,7 @@ struct ConversationView: View {
                                 errorMessage: sessionStore.selectedWriterConflictForkErrorMessage,
                                 isDuplicating: sessionStore.isDuplicatingSelectedWriterConflictSession,
                                 isRetrying: sessionStore.isRetryingSelectedWriterConflict,
+                                hostPlatform: sessionStore.activeHostPlatform,
                                 onFork: {
                                     Task { await sessionStore.duplicateSelectedWriterConflictSession() }
                                 },
@@ -172,7 +173,8 @@ struct ConversationView: View {
                     availability: sessionStore.selectedWriterConflictForkAvailability,
                     status: sessionStore.writerConflictSharedGuideStatus(
                         originLease: writerConflictSharedGuideOriginLease
-                    )
+                    ),
+                    hostPlatform: sessionStore.activeHostPlatform
                 )
             }
         }

@@ -31,6 +31,7 @@ struct WriterConflictCard: View {
     let errorMessage: String?
     let isDuplicating: Bool
     let isRetrying: Bool
+    let hostPlatform: HostPlatform
     let onFork: () -> Void
     let onRecheck: () -> Void
     let onRetry: () -> Void
@@ -42,6 +43,7 @@ struct WriterConflictCard: View {
         errorMessage: String?,
         isDuplicating: Bool,
         isRetrying: Bool,
+        hostPlatform: HostPlatform = .unknown,
         onFork: @escaping () -> Void,
         onRecheck: @escaping () -> Void,
         onRetry: @escaping () -> Void,
@@ -52,6 +54,7 @@ struct WriterConflictCard: View {
         self.errorMessage = errorMessage
         self.isDuplicating = isDuplicating
         self.isRetrying = isRetrying
+        self.hostPlatform = hostPlatform
         self.onFork = onFork
         self.onRecheck = onRecheck
         self.onRetry = onRetry
@@ -100,9 +103,21 @@ struct WriterConflictCard: View {
         .sheet(isPresented: $showingSharedGuide) {
             WriterConflictSharedGuideSheet(
                 sourceIsRunning: sourceIsRunning,
-                availability: availability
+                availability: availability,
+                status: standaloneSharedGuideStatus,
+                hostPlatform: hostPlatform
             )
         }
+    }
+
+    private var standaloneSharedGuideStatus: WriterConflictSharedGuideStatus {
+        if isDuplicating {
+            return .duplicating
+        }
+        if isRetrying {
+            return .retrying
+        }
+        return .activeConflict
     }
 
     @ViewBuilder
@@ -195,17 +210,37 @@ struct WriterConflictCard: View {
         .accessibilityIdentifier(accessibility.identifier)
     }
 
-    private var messageBody: String {
+    static func messageBodyKey(
+        sourceIsRunning: Bool,
+        availability: WriterConflictForkAvailability?
+    ) -> String {
         guard let availability else {
-            return L10n.text("ui.codex_active_writer_conflict")
+            return "ui.codex_active_writer_conflict"
         }
-        if availability == .unavailableNoTerminalTurn {
-            return L10n.text("ui.writer_conflict_fork_no_terminal_turn")
+        switch availability {
+        case .unavailableNoTerminalTurn:
+            return "ui.writer_conflict_fork_no_terminal_turn"
+        case .checking:
+            return "ui.writer_conflict_fork_checking_explanation"
+        case .failed:
+            return "ui.writer_conflict_fork_failed_explanation"
+        case .available(let lastTurnID):
+            if sourceIsRunning {
+                return lastTurnID == nil
+                    ? "ui.writer_conflict_fork_checking_explanation"
+                    : "ui.writer_conflict_fork_running_explanation"
+            }
+            return "ui.writer_conflict_fork_idle_explanation"
         }
-        if sourceIsRunning {
-            return L10n.text("ui.writer_conflict_fork_running_explanation")
-        }
-        return L10n.text("ui.writer_conflict_fork_idle_explanation")
+    }
+
+    private var messageBody: String {
+        L10n.text(
+            Self.messageBodyKey(
+                sourceIsRunning: sourceIsRunning,
+                availability: availability
+            )
+        )
     }
 
     @ViewBuilder
@@ -432,30 +467,45 @@ struct WriterConflictSharedGuideSheet: View {
     let sourceIsRunning: Bool
     let availability: WriterConflictForkAvailability?
     let status: WriterConflictSharedGuideStatus
+    let hostPlatform: HostPlatform
 
     init(
         sourceIsRunning: Bool = false,
         availability: WriterConflictForkAvailability? = .available(lastTurnID: nil),
-        status: WriterConflictSharedGuideStatus = .activeConflict
+        status: WriterConflictSharedGuideStatus = .activeConflict,
+        hostPlatform: HostPlatform = .unknown
     ) {
         self.sourceIsRunning = sourceIsRunning
         self.availability = availability
         self.status = status
+        self.hostPlatform = hostPlatform
     }
 
     static func nowSectionBodyKey(
         sourceIsRunning: Bool,
         availability: WriterConflictForkAvailability?,
-        status: WriterConflictSharedGuideStatus = .activeConflict
+        status: WriterConflictSharedGuideStatus = .activeConflict,
+        hostPlatform: HostPlatform = .unknown
     ) -> String {
         switch status {
         case .resolvedWritable:
-            return "ui.writer_conflict_shared_guide_now_resolved_body"
+            switch hostPlatform {
+            case .windows, .linux:
+                return "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
+            case .apple, .unknown:
+                return "ui.writer_conflict_shared_guide_now_resolved_body"
+            }
         case .connectionTerminated(let termination):
             switch termination {
             case .credentialsInvalid:
                 return "ui.writer_conflict_shared_guide_now_credentials_invalid_body"
             }
+        case .offline:
+            return "ui.writer_conflict_shared_guide_now_offline_body"
+        case .retrying:
+            return "ui.writer_conflict_shared_guide_now_retrying_body"
+        case .duplicating:
+            return "ui.writer_conflict_shared_guide_now_duplicating_body"
         case .unavailable:
             return "ui.writer_conflict_shared_guide_now_unavailable_body"
         case .activeConflict:
@@ -482,13 +532,36 @@ struct WriterConflictSharedGuideSheet: View {
     static func sections(
         sourceIsRunning: Bool,
         availability: WriterConflictForkAvailability?,
-        status: WriterConflictSharedGuideStatus = .activeConflict
+        status: WriterConflictSharedGuideStatus = .activeConflict,
+        hostPlatform: HostPlatform = .unknown
     ) -> [SectionModel] {
         let nowBodyKey = nowSectionBodyKey(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
-            status: status
+            status: status,
+            hostPlatform: hostPlatform
         )
+        let sharingSection: SectionModel
+        switch hostPlatform {
+        case .windows, .linux:
+            sharingSection = SectionModel(
+                id: "nonMac",
+                icon: "desktopcomputer",
+                iconTint: .primary,
+                title: L10n.text("ui.writer_conflict_shared_guide_non_mac_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_non_mac_body"),
+                isAccessibilityHeader: true
+            )
+        case .apple, .unknown:
+            sharingSection = SectionModel(
+                id: "mac",
+                icon: "arrow.triangle.2.circlepath",
+                iconTint: .primary,
+                title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
+                isAccessibilityHeader: true
+            )
+        }
         return [
             SectionModel(
                 id: "why",
@@ -498,14 +571,7 @@ struct WriterConflictSharedGuideSheet: View {
                 body: L10n.text("ui.writer_conflict_shared_guide_why_body"),
                 isAccessibilityHeader: true
             ),
-            SectionModel(
-                id: "mac",
-                icon: "arrow.triangle.2.circlepath",
-                iconTint: .primary,
-                title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
-                body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
-                isAccessibilityHeader: true
-            ),
+            sharingSection,
             SectionModel(
                 id: "now",
                 icon: "arrow.branch",
@@ -522,7 +588,8 @@ struct WriterConflictSharedGuideSheet: View {
         let sections = Self.sections(
             sourceIsRunning: sourceIsRunning,
             availability: availability,
-            status: status
+            status: status,
+            hostPlatform: hostPlatform
         )
         let nowBody = sections.last?.body ?? ""
         let headerTitles = sections.filter(\.isAccessibilityHeader).map(\.title)

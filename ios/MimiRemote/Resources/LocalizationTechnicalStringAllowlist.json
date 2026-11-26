@@ -371,5 +371,52 @@
       "value": "•",
       "reason": "Markdown list marker."
     }
+  ],
+  "englishVerbatimHostLabelAllowlist": [
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "检查更新",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac menu bar update button label (MenuBarContentView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "连接 Codex 桌面版…",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac menu bar item label (MenuBarContentView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "连接 Codex 桌面版",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Sessions toolbar button label (SessionsWindowView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "远程登录",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 1 label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开共享设置",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 1 button label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "一键配置本机 SSH",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 2 button label (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开 Codex SSH 设置",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 3 button label after one-click setup (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "打开 Codex 连接设置",
+      "reason": "Verbatim Chinese-only Mimi Remote Mac Step 3 button label for legacy verified 127.0.0.1 setup (CodexSharedSetupView.swift)."
+    },
+    {
+      "key": "ui.writer_conflict_shared_guide_mac_body",
+      "value": "设置 → 连接 → SSH",
+      "reason": "Verbatim Chinese navigation path shown in Mimi Remote Mac Step 3 fallback instructions (CodexSharedSetupView.swift)."
+    }
   ]
 }
