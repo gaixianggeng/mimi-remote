@@ -802,8 +802,8 @@ extension SessionStore {
         } catch {
             guard appStore.activeHostScope == hostScope,
                   appStore.connectionGeneration == connectionGeneration,
-                  !isCancellationError(error) else {
-                // Host 切换后的迟到错误或取消不得终止新连接，也不得污染界面与 Widget 证据。
+                  !Task.isCancelled else {
+                // Host 切换后的迟到错误不得终止新连接，也不得污染新 Host 的 Widget 证据。
                 return
             }
             if let requestProjectID, let requestToken, !isCurrentSessionPageRequest(projectID: requestProjectID, token: requestToken) {
@@ -1123,7 +1123,7 @@ extension SessionStore {
             )
             return true
         } catch {
-            if !isCancellationError(error), isSelectionLeaseCurrent(openIntent) {
+            if isSelectionLeaseCurrent(openIntent) {
                 setErrorMessage(for: error)
             }
             return false
@@ -1190,18 +1190,12 @@ extension SessionStore {
             let duplicateTitle = duplicatedSessionTitle(from: session.title)
             var responseSession = self.session(forked, in: workspace)
             var renameFailure: Error?
-            var renameCancelled = false
             do {
                 try await client.setThreadName(threadID: forked.id, name: duplicateTitle)
                 responseSession.title = duplicateTitle
             } catch {
-                // fork 已成功时不因附加的命名失败回滚；新会话仍然可打开，
-                // 显式取消命名时不把原始取消文本放进提示。
-                if isCancellationError(error) {
-                    renameCancelled = true
-                } else {
-                    renameFailure = error
-                }
+                // fork 已成功时不因附加的命名失败回滚；新会话仍然可打开，并明确提示部分成功。
+                renameFailure = error
             }
             guard appStore.activeHostScope == hostScope else { return false }
 
@@ -1237,7 +1231,7 @@ extension SessionStore {
                         renameFailure.localizedDescription
                     )
                 )
-            } else if !renameCancelled {
+            } else {
                 setStatusMessage(L10n.format("ui.session_duplicated_as_value", duplicateTitle))
             }
             if allowActiveWriterConflict {
@@ -1248,7 +1242,7 @@ extension SessionStore {
             }
             return true
         } catch {
-            guard !isCancellationError(error), appStore.activeHostScope == hostScope else { return false }
+            guard !Task.isCancelled, appStore.activeHostScope == hostScope else { return false }
             if allowActiveWriterConflict {
                 // writer 冲突卡片没有详情入口，暂保留服务端原因原文，便于判断能否改为复制。
                 writerConflictForkErrorByLease[sourceConflictLease] = L10n.format(
@@ -1362,7 +1356,7 @@ extension SessionStore {
                 conversationStore.appendSystem(L10n.text("ui.this_worktree_has_been_forked_from_the_source"), sessionID: responseSession.id)
                 return true
             } catch {
-                guard !isCancellationError(error), !Task.isCancelled, appStore.activeHostScope == hostScope,
+                guard !Task.isCancelled, appStore.activeHostScope == hostScope,
                       isSelectionLeaseCurrent(workspaceSelectionLease) else { return false }
                 setStatusMessage(L10n.format("ui.native_fork_is_not_available_use_prompt_worktree", UserFacingError(error).message))
             }
@@ -1385,7 +1379,7 @@ extension SessionStore {
             )
             return started
         } catch {
-            if !isCancellationError(error), isSelectionLeaseCurrent(handoffIntent) {
+            if isSelectionLeaseCurrent(handoffIntent) {
                 setErrorMessage(for: error)
             }
             return false

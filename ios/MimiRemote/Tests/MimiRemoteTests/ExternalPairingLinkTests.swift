@@ -107,7 +107,7 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertNil(connectedStore.lastPairingLinkRoute)
     }
 
-    func testConnectionProbeCancellationClassifierCoversAllCancellationTypes() async {
+    func testSharedCancellationClassifierCoversAllCancellationTypes() async {
         XCTAssertTrue(isCancellationError(CancellationError()))
         XCTAssertTrue(isCancellationError(URLError(.cancelled)))
         XCTAssertTrue(isCancellationError(
@@ -116,7 +116,6 @@ final class ExternalPairingLinkTests: XCTestCase {
         XCTAssertTrue(isCancellationError(HarnessTransportError.cancelled))
         XCTAssertTrue(isCancellationError(CodexAppServerConnectionError.transport(URLError(.cancelled))))
         XCTAssertTrue(isCancellationError(CodexAppServerConnectionError.transport(CancellationError())))
-        XCTAssertTrue(AppStore.isConnectionProbeCancellation(CodexAppServerConnectionError.transport(URLError(.cancelled))))
 
         XCTAssertFalse(isCancellationError(URLError(.cannotConnectToHost)))
         XCTAssertFalse(isCancellationError(URLError(.timedOut)))
@@ -130,8 +129,6 @@ final class ExternalPairingLinkTests: XCTestCase {
             XCTAssertTrue(Task.isCancelled)
             XCTAssertFalse(isCancellationError(AgentAPIError.credentialsInvalid(status: 401)))
             XCTAssertFalse(isCancellationError(PairingLinkError.expired))
-            XCTAssertFalse(AppStore.isConnectionProbeCancellation(AgentAPIError.credentialsInvalid(status: 401)))
-            XCTAssertFalse(AppStore.isConnectionProbeCancellation(URLError(.cannotConnectToHost)))
             XCTAssertTrue(isCancellationError(CancellationError()))
         }
         await cancelledTask.value

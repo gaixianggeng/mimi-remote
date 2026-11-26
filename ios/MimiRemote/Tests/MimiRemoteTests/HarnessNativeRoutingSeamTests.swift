@@ -1095,6 +1095,210 @@ final class HarnessNativeRoutingSeamTests: XCTestCase {
         eventClient.disconnect()
     }
 
+    /// DeepSeek RPC 门控必须跨过 Codex 断线与配置失效存活：
+    /// 1) 禁用宿主发生 Codex 断线/配置失效后，重读前保留明确的“未启用”门控且零配置请求、零 Harness RPC；
+    /// 2) 禁用宿主经 Codex 重连重新加载配置（含完整会话库刷新）后，零原生 RPC；
+    /// 3) 重连加载到最新配置时实时发布到门控（disabled -> enabled 立即放行并透传真实错误；
+    ///    enabled -> disabled 在重连后立即重新拦截，零新 Harness RPC）。
+    @MainActor
+    func testDeepSeekGateSurvivesCodexDisconnectAndPublishesFreshConfigOnReconnect() async throws {
+        let project = AgentProject(id: "reconnect-gate", name: "ReconnectGate", path: "/tmp/reconnect-gate")
+        let workspace = AgentWorkspace(project: project)
+        let methods = ["initialize", "initialized", "model/list", "thread/list", "thread/search"]
+        let disabledConfig = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: methods,
+            channels: [makeCodexChannel(methods: methods), makeNativeHarnessChannelMetadata(enabled: false)]
+        )
+        let enabledConfig = makeDirectAppServerConfig(
+            project: project,
+            allowedMethods: methods,
+            channels: [makeCodexChannel(methods: methods), makeNativeHarnessChannelMetadata(enabled: true)]
+        )
+        let configState = LiveConfigStubState(currentConfig: disabledConfig)
+        let expectedHarnessError = HarnessTransportError.server(status: 502, message: "real harness error after reconnect")
+        let rpcSpy = FailingHarnessRPCTransport(error: expectedHarnessError)
+        let harnessAPI = HarnessSessionAPIClient(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            rpc: rpcSpy
+        )
+        let codexPool = FakeCodexAppServerTransportPool()
+        let bundle = AppServerRuntimeBundle(
+            endpoint: "http://127.0.0.1:8787",
+            token: "fixture",
+            preparedConfig: disabledConfig,
+            harnessFactory: { _, _ in harnessAPI },
+            configProvider: { configState.recordConfigRead() },
+            transportFactory: { codexPool.make() }
+        )
+        defer { Task { await bundle.shutdownForHostSwitch() } }
+        let client = CodexAppServerRuntimeRoutingSessionAPIClient(bundle: bundle)
+
+        // 先建立首条 Codex 连接，再模拟底层连接断开触发 handleNotificationStreamEnded -> invalidateConfigSnapshot。
+        let firstActivation = Task { try await bundle.prepareForHostActivation() }
+        let firstTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 0)
+        try await initialize(firstTransport)
+        try await firstActivation.value
+        XCTAssertEqual(configState.configRequestCount, 0, "初始 preparedConfig 尚未触发额外配置读取")
+
+        firstTransport.failReceive()
+        for _ in 0..<100 {
+            guard await bundle.codex.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let stillReadyAfterFirstDrop = await bundle.codex.hasReadyConnectionForTesting()
+        XCTAssertFalse(stillReadyAfterFirstDrop)
+
+        // 1) 禁用宿主断线失效、尚未重读前：显式 disabled 必须保留，零 config 请求、零 Harness RPC。
+        let stateWhileInvalidated = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(stateWhileInvalidated, false, "禁用宿主断线失效后必须保留显式禁用状态")
+        do {
+            _ = try await client.controlledGlobalSessionsPage(runtimeProvider: "deepseek", cursor: nil, limit: 20)
+            XCTFail("断线失效窗口内不得放行 DeepSeek 全局发现")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            try await harnessAPI.submitPrompt(
+                sessionID: "stale-native", requestID: "req-while-down", text: "hi", mode: "queue", clientTimeZone: nil
+            )
+            XCTFail("断线失效窗口内不得直发 Harness RPC")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 0, "禁用宿主断线失效期间不得发出 /api/harness/rpc")
+        XCTAssertEqual(configState.configRequestCount, 0, "门控本身不得发起 GET /api/app-server/config")
+
+        // 2) 禁用宿主重连：Codex 自主重连通过 ensureConfig 重读配置并刷新会话库，期间与重连后均零原生 RPC。
+        let store = SessionStore(
+            appStore: makeIsolatedAppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+        store.recentWorkspaces = [workspace]
+        store.rebuildWorkspaceIndex()
+        let codexRow = appServerThreadJSON(
+            id: "codex-after-reconnect",
+            cwd: workspace.path,
+            source: "cli",
+            updatedAt: 200
+        )
+        let refreshTask = Task { await store.refreshSessionLibraryIndex() }
+        let secondTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 1)
+        try await initialize(secondTransport)
+        let workspaceList = try await waitForFakeAppServerRequest(secondTransport, method: "thread/list")
+        let afterWorkspaceList = await secondTransport.sentMessages().count
+        transportResponse(secondTransport, id: workspaceList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        let globalList = try await waitForFakeAppServerRequest(secondTransport, method: "thread/list", after: afterWorkspaceList)
+        transportResponse(secondTransport, id: globalList.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        await refreshTask.value
+
+        XCTAssertTrue(store.sessions.contains { $0.id == "codex-after-reconnect" })
+        let configReadsAfterReconnectRefresh = configState.configRequestCount
+        XCTAssertGreaterThanOrEqual(configReadsAfterReconnectRefresh, 1, "Codex 重连刷新应重读实时配置")
+        XCTAssertEqual(rpcSpy.callCount, 0, "禁用宿主重连并刷新会话库后必须零原生 RPC")
+
+        let beforeSearch = await secondTransport.sentMessages().count
+        let searchTask = Task { try await client.searchSessions(query: "q", cursor: nil, limit: 20) }
+        let searchRequest = try await waitForFakeAppServerRequest(secondTransport, method: "thread/search", after: beforeSearch)
+        transportResponse(secondTransport, id: searchRequest.id, result: #"{"data":[],"nextCursor":null}"#)
+        let searchPage = try await searchTask.value
+        XCTAssertTrue(searchPage.unavailableRuntimeProviders.isEmpty)
+        do {
+            try await harnessAPI.cancelSession(sessionID: "stale-native")
+            XCTFail("禁用宿主重连后直接取消 RPC 仍应被门控拦截")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 0, "禁用宿主重连后搜索与直达 RPC 均不得触发 /api/harness/rpc")
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh, "门控检查不得触发额外配置请求")
+
+        // 3) 宿主启用 DeepSeek 后发生断线重连：Codex ensureConfig 重读新配置即发布到门控，立即放行并透传真实 Harness 错误。
+        configState.setConfig(enabledConfig)
+        secondTransport.failReceive()
+        for _ in 0..<100 {
+            guard await bundle.codex.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let reconnectEnableTask = Task {
+            try await client.sessionsPage(
+                workspace: workspace, runtimeProvider: "codex", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+        }
+        let thirdTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 2)
+        try await initialize(thirdTransport)
+        let enableListRequest = try await waitForFakeAppServerRequest(thirdTransport, method: "thread/list")
+        transportResponse(thirdTransport, id: enableListRequest.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        _ = try await reconnectEnableTask.value
+
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh + 1)
+        let stateAfterEnableReconnect = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(stateAfterEnableReconnect, true, "重连加载到启用配置后应立即发布给门控")
+        do {
+            try await harnessAPI.submitPrompt(
+                sessionID: "enabled-native", requestID: "req-after-enable", text: "hi", mode: "queue", clientTimeZone: nil
+            )
+            XCTFail("启用态应放行并透传真实 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 1)
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh + 1)
+
+        // 4) 已启用宿主随后关闭 DeepSeek 并断线重连：断线重读前仍放行透传真实错误，重连读到禁用配置后立即恢复拦截。
+        configState.setConfig(disabledConfig)
+        thirdTransport.failReceive()
+        for _ in 0..<100 {
+            guard await bundle.codex.hasReadyConnectionForTesting() else { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let stateWhileEnabledInvalidated = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertNil(stateWhileEnabledInvalidated)
+        do {
+            try await harnessAPI.submitPrompt(
+                sessionID: "enabled-native", requestID: "req-while-enabled-down", text: "hi", mode: "queue", clientTimeZone: nil
+            )
+            XCTFail("启用宿主断线失效前仍应透传真实 Harness 错误")
+        } catch let error as HarnessTransportError {
+            XCTAssertEqual(error, expectedHarnessError)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 2)
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh + 1)
+
+        let reconnectDisableTask = Task {
+            try await client.sessionsPage(
+                workspace: workspace, runtimeProvider: "codex", cursor: nil, limit: nil, consistency: .fastIndexed
+            )
+        }
+        let fourthTransport = try await waitForFakeAppServerTransport(in: codexPool, index: 3)
+        try await initialize(fourthTransport)
+        let disableListRequest = try await waitForFakeAppServerRequest(fourthTransport, method: "thread/list")
+        transportResponse(fourthTransport, id: disableListRequest.id, result: appServerThreadListResult([codexRow], nextCursor: nil))
+        _ = try await reconnectDisableTask.value
+
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh + 2)
+        let stateAfterDisableReconnect = try await bundle.loadedNativeHarnessConfigured()
+        XCTAssertEqual(stateAfterDisableReconnect, false, "重连加载到禁用配置后门控应立即恢复拦截")
+        do {
+            _ = try await client.controlledGlobalSessionsPage(runtimeProvider: "deepseek", cursor: nil, limit: 20)
+            XCTFail("重连加载到禁用配置后不得再发 DeepSeek RPC")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        do {
+            try await harnessAPI.submitPrompt(
+                sessionID: "enabled-native", requestID: "req-after-disable", text: "hi", mode: "queue", clientTimeZone: nil
+            )
+            XCTFail("重连加载到禁用配置后直达 RPC 必须被拦截")
+        } catch {
+            assertGatewayUnavailable(error)
+        }
+        XCTAssertEqual(rpcSpy.callCount, 2, "重连读到禁用配置后不得再发出任何 /api/harness/rpc")
+        XCTAssertEqual(configState.configRequestCount, configReadsAfterReconnectRefresh + 2)
+    }
+
     // MARK: - 事件客户端与骨架
 
     /// 原生事件客户端必须显式拒绝 guidance，且**不得**把它当成 prompt 发出去。

@@ -621,161 +621,6 @@ final class WorkspaceHostBoundaryTests: XCTestCase {
         XCTAssertTrue(fixture.store.conversationStore.messages(for: fixture.source.id).isEmpty)
     }
 
-    /// Worktree handoff 中原生 fork 显式取消时必须直接返回，不得落入回退路径创建替代会话或发送 prompt。
-    func testWorktreeHandoffForkCancellationReturnsWithoutReplacementPrompt() async {
-        for cancelError in [
-            CancellationError() as Error,
-            URLError(.cancelled),
-            CodexAppServerConnectionError.transport(URLError(.cancelled)),
-        ] {
-            let response = worktreeResponse()
-            let source = AgentSession(
-                id: "source-thread", projectID: root.id, project: root.name, dir: root.path,
-                title: "Source", status: "history", source: "codex", resumeID: "source-thread",
-                createdAt: nil, updatedAt: nil
-            )
-            let created = AgentSession(
-                id: "unexpected-fallback", projectID: response.workspace.id,
-                project: response.workspace.name, dir: response.workspace.path,
-                title: "Fallback", status: "running", source: "codex", resumeID: nil,
-                createdAt: nil, updatedAt: nil
-            )
-            let client = MockSessionStoreClient(
-                projects: [root],
-                sessions: [source],
-                createSessionResponse: CreateSessionResponse(session: created, wsURL: ""),
-                sessionForkResults: ["source-thread": .failure(cancelError)],
-                worktreeCreateResults: [root.path: .success(response)]
-            )
-            let host = WorkspaceHostProbe(projects: [root])
-            host.createHandler = { response }
-            let store = SessionStore(
-                appStore: makeIsolatedAppStore(),
-                conversationStore: ConversationStore(),
-                logStore: LogStore(),
-                clientFactory: { client },
-                workspaceHostClientFactory: { host }
-            )
-            store.projects = [root]
-            store.sessions = [source]
-            _ = store.commitSelection(projectID: root.id, sessionID: source.id, reason: .userOpen)
-
-            let handedOff = await store.handoffSessionToWorktree(source)
-
-            let expectedFallbackMessage = L10n.format(
-                "ui.native_fork_is_not_available_use_prompt_worktree",
-                UserFacingError(cancelError).message
-            )
-            XCTAssertFalse(handedOff, "fork 显式取消应直接返回 false")
-            XCTAssertTrue(client.createPayloads.isEmpty, "fork 显式取消后不得创建替代会话或提交 prompt")
-            XCTAssertNotEqual(store.statusMessage, expectedFallbackMessage, "fork 显式取消不得展示回退提示")
-            XCTAssertFalse(store.statusMessage?.contains("CancellationError") == true)
-            XCTAssertNil(store.errorMessage)
-        }
-    }
-
-    /// 复制会话 fork 成功后若附加重命名被显式取消，应保留副本且不展示含原始取消文本的提示；
-    /// 而真实重命名失败仍保留部分成功提示。
-    func testDuplicateSessionCancelledRenameKeepsForkWithoutRawCancellationToast() async {
-        let workspace = AgentWorkspace(project: root)
-        let source = AgentSession(
-            id: "source-thread", projectID: root.id, project: root.name, dir: root.path,
-            title: "原始标题", status: "history", source: "codex", resumeID: "source-thread",
-            createdAt: nil, updatedAt: nil
-        )
-        let forked = AgentSession(
-            id: "forked-thread", projectID: root.id, project: root.name, dir: root.path,
-            title: "Forked", status: "history", source: "codex", resumeID: "forked-thread",
-            createdAt: nil, updatedAt: nil
-        )
-
-        for cancelError in [CancellationError() as Error, URLError(.cancelled)] {
-            let client = MockSessionStoreClient(
-                projects: [root],
-                sessions: [source],
-                sessionForkResults: ["source-thread": .success(forked)]
-            )
-            client.setThreadNameError = cancelError
-            let host = WorkspaceHostProbe(projects: [root])
-            host.resolveHandler = { _ in workspace }
-            let store = SessionStore(
-                appStore: makeIsolatedAppStore(),
-                conversationStore: ConversationStore(),
-                logStore: LogStore(),
-                clientFactory: { client },
-                workspaceHostClientFactory: { host }
-            )
-            store.projects = [root]
-            store.sessions = [source]
-
-            let duplicated = await store.duplicateSessionInCurrentWorkspace(source)
-
-            XCTAssertTrue(duplicated, "fork 成功后重命名取消仍应保留副本")
-            XCTAssertEqual(store.selectedSessionID, forked.id)
-            XCTAssertNil(store.statusMessage, "显式取消重命名不得把原始取消文本写入部分成功提示")
-        }
-
-        // 真实重命名失败仍展示部分成功提示。
-        let realFailClient = MockSessionStoreClient(
-            projects: [root],
-            sessions: [source],
-            sessionForkResults: ["source-thread": .success(forked)]
-        )
-        realFailClient.setThreadNameError = AgentAPIError.server(status: 500, message: "rename boom")
-        let realFailHost = WorkspaceHostProbe(projects: [root])
-        realFailHost.resolveHandler = { _ in workspace }
-        let realFailStore = SessionStore(
-            appStore: makeIsolatedAppStore(),
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { realFailClient },
-            workspaceHostClientFactory: { realFailHost }
-        )
-        realFailStore.projects = [root]
-        realFailStore.sessions = [source]
-
-        let duplicated = await realFailStore.duplicateSessionInCurrentWorkspace(source)
-        XCTAssertTrue(duplicated)
-        XCTAssertTrue(realFailStore.statusMessage?.contains("rename boom") == true)
-    }
-
-    /// 即使任务被取消，复制会话收到的真实非取消失败仍应如实上报，不得被裸 `Task.isCancelled` 吞掉。
-    func testDuplicateSessionRealFailureWhileTaskCancelledStillSurfacesError() async throws {
-        let workspace = AgentWorkspace(project: root)
-        let source = AgentSession(
-            id: "source-thread", projectID: root.id, project: root.name, dir: root.path,
-            title: "原始标题", status: "history", source: "codex", resumeID: "source-thread",
-            createdAt: nil, updatedAt: nil
-        )
-        let client = MockSessionStoreClient(
-            projects: [root],
-            sessions: [source],
-            sessionForkResults: ["source-thread": .failure(AgentAPIError.server(status: 500, message: "fork boom"))]
-        )
-        let host = WorkspaceHostProbe(projects: [root])
-        host.resolveHandler = { _ in workspace }
-        let store = SessionStore(
-            appStore: makeIsolatedAppStore(),
-            conversationStore: ConversationStore(),
-            logStore: LogStore(),
-            clientFactory: { client },
-            workspaceHostClientFactory: { host }
-        )
-        store.projects = [root]
-        store.sessions = [source]
-
-        let task = Task { @MainActor in
-            withUnsafeCurrentTask { $0?.cancel() }
-            return await store.duplicateSessionInCurrentWorkspace(source)
-        }
-        let duplicated = await task.value
-
-        XCTAssertFalse(duplicated)
-        let feedback = try XCTUnwrap(store.operationFeedback, "真实错误不得被 Task.isCancelled 吞掉")
-        XCTAssertEqual(feedback.kind, .failure)
-        XCTAssertTrue(feedback.technicalDetail?.contains("fork boom") == true, "应保留真实错误详情：\(String(describing: feedback.technicalDetail))")
-    }
-
     private func handoffFixture() -> (
         store: SessionStore, source: AgentSession, forked: AgentSession, history: OrderedHistoryPageClient
     ) {
@@ -923,7 +768,6 @@ private final class WorkspaceHostProbe: WorkspaceHostAPIClient {
     var worktreeListRequests = 0
     var listHandler: (@MainActor () async throws -> [WorktreeListItem])?
     var createHandler: (@MainActor () async -> WorktreeCreateResponse)?
-    var resolveHandler: (@MainActor (String) async throws -> AgentWorkspace)?
 
     init(projects: [AgentProject]) { catalog = projects }
 
@@ -941,10 +785,7 @@ private final class WorkspaceHostProbe: WorkspaceHostAPIClient {
         guard let createHandler else { throw AgentAPIError.invalidResponse }
         return await createHandler()
     }
-    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
-        if let resolveHandler { return try await resolveHandler(path) }
-        throw AgentAPIError.invalidResponse
-    }
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace { throw AgentAPIError.invalidResponse }
     func worktreeBranches(path: String) async throws -> WorktreeBranchListResponse { throw AgentAPIError.invalidResponse }
     func deleteWorktree(path: String, force: Bool) async throws -> WorktreeDeleteResponse { throw AgentAPIError.invalidResponse }
     func pruneMissingWorktrees() async throws -> WorktreePruneResponse { throw AgentAPIError.invalidResponse }

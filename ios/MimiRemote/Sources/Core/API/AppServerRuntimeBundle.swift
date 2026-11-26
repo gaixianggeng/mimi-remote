@@ -206,9 +206,22 @@ final class AppServerRuntimeBundle {
         installNativeHarnessRPCGate()
     }
 
-    /// 共享宿主级原生 Harness RPC 门控：所有经本宿主发出的 Harness RPC（含已打开会话的
-    /// prompt / selectModel / cancel）在发送前核对宿主当前已加载的配置快照，不在门控内发起网络请求。
+    /// 共享宿主级原生 Harness RPC 门控：订阅所有 Runtime 的配置加载/失效信号，并让经本宿主
+    /// 发出的全部 Harness RPC（含已打开会话的 prompt / selectModel / cancel）在发送前
+    /// 核对当前门控状态；门控本身绝不发起网络请求。
     private func installNativeHarnessRPCGate() {
+        // 逆序注册使主通道 `codex` 最后回放初始快照，确保初始门控以 `codex` 配置为准。
+        for provider in appServerRuntimeOrder.reversed() {
+            guard let runtime = appServerRuntimes[provider] else { continue }
+            runtime.setConfigObserver(
+                onLoad: { [weak self] config in
+                    self?.observeConfigurationForNativeHarnessGate(config)
+                },
+                onInvalidate: { [weak self] in
+                    self?.noteRuntimeConfigInvalidated()
+                }
+            )
+        }
         guard let apiClient = harness as? HarnessSessionAPIClient else { return }
         apiClient.setRPCGate { [weak self] in
             guard let self else { return }
@@ -310,9 +323,22 @@ final class AppServerRuntimeBundle {
         }
     }
 
+    /// 宿主级原生 Harness RPC 门控状态。
+    /// - `unknown`：尚未加载过配置，或启用态配置在断线失效后尚未重读；保持直达 Harness（不额外发 config 请求）。
+    /// - `allowed`：最近已加载的配置明确声明原生 Harness 可用。
+    /// - `disabled`：最近已加载的配置明确缺少或禁用原生 Harness；跨断线/配置失效保留，直至重新加载到启用配置。
+    /// - `upgradeRequired`：宿主声明了 DeepSeek 但协议/类型不兼容。
+    private enum NativeHarnessGateState: Equatable {
+        case unknown
+        case allowed
+        case disabled
+        case upgradeRequired
+    }
+
     private let configLock = NSLock()
     private var sharedConfig: CodexAppServerConfigResponse?
     private var installedGeneration: ConfigGeneration?
+    private var nativeHarnessGateState: NativeHarnessGateState = .unknown
     private var isRetired = false
     private var configRefreshTask: Task<CodexAppServerConfigResponse, Error>?
 
@@ -377,22 +403,48 @@ final class AppServerRuntimeBundle {
         try Self.nativeHarnessIsConfigured(in: try await currentConfiguration())
     }
 
-    /// 只读当前宿主已加载且未失效的配置快照；绝不发起 `GET /api/app-server/config`。
-    func loadedConfigurationSnapshot() async -> CodexAppServerConfigResponse? {
-        await cachedConfigIfStillValid()
-    }
-
-    /// 仅基于已加载的配置快照判断原生 Harness 是否启用；快照尚未加载或已失效时返回 `nil`，
-    /// 保留直达 Harness 的既有行为，不在门控路径触发额外网络请求。
-    func loadedNativeHarnessConfigured() async throws -> Bool? {
-        guard let config = await loadedConfigurationSnapshot() else {
-            return nil
+    private func observeConfigurationForNativeHarnessGate(_ config: CodexAppServerConfigResponse) {
+        let nextState: NativeHarnessGateState
+        do {
+            nextState = try Self.nativeHarnessIsConfigured(in: config) ? .allowed : .disabled
+        } catch HarnessNativeUnavailableError.agentdUpgradeRequired {
+            nextState = .upgradeRequired
+        } catch {
+            return
         }
-        return try Self.nativeHarnessIsConfigured(in: config)
+        configLock.withLock {
+            nativeHarnessGateState = nextState
+        }
     }
 
-    /// 共享宿主级门控：仅在配置快照已加载时阻止未启用或协议不兼容的调用；
-    /// 快照尚未加载时放行（不发起 `GET /api/app-server/config`）。
+    /// 断线或 daemon 重载导致配置快照失效时，明示“未启用/缺失”的宿主必须继续阻止原生 RPC，
+    /// 避免一次 Codex 断线把门控冲回“未知放行”；已启用宿主则回到未知态以继续透传真实 Harness 错误。
+    private func noteRuntimeConfigInvalidated() {
+        configLock.withLock {
+            if nativeHarnessGateState != .disabled {
+                nativeHarnessGateState = .unknown
+            }
+        }
+    }
+
+    /// 仅基于已发布到门控的配置状态判断原生 Harness 是否启用；从未加载或启用态失效后尚未重读时
+    /// 返回 `nil`，保留直达 Harness 的既有行为，不在门控路径触发额外网络请求。
+    func loadedNativeHarnessConfigured() async throws -> Bool? {
+        let state = configLock.withLock { nativeHarnessGateState }
+        switch state {
+        case .unknown:
+            return nil
+        case .allowed:
+            return true
+        case .disabled:
+            return false
+        case .upgradeRequired:
+            throw HarnessNativeUnavailableError.agentdUpgradeRequired
+        }
+    }
+
+    /// 共享宿主级门控：仅在门控记录到未启用或协议不兼容时阻止调用；
+    /// 快照尚未加载或启用态失效等待重读时放行（不发起 `GET /api/app-server/config`）。
     func requireLoadedNativeHarnessAllowed() async throws {
         if let configured = try await loadedNativeHarnessConfigured(), !configured {
             throw CodexAppServerSessionRuntimeError.gatewayUnavailable

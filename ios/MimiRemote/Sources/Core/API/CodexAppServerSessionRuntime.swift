@@ -199,12 +199,59 @@ struct CodexAppServerDeferredEventAttachment: Sendable {
 }
 
 actor CodexAppServerSessionRuntime {
+    private final class ConfigObserverBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var onLoad: (@Sendable (CodexAppServerConfigResponse) -> Void)?
+        private var onInvalidate: (@Sendable () -> Void)?
+        private var latestConfig: CodexAppServerConfigResponse?
+        private var invalidatedAfterLoad = false
+
+        init(initialConfig: CodexAppServerConfigResponse?) {
+            latestConfig = initialConfig
+        }
+
+        func setObservers(
+            onLoad: (@Sendable (CodexAppServerConfigResponse) -> Void)?,
+            onInvalidate: (@Sendable () -> Void)?
+        ) {
+            let replay: (config: CodexAppServerConfigResponse?, invalidated: Bool) = lock.withLock {
+                self.onLoad = onLoad
+                self.onInvalidate = onInvalidate
+                return (latestConfig, invalidatedAfterLoad)
+            }
+            if let config = replay.config {
+                onLoad?(config)
+                if replay.invalidated {
+                    onInvalidate?()
+                }
+            }
+        }
+
+        func publish(_ config: CodexAppServerConfigResponse) {
+            let handler: (@Sendable (CodexAppServerConfigResponse) -> Void)? = lock.withLock {
+                latestConfig = config
+                invalidatedAfterLoad = false
+                return onLoad
+            }
+            handler?(config)
+        }
+
+        func invalidate() {
+            let handler: (@Sendable () -> Void)? = lock.withLock {
+                invalidatedAfterLoad = true
+                return onInvalidate
+            }
+            handler?()
+        }
+    }
+
     let endpoint: String
     let token: String
     let runtimeProvider: String
     let transportFactory: () -> CodexAppServerTransport
     let configProvider: () async throws -> CodexAppServerConfigResponse
     let deprecationDiagnosticSink: (CodexAppServerDeprecationDiagnostic) -> Void
+    private let configObserverBox: ConfigObserverBox
     var config: CodexAppServerConfigResponse?
     /// 丢弃配置的次数。Bundle 用它判断共享快照是否还有效：daemon 重载可能只让其中一个
     /// Runtime 断线，而能力判断读的是同一份 channels，所以任一端失效都要让另一个也重读。
@@ -363,6 +410,7 @@ actor CodexAppServerSessionRuntime {
         self.gatewayDefaults = gatewayDefaults
         self.deprecationDiagnosticSink = deprecationDiagnosticSink
         self.config = initialConfig
+        self.configObserverBox = ConfigObserverBox(initialConfig: initialConfig)
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
         }
@@ -3649,12 +3697,20 @@ actor CodexAppServerSessionRuntime {
         )
     }
 
+    nonisolated func setConfigObserver(
+        onLoad: (@Sendable (CodexAppServerConfigResponse) -> Void)?,
+        onInvalidate: (@Sendable () -> Void)?
+    ) {
+        configObserverBox.setObservers(onLoad: onLoad, onInvalidate: onInvalidate)
+    }
+
     func ensureConfig(forceRefresh: Bool = false) async throws -> CodexAppServerConfigResponse {
         if let config, !forceRefresh {
             return config
         }
         let next = try await configProvider()
         config = next
+        configObserverBox.publish(next)
         return next
     }
 
@@ -3671,6 +3727,7 @@ actor CodexAppServerSessionRuntime {
     func invalidateConfigSnapshot() {
         config = nil
         configInvalidationSequence &+= 1
+        configObserverBox.invalidate()
     }
 
     func sendRecoveringFromStaleInitialization(
