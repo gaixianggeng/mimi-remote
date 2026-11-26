@@ -963,7 +963,10 @@ describe("mimi-agy-adapter round5 fixes", () => {
 
     const backend: AgySessionBackend = {
       async listSummaries() {
-        return [{ sessionId, cwd: workspaceDir, title: "C11 Write Recheck", updatedAt: "2026-11-22T02:00:00Z" }];
+        return {
+          summaries: [{ sessionId, cwd: workspaceDir, title: "C11 Write Recheck", updatedAt: "2026-11-22T02:00:00Z" }],
+          listMeta: { schemaVersion: 1, complete: true, sources: ["cli"] },
+        };
       },
       async loadReplay() {
         return [];

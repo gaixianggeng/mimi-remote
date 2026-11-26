@@ -4,7 +4,14 @@ import type { Turn } from "@mimi/appserver-kit/protocol/codex/v2/Turn.ts";
 import type { AcpSessionSummary, AcpSessionUpdate } from "../acp/types.ts";
 import { errorText, logger } from "../util/logging.ts";
 import { SharedReadonlyAcp } from "./binary.ts";
-import { conversationDbPath, hasOtherConversations, resolveSessionOrigin, type AgySessionOrigin } from "./env.ts";
+import {
+  conversationDbPath,
+  createBatchSessionOriginResolver,
+  probeOtherConversations,
+  resolveSessionOrigin,
+  type AgySessionOrigin,
+  type OtherConversationsProbeStatus,
+} from "./env.ts";
 import { directoryExists, normalizeNativeCwd, type GitRepoIndex } from "./git.ts";
 import { updatesToTurns } from "./history.ts";
 import { parseTurnOrdinal, type AgyOverlay, type PersistedToolMapping, type TurnAttemptRecord, type TurnOutcomeRecord } from "./overlay.ts";
@@ -45,6 +52,35 @@ export interface DiskRevisionInfo {
   transcriptPath?: string;
 }
 
+export type AgyListDegradedReason =
+  | "other_timeout"
+  | "other_failed"
+  | "other_probe_permission_denied"
+  | "other_probe_io_error";
+
+export type AgyThreadListMeta =
+  | {
+      schemaVersion: 1;
+      complete: true;
+      sources: ("cli" | "other")[];
+    }
+  | {
+      schemaVersion: 1;
+      complete: false;
+      degradedReason: AgyListDegradedReason;
+      degradedSources: ["other"];
+    };
+
+export interface AgyListSummariesResult {
+  readonly summaries: AcpSessionSummary[];
+  readonly listMeta: AgyThreadListMeta;
+}
+
+export interface AgyCatalogListResult {
+  readonly records: SessionRecord[];
+  readonly listMeta: AgyThreadListMeta;
+}
+
 export type OtherListDiagnostic =
   | { status: "ok"; count: number; elapsedMs: number }
   | { status: "empty"; count: 0; elapsedMs: number }
@@ -52,10 +88,10 @@ export type OtherListDiagnostic =
   | { status: "failed"; error: string; elapsedMs: number };
 
 export interface AgySessionBackend {
-  listSummaries(): Promise<AcpSessionSummary[]>;
-  wasLastOtherListDegraded?(): boolean;
+  listSummaries(): Promise<AgyListSummariesResult>;
   loadReplay(sessionId: string, cwd: string, origin: AgySessionOrigin): Promise<AcpSessionUpdate[]>;
   resolveSessionOrigin(sessionId: string): Promise<AgySessionOrigin | null>;
+  createSessionOriginResolver?(): Promise<(sessionId: string) => Promise<AgySessionOrigin | null>>;
   conversationFilePath(sessionId: string, origin: AgySessionOrigin): string | null;
   diskRevision?(sessionId: string, origin: AgySessionOrigin): Promise<DiskRevisionInfo | undefined>;
   inspectExternalActivity?(
@@ -109,24 +145,44 @@ function otherListBudgets(env: NodeJS.ProcessEnv): { foregroundMs: number; hardM
   return { foregroundMs, hardMs };
 }
 
+type OtherQueryOutcome =
+  | { readonly ok: true; readonly summaries: AcpSessionSummary[] }
+  | { readonly ok: false; readonly reason: "other_timeout" | "other_failed"; readonly summaries: AcpSessionSummary[] };
+
+function mergeSessionSummaries(
+  cliList: readonly AcpSessionSummary[],
+  otherList: readonly AcpSessionSummary[],
+): AcpSessionSummary[] {
+  if (otherList.length === 0) return [...cliList];
+  const merged = new Map<string, AcpSessionSummary>();
+  for (const item of cliList) {
+    if (item.sessionId) merged.set(item.sessionId, item);
+  }
+  for (const item of otherList) {
+    if (item.sessionId && !merged.has(item.sessionId)) {
+      merged.set(item.sessionId, item);
+    }
+  }
+  return [...merged.values()];
+}
+
 export function createAcpSessionBackend(
   cliSharedAcp: SharedReadonlyAcp,
   otherSharedAcp: SharedReadonlyAcp,
   env: () => NodeJS.ProcessEnv = () => process.env,
   hasLiveSession?: (sessionId: string) => boolean,
   onOtherListDiagnostic?: (diag: OtherListDiagnostic) => void,
+  probeOther: (currentEnv: NodeJS.ProcessEnv) => Promise<OtherConversationsProbeStatus> = probeOtherConversations,
 ): AgySessionBackend {
-  let lastOtherDegraded = false;
   let lastOtherSnapshot: { at: number; summaries: AcpSessionSummary[] } | undefined;
   let otherQueryInFlight:
     | {
-        promise: Promise<{ ok: boolean; summaries: AcpSessionSummary[] }>;
+        promise: Promise<OtherQueryOutcome>;
         startedAt: number;
       }
     | undefined;
 
   const recordOtherDiag = (diag: OtherListDiagnostic) => {
-    lastOtherDegraded = diag.status === "timeout" || diag.status === "failed";
     if (diag.status === "timeout") {
       logger.info("agy.other_list.timeout", { timeoutMs: diag.timeoutMs, elapsedMs: diag.elapsedMs });
     } else if (diag.status === "failed") {
@@ -152,9 +208,9 @@ export function createAcpSessionBackend(
 
     const flight = {
       startedAt,
-      promise: undefined as unknown as Promise<{ ok: boolean; summaries: AcpSessionSummary[] }>,
+      promise: undefined as unknown as Promise<OtherQueryOutcome>,
     };
-    flight.promise = (async (): Promise<{ ok: boolean; summaries: AcpSessionSummary[] }> => {
+    flight.promise = (async (): Promise<OtherQueryOutcome> => {
       try {
         const list = await otherSharedAcp.use(
           (client) => client.sessionList(hardMs, controller.signal),
@@ -170,12 +226,17 @@ export function createAcpSessionBackend(
         return { ok: true, summaries: list };
       } catch (error) {
         const elapsedMs = Date.now() - startedAt;
-        if (hardTimedOut || controller.signal.aborted) {
+        const isTimeout = hardTimedOut || controller.signal.aborted;
+        if (isTimeout) {
           recordOtherDiag({ status: "timeout", timeoutMs: hardMs, elapsedMs });
         } else {
           recordOtherDiag({ status: "failed", error: errorText(error), elapsedMs });
         }
-        return { ok: false, summaries: lastOtherSnapshot?.summaries ?? [] };
+        return {
+          ok: false,
+          reason: isTimeout ? "other_timeout" : "other_failed",
+          summaries: lastOtherSnapshot?.summaries ?? [],
+        };
       } finally {
         clearTimeout(hardTimer);
         if (otherQueryInFlight === flight) {
@@ -189,28 +250,41 @@ export function createAcpSessionBackend(
   };
 
   return {
-    wasLastOtherListDegraded() {
-      return lastOtherDegraded;
-    },
-
-    async listSummaries() {
+    async listSummaries(): Promise<AgyListSummariesResult> {
       const currentEnv = env();
-      const checkOther = await hasOtherConversations(currentEnv);
-      if (!checkOther) {
-        lastOtherDegraded = false;
-        return cliSharedAcp.use((client) => client.sessionList());
+      const probeStatus = await probeOther(currentEnv);
+      if (probeStatus === "absent_or_empty") {
+        const cliList = await cliSharedAcp.use((client) => client.sessionList());
+        return {
+          summaries: cliList,
+          listMeta: { schemaVersion: 1, complete: true, sources: ["cli"] },
+        };
       }
+      if (probeStatus === "permission_denied" || probeStatus === "io_error") {
+        const degradedReason: AgyListDegradedReason =
+          probeStatus === "permission_denied" ? "other_probe_permission_denied" : "other_probe_io_error";
+        logger.info("agy.other_probe.degraded", { status: probeStatus, degradedReason });
+        const cliList = await cliSharedAcp.use((client) => client.sessionList());
+        return {
+          summaries: cliList,
+          listMeta: {
+            schemaVersion: 1,
+            complete: false,
+            degradedReason,
+            degradedSources: ["other"],
+          },
+        };
+      }
+
       const { foregroundMs, hardMs } = otherListBudgets(currentEnv);
-      const queryOtherBounded = async (): Promise<AcpSessionSummary[]> => {
+      const queryOtherBounded = async (): Promise<OtherQueryOutcome> => {
         // 后台预热刚刚成功时直接复用新鲜快照，避免立即二次重复拉取。
         if (!otherQueryInFlight && lastOtherSnapshot && Date.now() - lastOtherSnapshot.at < OTHER_WARM_SNAPSHOT_REUSE_MS) {
-          lastOtherDegraded = false;
-          return lastOtherSnapshot.summaries;
+          return { ok: true, summaries: lastOtherSnapshot.summaries };
         }
         const flight = ensureOtherQueryInFlight(hardMs);
         if (hardMs <= foregroundMs) {
-          const result = await flight.promise;
-          return result.summaries;
+          return flight.promise;
         }
         let fgTimedOut = false;
         const fgStartedAt = Date.now();
@@ -225,15 +299,19 @@ export function createAcpSessionBackend(
         try {
           const raced = await Promise.race([flight.promise, timeoutSentinel]);
           if (raced === "fg_timeout") {
-            // 前台不等死，但保留后台健康预热继续完成；若已有上次成功快照则先回退展示。
+            // 前台不等死，但保留后台健康预热继续完成；若已有上次成功快照则先回退展示，同时明确标记降级。
             recordOtherDiag({
               status: "timeout",
               timeoutMs: foregroundMs,
               elapsedMs: Date.now() - fgStartedAt,
             });
-            return lastOtherSnapshot?.summaries ?? [];
+            return {
+              ok: false,
+              reason: "other_timeout",
+              summaries: lastOtherSnapshot?.summaries ?? [],
+            };
           }
-          return raced.summaries;
+          return raced;
         } finally {
           if (fgTimer && !fgTimedOut) {
             clearTimeout(fgTimer);
@@ -241,21 +319,20 @@ export function createAcpSessionBackend(
         }
       };
 
-      const [cliList, otherList] = await Promise.all([
+      const [cliList, otherOutcome] = await Promise.all([
         cliSharedAcp.use((client) => client.sessionList()),
         queryOtherBounded(),
       ]);
-      if (otherList.length === 0) return cliList;
-      const merged = new Map<string, AcpSessionSummary>();
-      for (const item of cliList) {
-        if (item.sessionId) merged.set(item.sessionId, item);
-      }
-      for (const item of otherList) {
-        if (item.sessionId && !merged.has(item.sessionId)) {
-          merged.set(item.sessionId, item);
-        }
-      }
-      return [...merged.values()];
+      const summaries = mergeSessionSummaries(cliList, otherOutcome.summaries);
+      const listMeta: AgyThreadListMeta = otherOutcome.ok
+        ? { schemaVersion: 1, complete: true, sources: ["cli", "other"] }
+        : {
+            schemaVersion: 1,
+            complete: false,
+            degradedReason: otherOutcome.reason,
+            degradedSources: ["other"],
+          };
+      return { summaries, listMeta };
     },
 
     async loadReplay(sessionId: string, cwd: string, origin: AgySessionOrigin) {
@@ -273,6 +350,10 @@ export function createAcpSessionBackend(
 
     resolveSessionOrigin(sessionId: string) {
       return resolveSessionOrigin(sessionId, env());
+    },
+
+    createSessionOriginResolver() {
+      return createBatchSessionOriginResolver(env());
     },
 
     conversationFilePath(sessionId: string, origin: AgySessionOrigin) {
@@ -341,7 +422,7 @@ export interface CatalogDeps {
 }
 
 export class AgyCatalog {
-  private cachedList: { at: number; degraded: boolean; summaries: AcpSessionSummary[] } | undefined;
+  private cachedList: { at: number; result: AgyListSummariesResult } | undefined;
 
   constructor(
     private readonly deps: CatalogDeps,
@@ -394,19 +475,26 @@ export class AgyCatalog {
     }
   }
 
-  async list(dirs?: readonly string[]): Promise<SessionRecord[]> {
+  /**
+   * 返回按 `dirs` 过滤后的未分页候选记录及同一次查询的不可变 `listMeta`；
+   * 过滤、排序与游标切页统一由 `handlers/threads.ts` 负责。
+   */
+  async list(dirs?: readonly string[]): Promise<AgyCatalogListResult> {
     await this.deps.overlay.load();
-    const summaries = await this.fetchSummaries();
+    const { summaries, listMeta } = await this.fetchSummaries();
     const activeMap = this.deps.inMemorySessions?.() ?? new Map();
+    const resolveOrigin = this.deps.backend.createSessionOriginResolver
+      ? await this.deps.backend.createSessionOriginResolver()
+      : (sessionId: string) => this.deps.backend.resolveSessionOrigin(sessionId);
+
     const byId = new Map<string, { summary: AcpSessionSummary; origin: AgySessionOrigin }>();
     for (const item of summaries) {
       if (!item.sessionId) continue;
+      const origin = await resolveOrigin(item.sessionId);
       if (activeMap.has(item.sessionId)) {
-        const detected = await this.deps.backend.resolveSessionOrigin(item.sessionId);
-        byId.set(item.sessionId, { summary: item, origin: detected ?? "cli" });
+        byId.set(item.sessionId, { summary: item, origin: origin ?? "cli" });
         continue;
       }
-      const origin = await this.deps.backend.resolveSessionOrigin(item.sessionId);
       if (origin) {
         byId.set(item.sessionId, { summary: item, origin });
       }
@@ -425,24 +513,80 @@ export class AgyCatalog {
       }
     }
 
-    const records: SessionRecord[] = [];
-    for (const { summary, origin } of byId.values()) {
-      const record = await this.toRecord(summary, origin, activeMap.get(summary.sessionId));
-      if (dirs && dirs.length > 0) {
-        if (!record.cwd || !(await this.deps.git.matchesAnyRoot(record.cwd, dirs))) {
-          continue;
-        }
+    const normalizedTmp = os.tmpdir().replace(/\/+$/, "");
+    const normalizedCwdCache = new Map<string, Promise<string>>();
+    const dirExistsCache = new Map<string, Promise<boolean>>();
+    const cachedDirExists = (dir: string): Promise<boolean> => {
+      let pending = dirExistsCache.get(dir);
+      if (!pending) {
+        pending = directoryExists(dir);
+        dirExistsCache.set(dir, pending);
       }
-      records.push(record);
+      return pending;
+    };
+
+    const resolveEffectiveCwd = async (
+      summary: AcpSessionSummary,
+      mem: { cwd: string } | undefined,
+    ): Promise<string> => {
+      const overlay = this.deps.overlay.get(summary.sessionId);
+      const fallbackCwd = (mem?.cwd || overlay?.cwd || "").trim() || undefined;
+      const raw = summary.cwd?.trim() ?? "";
+      let rawSummaryCwd = "";
+      if (raw) {
+        const cacheKey = `${raw}\x00${fallbackCwd ?? ""}`;
+        let pending = normalizedCwdCache.get(cacheKey);
+        if (!pending) {
+          pending = normalizeNativeCwd(raw, fallbackCwd);
+          normalizedCwdCache.set(cacheKey, pending);
+        }
+        rawSummaryCwd = await pending;
+      }
+      const summaryCwd = rawSummaryCwd && rawSummaryCwd.replace(/\/+$/, "") !== normalizedTmp ? rawSummaryCwd : "";
+      return (summaryCwd || mem?.cwd || overlay?.cwd || rawSummaryCwd).trim();
+    };
+
+    const candidates = await Promise.all(
+      [...byId.values()].map(async ({ summary, origin }) => {
+        const mem = activeMap.get(summary.sessionId);
+        const cwd = await resolveEffectiveCwd(summary, mem);
+        return { summary, origin, mem, cwd };
+      }),
+    );
+
+    let filtered = candidates;
+    if (dirs && dirs.length > 0) {
+      const uniqueCwds = new Set<string>();
+      for (const candidate of candidates) {
+        if (candidate.cwd) uniqueCwds.add(candidate.cwd);
+      }
+      const matchedCwds = new Set<string>();
+      await Promise.all(
+        [...uniqueCwds].map(async (cwd) => {
+          if (await this.deps.git.matchesAnyRoot(cwd, dirs)) {
+            matchedCwds.add(cwd);
+          }
+        }),
+      );
+      filtered = candidates.filter((candidate) => Boolean(candidate.cwd) && matchedCwds.has(candidate.cwd));
     }
-    return records;
+
+    const records = await Promise.all(
+      filtered.map(({ summary, origin, mem, cwd }) =>
+        this.toRecord(summary, origin, mem, {
+          resolvedCwd: cwd,
+          checkDirectoryExists: cachedDirExists,
+        }),
+      ),
+    );
+    return { records, listMeta };
   }
 
   async get(sessionId: string): Promise<SessionRecord | undefined> {
     await this.deps.overlay.load();
     const activeMap = this.deps.inMemorySessions?.() ?? new Map();
     const mem = activeMap.get(sessionId);
-    const summaries = await this.fetchSummaries();
+    const { summaries } = await this.fetchSummaries();
     const found = summaries.find((entry) => entry.sessionId === sessionId);
     if (!found && !mem) return undefined;
     const detectedOrigin = await this.deps.backend.resolveSessionOrigin(sessionId);
@@ -461,40 +605,57 @@ export class AgyCatalog {
     );
   }
 
-  private async fetchSummaries(): Promise<AcpSessionSummary[]> {
+  private async fetchSummaries(): Promise<AgyListSummariesResult> {
     const now = Date.now();
-    // 若上一次 Other 索引处于降级（超时/失败），不复用缓存，使分页翻页或下一次刷新能立即发现恢复后的 Other 会话（C10）。
-    if (this.cachedList && !this.cachedList.degraded && now - this.cachedList.at < this.listCacheMs) {
-      return this.cachedList.summaries;
+    // 仅复用完整健康快照；任何降级或探测失败均不写入健康缓存，保证下一次查询立即重试恢复（C10 / C3）。
+    if (this.cachedList && this.cachedList.result.listMeta.complete && now - this.cachedList.at < this.listCacheMs) {
+      return this.cachedList.result;
     }
-    const summaries = await this.deps.backend.listSummaries();
-    const degraded = this.deps.backend.wasLastOtherListDegraded?.() ?? false;
-    this.cachedList = { at: Date.now(), degraded, summaries };
-    return summaries;
+    const result = await this.deps.backend.listSummaries();
+    if (result.listMeta.complete) {
+      this.cachedList = { at: Date.now(), result };
+    }
+    return result;
   }
 
   private async toRecord(
     summary: AcpSessionSummary,
     origin: AgySessionOrigin,
     mem: { cwd: string; createdAt: number; updatedAt: number; title: string | null } | undefined,
+    precomputed?: {
+      resolvedCwd?: string;
+      checkDirectoryExists?: (dir: string) => Promise<boolean>;
+    },
   ): Promise<SessionRecord> {
     const overlay = this.deps.overlay.get(summary.sessionId);
-    const nowSec = Math.floor(Date.now() / 1000);
     const disk = await this.deps.backend.diskRevision?.(summary.sessionId, origin);
     const summaryUpdatedAt = parseIsoSeconds(summary.updatedAt, 0);
     // 仅 transcript.jsonl 反映真实对话写入时间；SQLite .db/.db-wal 可能在只读或 checkpoint 时
     // 刷新 mtime，仅在 summary 缺失有效时间戳时作为兜底，不覆盖已有历史会话的 updatedAt。
     const diskSec = disk?.transcriptPath ? Math.floor(disk.mtimeMs / 1000) : 0;
     const fallbackDiskSec = summaryUpdatedAt > 0 ? 0 : disk ? Math.floor(disk.mtimeMs / 1000) : 0;
-    const updatedAt =
-      Math.max(summaryUpdatedAt, diskSec, fallbackDiskSec, mem?.updatedAt ?? 0, overlay?.updatedAt ?? 0) || nowSec;
+    // 缺失全部有效时间戳时输出稳定 0（去掉 `|| nowSec` 兜底，避免跨页查询时排序漂移）。
+    const updatedAt = Math.max(
+      summaryUpdatedAt,
+      diskSec,
+      fallbackDiskSec,
+      mem?.updatedAt ?? 0,
+      overlay?.updatedAt ?? 0,
+    );
     const createdAt = overlay?.createdAt ?? mem?.createdAt ?? updatedAt;
-    const fallbackCwd = (mem?.cwd || overlay?.cwd || "").trim() || undefined;
-    const rawSummaryCwd = summary.cwd?.trim() ? await normalizeNativeCwd(summary.cwd, fallbackCwd) : "";
-    const normalizedTmp = os.tmpdir().replace(/\/+$/, "");
-    const summaryCwd = rawSummaryCwd && rawSummaryCwd.replace(/\/+$/, "") !== normalizedTmp ? rawSummaryCwd : "";
-    const cwd = (summaryCwd || mem?.cwd || overlay?.cwd || rawSummaryCwd).trim();
-    const cwdMissing = Boolean(cwd) && !(await directoryExists(cwd));
+
+    let cwd: string;
+    if (precomputed?.resolvedCwd !== undefined) {
+      cwd = precomputed.resolvedCwd;
+    } else {
+      const fallbackCwd = (mem?.cwd || overlay?.cwd || "").trim() || undefined;
+      const rawSummaryCwd = summary.cwd?.trim() ? await normalizeNativeCwd(summary.cwd, fallbackCwd) : "";
+      const normalizedTmp = os.tmpdir().replace(/\/+$/, "");
+      const summaryCwd = rawSummaryCwd && rawSummaryCwd.replace(/\/+$/, "") !== normalizedTmp ? rawSummaryCwd : "";
+      cwd = (summaryCwd || mem?.cwd || overlay?.cwd || rawSummaryCwd).trim();
+    }
+    const checkDirExists = precomputed?.checkDirectoryExists ?? directoryExists;
+    const cwdMissing = Boolean(cwd) && !(await checkDirExists(cwd));
     const gitInfo = cwd && !cwdMissing ? await this.deps.git.inspect(cwd) : { branch: null };
     const title = overlay?.customTitle?.trim() || mem?.title?.trim() || summary.title?.trim() || null;
     const preview = overlay?.preview?.trim() || title || "";

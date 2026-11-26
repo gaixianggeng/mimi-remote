@@ -131,10 +131,27 @@ export async function canonicalPathPreservingMissing(dir: string): Promise<strin
   }
 }
 
+export const MAX_CONCURRENT_GIT_INSPECT = 4;
+
 export interface GitDirectoryInfo {
   canonicalDir: string;
   repoKey: string;
   branch: string | null;
+}
+
+export interface GitRepoIndexOptions {
+  ttlMs?: number;
+  maxConcurrent?: number;
+  runGitRevParse?: (canonicalDir: string) => Promise<string>;
+}
+
+async function defaultRunGitRevParse(canonicalDir: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    "git",
+    ["-C", canonicalDir, "rev-parse", "--path-format=absolute", "--git-common-dir", "--abbrev-ref", "HEAD"],
+    { timeout: 3_000 },
+  );
+  return stdout;
 }
 
 /**
@@ -143,50 +160,124 @@ export interface GitDirectoryInfo {
  */
 export class GitRepoIndex {
   private readonly cache = new Map<string, { expiresAt: number; info: GitDirectoryInfo }>();
+  private readonly inflight = new Map<string, Promise<GitDirectoryInfo>>();
+  private readonly canonicalInflight = new Map<string, Promise<GitDirectoryInfo>>();
+  private readonly ttlMs: number;
+  private readonly maxConcurrent: number;
+  private readonly runGitRevParse: (canonicalDir: string) => Promise<string>;
+  private activeInspects = 0;
+  private readonly waiters: Array<() => void> = [];
 
-  constructor(private readonly ttlMs = 30_000) {}
+  constructor(ttlMsOrOptions: number | GitRepoIndexOptions = 30_000) {
+    if (typeof ttlMsOrOptions === "number") {
+      this.ttlMs = ttlMsOrOptions;
+      this.maxConcurrent = MAX_CONCURRENT_GIT_INSPECT;
+      this.runGitRevParse = defaultRunGitRevParse;
+    } else {
+      this.ttlMs = ttlMsOrOptions.ttlMs ?? 30_000;
+      this.maxConcurrent = Math.max(1, ttlMsOrOptions.maxConcurrent ?? MAX_CONCURRENT_GIT_INSPECT);
+      this.runGitRevParse = ttlMsOrOptions.runGitRevParse ?? defaultRunGitRevParse;
+    }
+  }
+
+  private async withInspectSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.activeInspects < this.maxConcurrent) {
+      this.activeInspects += 1;
+    } else {
+      await new Promise<void>((resolve) => {
+        this.waiters.push(resolve);
+      });
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) {
+        next();
+      } else {
+        this.activeInspects -= 1;
+      }
+    }
+  }
+
+  private inspectCanonical(canonicalDir: string): Promise<GitDirectoryInfo> {
+    const cached = this.cache.get(canonicalDir);
+    if (cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.info);
+    }
+    const existing = this.canonicalInflight.get(canonicalDir);
+    if (existing) {
+      return existing;
+    }
+
+    const work = (async (): Promise<GitDirectoryInfo> => {
+      let repoKey = canonicalDir;
+      let branch: string | null = null;
+      if (await directoryExists(canonicalDir)) {
+        try {
+          const stdout = await this.withInspectSlot(() => this.runGitRevParse(canonicalDir));
+          const lines = stdout
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          if (lines[0]) {
+            repoKey = await realpath(lines[0]).catch(() => path.resolve(lines[0]!));
+          }
+          if (lines[1] && lines[1] !== "HEAD") {
+            branch = lines[1];
+          }
+        } catch {
+          // 非 Git 目录或命令失败时退回规范化路径匹配。
+        }
+      }
+      const info: GitDirectoryInfo = { canonicalDir, repoKey, branch };
+      this.cache.set(canonicalDir, { expiresAt: Date.now() + this.ttlMs, info });
+      return info;
+    })().finally(() => {
+      if (this.canonicalInflight.get(canonicalDir) === work) {
+        this.canonicalInflight.delete(canonicalDir);
+      }
+    });
+
+    this.canonicalInflight.set(canonicalDir, work);
+    return work;
+  }
 
   async inspect(dir: string): Promise<GitDirectoryInfo> {
     const trimmed = dir.trim();
     if (!trimmed) {
       return { canonicalDir: "", repoKey: "", branch: null };
     }
-    const now = Date.now();
     const cached = this.cache.get(trimmed);
-    if (cached && cached.expiresAt > now) {
+    if (cached && cached.expiresAt > Date.now()) {
       return cached.info;
     }
-    const canonicalDir = await canonicalPathPreservingMissing(trimmed);
-    let repoKey = canonicalDir;
-    let branch: string | null = null;
-    try {
-      const { stdout } = await execFileAsync(
-        "git",
-        ["-C", canonicalDir, "rev-parse", "--path-format=absolute", "--git-common-dir", "--abbrev-ref", "HEAD"],
-        { timeout: 3_000 },
-      );
-      const lines = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
-      if (lines[0]) {
-        repoKey = await realpath(lines[0]).catch(() => path.resolve(lines[0]!));
-      }
-      if (lines[1] && lines[1] !== "HEAD") {
-        branch = lines[1];
-      }
-    } catch {
-      // 非 Git 目录或目录已删除时退回规范化路径匹配。
+    const existing = this.inflight.get(trimmed);
+    if (existing) {
+      return existing;
     }
-    const info: GitDirectoryInfo = { canonicalDir, repoKey, branch };
-    this.cache.set(trimmed, { expiresAt: now + this.ttlMs, info });
-    return info;
+
+    const work = (async (): Promise<GitDirectoryInfo> => {
+      const canonicalDir = await canonicalPathPreservingMissing(trimmed);
+      const info = await this.inspectCanonical(canonicalDir);
+      this.cache.set(trimmed, { expiresAt: Date.now() + this.ttlMs, info });
+      return info;
+    })().finally(() => {
+      if (this.inflight.get(trimmed) === work) {
+        this.inflight.delete(trimmed);
+      }
+    });
+
+    this.inflight.set(trimmed, work);
+    return work;
   }
 
   async matchesAnyRoot(sessionCwd: string, filterDirs: readonly string[]): Promise<boolean> {
     if (!sessionCwd.trim()) return false;
-    const sessionInfo = await this.inspect(sessionCwd);
-    const rootInfos = await Promise.all(filterDirs.map((dir) => this.inspect(dir)));
+    const [sessionInfo, ...rootInfos] = await Promise.all([
+      this.inspect(sessionCwd),
+      ...filterDirs.map((dir) => this.inspect(dir)),
+    ]);
     for (const root of rootInfos) {
       if (!root.canonicalDir) continue;
       if (sessionInfo.repoKey && sessionInfo.repoKey === root.repoKey) {

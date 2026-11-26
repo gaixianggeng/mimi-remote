@@ -1,4 +1,4 @@
-import { access, readdir } from "node:fs/promises";
+import { access, constants, lstat, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -77,20 +77,201 @@ export async function hasCliConversationDb(sessionId: string, env: NodeJS.Proces
   return fileExists(conversationDbPath(sessionId, env, "cli"));
 }
 
+export type OtherConversationsProbeStatus =
+  | "present"
+  | "absent_or_empty"
+  | "permission_denied"
+  | "io_error";
+
+export interface ProbeFsOps {
+  access: typeof access;
+  lstat: typeof lstat;
+  readdir: typeof readdir;
+  stat: typeof stat;
+}
+
+const defaultProbeFsOps: ProbeFsOps = { access, lstat, readdir, stat };
+
+function errorCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function isPermissionError(code: string | undefined): boolean {
+  return code === "EACCES" || code === "EPERM";
+}
+
+async function classifyMissingAncestor(
+  ancestorPath: string,
+  ops: ProbeFsOps,
+): Promise<"absent" | "present_dir" | "permission_denied" | "io_error"> {
+  try {
+    const ancestorLstat = await ops.lstat(ancestorPath);
+    if (ancestorLstat.isSymbolicLink()) {
+      try {
+        const targetStat = await ops.stat(ancestorPath);
+        return targetStat.isDirectory() ? "present_dir" : "io_error";
+      } catch (statError) {
+        return isPermissionError(errorCode(statError)) ? "permission_denied" : "io_error";
+      }
+    }
+    return ancestorLstat.isDirectory() ? "present_dir" : "io_error";
+  } catch (ancestorError) {
+    const code = errorCode(ancestorError);
+    if (isPermissionError(code)) return "permission_denied";
+    if (code === "ENOENT") return "absent";
+    return "io_error";
+  }
+}
+
+/**
+ * 4 状态 fail-closed 探测独立的 Other（桌面版 / 自定义 `AGY_ADAPTER_OTHER_APP_DATA_DIR`）目录：
+ * - `present`：目录可穿越且可读，且存在至少一个 `.db`；
+ * - `absent_or_empty`：与 CLI 同目录、真正缺目录，或目录可读但为空/无 `.db`；
+ * - `permission_denied`：`lstat` / `access(X_OK)` / `readdir` 遇到 `EACCES`/`EPERM`（含 `0111`/`0444`/`0000`）；
+ * - `io_error`：`EIO`/`EMFILE`/`ENOTDIR`/`ELOOP`、非目录，以及同样返回 `ENOENT` 的悬空符号链接。
+ */
+export async function probeOtherConversations(
+  env: NodeJS.ProcessEnv = process.env,
+  ops: ProbeFsOps = defaultProbeFsOps,
+): Promise<OtherConversationsProbeStatus> {
+  const paths = resolveAgyDataPaths(env);
+  if (paths.otherAppDataRoot === paths.appDataRoot) return "absent_or_empty";
+  const dir = path.join(paths.otherAppDataRoot, "conversations");
+
+  let isSymlink = false;
+  try {
+    const dirLstat = await ops.lstat(dir);
+    isSymlink = dirLstat.isSymbolicLink();
+    if (!isSymlink && !dirLstat.isDirectory()) {
+      return "io_error";
+    }
+  } catch (error) {
+    const code = errorCode(error);
+    if (isPermissionError(code)) return "permission_denied";
+    if (code !== "ENOENT") return "io_error";
+
+    // `lstat(dir)` 返回 ENOENT 时，进一步检查父级是否为悬空链接或非目录，避免误判为健康缺目录。
+    const rootState = await classifyMissingAncestor(paths.otherAppDataRoot, ops);
+    if (rootState === "permission_denied") return "permission_denied";
+    if (rootState === "io_error") return "io_error";
+    if (rootState === "absent") {
+      const geminiRoot = path.dirname(paths.otherAppDataRoot);
+      const geminiState = await classifyMissingAncestor(geminiRoot, ops);
+      if (geminiState === "permission_denied") return "permission_denied";
+      if (geminiState === "io_error") return "io_error";
+    }
+    return "absent_or_empty";
+  }
+
+  if (isSymlink) {
+    try {
+      const targetStat = await ops.stat(dir);
+      if (!targetStat.isDirectory()) {
+        return "io_error";
+      }
+    } catch (error) {
+      const code = errorCode(error);
+      if (isPermissionError(code)) return "permission_denied";
+      // 悬空符号链接（stat 返回 ENOENT）、ELOOP、EIO 等均 fail-closed 判为 io_error。
+      return "io_error";
+    }
+  }
+
+  try {
+    await ops.access(dir, constants.X_OK);
+    const entries = await ops.readdir(dir);
+    return entries.some((name) => name.endsWith(".db")) ? "present" : "absent_or_empty";
+  } catch (error) {
+    const code = errorCode(error);
+    if (isPermissionError(code)) return "permission_denied";
+    if (!isSymlink && code === "ENOENT") return "absent_or_empty";
+    return "io_error";
+  }
+}
+
 /**
  * 检查独立的 Other（桌面版 / 自定义 `AGY_ADAPTER_OTHER_APP_DATA_DIR`）目录下是否存在有效会话 `.db`，
  * 仅在存在时才按需查询 `otherSharedAcp` 的 `session/list`，避免无 Other 数据时多起子进程（C10）。
  */
 export async function hasOtherConversations(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  const paths = resolveAgyDataPaths(env);
-  if (paths.otherAppDataRoot === paths.appDataRoot) return false;
-  const dir = path.join(paths.otherAppDataRoot, "conversations");
+  return (await probeOtherConversations(env)) === "present";
+}
+
+type DirOriginIndex =
+  | { kind: "inaccessible" }
+  | { kind: "fallback_access"; dir: string }
+  | { kind: "indexed"; dir: string; directDbIds: Set<string>; verifyAccessDbIds: Set<string> };
+
+async function buildDirOriginIndex(dir: string): Promise<DirOriginIndex> {
   try {
-    const entries = await readdir(dir);
-    return entries.some((name) => name.endsWith(".db"));
+    // 先校验目录可穿越（X_OK），确保 0444 / 0000 / 悬空目录链接与逐文件 access(path) 完全等价。
+    await access(dir, constants.X_OK);
   } catch {
-    return false;
+    return { kind: "inaccessible" };
   }
+
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const directDbIds = new Set<string>();
+    const verifyAccessDbIds = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".db")) continue;
+      const sessionId = entry.name.slice(0, -3);
+      if (!SAFE_SESSION_ID.test(sessionId)) continue;
+      if (entry.isSymbolicLink()) {
+        // 符号链接条目需由 access(path) 核验目标可达，避免将悬空 .db 链接误认存在。
+        verifyAccessDbIds.add(sessionId);
+      } else if (entry.isFile() || entry.isDirectory()) {
+        directDbIds.add(sessionId);
+      } else {
+        verifyAccessDbIds.add(sessionId);
+      }
+    }
+    return { kind: "indexed", dir, directDbIds, verifyAccessDbIds };
+  } catch {
+    // 例如 0111 目录允许穿越（X_OK 成功）但禁止 readdir，回退逐文件 access(path) 保持等价。
+    return { kind: "fallback_access", dir };
+  }
+}
+
+async function hasIndexedConversationDb(index: DirOriginIndex, sessionId: string): Promise<boolean> {
+  if (!SAFE_SESSION_ID.test(sessionId)) return false;
+  if (index.kind === "inaccessible") return false;
+  if (index.kind === "fallback_access") {
+    return fileExists(path.join(index.dir, `${sessionId}.db`));
+  }
+  if (index.directDbIds.has(sessionId)) return true;
+  if (index.verifyAccessDbIds.has(sessionId)) {
+    return fileExists(path.join(index.dir, `${sessionId}.db`));
+  }
+  return false;
+}
+
+/**
+ * 批量识别会话来源（与逐条 `resolveSessionOrigin` 在 `0444`/`0111`/`0000`/悬空符号链接下完全等价）。
+ */
+export async function createBatchSessionOriginResolver(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<(sessionId: string) => Promise<AgySessionOrigin | null>> {
+  const paths = resolveAgyDataPaths(env);
+  const cliDir = path.join(paths.appDataRoot, "conversations");
+  const otherDir = path.join(paths.otherAppDataRoot, "conversations");
+  const sameRoot = paths.otherAppDataRoot === paths.appDataRoot;
+
+  const [cliIndex, otherIndex] = sameRoot
+    ? [await buildDirOriginIndex(cliDir), { kind: "inaccessible" } as const]
+    : await Promise.all([buildDirOriginIndex(cliDir), buildDirOriginIndex(otherDir)]);
+
+  return async (sessionId: string): Promise<AgySessionOrigin | null> => {
+    if (await hasIndexedConversationDb(cliIndex, sessionId)) {
+      return "cli";
+    }
+    if (!sameRoot && (await hasIndexedConversationDb(otherIndex, sessionId))) {
+      return "other";
+    }
+    return null;
+  };
 }
 
 /**
