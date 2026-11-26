@@ -159,22 +159,34 @@ public sealed class AgentClient(string executable) : IAgentCommand
             verifiedConfigured: verifiedConfigured,
             verifiedCapability: options.VerifiedCapability,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (!OnboardingCopyCatalog.TryDecodeAndValidateReport(
-            stdout,
-            platform,
-            expectedStage: options.Stage,
-            nativeOverlay: false,
-            verifiedCapability: options.VerifiedCapability,
-            out var report,
-            out _))
-        {
-            throw new InvalidDataException("无法解析预检报告。请重新检查。");
-        }
+        var report = DecodePreflightReport(stdout, platform, options);
         if (!accumulator.Complete(1, report))
         {
             cancellationToken.ThrowIfCancellationRequested();
         }
         return report;
+    }
+
+    internal static OnboardingPreflightReport DecodePreflightReport(string json, string platform, OnboardingPreflightOptions options)
+    {
+        if (OnboardingCopyCatalog.TryDecodeAndValidateReport(json, platform, options.Stage, false, options.VerifiedCapability, out var report, out _))
+        {
+            return report;
+        }
+        // Recognize this specific report as a reason to lock navigation. Never return its unverified repair action.
+        if (platform == "windows" && options.VerifiedCapability is null
+            && OnboardingCopyCatalog.TryDecodeAndValidateReport(json, platform, options.Stage, false, OnboardingSchema.DoctorFixCapability, out var restricted, out _)
+            && restricted.Checks.Any(row => row.Id == "config_store" && row.Code == "config_permissions_unsafe"))
+        {
+            throw new OnboardingCliException(new OnboardingResolvedDiagnostic
+            {
+                Code = "config_permissions_unsafe",
+                Step = "config_store",
+                Message = OnboardingCopyCatalog.LocalizedMessage("config_permissions_unsafe", "config_store"),
+                Trusted = false,
+            });
+        }
+        throw new InvalidDataException("无法解析预检报告。请重新检查。");
     }
 
     public async Task<SetupReceipt> SetupAsync(

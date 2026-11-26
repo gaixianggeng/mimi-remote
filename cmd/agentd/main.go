@@ -72,6 +72,8 @@ func runCommand(args []string, stdout, stderr, notice io.Writer) error {
 	case "version":
 		fmt.Println(version)
 		return nil
+	case "installer-maintenance":
+		return runInstallerMaintenance(args[1:])
 	case "preflight":
 		return runPreflight(args, stdout, stderr)
 	case "setup":
@@ -181,11 +183,17 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	appServerSSHTarget := fs.String("app-server-ssh-target", "", "共享 Codex App Server 的 SSH 目标；macOS 默认 127.0.0.1，Linux 仅显式指定时使用")
 	waitTimeout := fs.Duration("wait", 10*time.Second, "等待后台服务健康检查时间，设置 0 可跳过")
 	noPair := fs.Bool("no-pair", false, "启动成功后不输出二维码、Endpoint 和长期访问码，适合 Agent/自动化")
+	bootstrap := fs.Bool("installer-bootstrap", false, "Windows 安装器单次初始化或维护")
+	lan := fs.Bool("lan-enabled", false, "安装器已核验的局域网设置")
+	existing := fs.Bool("require-existing", false, "升级时必须复用已有身份")
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
+	if err := validateBootstrapFlags(fs, managedServicePlatform, *bootstrap, *noPair, *asJSON, *scanRoot); err != nil {
+		return err
+	}
 	if err := ensureNoLegacyCodexExperimentResidue(); err != nil {
 		return err
 	}
@@ -199,7 +207,7 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 	if !*asJSON {
 		fmt.Fprintln(stdout, "正在准备 Mimi Remote 助手...")
 	}
-	result, err := runAgentSetup(context.Background(), agentsetup.Options{
+	options := agentsetup.Options{
 		ConfigPath:         *configPath,
 		LegacyPath:         setupLegacyPath(fs),
 		ScanRoot:           *scanRoot,
@@ -207,7 +215,24 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 		Listen:             *listen,
 		AppServerSSHTarget: *appServerSSHTarget,
 		LocalServiceOnly:   true,
-	})
+	}
+	action := "start"
+	var lanErr error
+	if *bootstrap {
+		options.SaveOnly = true
+		options.PendingWorkspace = *scanRoot == ""
+		options.BrowseRoot = *scanRoot
+		if *lan {
+			lanErr = ensurePlatformLANAccessAllowed()
+		}
+		if lanErr != nil {
+			*lan = false
+		}
+		options.InstallerLAN = lan
+		options.RequireExisting = *existing
+		action = "reload-or-start"
+	}
+	result, err := runAgentSetup(context.Background(), options)
 	if err != nil {
 		return err
 	}
@@ -219,11 +244,14 @@ func runUpWithWriters(args []string, stdout, stderr io.Writer) error {
 		serviceStdout = io.Discard
 		serviceStderr = io.Discard
 	}
-	if err := manageCoreService(context.Background(), managedServicePlatform, "start", result.Endpoint, result.Token, version, *waitTimeout, serviceStdout, serviceStderr); err != nil {
+	if err := manageCoreService(context.Background(), managedServicePlatform, action, result.Endpoint, result.Token, version, *waitTimeout, serviceStdout, serviceStderr); err != nil {
 		return err
 	}
+	if lanErr != nil {
+		return onboardingFailure("lan_firewall_blocked", "network_lan", true, errors.New("核心服务已启动，局域网仍关闭。请在受信任的专用网络中重试维护。"))
+	}
 	if !*noPair {
-		pair, err := agentsetup.Pair(context.Background(), result.ConfigPath)
+		pair, err := requestPairIssue(context.Background(), result.ConfigPath, agentsetup.PairingNetworkAuto)
 		if err != nil {
 			return err
 		}
@@ -370,7 +398,7 @@ func runManagedServiceCommand(args []string, stdout, stderr io.Writer, copy mana
 		return err
 	}
 	if !*noPair {
-		result, err = agentsetup.Pair(context.Background(), *configPath)
+		result, err = requestPairIssue(context.Background(), *configPath, agentsetup.PairingNetworkAuto)
 		if err != nil {
 			return err
 		}
@@ -706,7 +734,7 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 	if err := prepareRequiredConfig(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	result, err := agentsetup.PairForNetwork(context.Background(), *configPath, network)
+	result, err := requestPairIssue(context.Background(), *configPath, network)
 	if err != nil {
 		return err
 	}
@@ -714,7 +742,10 @@ func runPairWithWriters(args []string, stdout io.Writer, stderr io.Writer) error
 		if *qrOnly {
 			return printJSONTo(stdout, qrOnlyPairResult(result))
 		}
-		return printJSONTo(stdout, result)
+		return printJSONTo(stdout, struct {
+			OK bool `json:"ok"`
+			agentsetup.Result
+		}{true, result})
 	}
 	if *qrOnly {
 		printQROnlyPairResult(stdout, result)
@@ -976,7 +1007,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		}
 	}()
 	checker.StartFileAccessPreflight()
-	routerOptions := httpapi.RouterOptions{EnableHostMetadata: true}
+	routerOptions := httpapi.RouterOptions{EnableHostMetadata: true, BoundListeners: listeners}
 	if gate != nil {
 		routerOptions.NetworkAvailability = gate.Availability
 		routerOptions.ConfirmLANPolicy = gate.Confirm
@@ -1022,8 +1053,10 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		log.Print(staleTailscaleListenWarning)
 	} else if isTerminalOutput(os.Stdout) {
 		go func() {
-			result := agentsetup.ResultFromConfig(serviceCtx, checker.ConfigPath(), cfg)
-			if serviceCtx.Err() == nil {
+			// The foreground serve process owns these listeners, even when its
+			// config has the default system-manager path. Verify the foreground peer.
+			result, err := requestPairIssueWithDial(serviceCtx, checker.ConfigPath(), agentsetup.PairingNetworkAuto, coreDialForOwner(false))
+			if err == nil && serviceCtx.Err() == nil {
 				maybePrintServeConnection(os.Stdout, result)
 			}
 		}()

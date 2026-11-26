@@ -11,12 +11,13 @@ internal static class PreviewData
         Projects = 4,
         ServiceOk = true,
         ProcessOk = true,
-        ModuleStatus = new ModuleStatus { CodexEnabled = true, ClaudeEnabled = true, TailscaleEnabled = true, LanEnabled = true, TailscaleAvailable = true, LanAvailable = true },
+        ModuleStatus = new ModuleStatus { CodexEnabled = true, ClaudeEnabled = true, AgyEnabled = true, TailscaleEnabled = true, LanEnabled = true, TailscaleAvailable = true, LanAvailable = true },
         RuntimeStatus = new RuntimeStatus
         {
             Runtimes = [
             new RuntimeEntry { Id = "codex", Title = "Codex", Enabled = true, State = "ready" },
-            new RuntimeEntry { Id = "claude", Title = "Claude", Enabled = true, State = "ready" }]
+            new RuntimeEntry { Id = "claude", Title = "Claude", Enabled = true, State = "ready" },
+            new RuntimeEntry { Id = "agy", Title = "Antigravity", Enabled = true, State = "ready" }]
         }
     };
 }

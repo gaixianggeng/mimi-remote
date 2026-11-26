@@ -174,9 +174,13 @@ func (r *Router) checkAgyAuthStatusCached(agyPath string, env []string) (agybrid
 }
 
 func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
+	return r.setAgyAdapterProbe(r.inspectAgyAdapter(context.Background(), r.checkAgyAuthStatusCached))
+}
+
+func (r *Router) inspectAgyAdapter(ctx context.Context, account func(string, []string) (agybridge.AgyAuthState, string)) agyAdapterProbe {
 	probe := agyAdapterProbe{Status: "disabled"}
 	if !r.cfg.Agy.Enabled {
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
 	bin := strings.TrimSpace(r.cfg.Agy.AdapterBin)
 	path, ok := agybridge.ResolveBinary(bin)
@@ -184,36 +188,36 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 		probe.Path = bin
 		probe.Status = "missing_command"
 		probe.Error = "未找到 mimi-agy-adapter，可重新安装 Mimi Remote 或配置 agy.adapter_bin"
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
 	probe.Path = path
 
 	env := agybridge.BuildEnv(r.cfg.Agy.Env)
-	verCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	verCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	out, err := cliinspect.Stdout(verCtx, path, env, append(append([]string{}, r.cfg.Agy.Args...), "--version")...)
 	cancel()
 	if err != nil {
 		probe.Status = "missing_version"
 		probe.Error = agybridge.UpgradeMessage("")
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
 	version, ok := agybridge.ParseVersion(string(bytes.TrimSpace(out)))
 	probe.Version = version
 	if !ok || !agybridge.IsSupported(version) {
 		probe.Status = "unsupported_version"
 		probe.Error = agybridge.UpgradeMessage(version)
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
-	capabilities, err := agybridge.ReadAdapterCapabilities(context.Background(), path, r.cfg.Agy.Args, env)
+	capabilities, err := agybridge.ReadAdapterCapabilities(ctx, path, r.cfg.Agy.Args, env)
 	if err != nil {
 		probe.Status = "missing_capabilities"
 		probe.Error = "无法读取 Antigravity 适配器的能力声明：" + err.Error()
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
 	probe.Capabilities = &capabilities
 	probe.MinimumCLIVersion = strings.TrimSpace(capabilities.Agy.MinimumVersion)
 
-	candidate, err := setup.ResolveRuntime(context.Background(), setup.AgyRuntime(r.cfg.Agy, probe.MinimumCLIVersion, env))
+	candidate, err := setup.ResolveRuntime(ctx, setup.AgyRuntime(r.cfg.Agy, probe.MinimumCLIVersion, env))
 	probe.CLIVersion, probe.cliPath = candidate.Version, candidate.Path
 	if err != nil {
 		probe.Status = "agy_missing"
@@ -223,23 +227,23 @@ func (r *Router) refreshAgyAdapterProbe() agyAdapterProbe {
 			probe.Status = "agy_unsupported"
 			probe.Error = agybridge.AgyUpgradeMessage(candidate.Version, probe.MinimumCLIVersion)
 		}
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
-	authState, authMsg := r.checkAgyAuthStatusCached(candidate.Path, env)
+	authState, authMsg := account(candidate.Path, env)
 	switch authState {
 	case agybridge.AgyAuthSignedOut:
 		probe.Status = "agy_signed_out"
 		probe.Error = authMsg
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	case agybridge.AgyAuthUnknown:
 		probe.Status = "agy_auth_unknown"
 		probe.Error = authMsg
-		return r.setAgyAdapterProbe(probe)
+		return probe
 	}
 
 	probe.Status = "ready"
 	probe.Healthy = true
-	return r.setAgyAdapterProbe(probe)
+	return probe
 }
 
 func (r *Router) setAgyAdapterProbe(probe agyAdapterProbe) agyAdapterProbe {

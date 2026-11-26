@@ -4,13 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
-
 	"strings"
 	"time"
 
@@ -31,9 +29,11 @@ type Options struct {
 	AppServerSSHTarget                     string
 	Force                                  bool
 	SaveOnly, CreateRoot, PendingWorkspace bool
-	RequireExisting                        bool
-	RuntimePaths, Assistants               map[string]string
-	LegacyPath                             string
+	// InstallerLAN applies verified ingress intent in the same publication as the workspace.
+	InstallerLAN             *bool
+	RequireExisting          bool
+	RuntimePaths, Assistants map[string]string
+	LegacyPath               string
 	// LocalServiceOnly 用于 up --no-pair：新建或沿用配置后都只返回本机就绪检查需要的
 	// Token 与 loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
 	LocalServiceOnly bool
@@ -80,28 +80,13 @@ func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
 	return value, nil
 }
 
-func Pair(ctx context.Context, configPath string) (Result, error) {
-	return PairForNetwork(ctx, configPath, PairingNetworkAuto)
-}
-
-func PairForNetwork(ctx context.Context, configPath string, network PairingNetwork) (Result, error) {
-	cfgPath, err := resolveConfigPath(configPath)
-	if err != nil {
-		return Result{}, err
-	}
-	cfg, err := config.LoadForDoctor(cfgPath)
-	if err != nil {
-		return Result{}, err
-	}
-	return ResultFromConfigForNetwork(ctx, cfgPath, cfg, network)
-}
-
-func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	result, err := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+// ResultFromConfig returns display metadata. Only the running daemon issues links.
+func ResultFromConfig(ctx context.Context, path string, cfg config.Config) Result {
+	candidate, err := DirectPairCandidate(ctx, path, cfg, PairingNetworkAuto)
 	if err == nil {
-		return result
+		return candidate
 	}
-	result = localServiceResult(configPath, cfg)
+	result := localServiceResult(path, cfg)
 	result.Warnings = []string{err.Error()}
 	return result
 }
@@ -138,13 +123,10 @@ func localServiceResult(configPath string, cfg config.Config) Result {
 	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token}
 }
 
-func ResultFromConfigForNetwork(
-	ctx context.Context,
-	configPath string,
-	cfg config.Config,
-	network PairingNetwork,
-) (Result, error) {
-	return resultFromConfigForNetwork(ctx, configPath, cfg, network, defaultPairingNetworkLookups())
+// DirectPairCandidate resolves an address but does not issue credentials. The
+// daemon validates the selected address against its listeners and live policy.
+func DirectPairCandidate(ctx context.Context, path string, cfg config.Config, network PairingNetwork) (Result, error) {
+	return resultFromConfigForNetwork(ctx, path, cfg, network, defaultPairingNetworkLookups())
 }
 
 func resultFromConfigForNetwork(
@@ -160,11 +142,6 @@ func resultFromConfigForNetwork(
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
 		return Result{}, err
-	}
-	if pairingNetworkForEndpoint(endpoint) == PairingNetworkLAN && lookups.confirmLAN != nil {
-		if err := lookups.confirmLAN(ctx, cfg); err != nil {
-			return Result{}, err
-		}
 	}
 	host := tailscaleinfo.Host{}
 	if pairingNetworkForEndpoint(endpoint) == PairingNetworkTailscale && lookups.tailscaleHost != nil {
@@ -182,8 +159,6 @@ func resultFromConfigForNetwork(
 	if len(cfg.BrowseRoots) > 0 {
 		browseRoot = cfg.BrowseRoots[0]
 	}
-	now := time.Now().UTC()
-	expiresAt := now.Add(defaultPairingURLTTL)
 	return Result{
 		ConfigPath:          configPath,
 		Endpoint:            endpoint,
@@ -191,15 +166,22 @@ func resultFromConfigForNetwork(
 		TailscaleDNSName:    host.DNSName,
 		TailscaleDeviceName: host.DeviceName,
 		Token:               token,
-		ConnectURL:          connectionURL("connect", endpoint, token, now, expiresAt),
-		PairURL:             pairingURL(endpoint, token, now, expiresAt),
-		PairIssuedAt:        now.Format(time.RFC3339),
-		PairExpiresAt:       expiresAt.Format(time.RFC3339),
 		ScanRoot:            scanRoot,
 		BrowseRoot:          browseRoot,
 		AppServerSSHTarget:  cfg.AppServer.SSHTarget,
 		Warnings:            warnings,
 	}, nil
+}
+
+// SignDirectPair is called after the listener owner verifies the route and gate.
+func (r Result) SignDirectPair() Result {
+	now := time.Now().UTC()
+	expiry := now.Add(defaultPairingURLTTL)
+	r.ConnectURL = connectionURL("connect", r.Endpoint, r.Token, now, expiry)
+	r.PairURL = pairingURL(r.Endpoint, r.Token, now, expiry)
+	r.PairIssuedAt = now.Format(time.RFC3339Nano)
+	r.PairExpiresAt = expiry.Format(time.RFC3339Nano)
+	return r
 }
 
 func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time) string {

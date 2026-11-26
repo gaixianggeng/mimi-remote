@@ -14,6 +14,7 @@ type PreflightOptions struct {
 	Stage, ConfigPath, ScanRoot, BrowseRoot, Version string
 	LegacyPath                                       string
 	RuntimePaths, Assistants                         map[string]string
+	InstallerSmoke                                   bool
 }
 
 type PreflightHost struct {

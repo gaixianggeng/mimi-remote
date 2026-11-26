@@ -27,6 +27,7 @@ import (
 	"github.com/gaixianggeng/mimi-remote/internal/projects"
 	"github.com/gaixianggeng/mimi-remote/internal/protocolcontract"
 	"github.com/gaixianggeng/mimi-remote/internal/pushbridge"
+	"github.com/gaixianggeng/mimi-remote/internal/setup"
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
 )
 
@@ -53,6 +54,9 @@ type Router struct {
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
 	networkAvailability func(context.Context) (bool, bool)
+	pairingGeneration   func() string
+	directCandidate     func(context.Context, string, config.Config, setup.PairingNetwork) (setup.Result, error)
+	directReachable     func(context.Context, *net.TCPAddr) bool
 	confirmLANPolicy    func(context.Context) string
 	lanPolicyDiagnostic func() string
 	// tailscaleHostResolver 只缓存 MagicDNS 路由元数据。installationID 仍是唯一身份边界；
@@ -68,6 +72,8 @@ type Router struct {
 	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
 	runtimeStatus  *runtimeStatusSnapshotCache
 	runtimeWorkers runtimeProbeWorkers
+	pairingStatus  *runtimeStatusSnapshotCache
+	pairingWorkers runtimeProbeWorkers
 	// autoThreadTitles 在 Mac 端串行生成新会话标题。它使用独立的 loopback
 	// app-server 连接，不能阻塞或消费移动端 gateway 的 JSON-RPC 响应。
 	autoThreadTitles autoThreadTitleScheduler
@@ -178,6 +184,7 @@ type Router struct {
 // 空持久化路径保持纯内存行为，供普通测试和嵌入式调用使用；agentd 生产入口
 // 必须注入真实配置与私有状态路径。
 type RouterOptions struct {
+	BoundListeners         []net.Listener
 	ConfigPath             string
 	EnableHostMetadata     bool
 	NetworkAvailability    func(context.Context) (bool, bool)
@@ -272,8 +279,20 @@ func NewRouterWithInstallationIDAndOptions(
 		appServerSSH:                options.AppServerSSH,
 		diagnosticLogs:              options.DiagnosticLogs,
 	}
+	r.pairingGeneration = r.appliedPairingGeneration
+	r.directCandidate = setup.DirectPairCandidate
+	r.directReachable = func(ctx context.Context, addr *net.TCPAddr) bool {
+		return networkaccess.DirectListenerReachable(ctx, options.BoundListeners, addr)
+	}
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
 	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
+	r.pairingStatus = newRuntimeStatusSnapshotCache(func(ctx context.Context) runtimeStatusResponse {
+		return r.refreshPairingAssistants(ctx, explicitPairing)
+	}, func() runtimeStatusResponse { return runtimeStatusResponse{} })
+	r.pairingStatus.passivePairingProbe = func(ctx context.Context) runtimeStatusResponse {
+		return r.refreshPairingAssistants(ctx, passivePairing)
+	}
+	r.pairingStatus.timeout = pairingRefreshTimeout
 	if cfg.Codex.IsEnabled() && strings.EqualFold(strings.TrimSpace(cfg.AppServer.Transport), "local") {
 		if home, ok := cfg.EffectiveLocalCodexHome(); ok {
 			r.codexWriterLocks = appserver.NewWriterLockInspector(home)
@@ -306,6 +325,7 @@ func NewRouterWithInstallationIDAndOptions(
 		return r.auth.Middleware(protocolCompatibilityMiddleware(handler))
 	}
 	coreAuth := auth.NewWithOptions(cfg.Auth.Token, false, auth.Options{})
+	mux.Handle("/api/local/pair/issue", coreAuth.Middleware(http.HandlerFunc(r.localPairIssue)))
 	mux.Handle("/api/readyz", coreAuth.Middleware(protocolCompatibilityMiddleware(http.HandlerFunc(r.readyz))))
 	mux.Handle("/api/version", authed(http.HandlerFunc(r.versionHandler)))
 	mux.Handle("/api/doctor", authed(http.HandlerFunc(r.doctorHandler)))
@@ -379,7 +399,7 @@ func NewRouterWithInstallationIDAndOptions(
 	// 与 rpc 并列而非合并——HTTP 与 WebSocket 的失败语义不同，混在一个入口里
 	// 会让"这条错误来自哪条通道"变得难以判断。
 	mux.Handle("/api/harness/ws", authed(http.HandlerFunc(r.harnessNativeStreamHandler)))
-	handler := logging(limitAPIRequestBodies(mux), r.monitor)
+	handler := logging(negotiatePairingErrors(limitAPIRequestBodies(mux)), r.monitor)
 	if options.EnableHostMetadata {
 		r.tailscaleHostLookup = tailscaleinfo.NewResolver(time.Minute).Lookup
 		r.hostDeviceNameLookup = hostinfo.NewResolver(time.Minute).Lookup
@@ -424,6 +444,10 @@ func (r *Router) Shutdown() {
 		if r.runtimeStatus != nil {
 			r.runtimeStatus.Close()
 			r.runtimeWorkers.wg.Wait()
+		}
+		if r.pairingStatus != nil {
+			r.pairingStatus.Close()
+			r.pairingWorkers.wg.Wait()
 		}
 		if r.claudeBridge != nil {
 			r.claudeBridge.shutdown()

@@ -91,7 +91,9 @@ func TestAllAgentsOffCannotIssueLocalOrTailcatPairing(t *testing.T) {
 		t.Fatal("local pairing returned credentials")
 	}
 	rec = httptest.NewRecorder()
-	r.tailcatLocalAction(rec, httptest.NewRequest(http.MethodPost, "/api/tailcat/local", strings.NewReader(`{"action":"pair"}`)))
+	req = httptest.NewRequest(http.MethodPost, "/api/tailcat/local", strings.NewReader(`{"action":"pair"}`))
+	req.Header.Set("Authorization", "Bearer module-test-only")
+	r.tailcatLocalAction(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatal("Tailcat pairing should fail before invoking sidecar")
 	}

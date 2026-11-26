@@ -126,6 +126,11 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		if o.RequireExisting {
 			return Result{}, saveFailure("config_missing", os.ErrNotExist)
 		}
+		if o.InstallerLAN != nil && identity.Bearer == "" {
+			if err := checkFreshInstallerIdentity(path); err != nil {
+				return Result{}, err
+			}
+		}
 		if err = p.fresh(o, identity); err != nil {
 			return Result{}, saveFailure("config_commit_failed", err)
 		}
@@ -154,13 +159,36 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 			p.set(true, "app_server", "pin_transport")
 		}
 	}
-	if !p.source.exists || o.SaveOnly {
+	selectWorkspace := !p.source.exists || o.SaveOnly
+	if o.InstallerLAN != nil {
+		p.set(p.cfg.TailscaleAccessEnabled(), "network", "allow_tailscale")
+		// An upgrade can change LAN policy without replacing any existing grants.
+		selectWorkspace = !p.source.exists || (!p.cfg.WorkspaceConfirmed() && o.ScanRoot != "")
+		if selectWorkspace {
+			if o.ScanRoot == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return Result{}, err
+				}
+				o.ScanRoot = filepath.Join(home, "code")
+				o.CreateRoot = true
+			}
+			o.BrowseRoot = o.ScanRoot
+			// Confirmation grants only the single folder displayed in the installer.
+			p.cfg.ScanRoots, p.cfg.BrowseRoots = nil, nil
+		}
+	}
+	if selectWorkspace {
 		if err = p.selectRoots(o); err != nil {
 			return Result{}, err
 		}
 		if err = p.applyAssistants(ctx, o, verifiedHost); err != nil {
 			return Result{}, err
 		}
+	}
+	if o.InstallerLAN != nil {
+		confirmed := p.source.exists && p.cfg.WorkspaceConfirmed() || selectWorkspace && !o.PendingWorkspace
+		p.set(*o.InstallerLAN && confirmed, "network", "allow_lan")
 	}
 	raw, err := p.bytes()
 	if err != nil {
@@ -171,12 +199,6 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		return Result{}, err
 	}
 	r := localServiceResult(path, cfg)
-	if !o.SaveOnly && !o.LocalServiceOnly {
-		r, err = ResultFromConfigForNetwork(ctx, path, cfg, PairingNetworkAuto)
-		if err != nil {
-			return Result{}, err
-		}
-	}
 	r.Created = !p.source.exists
 	r.Migrated = p.source.exists && !p.dest.exists
 	if len(cfg.ScanRoots) > 0 {
@@ -188,6 +210,23 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 	r.AppServerSSHTarget = cfg.AppServer.SSHTarget
 	return r, nil
 }
+
+// An interrupted setup with a verified journal can replay its original bearer.
+// Other surviving credentials without their config require local recovery.
+func checkFreshInstallerIdentity(path string) error {
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return saveFailure("config_recovery_required", err)
+	}
+	for _, entry := range entries {
+		name := strings.ToLower(entry.Name())
+		if name == "tailcat" || name == "deepseek.token" || strings.HasPrefix(name, "app-server-ws-token") {
+			return saveFailure("config_recovery_required", errors.New("请先恢复原配置以保留已有身份"))
+		}
+	}
+	return nil
+}
+
 func (p *proposal) check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

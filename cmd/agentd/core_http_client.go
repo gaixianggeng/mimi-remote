@@ -26,7 +26,10 @@ func isManagedCoreConfig(path string) bool {
 type coreDialFunc func(context.Context, string, string) (net.Conn, error)
 
 func coreDialForConfig(path string) coreDialFunc {
-	managed := isManagedCoreConfig(path)
+	return coreDialForOwner(isManagedCoreConfig(path))
+}
+
+func coreDialForOwner(managed bool) coreDialFunc {
 	return func(parent context.Context, _ string, address string) (net.Conn, error) {
 		target, err := netip.ParseAddrPort(address)
 		if err != nil || !target.Addr().IsLoopback() {
@@ -57,7 +60,10 @@ func coreDialForConfig(path string) coreDialFunc {
 }
 
 func coreHTTPClient(ctx context.Context, path string) *http.Client {
-	dial := coreDialForConfig(path)
+	return coreHTTPClientWithDial(ctx, coreDialForConfig(path))
+}
+
+func coreHTTPClientWithDial(ctx context.Context, dial coreDialFunc) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{DisableKeepAlives: true, MaxResponseHeaderBytes: 16 << 10, DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
 			// net/http can detach a pooled dial from request cancellation. Each

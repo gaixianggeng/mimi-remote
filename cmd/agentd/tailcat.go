@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -103,30 +104,8 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 	if err := prepare(fs, *configPath, stderr); err != nil {
 		return err
 	}
-	cfg, err := config.LoadForDoctor(*configPath)
-	if err != nil {
-		return err
-	}
-	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action, *derpMapURL, *choice)
-	if err != nil {
-		return err
-	}
 	if action == "pair" {
-		// 只有托管模式的二维码才带托管字段。自建模式带上它们，iOS 会先向云端
-		// 预留电脑名额，到 claim 时才被拒绝。
-		macInstallationID, macPublicKey, pairPublicKey, freePairAddress := "", "", "", ""
-		if status.Mode == config.TailcatModeManaged {
-			macInstallationID, macPublicKey, pairPublicKey = status.MacInstallationID, status.PublicKey, status.PairPublicKey
-			freePairAddress = status.FreePairAddress
-		}
-		result, err := agentsetup.TailcatPairWithManagedHost(
-			*configPath,
-			status.PairAddress,
-			macInstallationID,
-			macPublicKey,
-			pairPublicKey,
-			freePairAddress,
-		)
+		result, err := requestPairIssue(context.Background(), *configPath, agentsetup.PairingNetworkTailcat)
 		if err != nil {
 			return err
 		}
@@ -136,6 +115,15 @@ func runTailcatWithWriters(args []string, stdout io.Writer, stderr io.Writer) er
 		printQROnlyPairResult(stdout, result)
 		return nil
 	}
+	cfg, err := config.LoadForLocalControl(*configPath)
+	if err != nil {
+		return err
+	}
+	status, err := requestTailcatControl(context.Background(), *configPath, cfg, action, *derpMapURL, *choice)
+	if err != nil {
+		return err
+	}
+
 	if *asJSON {
 		return printJSONTo(stdout, status)
 	}
@@ -155,8 +143,11 @@ func requestTailcatControl(
 	if err != nil {
 		return tailcatCommandStatus{}, fmt.Errorf("Tailcat 本机控制尚未就绪，请先启动 agentd：%w", err)
 	}
-	result := agentsetup.ResultFromConfig(ctx, configPath, cfg)
-	controlURL, err := serviceCheckURL(loopbackServiceEndpoint(result.Endpoint), "/api/local/tailcat")
+	_, port, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return tailcatCommandStatus{}, err
+	}
+	controlURL, err := serviceCheckURL("http://"+net.JoinHostPort("127.0.0.1", port), "/api/local/tailcat")
 	if err != nil {
 		return tailcatCommandStatus{}, err
 	}
@@ -196,7 +187,9 @@ func requestTailcatControl(
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.Auth.Token))
 	req.Header.Set(httpapi.TailcatLocalControlHeader, localToken)
-	response, err := (&http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	client := coreHTTPClient(requestCtx, configPath)
+	defer client.CloseIdleConnections()
+	response, err := client.Do(req)
 	if err != nil {
 		return tailcatCommandStatus{}, fmt.Errorf("连接本机 agentd 失败：%w", err)
 	}

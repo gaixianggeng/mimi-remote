@@ -58,17 +58,21 @@ type runtimeStatusSnapshotCache struct {
 	successTTL  time.Duration
 	failureTTL  time.Duration
 
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	hasResult    bool
-	snapshot     runtimeStatusResponse
-	refreshing   bool
-	refreshGen   uint64
-	publishedGen uint64
-	refreshDone  map[uint64]chan struct{}
-	forceNext    bool
-	closed       bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	hasResult         bool
+	snapshot          runtimeStatusResponse
+	refreshing        bool
+	pairingGeneration string // Guarded by mu; identifies both the running probe and its published result.
+	refreshGen        uint64
+	publishedGen      uint64
+	refreshDone       map[uint64]chan struct{}
+	forceNext         bool
+	closed            bool
+
+	pairingMode         pairingProbeMode
+	passivePairingProbe func(context.Context) runtimeStatusResponse
 }
 
 func newRuntimeStatusSnapshotCache(
@@ -165,6 +169,10 @@ func (c *runtimeStatusSnapshotCache) Refresh(ctx context.Context) runtimeStatusR
 }
 
 func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
+	c.startProbeLocked(c.probe)
+}
+
+func (c *runtimeStatusSnapshotCache) startProbeLocked(probe func(context.Context) runtimeStatusResponse) {
 	if c.refreshing || c.closed {
 		return
 	}
@@ -173,13 +181,13 @@ func (c *runtimeStatusSnapshotCache) startRefreshLocked() {
 	generation := c.refreshGen
 	c.refreshDoneLocked(generation)
 	c.wg.Add(1)
-	go c.refresh(generation)
+	go c.refresh(generation, probe)
 }
 
-func (c *runtimeStatusSnapshotCache) refresh(generation uint64) {
+func (c *runtimeStatusSnapshotCache) refresh(generation uint64, probe func(context.Context) runtimeStatusResponse) {
 	defer c.wg.Done()
 	ctx, cancel := context.WithTimeout(c.ctx, c.timeout)
-	response := c.probe(ctx)
+	response := probe(ctx)
 	finishedInBudget := ctx.Err() == nil
 	cancel()
 
@@ -561,7 +569,11 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountStatus) {
+func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
+	return r.readCodexRuntime(ctx, true)
+}
+
+func (r *Router) readCodexRuntime(ctx context.Context, includeQuota bool) (status runtimeAccountStatus) {
 	// 登录指引只依赖已加载配置，未登录或后端不可用时也必须指向同一目录。
 	defer func() { status.LoginCommand = r.codexRuntimeLoginCommand() }()
 	if !r.cfg.Codex.IsEnabled() {
@@ -587,6 +599,11 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 	dialer, err := r.appServerUpstreamDialer(codexRuntimeProbeTimeout)
 	if err != nil {
 		return status
+	}
+	var observationGeneration string
+	if includeQuota && r.pairingGeneration != nil {
+		// A live Tailcat change can advance the pairing generation while Codex replies.
+		observationGeneration = r.currentPairingGeneration(ctx)
 	}
 	conn, response, err := dialer.DialContext(ctx, upstreamURL, headers)
 	if response != nil && response.Body != nil {
@@ -617,6 +634,11 @@ func (r *Router) probeCodexRuntime(ctx context.Context) (status runtimeAccountSt
 		applyCodexAccount(&status, account)
 	}
 
+	if !includeQuota {
+		return status
+	}
+
+	r.pairingStatus.observeCodexAccount(observationGeneration, status)
 	var limits runtimeRateLimitsEnvelope
 	if err := rpc.call(ctx, "account/rateLimits/read", map[string]any{}, &limits); err == nil {
 		status.RateLimits = normalizeRuntimeRateLimits(limits, "codex")

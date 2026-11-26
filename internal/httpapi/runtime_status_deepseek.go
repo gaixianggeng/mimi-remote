@@ -10,6 +10,10 @@ import (
 // probeDeepSeekRuntime 只验证已启用服务的握手与模型目录，不创建会话或占用 follow 名额。
 // 不能把 Setup 的预检成功当作 agentd 已加载配置；Mac 使用这里的运行态作最终判断。
 func (r *Router) probeDeepSeekRuntime(ctx context.Context) runtimeAccountStatus {
+	return r.readDeepSeekRuntime(ctx, true)
+}
+
+func (r *Router) readDeepSeekRuntime(ctx context.Context, allowRenewal bool) runtimeAccountStatus {
 	status := runtimeAccountStatus{
 		ID: "deepseek", Title: "DeepSeek Harness", Enabled: r.cfg.DeepSeek.Enabled,
 		State: runtimeStateUnavailable, Reason: "harness_unavailable",
@@ -19,7 +23,7 @@ func (r *Router) probeDeepSeekRuntime(ctx context.Context) runtimeAccountStatus 
 		status.Reason = "disabled"
 		return status
 	}
-	client, err := r.authenticatedDeepSeekClient(ctx)
+	client, err := r.openDeepSeekClient(ctx, allowRenewal)
 	switch {
 	case errors.Is(err, errDeepSeekCredentialsUnavailable):
 		status.Reason = "credentials_unavailable"

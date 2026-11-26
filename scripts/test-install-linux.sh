@@ -69,6 +69,21 @@ chmod +x "$TEST_DIR/bin/uname" "$TEST_DIR/bin/systemctl" "$TEST_DIR/bin/journalc
 PATH="$TEST_DIR/bin:$PATH"
 export PATH
 
+# Darwin does not ship util-linux flock. Preserve real lock contention in
+# the fake Linux host using the inherited file descriptor.
+if ! command -v flock >/dev/null; then
+  cat >"$TEST_DIR/bin/flock" <<'PY'
+#!/usr/bin/env python3
+import fcntl
+import sys
+try:
+    fcntl.flock(int(sys.argv[2]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+PY
+  chmod +x "$TEST_DIR/bin/flock"
+fi
+
 make_release() {
   local destination="$1"
   local version="$2"
@@ -77,62 +92,56 @@ make_release() {
   cp "$ROOT_DIR/scripts/install-linux.sh" "$destination/scripts/install-linux.sh"
   cp "$ROOT_DIR/packaging/systemd/mimi-remote.service" \
     "$destination/packaging/systemd/mimi-remote.service"
-  cat >"$destination/agentd" <<SH
-#!/usr/bin/env bash
-printf '%s %s\n' "$version" "\$*" >>"\$FAKE_AGENTD_LOG"
-case "\${1:-}" in
-  version)
-    echo "$version"
-    ;;
+  printf '#!/usr/bin/env bash\nset -eu\nversion=%q\nhealthy=%q\n' "$version" "$healthy" >"$destination/agentd"
+  cat >>"$destination/agentd" <<'SH'
+if [[ "$1" == preflight ]]; then
+  [[ "${0##*/}" != agentd.previous && -z "${FAKE_AGENTD_LOG:-}" ]]
+  [[ "$*" == "preflight --stage setup --json --installer-smoke --config $HOME/config.json --scan-root $HOME --browse-root $HOME" ]]
+  [[ "$HOME" == "$TMPDIR" && "$HOME" == "$XDG_CONFIG_HOME" && ! -e "$HOME/config.json" ]]
+  if [[ -f "${0%/*}/fail-preflight" ]]; then
+    cat "${0%/*}/fail-preflight" >&2
+    exit 17
+  fi
+  echo '{"schema":"mimi.onboarding.preflight/v1","stage":"setup","ok":true,"configured":false}'
+  exit 0
+fi
+printf '%s %s\n' "$version" "$*" >>"$FAKE_AGENTD_LOG"
+case "$1" in
+  version) echo "$version" ;;
   setup)
-    config_path="\$HOME/.config/mimi-remote/config.json"
-    shift
-    while [[ \$# -gt 0 ]]; do
-      case "\${1:-}" in
-        --config)
-          config_path="\${2:-}"
-          shift 2
-          ;;
-        *)
-          shift
-          ;;
-      esac
-    done
-    if [[ "\${FAKE_SSH_PREFLIGHT_FAIL:-0}" == "1" && "\$config_path" == *'/app-server-preflight/'* ]]; then
-      printf 'SSH host/auth 或远端 Codex 不可用：authorization=Bearer %s\n' "\$TEST_SECRET" >&2
-      exit 17
-    fi
-    mkdir -p "\$(dirname "\$config_path")"
-    printf '%s\n' '{"test":true}' >"\$config_path"
-    printf 'Token：%s\n' "\$TEST_SECRET"
-    printf '连接链接：mimiremote://connect?token=%s\n' "\$TEST_SECRET"
+    [[ "$*" == *'--no-pair --json'* ]]
+    path="$HOME/.config/mimi-remote/config.json"
+    [[ ! -e "$path" ]]
+    mkdir -p "${path%/*}"
+    printf '{"auth":{"token":"%s"},"unknown":"preserve"}\n' "$TEST_SECRET" >"$path"
+    chmod 600 "$path"
+    printf 'Token：%s\n' "$TEST_SECRET"
     ;;
-  doctor)
-    exit 0
+  check-config)
+    [[ "$2" == --config && "$3" != "$HOME/.config/mimi-remote/config.json" && -s "$3" ]]
+    [[ "${FAKE_INCOMPATIBLE_VERSION:-}" != "$version" ]]
+    ;;
+  start|restart)
+    [[ "$*" == "$1 --no-pair --wait 60s" ]]
+    systemctl --user "$1" mimi-remote.service
+    [[ "${FAKE_FAIL_RESTORED_VERSION:-}" != "$version" ]] || exit 19
+    [[ "$healthy" == true ]] || exit 18
+    echo '{"service_ok":true,"ok":true}'
     ;;
   status)
-    if [[ "$healthy" == "true" ]]; then
-      printf '%s\n' '{"service_ok":true,"doctor_ok":true}'
+    if [[ "$healthy" == true ]]; then
+      echo '{"service_ok":true,"doctor_ok":false}'
     else
-      printf '{"service_ok":false,"doctor_ok":false,"service_error":"token=%s codex upstream unavailable"}\n' "\$TEST_SECRET"
-      printf 'status authorization=Bearer %s\n' "\$TEST_SECRET" >&2
+      printf '{"service_ok":false,"doctor_ok":false,"service_error":"token=%s core unavailable"}\n' "$TEST_SECRET"
+      printf 'status authorization=Bearer %s\n' "$TEST_SECRET" >&2
     fi
     ;;
   pair)
-    if [[ "\${FAKE_PAIR_FAIL:-0}" == "1" ]]; then
-      echo "fake pair 暂时失败" >&2
-      exit 9
-    fi
-    if [[ "\${2:-}" != "--qr-only" ]]; then
-      printf 'Token：%s\n' "\$TEST_SECRET"
-      printf '连接链接：mimiremote://connect?token=%s\n' "\$TEST_SECRET"
-    fi
+    [[ "$*" == 'pair --qr-only' ]]
+    if [[ "${FAKE_PAIR_FAIL:-0}" == 1 ]]; then exit 9; fi
     echo "短期配对二维码已就绪（${version}）"
     ;;
-  *)
-    echo "fake agentd 不支持：\${1:-}" >&2
-    exit 2
-    ;;
+  *) echo "fake agentd 不支持：$1" >&2; exit 2 ;;
 esac
 SH
   cat >"$destination/mimi-tailcat-experiment" <<SH
@@ -161,10 +170,11 @@ make_release "$release_123" "1.2.3" "true"
 make_release "$release_124" "1.2.4" "true"
 make_release "$release_125_bad" "1.2.5" "false"
 
-# SSH 预检必须在创建安装目录、替换二进制或调用 systemd 前失败。
+# 只读预检必须在创建安装目录、替换二进制或调用 systemd 前失败。
 preflight_failure_home="$TEST_DIR/preflight-failure-home"
 preflight_failure_state="$TEST_DIR/preflight-failure-state"
 mkdir -p "$preflight_failure_home" "$preflight_failure_state"
+printf 'authorization=Bearer %s\n' "$TEST_SECRET" >"$release_123/fail-preflight"
 set +e
 preflight_failure_output="$(
   HOME="$preflight_failure_home" \
@@ -172,20 +182,18 @@ preflight_failure_output="$(
     FAKE_SYSTEMCTL_ACTIVE="$preflight_failure_state/active" \
     FAKE_SYSTEMCTL_LOG="$preflight_failure_state/systemctl.log" \
     FAKE_AGENTD_LOG="$preflight_failure_state/agentd.log" \
-    FAKE_SSH_PREFLIGHT_FAIL=1 \
-    AGENTD_APP_SERVER_SSH_TARGET=linux-share-host \
     bash "$release_123/scripts/install-linux.sh" install 2>&1
 )"
 preflight_failure_status=$?
 set -e
 [[ "$preflight_failure_status" -ne 0 ]] || {
-  echo "SSH 预检失败没有阻止安装。" >&2
+  echo "隔离预检失败没有阻止安装。" >&2
   exit 1
 }
-grep -Fq 'ssh linux-share-host true' <<<"$preflight_failure_output"
-grep -Fq '远端 Codex 已安装' <<<"$preflight_failure_output"
+grep -Fq '安装包隔离预检失败' <<<"$preflight_failure_output"
+rm "$release_123/fail-preflight"
 if grep -Fq "$TEST_SECRET" <<<"$preflight_failure_output"; then
-  echo "SSH 预检失败诊断泄漏了测试 Token。" >&2
+  echo "隔离预检失败诊断泄漏了测试 Token。" >&2
   exit 1
 fi
 [[ ! -e "$preflight_failure_home/.local/bin/agentd" ]]
@@ -206,12 +214,14 @@ fi
 [[ ! -e "$HOME/.config/systemd/user/mimi-remote.service" ]]
 [[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" ]]
 [[ ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
-# 此测试的 setup 生成的是一次性假配置，移除它以继续覆盖首次成功的配对交接。
-rm "$HOME/.config/mimi-remote/config.json"
+# 首次启动失败保留身份，再次安装必须复用同一配置。
+cp "$HOME/.config/mimi-remote/config.json" "$TEST_DIR/committed-config"
+grep -Fq "$TEST_SECRET" "$TEST_DIR/committed-config"
 : > "$FAKE_AGENTD_LOG"
 
 install_output="$(bash "$release_123/scripts/install-linux.sh" install 2>&1)"
-grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$install_output"
+[[ "$install_output" != *'短期配对二维码已就绪'* ]]
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
 grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' <<<"$install_output"
 grep -Fq "状态：\"$HOME/.local/bin/agentd\" status" <<<"$install_output"
 grep -Fq "配对：\"$HOME/.local/bin/agentd\" pair --qr-only" <<<"$install_output"
@@ -224,10 +234,8 @@ agentd_commands="$(<"$FAKE_AGENTD_LOG")"
   echo "Linux 本机安装不应向 setup 传递 SSH target：$agentd_commands" >&2
   exit 1
 }
-[[ "$agentd_commands" == *$'1.2.3 status --json\n1.2.3 pair --qr-only'* ]] || {
-  echo "首次配对必须在 readiness 成功后使用 --qr-only：$agentd_commands" >&2
-  exit 1
-}
+[[ "$agentd_commands" == *'1.2.3 start --no-pair --wait 60s'* ]]
+[[ "$agentd_commands" != *'1.2.3 pair '* && "$agentd_commands" != *'1.2.3 setup '* && "$agentd_commands" != *' doctor '* ]]
 assert_version "$HOME/.local/bin/agentd" "1.2.3"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 [[ -f "$HOME/.config/systemd/user/mimi-remote.service" ]]
@@ -244,8 +252,10 @@ pair_failure_output="$(
     FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
     FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" \
     FAKE_SYSTEMCTL_LOG="$pair_failure_state/systemctl.log" \
+    FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+    AGENTD_APP_SERVER_SSH_TARGET=linux-share-host \
     FAKE_PAIR_FAIL=1 \
-    bash "$release_123/scripts/install-linux.sh" install 2>&1
+    bash "$release_123/scripts/install-linux.sh" install --pair 2>&1
 )"
 pair_failure_status=$?
 set -e
@@ -256,6 +266,17 @@ set -e
 grep -Fq "服务已安装并就绪，但暂时无法生成配对信息" <<<"$pair_failure_output"
 assert_version "$pair_failure_home/.local/bin/agentd" "1.2.3"
 [[ -f "$pair_failure_state/active" ]]
+grep -Fq 'setup --no-pair --json --app-server-ssh-target linux-share-host' "$pair_failure_state/agentd.log"
+[[ "$(grep -c '1.2.3 setup ' "$pair_failure_state/agentd.log")" == 1 ]]
+[[ "$(grep -c 'start mimi-remote.service' "$pair_failure_state/systemctl.log")" == 1 ]]
+[[ "$(cat "$pair_failure_state/agentd.log")" == *$'start --no-pair --wait 60s\n1.2.3 pair --qr-only'* ]]
+[[ "$pair_failure_output" != *"$TEST_SECRET"* ]]
+
+success_pair="$(HOME="$pair_failure_home" FAKE_AGENTD_LOG="$pair_failure_state/agentd.log" \
+  FAKE_SYSTEMCTL_ACTIVE="$pair_failure_state/active" FAKE_SYSTEMCTL_ENABLED="$pair_failure_state/enabled" \
+  bash "$release_123/scripts/install-linux.sh" install --pair 2>&1)"
+grep -Fq '短期配对二维码已就绪（1.2.3）' <<<"$success_pair"
+[[ "$success_pair" != *"$TEST_SECRET"* ]]
 
 bash "$release_124/scripts/install-linux.sh" upgrade >/dev/null
 assert_version "$HOME/.local/bin/agentd" "1.2.4"
@@ -295,11 +316,38 @@ assert_version "$HOME/.local/bin/agentd" "1.2.3"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 [[ -f "$FAKE_SYSTEMCTL_ACTIVE" ]]
 
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
+if grep -q ' setup ' "$FAKE_AGENTD_LOG"; then exit 1; fi
+
 # 失败升级也不能覆盖之前的回滚目标。
 assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
 
 grep -Fq 'restart mimi-remote.service' "$FAKE_SYSTEMCTL_LOG"
+
+# 恢复的二进制读不到当前配置时停止服务并保留身份与回滚备份。
+if FAKE_INCOMPATIBLE_VERSION=1.2.3 bash "$release_125_bad/scripts/install-linux.sh" upgrade >"$TEST_DIR/recovery.log" 2>&1; then exit 1; fi
+grep -Fq '配置恢复需要人工处理' "$TEST_DIR/recovery.log"
+[[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" && ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
+assert_version "$HOME/.local/bin/agentd" 1.2.3
+assert_version "$HOME/.local/bin/agentd.previous" 1.2.4
+systemctl --user enable mimi-remote.service
+systemctl --user start mimi-remote.service
+
+if FAKE_FAIL_RESTORED_VERSION=1.2.3 bash "$release_125_bad/scripts/install-linux.sh" upgrade >"$TEST_DIR/failed-restart.log" 2>&1; then exit 1; fi
+grep -Fq '恢复的后台服务未就绪' "$TEST_DIR/failed-restart.log"
+[[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" && ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
+
+(
+  exec 9>>"$HOME/.local/share/mimi-remote/installer.lock"
+  flock -n 9
+  if bash "$release_124/scripts/install-linux.sh" upgrade >"$TEST_DIR/locked.log" 2>&1; then exit 1; fi
+)
+grep -Fq '另一个安装或恢复操作' "$TEST_DIR/locked.log"
+systemctl --user enable mimi-remote.service
+systemctl --user start mimi-remote.service
 
 # 不完整、不可执行、版本错配的 Release 必须在改安装或调用 systemd 前被拒绝。
 for broken in missing permission mismatch exec; do
@@ -331,6 +379,9 @@ cat >"$TEST_DIR/bin/mv" <<'SH'
 if [[ "${FAKE_FAIL_TAILCAT_RENAME:-0}" == 1 && "${2:-}" == *'/mimi-tailcat-experiment.new.'* ]]; then
   exit 43
 fi
+if [[ "${FAKE_FAIL_RESTORE_RENAME:-0}" == 1 && "${2:-}" == *'/agentd.restore.'* ]]; then
+  exit 44
+fi
 exec "$REAL_MV" "$@"
 SH
 chmod +x "$TEST_DIR/bin/mv"
@@ -342,6 +393,24 @@ assert_version "$HOME/.local/bin/agentd" "1.2.3"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+
+# A failed restore leaves the original payloads for recovery and must not
+# restart the mixed installation.
+: >"$FAKE_AGENTD_LOG"
+if FAKE_FAIL_RESTORE_RENAME=1 bash "$release_125_bad/scripts/install-linux.sh" upgrade >"$TEST_DIR/restore.log" 2>&1; then
+  exit 1
+fi
+grep -Fq '自动恢复未完成' "$TEST_DIR/restore.log"
+recovery_dir="$(sed -n 's/^自动恢复未完成.*：//p' "$TEST_DIR/restore.log")"
+cmp "$release_123/agentd" "$recovery_dir/before-0"
+cmp "$release_123/mimi-tailcat-experiment" "$recovery_dir/before-1"
+[[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" && ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
+[[ "$(grep -c ' restart ' "$FAKE_AGENTD_LOG")" == 1 ]]
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
+bash "$release_123/scripts/install-linux.sh" upgrade >/dev/null
+# Restore the earlier rollback target for the subsequent scenarios.
+cp "$recovery_dir/before-3" "$HOME/.local/bin/agentd.previous"
+cp "$recovery_dir/before-4" "$HOME/.local/bin/mimi-tailcat-experiment.previous"
 
 # 从旧的无 sidecar 安装升级，失败时仍无 sidecar，成功后可回到确切的旧状态。
 rm "$HOME/.local/bin/mimi-tailcat-experiment"

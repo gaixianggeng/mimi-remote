@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -66,5 +67,35 @@ func TestPairingTicketUsesSubsecondPrecisionAndAcceptsLegacyTimestamp(t *testing
 	}
 	if err := ValidatePairingTicket(secret, legacy, base.Add(time.Minute)); err != nil {
 		t.Fatalf("升级后仍应接受有效的旧 RFC3339 票据：%v", err)
+	}
+}
+
+func TestPairingTicketSentinels(t *testing.T) {
+	const secret = "fixture-signing-key"
+	now := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name            string
+		issued, expires time.Duration
+		tampered        bool
+		want            error
+	}{
+		{"valid", 0, time.Minute, false, nil},
+		{"expired", -time.Hour, 0, false, ErrPairTicketExpired},
+		{"future", 2*time.Minute + time.Nanosecond, time.Hour, false, ErrPairClockSkew},
+		{"skew boundary", 2 * time.Minute, time.Hour, false, nil},
+		{"invalid interval", time.Minute, 0, false, ErrPairTicketInvalid},
+		{"tampered expired", -time.Hour, 0, true, ErrPairTicketInvalid},
+		{"tampered future", 3 * time.Minute, time.Hour, true, ErrPairTicketInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ticket := NewPairingTicket("http://pair.example.invalid", secret, now.Add(tc.issued), now.Add(tc.expires))
+			if tc.tampered {
+				ticket.Endpoint += "/other"
+			}
+			got := ValidatePairingTicket(secret, ticket, now)
+			if !errors.Is(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

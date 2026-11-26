@@ -157,6 +157,10 @@ func (s *claudeBridgeSupervisor) clearCursors() {
 }
 
 func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[string]string) (string, error) {
+	return s.ensureRunning(bin, args, env, true)
+}
+
+func (s *claudeBridgeSupervisor) ensureRunning(bin string, args []string, env map[string]string, allowStart bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	spec := s.specOrDefault()
@@ -169,6 +173,9 @@ func (s *claudeBridgeSupervisor) ensure(bin string, args []string, env map[strin
 			return "", errAdapterRestartRequired
 		}
 		return s.address, nil
+	}
+	if !allowStart {
+		return "", fmt.Errorf("%s 尚未启动", spec.DisplayName)
 	}
 	if s.cmd != nil {
 		log.Printf("%s exited; starting a replacement", spec.DisplayName)
