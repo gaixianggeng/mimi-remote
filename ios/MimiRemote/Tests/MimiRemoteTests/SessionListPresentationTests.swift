@@ -1435,6 +1435,14 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertFalse(freshStore.hasKeychainRecoveryPath)
         XCTAssertFalse(freshStore.hasValidLegacySingleHostCredential)
 
+        freshStore.suspendCredentialsForBackground()
+        XCTAssertFalse(freshStore.isCredentialMemorySuspended)
+        try await freshStore.restoreCredentialsForForeground()
+        _ = try await freshStore.commitConnectionSettings(
+            PreparedConnectionSettings(endpoint: "http://paired.local:8787", token: "paired-token")
+        )
+        XCTAssertNotNil(freshStore.authenticatedCredentialFingerprint)
+
         // 2. 无 Keychain entitlement 且 0 档案 → 视为无主机，不误判为锁屏待恢复。
         let missingEntitlementSuite = "SessionListPresentationTests.MissingEntitlement.\(UUID().uuidString)"
         let missingEntitlementDefaults = try XCTUnwrap(UserDefaults(suiteName: missingEntitlementSuite))
@@ -1560,6 +1568,10 @@ final class SessionListPresentationTests: XCTestCase {
         }
         XCTAssertTrue(pairedStore.connectionProfiles.isEmpty)
         XCTAssertTrue(pairedStore.hasNoConfiguredHost)
+
+        let inactiveID = try XCTUnwrap(relaunchedLockedStore.connectionProfiles.first?.id)
+        try await relaunchedLockedStore.deleteConnectionProfile(id: inactiveID)
+        XCTAssertTrue(relaunchedLockedStore.hasNoConfiguredHost)
     }
 
     @MainActor
@@ -1576,7 +1588,8 @@ final class SessionListPresentationTests: XCTestCase {
         )
         XCTAssertTrue(appStore.hasNoConfiguredHost)
 
-        let client = NoHostCountingSessionClient()
+        let probeGate = PreparedConnectionGate()
+        let client = NoHostCountingSessionClient(firstProbeGate: probeGate)
         let sessionStore = SessionStore(
             appStore: appStore,
             conversationStore: ConversationStore(),
@@ -1626,9 +1639,18 @@ final class SessionListPresentationTests: XCTestCase {
             PreparedConnectionSettings(endpoint: "http://paired.local:8787", token: "paired-token")
         )
         XCTAssertFalse(appStore.hasNoConfiguredHost)
+        let probing = Task { await sessionStore.refreshAppServerModelOptions() }
+        await probeGate.waitUntilStarted()
         try await sessionStore.clearCurrentConnectionProfile()
         XCTAssertTrue(appStore.hasNoConfiguredHost)
         client.resetCount()
+        await probeGate.release()
+        await probing.value
+        XCTAssertEqual(client.requestCount, 0, "已退役的客户端不可继续探测其他运行时")
+
+        sessionStore.sidebarProjects = [
+            AgentProject(id: "cached", name: "Cached", path: "/workspace/cached")
+        ]
 
         try await hostViewBriefly(
             VStack(spacing: 0) {
@@ -1646,6 +1668,29 @@ final class SessionListPresentationTests: XCTestCase {
             .environmentObject(themeStore)
         )
         XCTAssertEqual(client.requestCount, 0, "删空最后一台电脑进入无主机空态后不得再发后台请求")
+    }
+
+    @MainActor
+    func testRetiringHostCancelsItsInFlightConfigurationRequest() async {
+        let started = expectation(description: "configuration request started")
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://paired.local:8787", token: "fixture",
+            configProvider: {
+                started.fulfill()
+                try await Task.sleep(for: .seconds(3))
+                throw MockError.unimplemented
+            }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: runtime, claudeRuntime: runtime)
+        let request = Task { try await bundle.readConfiguration() }
+        await fulfillment(of: [started], timeout: 2)
+        await bundle.shutdownForHostSwitch()
+        do {
+            _ = try await request.value
+            XCTFail("退役主机的配置请求应被取消")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
     }
 
     @MainActor
@@ -1986,13 +2031,17 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
 private final class NoHostCountingSessionClient: SessionStoreAPIClient {
     private let lock = NSLock()
     private var requestCountStorage = 0
+    private var didStartProbe = false
+    private let firstProbeGate: PreparedConnectionGate?
     private let directoryListResponse: DirectoryListResponse?
     private let resolvedWorkspace: AgentWorkspace?
 
     init(
+        firstProbeGate: PreparedConnectionGate? = nil,
         directoryListResponse: DirectoryListResponse? = nil,
         resolvedWorkspace: AgentWorkspace? = nil
     ) {
+        self.firstProbeGate = firstProbeGate
         self.directoryListResponse = directoryListResponse
         self.resolvedWorkspace = resolvedWorkspace
     }
@@ -2026,6 +2075,14 @@ private final class NoHostCountingSessionClient: SessionStoreAPIClient {
 
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         record()
+        let isFirstProbe = lock.withLock {
+            defer { didStartProbe = true }
+            return !didStartProbe
+        }
+        if isFirstProbe, let firstProbeGate {
+            await firstProbeGate.wait()
+            return true
+        }
         return false
     }
 

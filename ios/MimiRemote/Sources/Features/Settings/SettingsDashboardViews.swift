@@ -242,8 +242,13 @@ private struct ConnectionSettingsExitToolbarModifier: ViewModifier {
                           hasEnterWorkbenchAction: true
                       ) {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(L10n.text("ui.connect_later")) {
+                    Button {
                         enterWorkbenchFromInitialSetup()
+                    } label: {
+                        Text(L10n.text("ui.connect_later"))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("settings.firstConnection.enterWorkbench")
                 }

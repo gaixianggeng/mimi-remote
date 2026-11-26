@@ -1347,6 +1347,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         let project = AgentProject(id: "mimi-remote", name: "mimi-remote", path: "/Users/me/code/mimi-remote")
         let themeStore = makeThemeStore()
         let appStore = makeSnapshotAppStore()
+        appStore.token = "snapshot-token"
         let sessions = [
             makeSnapshotSession(
                 id: "running",
@@ -1771,6 +1772,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         dynamicTypeSize: DynamicTypeSize
     ) -> some View {
         let appStore = makeSnapshotAppStore()
+        appStore.token = "snapshot-token"
         let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let appearanceDefaults = UserDefaults(
@@ -1782,6 +1784,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             conversationStore: conversationStore,
             logStore: LogStore()
         )
+        sessionStore.lastSessionLibraryIndexRefreshAt = sessionStore.sessionListNow()
         sessionStore.settleInitialSessionLibrary(profileID: appStore.activeHostScope.profileID)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())

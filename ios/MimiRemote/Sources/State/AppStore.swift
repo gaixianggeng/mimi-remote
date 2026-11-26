@@ -331,6 +331,7 @@ final class AppStore: ObservableObject {
 #if DEBUG
         guard !debugLaunchConfiguration.seedsStoreScreenshotUI else { return }
 #endif
+        guard !hasNoConfiguredHost else { return }
         if let activeConnectionProfileID,
            activeConnectionProfileID == ephemeralLocalProfileID {
             // 开发包没有可恢复的 Keychain 项；后台保留本进程短期凭据，
@@ -981,6 +982,7 @@ final class AppStore: ObservableObject {
         try await credentialVault.delete(profileID: id)
         persistProfiles(encodedProfiles)
         connectionProfiles = nextProfiles
+        if nextProfiles.isEmpty { hasPendingKeychainRecovery = false }
         // 档案删了，它的预览副本也不会再被用到（#918）。
         await MediaWorker.shared.discardPreviews(profileID: id)
     }

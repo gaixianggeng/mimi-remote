@@ -43,8 +43,9 @@ private struct ProjectSidebarContentView: View {
         let selectedProjectID = sessionStore.selectedProjectID
         let selectedSessionID = sessionStore.selectedSessionID
         let themeRenderKey = SidebarThemeRenderKey(themeVersion: themeStore.themeVersion, colorScheme: colorScheme)
-        let projects = showsSessions ? sessionStore.filteredSessionSidebarProjects : sessionStore.filteredSidebarProjects
-        let hasNoConfiguredHost = appStore.hasNoConfiguredHost && projects.isEmpty
+        let hasNoConfiguredHost = appStore.hasNoConfiguredHost
+        let matchingProjects = showsSessions ? sessionStore.filteredSessionSidebarProjects : sessionStore.filteredSidebarProjects
+        let projects = hasNoConfiguredHost ? [] : matchingProjects
         let usesCustomHeader = horizontalSizeClass == .regular || onCollapseSidebar != nil
 
         Group {
@@ -181,7 +182,7 @@ private struct ProjectSidebarContentView: View {
                     }
                 }
 
-                if showsSessions && sessionStore.isSessionSearchActive,
+                if !hasNoConfiguredHost && showsSessions && sessionStore.isSessionSearchActive,
                    let notice = sessionStore.remoteSessionSearchNotice {
                     Text(notice)
                         .font(.caption)
@@ -191,7 +192,7 @@ private struct ProjectSidebarContentView: View {
                 }
 
                 // 远端搜索是跨项目分页，只放一个全局入口；0 项目/0 可见命中时也能继续翻页。
-                if showsSessions && sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
+                if !hasNoConfiguredHost && showsSessions && sessionStore.isSessionSearchActive && sessionStore.sessionSearchHasMore {
                     sidebarSearchLoadMoreRow(tokens: tokens)
                 }
             } header: {
@@ -561,7 +562,8 @@ private struct ProjectSidebarContentView: View {
             Image(systemName: systemImage)
                 .font(themeStore.uiFont(size: 14, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .frame(width: 32, height: 32)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(tokens.secondaryText)

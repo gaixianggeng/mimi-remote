@@ -284,6 +284,8 @@ struct WorkspaceRootView: View {
     @Environment(\.workbenchHasBottomTabBar) private var hasBottomTabBar
     @Environment(\.workbenchHasCompactTabBar) private var hasCompactTabBar
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .callout) private var emptyActionSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .title3) private var emptyTitleSize: CGFloat = 20
     @StateObject private var appearanceStore: WorkspaceAppearanceStore
     @StateObject private var pagerTransitionState = WorkspacePagerTransitionState()
 
@@ -359,7 +361,7 @@ struct WorkspaceRootView: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let isInNoHostEmptyState = appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty
+        let isInNoHostEmptyState = appStore.hasNoConfiguredHost
         let catalogRefreshScope = WorkspaceCatalogRefreshScope(
             hostScope: appStore.activeHostScope,
             credentialsSuspended: appStore.isCredentialMemorySuspended,
@@ -622,15 +624,14 @@ struct WorkspaceRootView: View {
 
     @ViewBuilder
     private func workspaceBrowser(tokens: ThemeTokens) -> some View {
-        if sessionStore.sidebarProjects.isEmpty {
-            // 显式无主机空态优先于连接过渡和目录加载，避免未配对用户看到加载或失败页。
-            if appStore.hasNoConfiguredHost {
-                UnpairedHostEmptyStateView(
-                    context: .workspaces,
-                    bottomContentMargin: suggestionsBottomContentMargin,
-                    onConnectComputer: onConnectComputer ?? manageConnections
-                )
-            } else if sessionStore.isEstablishingConnection {
+        if appStore.hasNoConfiguredHost {
+            UnpairedHostEmptyStateView(
+                context: .workspaces,
+                bottomContentMargin: suggestionsBottomContentMargin,
+                onConnectComputer: onConnectComputer ?? manageConnections
+            )
+        } else if sessionStore.sidebarProjects.isEmpty {
+            if sessionStore.isEstablishingConnection {
                 // 首次连接这台电脑期间，catalog/open 的失败只是本轮尝试的结果；此时展示
                 // "无法加载工作区" 会把仍在建立的连接说成结论。预热窗口结束后再落回原有空态。
                 workspaceConnectingState(tokens: tokens)
@@ -814,14 +815,14 @@ struct WorkspaceRootView: View {
 
             VStack(spacing: 7) {
                 Text(emptyWorkspaceTitle)
-                    .font(themeStore.uiFont(.title3, weight: .semibold))
+                    .font(themeStore.uiFont(size: emptyTitleSize, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
 
                 Text(emptyWorkspaceMessage)
-                    .font(themeStore.uiFont(.callout))
+                    .font(themeStore.uiFont(size: emptyActionSize))
                     .foregroundStyle(tokens.secondaryText)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
@@ -850,7 +851,7 @@ struct WorkspaceRootView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .font(themeStore.uiFont(.callout, weight: .semibold))
+                .font(themeStore.uiFont(size: emptyActionSize, weight: .semibold))
                 .foregroundStyle(tokens.primaryActionForeground)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 11)
@@ -1319,7 +1320,7 @@ struct WorkspaceRootView: View {
     private var neighborPrefetchScope: String {
         (
             [appStore.activeHostScope.profileID,
-             (appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty) ? "no-host" : "host",
+             appStore.hasNoConfiguredHost ? "no-host" : "host",
              selectedSessionRuntime.rawValue,
              selectedWorkspaceID ?? ""]
                 + neighborWorkspaceProjects.map(\.id)
@@ -1389,7 +1390,7 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshCatalog(refreshesGitSummaries: Bool = true) async {
-        guard !(appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty) else { return }
+        guard !appStore.hasNoConfiguredHost else { return }
         let invocationID = catalogLoad.begin()
         onCatalogRefreshEvent?(invocationID, false)
         defer { onCatalogRefreshEvent?(invocationID, true) }
@@ -1437,7 +1438,7 @@ struct WorkspaceRootView: View {
             SessionListDiagnostics.refreshStage("manual_end", startedAt: startedAt, source: .workspaceForeground)
         }
         guard sessionRefreshOwner.isActive,
-              !(appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty),
+              !appStore.hasNoConfiguredHost,
               !appStore.isCredentialMemorySuspended,
               selectedWorkspaceID == projectID,
               let project = sessionStore.sidebarProjects.first(where: { $0.id == projectID })
@@ -1466,7 +1467,7 @@ struct WorkspaceRootView: View {
     ) async {
         // 有效手动操作在进入 owner 前也可能被 SwiftUI 取消等待者。
         // 页面 owner 的活动状态与 Store 的 Host/路径 lease 决定它是否还能启动。
-        guard !(appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty),
+        guard !appStore.hasNoConfiguredHost,
               !appStore.isCredentialMemorySuspended,
               appStore.activeHostScope == presentationKey.hostScope,
               sessionStore.sidebarProjects.contains(where: {
@@ -1536,7 +1537,7 @@ struct WorkspaceRootView: View {
 
     private func startManualCatalogRefresh(hostScope: HostScope) {
         guard manualCatalogRefreshTask == nil,
-              !(appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty),
+              !appStore.hasNoConfiguredHost,
               !appStore.isCredentialMemorySuspended,
               appStore.activeHostScope == hostScope else {
             return
@@ -1545,7 +1546,7 @@ struct WorkspaceRootView: View {
         manualCatalogRefreshInvocationID = invocationID
         manualCatalogRefreshTask = Task { @MainActor in
             guard !Task.isCancelled,
-                  !(appStore.hasNoConfiguredHost && sessionStore.sidebarProjects.isEmpty),
+                  !appStore.hasNoConfiguredHost,
                   appStore.activeHostScope == hostScope,
                   !appStore.isCredentialMemorySuspended else {
                 guard manualCatalogRefreshInvocationID == invocationID else { return }

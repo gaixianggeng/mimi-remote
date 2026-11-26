@@ -177,6 +177,7 @@ struct SessionListView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.themeInterfaceStyle) private var interfaceStyle
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .callout) private var emptyActionSize: CGFloat = 16
     /// 搜索框文字与图标先跟随系统字号，再交给 ThemeStore 叠应用内比例；
     /// 紧凑布局在辅助功能字号下也用这一枚自绘搜索框，不能写死字号。
     @ScaledMetric(relativeTo: .subheadline) private var searchFieldTextSize: CGFloat = 15
@@ -973,7 +974,7 @@ struct SessionListView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
+                        .font(themeStore.uiFont(size: emptyActionSize, weight: .semibold))
                         .foregroundStyle(tokens.primaryActionForeground)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 11)
@@ -995,7 +996,7 @@ struct SessionListView: View {
                             onOpenWorkspaces()
                         } label: {
                             Text(L10n.text("ui.go_to_work_area"))
-                                .font(themeStore.uiFont(.callout, weight: .medium))
+                                .font(themeStore.uiFont(size: emptyActionSize, weight: .medium))
                                 .foregroundStyle(tokens.accentText)
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)

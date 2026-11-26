@@ -445,11 +445,6 @@ struct RootView: View {
     /// 前台恢复链路本体。每一步失败都要返回明确结论，而不是提前 return 让调用方猜。
     private func performForegroundResume(recoverTailcat: Bool) async -> ForegroundResumeOutcome {
         await lockScreenApprovalStore.reconcileDeliveredNotifications()
-        if appStore.hasNoConfiguredHost {
-            // 未配对空态不做凭据、隧道或列表网络恢复，但仍需结束 Store 的后台挂起态。
-            await sessionStore.resumeFromForeground()
-            return .completed
-        }
         do {
             try await appStore.restoreCredentialsForForeground()
         } catch is CancellationError {
@@ -464,6 +459,10 @@ struct RootView: View {
             return .credentialsUnavailable
         }
         guard !Task.isCancelled else { return .cancelled }
+        if appStore.hasNoConfiguredHost {
+            await sessionStore.resumeFromForeground()
+            return .completed
+        }
         if recoverTailcat {
             let tailcatReady = await tailcatExperimentController
                 .recoverRouteFromForeground(appStore: appStore)

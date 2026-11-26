@@ -756,7 +756,7 @@ struct UnifiedWorkbenchShell: View {
                 )
             }
 
-            if appStore.hasNoConfiguredHost && familySections.isEmpty {
+            if appStore.hasNoConfiguredHost {
                 Section {
                     UnpairedHostEmptyStateView(
                         context: .sidebar,
@@ -949,6 +949,7 @@ struct UnifiedWorkbenchShell: View {
     }
 
     func sidebarMonitorSections(now: Date) -> [SessionSidebarSection] {
+        guard !appStore.hasNoConfiguredHost else { return [] }
         let chronologicallySortedSessions = SessionStore.sortedSessions(
             sessionStore.openedWorkspaceSessionLibrarySessions
         )
