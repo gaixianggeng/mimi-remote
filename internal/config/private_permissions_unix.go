@@ -30,7 +30,7 @@ func CreatePrivateTemp(dir, prefix string) (*os.File, error) {
 	return file, nil
 }
 
-func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, error) {
+func CreatePrivateStage(dir, prefix string, _ StagePermissions) (*os.File, error) {
 	file, err := CreatePrivateTemp(dir, prefix)
 	if err != nil {
 		return nil, err
@@ -39,19 +39,6 @@ func CreatePrivateStage(dir, prefix string, policy StagePermissions) (*os.File, 
 		file.Close()
 		os.Remove(file.Name())
 		return nil, err
-	}
-	if policy.Source != "" && policy.Snapshot != nil {
-		info, err := regularReplacementInfo(policy.Source)
-		if err == nil {
-			policy.Snapshot.info = info
-			// Two-file token repairs also strip unsafe group/other grants.
-			err = file.Chmod(info.Mode().Perm() & 0600)
-		}
-		if err != nil {
-			file.Close()
-			os.Remove(file.Name())
-			return nil, err
-		}
 	}
 	return file, nil
 }

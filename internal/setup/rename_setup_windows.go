@@ -1,9 +1,17 @@
 package setup
 
-import "golang.org/x/sys/windows"
+import (
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"golang.org/x/sys/windows"
+)
 
-// Raw write-through move used by ReplacementPermissions after its final check.
+// Windows has no portable directory fsync. Publish flushed files with write-through.
 func renameSetupFile(source, destination string) error {
+	// The destination can acquire a different DACL without changing bytes.
+	// Check rollback links as well as forward publications.
+	if err := config.CopyPrivatePermissions(destination, source); err != nil {
+		return err
+	}
 	return moveSetupFile(source, destination, windows.MOVEFILE_REPLACE_EXISTING)
 }
 func renameNewSetupFile(source, destination string) error {

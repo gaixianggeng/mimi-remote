@@ -198,7 +198,6 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 	changes := !p.dest.exists || !bytes.Equal(raw, p.dest.raw)
 	stage, tokenStage := "", ""
 	var stageInfo, tokenInfo os.FileInfo
-	var permissions config.ReplacementPermissions
 	journal := config.SetupJournalPath(path)
 	keep := false
 	lockedCleanup := false
@@ -223,7 +222,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 		if p.source.exists {
 			permissionsFrom = p.source.path
 		}
-		stage, err = ops.stage(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: permissionsFrom, Snapshot: &permissions})
+		stage, err = ops.stage(dir, ".config.json.tmp-", raw, config.StagePermissions{Source: permissionsFrom})
 		if err == nil {
 			stageInfo, err = config.FileIdentity(stage)
 		}
@@ -286,7 +285,7 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if !sameSetupFile(stage, stageInfo, raw) || (tokenStage != "" && !sameSetupContents(tokenStage, tokenInfo, p.token, config.ReadPrivateTokenFile)) {
 				return saveFailure("config_concurrent_change", errors.New("暂存文件已被替换"))
 			}
-			if p.source.exists && runtime.GOOS != "windows" {
+			if p.source.exists {
 				if err := copyAndSyncPermissions(p.source.path, stage); err != nil {
 					if conflict := p.source.check(); conflict != nil {
 						return conflict
@@ -387,26 +386,16 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 			if err = p.check(ctx); err != nil {
 				return abandon(err)
 			}
-			if p.source.exists && !p.dest.exists {
-				if err := permissions.CheckStageSource(stage, p.source.path); err != nil {
+			publish := ops.rename
+			if !p.dest.exists {
+				publish = ops.renameNew
+			}
+			if runtime.GOOS == "windows" && p.source.exists && !p.dest.exists {
+				if err := config.CopyPrivatePermissions(p.source.path, stage); err != nil {
 					return abandon(saveFailure("config_concurrent_change", err))
 				}
 			}
-			if p.dest.exists {
-				err = permissions.Replace(stage, path, backup, ops.rename)
-			} else {
-				err = ops.renameNew(stage, path)
-			}
-			if err != nil {
-				var conflict *config.PermissionConflict
-				if errors.As(err, &conflict) {
-					// Leave the journal, companion and stages for the next locked
-					// reread. A published, corrected config already uses the companion.
-					if conflict.Recovery {
-						return recoveryError(journal, err)
-					}
-					return saveFailure("config_concurrent_change", err)
-				}
+			if err = publish(stage, path); err != nil {
 				if !p.dest.exists && errors.Is(err, os.ErrExist) {
 					return abandon(saveFailure("config_concurrent_change", err))
 				}
@@ -421,14 +410,14 @@ func (p *proposal) commit(ctx context.Context, raw []byte, ops setupFileTransact
 				if e != nil || !bytes.Equal(current, raw) {
 					return recoveryError(journal, errors.Join(err, e))
 				}
-				publishedInfo, e := config.FileIdentity(path)
+				publishedInfo, e := os.Lstat(path)
 				if e != nil || !os.SameFile(stageInfo, publishedInfo) {
 					return recoveryError(journal, errors.Join(err, e))
 				}
 				if backup != "" {
 					rollback := stage
 					if e = ops.link(backup, rollback); e == nil {
-						e = config.RollbackPermissions(publishedInfo, false).Replace(rollback, path, "", ops.rename)
+						e = ops.rename(rollback, path)
 					}
 				} else {
 					e = ops.remove(path)
@@ -491,7 +480,12 @@ func (p *proposal) removeSetupFileIfOwned(path string, expected os.FileInfo, raw
 }
 
 func copyAndSyncPermissions(source, stage string) error {
-	file, err := os.Open(stage)
+	if runtime.GOOS == "windows" {
+		// The stage was flushed with the original DACL. Its owner may only
+		// have read access under that policy, so do not reopen it for writing.
+		return config.CopyPrivatePermissions(source, stage)
+	}
+	file, err := os.OpenFile(stage, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}

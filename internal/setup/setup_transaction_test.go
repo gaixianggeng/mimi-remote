@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -12,9 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
@@ -375,37 +374,5 @@ func assertSetupDirectoryEntries(t *testing.T, dir string, allowed ...string) {
 	}
 	if len(entries) != len(allowedSet) {
 		t.Fatalf("setup 目录文件数量异常：entries=%v allowed=%v", entries, allowed)
-	}
-}
-
-func TestTwoFileSaveAfterPublishedPermissionConflict(t *testing.T) {
-	for _, target := range []string{"token", "config"} {
-		t.Run(target, func(t *testing.T) {
-			dir := t.TempDir()
-			path, token := filepath.Join(dir, "config"), filepath.Join(dir, "token")
-			configtest.CreatePrivateFile(t, path, []byte("old config"))
-			configtest.CreatePrivateFile(t, token, []byte("old token"))
-			ops := defaultSetupFileTransactionOps()
-			move := ops.rename
-			injected := false
-			ops.rename = func(from, to string) error {
-				if err := move(from, to); err != nil {
-					return err
-				}
-				if !injected && filepath.Base(to) == target {
-					injected = true
-					return &config.PermissionConflict{Published: true, Cause: errors.New("injected ACL correction")}
-				}
-				return nil
-			}
-			err := writeSetupFilesAtomically(path, token, []byte("new config"), []byte("new token"), ops)
-			requirePublicationError(t, err, "config_concurrent_change")
-			generation := "old"
-			if target == "config" {
-				generation = "new"
-			}
-			assertFileBytesAndMode(t, path, []byte(generation+" config"), 0600)
-			assertFileBytesAndMode(t, token, []byte(generation+" token"), 0600)
-		})
 	}
 }
