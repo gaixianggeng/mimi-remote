@@ -125,7 +125,8 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
         size: CGSize,
         dynamicTypeSize: DynamicTypeSize = .large,
         sourceIsRunning: Bool,
-        availability: WriterConflictForkAvailability?
+        availability: WriterConflictForkAvailability?,
+        hostPlatform: HostPlatform = .apple
     ) async throws -> UIImage {
         let suiteName = "WriterConflictCardSnapshotTests.Guide.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -136,7 +137,8 @@ final class WriterConflictCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         let view = WriterConflictSharedGuideSheet(
             sourceIsRunning: sourceIsRunning,
-            availability: availability
+            availability: availability,
+            hostPlatform: hostPlatform
         )
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)

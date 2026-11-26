@@ -490,10 +490,10 @@ struct WriterConflictSharedGuideSheet: View {
         switch status {
         case .resolvedWritable:
             switch hostPlatform {
-            case .windows, .linux:
-                return "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
-            case .apple, .unknown:
+            case .apple:
                 return "ui.writer_conflict_shared_guide_now_resolved_body"
+            case .windows, .linux, .unknown:
+                return "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
             }
         case .connectionTerminated(let termination):
             switch termination {
@@ -543,6 +543,15 @@ struct WriterConflictSharedGuideSheet: View {
         )
         let sharingSection: SectionModel
         switch hostPlatform {
+        case .apple:
+            sharingSection = SectionModel(
+                id: "mac",
+                icon: "arrow.triangle.2.circlepath",
+                iconTint: .primary,
+                title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
+                isAccessibilityHeader: true
+            )
         case .windows, .linux:
             sharingSection = SectionModel(
                 id: "nonMac",
@@ -552,13 +561,13 @@ struct WriterConflictSharedGuideSheet: View {
                 body: L10n.text("ui.writer_conflict_shared_guide_non_mac_body"),
                 isAccessibilityHeader: true
             )
-        case .apple, .unknown:
+        case .unknown:
             sharingSection = SectionModel(
-                id: "mac",
-                icon: "arrow.triangle.2.circlepath",
+                id: "unknownPlatform",
+                icon: "desktopcomputer",
                 iconTint: .primary,
-                title: L10n.text("ui.writer_conflict_shared_guide_mac_title"),
-                body: L10n.text("ui.writer_conflict_shared_guide_mac_body"),
+                title: L10n.text("ui.writer_conflict_shared_guide_non_mac_title"),
+                body: L10n.text("ui.writer_conflict_shared_guide_unknown_platform_body"),
                 isAccessibilityHeader: true
             )
         }

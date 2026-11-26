@@ -43,6 +43,7 @@ struct DebugWriterConflictGuideFixture: View {
                     errorMessage: nil,
                     isDuplicating: false,
                     isRetrying: false,
+                    hostPlatform: .apple,
                     onFork: { forkCount += 1 },
                     onRecheck: {},
                     onRetry: { retryCount += 1 }

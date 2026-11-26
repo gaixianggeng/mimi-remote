@@ -480,19 +480,23 @@ final class WriterConflictForkStoreTests: XCTestCase {
             WriterConflictSharedGuideSheet.nowSectionBodyKey(
                 sourceIsRunning: true,
                 availability: .available(lastTurnID: "turn-1"),
-                status: .resolvedWritable
+                status: .resolvedWritable,
+                hostPlatform: .apple
             ),
             "ui.writer_conflict_shared_guide_now_resolved_body"
         )
-        XCTAssertEqual(
-            WriterConflictSharedGuideSheet.nowSectionBodyKey(
-                sourceIsRunning: true,
-                availability: .available(lastTurnID: "turn-1"),
-                status: .resolvedWritable,
-                hostPlatform: .windows
-            ),
-            "ui.writer_conflict_shared_guide_now_resolved_non_mac_body"
-        )
+        for nonMacOrUnknown in [HostPlatform.windows, .linux, .unknown] {
+            XCTAssertEqual(
+                WriterConflictSharedGuideSheet.nowSectionBodyKey(
+                    sourceIsRunning: true,
+                    availability: .available(lastTurnID: "turn-1"),
+                    status: .resolvedWritable,
+                    hostPlatform: nonMacOrUnknown
+                ),
+                "ui.writer_conflict_shared_guide_now_resolved_non_mac_body",
+                "\(nonMacOrUnknown.rawValue) 平台恢复可写后不应提示 Mac 配置步骤"
+            )
+        }
         XCTAssertEqual(
             WriterConflictSharedGuideSheet.nowSectionBodyKey(
                 sourceIsRunning: false,
@@ -575,6 +579,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
         XCTAssertEqual(appleSections.map(\.id), ["why", "mac", "now"])
         XCTAssertTrue(appleSections[1].body.contains("让 Codex 桌面版和手机同时使用…"))
         XCTAssertTrue(appleSections[1].body.contains("打开 Codex 桌面版"))
+        XCTAssertTrue(appleSections[1].body.contains("127.0.0.1 / ::1"))
+        XCTAssertTrue(appleSections[1].body.contains("退出占锁的 Codex 进程"))
         XCTAssertFalse(appleSections[1].body.contains("一键配置本机 SSH"))
 
         for nonMac in [HostPlatform.windows, .linux] {
@@ -597,7 +603,35 @@ final class WriterConflictForkStoreTests: XCTestCase {
                 sections[1].body.contains("一键"),
                 "\(nonMac.rawValue) 主机不应引用尚未合入的一键配置文案"
             )
+            XCTAssertFalse(
+                sections[1].body.contains("分支复制"),
+                "\(nonMac.rawValue) 平台说明不应写死分支恢复动作，应统一由实时状态段给出"
+            )
+            XCTAssertFalse(
+                sections[1].body.contains("重试"),
+                "\(nonMac.rawValue) 平台说明不应写死重试恢复动作，应统一由实时状态段给出"
+            )
         }
+
+        let unknownSections = WriterConflictSharedGuideSheet.sections(
+            sourceIsRunning: false,
+            availability: .available(lastTurnID: nil),
+            hostPlatform: .unknown
+        )
+        XCTAssertEqual(unknownSections.map(\.id), ["why", "unknownPlatform", "now"])
+        XCTAssertEqual(unknownSections[1].title, L10n.text("ui.writer_conflict_shared_guide_non_mac_title"))
+        XCTAssertFalse(
+            unknownSections[1].body.contains("让 Codex 桌面版和手机同时使用…"),
+            "缺少平台元数据的旧档案不应默认展示 Mac 专用配置入口"
+        )
+        XCTAssertFalse(
+            unknownSections[1].body.contains("打开共享设置"),
+            "缺少平台元数据的旧档案不应默认展示 Mac 专用配置步骤"
+        )
+        XCTAssertFalse(
+            unknownSections[1].body.contains("当前连接的电脑不是 Mac"),
+            "缺少平台元数据时的中性提示不应武断宣称主机不是 Mac"
+        )
     }
 
     func testWriterConflictCardHitTargetsAndSharedGuideAccessibilityLabel() async throws {
@@ -708,7 +742,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
         let bridge = WriterConflictInteractionBridge()
         let view = WriterConflictSharedGuideSheet(
             sourceIsRunning: true,
-            availability: .available(lastTurnID: "turn-1")
+            availability: .available(lastTurnID: "turn-1"),
+            hostPlatform: .apple
         )
         .environmentObject(themeStore)
         .environment(\.dynamicTypeSize, .accessibility3)
@@ -731,7 +766,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
 
         let sections = WriterConflictSharedGuideSheet.sections(
             sourceIsRunning: true,
-            availability: .available(lastTurnID: "turn-1")
+            availability: .available(lastTurnID: "turn-1"),
+            hostPlatform: .apple
         )
         XCTAssertEqual(
             sections.filter(\.isAccessibilityHeader).map(\.title),
@@ -909,7 +945,8 @@ final class WriterConflictForkStoreTests: XCTestCase {
         try await waitForWebSocketStatus(.connected, store: store)
         XCTAssertEqual(store.writerConflictSharedGuideStatus(originLease: originLease), .resolvedWritable)
 
-        let resolvedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_body")
+        // 未带平台元数据的旧档案恢复可写时，使用平台中性的已解锁说明，不默认引导 Mac 配置。
+        let resolvedCopy = L10n.text("ui.writer_conflict_shared_guide_now_resolved_non_mac_body")
         try await waitUntil(
             description: "同一会话恢复可写后引导弹层更新为已解锁说明",
             window: hosted.window,
