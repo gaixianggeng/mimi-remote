@@ -870,7 +870,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         var selectedWorkspaceChanges: [String?] = []
         var catalogRefreshFinished = false
         var observedModels: [WeakOpenWorkspaceSheetModel] = []
-        var observedModelIDs = Set<ObjectIdentifier>()
+        var observedPresentationIDs = Set<UUID>()
         let openWorkspacePresenter = OpenWorkspaceSheetPresenter()
         _ = await waitUntil(timeout: .seconds(3)) {
             OpenWorkspaceSheetModel.liveInstanceCountForTesting == 0
@@ -935,6 +935,30 @@ final class WorkspaceStripPresentationTests: XCTestCase {
                 && openDirectoryButton.bounds.height >= WorkspaceStripLayout.chipHeight
         }
         XCTAssertTrue(workspaceStripReady, "生产 WorkspaceRootView 应当完成目录刷新并渲染可交互的打开目录胶囊按钮")
+        let renderedOpenDirectoryButton = try XCTUnwrap(
+            findAccessibilityElement(identifier: "workspace.toolbar.openDirectory", in: window) as? UIControl,
+            "应当找到渲染出的打开目录胶囊按钮"
+        )
+        XCTAssertTrue(
+            renderedOpenDirectoryButton.point(
+                inside: CGPoint(
+                    x: renderedOpenDirectoryButton.bounds.midX,
+                    y: renderedOpenDirectoryButton.bounds.midY
+                ),
+                with: nil
+            ),
+            "胶囊按钮中心应命中点击区域"
+        )
+        XCTAssertFalse(
+            renderedOpenDirectoryButton.point(
+                inside: CGPoint(
+                    x: renderedOpenDirectoryButton.bounds.minX + 1,
+                    y: renderedOpenDirectoryButton.bounds.minY + 1
+                ),
+                with: nil
+            ),
+            "胶囊按钮四角外侧不应命中点击区域"
+        )
         XCTAssertNil(openWorkspacePresenter.presentation)
         XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
 
@@ -945,11 +969,11 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             )
         }
         let recordPresentedModel: () -> Bool = {
-            guard let model = openWorkspacePresenter.presentation?.model else {
+            guard let presentation = openWorkspacePresenter.presentation else {
                 return false
             }
-            let inserted = observedModelIDs.insert(ObjectIdentifier(model)).inserted
-            observedModels.append(WeakOpenWorkspaceSheetModel(value: model))
+            let inserted = observedPresentationIDs.insert(presentation.id).inserted
+            observedModels.append(WeakOpenWorkspaceSheetModel(value: presentation.model))
             return inserted
         }
 
@@ -1097,7 +1121,7 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
         }
         XCTAssertEqual(observedModels.count, 4)
-        XCTAssertEqual(observedModelIDs.count, 4)
+        XCTAssertEqual(observedPresentationIDs.count, 4)
         XCTAssertTrue(observedModels.allSatisfy { $0.value == nil })
     }
 

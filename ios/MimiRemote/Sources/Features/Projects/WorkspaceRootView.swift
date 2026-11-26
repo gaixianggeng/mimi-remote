@@ -1812,6 +1812,16 @@ private struct WorkspaceAddChipControl: UIViewRepresentable {
             }
         }
 
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            guard super.point(inside: point, with: event) else {
+                return false
+            }
+            return UIBezierPath(
+                roundedRect: bounds,
+                cornerRadius: min(bounds.width, bounds.height) / 2
+            ).contains(point)
+        }
+
         override func accessibilityActivate() -> Bool {
             guard isEnabled, !isHidden, alpha > 0.01 else {
                 return false
