@@ -14,7 +14,19 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/httpapi"
+	"github.com/gaixianggeng/mimi-remote/internal/networkaccess"
 )
+
+func publicNetworkTestGate(t *testing.T) *networkaccess.LANGate {
+	t.Helper()
+	const public = "lan_public_network_blocked"
+	gate := networkaccess.NewLANGate(func(context.Context) string { return public })
+	gate.Invalidate(true)
+	if got := gate.Confirm(t.Context()); got != public {
+		t.Fatalf("public profile diagnostic = %q", got)
+	}
+	return gate
+}
 
 func TestServeListenersRecoverLegacyTailscaleBind(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
@@ -31,18 +43,21 @@ func TestServeListenersRecoverLegacyTailscaleBind(t *testing.T) {
 			}
 			local := &startupTestListener{address: "127.0.0.1:8787"}
 			var calls []string
-			listeners, localOnly, err := bindServeListeners(cfg, moduleListenAddresses(cfg), func(_ config.Config, address string) (net.Listener, error) {
+			listeners, localOnly, err := bindServeListenersWithPolicy(cfg, moduleListenAddresses(cfg), func(_ config.Config, address string) (net.Listener, error) {
 				calls = append(calls, address)
 				if address == cfg.Listen {
-					return nil, startupBindError(syscall.EADDRNOTAVAIL)
+					return nil, startupBindError(socketAddressNotAvailable)
 				}
 				return local, nil
-			})
+			}, publicNetworkTestGate(t))
 			if err != nil {
 				t.Fatalf("stale Tailscale bind must keep loopback recoverable: %v", err)
 			}
-			if !localOnly || len(listeners) != 1 || listeners[0] != local || local.closed != 0 {
+			if !localOnly || len(listeners) != 1 || listeners[0].Addr().String() != local.address || local.closed != 0 {
 				t.Fatalf("lost recovery listener: localOnly=%t listeners=%v closed=%d", localOnly, listeners, local.closed)
+			}
+			if err := listeners[0].Close(); err != nil || local.closed != 1 {
+				t.Fatalf("closing the recovery listener: err=%v underlying closes=%d", err, local.closed)
 			}
 			if !reflect.DeepEqual(calls, []string{address, local.address}) {
 				t.Fatalf("bind plan expanded: %v", calls)
@@ -94,18 +109,18 @@ func TestServeListenersKeepFatalErrorsAndCloseOpenedListeners(t *testing.T) {
 
 func TestServeListenersRequireSuccessfulPlannedLoopback(t *testing.T) {
 	cfg := config.Config{Listen: "100.64.0.2:8787"}
-	for _, localErr := range []error{nil, syscall.EADDRNOTAVAIL, syscall.EADDRINUSE, syscall.EACCES} {
+	for _, localErr := range []error{nil, socketAddressNotAvailable, syscall.EADDRINUSE, syscall.EACCES} {
 		t.Run(fmt.Sprint(localErr), func(t *testing.T) {
 			listeners, localOnly, err := bindServeListeners(cfg, moduleListenAddresses(cfg), func(_ config.Config, address string) (net.Listener, error) {
 				if address == cfg.Listen {
-					return nil, startupBindError(syscall.EADDRNOTAVAIL)
+					return nil, startupBindError(socketAddressNotAvailable)
 				}
 				// A nil listener is not a successful recovery bind.
 				return nil, localErr
 			})
 			want := localErr
 			if want == nil {
-				want = syscall.EADDRNOTAVAIL
+				want = socketAddressNotAvailable
 			}
 			if !errors.Is(err, want) || localOnly || len(listeners) != 0 {
 				t.Fatalf("claimed recovery without loopback: %v %t %v", listeners, localOnly, err)
@@ -144,9 +159,9 @@ func TestServeListenersDoNotRecoverOtherPlans(t *testing.T) {
 			var calls []string
 			listeners, localOnly, err := bindServeListeners(tc.cfg, plan, func(_ config.Config, address string) (net.Listener, error) {
 				calls = append(calls, address)
-				return nil, startupBindError(syscall.EADDRNOTAVAIL)
+				return nil, startupBindError(socketAddressNotAvailable)
 			})
-			if !errors.Is(err, syscall.EADDRNOTAVAIL) || localOnly || len(listeners) != 0 || len(calls) != 1 {
+			if !errors.Is(err, socketAddressNotAvailable) || localOnly || len(listeners) != 0 || len(calls) != 1 {
 				t.Fatalf("unexpected recovery: %v %t %v calls=%v", listeners, localOnly, err, calls)
 			}
 		})
@@ -165,7 +180,7 @@ func TestServeListenersSuccessAndRecoveryInEitherOrder(t *testing.T) {
 				var opened []*startupTestListener
 				listeners, localOnly, err := bindServeListeners(cfg, plan, func(_ config.Config, address string) (net.Listener, error) {
 					if unavailable && address == cfg.Listen {
-						return nil, startupBindError(syscall.EADDRNOTAVAIL)
+						return nil, startupBindError(socketAddressNotAvailable)
 					}
 					l := &startupTestListener{address: address}
 					opened = append(opened, l)
@@ -245,15 +260,15 @@ func TestServeListenersRecoveryKeepsAuthenticatedLocalControl(t *testing.T) {
 	off := false
 	cfg.Codex.Enabled = &off
 	cfg.Claude.Enabled, cfg.Tailcat.Enabled, cfg.Push.Enabled = false, false, false
-	listeners, localOnly, err := bindServeListeners(cfg, moduleListenAddresses(cfg), func(_ config.Config, address string) (net.Listener, error) {
+	listeners, localOnly, err := bindServeListenersWithPolicy(cfg, moduleListenAddresses(cfg), func(_ config.Config, address string) (net.Listener, error) {
 		if address == cfg.Listen {
-			return nil, startupBindError(syscall.EADDRNOTAVAIL)
+			return nil, startupBindError(socketAddressNotAvailable)
 		}
 		if address != local.Addr().String() {
 			t.Fatalf("unexpected bind: %s", address)
 		}
 		return local, nil
-	})
+	}, publicNetworkTestGate(t))
 	if err != nil || !localOnly || len(listeners) != 1 {
 		t.Fatalf("recovery: %v %t %v", listeners, localOnly, err)
 	}

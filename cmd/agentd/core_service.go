@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
@@ -36,7 +35,7 @@ func inspectCoreService(ctx context.Context, platform, endpoint, token, expected
 		return coreServiceOwner{}, result, errors.New("本机服务地址无效")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp4", u.Host)
-	if errors.Is(err, syscall.ECONNREFUSED) || (platform == "windows" && errors.Is(err, syscall.Errno(10061))) {
+	if errors.Is(err, socketConnectionRefused) {
 		return coreServiceOwner{}, result, nil
 	}
 	if err != nil {
