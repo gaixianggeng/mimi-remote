@@ -975,6 +975,11 @@ struct CodexLocalSSHConfigurator: Sendable {
 
         let existingConfigText = try decodeUTF8(configSnapshot.data, label: "~/.ssh/config")
         let strippedConfig = try Self.stripManagedIncludeLine(from: existingConfigText)
+        if strippedConfig.hadManagedInclude &&
+            (!strippedConfig.wasAtTop || strippedConfig.originalManagedLine != Self.managedIncludeLine) {
+            // 拒绝在写入前静默移动非顶部或格式偏移的已有标记 Include，避免验连失败回滚时遗留被搬移的配置行。
+            throw ConfigError.invalidManagedBlock
+        }
         if containsConflictingHostAlias(Self.hostAlias, in: strippedConfig.remaining) {
             throw ConfigError.conflictingHostAlias(Self.hostAlias)
         }

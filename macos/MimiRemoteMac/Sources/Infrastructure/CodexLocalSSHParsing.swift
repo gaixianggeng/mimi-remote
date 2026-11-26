@@ -414,19 +414,20 @@ extension CodexLocalSSHConfigurator {
             return (content, false)
         }
 
-        var result = content
+        var bytes = Array(content.utf8)
+        let utf8 = content.utf8
         for range in targetRanges.reversed() {
-            result.removeSubrange(range)
+            let startOffset = utf8.distance(from: utf8.startIndex, to: range.lowerBound)
+            let endOffset = utf8.distance(from: utf8.startIndex, to: range.upperBound)
+            bytes.removeSubrange(startOffset..<endOffset)
         }
         if addedLeadingNewline && removedTrailingLineAtEOF {
-            var bytes = Array(result.utf8)
             // 仅在末尾确认为 Mimi 追加时插入的独立 LF（非已被外部转为 CRLF 的 \r\n）时才移除，避免残留裸 CR。
             if bytes.last == 0x0A && (bytes.count < 2 || bytes[bytes.count - 2] != 0x0D) {
                 bytes.removeLast()
-                result = String(decoding: bytes, as: UTF8.self)
             }
         }
-        return (result, true)
+        return (String(decoding: bytes, as: UTF8.self), true)
     }
 
     // MARK: - Byte-Preserving Line Scanning & Single-Line Managed Include Composition
@@ -505,10 +506,13 @@ extension CodexLocalSSHConfigurator {
 
         let slice = slices[matchIdx]
         let originalLine = utf8Substring(text, range: slice.contentRange)
-        var remaining = text
-        remaining.removeSubrange(slice.fullRange)
+        let utf8 = text.utf8
+        let startOffset = utf8.distance(from: utf8.startIndex, to: slice.fullRange.lowerBound)
+        let endOffset = utf8.distance(from: utf8.startIndex, to: slice.fullRange.upperBound)
+        var bytes = Array(utf8)
+        bytes.removeSubrange(startOffset..<endOffset)
         return StrippedIncludeConfig(
-            remaining: remaining,
+            remaining: String(decoding: bytes, as: UTF8.self),
             hadManagedInclude: true,
             wasAtTop: matchIdx == 0,
             originalManagedLine: originalLine
@@ -674,9 +678,38 @@ extension CodexLocalSSHConfigurator {
         return patterns
     }
 
-    /// 判定未识别指令是否满足 OpenSSH `IgnoreUnknown` 规则且可证明为惰性：
-    /// - 绝不放行任何已在 `recognizedSSHConfigKeywords` 中的指令（含 `Include`/`Match`/`ProxyCommand`/`LocalCommand`/`KnownHostsCommand` 等）；
-    /// - 仅接受纯 ASCII 标识符名称，并按 OpenSSH `match_pattern_list` 语义（含 `!` 取反）匹配。
+    /// 纯 OpenSSH `match_pattern` 语义：仅支持 `*` 与 `?` 通配符（不支持 Darwin `fnmatch` 的 `[...]` 字符类或反斜杠转义），与 OpenSSH `match.c` 严格一致。
+    static func matchesOpenSSHWildcard(pattern: String, string: String) -> Bool {
+        let p = Array(pattern.utf8)
+        let s = Array(string.utf8)
+        var pi = 0
+        var si = 0
+        var starIdx: Int?
+        var matchIdx = 0
+        while si < s.count {
+            if pi < p.count && (p[pi] == 0x3F || p[pi] == s[si]) { // '?' or exact byte
+                pi += 1
+                si += 1
+            } else if pi < p.count && p[pi] == 0x2A { // '*'
+                starIdx = pi
+                matchIdx = si
+                pi += 1
+            } else if let star = starIdx {
+                pi = star + 1
+                matchIdx += 1
+                si = matchIdx
+            } else {
+                return false
+            }
+        }
+        while pi < p.count && p[pi] == 0x2A {
+            pi += 1
+        }
+        return pi == p.count
+    }
+
+    /// 判定未识别指令是否满足 OpenSSH `IgnoreUnknown` 模式（严格按 `*`/`?`/`!` 语义，不放行任何已在 `recognizedSSHConfigKeywords` 中的指令）。
+    /// 命中后冻结器会原样保留该行交由真实 `/usr/bin/ssh -G` 按 OpenSSH `Host`/`Match` 作用域裁决，绝不私自注释。
     static func matchesIgnoreUnknown(keyword: String, patterns: [String]) -> Bool {
         let lower = keyword.lowercased()
         guard !lower.isEmpty,
@@ -692,10 +725,10 @@ extension CodexLocalSSHConfigurator {
         for pattern in patterns {
             if pattern.hasPrefix("!") {
                 let negated = String(pattern.dropFirst())
-                if !negated.isEmpty, Darwin.fnmatch(negated, lower, 0) == 0 {
+                if !negated.isEmpty, matchesOpenSSHWildcard(pattern: negated, string: lower) {
                     return false
                 }
-            } else if Darwin.fnmatch(pattern, lower, 0) == 0 {
+            } else if matchesOpenSSHWildcard(pattern: pattern, string: lower) {
                 matchedPositive = true
             }
         }

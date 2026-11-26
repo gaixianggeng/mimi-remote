@@ -957,36 +957,50 @@ extension CodexLocalSSHConfigurator {
                             reason: "回滚期间检测到 ~/.ssh/authorized_keys 权限变为组或其他用户可写，已拒绝修改权限或保留其中条目；请先手工核对文件内容并执行 chmod 600 ~/.ssh/authorized_keys。"
                         )
                     }
-                    // 收窄撤销（刘飞方案）：只删除本次写入、带 Mimi 标记的那一行公钥，不恢复整文件备份。
-                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/authorized_keys")
-                    var working = text
-                    var changed = false
-
-                    let targetKeyBody = rollback.addedAuthorizedKeyBody ?? rollback.generatedKeyBody
-                    if let entry = rollback.addedAuthorizedKeyEntry, let keyBody = targetKeyBody {
-                        let reverted = Self.removeExactAuthorizedKeyEntry(
-                            entry,
-                            expectedKeyBody: keyBody,
-                            addedLeadingNewline: rollback.addedAuthorizedKeyLeadingNewline,
-                            from: working
-                        )
-                        if reverted.removed {
-                            working = reverted.text
-                            changed = true
-                        }
-                    }
-
-                    if changed {
-                        if !rollback.originalAuthSnapshot.exists && working.isEmpty {
+                    if let writtenSnap = rollback.writtenAuthSnapshot, Self.snapshotsMatch(writtenSnap, snapshot) {
+                        // 本次写入快照未发生任何外部内容或元数据改动：新建文件直接移除，原有文件逐字节恢复（保留尾 CR、UTF-8 BOM 等）。
+                        if !rollback.originalAuthSnapshot.exists {
                             try removeFileMatchingSnapshot(
                                 authorizedKeysURL,
-                                expectedSnapshot: snapshot,
+                                expectedSnapshot: writtenSnap,
                                 label: "~/.ssh/authorized_keys",
                                 invokeHook: false,
                                 journalQuarantine: journalRollbackQuarantine,
                                 clearQuarantine: clearRollbackQuarantine
                             )
                         } else {
+                            let mode = Self.preservedSafeFileMode(existing: rollback.originalAuthSnapshot.mode, defaultMode: 0o600)
+                            _ = try writeFileAtomically(
+                                rollback.originalAuthSnapshot.data,
+                                to: authorizedKeysURL,
+                                mode: mode,
+                                expectedSnapshot: writtenSnap,
+                                label: "~/.ssh/authorized_keys",
+                                invokeHook: false
+                            )
+                        }
+                        authReverted = true
+                    } else {
+                        // 外部已并发修改内容或权限/元数据（如新建文件被改为 0640）：绝不删除文件，仅剥离 Mimi 标记行并保留当前元数据。
+                        let text = try decodeUTF8(snapshot.data, label: "~/.ssh/authorized_keys")
+                        var working = text
+                        var changed = false
+
+                        let targetKeyBody = rollback.addedAuthorizedKeyBody ?? rollback.generatedKeyBody
+                        if let entry = rollback.addedAuthorizedKeyEntry, let keyBody = targetKeyBody {
+                            let reverted = Self.removeExactAuthorizedKeyEntry(
+                                entry,
+                                expectedKeyBody: keyBody,
+                                addedLeadingNewline: rollback.addedAuthorizedKeyLeadingNewline,
+                                from: working
+                            )
+                            if reverted.removed {
+                                working = reverted.text
+                                changed = true
+                            }
+                        }
+
+                        if changed {
                             let mode = Self.preservedSafeFileMode(existing: snapshot.mode, defaultMode: 0o600)
                             _ = try writeFileAtomically(
                                 Data(working.utf8),
@@ -997,19 +1011,19 @@ extension CodexLocalSSHConfigurator {
                                 invokeHook: false
                             )
                         }
-                    }
 
-                    if let keyBody = targetKeyBody {
-                        let residuals = Self.findResidualAuthorizedKeyBodies([keyBody], in: working)
-                        if !residuals.isEmpty {
-                            authReverted = false
-                            residualAuthBodies.append(contentsOf: residuals)
-                            failures.append("~/.ssh/authorized_keys 中本次新增公钥的授权行已被外部修改，未能自动撤销，已保留外部改动与撤销记录")
+                        if let keyBody = targetKeyBody {
+                            let residuals = Self.findResidualAuthorizedKeyBodies([keyBody], in: working)
+                            if !residuals.isEmpty {
+                                authReverted = false
+                                residualAuthBodies.append(contentsOf: residuals)
+                                failures.append("~/.ssh/authorized_keys 中本次新增公钥的授权行已被外部修改，未能自动撤销，已保留外部改动与撤销记录")
+                            } else {
+                                authReverted = true
+                            }
                         } else {
                             authReverted = true
                         }
-                    } else {
-                        authReverted = true
                     }
                 }
             } catch {
@@ -1050,22 +1064,36 @@ extension CodexLocalSSHConfigurator {
                             reason: "回滚期间检测到 ~/.ssh/config 权限变为组或其他用户可写，已拒绝修改权限或保留其中条目；请先手工核对文件内容并执行 chmod 600 ~/.ssh/config。"
                         )
                     }
-                    // 收窄撤销（刘飞方案）：只删除本次写入、带 Mimi 标记的那一行 Include，不恢复整文件备份。
-                    let text = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
-                    let currentStripped = try Self.stripManagedIncludeLine(from: text)
-                    if rollback.originalHadManagedInclude {
-                        configReverted = true
-                    } else if currentStripped.hadManagedInclude {
-                        if !rollback.originalConfigSnapshot.exists && currentStripped.remaining.isEmpty {
+                    if let writtenSnap = rollback.writtenConfigSnapshot, Self.snapshotsMatch(writtenSnap, snapshot) {
+                        // 本次写入快照未发生任何外部内容或元数据改动：新建文件直接移除，原有文件逐字节恢复。
+                        if !rollback.originalConfigSnapshot.exists {
                             try removeFileMatchingSnapshot(
                                 sshConfigURL,
-                                expectedSnapshot: snapshot,
+                                expectedSnapshot: writtenSnap,
                                 label: "~/.ssh/config",
                                 invokeHook: false,
                                 journalQuarantine: journalRollbackQuarantine,
                                 clearQuarantine: clearRollbackQuarantine
                             )
                         } else {
+                            let mode = Self.preservedSafeFileMode(existing: rollback.originalConfigSnapshot.mode, defaultMode: 0o600)
+                            _ = try writeFileAtomically(
+                                rollback.originalConfigSnapshot.data,
+                                to: sshConfigURL,
+                                mode: mode,
+                                expectedSnapshot: writtenSnap,
+                                label: "~/.ssh/config",
+                                invokeHook: false
+                            )
+                        }
+                        configReverted = true
+                    } else {
+                        // 外部已并发修改内容或元数据：绝不删除文件，仅剥离本次写入的 Mimi 标记 Include 并保留当前元数据。
+                        let text = try decodeUTF8(snapshot.data, label: "~/.ssh/config")
+                        let currentStripped = try Self.stripManagedIncludeLine(from: text)
+                        if rollback.originalHadManagedInclude {
+                            configReverted = true
+                        } else if currentStripped.hadManagedInclude {
                             let mode = Self.preservedSafeFileMode(existing: snapshot.mode, defaultMode: 0o600)
                             _ = try writeFileAtomically(
                                 Data(currentStripped.remaining.utf8),
@@ -1075,10 +1103,10 @@ extension CodexLocalSSHConfigurator {
                                 label: "~/.ssh/config",
                                 invokeHook: false
                             )
+                            configReverted = true
+                        } else {
+                            configReverted = true
                         }
-                        configReverted = true
-                    } else {
-                        configReverted = true
                     }
                 }
             } catch {
@@ -1530,16 +1558,45 @@ extension CodexLocalSSHConfigurator {
         return AuthorizedKeysRemovalOutcome(removedAny: removedAny, residualBodies: residuals)
     }
 
-    // MARK: - Concurrency Serialization (In-process + Cross-process Directory & File Advisory Locks)
+    // MARK: - Concurrency Serialization (In-process + Cross-process Anchor, Directory & File Advisory Locks)
 
-    /// 跨进程写锁：固定按「状态目录独占锁 -> 锁文件独占锁」顺序加锁，
-    /// 确保即便 `.codex-local-ssh.lock` 尚未创建或被删除，与只读校验共享目录锁仍严格互斥且无死锁。
+    /// 跨进程锁锚点目录：当状态目录尚未创建时依然存在且对读写双方固定一致，保证「锚点目录 -> 状态目录 -> 锁文件」严格自顶向下加锁无死锁。
+    var lockAnchorDirectoryURL: URL {
+        let stateDir = stateFileURL.deletingLastPathComponent().standardizedFileURL
+        let home = homeDirectory.standardizedFileURL
+        if stateDir.path == home.path || stateDir.path.hasPrefix(home.path + "/") {
+            return home
+        }
+        var cursor = stateDir
+        while cursor.path != "/" {
+            var st = stat()
+            if Darwin.lstat(cursor.path, &st) == 0,
+               (st.st_mode & S_IFMT) == S_IFDIR,
+               st.st_uid == Darwin.geteuid() {
+                return cursor
+            }
+            let parent = cursor.deletingLastPathComponent()
+            if parent.path == cursor.path { break }
+            cursor = parent
+        }
+        return home
+    }
+
+    /// 跨进程写锁：固定按「锚点目录独占锁 -> 创建/校验状态目录 -> 状态目录独占锁 -> 锁文件独占锁」顺序加锁，
+    /// 确保即便状态目录与锁文件均尚未存在，也能与只读优先校验严格互斥且无死锁。
     func withSerializedLock<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
         let key = homeDirectory.standardizedFileURL.path
         return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
+            let anchorDir = lockAnchorDirectoryURL
+            let anchorLockFD = try await acquireDirectoryAdvisoryLock(at: anchorDir, exclusive: true)
+            defer {
+                if let anchorLockFD { Darwin.close(anchorLockFD) }
+            }
             try ensureStateDirectory()
-            let stateDir = stateFileURL.deletingLastPathComponent()
-            let dirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
+            let stateDir = stateFileURL.deletingLastPathComponent().standardizedFileURL
+            let dirLockFD: Int32? = stateDir.path == anchorDir.path
+                ? nil
+                : try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
             defer {
                 if let dirLockFD { Darwin.close(dirLockFD) }
             }
@@ -1552,16 +1609,18 @@ extension CodexLocalSSHConfigurator {
     }
 
     /// 供 `configure()` 使用的只读优先串行锁：
-    /// 先在不创建/不改权状态目录与锁文件的前提下，对已存在状态目录加共享目录锁 `O_SHLOCK`（若存在锁文件同时校验并加共享锁），
-    /// 即使 `.codex-local-ssh.lock` 缺失也能严格阻塞跨进程写者；仅当确需首次写入状态时才释放共享锁并升级为独占写锁。
+    /// 先在不创建/不改权任何状态目录与锁文件的前提下，按「锚点目录共享锁 -> 状态目录共享锁（若存在）-> 锁文件共享锁（若存在）」加锁；
+    /// 即使状态目录初始不存在，也能通过锚点目录共享锁与跨进程写者严格互斥；仅当确需首次写入状态时才释放共享锁并按同序升级为独占写锁。
     func withReadOnlyFirstSerializedLock<T: Sendable>(
         tryReadOnly: () async throws -> T?,
         performWrite: () async throws -> T
     ) async throws -> T {
         let key = homeDirectory.standardizedFileURL.path
         return try await CodexLocalSSHOperationLock.shared.withLock(key: key) {
-            let stateDir = stateFileURL.deletingLastPathComponent()
-            var readDirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: false)
+            let anchorDir = lockAnchorDirectoryURL
+            let stateDir = stateFileURL.deletingLastPathComponent().standardizedFileURL
+            var readAnchorLockFD = try await acquireDirectoryAdvisoryLock(at: anchorDir, exclusive: false)
+            var readDirLockFD: Int32?
             var readFileLockFD: Int32?
             func releaseReadLocks() {
                 if let fd = readFileLockFD {
@@ -1572,9 +1631,16 @@ extension CodexLocalSSHConfigurator {
                     Darwin.close(fd)
                     readDirLockFD = nil
                 }
+                if let fd = readAnchorLockFD {
+                    Darwin.close(fd)
+                    readAnchorLockFD = nil
+                }
             }
             do {
-                if readDirLockFD != nil {
+                if stateDir.path != anchorDir.path {
+                    readDirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: false)
+                }
+                if readDirLockFD != nil || stateDir.path == anchorDir.path {
                     readFileLockFD = try await acquireExistingValidatedAdvisoryFileLockIfPresent(at: lockFileURL)
                 }
                 if let result = try await tryReadOnly() {
@@ -1587,8 +1653,14 @@ extension CodexLocalSSHConfigurator {
             }
             releaseReadLocks()
 
+            let writeAnchorLockFD = try await acquireDirectoryAdvisoryLock(at: anchorDir, exclusive: true)
+            defer {
+                if let writeAnchorLockFD { Darwin.close(writeAnchorLockFD) }
+            }
             try ensureStateDirectory()
-            let writeDirLockFD = try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
+            let writeDirLockFD: Int32? = stateDir.path == anchorDir.path
+                ? nil
+                : try await acquireDirectoryAdvisoryLock(at: stateDir, exclusive: true)
             defer {
                 if let writeDirLockFD { Darwin.close(writeDirLockFD) }
             }

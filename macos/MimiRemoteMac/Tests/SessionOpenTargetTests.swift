@@ -1691,53 +1691,69 @@ final class CodexSharedSetupStatusTests: XCTestCase {
           700   699   \(currentUID) /Applications/Mimi Remote Mac.app/Contents/Resources/agentd serve --log-file /tmp/mimi.log
         """
 
-        // 1. AGENTD_LISTEN 覆写端口为 18787（与 JSON 8787 不同），lsof 实时回环监听在 127.0.0.1:18787 -> 必须识别成功！
+        // 1. AGENTD_LISTEN 覆写端口为 18787（与 JSON 8787 不同），lsof 实时回环监听在 127.0.0.1:18787 -> 必须识别成功并保留地址与地址族！
         var procsListenOverride = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
         procsListenOverride[700]?.environment = ["AGENTD_LISTEN": "127.0.0.1:18787"]
-        let listenOverridePorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn127.0.0.1:18787\n")
+        let listenOverrideEndpoints = CodexDesktopLink.parseListeningLoopbackEndpoints(lsofOutput: "p700\ntIPv4\nn127.0.0.1:18787\n")
         let activeListen = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
             processes: procsListenOverride,
-            listeningPortsByPID: listenOverridePorts,
+            listeningEndpointsByPID: listenOverrideEndpoints,
             launchdSupervisorPID: 699,
             homeDirectory: fakeHome,
             expectedUID: currentUID
         ))
         XCTAssertEqual(activeListen.pid, 700)
+        XCTAssertEqual(activeListen.listenEndpoint, LoopbackEndpoint(host: "127.0.0.1", port: 18787, family: AF_INET))
         XCTAssertEqual(activeListen.listenPort, 18787)
         XCTAssertEqual(activeListen.authToken, "cfg-secret-token")
 
-        // 2. AGENTD_PORT + AGENTD_TOKEN 覆写且绑定通配地址 *:19001 -> 必须识别端口 19001 与 env token！
-        var procsPortOverride = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
-        procsPortOverride[700]?.environment = ["AGENTD_PORT": "19001", "AGENTD_TOKEN": "env-override-token"]
-        let wildcardPorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn*:19001\n")
-        let activePort = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
-            processes: procsPortOverride,
-            listeningPortsByPID: wildcardPorts,
+        // 2. IPv4 非 127.0.0.1 回环别名（127.0.0.2:18788）-> 必须完整识别 127.0.0.0/8 并保留真实地址 127.0.0.2！
+        var procsAliasLoopback = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
+        procsAliasLoopback[700]?.environment = ["AGENTD_LISTEN": "127.0.0.2:18788"]
+        let aliasEndpoints = CodexDesktopLink.parseListeningLoopbackEndpoints(lsofOutput: "p700\ntIPv4\nn127.0.0.2:18788\n")
+        let activeAlias = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsAliasLoopback,
+            listeningEndpointsByPID: aliasEndpoints,
             launchdSupervisorPID: 699,
             homeDirectory: fakeHome,
             expectedUID: currentUID
         ))
+        XCTAssertEqual(activeAlias.listenEndpoint, LoopbackEndpoint(host: "127.0.0.2", port: 18788, family: AF_INET))
+
+        // 3. AGENTD_PORT + AGENTD_TOKEN 覆写且绑定 IPv6 通配地址 tIPv6 + *:19001 -> 必须映射为 ::1 / AF_INET6（绝不盲转 127.0.0.1）！
+        var procsPortOverride = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
+        procsPortOverride[700]?.environment = ["AGENTD_PORT": "19001", "AGENTD_TOKEN": "env-override-token"]
+        let wildcardIPv6Endpoints = CodexDesktopLink.parseListeningLoopbackEndpoints(lsofOutput: "p700\ntIPv6\nn*:19001\n")
+        let activePort = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
+            processes: procsPortOverride,
+            listeningEndpointsByPID: wildcardIPv6Endpoints,
+            launchdSupervisorPID: 699,
+            homeDirectory: fakeHome,
+            expectedUID: currentUID
+        ))
+        XCTAssertEqual(activePort.listenEndpoint, LoopbackEndpoint(host: "::1", port: 19001, family: AF_INET6))
         XCTAssertEqual(activePort.listenPort, 19001)
         XCTAssertEqual(activePort.authToken, "env-override-token")
 
-        // 3. 即使未读到进程环境变量，已锁定唯一活动进程且仅有一个实时回环监听端口 20444（与 JSON 8787 不同）-> 直接采用实时回环端口！
+        // 4. 即使未读到进程环境变量，已锁定唯一活动进程且仅有一个 IPv6-only 实时回环监听 [::1]:20444 -> 保留 ::1 / AF_INET6！
         let procsNoEnv = CodexDesktopLink.parseProcessesWithUID(psOutput: basePS)
-        let singleLivePorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn[::1]:20444\n")
+        let singleLiveEndpoints = CodexDesktopLink.parseListeningLoopbackEndpoints(lsofOutput: "p700\ntIPv6\nn[::1]:20444\n")
         let activeSingleLive = try XCTUnwrap(CodexDesktopLink.resolveActiveMimiAgentd(
             processes: procsNoEnv,
-            listeningPortsByPID: singleLivePorts,
+            listeningEndpointsByPID: singleLiveEndpoints,
             launchdSupervisorPID: 699,
             homeDirectory: fakeHome,
             expectedUID: currentUID
         ))
+        XCTAssertEqual(activeSingleLive.listenEndpoint, LoopbackEndpoint(host: "::1", port: 20444, family: AF_INET6))
         XCTAssertEqual(activeSingleLive.listenPort, 20444)
 
-        // 4. 仅监听非回环地址（192.168.1.10:18787）-> 不属于本机回环监听，必须忽略并返回 nil！
-        let nonLoopbackPorts = CodexDesktopLink.parseListeningTCPPorts(lsofOutput: "p700\nn192.168.1.10:18787\n")
-        XCTAssertTrue(nonLoopbackPorts[700]?.isEmpty ?? true)
+        // 5. 仅监听非回环地址（192.168.1.10:18787）-> 不属于本机回环监听，必须忽略并返回 nil！
+        let nonLoopbackEndpoints = CodexDesktopLink.parseListeningLoopbackEndpoints(lsofOutput: "p700\ntIPv4\nn192.168.1.10:18787\n")
+        XCTAssertTrue(nonLoopbackEndpoints[700]?.isEmpty ?? true)
         XCTAssertNil(CodexDesktopLink.resolveActiveMimiAgentd(
             processes: procsNoEnv,
-            listeningPortsByPID: nonLoopbackPorts,
+            listeningEndpointsByPID: nonLoopbackEndpoints,
             launchdSupervisorPID: 699,
             homeDirectory: fakeHome,
             expectedUID: currentUID
@@ -1775,7 +1791,7 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             }
         }
         XCTAssertEqual(nameRC, 0)
-        let port = Int(UInt16(bigEndian: boundAddr.sin_port))
+        let port = UInt16(bigEndian: boundAddr.sin_port)
 
         let pairLocalHits = OSAllocatedUnfairLock(initialState: 0)
         let wsAuthMatched = OSAllocatedUnfairLock(initialState: false)
@@ -1839,19 +1855,159 @@ final class CodexSharedSetupStatusTests: XCTestCase {
         // 先确认若调用 /api/pair/local 确实返回 503（模拟 Codex 唯一助手且无新观测的配对未就绪场景）。
         let client = LocalGatewayClient(requestTimeout: 5)
         do {
-            _ = try await client.claimToken(port: port)
+            _ = try await client.claimToken(port: Int(port))
             XCTFail("/api/pair/local 在本夹具中应返回 503")
         } catch LocalGatewayError.claimRejected {}
         XCTAssertEqual(pairLocalHits.withLock { $0 }, 1)
 
-        // 核心回归：openCodexProbeChannel 直接携带 Bearer Token 建立探针通道，完全绕开 /api/pair/local 并成功握手！
-        let channel = try await client.openCodexProbeChannel(port: port, bearerToken: expectedToken)
+        // 核心回归：openPeerVerifiedCodexProbeChannel 经真实内核 lsof 核验对端 PID（当前进程）后直连 WebSocket 并绕开 /api/pair/local！
+        let endpoint = LoopbackEndpoint(host: "127.0.0.1", port: port, family: AF_INET)
+        let channel = try await client.openPeerVerifiedCodexProbeChannel(
+            endpoint: endpoint,
+            expectedPID: Darwin.getpid(),
+            bearerToken: expectedToken
+        )
         channel.close()
         Darwin.shutdown(listenFD, SHUT_RDWR)
         await serverTask.value
 
-        XCTAssertEqual(pairLocalHits.withLock { $0 }, 1, "openCodexProbeChannel 绝不得调用 /api/pair/local")
+        XCTAssertEqual(pairLocalHits.withLock { $0 }, 1, "探针通道绝不得调用 /api/pair/local")
         XCTAssertTrue(wsAuthMatched.withLock { $0 }, "探针通道必须携带 Bearer Token 直连 /api/app-server/ws?runtime=codex")
+    }
+
+    func testR3_P0_PeerMismatchAbortsProbeBeforeSendingAnyBearerBytesAndSupportsIPv6Loopback() async throws {
+        // 1. 对端 PID 核验失败：在真实回环 TCP 监听上，服务端收到 0 字节即被断开，绝不泄漏任何 Bearer Token 字节！
+        let ipv4ListenFD = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(ipv4ListenFD, 0)
+        defer { Darwin.close(ipv4ListenFD) }
+        var reuse: Int32 = 1
+        _ = Darwin.setsockopt(ipv4ListenFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        var addr4 = sockaddr_in()
+        addr4.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr4.sin_family = sa_family_t(AF_INET)
+        addr4.sin_port = 0
+        addr4.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bind4 = withUnsafePointer(to: &addr4) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(ipv4ListenFD, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bind4, 0)
+        XCTAssertEqual(Darwin.listen(ipv4ListenFD, 4), 0)
+        var bound4 = sockaddr_in()
+        var len4 = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bound4) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.getsockname(ipv4ListenFD, sa, &len4)
+            }
+        }
+        let port4 = UInt16(bigEndian: bound4.sin_port)
+
+        let receivedBytes = OSAllocatedUnfairLock(initialState: Data())
+        let decoyServer = Task.detached {
+            let clientFD = Darwin.accept(ipv4ListenFD, nil, nil)
+            guard clientFD >= 0 else { return }
+            defer { Darwin.close(clientFD) }
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let n = Darwin.read(clientFD, &buf, buf.count)
+                if n > 0 {
+                    receivedBytes.withLock { $0.append(contentsOf: buf.prefix(n)) }
+                } else {
+                    break
+                }
+            }
+        }
+
+        let client = LocalGatewayClient(requestTimeout: 5)
+        let decoyEndpoint = LoopbackEndpoint(host: "127.0.0.1", port: port4, family: AF_INET)
+        do {
+            let ch = try await client.openPeerVerifiedCodexProbeChannel(
+                endpoint: decoyEndpoint,
+                expectedPID: 999_999,
+                bearerToken: "dummy-never-leak-token",
+                verifyPeerPID: { _, _, _ in false }
+            )
+            ch.close()
+            XCTFail("对端 PID 不匹配时必须中止连接并抛出错误")
+        } catch LocalGatewayError.connectionFailed {}
+        Darwin.shutdown(ipv4ListenFD, SHUT_RDWR)
+        await decoyServer.value
+        XCTAssertEqual(receivedBytes.withLock { $0.count }, 0, "对端 PID 核验失败时必须写入 0 字节，绝不得发送 Authorization/Bearer 凭据")
+
+        // 2. IPv6-only 回环监听（[::1]）必须走 AF_INET6 与正确 Host: [::1]:port，并成功通过内核 PID 核验与握手！
+        let ipv6ListenFD = Darwin.socket(AF_INET6, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(ipv6ListenFD, 0)
+        defer { Darwin.close(ipv6ListenFD) }
+        var v6Only: Int32 = 1
+        _ = Darwin.setsockopt(ipv6ListenFD, IPPROTO_IPV6, IPV6_V6ONLY, &v6Only, socklen_t(MemoryLayout<Int32>.size))
+        _ = Darwin.setsockopt(ipv6ListenFD, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        var addr6 = sockaddr_in6()
+        addr6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        addr6.sin6_family = sa_family_t(AF_INET6)
+        addr6.sin6_port = 0
+        addr6.sin6_addr = in6addr_loopback
+        let bind6 = withUnsafePointer(to: &addr6) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(ipv6ListenFD, sa, socklen_t(MemoryLayout<sockaddr_in6>.size))
+            }
+        }
+        XCTAssertEqual(bind6, 0)
+        XCTAssertEqual(Darwin.listen(ipv6ListenFD, 4), 0)
+        var bound6 = sockaddr_in6()
+        var len6 = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        _ = withUnsafeMutablePointer(to: &bound6) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.getsockname(ipv6ListenFD, sa, &len6)
+            }
+        }
+        let port6 = UInt16(bigEndian: bound6.sin6_port)
+
+        let v6HostHeaderMatched = OSAllocatedUnfairLock(initialState: false)
+        let v6Server = Task.detached {
+            let clientFD = Darwin.accept(ipv6ListenFD, nil, nil)
+            guard clientFD >= 0 else { return }
+            defer { Darwin.close(clientFD) }
+            var reqBuf = [UInt8](repeating: 0, count: 4096)
+            let n = Darwin.read(clientFD, &reqBuf, reqBuf.count)
+            guard n > 0 else { return }
+            let reqText = String(decoding: reqBuf.prefix(n), as: UTF8.self)
+            let lines = reqText.components(separatedBy: "\r\n")
+            var wsKey = ""
+            var hostHeader = ""
+            for line in lines.dropFirst() {
+                if let colon = line.firstIndex(of: ":") {
+                    let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                    let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                    if k == "sec-websocket-key" { wsKey = v }
+                    if k == "host" { hostHeader = v }
+                }
+            }
+            if hostHeader == "[::1]:\(port6)" {
+                v6HostHeaderMatched.withLock { $0 = true }
+            }
+            let acceptVal = Data(Insecure.SHA1.hash(data: Data((wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
+            let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(acceptVal)\r\n\r\n"
+            _ = resp.withCString { Darwin.write(clientFD, $0, strlen($0)) }
+            var frameBuf = [UInt8](repeating: 0, count: 4096)
+            _ = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+            let replyJSON = Data(#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-v6"}}"#.utf8)
+            var outFrame: [UInt8] = [0x81, UInt8(replyJSON.count)]
+            outFrame.append(contentsOf: replyJSON)
+            _ = outFrame.withUnsafeBytes { Darwin.write(clientFD, $0.baseAddress, $0.count) }
+            _ = Darwin.read(clientFD, &frameBuf, frameBuf.count)
+        }
+
+        let v6Endpoint = LoopbackEndpoint(host: "::1", port: port6, family: AF_INET6)
+        let v6Channel = try await client.openPeerVerifiedCodexProbeChannel(
+            endpoint: v6Endpoint,
+            expectedPID: Darwin.getpid(),
+            bearerToken: "dummy-ipv6-probe-token"
+        )
+        v6Channel.close()
+        Darwin.shutdown(ipv6ListenFD, SHUT_RDWR)
+        await v6Server.value
+        XCTAssertTrue(v6HostHeaderMatched.withLock { $0 }, "IPv6 回环探针必须发送正确的 Host: [::1]:<port> 头")
     }
 }
 

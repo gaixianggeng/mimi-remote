@@ -2069,7 +2069,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let frozen = try cfg.materializeEvaluationSSHConfig(userConfigText: portableConfig, includeSystemConfig: false)
         defer { frozen.cleanup() }
         let frozenText = try String(contentsOf: frozen.configFileURL, encoding: .utf8)
-        XCTAssertTrue(frozenText.contains("# [ignored by IgnoreUnknown] customlinuxopt"), "命中 IgnoreUnknown 的未知指令必须注释掉以确保 ssh -G 惰性")
+        XCTAssertTrue(frozenText.contains("CustomLinuxOpt enabled"), "命中 IgnoreUnknown 的未知指令必须原样保留交由真实 ssh -G 裁决")
         let effective = try await cfg.resolveEffectiveSSHConfig(
             configPath: frozen.configFileURL.path,
             alias: "127.0.0.1",
@@ -2078,12 +2078,53 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertEqual(effective.hostname, "127.0.0.1")
         XCTAssertEqual(effective.user, "alice")
 
-        // 2. IgnoreUnknown 绝不能绕过 Include、Match exec、ProxyCommand，也不能放行前置或未列出的未知指令！
+        // 1b. 子 Include 声明的 IgnoreUnknown 必须传播回父配置后续指令（与系统 OpenSSH 语义一致）！
+        let childIgnoreFile = cfg.sshDirectory.appendingPathComponent("child-ignore.conf")
+        try "IgnoreUnknown ChildPropagatedOpt\n".write(to: childIgnoreFile, atomically: true, encoding: .utf8)
+        _ = Darwin.chmod(childIgnoreFile.path, 0o600)
+        let parentUsingChildIgnore = """
+        Include child-ignore.conf
+        Host 127.0.0.1
+            HostName 127.0.0.1
+            User alice
+            ChildPropagatedOpt yes
+        """
+        let frozenChildProp = try cfg.materializeEvaluationSSHConfig(userConfigText: parentUsingChildIgnore, includeSystemConfig: false)
+        defer { frozenChildProp.cleanup() }
+        let childPropEffective = try await cfg.resolveEffectiveSSHConfig(
+            configPath: frozenChildProp.configFileURL.path,
+            alias: "127.0.0.1",
+            includeSystemConfig: false
+        )
+        XCTAssertEqual(childPropEffective.hostname, "127.0.0.1")
+
+        // 1c. 非激活 Host 块中的 IgnoreUnknown 不得在真实 ssh -G 中放行其他 Host 块的未知指令！
+        let inactiveHostIgnore = """
+        Host other-host
+            IgnoreUnknown ScopedUnknownOpt
+        Host mimi-local
+            HostName 127.0.0.1
+            User alice
+            ScopedUnknownOpt yes
+        """
+        let frozenScoped = try cfg.materializeEvaluationSSHConfig(userConfigText: inactiveHostIgnore, includeSystemConfig: false)
+        defer { frozenScoped.cleanup() }
+        do {
+            _ = try await cfg.resolveEffectiveSSHConfig(
+                configPath: frozenScoped.configFileURL.path,
+                alias: "mimi-local",
+                includeSystemConfig: false
+            )
+            XCTFail("非激活 Host 块里的 IgnoreUnknown 不得让 mimi-local 下的未知指令通过 ssh -G")
+        } catch CodexLocalSSHConfigurator.ConfigError.effectiveConfigConflict {}
+
+        // 2. IgnoreUnknown 绝不能绕过 Include、Match exec、ProxyCommand，也不能接受 Darwin 方括号字符类或前置/未列出未知指令！
         let blockedConfigs: [(String, String)] = [
             ("IgnoreUnknown cannot bypass Match exec", "IgnoreUnknown Match\nMatch exec \"touch '\(markerFile.path)'\"\n"),
             ("IgnoreUnknown cannot bypass unfreezable Include", "IgnoreUnknown Include\nInclude %h/evil.conf\n"),
             ("unknown before IgnoreUnknown", "CustomLinuxOpt enabled\nIgnoreUnknown CustomLinuxOpt\n"),
             ("unlisted unknown directive", "IgnoreUnknown OtherOpt\nCustomLinuxOpt enabled\n"),
+            ("OpenSSH rejects bracket character class", "IgnoreUnknown [a-z]*\nCustomLinuxOpt enabled\n"),
         ]
         for (label, text) in blockedConfigs {
             do {
@@ -2140,6 +2181,114 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         try await verifyTask.value
         XCTAssertTrue(finishedFlag.withLock { $0 })
         XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.lockFileURL.path), "只读校验完成后仍不得创建锁文件")
+    }
+
+    func testR3_P2_2AnchorLockSerializesVerifyOnlyWhenStateDirectoryIsInitiallyAbsent() async throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        let stateDir = cfg.stateFileURL.deletingLastPathComponent()
+        try? FileManager.default.removeItem(at: stateDir)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateDir.path), "前置条件：状态目录尚未创建")
+
+        // 模拟跨进程写者在状态目录尚未创建时已持有锚点目录独占锁。
+        let anchorFD = Darwin.open(cfg.lockAnchorDirectoryURL.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY | O_EXLOCK | O_NONBLOCK)
+        XCTAssertGreaterThanOrEqual(anchorFD, 0)
+
+        let finishedFlag = OSAllocatedUnfairLock(initialState: false)
+        let task = Task {
+            try await cfg.configure(verifyConnection: false)
+            finishedFlag.withLock { $0 = true }
+        }
+
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(finishedFlag.withLock { $0 }, "即使状态目录初始不存在，只读优先流程也必须阻塞等待跨进程锚点独占锁")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stateDir.path), "等待锁期间不得提前创建状态目录")
+
+        Darwin.close(anchorFD)
+        try await task.value
+        XCTAssertTrue(finishedFlag.withLock { $0 })
+    }
+
+    func testR3_P1_RollbackPreservesConcurrentlyChmoddedNewAuthAndByteExactCRAndBOM() async throws {
+        // 1. 新建 authorized_keys 在验连失败回滚前被外部改为 0640：必须剥离托管行并保留空文件与 0640 权限（绝不删除）。
+        let authURL = tempHome.appendingPathComponent(".ssh/authorized_keys")
+        let (chmodCfg, _) = makeConfigurator(
+            username: "alice",
+            systemSSHConfigPath: nil,
+            sshExitStatus: 255,
+            sshStderr: "Connection refused",
+            beforeVerifySSH: {
+                _ = Darwin.chmod(authURL.path, 0o640)
+            }
+        )
+        do {
+            try await chmodCfg.configure(verifyConnection: true)
+            XCTFail("验连失败必须触发回滚并抛出错误")
+        } catch CodexLocalSSHConfigurator.ConfigError.verificationFailed {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: authURL.path), "外部已改权为 0640 的新建 authorized_keys 回滚时不得删除")
+        XCTAssertEqual(try Data(contentsOf: authURL), Data(), "托管公钥行必须已从 authorized_keys 中剥离")
+        var st = stat()
+        XCTAssertEqual(Darwin.lstat(authURL.path, &st), 0)
+        XCTAssertEqual(st.st_mode & 0o777, 0o640, "外部修改的 0640 权限必须被保留")
+
+        // 2. 原有 authorized_keys 与 config 含 UTF-8 BOM 和尾 CR：验连失败回滚后必须逐字节还原！
+        let bomHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mimi-r3-bom-cr-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: bomHome.appendingPathComponent(".ssh", isDirectory: true), withIntermediateDirectories: true)
+        _ = Darwin.chmod(bomHome.appendingPathComponent(".ssh").path, 0o700)
+        defer { try? FileManager.default.removeItem(at: bomHome) }
+
+        let origAuthBytes = Data([0xEF, 0xBB, 0xBF]) + Data("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockExistingUserKey123456789012345678901234567890 user@mac\r".utf8)
+        let origConfigBytes = Data([0xEF, 0xBB, 0xBF]) + Data("Host prod\r\n    HostName 10.0.0.5\r".utf8)
+        let bomAuthURL = bomHome.appendingPathComponent(".ssh/authorized_keys")
+        let bomConfigURL = bomHome.appendingPathComponent(".ssh/config")
+        try origAuthBytes.write(to: bomAuthURL)
+        try origConfigBytes.write(to: bomConfigURL)
+        _ = Darwin.chmod(bomAuthURL.path, 0o600)
+        _ = Darwin.chmod(bomConfigURL.path, 0o600)
+
+        let bomCfg = CodexLocalSSHConfigurator(
+            homeDirectory: bomHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, stdinData in
+                if executable.path == "/usr/bin/ssh", arguments.first != "-G" {
+                    return CommandResult(status: 255, stdout: Data(), stderr: Data("Connection refused".utf8))
+                }
+                return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                    executable: executable,
+                    arguments: arguments,
+                    timeout: timeout,
+                    standardInput: stdinData
+                )
+            }
+        )
+        do {
+            try await bomCfg.configure(verifyConnection: true)
+            XCTFail("验连失败必须回滚")
+        } catch CodexLocalSSHConfigurator.ConfigError.verificationFailed {}
+        XCTAssertEqual(try Data(contentsOf: bomAuthURL), origAuthBytes, "含 UTF-8 BOM 与尾 CR 的 authorized_keys 回滚后必须逐字节还原")
+        XCTAssertEqual(try Data(contentsOf: bomConfigURL), origConfigBytes, "含 UTF-8 BOM 与尾 CR 的 ~/.ssh/config 回滚后必须逐字节还原")
+    }
+
+    func testR3_P1_RejectsMisplacedMarkedIncludeBeforeWriting() async throws {
+        let (cfg, _) = makeConfigurator(username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: cfg.sshDirectory, withIntermediateDirectories: true)
+        _ = Darwin.chmod(cfg.sshDirectory.path, 0o700)
+
+        let misplaced = """
+        Host prod
+            HostName 10.0.0.5
+        \(CodexLocalSSHConfigurator.managedIncludeLine)
+        """
+        let originalBytes = Data(misplaced.utf8)
+        try originalBytes.write(to: cfg.sshConfigURL)
+        _ = Darwin.chmod(cfg.sshConfigURL.path, 0o600)
+
+        do {
+            try await cfg.configure(verifyConnection: false)
+            XCTFail("非顶部的已有标记 Include 必须在写入前直接拒绝")
+        } catch CodexLocalSSHConfigurator.ConfigError.invalidManagedBlock {}
+        XCTAssertEqual(try Data(contentsOf: cfg.sshConfigURL), originalBytes, "拒绝后 ~/.ssh/config 必须保持原样未被移动或改写")
     }
 }
 

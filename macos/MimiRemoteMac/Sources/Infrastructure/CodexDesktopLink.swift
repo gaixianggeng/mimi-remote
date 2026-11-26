@@ -78,7 +78,7 @@ enum CodexDesktopLink {
         let remotePort: String
 
         var isLoopbackHost: Bool {
-            remoteHost == "127.0.0.1" || remoteHost == "::1"
+            LoopbackEndpoint.isLoopbackHost(remoteHost)
         }
 
         var isLoopbackSSH: Bool {
@@ -94,11 +94,11 @@ enum CodexDesktopLink {
         let remotePort: String
 
         var isLocalLoopback: Bool {
-            localHost == "127.0.0.1" || localHost == "::1"
+            LoopbackEndpoint.isLoopbackHost(localHost)
         }
 
         var isRemoteLoopback: Bool {
-            remoteHost == "127.0.0.1" || remoteHost == "::1"
+            LoopbackEndpoint.isLoopbackHost(remoteHost)
         }
 
         var isLoopbackToSSHPort: Bool {
@@ -192,11 +192,7 @@ enum CodexDesktopLink {
     }
 
     private static func normalizeLoopbackHost(_ rawHost: String) -> String {
-        let lower = rawHost.lowercased()
-        if lower == "::ffff:127.0.0.1" {
-            return "127.0.0.1"
-        }
-        return lower
+        LoopbackEndpoint.normalizeIPAddress(rawHost)
     }
 
     private static func parseHostPort(_ endpoint: String) -> (host: String, port: String)? {
@@ -416,12 +412,14 @@ enum CodexDesktopLink {
         }
     }
 
-    /// 经实时进程、LaunchAgent 与实时回环监听端口核验确认当前正为 Mimi 服务的 `agentd serve` 实例。
+    /// 经实时进程、LaunchAgent 与实时回环监听端点核验确认当前正为 Mimi 服务的 `agentd serve` 实例。
     struct ActiveMimiAgentd: Equatable, Sendable {
         let pid: Int32
         let configURL: URL
-        let listenPort: Int
+        let listenEndpoint: LoopbackEndpoint
         let authToken: String?
+
+        var listenPort: Int { Int(listenEndpoint.port) }
     }
 
     private static let agentdLaunchAgentLabel = "com.gaixianggeng.mimi.mac.agentd"
@@ -442,33 +440,33 @@ enum CodexDesktopLink {
         return nil
     }
 
-    private static func isLoopbackReachableBindHost(_ rawHost: String) -> Bool {
-        let lower = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        return lower == "127.0.0.1" ||
-            lower == "::1" ||
-            lower == "localhost" ||
-            lower == "*" ||
-            lower == "0.0.0.0" ||
-            lower == "::"
-    }
-
-    /// 从 `lsof -nP -a -u <uid> -iTCP -sTCP:LISTEN -F pn` 解析每个进程可从本机回环直连的 TCP 监听端口集合。
-    static func parseListeningTCPPorts(lsofOutput: String) -> [Int32: Set<Int>] {
-        var result: [Int32: Set<Int>] = [:]
+    /// 从 `lsof -nP -a -u <uid> -iTCP -sTCP:LISTEN -F ptn` 解析每个进程精确可直连的回环监听端点集合（保留地址、端口与 IPv4/IPv6 地址族，支持完整 `127.0.0.0/8`）。
+    static func parseListeningLoopbackEndpoints(lsofOutput: String) -> [Int32: Set<LoopbackEndpoint>] {
+        var result: [Int32: Set<LoopbackEndpoint>] = [:]
         var currentPID: Int32?
+        var currentProtoType: String?
         for line in lsofOutput.split(whereSeparator: \.isNewline) {
             guard let first = line.first else { continue }
             let value = String(line.dropFirst())
             switch first {
             case "p":
                 currentPID = Int32(value)
+                currentProtoType = nil
+            case "t":
+                currentProtoType = value
             case "n":
+                let proto = currentProtoType
+                currentProtoType = nil
                 guard let pid = currentPID,
                       let parsed = parseHostPort(value),
-                      isLoopbackReachableBindHost(parsed.host),
-                      let port = Int(parsed.port),
-                      port > 0 else { continue }
-                result[pid, default: []].insert(port)
+                      let port = UInt16(parsed.port),
+                      port > 0,
+                      let endpoint = LoopbackEndpoint.fromBindAddress(
+                          host: parsed.host,
+                          port: port,
+                          protocolType: proto
+                      ) else { continue }
+                result[pid, default: []].insert(endpoint)
             default:
                 break
             }
@@ -476,37 +474,69 @@ enum CodexDesktopLink {
         return result
     }
 
-    private static func configuredListenPort(from listen: String?) -> Int {
+    /// 兼容辅助：返回每个进程可从本机回环直连的 TCP 监听端口集合。
+    static func parseListeningTCPPorts(lsofOutput: String) -> [Int32: Set<Int>] {
+        parseListeningLoopbackEndpoints(lsofOutput: lsofOutput).mapValues { endpoints in
+            Set(endpoints.map { Int($0.port) })
+        }
+    }
+
+    private static func configuredListenSpec(from listen: String?) -> (host: String?, port: UInt16) {
+        let defaultPort = UInt16(LocalGatewayClient.defaultPort)
         guard let raw = listen?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return LocalGatewayClient.defaultPort
+            return (nil, defaultPort)
         }
-        if let parsed = parseHostPort(raw), let port = Int(parsed.port), port > 0 {
-            return port
+        if raw.hasPrefix(":"), let port = UInt16(raw.dropFirst()), port > 0 {
+            return (nil, port)
         }
-        if raw.hasPrefix(":"), let port = Int(raw.dropFirst()), port > 0 {
-            return port
+        if let parsed = parseHostPort(raw), let port = UInt16(parsed.port), port > 0 {
+            return (parsed.host, port)
         }
-        return LocalGatewayClient.defaultPort
+        return (nil, defaultPort)
     }
 
     /// 与 Go `internal/config/config.go:applyEnv` 对齐：优先 `AGENTD_LISTEN`，其次 `AGENTD_PORT`/`AGENTD_BIND`，最后回退到 JSON `listen`。
-    private static func effectiveExpectedListenPort(
+    private static func effectiveExpectedListenSpec(
         configListen: String?,
         processEnv: [String: String]?
-    ) -> Int {
+    ) -> (host: String?, port: UInt16) {
         if let envListen = processEnv?["AGENTD_LISTEN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !envListen.isEmpty {
-            return configuredListenPort(from: envListen)
+            return configuredListenSpec(from: envListen)
         }
         let envBind = processEnv?["AGENTD_BIND"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let envPort = processEnv?["AGENTD_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !envBind.isEmpty || !envPort.isEmpty {
-            if let parsed = Int(envPort), parsed > 0 {
-                return parsed
-            }
-            return LocalGatewayClient.defaultPort
+            let port = UInt16(envPort).flatMap { $0 > 0 ? $0 : nil } ?? UInt16(LocalGatewayClient.defaultPort)
+            return (envBind.isEmpty ? nil : envBind, port)
         }
-        return configuredListenPort(from: configListen)
+        return configuredListenSpec(from: configListen)
+    }
+
+    private static func selectResolvedLoopbackEndpoint(
+        liveEndpoints: Set<LoopbackEndpoint>,
+        expectedSpec: (host: String?, port: UInt16)
+    ) -> LoopbackEndpoint? {
+        guard !liveEndpoints.isEmpty else { return nil }
+        if let expectedHost = expectedSpec.host,
+           let exact = LoopbackEndpoint.fromBindAddress(host: expectedHost, port: expectedSpec.port),
+           liveEndpoints.contains(exact) {
+            return exact
+        }
+        let portMatches = liveEndpoints.filter { $0.port == expectedSpec.port }
+        if portMatches.count == 1 {
+            return portMatches.first
+        }
+        if portMatches.count > 1 {
+            return portMatches.sorted { lhs, rhs in
+                if lhs.family != rhs.family { return lhs.family < rhs.family }
+                return lhs.host < rhs.host
+            }.first
+        }
+        if liveEndpoints.count == 1 {
+            return liveEndpoints.first
+        }
+        return nil
     }
 
     private static func isAgentdSupervisorProcess(_ entry: ProcessSnapshotEntry) -> Bool {
@@ -556,6 +586,7 @@ enum CodexDesktopLink {
     /// 支持 `AGENTD_LISTEN` / `AGENTD_PORT` 覆写导致的实时回环监听端口与 JSON `listen` 不同，绝不借用同用户其他 `agentd serve --config ...` 的配置，无法确认或存在歧义时返回 `nil`。
     static func resolveActiveMimiAgentd(
         processes: [Int32: ProcessSnapshotEntry],
+        listeningEndpointsByPID: [Int32: Set<LoopbackEndpoint>]? = nil,
         listeningPortsByPID: [Int32: Set<Int>]? = nil,
         launchdSupervisorPID: Int32? = nil,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -581,23 +612,37 @@ enum CodexDesktopLink {
             case .missing, .invalid:
                 return nil
             }
-            let expectedPort = effectiveExpectedListenPort(
+            let expectedSpec = effectiveExpectedListenSpec(
                 configListen: loadedCfg.listen,
                 processEnv: candidate.entry.environment
             )
-            let resolvedPort: Int
-            if let listeningPortsByPID {
+            let resolvedEndpoint: LoopbackEndpoint
+            if let listeningEndpointsByPID {
+                let liveEndpoints = listeningEndpointsByPID[candidate.entry.pid] ?? []
+                guard let selected = selectResolvedLoopbackEndpoint(
+                    liveEndpoints: liveEndpoints,
+                    expectedSpec: expectedSpec
+                ) else {
+                    return nil
+                }
+                resolvedEndpoint = selected
+            } else if let listeningPortsByPID {
                 let livePorts = listeningPortsByPID[candidate.entry.pid] ?? []
+                let expectedPort = Int(expectedSpec.port)
+                let chosenPort: Int
                 if livePorts.contains(expectedPort) {
-                    resolvedPort = expectedPort
+                    chosenPort = expectedPort
                 } else if livePorts.count == 1, let onlyLivePort = livePorts.first {
-                    // 覆盖 AGENTD_LISTEN / AGENTD_PORT 场景：已唯一锁定该进程时直接使用其真实回环监听端口。
-                    resolvedPort = onlyLivePort
+                    chosenPort = onlyLivePort
                 } else {
                     return nil
                 }
+                guard let port16 = UInt16(exactly: chosenPort) else { return nil }
+                resolvedEndpoint = LoopbackEndpoint.fromBindAddress(host: expectedSpec.host ?? "127.0.0.1", port: port16)
+                    ?? LoopbackEndpoint(host: "127.0.0.1", port: port16, family: AF_INET)
             } else {
-                resolvedPort = expectedPort
+                resolvedEndpoint = LoopbackEndpoint.fromBindAddress(host: expectedSpec.host ?? "127.0.0.1", port: expectedSpec.port)
+                    ?? LoopbackEndpoint(host: "127.0.0.1", port: expectedSpec.port, family: AF_INET)
             }
             let envToken = candidate.entry.environment?["AGENTD_TOKEN"]?.trimmingCharacters(in: .whitespacesAndNewlines)
             let cfgToken = loadedCfg.auth?.token?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -605,7 +650,7 @@ enum CodexDesktopLink {
             return ActiveMimiAgentd(
                 pid: candidate.entry.pid,
                 configURL: candidate.configURL,
-                listenPort: resolvedPort,
+                listenEndpoint: resolvedEndpoint,
                 authToken: effectiveToken
             )
         }
@@ -1828,16 +1873,16 @@ enum CodexDesktopLink {
         }()
         let listenLsofResult = try? await ProcessExecutor.shared.run(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
-            arguments: ["-nP", "-a", "-u", String(currentUID), "-iTCP", "-sTCP:LISTEN", "-F", "pn"],
+            arguments: ["-nP", "-a", "-u", String(currentUID), "-iTCP", "-sTCP:LISTEN", "-F", "ptn"],
             timeout: .seconds(5),
             outputLimit: 1_048_576
         )
         guard let listenLsofResult, listenLsofResult.status == 0 else { return .separate }
-        let listeningPortsByPID = parseListeningTCPPorts(lsofOutput: listenLsofResult.stdoutText)
+        let listeningEndpointsByPID = parseListeningLoopbackEndpoints(lsofOutput: listenLsofResult.stdoutText)
 
         guard let activeAgentd = resolveActiveMimiAgentd(
             processes: processes,
-            listeningPortsByPID: listeningPortsByPID,
+            listeningEndpointsByPID: listeningEndpointsByPID,
             launchdSupervisorPID: launchdSupervisorPID,
             expectedUID: currentUID
         ) else {
@@ -1890,7 +1935,11 @@ enum CodexDesktopLink {
                   let bearerToken = activeAgentd.authToken,
                   !bearerToken.isEmpty else { return .separate }
             guard let probeChannel = try? await LocalGatewayClient(requestTimeout: 5)
-                .openCodexProbeChannel(port: activeAgentd.listenPort, bearerToken: bearerToken) else {
+                .openPeerVerifiedCodexProbeChannel(
+                    endpoint: activeAgentd.listenEndpoint,
+                    expectedPID: activeAgentd.pid,
+                    bearerToken: bearerToken
+                ) else {
                 return .separate
             }
             defer { probeChannel.close() }

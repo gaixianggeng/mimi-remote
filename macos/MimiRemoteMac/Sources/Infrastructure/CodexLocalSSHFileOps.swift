@@ -1516,6 +1516,7 @@ extension CodexLocalSSHConfigurator {
         do {
             var counter = 0
             var activeStack: Set<String> = []
+            var seenIgnoreUnknownPatterns: [[String]] = []
             var materializedUserText = try rewriteSSHConfigIncludes(
                 text: userConfigText,
                 baseDirectory: sshDirectory,
@@ -1523,7 +1524,8 @@ extension CodexLocalSSHConfigurator {
                 virtualFileOverrides: normalizedOverrides,
                 counter: &counter,
                 depth: 0,
-                activeStack: &activeStack
+                activeStack: &activeStack,
+                seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
             )
 
             if includeSystemConfig,
@@ -1544,7 +1546,8 @@ extension CodexLocalSSHConfigurator {
                         virtualFileOverrides: normalizedOverrides,
                         counter: &counter,
                         depth: 1,
-                        activeStack: &sysStack
+                        activeStack: &sysStack,
+                        seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
                     )
                     counter += 1
                     let sysSnapshotURL = tempDir.appendingPathComponent("system-\(counter).conf")
@@ -1573,15 +1576,12 @@ extension CodexLocalSSHConfigurator {
         counter: inout Int,
         depth: Int,
         activeStack: inout Set<String>,
-        inheritedIgnoreUnknownPatterns: [String]? = nil
+        seenIgnoreUnknownPatterns: inout [[String]]
     ) throws -> String {
         guard depth <= 16 else {
             throw ConfigError.effectiveConfigConflict("SSH 配置 Include 嵌套层级超过 16 层，无法忠实冻结。")
         }
         let virtualPathSet = Set(virtualFileOverrides.keys)
-        var globalIgnorePatterns = inheritedIgnoreUnknownPatterns
-        var blockIgnorePatterns: [String]? = nil
-        var inUnconditionalScope = true
         var output = ""
         for slice in Self.rawLineSlices(in: text) {
             let rawLine = Self.utf8Substring(text, range: slice.contentRange)
@@ -1599,43 +1599,27 @@ extension CodexLocalSSHConfigurator {
             }
             let keyword = firstToken.lowercased()
             if !Self.recognizedSSHConfigKeywords.contains(keyword) {
-                let activeIgnorePatterns = globalIgnorePatterns ?? blockIgnorePatterns
-                if let activeIgnorePatterns,
-                   Self.matchesIgnoreUnknown(keyword: keyword, patterns: activeIgnorePatterns) {
-                    // 已确认不在 OpenSSH 已知/危险指令集中且命中先前生效的 IgnoreUnknown：注释掉确保 ssh -G 下严格惰性。
-                    output.append("# [ignored by IgnoreUnknown] \(keyword)\n")
+                if seenIgnoreUnknownPatterns.contains(where: { Self.matchesIgnoreUnknown(keyword: keyword, patterns: $0) }) {
+                    // 原样保留未知指令交由真实 `/usr/bin/ssh -G` 按 OpenSSH `Host`/`Match` 作用域与通配符规则裁决，绝不私自注释。
+                    output.append(rawLine)
+                    output.append("\n")
                     continue
                 }
                 throw ConfigError.effectiveConfigConflict(
                     "SSH 配置包含无法识别的指令（\(firstToken)），拒绝冻结并停止只读评估。"
                 )
             }
-            if keyword == "host" {
-                blockIgnorePatterns = nil
-                let patterns = tokens.dropFirst().map { $0.lowercased() }
-                inUnconditionalScope = patterns.count == 1 && patterns[0] == "*"
-                output.append(rawLine)
-                output.append("\n")
-            } else if keyword == "match" {
+            if keyword == "match" {
                 if let matchError = Self.validateMatchCriteria(Array(tokens.dropFirst())) {
                     throw ConfigError.effectiveConfigConflict(matchError)
                 }
-                blockIgnorePatterns = nil
-                let criteria = tokens.dropFirst().map { $0.lowercased() }
-                inUnconditionalScope = criteria.count == 1 && criteria[0] == "all"
                 output.append(rawLine)
                 output.append("\n")
             } else if keyword == "ignoreunknown" {
                 guard let parsedPatterns = Self.parseIgnoreUnknownPatterns(from: tokens) else {
                     throw ConfigError.effectiveConfigConflict("SSH 配置 IgnoreUnknown 指令语法无效，拒绝冻结并停止只读评估。")
                 }
-                if inUnconditionalScope {
-                    if globalIgnorePatterns == nil {
-                        globalIgnorePatterns = parsedPatterns
-                    }
-                } else if blockIgnorePatterns == nil {
-                    blockIgnorePatterns = parsedPatterns
-                }
+                seenIgnoreUnknownPatterns.append(parsedPatterns)
                 output.append(rawLine)
                 output.append("\n")
             } else if keyword == "include" {
@@ -1692,7 +1676,7 @@ extension CodexLocalSSHConfigurator {
                             counter: &counter,
                             depth: depth + 1,
                             activeStack: &activeStack,
-                            inheritedIgnoreUnknownPatterns: globalIgnorePatterns
+                            seenIgnoreUnknownPatterns: &seenIgnoreUnknownPatterns
                         )
                         counter += 1
                         let childURL = tempDirectory.appendingPathComponent("inc-\(counter).conf")
