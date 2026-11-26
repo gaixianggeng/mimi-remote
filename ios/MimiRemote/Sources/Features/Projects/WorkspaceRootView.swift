@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// MeeGo / Harmattan 图标底板不是规则圆角矩形，也不是完全对称的超椭圆。
 /// 归一化 Bézier 控制点让上下边略平、左右边轻微收腰，并保留四角细微不同的饱满度。
@@ -569,34 +570,11 @@ struct WorkspaceRootView: View {
     /// 它仍然是个加号，但形状、材质和所处层次都与右下角浮起的新建会话按钮不同，
     /// 因此两个加号不会互相冒充——一个添工作区，一个建会话。
     private func addWorkspaceChip(tokens: ThemeTokens) -> some View {
-        Button {
-            presentOpenWorkspaceSheet()
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(tokens.secondaryText)
-                .frame(
-                    width: WorkspaceStripLayout.addChipVisualSize,
-                    height: WorkspaceStripLayout.addChipVisualSize
-                )
-                .background {
-                    Capsule()
-                        .strokeBorder(
-                            tokens.border,
-                            style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
-                        )
-                }
-                // 视觉比项目胶囊小一圈——它是次级动作，不该和工作区身份等重；
-                // 但外层仍撑满 44pt 行高，命中区不跟着缩。
-                .frame(
-                    width: WorkspaceStripLayout.chipHeight,
-                    height: WorkspaceStripLayout.chipHeight
-                )
-                .contentShape(Capsule())
-        }
-        .buttonStyle(MimiPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.open_directory"))
-        .accessibilityIdentifier("workspace.toolbar.openDirectory")
+        WorkspaceAddChipButton(
+            tokens: tokens,
+            reduceMotion: reduceMotion,
+            action: presentOpenWorkspaceSheet
+        )
     }
 
     @ViewBuilder
@@ -1723,5 +1701,139 @@ private struct WorkspaceProjectChip: View {
             status,
             selected
         )
+    }
+}
+
+/// 「打开目录」胶囊按钮：视觉仍完全由 SwiftUI 绘制，交互与无障碍节点由真实 UIKit `UIButton`
+/// 承载，确保 VoiceOver、XCUITest 与未加载 `SwiftUI.axbundle` 的单测宿主都通过同一枚渲染按钮触发动作（#1141）。
+private struct WorkspaceAddChipButton: View {
+    let tokens: ThemeTokens
+    let reduceMotion: Bool
+    let action: () -> Void
+
+    @State private var isPressed = false
+
+    var body: some View {
+        let pressMotion = MimiMotion.press.resolve(reduceMotion: reduceMotion)
+
+        Image(systemName: "plus")
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(tokens.secondaryText)
+            .frame(
+                width: WorkspaceStripLayout.addChipVisualSize,
+                height: WorkspaceStripLayout.addChipVisualSize
+            )
+            .background {
+                Capsule()
+                    .strokeBorder(
+                        tokens.border,
+                        style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                    )
+            }
+            // 视觉比项目胶囊小一圈——它是次级动作，不该和工作区身份等重；
+            // 但外层仍撑满 44pt 行高，命中区不跟着缩。
+            .frame(
+                width: WorkspaceStripLayout.chipHeight,
+                height: WorkspaceStripLayout.chipHeight
+            )
+            .scaleEffect(isPressed && pressMotion.allowsScale ? 0.985 : 1)
+            .opacity(isPressed ? 0.84 : 1)
+            .animation(pressMotion.animation, value: isPressed)
+            .accessibilityHidden(true)
+            .overlay {
+                WorkspaceAddChipControl(
+                    accessibilityLabel: L10n.text("ui.open_directory"),
+                    accessibilityIdentifier: "workspace.toolbar.openDirectory",
+                    onPressedChange: { pressed in
+                        if isPressed != pressed {
+                            isPressed = pressed
+                        }
+                    },
+                    action: action
+                )
+            }
+            .frame(
+                width: WorkspaceStripLayout.chipHeight,
+                height: WorkspaceStripLayout.chipHeight
+            )
+    }
+}
+
+private struct WorkspaceAddChipControl: UIViewRepresentable {
+    let accessibilityLabel: String
+    let accessibilityIdentifier: String
+    let onPressedChange: (Bool) -> Void
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> ControlButton {
+        let button = ControlButton(type: .custom)
+        button.backgroundColor = .clear
+        button.isAccessibilityElement = true
+        button.accessibilityTraits = .button
+        button.accessibilityLabel = accessibilityLabel
+        button.accessibilityIdentifier = accessibilityIdentifier
+        button.onHighlightChange = { [weak coordinator = context.coordinator] isHighlighted in
+            coordinator?.handleHighlightChange(isHighlighted)
+        }
+        button.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.handleTouchUpInside),
+            for: .touchUpInside
+        )
+        return button
+    }
+
+    func updateUIView(_ uiView: ControlButton, context: Context) {
+        context.coordinator.parent = self
+        if uiView.accessibilityLabel != accessibilityLabel {
+            uiView.accessibilityLabel = accessibilityLabel
+        }
+        if uiView.accessibilityIdentifier != accessibilityIdentifier {
+            uiView.accessibilityIdentifier = accessibilityIdentifier
+        }
+    }
+
+    static func dismantleUIView(_ uiView: ControlButton, coordinator: Coordinator) {
+        uiView.onHighlightChange = nil
+    }
+
+    final class ControlButton: UIButton {
+        var onHighlightChange: ((Bool) -> Void)?
+
+        override var isHighlighted: Bool {
+            didSet {
+                if oldValue != isHighlighted {
+                    onHighlightChange?(isHighlighted)
+                }
+            }
+        }
+
+        override func accessibilityActivate() -> Bool {
+            guard isEnabled, !isHidden, alpha > 0.01 else {
+                return false
+            }
+            sendActions(for: .touchUpInside)
+            return true
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: WorkspaceAddChipControl
+
+        init(parent: WorkspaceAddChipControl) {
+            self.parent = parent
+        }
+
+        func handleHighlightChange(_ isHighlighted: Bool) {
+            parent.onPressedChange(isHighlighted)
+        }
+
+        @objc func handleTouchUpInside() {
+            parent.action()
+        }
     }
 }

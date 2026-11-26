@@ -863,8 +863,14 @@ final class WorkspaceStripPresentationTests: XCTestCase {
         let themeStore = ThemeStore(defaults: defaults)
         let appearanceStore = WorkspaceAppearanceStore(defaults: defaults)
 
+        struct WeakOpenWorkspaceSheetModel {
+            weak var value: OpenWorkspaceSheetModel?
+        }
+
         var selectedWorkspaceChanges: [String?] = []
         var catalogRefreshFinished = false
+        var observedModels: [WeakOpenWorkspaceSheetModel] = []
+        var observedModelIDs = Set<ObjectIdentifier>()
         let openWorkspacePresenter = OpenWorkspaceSheetPresenter()
         _ = await waitUntil(timeout: .seconds(3)) {
             OpenWorkspaceSheetModel.liveInstanceCountForTesting == 0
@@ -912,30 +918,45 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             let scrollViews = self.allDescendantViews(in: window).compactMap { $0 as? UIScrollView }
             let hasStripScroll = scrollViews.contains { !$0.isHidden && $0.bounds.height > 40 && $0.bounds.height <= 120 }
             let hasPagerOrDetailScroll = scrollViews.contains { !$0.isHidden && $0.bounds.height > 200 }
-            return hasStripScroll && hasPagerOrDetailScroll
+            guard hasStripScroll && hasPagerOrDetailScroll else {
+                return false
+            }
+            guard let openDirectoryButton = self.findAccessibilityElement(
+                identifier: "workspace.toolbar.openDirectory",
+                in: window
+            ) as? UIControl else {
+                return false
+            }
+            return openDirectoryButton.window === window
+                && openDirectoryButton.isEnabled
+                && !openDirectoryButton.isHidden
+                && openDirectoryButton.alpha > 0.01
+                && openDirectoryButton.bounds.width >= WorkspaceStripLayout.chipHeight
+                && openDirectoryButton.bounds.height >= WorkspaceStripLayout.chipHeight
         }
-        XCTAssertTrue(workspaceStripReady, "生产 WorkspaceRootView 应当完成目录刷新并渲染工作区胶囊条")
+        XCTAssertTrue(workspaceStripReady, "生产 WorkspaceRootView 应当完成目录刷新并渲染可交互的打开目录胶囊按钮")
         XCTAssertNil(openWorkspacePresenter.presentation)
         XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
 
-        let presentSheetFromWorkspaceRoot: () -> Bool = {
-            if let openDirectoryButton = self.findAccessibilityElement(
+        let activateOpenDirectoryChip: () -> Bool = {
+            self.activateAccessibilityElement(
                 identifier: "workspace.toolbar.openDirectory",
                 in: window
-            ) {
-                return openDirectoryButton.accessibilityActivate()
+            )
+        }
+        let recordPresentedModel: () -> Bool = {
+            guard let model = openWorkspacePresenter.presentation?.model else {
+                return false
             }
-            // 无外部 AX 客户端（未加载 SwiftUI.axbundle）时，SwiftUI.HostingScrollView 的
-            // accessibilityElements 为空；直接调用与 addWorkspaceChip 同源的 presenter.present()
-            // 触发生产 WorkspaceRootView 的 .sheet(item:) 呈现链路。
-            openWorkspacePresenter.present()
-            return openWorkspacePresenter.presentation != nil
+            let inserted = observedModelIDs.insert(ObjectIdentifier(model)).inserted
+            observedModels.append(WeakOpenWorkspaceSheetModel(value: model))
+            return inserted
         }
 
-        // 1. 走生产 WorkspaceRootView 打开 Sheet、提交有效路径并确认工作区切换与模型释放。
+        // 1. 走生产 WorkspaceRootView 渲染出的打开目录胶囊按钮弹出 Sheet、提交有效路径并确认工作区切换与模型释放。
         XCTAssertTrue(
-            presentSheetFromWorkspaceRoot(),
-            "应能通过生产工作区入口弹出 OpenWorkspaceSheet"
+            activateOpenDirectoryChip(),
+            "应能通过生产 WorkspaceRootView 渲染的打开目录按钮弹出 OpenWorkspaceSheet"
         )
 
         let firstSheetReady = await waitUntil(timeout: .seconds(4)) {
@@ -953,9 +974,12 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             let browseReady = currentOpen.map { !$0.accessibilityTraits.contains(.notEnabled) } ?? false
             return toggle != nil
                 && browseReady
+                && openWorkspacePresenter.presentation != nil
                 && OpenWorkspaceSheetModel.liveInstanceCountForTesting > baselineLiveModelCount
         }
         XCTAssertTrue(firstSheetReady, "生产 WorkspaceRootView 弹出的 Sheet 应当完成初始目录加载")
+        XCTAssertTrue(recordPresentedModel(), "首次弹出 Sheet 应记录新的 OpenWorkspaceSheetModel 实例")
+        XCTAssertNotNil(observedModels.last?.value, "Sheet 呈现期间当前模型弱引用应保持存活")
 
         // 模拟 Sheet 打开期间 SessionStore 轮询触发父层重绘。
         sessionStore.objectWillChange.send()
@@ -1002,22 +1026,25 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             selectedWorkspaceChanges.contains("proj-finance")
                 && window.rootViewController?.presentedViewController == nil
                 && openWorkspacePresenter.presentation == nil
+                && observedModels.allSatisfy { $0.value == nil }
                 && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
         }
         XCTAssertTrue(selectedWorkspaceChanges.contains("proj-finance"), "提交成功后生产 WorkspaceRootView 应切换到新工作区")
         XCTAssertNil(window.rootViewController?.presentedViewController)
         XCTAssertNil(openWorkspacePresenter.presentation)
+        XCTAssertEqual(observedModels.count, 1)
+        XCTAssertNil(observedModels.first?.value, "提交关闭 Sheet 后，当前呈现的 OpenWorkspaceSheetModel 弱引用必须释放")
         XCTAssertTrue(
             submittedAndReleased,
             "成功提交关闭 Sheet 后，生产 WorkspaceRootView 不应滞留任何 OpenWorkspaceSheetModel（当前 \(OpenWorkspaceSheetModel.liveInstanceCountForTesting)，基线 \(baselineLiveModelCount)）"
         )
         XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
 
-        // 2. 连续三次打开并取消 Sheet，确认活对象数每次都回到基线而非 1->2->3->4 递增。
+        // 2. 连续三次通过真实按钮打开并取消 Sheet，确认每个模型的弱引用归零且活对象数回到基线。
         for attempt in 1...3 {
             XCTAssertTrue(
-                presentSheetFromWorkspaceRoot(),
-                "第 \(attempt) 次应能打开 Sheet"
+                activateOpenDirectoryChip(),
+                "第 \(attempt) 次应能通过渲染的打开目录按钮打开 Sheet"
             )
 
             let presented = await waitUntil(timeout: .seconds(4)) {
@@ -1035,9 +1062,12 @@ final class WorkspaceStripPresentationTests: XCTestCase {
                 let browseReady = currentOpen.map { !$0.accessibilityTraits.contains(.notEnabled) } ?? false
                 return cancel != nil
                     && browseReady
+                    && openWorkspacePresenter.presentation != nil
                     && OpenWorkspaceSheetModel.liveInstanceCountForTesting > baselineLiveModelCount
             }
             XCTAssertTrue(presented, "第 \(attempt) 次打开的 Sheet 应当完成呈现")
+            XCTAssertTrue(recordPresentedModel(), "第 \(attempt) 次打开应记录新的 OpenWorkspaceSheetModel 实例")
+            XCTAssertNotNil(observedModels.last?.value, "第 \(attempt) 次 Sheet 呈现期间当前模型弱引用应保持存活")
 
             // 在 Sheet 打开期间触发父层刷新，取消后不再触发任何额外刷新，验证不会滞留最后一次 model。
             sessionStore.objectWillChange.send()
@@ -1054,16 +1084,21 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             let cancelledAndReleased = await waitUntil(timeout: .seconds(4)) {
                 window.rootViewController?.presentedViewController == nil
                     && openWorkspacePresenter.presentation == nil
+                    && observedModels.allSatisfy { $0.value == nil }
                     && OpenWorkspaceSheetModel.liveInstanceCountForTesting == baselineLiveModelCount
             }
             XCTAssertNil(window.rootViewController?.presentedViewController, "第 \(attempt) 次取消后 Sheet 应当关闭")
             XCTAssertNil(openWorkspacePresenter.presentation, "第 \(attempt) 次取消后 presenter 不应滞留 presentation")
+            XCTAssertNil(observedModels.last?.value, "第 \(attempt) 次取消关闭 Sheet 后，当前 OpenWorkspaceSheetModel 弱引用必须释放")
             XCTAssertTrue(
                 cancelledAndReleased,
                 "第 \(attempt) 次取消关闭 Sheet 后，OpenWorkspaceSheetModel 活对象数必须回到基线（当前 \(OpenWorkspaceSheetModel.liveInstanceCountForTesting)，基线 \(baselineLiveModelCount)）"
             )
             XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
         }
+        XCTAssertEqual(observedModels.count, 4)
+        XCTAssertEqual(observedModelIDs.count, 4)
+        XCTAssertTrue(observedModels.allSatisfy { $0.value == nil })
     }
 
     @MainActor

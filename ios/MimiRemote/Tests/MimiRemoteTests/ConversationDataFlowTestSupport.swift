@@ -572,8 +572,16 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
     private var targetedModelOptionsRequestsStorage: [String] = []
     /// 各自只拦下一次请求，用来排出聚合与定向目录请求的先后。
-    var modelOptionsGate: PreparedConnectionGate?
-    var targetedModelOptionsGate: PreparedConnectionGate?
+    var modelOptionsGate: PreparedConnectionGate? {
+        get { requestLogLock.withLock { modelOptionsGateStorage } }
+        set { requestLogLock.withLock { modelOptionsGateStorage = newValue } }
+    }
+    private var modelOptionsGateStorage: PreparedConnectionGate?
+    var targetedModelOptionsGate: PreparedConnectionGate? {
+        get { requestLogLock.withLock { targetedModelOptionsGateStorage } }
+        set { requestLogLock.withLock { targetedModelOptionsGateStorage = newValue } }
+    }
+    private var targetedModelOptionsGateStorage: PreparedConnectionGate?
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let controlledGlobalSessionsHandler: ((String?, Int?) async throws -> SessionsPage)?
@@ -814,9 +822,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
-        requestLogLock.withLock { modelOptionsCallCountStorage += 1 }
-        if let gate = modelOptionsGate {
-            modelOptionsGate = nil
+        let gate = requestLogLock.withLock { () -> PreparedConnectionGate? in
+            modelOptionsCallCountStorage += 1
+            let gate = modelOptionsGateStorage
+            modelOptionsGateStorage = nil
+            return gate
+        }
+        if let gate {
             await gate.wait()
         }
         if let modelOptionsError {
@@ -826,9 +838,13 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     }
 
     func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
-        requestLogLock.withLock { targetedModelOptionsRequestsStorage.append(runtimeProvider) }
-        if let gate = targetedModelOptionsGate {
-            targetedModelOptionsGate = nil
+        let gate = requestLogLock.withLock { () -> PreparedConnectionGate? in
+            targetedModelOptionsRequestsStorage.append(runtimeProvider)
+            let gate = targetedModelOptionsGateStorage
+            targetedModelOptionsGateStorage = nil
+            return gate
+        }
+        if let gate {
             await gate.wait()
         }
         if let options = modelOptionsByRuntime[runtimeProvider] {
