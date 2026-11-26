@@ -115,6 +115,12 @@ func manageCoreService(ctx context.Context, platform, action, endpoint, token, e
 	}
 	// A verified owner can be in the middle of starting. Wait on it, without
 	// submitting a second start. Explicit restart can also recover an old binary.
+	if action == "reload-or-start" {
+		action = "start"
+		if owner.manager != "" {
+			action = "restart"
+		}
+	}
 	explicitRepair := action == "restart" && owner.manager != ""
 	if err != nil && !errors.Is(err, errCoreStarting) && !explicitRepair {
 		return onboardingFailure("service_start_failed", "service_daemon", true, err)

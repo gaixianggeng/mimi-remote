@@ -24,6 +24,7 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&o.ScanRoot, "scan-root", "", "代码目录")
 	fs.StringVar(&o.BrowseRoot, "browse-root", "", "浏览目录")
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	installerSmoke := fs.Bool("installer-smoke", false, "验证离线安装包的隔离预检结果")
 	stream := fs.Bool("progress-json", false, "流式输出检查进度")
 	fs.Func("assistant", "助手草稿", func(value string) error { return preflightChoice(o.Assistants, value, false) })
 	fs.Func("runtime-path", "程序草稿", func(value string) error { return preflightChoice(o.RuntimePaths, value, true) })
@@ -41,6 +42,9 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 	if o.Stage == "pair" && (len(o.RuntimePaths)+len(o.Assistants) > 0 || o.ScanRoot != "" || o.BrowseRoot != "") {
 		return invalidOnboardingRequest(errors.New("配对检查使用已保存的配置"))
 	}
+	if *installerSmoke && (o.Stage != "setup" || !flagSetByCaller(fs, "config") || o.ScanRoot == "" || o.BrowseRoot == "") {
+		return invalidOnboardingRequest(errors.New("请提供隔离的配置、扫描和浏览目录"))
+	}
 	o.LegacyPath = setupLegacyPath(fs)
 	o.HostDial = coreDialForConfig(o.ConfigPath)
 	var progress func(setup.PreflightCheck)
@@ -54,6 +58,9 @@ func runPreflight(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	report := runHostPreflight(context.Background(), o, progress)
+	if *installerSmoke && !validInstallerPreflight(report, o) {
+		return errors.New("安装包隔离预检失败")
+	}
 	return json.NewEncoder(stdout).Encode(report)
 }
 
@@ -74,4 +81,21 @@ func preflightChoice(choices map[string]string, raw string, path bool) error {
 	}
 	choices[id] = value
 	return nil
+}
+
+func validInstallerPreflight(r setup.PreflightReport, o setup.PreflightOptions) bool {
+	if r.Schema != "mimi.onboarding.preflight/v1" || r.Stage != "setup" || !r.OK || r.Configured || r.WorkspaceConfirmed ||
+		!r.ScanRootExists || r.ConfigPath != o.ConfigPath || r.ScanRoot != o.ScanRoot || r.BrowseRoot != o.BrowseRoot {
+		return false
+	}
+	var store, workspace bool
+	for _, row := range r.Checks {
+		switch row.ID {
+		case "config_store":
+			store = row.State == "ok" && !row.Blocking
+		case "workspace_root":
+			workspace = row.State == "ok" && !row.Blocking
+		}
+	}
+	return store && workspace
 }

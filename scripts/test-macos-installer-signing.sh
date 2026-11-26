@@ -364,6 +364,9 @@ C_SRC
   # 用于端到端测试 build-macos-installer.sh 完整签名循环与 check-macos-installer.sh --app 完整验收。
   local probe_src="$out_dir/probe.c"
   cat > "$probe_src" <<'PROBE_C'
+#include <limits.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -376,6 +379,23 @@ int main(int argc, char **argv) {
   const char *name = argc > 0 ? base_name(argv[0]) : "";
   const char *arg1 = argc > 1 ? argv[1] : "";
 
+  if (strcmp(name, "agentd") == 0 && strcmp(arg1, "preflight") == 0) {
+    char cwd[PATH_MAX], home[PATH_MAX], config[PATH_MAX], workspace[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) return 1;
+    snprintf(home, sizeof(home), "%s/home", cwd);
+    snprintf(config, sizeof(config), "%s/home/config.json", cwd);
+    snprintf(workspace, sizeof(workspace), "%s/work", cwd);
+    if (argc < 11 || !getenv("HOME") || strcmp(getenv("HOME"), home) || getenv("TEST_REPO_ROOT") ||
+        strcmp(argv[2], "--json") || strcmp(argv[3], "--stage") || strcmp(argv[4], "setup") ||
+        strcmp(argv[5], "--config") || strcmp(argv[6], config) || strcmp(argv[7], "--scan-root") ||
+        strcmp(argv[8], workspace) || strcmp(argv[9], "--browse-root") || strcmp(argv[10], workspace)) return 2;
+    puts("{\"schema\":\"mimi.onboarding.preflight/v1\",\"stage\":\"setup\",\"ok\":true,"
+         "\"configured\":false,\"workspace_confirmed\":false,\"scan_root_exists\":true,\"checks\":["
+         "{\"id\":\"config_store\",\"state\":\"ok\"},{\"id\":\"workspace_root\",\"state\":\"ok\"},"
+         "{\"id\":\"service_daemon\",\"code\":\"service_not_running\"},{\"id\":\"assistant_codex\"},"
+         "{\"id\":\"assistant_claude\"},{\"id\":\"assistant_agy\"},{\"id\":\"assistant_deepseek\"}]}");
+    return 0;
+  }
   if (strcmp(name, "agentd") == 0 || strcmp(name, "mimi-tailcat-experiment") == 0) {
     if (strcmp(arg1, "version") == 0) {
       printf("%s 9.9.9\n", name);
@@ -1389,6 +1409,9 @@ for rel_bin in \
   chmod 0755 "$app_out/$rel_bin"
 done
 
+if [[ -n "${TEST_EMPTY_PREFLIGHT_PROBE:-}" ]]; then
+  cp "$TEST_EMPTY_PREFLIGHT_PROBE" "$app_out/Contents/Resources/agentd"
+fi
 if [[ "${TEST_INJECT_ROGUE_SIDECAR:-0}" == "1" ]]; then
   # 模拟 embed-agentd.sh 新增了一个未进入 build-macos-installer.sh 签名列表的未签侧车。
   rogue_path="$app_out/Contents/Resources/mimi-rogue-sidecar"
@@ -1410,6 +1433,16 @@ XCODE_STUB
   bash "$ROOT_DIR/scripts/check-macos-installer.sh" --app "$e2e_app" >"$test_log" 2>&1 \
     || fail "端到端生成的 Mimi Remote Mac.app 未通过完整 check-macos-installer.sh --app 校验：$(<"$test_log")"
   run_direct_builder_output_tests "$fake_xcode_dir" "$probe_universal" "$e2e_app"
+
+  local failed_smoke_out="$TEMP_DIR/e2e-failed-smoke"
+  mkdir "$failed_smoke_out"
+  if PATH="$fake_xcode_dir:$PATH" TEST_REPO_ROOT="$ROOT_DIR" TEST_PROBE_UNIVERSAL="$probe_universal" \
+    TEST_EMPTY_PREFLIGHT_PROBE="$sample_universal" bash "$ROOT_DIR/scripts/build-macos-installer.sh" \
+    --snapshot --app-only --version 1.2.3 --output-dir "$failed_smoke_out" >"$test_log" 2>&1; then
+    fail "agentd 未返回预检报告时仍发布了 App。"
+  fi
+  grep -Fq '隔离预检报告或临时目录异常' "$test_log" || fail "未检测到无效的预检报告。"
+  [[ ! -e "$failed_smoke_out/Mimi Remote Mac.app" ]] || fail "预检失败后仍发布了 App。"
 
   # 10b. P2-6 端到端漏签集成反例：模拟 embed-agentd.sh 注入未签侧车进入真实 build-macos-installer.sh 封包流程 -> 封包前检验必须失败并指出文件名。
   local e2e_bad_out="$TEMP_DIR/e2e-bad-out"

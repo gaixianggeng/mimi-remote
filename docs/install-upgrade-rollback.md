@@ -2,7 +2,7 @@
 
 ## 目标
 
-让个人开发者在 macOS、Windows 或 Linux 电脑上启动 `agentd`，升级时不轮换已有配对凭据，失败时能先恢复服务再排查。生产主路径是“单机 + 私网连接 + 用户自己的 Codex CLI”，跨网络优先使用 Tailscale，同一局域网可直接连接。
+桌面端可先在离线电脑安装和启动，升级沿用已有配对凭据。首次连接时再准备一个可用助手和一种手机可达的通道。四种助手的配置与图形入口见[快速入门](quickstart.md)。
 
 ## 方案
 
@@ -17,7 +17,7 @@
 
 ### Windows 首次安装、升级与回滚
 
-前置条件：Windows 10/11 x64，并且当前 Windows 用户已安装、登录 Codex CLI 0.149.1 或更高版本。Windows 上的 Codex 连接不依赖 POSIX SSH 或 Unix Socket。`agentd` 启动并管理一个只监听 `ws://127.0.0.1:4222` 的 Codex App Server；它不连接 Codex Desktop 私有 IPC，也不向局域网暴露该端口。
+Windows 安装要求 Windows 10/11 x64 和当前桌面用户权限。选择 Codex 时再安装并登录受支持的 CLI。Windows 的 Codex App Server 由 agentd 管理，通过本机 loopback WebSocket 通信。
 
 从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载同版本的 `Mimi-Remote-Setup-*.exe`、`.sha256` 和 `.metadata.json`。在 PowerShell 中验证摘要和签名状态：
 
@@ -29,11 +29,11 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 摘要必须与 `.sha256` 一致。元数据为 `authenticode-pfx` 时，签名状态必须为 `Valid`；元数据为 `unsigned-release` 时，状态应为 `NotSigned`，Windows 可能显示 Microsoft Defender SmartScreen 警告。
 
-安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它注册名为 `Mimi Remote agentd` 的 limited 当前用户任务，并在完成前等待 `/api/readyz` 和真实 App Server `initialize`。Windows 托盘 App 提供服务状态、配对、诊断与恢复入口。配置与配对 Token 保留在 `%APPDATA%\mimi-remote`，日志保留在 `%LOCALAPPDATA%\Mimi Remote\logs`。覆盖安装不会轮换现有 Token。
+安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它回读当前用户计划任务的 SID、Limited 权限及唯一的无窗口宿主动作，然后在一次启动操作中等待经鉴权的核心服务就绪。首次安装时可选择一个现有目录，同时授予扫描和浏览权限。跳过确认或静默新装会保存待确认状态并阻止配对。覆盖安装沿用原 Token、目录授权和确认状态。配置位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`。
 
 Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
 
-不选 LAN 时，首次安装检测到 Tailscale 就默认通过 Tailscale 连接；没检测到时，服务只监听本机，安装仍会完成，但托盘的“配对设备…”会提示没有可用连接（#874）。此时可以在托盘控制面板开启 Tailcat 后扫码配对（见下文），不需要 Tailscale 或 LAN；也可以安装并登录 Tailscale，再启用 Mimi 的 Tailscale 连接，或重新运行安装器并勾选 LAN 访问：
+公共网络、规则过宽或未获管理员授权时，安装器关闭应用的 LAN 入口，保留环回和其他已配置的通道。它只清理当前用户由本版安装器创建的规则。旧规则或其他软件创建的规则请在 Windows 防火墙中核对归属。静默安装不会请求 UAC。也可在 Tailscale 已就绪后启用它，再重启一次：
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe" network --tailscale-enabled=true
@@ -63,11 +63,19 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 
 升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件和由安装器创建的可选防火墙规则，但保留配置、Token 与日志。
 
+#### Windows 托盘与 App 的维护调用约定
+
+- 正式签名发行版的 UI 使用已验证发布者、已绑定到当前安装版本的 `agentd.exe`，按参数数组调用 `installer-maintenance modify`。使用普通桌面用户权限，等待退出后重新读取 `status --json` 的 `workspace_confirmed` 和 LAN 状态。已有授权的用户无需再选一次目录。
+- 桌面端从受信安装位置读取 `maintenance-identity.p7m`。这是带内容的 CMS SignedData，UTF-8 JSON 的 schema 为 `mimi.windows.maintenance/v1`。用发布渠道预置信任的代码签名发布者验证唯一签名人和证书链，再核对预期安装版本 `version`、固定角色名 `broker=agentd.exe` 与 `maintenance=Mimi-Remote-Maintenance.exe`。`broker_sha256` 和 `maintenance_sha256` 均指完整签名文件。启动代理前，用同一打开文件校验 Authenticode 和摘要，固定路径各级目录与映像直至启动完成。旧签名收据、可写元数据及任意系统信任的其他发布者均不能替代这些校验。
+- 安装器构建先签名独立的 `Mimi-Remote-Maintenance.exe`，再把完整文件的 SHA-256 编入同版签名 agentd。代理只从自身安装目录打开这个固定文件，核对摘要并在同一文件句柄上通过 Windows Authenticode 验证。校验到维护结束期间固定目录和映像，拒绝重解析点。卸载程序、注册表命令、下载目录和 PATH 均不参与选择。调用方须先验证代理本身的可信身份。
+- Modify 的目录确认和核心服务操作以普通用户运行。仅修改防火墙时，代理再次验证同一维护映像，并向 UAC 提交固定动作。提升权限的程序从实际安装目录读取签名收据，核对发布者、版本和两个固定映像的摘要后，只为该目录的 agentd 管理 Private/LocalSubnet 规则。标准用户可在 UAC 中使用管理员凭据。
+- 无签名构建、维护程序缺失、身份校验失败或旧桌面端缺少可信代理入口时，显示下载正式安装包的指引。UI 不执行安装路径、注册表或诊断信息中的命令。恢复入口为[桌面端正式下载](https://github.com/gaixianggeng/mimi-remote/releases/latest)。
+
 ### macOS 首次安装（推荐）
 
-前置条件：macOS 15 或更高版本，已安装并登录 Codex（Codex CLI 或 ChatGPT 桌面版均可），Mac 与移动设备位于同一私有网络。不需要开启“远程登录”或配置 SSH：agentd 直接连接本机 Codex 的 control socket，只有想让 Codex Desktop 通过 SSH 主机接入同一个共享运行时时才需要它们，见[共享 App Server](shared-ssh-app-server.md)。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+macOS 安装要求 macOS 15 或更高版本。有安装包即可先配置桌面端。使用 Codex 桌面共享时才需要额外设置，见[共享 App Server](shared-ssh-app-server.md)。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并点“完成设置并显示二维码”，窗口随后显示配对二维码，用移动端 App（主屏上叫 mimi）扫码即可。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd`、默认使用的 Claude 适配器 `mimi-claude-adapter`、回退用的 `alleycat-claude-bridge`，以及实验性 Tailcat 辅助程序 `mimi-tailcat-experiment`（默认关闭）。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”并打开。首次打开会自动弹出设置窗口：选好代码文件夹并保存。服务、助手与通道就绪后，用移动端 App（主屏上叫 mimi）扫描新生成的二维码。之后要再次显示二维码，点菜单栏的 Mimi Remote 图标，选“配对设备…”。安装包内已包含 `agentd`、默认使用的 Claude 适配器 `mimi-claude-adapter`、回退用的 `alleycat-claude-bridge`，以及实验性 Tailcat 辅助程序 `mimi-tailcat-experiment`（默认关闭）。
 
 检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 
@@ -77,15 +85,13 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 brew update
 brew install gaixianggeng/tap/mimi-remote
 
-codex --version
-codex app-server --help
-agentd up
+agentd up --no-pair
 agentd status
 ```
 
-`agentd status` 将进程存活和业务就绪分开显示；脚本使用 `agentd status --json` 时，`process_ok` 只代表 `/healthz` 可达，`service_ok` 才代表配置、鉴权、当前平台的 App Server transport、Codex 版本和真实 `initialize` 均已通过。安装与升级只能以后者为成功条件。
+`agentd status --json` 中，`service_ok` 表示已核验当前后台服务的归属、版本与鉴权就绪。助手的版本、登录状态和手机连接通道在配对前另行检查。
 
-`agentd up` 会创建 `~/Library/Application Support/mimi-remote/config.json`，以 `0600` 保存，并直接连接本机共享 Unix App Server（缺失时启动它），然后启动 Homebrew 后台服务。检测到 Tailscale 时优先使用；否则自动启用 LAN 监听并生成当前局域网地址。重复运行会复用现有配置和移动端 Token，不会停止共享 App Server、Desktop 普通本地实例或 OpenClaw 实例。
+首次执行 `agentd up --no-pair` 会保存用户私有配置并启动 Homebrew 后台服务。请先准备代码目录（默认 `~/code`），或使用桌面向导选择目录。默认配置仅允许本机访问，之后可开启所需通道。重复运行会沿用现有身份。
 
 Agent 或自动化首次安装必须使用安全模式，初始化与启动逻辑不变，但不输出二维码、Endpoint 或长期访问码：
 
@@ -98,7 +104,7 @@ JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning�
 
 ### macOS App 升级与回滚
 
-首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。前门会按包内 agentd 二进制摘要判断是否换代；有活动共享连接或任务时会暂缓，结束任务并断开 Desktop SSH 页面后重启 App 服务即可再次尝试，不强制中断 backend。
+首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本及核心服务就绪，随后检查自己启用的助手。前门会按包内 agentd 二进制摘要判断是否换代；有活动共享连接或任务时会暂缓，结束任务并断开 Desktop SSH 页面后重启 App 服务即可再次尝试，不强制中断 backend。
 
 需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。若要回到不支持 Codex 前门的旧版，先按[共享 App Server](shared-ssh-app-server.md#macos-mac-app-前门)卸载前门并安全结束私有 backend，再替换 App。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
 
@@ -239,7 +245,7 @@ brew services stop mimi-remote
 systemctl --user stop mimi-remote.service
 ```
 
-收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS 和 Linux 显式远端模式会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server；Windows 与 Linux 默认模式会停止自己管理的 loopback App Server 子进程。App Server 或 transport 异常时，`/api/readyz` 和 `agentd status --json` 会报告不可用；`/healthz` 仍只表示 HTTP 进程存活。
+收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再关闭自己的会话资源。macOS 和 Linux 显式远端模式会关闭每条连接对应的 SSH proxy，但保留共享 Unix App Server；Windows 与 Linux 默认模式会停止自己管理的 loopback App Server 子进程。核心服务与各助手独立报告就绪情况，Codex 运行时异常可以在助手诊断中查看；`/healthz` 仍只表示 HTTP 进程存活。
 
 ### macOS Homebrew 应急回滚
 
@@ -298,7 +304,7 @@ Linux Release 包同时包含 agentd、同版本的 Tailcat 辅助程序、托�
 ```bash
 set -euo pipefail
 
-version="v0.1.0"
+read -r -p "输入要安装的正式版本标签（含 v）：" version
 release_version="${version#v}"
 case "$(uname -m)" in
   x86_64|amd64) arch="amd64" ;;
@@ -320,19 +326,17 @@ tar -xzf "$archive"
 bash ./scripts/install-linux.sh install
 ```
 
-默认模式直接使用当前 Linux 用户的 Codex CLI，不需要安装或配置 `sshd`，也不会读取或修改 `authorized_keys`。安装脚本会在替换二进制或 unit 前连接或启动 `~/.codex/app-server-control/app-server-control.sock` 并完成真实 `initialize` 预检；正式服务继续连接这个 resident，本机终端可通过 `codex --remote unix://` 打开同一个后端和 Thread。resident 优先运行在独立 user-systemd scope 中，不随 agentd 重启而停止。
+可以在另一台机器上下载对应架构的归档及校验文件，复制到离线电脑后就地校验、解压并安装。安装器用临时 HOME 和临时代码目录运行只读预检，无需访问 Codex 或登录任何助手。选择本机 Codex 时，它可以使用该用户的 Unix control socket。
 
-若确实要把 Codex 放到另一台 SSH 主机，可显式执行 `AGENTD_APP_SERVER_SSH_TARGET=user@host bash ./scripts/install-linux.sh install`。该高级模式才要求预先配置 host key 和非交互密钥认证；安装器仍不会修改 `authorized_keys` 或放宽 sshd。首次 setup 会把目标持久化到配置，systemd unit 不需要继承该环境变量。
+若确实要把 Codex 放到另一台 SSH 主机，可显式执行 `AGENTD_APP_SERVER_SSH_TARGET=user@host bash ./scripts/install-linux.sh install`。实际使用远端 Codex 时，请配置 host key 和非交互密钥认证；安装器仍不会修改 `authorized_keys` 或放宽 sshd。首次 setup 会把目标持久化到配置，systemd unit 不需要继承该环境变量。
 
 脚本只接受正式版本号，拒绝 `devel`、错误架构、root、非默认 `AGENTD_CONFIG` 和不一致的 `XDG_CONFIG_HOME`。它会：
 
-- 原子安装 `~/.local/bin/agentd` 和 user-systemd unit；
-- 默认生成本机受管 WebSocket 配置和权限为 `0600` 的独立 App Server token 文件；
-- 首次安装时静默创建默认配置，已有配置和 Token 不会被覆盖；服务真正就绪且安装事务提交后，才输出不含长期 Token/connect link 的短期配对二维码；
-- 升级前保存 `agentd.previous` 和上一版 unit；
-- 显式重启已经运行的旧进程，并等待服务健康；
-- 任一步骤、服务健康或 Doctor 必要检查在 10 秒内失败时，先输出最多 40 行去敏状态摘要和 80 行去敏 journal，再自动恢复安装前二进制、unit 和服务状态；首次 setup 已安全生成的配置与 Token 会保留，不会因服务失败再次轮换；
-- 若安装后的二维码生成失败，只提示使用绝对路径重试 `pair --qr-only`，不会回滚已经就绪的服务。
+- 暂存并核对 agentd、同版本 Tailcat 辅助程序和 user-systemd unit。
+- 首次安装时静默保存一次配置，扫描和浏览均限定为 `~/code`。升级保留配置、Token 和可回滚的上一版文件。
+- 对已运行的服务执行一次重启，首次启动等待本机鉴权和版本核验。可选助手的诊断不会阻塞核心服务。
+- 启动失败时输出有界去敏诊断并恢复安装前文件、备份及服务状态。首次保存的身份可用于重试。如果旧版本无法读取配置，停止服务并提示使用兼容版本修复。
+- 默认只提示用户如何配对。可在需要配对时执行 `agentd pair --qr-only`，或在安装命令后加 `--pair`。出码失败可以单独重试。
 
 安装器不会修改 `.bashrc`、`.zshrc` 等 shell 配置。若成功输出提示当前 `PATH` 没有 `~/.local/bin`，可在当前 shell 执行：
 
@@ -351,7 +355,7 @@ export PATH="$HOME/.local/bin:$PATH"
 "$HOME/.local/bin/agentd" stop
 ```
 
-`pair --qr-only` 只输出 Endpoint、短期 Pair 链接、过期时间和二维码，适合安装器或可能留存日志的终端；普通 `pair` 继续保留长期 Token/connect link，作为扫码不可用时的手动 fallback。其余命令在 Linux 只做一层薄映射，实际仍由 `systemctl --user` 和 `journalctl --user` 管理；不会额外创建 PID 文件或自建守护进程。`logs -n` 的正数范围固定为 1 到 5000，`0` 或负数使用默认 120 行，超限直接报错；`-f` 仍可与合法行数组合。unit 缺失时 CLI 会明确提示先从正式 Release 解压目录运行 `bash ./scripts/install-linux.sh install`。需要绕过 CLI 排查 systemd 本身时，仍可直接运行 `systemctl --user status mimi-remote.service`。
+`pair --qr-only` 只输出 Endpoint、短期 Pair 链接、过期时间和二维码，请只在可信的本机终端显示；普通 `pair` 继续保留长期 Token/connect link，作为扫码不可用时的手动 fallback。其余命令在 Linux 只做一层薄映射，实际仍由 `systemctl --user` 和 `journalctl --user` 管理；不会额外创建 PID 文件或自建守护进程。`logs -n` 的正数范围固定为 1 到 5000，`0` 或负数使用默认 120 行，超限直接报错；`-f` 仍可与合法行数组合。unit 缺失时 CLI 会明确提示先从正式 Release 解压目录运行 `bash ./scripts/install-linux.sh install`。需要绕过 CLI 排查 systemd 本身时，仍可直接运行 `systemctl --user status mimi-remote.service`。
 
 若希望退出 SSH 登录后服务仍运行，需要由当前机器管理员明确开启 user lingering：
 

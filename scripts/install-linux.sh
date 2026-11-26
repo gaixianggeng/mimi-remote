@@ -7,7 +7,7 @@ SERVICE_NAME="mimi-remote.service"
 usage() {
   cat <<'USAGE'
 用法：
-  bash ./scripts/install-linux.sh [install|upgrade|rollback|uninstall|--self-test]
+  bash ./scripts/install-linux.sh [install|upgrade|rollback|uninstall|--self-test] [--pair]
 
 命令：
   install     默认。从当前已解压的 Release 包安装；已有版本会自动备份。
@@ -17,6 +17,7 @@ usage() {
   --self-test 只运行参数、架构和版本校验，不修改系统。
 
 约束：
+  - install/upgrade 默认只启动核心服务，可显式传入 --pair 请求短期配对码。
   - 只支持普通 Linux 用户的 systemd user service，不要使用 sudo。
   - install/upgrade 必须在官方 Release 包解压目录中执行。
   - 自定义 AGENTD_CONFIG 或 XDG_CONFIG_HOME 不适用当前固定 service 模板。
@@ -135,7 +136,7 @@ manage_linux_tray() {
     tray_helper="$HOME/.local/share/mimi-remote/install-linux-tray.sh"
   fi
   [[ -f "$tray_helper" ]] || return 0
-  bash "$tray_helper" "$tray_mode"
+  bash "$tray_helper" "$tray_mode" 9>&-
 }
 
 uninstall_linux() {
@@ -228,7 +229,10 @@ self_test() {
 
 main() {
   local mode="${1:-install}"
-  if [[ $# -gt 1 ]]; then
+  local request_pair=0
+  if [[ $# == 2 && "$2" == --pair && ( "$mode" == install || "$mode" == upgrade ) ]]; then
+    request_pair=1
+  elif [[ $# -gt 1 ]]; then
     usage >&2
     return 2
   fi
@@ -263,6 +267,7 @@ main() {
   local previous_service="$HOME/.config/systemd/user/${SERVICE_NAME}.previous"
   local config_dir="$HOME/.config/mimi-remote"
   local config_path="$HOME/.config/mimi-remote/config.json"
+  local legacy_config="$HOME/.config/codex-ipad-agent/config.json"
   local installed_helper="$HOME/.local/share/mimi-remote/install-linux.sh"
   local source_binary="$ROOT_DIR/agentd"
   local source_service="$ROOT_DIR/packaging/systemd/mimi-remote.service"
@@ -271,6 +276,13 @@ main() {
   local previous_tailcat_absent="${previous_tailcat}.absent"
   local source_tailcat="$ROOT_DIR/mimi-tailcat-experiment"
   local source_has_tailcat="1"
+
+  # A failed transaction may restore both live files and .previous backups.
+  # Serialize all installations of this user, including uninstall and rollback.
+  require_command flock
+  mkdir -p "$HOME/.local/share/mimi-remote"
+  exec 9>>"$HOME/.local/share/mimi-remote/installer.lock"
+  flock -n 9 || fail "另一个安装或恢复操作仍在运行。"
 
   local command_name
   if [[ "$mode" == "uninstall" ]]; then
@@ -287,7 +299,7 @@ main() {
     return
   fi
 
-  for command_name in cmp grep id install journalctl mkdir mktemp mv rm sleep systemctl uname; do
+  for command_name in cmp env id install journalctl mkdir mktemp mv rm sleep systemctl uname; do
     require_command "$command_name"
   done
   normalize_arch "$(uname -m)" >/dev/null \
@@ -336,13 +348,12 @@ main() {
   local had_tailcat="0"
   local was_enabled="0"
   local was_active="0"
-  local created_config="0"
+  local fresh_install="0"
   local app_server_ssh_target="${AGENTD_APP_SERVER_SSH_TARGET:-}"
   # 只有显式 SSH 远端时才有元素；展开处用 ${arr[@]+"${arr[@]}"}，因为 bash 3.2
   # 在 set -u 下把空数组当作未绑定变量（Release 的 macOS 校验用的就是 /bin/bash 3.2）。
   local setup_transport_args=()
   if [[ -n "$app_server_ssh_target" ]]; then
-    require_command ssh
     setup_transport_args=(--app-server-ssh-target "$app_server_ssh_target")
   fi
 
@@ -359,12 +370,29 @@ main() {
     done
   }
 
+  # 旧版 check-config 可能迁移本地配置，只允许它改写私有暂存副本。
+  check_saved_config() {
+    local binary="$1" check_dir="$work_dir/compat" source_config="$config_path"
+    if ! path_exists "$source_config"; then
+      source_config="$legacy_config"
+    fi
+    [[ -f "$source_config" && ! -L "$source_config" ]] || return 1
+    mkdir -p "$check_dir" && install -m 600 "$source_config" "$check_dir/config.json" &&
+      "$binary" check-config --config "$check_dir/config.json" --json >/dev/null 2>&1
+  }
+
   # 任一步骤失败都恢复安装前的二进制和 unit；首次安装失败则停用残留服务。
   rollback_on_error() {
-    local status=$?
-    trap - ERR
+    local status="${1:-$?}"
+    trap - ERR INT TERM
+    trap '' INT TERM
     if [[ "$transaction_started" == "1" && "$completed" != "1" ]]; then
       echo "安装未通过就绪检查，正在恢复安装前版本..." >&2
+      if [[ "$had_service" == 0 || "$was_enabled" == 0 ]]; then
+        # Disable while systemd can still resolve the newly installed unit.
+        systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+      fi
+      systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
       local index path
       for index in "${!transaction_paths[@]}"; do
         path="${transaction_paths[$index]}"
@@ -377,15 +405,20 @@ main() {
         fi
       done
       systemctl --user daemon-reload >/dev/null 2>&1 || true
-      if [[ "$was_enabled" == "1" ]]; then
-        systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 || true
-      else
-        systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-      fi
-      if [[ "$was_active" == "1" ]]; then
-        systemctl --user restart "$SERVICE_NAME" >/dev/null 2>&1 || true
-      else
-        systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+      if [[ "$had_service" == 1 ]]; then
+        if ! check_saved_config "$destination_binary"; then
+          systemctl --user disable "$SERVICE_NAME" || echo '禁用服务失败，请检查 systemd 状态。' >&2
+          echo '配置恢复需要人工处理。已保留配置、Token 和回滚备份，请使用兼容版本重试。' >&2
+        else
+          if [[ "$was_enabled" == 1 ]]; then
+            systemctl --user enable "$SERVICE_NAME" || echo '恢复登录自启失败，请检查 systemd 状态。' >&2
+          fi
+          if [[ "$was_active" == 1 ]] && ! "$destination_binary" restart --no-pair --wait 60s >/dev/null 2>&1; then
+            systemctl --user stop "$SERVICE_NAME" || echo '停止服务失败，请检查 systemd 状态。' >&2
+            systemctl --user disable "$SERVICE_NAME" || echo '禁用服务失败，请检查 systemd 状态。' >&2
+            echo '恢复的后台服务未就绪。已保留配置、Token 和回滚备份。' >&2
+          fi
+        fi
       fi
     fi
     cleanup
@@ -393,28 +426,29 @@ main() {
   }
   trap cleanup EXIT
   trap rollback_on_error ERR
+  trap 'rollback_on_error 130' INT
+  trap 'rollback_on_error 143' TERM
 
-  # 在替换二进制、unit 或服务状态前，用候选版本完成本机 Codex App Server
-  # initialize 预检；显式远端 SSH 模式仍检查 SSH。临时配置不接触现有配对信息。
-  local preflight_dir="$work_dir/app-server-preflight"
-  mkdir -p "$preflight_dir"
-  local preflight_output
-  if ! preflight_output="$("$source_binary" setup \
-    --config "$preflight_dir/config.json" \
-    --scan-root "$HOME" \
-    --browse-root "$HOME" \
-    --listen 127.0.0.1:8787 \
-    ${setup_transport_args[@]+"${setup_transport_args[@]}"} \
-    2>&1)"; then
-    echo "Codex App Server 预检诊断：" >&2
-    print_bounded_redacted_lines "$preflight_output" 12 "（agentd setup 没有返回诊断）" >&2
-    if [[ -n "$app_server_ssh_target" ]]; then
-      fail "远端 SSH App Server 预检失败；请先确认 ssh ${app_server_ssh_target} true 可无交互执行，并确认远端 Codex 已安装。"
+  if [[ "$mode" == rollback ]]; then
+    # 历史版本可能没有 preflight；先使用候选旧版本读取配置副本。
+    if ! check_saved_config "$source_binary"; then
+      fail '回滚版本无法读取配置。请保留配置和 Token，使用兼容的完整 Release 重新安装。'
     fi
-    fail "Linux 共享本机 App Server 预检失败；请确认 Codex CLI 已安装、已登录，并支持 app-server Unix control socket。"
+  else
+    local smoke="$work_dir/preflight"
+    mkdir -m 700 "$smoke"
+    if ! env -i HOME="$smoke" PATH=/usr/bin:/bin TMPDIR="$smoke" XDG_CONFIG_HOME="$smoke" \
+      XDG_DATA_HOME="$smoke" XDG_CACHE_HOME="$smoke" XDG_STATE_HOME="$smoke" \
+      "$source_binary" preflight --stage setup --json --installer-smoke \
+      --config "$smoke/config.json" --scan-root "$smoke" --browse-root "$smoke" \
+      --runtime-path "codex=$smoke/missing" --runtime-path "claude=$smoke/missing" --runtime-path "agy=$smoke/missing" \
+      >"$work_dir/preflight.json" 2>"$work_dir/preflight.stderr" || [[ ! -s "$work_dir/preflight.json" ]]; then
+      print_bounded_redacted_lines "$(<"$work_dir/preflight.stderr")" 12 '（无预检诊断）' >&2
+      fail '安装包隔离预检失败；请检查归档与暂存目录。'
+    fi
   fi
 
-  mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/code"
+  mkdir -p "$HOME/.local/bin" "$HOME/.config/systemd/user"
   install -m 755 "$source_binary" "$work_dir/agentd.source"
   install -m 644 "$source_service" "$work_dir/service.source"
   if [[ "$source_has_tailcat" == "1" ]]; then
@@ -423,6 +457,9 @@ main() {
   local index path
   for index in "${!transaction_paths[@]}"; do
     path="${transaction_paths[$index]}"
+    if path_exists "$path" && [[ ! -f "$path" || -L "$path" ]]; then
+      fail '安装文件不是普通文件。请先检查现有安装，已保留现场。'
+    fi
     if [[ -f "$path" ]]; then
       install -m "${transaction_modes[$index]}" "$path" "$work_dir/before-$index"
     fi
@@ -445,6 +482,19 @@ main() {
   fi
   if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     was_active="1"
+  fi
+
+  if ! path_exists "$config_path" && ! path_exists "$legacy_config"; then
+    # A leftover installation or independent credential is not a new host.
+    local previous
+    for previous in "${transaction_paths[@]}" "$installed_helper" "$config_dir/deepseek.token" \
+      "$config_dir/tailcat" "$config_dir"/app-server-ws-token*; do
+      if path_exists "$previous"; then
+        fail '已有安装缺少配置。请从本机备份恢复原设备身份。'
+      fi
+    done
+    [[ "$mode" == install ]] || fail '缺少原配置。请先恢复原设备身份。'
+    fresh_install=1
   fi
 
   transaction_started="1"
@@ -482,44 +532,24 @@ main() {
   install -m 644 "$work_dir/service.source" "${destination_service}.new.$$"
   mv -f "${destination_service}.new.$$" "$destination_service"
 
-  if [[ ! -f "$config_path" ]]; then
-    created_config="1"
-    # setup 的普通输出包含长期 Token 和尚未就绪的二维码；首次安装先静默建配置，
-    # 只有服务通过真实 readiness 且事务提交后才在终端展示配对信息。
-    "$destination_binary" setup \
-      --scan-root "$HOME/code" \
-      --browse-root "$HOME" \
-      ${setup_transport_args[@]+"${setup_transport_args[@]}"} \
-      >/dev/null
+  if [[ "$fresh_install" == 1 ]]; then
+    mkdir -p "$HOME/code"
+    "$destination_binary" setup --no-pair --json ${setup_transport_args[@]+"${setup_transport_args[@]}"} >/dev/null
   fi
-  "$destination_binary" doctor --fix
 
   systemctl --user daemon-reload
   systemctl --user enable "$SERVICE_NAME"
-  if [[ "$was_active" == "1" ]]; then
-    # enable --now 不会重启已经运行的旧进程，升级时必须显式 restart。
-    systemctl --user restart "$SERVICE_NAME"
-  else
-    systemctl --user start "$SERVICE_NAME"
+  local action=start
+  [[ "$was_active" == 0 ]] || action=restart
+  # agentd 确认 systemd 归属，再在同一连接上验证凭据、readyz 与版本。
+  local diagnostics
+  # Older rollback targets support the human-readable --no-pair receipt.
+  if ! "$destination_binary" "$action" --no-pair --wait 60s >"$work_dir/service.receipt" 2>"$work_dir/service.stderr"; then
+    diagnostics="$("$destination_binary" status --json 2>>"$work_dir/service.stderr" || true)"
+    print_readiness_diagnostics "$diagnostics" "$(<"$work_dir/service.stderr")" >&2
+    fail '核心服务未通过就绪检查。配置和 Token 已保留。'
   fi
-
-  local status_json=""
-  local status_stderr_path="$work_dir/status.stderr"
-  local attempt
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    status_json="$("$destination_binary" status --json 2>"$status_stderr_path" || true)"
-    if grep -Eq '"service_ok"[[:space:]]*:[[:space:]]*true' <<<"$status_json" \
-      && grep -Eq '"doctor_ok"[[:space:]]*:[[:space:]]*true' <<<"$status_json"; then
-      completed="1"
-      break
-    fi
-    sleep 1
-  done
-  if [[ "$completed" != "1" ]]; then
-    # 必须在 rollback 删除新二进制和 unit 前取证；所有输出有界并再次去敏。
-    print_readiness_diagnostics "$status_json" "$(<"$status_stderr_path")" >&2
-    fail "服务或必要环境检查在 10 秒内未就绪；安装前版本已自动恢复。"
-  fi
+  completed=1
 
   mkdir -p "$HOME/.local/share/mimi-remote"
   if [[ ! -f "$installed_helper" ]] || ! cmp -s "${BASH_SOURCE[0]}" "$installed_helper"; then
@@ -527,7 +557,7 @@ main() {
       echo "警告：服务已就绪，但没有保存回滚脚本；请保留当前 Release 解压目录。" >&2
     fi
   fi
-  trap - ERR
+  trap - ERR INT TERM
   cleanup
   trap - EXIT
   if ! manage_linux_tray "$mode"; then
@@ -546,7 +576,7 @@ main() {
   echo "重启：\"$destination_binary\" restart"
   echo "配对：\"$destination_binary\" pair --qr-only"
 
-  if [[ "$created_config" == "1" ]]; then
+  if [[ "$request_pair" == 1 ]]; then
     echo
     echo "服务已就绪，请用移动端扫描下面的配对二维码："
     # 配对属于安装后的交互交接；失败只给出绝对路径重试命令，不能回滚已提交事务。

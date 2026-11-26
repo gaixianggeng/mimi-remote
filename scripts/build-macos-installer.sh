@@ -508,6 +508,41 @@ for required_arch in arm64 x86_64; do
   fi
 done
 
+# Run the embedded CLI before signing. Discovery cannot launch tools, contact
+# a service, or write outside this scratch directory (including the staged App).
+mkdir -p "$WORK_DIR/preflight/home" "$WORK_DIR/preflight/work" "$WORK_DIR/preflight/tmp"
+(
+  cd -P -- "$WORK_DIR/preflight"
+  agent="$(resolve_physical_dir "$(dirname "$AGENT_PATH")")/agentd"
+  profile='(version 1)(allow default)
+    (deny file-write*)(allow file-write* (subpath (param "ROOT")))
+    (deny network*)(deny process-exec)(allow process-exec (literal (param "AGENT")))'
+  /usr/bin/env -i HOME="$PWD/home" TMPDIR="$PWD/tmp" PATH=/usr/bin:/bin \
+    /usr/bin/sandbox-exec -D "ROOT=$PWD" -D "AGENT=$agent" -p "$profile" \
+    "$agent" preflight --json --stage setup --config "$PWD/home/config.json" \
+      --scan-root "$PWD/work" --browse-root "$PWD/work" \
+      --runtime-path "codex=$PWD/missing" --runtime-path "claude=$PWD/missing" \
+      --runtime-path "agy=$PWD/missing" >report.json </dev/null
+  python3 -I - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    report = json.loads(Path("report.json").read_bytes())
+    rows = {row["id"]: row for row in report["checks"]}
+    valid = (report["schema"] == "mimi.onboarding.preflight/v1" and report["stage"] == "setup"
+             and report["ok"] is True and report["configured"] is False
+             and report["workspace_confirmed"] is False and report["scan_root_exists"] is True
+             and rows["config_store"]["state"] == rows["workspace_root"]["state"] == "ok"
+             and rows["service_daemon"]["code"] == "service_not_running"
+             and {"assistant_codex", "assistant_claude", "assistant_agy", "assistant_deepseek"} <= rows.keys())
+except (ValueError, KeyError, TypeError):
+    valid = False
+if not valid or any(Path("home").iterdir()) or any(Path("work").iterdir()):
+    raise SystemExit("Mac 安装包构建失败：隔离预检报告或临时目录异常。")
+PY
+)
+
 CODESIGN_IDENTITY="-"
 CODESIGN_TIMESTAMP=(--timestamp=none)
 NOTARY_KEY_PATH=""
