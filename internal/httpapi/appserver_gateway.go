@@ -760,23 +760,6 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 	defer r.releaseCodexGateway(gateway)
 	req = req.WithContext(gatewayCtx)
 
-	upstreamURL, err := r.appServerUpstreamWebSocketURL()
-	if err != nil {
-		// 底层错误可能带配置内容；外侧只返回可操作但不泄漏本机信息的固定文案。
-		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
-		return
-	}
-	upstreamHeaders, err := r.appServerUpstreamHeaders()
-	if err != nil {
-		// token file 错误通常含电脑绝对路径，不能回显给移动端。
-		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游鉴权不可用，请在电脑运行 agentd doctor")
-		return
-	}
-	dialer, err := r.appServerUpstreamDialer(4 * time.Second)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
-		return
-	}
 	client, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		log.Printf("app-server gateway ws upgrade failed err=%v", err)
@@ -794,6 +777,26 @@ func (r *Router) appServerCodexGatewayWS(w http.ResponseWriter, req *http.Reques
 		brokerKey = codexGatewayBrokerKey(req)
 	}
 	if brokerKey != "" && r.serveAttachedCodexGatewayBroker(req, client, brokerKey) {
+		return
+	}
+
+	// Transport lookup can start an SSH preparation retry. Only a newly
+	// upgraded client that needs an upstream connection should trigger it.
+	upstreamURL, err := r.appServerUpstreamWebSocketURL()
+	if err != nil {
+		// 底层错误可能带配置内容；外侧只返回可操作但不泄漏本机信息的固定文案。
+		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
+		return
+	}
+	upstreamHeaders, err := r.appServerUpstreamHeaders()
+	if err != nil {
+		// token file 错误通常含电脑绝对路径，不能回显给移动端。
+		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 上游鉴权不可用，请在电脑运行 agentd doctor")
+		return
+	}
+	dialer, err := r.appServerUpstreamDialer(4 * time.Second)
+	if err != nil {
+		writeCodexGatewayRuntimeError(client, "CODEX_UPSTREAM_UNAVAILABLE", "Codex app-server 上游配置不可用，请在电脑运行 agentd doctor")
 		return
 	}
 
