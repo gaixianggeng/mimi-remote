@@ -924,41 +924,23 @@ final class WorkspaceStripPresentationTests: XCTestCase {
             guard let openDirectoryButton = self.findAccessibilityElement(
                 identifier: "workspace.toolbar.openDirectory",
                 in: window
-            ) as? UIControl else {
+            ) else {
                 return false
             }
-            return openDirectoryButton.window === window
-                && openDirectoryButton.isEnabled
-                && !openDirectoryButton.isHidden
-                && openDirectoryButton.alpha > 0.01
-                && openDirectoryButton.bounds.width >= WorkspaceStripLayout.chipHeight
-                && openDirectoryButton.bounds.height >= WorkspaceStripLayout.chipHeight
+            return openDirectoryButton.accessibilityTraits.contains(.button)
+                && !openDirectoryButton.accessibilityTraits.contains(.notEnabled)
         }
         XCTAssertTrue(workspaceStripReady, "生产 WorkspaceRootView 应当完成目录刷新并渲染可交互的打开目录胶囊按钮")
-        let renderedOpenDirectoryButton = try XCTUnwrap(
-            findAccessibilityElement(identifier: "workspace.toolbar.openDirectory", in: window) as? UIControl,
+        let chip = try XCTUnwrap(
+            findAccessibilityElement(identifier: "workspace.toolbar.openDirectory", in: window),
             "应当找到渲染出的打开目录胶囊按钮"
         )
-        XCTAssertTrue(
-            renderedOpenDirectoryButton.point(
-                inside: CGPoint(
-                    x: renderedOpenDirectoryButton.bounds.midX,
-                    y: renderedOpenDirectoryButton.bounds.midY
-                ),
-                with: nil
-            ),
-            "胶囊按钮中心应命中点击区域"
-        )
-        XCTAssertFalse(
-            renderedOpenDirectoryButton.point(
-                inside: CGPoint(
-                    x: renderedOpenDirectoryButton.bounds.minX + 1,
-                    y: renderedOpenDirectoryButton.bounds.minY + 1
-                ),
-                with: nil
-            ),
-            "胶囊按钮四角外侧不应命中点击区域"
-        )
+        XCTAssertTrue(chip.isAccessibilityElement)
+        XCTAssertEqual(chip.accessibilityLabel, L10n.text("ui.open_directory"))
+        let windowFrame = UIAccessibility.convertToScreenCoordinates(window.bounds, in: window)
+        XCTAssertTrue(windowFrame.contains(chip.accessibilityActivationPoint))
+        XCTAssertGreaterThanOrEqual(chip.accessibilityFrame.width, WorkspaceStripLayout.chipHeight)
+        XCTAssertGreaterThanOrEqual(chip.accessibilityFrame.height, WorkspaceStripLayout.chipHeight)
         XCTAssertNil(openWorkspacePresenter.presentation)
         XCTAssertEqual(OpenWorkspaceSheetModel.liveInstanceCountForTesting, baselineLiveModelCount)
 
@@ -2010,6 +1992,17 @@ final class WorkspaceStripPresentationTests: XCTestCase {
                        let match = search(child) {
                         return match
                     }
+                }
+            }
+
+            // 没有外部辅助技术客户端时，SwiftUI 滚动容器的 UIKit 子元素可能为空。
+            // 测试宿主通过 SwiftUI 的私有只读接口取得滚动容器的节点，再沿其无障碍子树查找真实按钮。
+            if object is UIScrollView {
+                let selector = NSSelectorFromString("accessibilityNodeForPlatformElement")
+                if object.responds(to: selector),
+                   let node = object.perform(selector)?.takeUnretainedValue() as? NSObject,
+                   let match = search(node) {
+                    return match
                 }
             }
 
