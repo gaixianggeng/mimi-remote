@@ -891,7 +891,7 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             sharedSocketPaths: sockets
         ), "桌面 SSH 连接到 agentd 实际公共 socket 时应判为共享")
 
-        // 2. agentd 使用 ssh transport 时不共享本机 socket -> 返回空集合！
+        // 2. agentd 使用 ssh transport、省略 transport 或配置文件缺失时均不共享本机 socket（与 agentd 默认 ssh 对齐）-> 返回空集合！
         try #"{"app_server":{"transport":"ssh","ssh_target":"remote-box"},"codex":{"enabled":true}}"#
             .write(to: configURL, atomically: true, encoding: .utf8)
         XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
@@ -899,6 +899,22 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             environment: [:],
             expectedUID: currentUID
         ).isEmpty, "agentd 使用 ssh transport 时不得匹配任何本机 socket")
+
+        try #"{"codex":{"enabled":true}}"#
+            .write(to: configURL, atomically: true, encoding: .utf8)
+        XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        ).isEmpty, "省略 app_server.transport 时应与 agentd 一致默认 ssh，不得误判为 local 共享")
+
+        let missingConfigHome = tempRoot.appendingPathComponent("missing-config-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: missingConfigHome, withIntermediateDirectories: true)
+        XCTAssertTrue(CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: missingConfigHome,
+            environment: [:],
+            expectedUID: currentUID
+        ).isEmpty, "配置文件缺失时应默认 ssh，不得误判为 local 共享")
 
         // 3. agentd 禁用 codex 或配置文件损坏时 fail-closed 返回空集合！
         try #"{"app_server":{"transport":"local"},"codex":{"enabled":false}}"#
@@ -916,11 +932,13 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             expectedUID: currentUID
         ).isEmpty, "agentd 配置损坏时不得回退到默认 ~/.codex")
 
-        // 4. 运行中 agentd serve 带显式 --config 参数时优先读取该配置文件。
-        let altConfigURL = tempRoot.appendingPathComponent("alt-agentd.json")
+        // 4. 运行中 agentd serve 带显式 --config 参数（含带空格的目录与可执行文件路径）时优先读取该配置文件。
+        let spacedConfigDir = tempRoot.appendingPathComponent("My Config Dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: spacedConfigDir, withIntermediateDirectories: true)
+        let altConfigURL = spacedConfigDir.appendingPathComponent("alt agentd.json")
         try customCfg.write(to: altConfigURL, atomically: true, encoding: .utf8)
         let psWithAltAgentd = CodexDesktopLink.parseProcessesWithUID(psOutput: """
-          888     1   \(currentUID) /Applications/MimiRemoteMac/agentd serve --config \(altConfigURL.path)
+          888     1   \(currentUID) /Applications/Mimi Remote.app/Contents/Resources/agentd serve --config \(altConfigURL.path) --listen 127.0.0.1:8787
         """)
         let altSockets = CodexDesktopLink.sharedCodexControlSocketPaths(
             homeDirectory: fakeHome,
@@ -928,8 +946,27 @@ final class CodexSharedSetupStatusTests: XCTestCase {
             expectedUID: currentUID,
             processes: psWithAltAgentd
         )
-        XCTAssertTrue(altSockets.contains(customSock))
+        XCTAssertTrue(altSockets.contains(customSock), "含空格的 --config 路径必须完整保留并命中自定义 CODEX_HOME")
         XCTAssertFalse(altSockets.contains(defaultSock))
+
+        // 5. 显式配置 app_server.shared_codex_home（transport=local）时优先匹配该共享目录。
+        let sharedHomeDir = tempRoot.appendingPathComponent("shared-codex-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedHomeDir, withIntermediateDirectories: true)
+        let sharedHomeCfg = """
+        {
+          "app_server": { "transport": "local", "shared_codex_home": "\(sharedHomeDir.path)" },
+          "codex": { "enabled": true, "env": { "CODEX_HOME": "\(customCodexHome.path)" } }
+        }
+        """
+        try sharedHomeCfg.write(to: configURL, atomically: true, encoding: .utf8)
+        let sharedHomeSockets = CodexDesktopLink.sharedCodexControlSocketPaths(
+            homeDirectory: fakeHome,
+            environment: [:],
+            expectedUID: currentUID
+        )
+        let expectedSharedHomeSock = sharedHomeDir.appendingPathComponent("app-server-control/app-server-control.sock").standardizedFileURL.path
+        XCTAssertTrue(sharedHomeSockets.contains(expectedSharedHomeSock))
+        XCTAssertFalse(sharedHomeSockets.contains(customSock))
     }
 
     // MARK: - Final Round P1-6: Active Connection Check Accepts localhost

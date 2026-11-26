@@ -414,50 +414,6 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: existingAuthRace.authorizedKeysURL, encoding: .utf8), externalSavedAuth)
         XCTAssertFalse(FileManager.default.fileExists(atPath: existingAuthRace.sshConfigURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: existingAuthRace.privateKeyURL.path))
-
-        // 4. 已有 ~/.ssh/mimi/known_hosts 在 Phase 4 最终比对之后瞬间被外部更新 -> RENAME_SWAP 无损恢复外部版本！
-        let existingKHHome = tempHome.appendingPathComponent("p1-3-existing-kh", isDirectory: true)
-        try FileManager.default.createDirectory(at: existingKHHome, withIntermediateDirectories: true)
-        let initKHConfig = makeConfigurator(home: existingKHHome, username: "alice")
-        try await initKHConfig.configure(verifyConnection: true)
-
-        let secondHostKey = Self.mockVerifiedHostKeyLine + "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISecondTxKey12345678901234567890123456789012\n"
-        let externalLateKH = Self.mockVerifiedHostKeyLine + "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILateExternalKH12345678901234567890123456789\n"
-        let racyKHUpdate = CodexLocalSSHConfigurator(
-            homeDirectory: existingKHHome,
-            username: "alice",
-            runCommand: { executable, arguments, timeout, standardInput in
-                if executable.lastPathComponent == "ssh-keygen" ||
-                    (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
-                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
-                        executable: executable,
-                        arguments: arguments,
-                        timeout: timeout,
-                        standardInput: standardInput
-                    )
-                }
-                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
-                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    try secondHostKey.write(toFile: rawPath, atomically: true, encoding: .utf8)
-                }
-                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
-            },
-            afterVerifyBeforeCommit: { targetURL in
-                if targetURL.lastPathComponent == CodexLocalSSHConfigurator.knownHostsFileName {
-                    try externalLateKH.write(to: targetURL, atomically: true, encoding: .utf8)
-                }
-            }
-        )
-        do {
-            try await racyKHUpdate.configure(verifyConnection: true)
-            XCTFail("最终比对后外部更新 known_hosts 必须中止并恢复外部版本")
-        } catch let error as CodexLocalSSHConfigurator.ConfigError {
-            guard case .concurrentModification = error else {
-                return XCTFail("期望 concurrentModification，实际：\(error)")
-            }
-        }
-        XCTAssertEqual(try String(contentsOf: initKHConfig.knownHostsURL, encoding: .utf8), externalLateKH)
     }
 
     // MARK: - r5 P1-4: Retry Remove Preserves External Known Hosts Protected by Rollback
@@ -570,23 +526,23 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         let managedAfterFirstFail = await firstFailing.inspect().isManaged
         XCTAssertTrue(managedAfterFirstFail)
 
-        // 重配（此时密钥已被回滚删除，触发轮换生成新密钥）：绝不能在旧行精确删除失败后丢弃旧记录提交新记录！
-        let reconfigureRotate = makeConfigurator(home: flowHome, username: "alice")
+        // 已有残留状态时再次调用 configure() 只做校验/拒绝，绝不轮换密钥或丢弃旧记录！
+        let reconfigureAttempt = makeConfigurator(home: flowHome, username: "alice")
         do {
-            try await reconfigureRotate.configure(verifyConnection: false)
-            XCTFail("存在未能清除的历史同公钥授权时，重配轮换必须拒绝并保留旧记录")
+            try await reconfigureAttempt.configure(verifyConnection: false)
+            XCTFail("存在未能清除的历史同公钥授权时，再次配置必须拒绝并保留旧记录")
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             guard case .conflictingAuthorizedKey = error else {
                 return XCTFail("期望 conflictingAuthorizedKey，实际：\(error)")
             }
         }
         XCTAssertEqual(try String(contentsOf: authURL, encoding: .utf8), editedAuthSnapshot)
-        let managedAfterRotateReject = await reconfigureRotate.inspect().isManaged
-        XCTAssertTrue(managedAfterRotateReject, "重配被拒后必须完整保留残留授权记录")
+        let managedAfterReject = await reconfigureAttempt.inspect().isManaged
+        XCTAssertTrue(managedAfterReject, "再次配置被拒后必须完整保留残留授权记录")
 
         // 调用 remove()：仍检测到残留公钥授权，保留文件与记录并报冲突。
         do {
-            try await reconfigureRotate.remove()
+            try await reconfigureAttempt.remove()
             XCTFail("残留改注释授权存在时 remove 必须报错并保留记录")
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             guard case .conflictingAuthorizedKey = error else {
@@ -594,13 +550,13 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
             }
         }
         XCTAssertEqual(try String(contentsOf: authURL, encoding: .utf8), editedAuthSnapshot)
-        let managedAfterRemoveConflict = await reconfigureRotate.inspect().isManaged
+        let managedAfterRemoveConflict = await reconfigureAttempt.inspect().isManaged
         XCTAssertTrue(managedAfterRemoveConflict)
 
         // 用户手工删掉被改注释的行后再 remove()，彻底清空状态。
         try "".write(to: authURL, atomically: true, encoding: .utf8)
-        try await reconfigureRotate.remove()
-        let managedAfterManualClear = await reconfigureRotate.inspect().isManaged
+        try await reconfigureAttempt.remove()
+        let managedAfterManualClear = await reconfigureAttempt.inspect().isManaged
         XCTAssertFalse(managedAfterManualClear)
 
         // 场景 B：复用同密钥路径（密钥仍在，仅把 authorized_keys 注释改掉）-> 重配绝不得复用并清空记录！
@@ -874,78 +830,315 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         }
     }
 
-    // MARK: - Final Round P1-1: Key Rotation Crash Recovery Retains Both Identities & Exact Entries Until Verified Cleanup
+    // MARK: - Scope Cut & Security Regressions (Verify-Only, Unsafe Rollback, Frozen ssh -G, Inode Staging, Transient I/O)
 
-    func testFinal_P1_1KeyRotationCrashPreservesBothIdentitiesAndExactEntriesAcrossRetries() async throws {
-        let rotHome = tempHome.appendingPathComponent("final-p1-1-rotation-crash", isDirectory: true)
-        try FileManager.default.createDirectory(at: rotHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
-        let originalAuth = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserPrimaryAuth12345678901234567890123 user@host\n"
-        let originalConfig = "Host work\n    HostName 10.2.3.4\n"
-        try originalAuth.write(to: rotHome.appendingPathComponent(".ssh/authorized_keys"), atomically: true, encoding: .utf8)
-        try originalConfig.write(to: rotHome.appendingPathComponent(".ssh/config"), atomically: true, encoding: .utf8)
+    func testExistingConfigIsVerifyOnlyNeverRotatesKeysOrOverwritesPendingTransaction() async throws {
+        let verifyHome = tempHome.appendingPathComponent("scope-verify-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: verifyHome, withIntermediateDirectories: true)
+        let cfg = makeConfigurator(home: verifyHome, username: "alice", systemSSHConfigPath: nil)
+        try await cfg.configure(verifyConnection: true)
 
-        // 1. 首次配置写入密钥 A 及其授权行。
-        let initialCfg = makeConfigurator(home: rotHome, username: "alice")
-        try await initialCfg.configure(verifyConnection: true)
-        let keyAPubBody = try XCTUnwrap(
-            CodexLocalSSHConfigurator.extractPublicKeyBody(
-                from: try String(contentsOf: initialCfg.publicKeyURL, encoding: .utf8)
-            )
-        )
+        var privStBefore = stat()
+        var pubStBefore = stat()
+        XCTAssertEqual(Darwin.lstat(cfg.privateKeyURL.path, &privStBefore), 0)
+        XCTAssertEqual(Darwin.lstat(cfg.publicKeyURL.path, &pubStBefore), 0)
+        let privDataBefore = try Data(contentsOf: cfg.privateKeyURL)
 
-        // 2. 删除私钥触发轮换生成密钥 B，并在 authorized_keys 提交后模拟崩溃（此时 WAL 含密钥 B，主记录仍为密钥 A）。
-        try FileManager.default.removeItem(at: initialCfg.privateKeyURL)
-        let rotatingCrash = makeConfigurator(
-            home: rotHome,
+        // 1. 已有健康配置再次调用 configure() 只做校验，不换钥、不改写磁盘文件。
+        try await cfg.configure(verifyConnection: true)
+        var privStAfter = stat()
+        var pubStAfter = stat()
+        XCTAssertEqual(Darwin.lstat(cfg.privateKeyURL.path, &privStAfter), 0)
+        XCTAssertEqual(Darwin.lstat(cfg.publicKeyURL.path, &pubStAfter), 0)
+        XCTAssertEqual(privStAfter.st_ino, privStBefore.st_ino)
+        XCTAssertEqual(pubStAfter.st_ino, pubStBefore.st_ino)
+        XCTAssertEqual(try Data(contentsOf: cfg.privateKeyURL), privDataBefore)
+
+        // 2. 删除私钥后再次调用 configure()：绝不轮换生成新密钥，必须拒绝并提示先移除。
+        try FileManager.default.removeItem(at: cfg.privateKeyURL)
+        do {
+            try await cfg.configure(verifyConnection: false)
+            XCTFail("已有配置缺少私钥时不得轮换生成新密钥")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {
+            // 预期
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cfg.privateKeyURL.path))
+
+        // 3. 首次配置崩溃留下 pendingTransaction 后再次 configure()：绝不覆盖 pendingTransaction。
+        let pendingHome = tempHome.appendingPathComponent("scope-pending-no-overwrite", isDirectory: true)
+        try FileManager.default.createDirectory(at: pendingHome, withIntermediateDirectories: true)
+        let crashingCfg = makeConfigurator(
+            home: pendingHome,
             username: "alice",
+            systemSSHConfigPath: nil,
             simulateHardCrashPoint: .afterAuthorizedKeysCommit
         )
         do {
-            try await rotatingCrash.configure(verifyConnection: true)
-            XCTFail("模拟轮换崩溃点必须抛出 SimulatedHardCrashError")
-        } catch is CodexLocalSSHConfigurator.SimulatedHardCrashError {
+            try await crashingCfg.configure(verifyConnection: true)
+            XCTFail("应触发模拟崩溃")
+        } catch is CodexLocalSSHConfigurator.SimulatedHardCrashError {}
+        let stateBeforeRetry = try Data(contentsOf: crashingCfg.stateFileURL)
+
+        let secondAttempt = makeConfigurator(home: pendingHome, username: "alice", systemSSHConfigPath: nil)
+        do {
+            try await secondAttempt.configure(verifyConnection: false)
+            XCTFail("存在未完成 pendingTransaction 时再次配置必须拒绝，不得覆盖记录")
+        } catch CodexLocalSSHConfigurator.ConfigError.conflictingKeyFiles {
             // 预期
         }
+        XCTAssertEqual(try Data(contentsOf: crashingCfg.stateFileURL), stateBeforeRetry, "pendingTransaction 绝不得被覆盖")
+    }
 
-        let keyBPubBody = try XCTUnwrap(
-            CodexLocalSSHConfigurator.extractPublicKeyBody(
-                from: try String(contentsOf: initialCfg.publicKeyURL, encoding: .utf8)
-            )
-        )
-        XCTAssertNotEqual(keyAPubBody, keyBPubBody, "轮换崩溃现场磁盘应为新生成的密钥 B")
-        let authAfterCrash = try String(contentsOf: initialCfg.authorizedKeysURL, encoding: .utf8)
-        XCTAssertTrue(authAfterCrash.contains(keyBPubBody))
+    func testRollbackRefusesUnsafeGroupOrWorldWritableAuthorizedKeysAndConfigWithoutTighteningOrPreservingEntries() async throws {
+        // 1. 配置进行中 authorized_keys 被改成 0666 并追加未授权公钥，随后验连失败触发回滚：
+        //    回滚必须直接拒绝修改 authorized_keys，绝不将其重写为 0600 激活其中条目！
+        let authHome = tempHome.appendingPathComponent("p0-2-rollback-auth-unsafe", isDirectory: true)
+        try FileManager.default.createDirectory(at: authHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        _ = Darwin.chmod(authHome.appendingPathComponent(".ssh").path, 0o700)
+        let origAuth = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOrigSafeKey1234567890123456789012345678 orig@host\n"
+        let attackerKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAttackerKeyMustNotActivate123456789012 attacker@evil\n"
+        let authURL = authHome.appendingPathComponent(".ssh/authorized_keys")
+        try origAuth.write(to: authURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(Darwin.chmod(authURL.path, 0o600), 0)
 
-        // 3. 首次 remove() 在写回 authorized_keys 与删除私钥前模拟临时 I/O 失败，迫使状态文件落盘合并后的新旧记录。
-        let transientFailingRemover = makeConfigurator(
-            home: rotHome,
+        let failingAuthCfg = makeConfigurator(
+            home: authHome,
             username: "alice",
+            systemSSHConfigPath: nil,
+            sshExitStatus: 255,
+            sshStderr: "Connection refused",
+            beforeVerifySSH: {
+                let current = try String(contentsOf: authURL, encoding: .utf8)
+                try (current + attackerKey).write(to: authURL, atomically: true, encoding: .utf8)
+                _ = Darwin.chmod(authURL.path, 0o666)
+            }
+        )
+        do {
+            try await failingAuthCfg.configure(verifyConnection: true)
+            XCTFail("验连与不安全回滚必须报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .fileOperationFailed(let detail) = error else {
+                return XCTFail("期望 fileOperationFailed 报告回滚被拒，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("chmod 600 ~/.ssh/authorized_keys"), "应包含明确手动修复提示：\(detail)")
+        }
+        // 关键：权限仍为 0666（绝不能收紧为 0600 激活 attackerKey！），且状态保留以便用户手动核对修复后移除。
+        XCTAssertEqual(try posixPermissions(of: authURL), 0o666, "回滚绝不得将组/全局可写的 authorized_keys 收紧为 0600")
+        let inspectedUnsafeAuth = await failingAuthCfg.inspect()
+        XCTAssertTrue(inspectedUnsafeAuth.hasUnsafeFileSystemState)
+        XCTAssertTrue(inspectedUnsafeAuth.isManaged)
+
+        // 2. 配置进行中 ~/.ssh/config 被改成 0666 并改动，随后验连失败触发回滚：同样绝不收紧权限或改写！
+        let cfgHome = tempHome.appendingPathComponent("p0-2-rollback-cfg-unsafe", isDirectory: true)
+        try FileManager.default.createDirectory(at: cfgHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        _ = Darwin.chmod(cfgHome.appendingPathComponent(".ssh").path, 0o700)
+        let cfgURL = cfgHome.appendingPathComponent(".ssh/config")
+        try "Host keep\n    HostName 10.0.0.1\n".write(to: cfgURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(Darwin.chmod(cfgURL.path, 0o600), 0)
+
+        let failingCfg = makeConfigurator(
+            home: cfgHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            sshExitStatus: 255,
+            sshStderr: "Connection refused",
+            beforeVerifySSH: {
+                let current = try String(contentsOf: cfgURL, encoding: .utf8)
+                try (current + "\nHost injected\n    HostName 10.9.9.9\n").write(to: cfgURL, atomically: true, encoding: .utf8)
+                _ = Darwin.chmod(cfgURL.path, 0o666)
+            }
+        )
+        do {
+            try await failingCfg.configure(verifyConnection: true)
+            XCTFail("config 变为 0666 后回滚必须拒绝修改")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .fileOperationFailed(let detail) = error else {
+                return XCTFail("期望 fileOperationFailed，实际：\(error)")
+            }
+            XCTAssertTrue(detail.contains("chmod 600 ~/.ssh/config"), "应包含明确手动修复提示：\(detail)")
+        }
+        XCTAssertEqual(try posixPermissions(of: cfgURL), 0o666, "回滚绝不得自动收紧不安全的 ~/.ssh/config 权限")
+
+        // 3. 已存在的安全权限（~/.ssh 0755、config 0644）配置与撤销后保持原权限不变，绝不擅自 chmod。
+        let keepModeHome = tempHome.appendingPathComponent("p0-2-keep-safe-modes", isDirectory: true)
+        try FileManager.default.createDirectory(at: keepModeHome.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        let keepCfg = makeConfigurator(home: keepModeHome, username: "alice", systemSSHConfigPath: nil)
+        try "Host work\n    HostName 10.1.1.1\n".write(to: keepCfg.sshConfigURL, atomically: true, encoding: .utf8)
+        XCTAssertEqual(Darwin.chmod(keepCfg.sshDirectory.path, 0o755), 0)
+        XCTAssertEqual(Darwin.chmod(keepCfg.sshConfigURL.path, 0o644), 0)
+        try await keepCfg.configure(verifyConnection: false)
+        XCTAssertEqual(try posixPermissions(of: keepCfg.sshDirectory), 0o755)
+        XCTAssertEqual(try posixPermissions(of: keepCfg.sshConfigURL), 0o644)
+        try await keepCfg.remove()
+        XCTAssertEqual(try posixPermissions(of: keepCfg.sshDirectory), 0o755)
+        XCTAssertEqual(try posixPermissions(of: keepCfg.sshConfigURL), 0o644)
+    }
+
+    func testSSHGAlwaysUsesFrozenSnapshotAndNeverReadsLiveFiles() async throws {
+        let frozenHome = tempHome.appendingPathComponent("p0-1-frozen-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: frozenHome, withIntermediateDirectories: true)
+        let sshGArgsBox = IsolatedArgsRecorder()
+        let cfg = CodexLocalSSHConfigurator(
+            homeDirectory: frozenHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh", arguments.first == "-G" {
+                    await sshGArgsBox.record(arguments)
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try Self.mockVerifiedHostKeyLine.write(toFile: rawPath, atomically: true, encoding: .utf8)
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
+        )
+
+        try await cfg.configure(verifyConnection: true)
+        _ = await cfg.inspect()
+
+        let recorded = await sshGArgsBox.all
+        XCTAssertFalse(recorded.isEmpty)
+        for args in recorded {
+            guard let fIdx = args.firstIndex(of: "-F"), fIdx + 1 < args.count else {
+                return XCTFail("每次 ssh -G 都必须携带 -F 指向冻结快照：\(args)")
+            }
+            XCTAssertNotEqual(args[fIdx + 1], cfg.sshConfigURL.path, "ssh -G 绝不得直接读取实时 ~/.ssh/config：\(args)")
+        }
+
+        // 不带 -F 直接调用 resolveEffectiveSSHConfig(rawArguments:) 必须被拒绝。
+        do {
+            _ = try await cfg.resolveEffectiveSSHConfig(rawArguments: [CodexLocalSSHConfigurator.hostAlias])
+            XCTFail("缺少 -F 冻结快照参数的 ssh -G 必须被拒绝")
+        } catch CodexLocalSSHConfigurator.ConfigError.effectiveConfigConflict {
+            // 预期
+        }
+    }
+
+    func testInMemoryKeyGenerationIsOpenSSHCompatibleAndStagingCleanupOnlyDeletesRecordedInodes() async throws {
+        // 1. 内存生成的 OpenSSH Ed25519 私钥能被系统真实 /usr/bin/ssh-keygen -y 与 -lf 识别且公钥、指纹完全一致。
+        let generated = try CodexLocalSSHConfigurator.generateEd25519OpenSSHKeyPair()
+        XCTAssertEqual(
+            CodexLocalSSHConfigurator.derivePublicKeyBody(fromOpenSSHPrivateKeyData: generated.privateKeyData),
+            generated.publicKeyBody
+        )
+        let compatDir = tempHome.appendingPathComponent("openssh-compat", isDirectory: true)
+        try FileManager.default.createDirectory(at: compatDir, withIntermediateDirectories: true)
+        let compatPriv = compatDir.appendingPathComponent("id_ed25519")
+        try generated.privateKeyData.write(to: compatPriv)
+        XCTAssertEqual(Darwin.chmod(compatPriv.path, 0o600), 0)
+
+        let derivedResult = try await CodexLocalSSHConfigurator.defaultCommandRunner(
+            executable: URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
+            arguments: ["-y", "-P", "", "-f", compatPriv.path],
+            timeout: .seconds(10)
+        )
+        XCTAssertEqual(derivedResult.status, 0, derivedResult.stderrText)
+        XCTAssertEqual(
+            CodexLocalSSHConfigurator.extractPublicKeyBody(from: derivedResult.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)),
+            generated.publicKeyBody
+        )
+
+        let fpResult = try await CodexLocalSSHConfigurator.defaultCommandRunner(
+            executable: URL(fileURLWithPath: "/usr/bin/ssh-keygen"),
+            arguments: ["-lf", compatPriv.path],
+            timeout: .seconds(10)
+        )
+        XCTAssertEqual(fpResult.status, 0, fpResult.stderrText)
+        XCTAssertTrue(fpResult.stdoutText.contains(generated.fingerprint), "ssh-keygen -lf 指纹必须与内存计算一致：\(fpResult.stdoutText)")
+
+        // 2. staging 清理必须严格核验目录与文件 inode：若目录或其中文件被同用户替换为不同 inode，绝不误删！
+        let stageHome = tempHome.appendingPathComponent("inode-staging-guard", isDirectory: true)
+        let cfg = makeConfigurator(home: stageHome, username: "alice", systemSSHConfigPath: nil)
+        try FileManager.default.createDirectory(at: cfg.mimiSSHDirectory, withIntermediateDirectories: true)
+        let dirName = "\(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix)\(UUID().uuidString)"
+        let stageDir = cfg.mimiSSHDirectory.appendingPathComponent(dirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: false)
+        let privFile = stageDir.appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
+        let pubFile = stageDir.appendingPathComponent("\(CodexLocalSSHConfigurator.keyFileName).pub")
+        try Data("orig-priv".utf8).write(to: privFile)
+        try Data("orig-pub".utf8).write(to: pubFile)
+
+        var dirSt = stat()
+        var privSt = stat()
+        var pubSt = stat()
+        XCTAssertEqual(Darwin.lstat(stageDir.path, &dirSt), 0)
+        XCTAssertEqual(Darwin.lstat(privFile.path, &privSt), 0)
+        XCTAssertEqual(Darwin.lstat(pubFile.path, &pubSt), 0)
+
+        let artifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: dirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: dirSt.st_dev, ino: dirSt.st_ino),
+            privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: privSt.st_dev, ino: privSt.st_ino),
+            publicKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: pubSt.st_dev, ino: pubSt.st_ino)
+        )
+
+        // 替换私钥文件为新 inode：staging 清理必须拒绝删除替换文件！
+        try FileManager.default.removeItem(at: privFile)
+        let replacementPriv = Data("REPLACEMENT-KEY-MUST-SURVIVE".utf8)
+        try replacementPriv.write(to: privFile)
+        XCTAssertFalse(cfg.cleanupStagedKeyArtifact(artifact), "文件 inode 变化后 staging 清理必须拒绝删除")
+        XCTAssertEqual(try Data(contentsOf: privFile), replacementPriv, "同名替换文件绝不得被 staging 清理误删")
+
+        // 替换整个 staging 目录为新 inode：同样必须拒绝删除其中文件！
+        let wrongDirArtifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: dirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: dirSt.st_dev, ino: dirSt.st_ino &+ 999999),
+            privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: privSt.st_dev, ino: privSt.st_ino),
+            publicKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: pubSt.st_dev, ino: pubSt.st_ino)
+        )
+        XCTAssertFalse(cfg.cleanupStagedKeyArtifact(wrongDirArtifact), "目录 inode 不匹配时 staging 清理必须拒绝")
+        XCTAssertEqual(try Data(contentsOf: privFile), replacementPriv)
+
+        // 记录当前真实 inode 时，清理精准删除并移除目录。
+        var curPrivSt = stat()
+        var curPubSt = stat()
+        XCTAssertEqual(Darwin.lstat(privFile.path, &curPrivSt), 0)
+        XCTAssertEqual(Darwin.lstat(pubFile.path, &curPubSt), 0)
+        let matchingArtifact = CodexLocalSSHConfigurator.StagedKeyArtifact(
+            directoryName: dirName,
+            directoryIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: dirSt.st_dev, ino: dirSt.st_ino),
+            privateKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: curPrivSt.st_dev, ino: curPrivSt.st_ino),
+            publicKeyIdentity: CodexLocalSSHConfigurator.FileIdentity(dev: curPubSt.st_dev, ino: curPubSt.st_ino)
+        )
+        XCTAssertTrue(cfg.cleanupStagedKeyArtifact(matchingArtifact))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stageDir.path))
+    }
+
+    func testTransientIOErrorDuringRemoveDoesNotSetPersistentConflictFlagBlockingRetry() async throws {
+        let retryHome = tempHome.appendingPathComponent("p2-2-transient-io-retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: retryHome, withIntermediateDirectories: true)
+        let setupCfg = makeConfigurator(home: retryHome, username: "alice", systemSSHConfigPath: nil)
+        try await setupCfg.configure(verifyConnection: true)
+
+        // 首次 remove 在删除 known_hosts 前遇到临时 I/O 错误：不得置位 knownHostsConflict 阻断重试。
+        let transientFailRemover = makeConfigurator(
+            home: retryHome,
+            username: "alice",
+            systemSSHConfigPath: nil,
             beforeAtomicCommit: { targetURL in
-                if targetURL.lastPathComponent == "authorized_keys" || targetURL.lastPathComponent == CodexLocalSSHConfigurator.keyFileName {
-                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟首次移除临时失败")
+                if targetURL.lastPathComponent == CodexLocalSSHConfigurator.knownHostsFileName {
+                    throw CodexLocalSSHConfigurator.ConfigError.fileOperationFailed("模拟临时 I/O 错误")
                 }
             }
         )
         do {
-            try await transientFailingRemover.remove()
-            XCTFail("首次移除遭遇临时失败必须报错")
-        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {
-            // 预期
-        }
-        // 确认失败后新密钥与新授权仍保留在磁盘且状态完整保留新旧身份与精确条目。
-        XCTAssertTrue(FileManager.default.fileExists(atPath: initialCfg.privateKeyURL.path))
-        XCTAssertTrue(try String(contentsOf: initialCfg.authorizedKeysURL, encoding: .utf8).contains(keyBPubBody))
+            try await transientFailRemover.remove()
+            XCTFail("临时 I/O 错误应向上报告")
+        } catch CodexLocalSSHConfigurator.ConfigError.fileOperationFailed {}
 
-        // 4. 重试 remove()：必须同时识别并核验清理替换密钥 B 及其精确授权行（绝不再把新密钥判为冲突或遗留授权）！
-        let retryRemover = makeConfigurator(home: rotHome, username: "alice")
+        // 重试 remove() 必须直接识别匹配版本的 known_hosts 并彻底清理！
+        let retryRemover = makeConfigurator(home: retryHome, username: "alice", systemSSHConfigPath: nil)
         try await retryRemover.remove()
-
-        XCTAssertEqual(try String(contentsOf: initialCfg.authorizedKeysURL, encoding: .utf8), originalAuth)
-        XCTAssertEqual(try String(contentsOf: initialCfg.sshConfigURL, encoding: .utf8), originalConfig)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: initialCfg.privateKeyURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: initialCfg.publicKeyURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: initialCfg.mimiSSHDirectory.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: initialCfg.stateFileURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.knownHostsURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: setupCfg.stateFileURL.path))
         let managedAfterRetry = await retryRemover.inspect().isManaged
         XCTAssertFalse(managedAfterRetry)
     }
@@ -1012,14 +1205,17 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cfgConfigDeleted.stateFileURL.path))
     }
 
-    // MARK: - Final Round P1-3: Register Staging Before Keygen & Clean Across Actual Process Exit (SIGKILL)
+    // MARK: - Final Round P1-3: Register Staging Inodes Before Key Write & Clean Across Actual Process Exit (SIGKILL)
 
     func testFinal_P1_3PreRegisteredStagingArtifactCleanedAfterRealSIGKILLProcessExit() async throws {
+#if !DEBUG
+        throw XCTSkip("真实 SIGKILL 暂存崩溃测试辅助入口仅在 Debug 构建编译。")
+#else
         let hostExecutable = try XCTUnwrap(Bundle.main.executableURL, "测试宿主可执行文件应存在")
         let crashHome = tempHome.appendingPathComponent("final-p1-3-sigkill", isDirectory: true)
         try FileManager.default.createDirectory(at: crashHome, withIntermediateDirectories: true)
 
-        // 启动真实子进程执行 configure()，在 ssh-keygen 刚生成暂存私钥后立刻 SIGKILL 终止进程（完全跳过 Swift defer）。
+        // 启动真实子进程执行 configure()，在独占写入暂存私钥并持久化 inode 后立刻 SIGKILL 终止进程（完全跳过 Swift defer）。
         let process = Process()
         process.executableURL = hostExecutable
         process.arguments = []
@@ -1028,24 +1224,35 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         env["MIMI_TEST_SSH_CRASH_STAGING_HOME"] = crashHome.path
         process.environment = env
         try process.run()
-        process.waitUntilExit()
+
+        // 有界等待（最多 15 秒），防止辅助入口不可用或异常时测试无限挂起。
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        if process.isRunning {
+            Darwin.kill(process.processIdentifier, SIGKILL)
+            XCTFail("真实 SIGKILL 崩溃恢复测试子进程在 15 秒内未退出")
+            return
+        }
 
         XCTAssertEqual(process.terminationReason, .uncaughtSignal, "子进程应由真实信号终止而非正常退出")
         XCTAssertEqual(process.terminationStatus, SIGKILL, "子进程应由 SIGKILL 终止以跳过所有 Swift defer")
 
         let configurator = makeConfigurator(home: crashHome, username: "alice")
-        // 验证：1) 密钥生成前已落盘登记 staging 目录；2) SIGKILL 确实在 ~/.ssh/mimi/.mimi-keygen-* 遗留了真实私钥。
+        // 验证：1) 密钥写入前已落盘登记 staging 目录与文件 inode；2) SIGKILL 确实在 ~/.ssh/mimi/.mimi-keygen-* 遗留了真实私钥。
         let mimiEntries = try FileManager.default.contentsOfDirectory(atPath: configurator.mimiSSHDirectory.path)
         let stagingDirs = mimiEntries.filter { $0.hasPrefix(CodexLocalSSHConfigurator.keyStagingDirectoryPrefix) }
         XCTAssertEqual(stagingDirs.count, 1, "真实 SIGKILL 后应遗留 1 个密钥暂存目录")
-        let stagingDirURL = configurator.mimiSSHDirectory.appendingPathComponent(stagingDirs[0], isDirectory: true)
+        let stagingDirName = try XCTUnwrap(stagingDirs.first, "应安全解包暂存目录名称")
+        let stagingDirURL = configurator.mimiSSHDirectory.appendingPathComponent(stagingDirName, isDirectory: true)
         let stagedPrivateKeyURL = stagingDirURL.appendingPathComponent(CodexLocalSSHConfigurator.keyFileName)
         XCTAssertTrue(FileManager.default.fileExists(atPath: stagedPrivateKeyURL.path), "SIGKILL 跳过 defer 后暂存私钥应留在磁盘上")
 
         let stateJSON = try String(contentsOf: configurator.stateFileURL, encoding: .utf8)
-        XCTAssertTrue(stateJSON.contains(stagingDirs[0]), "密钥生成前状态文件必须已登记该 staging 目录")
+        XCTAssertTrue(stateJSON.contains(stagingDirName), "写入私钥前状态文件必须已登记该 staging 目录与 inode")
 
-        // 新实例 inspect 应识别为已托管但未就绪，调用 remove() 必须彻底清理暂存私钥、暂存目录、空 mimi 目录与状态文件。
+        // 新实例 inspect 应识别为已托管但未就绪，调用 remove() 必须按 inode 核验彻底清理暂存私钥、暂存目录、空 mimi 目录与状态文件。
         let inspected = await configurator.inspect()
         XCTAssertTrue(inspected.isManaged)
         XCTAssertTrue(inspected.hasPendingTransaction)
@@ -1058,6 +1265,7 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.stateFileURL.path), "清理完成后状态文件应被移除")
         let managedAfterClean = await configurator.inspect().isManaged
         XCTAssertFalse(managedAfterClean)
+#endif
     }
 
     // MARK: - Final Round P1-4: Read-Only Probe Allows Trusted Regular Symlink Config While Writes Refuse
@@ -1117,4 +1325,9 @@ final class CodexLocalSSHIsolationTests: XCTestCase {
         )
         XCTAssertFalse(probeWritableTarget, "符号链接指向组/全局可写目标时只读探测必须拒绝")
     }
+}
+
+private actor IsolatedArgsRecorder {
+    var all: [[String]] = []
+    func record(_ args: [String]) { all.append(args) }
 }

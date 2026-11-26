@@ -241,8 +241,6 @@ enum CodexSharedSetupChecks {
         }
         defer { materialized.cleanup() }
 
-        let checkRealDesktop = configurator.isDefaultUserHome && configurator.systemSSHConfigPath == "/etc/ssh/ssh_config"
-
         func validateProfile(_ effective: CodexLocalSSHConfigurator.EffectiveSSHConfig) -> Bool {
             if target == CodexLocalSSHConfigurator.hostAlias {
                 return CodexLocalSSHConfigurator.validateEffectiveLoopbackConfig(
@@ -255,7 +253,7 @@ enum CodexSharedSetupChecks {
             return CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser)
         }
 
-        // 1. 冻结快照：无命令基准 + /bin/cat + 桌面版代理命令画像（逐项校验并比对端点/地址族/认证/信任等价性）
+        // 1. 仅针对同一份冻结快照执行 ssh -G：无命令基准 + /bin/cat + 桌面版代理命令画像（不读取实时文件）
         guard let baseEffective = try? await configurator.resolveEffectiveSSHConfig(
             configPath: materialized.configFileURL.path,
             alias: target,
@@ -288,31 +286,7 @@ enum CodexSharedSetupChecks {
             }
         }
 
-        // 2. 默认主目录下同时校验真实桌面解析路径（防止与冻结器之间出现任何语义偏差）
-        if checkRealDesktop {
-            guard let desktopBase = try? await configurator.resolveEffectiveSSHConfig(
-                configPath: configurator.sshConfigURL.path,
-                alias: target,
-                includeSystemConfig: true
-            ), validateProfile(desktopBase),
-                  CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(baseEffective, desktopBase) else {
-                return false
-            }
-            for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
-                guard let desktopProxy = try? await configurator.resolveEffectiveSSHConfig(
-                    configPath: configurator.sshConfigURL.path,
-                    alias: target,
-                    includeSystemConfig: true,
-                    extraOptions: ["-T"],
-                    remoteCommand: proxyCmd
-                ), validateProfile(desktopProxy),
-                      CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, desktopProxy) else {
-                    return false
-                }
-            }
-        }
-
-        // 3. 实际探测参数 `ssh -G` 核验（确保实际探测命令行与上述桌面代理配置使用同一份有效配置）
+        // 2. 实际探测参数 `ssh -G` 核验（与后续执行共用同一份冻结快照）
         let resolvedHostName = baseEffective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
         let resolvedAddressFamily: String? = {
             guard let af = baseEffective.addressFamily?.lowercased(), !af.isEmpty, af != "any" else { return nil }

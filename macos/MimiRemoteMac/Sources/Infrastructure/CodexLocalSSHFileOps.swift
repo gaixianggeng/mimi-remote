@@ -83,13 +83,13 @@ extension CodexLocalSSHConfigurator {
             return nil
         case .present(let info):
             if info.isSymlink {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 是符号链接。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 是符号链接，Mimi 不会自动修改。请先手工调整为当前用户的普通目录后再试。")
             }
             guard info.isDirectory else {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 不是普通目录。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 不是普通目录，Mimi 不会自动修改。请先手工检查该路径后再试。")
             }
             guard info.uid == Darwin.geteuid() else {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 不属于当前用户。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 不属于当前用户，Mimi 不会自动修改属主。请先在终端手工核对并修复属主（如执行：sudo chown \"$USER\" \(label)）后再试。")
             }
             return info
         }
@@ -102,13 +102,13 @@ extension CodexLocalSSHConfigurator {
             return nil
         case .present(let info):
             if info.isSymlink {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 是符号链接。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 是符号链接，Mimi 不会自动修改。请先手工调整为普通文件后再试。")
             }
             guard info.isRegularFile else {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 不是普通文件。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 不是普通文件，Mimi 不会自动修改。请先手工检查该路径后再试。")
             }
             guard info.uid == Darwin.geteuid() else {
-                throw ConfigError.unsafeFileSystemTarget("\(label) 不属于当前用户。")
+                throw ConfigError.unsafeFileSystemTarget("\(label) 不属于当前用户，Mimi 不会自动修改属主。请先在终端手工核对并修复属主（如执行：sudo chown \"$USER\" \(label)）后再试。")
             }
             return info
         }
@@ -131,7 +131,7 @@ extension CodexLocalSSHConfigurator {
     func ensureNotGroupOrWorldWritable(_ info: LStatInfo, label: String, reason: String) throws {
         guard (info.permissions & 0o022) == 0 else {
             throw ConfigError.unsafeFileSystemTarget(
-                "\(label) 权限不安全（组或其他用户可写，当前权限 \(String(format: "%04o", info.permissions))）：\(reason)"
+                "\(label) 权限不安全（组或其他用户可写，当前权限 \(String(format: "%04o", info.permissions))），Mimi 不会自动修改权限：\(reason)"
             )
         }
     }
@@ -141,9 +141,8 @@ extension CodexLocalSSHConfigurator {
             try ensureNotGroupOrWorldWritable(
                 info,
                 label: "~/.ssh",
-                reason: "为避免收紧权限后激活原本被 StrictModes 拒绝的授权，已拒绝采纳，请先手工修复权限。"
+                reason: "请先手工核对目录内容并在终端执行 chmod 700 ~/.ssh 后重试。"
             )
-            try tightenExistingDirectoryIfNeeded(sshDirectory, currentMode: info.permissions)
             return false
         }
         return try createSecureDirectory(at: sshDirectory, withIntermediateDirectories: false)
@@ -154,9 +153,8 @@ extension CodexLocalSSHConfigurator {
             try ensureNotGroupOrWorldWritable(
                 info,
                 label: "~/.ssh/mimi",
-                reason: "请先手工修复 ~/.ssh/mimi 目录权限后再试。"
+                reason: "请先手工核对目录内容并在终端执行 chmod 700 ~/.ssh/mimi 后重试。"
             )
-            try tightenExistingDirectoryIfNeeded(mimiSSHDirectory, currentMode: info.permissions)
             return false
         }
         return try createSecureDirectory(at: mimiSSHDirectory, withIntermediateDirectories: false)
@@ -216,31 +214,10 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    /// 绝不放宽已有文件权限：若文件已存在，取 `existing & maxMode`；新建文件取 `maxMode`。
-    static func tightenedFileMode(existing: mode_t?, maxMode: mode_t) -> mode_t {
-        guard let existing else { return maxMode }
-        return (existing & 0o777) & maxMode
-    }
-
-    func tightenExistingFileIfNeeded(_ url: URL, currentMode: mode_t?, maxMode: mode_t) throws {
-        guard let currentMode else { return }
-        let masked = currentMode & 0o777
-        let target = masked & maxMode
-        guard target != masked else { return }
-        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW)
-        guard fd >= 0 else {
-            throw ConfigError.fileOperationFailed("无法打开文件 \(url.lastPathComponent)：\(Self.posixErrorMessage())")
-        }
-        defer { Darwin.close(fd) }
-        var st = stat()
-        guard Darwin.fstat(fd, &st) == 0,
-              (st.st_mode & S_IFMT) == S_IFREG,
-              st.st_uid == Darwin.geteuid() else {
-            throw ConfigError.unsafeFileSystemTarget(url.lastPathComponent)
-        }
-        guard Darwin.fchmod(fd, target) == 0 else {
-            throw ConfigError.fileOperationFailed("收紧文件权限失败：\(Self.posixErrorMessage())")
-        }
+    /// 对已存在且已通过安全校验的用户文件保持其原有权限不变；仅新建文件采用默认权限。
+    static func preservedSafeFileMode(existing: mode_t?, defaultMode: mode_t) -> mode_t {
+        guard let existing else { return defaultMode }
+        return existing & 0o777
     }
 
     func captureSnapshot(of url: URL, label: String? = nil) throws -> FileSnapshot {
@@ -302,6 +279,7 @@ extension CodexLocalSSHConfigurator {
         guard expected.exists else { return true }
         return expected.info?.dev == current.info?.dev &&
             expected.info?.ino == current.info?.ino &&
+            expected.info?.permissions == current.info?.permissions &&
             expected.info?.size == current.info?.size &&
             expected.info?.mtimeSec == current.info?.mtimeSec &&
             expected.info?.mtimeNsec == current.info?.mtimeNsec &&
@@ -312,6 +290,7 @@ extension CodexLocalSSHConfigurator {
         guard snapshot.exists, let info = snapshot.info else { return false }
         return st.st_dev == info.dev &&
             st.st_ino == info.ino &&
+            (st.st_mode & 0o7777) == info.permissions &&
             st.st_size == info.size &&
             st.st_mtimespec.tv_sec == info.mtimeSec &&
             st.st_mtimespec.tv_nsec == info.mtimeNsec
@@ -329,7 +308,7 @@ extension CodexLocalSSHConfigurator {
 
     // MARK: - Stage-Then-Exclusive-Publish, Atomic RENAME_SWAP CAS & Quarantine-Then-Verify-Then-Delete
 
-    private func openVerifiedParentDirectoryFD(for url: URL, label: String) throws -> Int32 {
+    func openVerifiedParentDirectoryFD(for url: URL, label: String) throws -> Int32 {
         let parentDir = url.deletingLastPathComponent()
         let dirFD = Darwin.open(parentDir.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
         guard dirFD >= 0 else {
@@ -349,36 +328,67 @@ extension CodexLocalSSHConfigurator {
         return dirFD
     }
 
-    /// 以禁止覆盖方式将已校验的临时密钥文件发布到最终路径（优先使用原子 `link`，遇已有同名文件报错绝不覆盖）。
-    /// `Darwin.link` 直接绑定到独占临时文件的同一 inode，返回该已校验快照，避免发布后按目标路径重抓快照的竞态窗口。
+    /// 以禁止覆盖且不写额外副本的方式将独占暂存目录中经 inode 核验的密钥文件原子移动到最终路径（优先 `RENAME_EXCL`，不支持时回退同文件系统 `linkat` + `unlinkat`）。
+    /// 私钥只在 `~/.ssh/mimi/` 中生成一次，绝不复制到临时目录或其他副本；遇已有同名文件报错且绝不覆盖。
     func publishStagedKeyFile(
-        from stagedURL: URL,
+        inStagingDirectory stageDirName: String,
+        expectedDirectoryIdentity: FileIdentity,
+        fileName: String,
+        expectedFileIdentity: FileIdentity,
         stagedSnapshot: FileSnapshot,
         to targetURL: URL,
-        mode: mode_t,
         label: String
     ) throws -> FileSnapshot {
         if let beforeAtomicCommit {
             try beforeAtomicCommit(targetURL)
         }
+        let parentFD = try openVerifiedParentDirectoryFD(for: targetURL, label: label)
+        defer { Darwin.close(parentFD) }
+
+        let stageFD = Darwin.openat(parentFD, stageDirName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        guard stageFD >= 0 else {
+            throw ConfigError.fileOperationFailed("无法打开密钥暂存目录发布 \(label)：\(Self.posixErrorMessage())")
+        }
+        defer { Darwin.close(stageFD) }
+
+        var stageSt = stat()
+        guard Darwin.fstat(stageFD, &stageSt) == 0,
+              (stageSt.st_mode & S_IFMT) == S_IFDIR,
+              stageSt.st_uid == Darwin.geteuid(),
+              expectedDirectoryIdentity.matches(stageSt) else {
+            throw ConfigError.conflictingKeyFiles("密钥暂存目录在发布 \(label) 前被替换，已中止。")
+        }
+
+        var stagedSt = stat()
+        guard Darwin.fstatat(stageFD, fileName, &stagedSt, AT_SYMLINK_NOFOLLOW) == 0,
+              (stagedSt.st_mode & S_IFMT) == S_IFREG,
+              stagedSt.st_uid == Darwin.geteuid(),
+              expectedFileIdentity.matches(stagedSt) else {
+            throw ConfigError.conflictingKeyFiles("暂存文件 \(label) 在发布前被修改或替换，已中止。")
+        }
+
         if let afterVerifyBeforeCommit {
             try afterVerifyBeforeCommit(targetURL)
         }
-        if Darwin.link(stagedURL.path, targetURL.path) == 0 {
+
+        let targetName = targetURL.lastPathComponent
+        if Darwin.renameatx_np(stageFD, fileName, parentFD, targetName, UInt32(RENAME_EXCL)) == 0 {
             return stagedSnapshot
         }
         let err = errno
         if err == EEXIST {
             throw ConfigError.conflictingKeyFiles("发布期间出现同名文件 \(label)，已停止且未覆盖。")
         }
-        if err == EXDEV || err == ENOTSUP || err == EPERM {
-            return try publishExclusiveNewFile(
-                stagedSnapshot.data,
-                to: targetURL,
-                mode: mode,
-                label: label,
-                invokeHook: false
-            )
+        if err == ENOTSUP || err == EPERM {
+            if Darwin.linkat(stageFD, fileName, parentFD, targetName, 0) == 0 {
+                _ = Darwin.unlinkat(stageFD, fileName, 0)
+                return stagedSnapshot
+            }
+            let linkErr = errno
+            if linkErr == EEXIST {
+                throw ConfigError.conflictingKeyFiles("发布期间出现同名文件 \(label)，已停止且未覆盖。")
+            }
+            throw ConfigError.fileOperationFailed("发布 \(label) 失败：\(Self.posixErrorMessage(linkErr))")
         }
         throw ConfigError.fileOperationFailed("发布 \(label) 失败：\(Self.posixErrorMessage(err))")
     }

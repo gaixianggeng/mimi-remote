@@ -285,26 +285,91 @@ enum CodexDesktopLink {
         let uid: uid_t
         let executable: String
         let arguments: [Substring]
+        let rawCommand: String
+        var exactArguments: [String]? = nil
     }
 
-    /// 解析 `ps -axo pid=,ppid=,uid=,command=` 输出，用于校验进程归属当前用户及 `sshd` 祖先链。
+    /// 解析 `ps -axo pid=,ppid=,uid=,command=` 输出，保留原始完整命令行（不丢失路径中的空格）供后续参数解析与 `sshd` 祖先链核验。
     static func parseProcessesWithUID(psOutput: String) -> [Int32: ProcessSnapshotEntry] {
         var table: [Int32: ProcessSnapshotEntry] = [:]
         for line in psOutput.split(whereSeparator: \.isNewline) {
-            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count >= 4,
-                  let pid = Int32(fields[0]),
-                  let ppid = Int32(fields[1]),
-                  let uidValue = UInt32(fields[2]) else { continue }
+            var idx = line.startIndex
+            func nextField() -> Substring? {
+                while idx < line.endIndex && (line[idx] == " " || line[idx] == "\t") {
+                    idx = line.index(after: idx)
+                }
+                guard idx < line.endIndex else { return nil }
+                let start = idx
+                while idx < line.endIndex && line[idx] != " " && line[idx] != "\t" {
+                    idx = line.index(after: idx)
+                }
+                return line[start..<idx]
+            }
+            guard let pidField = nextField(),
+                  let ppidField = nextField(),
+                  let uidField = nextField(),
+                  let pid = Int32(pidField),
+                  let ppid = Int32(ppidField),
+                  let uidValue = UInt32(uidField) else { continue }
+            while idx < line.endIndex && (line[idx] == " " || line[idx] == "\t") {
+                idx = line.index(after: idx)
+            }
+            guard idx < line.endIndex else { continue }
+            let rawCommand = String(line[idx...])
+            let commandFields = line[idx...].split(separator: " ", omittingEmptySubsequences: true)
+            guard let firstField = commandFields.first else { continue }
             table[pid] = ProcessSnapshotEntry(
                 pid: pid,
                 ppid: ppid,
                 uid: uid_t(uidValue),
-                executable: String(fields[3]),
-                arguments: Array(fields.dropFirst(4))
+                executable: String(firstField),
+                arguments: Array(commandFields.dropFirst()),
+                rawCommand: rawCommand,
+                exactArguments: nil
             )
         }
         return table
+    }
+
+    /// 通过 macOS 内核 `KERN_PROCARGS2` 读取同用户实时进程的精确 `argv` 数组，完整保留可执行文件路径和 `--config` 路径中的空格。
+    static func processArguments(forPID pid: Int32) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size: size_t = 0
+        guard Darwin.sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size,
+              size <= 1_048_576 else {
+            return nil
+        }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard Darwin.sysctl(&mib, UInt32(mib.count), &buffer, &size, nil, 0) == 0,
+              size > MemoryLayout<Int32>.size else {
+            return nil
+        }
+        let argc = buffer.withUnsafeBytes { raw -> Int32 in
+            raw.load(as: Int32.self)
+        }
+        guard argc > 0, argc < 4096 else { return nil }
+
+        var offset = MemoryLayout<Int32>.size
+        // 跳过 exec_path 及其后的 NUL 填充字节。
+        while offset < size && buffer[offset] != 0 {
+            offset += 1
+        }
+        while offset < size && buffer[offset] == 0 {
+            offset += 1
+        }
+
+        var args: [String] = []
+        args.reserveCapacity(Int(argc))
+        while args.count < Int(argc) && offset < size {
+            let start = offset
+            while offset < size && buffer[offset] != 0 {
+                offset += 1
+            }
+            args.append(String(decoding: buffer[start..<offset], as: UTF8.self))
+            offset += 1
+        }
+        return args.isEmpty ? nil : args
     }
 
     /// 从带 UID 的 `ps` 表中提取桌面版名下满足直连回环条件的 ssh 子进程候选列表。
@@ -335,6 +400,12 @@ enum CodexDesktopLink {
 
         struct AppServerSection: Decodable {
             let transport: String?
+            let sharedCodexHome: String?
+
+            enum CodingKeys: String, CodingKey {
+                case transport
+                case sharedCodexHome = "shared_codex_home"
+            }
         }
 
         let codex: CodexSection?
@@ -356,6 +427,71 @@ enum CodexDesktopLink {
         return path
     }
 
+    /// 从完整命令行（可能包含带空格的目录路径）提取 `agentd serve` 的 `--config` / `-config` 参数值。
+    private static func extractAgentdServeConfigPath(from entry: ProcessSnapshotEntry) -> String? {
+        if let exactArgs = entry.exactArguments, exactArgs.count >= 2 {
+            let base = URL(fileURLWithPath: exactArgs[0]).lastPathComponent
+            guard base == "agentd", exactArgs[1] == "serve" else { return nil }
+            var idx = 2
+            while idx < exactArgs.count {
+                let arg = exactArgs[idx]
+                if arg == "--config" || arg == "-config" {
+                    if idx + 1 < exactArgs.count {
+                        let rawPath = exactArgs[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !rawPath.isEmpty { return rawPath }
+                    }
+                    idx += 2
+                    continue
+                }
+                if arg.hasPrefix("--config=") {
+                    let rawPath = String(arg.dropFirst("--config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty { return rawPath }
+                } else if arg.hasPrefix("-config=") {
+                    let rawPath = String(arg.dropFirst("-config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rawPath.isEmpty { return rawPath }
+                }
+                idx += 1
+            }
+            return nil
+        }
+
+        // 回退到 `ps` 原始命令行文本解析：允许可执行文件路径和 `--config` 路径均包含空格。
+        let raw = entry.rawCommand
+        let serveRange: Range<String.Index>
+        if let matched = raw.range(of: "/agentd serve") {
+            serveRange = matched
+        } else if raw.hasPrefix("agentd serve"),
+                  let matched = raw.range(of: "agentd serve") {
+            serveRange = matched
+        } else {
+            return nil
+        }
+
+        let afterServe = raw[serveRange.upperBound...]
+        guard afterServe.isEmpty || afterServe.first == " " || afterServe.first == "\t" else {
+            return nil
+        }
+
+        // 在 serve 之后查找 `--config` / `-config` / `--config=` / `-config=` 并截取到下一个以空白开头的新选项（` -`）之前。
+        let prefixes = [" --config=", " -config=", " --config ", " -config "]
+        for prefix in prefixes {
+            if let range = afterServe.range(of: prefix) {
+                var valueSlice = afterServe[range.upperBound...]
+                while let first = valueSlice.first, first == " " || first == "\t" {
+                    valueSlice = valueSlice.dropFirst()
+                }
+                if let nextFlag = valueSlice.range(of: " -") {
+                    valueSlice = valueSlice[..<nextFlag.lowerBound]
+                }
+                let rawPath = String(valueSlice).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rawPath.isEmpty {
+                    return rawPath
+                }
+            }
+        }
+        return nil
+    }
+
     /// 定位当前用户运行中的 `agentd serve` 实际使用的配置文件路径（优先运行中进程的 `--config`，其次 `AGENTD_CONFIG`，最后默认配置路径）。
     static func agentdConfigURL(
         processes: [Int32: ProcessSnapshotEntry] = [:],
@@ -364,34 +500,8 @@ enum CodexDesktopLink {
         expectedUID: uid_t = Darwin.geteuid()
     ) -> URL {
         for entry in processes.values.sorted(by: { $0.pid < $1.pid }) where entry.uid == expectedUID {
-            let base = URL(fileURLWithPath: entry.executable).lastPathComponent
-            guard base == "agentd", entry.arguments.first == "serve" else { continue }
-            let args = entry.arguments.dropFirst().map(String.init)
-            var idx = 0
-            while idx < args.count {
-                let arg = args[idx]
-                if arg == "--config" || arg == "-config" {
-                    if idx + 1 < args.count {
-                        let rawPath = args[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !rawPath.isEmpty {
-                            return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
-                        }
-                    }
-                    idx += 2
-                    continue
-                }
-                if arg.hasPrefix("--config=") {
-                    let rawPath = String(arg.dropFirst("--config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !rawPath.isEmpty {
-                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
-                    }
-                } else if arg.hasPrefix("-config=") {
-                    let rawPath = String(arg.dropFirst("-config=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !rawPath.isEmpty {
-                        return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
-                    }
-                }
-                idx += 1
+            if let rawPath = extractAgentdServeConfigPath(from: entry) {
+                return URL(fileURLWithPath: expandHomePrefix(rawPath, homeDirectory: homeDirectory), isDirectory: false)
             }
         }
 
@@ -452,7 +562,7 @@ enum CodexDesktopLink {
     }
 
     /// 按 `agentd` 实际配置的 transport 与公共 `CODEX_HOME` 解析共享 Codex App Server 控制 socket 路径集合（不读取 GUI 的 `CODEX_HOME`，也不在配置自定义目录时额外放行默认 `~/.codex`）。
-    /// 当 `agentd` 禁用 Codex、使用非 `local` transport（如 `ssh`）或配置损坏时返回空集合，避免把独立后端误判为共享。
+    /// 与 `agentd`（`internal/config/config.go`）对齐：缺失配置或省略 `app_server.transport` 时默认 transport 为 `ssh`，仅当显式配置 `local` 且启用 Codex 时返回本机共享控制 socket。
     static func sharedCodexControlSocketPaths(
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -469,21 +579,25 @@ enum CodexDesktopLink {
 
         let effectiveCodexHome: URL
         switch loadAgentdCodexConfig(at: configURL, expectedUID: expectedUID) {
-        case .invalid:
+        case .invalid, .missing:
+            // agentd 缺失配置或配置无效时不会启用本机共享 local socket（默认 transport 为 ssh）。
             return []
-        case .missing:
-            effectiveCodexHome = homeDirectory.appendingPathComponent(".codex", isDirectory: true)
         case .loaded(let cfg):
             if cfg.codex?.enabled == false {
                 return []
             }
             let rawTransport = cfg.appServer?.transport?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-            let effectiveTransport = rawTransport.isEmpty ? "local" : rawTransport
+            let effectiveTransport = rawTransport.isEmpty ? "ssh" : rawTransport
             guard effectiveTransport == "local" else {
                 return []
             }
-            // 与 Go `SharedLocalSocketPath` 一致：保留目录名原样空格，要求显式 CODEX_HOME 为绝对路径，且不再追加默认 ~/.codex。
-            if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
+            // 与 Go `EffectiveLocalCodexHome` 一致：优先 app_server.shared_codex_home，其次 codex.env.CODEX_HOME，最后默认 ~/.codex；保留原样空格且要求绝对路径。
+            if let sharedHome = cfg.appServer?.sharedCodexHome, !sharedHome.isEmpty {
+                guard sharedHome.hasPrefix("/") else {
+                    return []
+                }
+                effectiveCodexHome = URL(fileURLWithPath: sharedHome, isDirectory: true)
+            } else if let configuredHome = cfg.codex?.env?["CODEX_HOME"], !configuredHome.isEmpty {
                 guard configuredHome.hasPrefix("/") else {
                     return []
                 }
@@ -960,7 +1074,14 @@ enum CodexDesktopLink {
         guard let result, result.status == 0 else { return .separate }
         let currentUser = NSUserName()
         let currentUID = Darwin.geteuid()
-        let processes = parseProcessesWithUID(psOutput: result.stdoutText)
+        var processes = parseProcessesWithUID(psOutput: result.stdoutText)
+        for (pid, entry) in processes where entry.uid == currentUID && entry.rawCommand.contains("agentd") {
+            if let exactArgs = processArguments(forPID: pid) {
+                var enriched = entry
+                enriched.exactArguments = exactArgs
+                processes[pid] = enriched
+            }
+        }
         let allowedHosts = localHosts(includeManagedAlias: allowManagedAlias)
         let candidates = localSSHChildCandidates(
             processes: processes,
@@ -990,13 +1111,17 @@ enum CodexDesktopLink {
             let loopbackSSH = conns.filter(\.isLoopbackToSSHPort)
             guard !loopbackSSH.isEmpty else { continue }
 
-            // 对未带 `-F /dev/null` 的非托管目标，额外通过真实 `ssh -G`（含桌面代理命令）确认无重定向（活动连接检查接受 localhost）。
+            // 对未带 `-F /dev/null` 的非托管目标，仅针对单份冻结快照执行 `ssh -G`（含桌面代理命令）确认无重定向（活动连接检查接受 localhost）。
             let lowerDest = candidate.invocation.destinationHost.lowercased()
             if lowerDest != CodexLocalSSHConfigurator.hostAlias && candidate.invocation.explicitConfigPath != "/dev/null" {
+                guard let frozen = try? configurator.materializeCurrentSSHConfigForEvaluation(includeSystemConfig: true) else {
+                    continue
+                }
+                defer { frozen.cleanup() }
                 guard let effective = try? await configurator.resolveEffectiveSSHConfig(
-                    configPath: configurator.sshConfigURL.path,
+                    configPath: frozen.configFileURL.path,
                     alias: candidate.invocation.destinationHost,
-                    includeSystemConfig: true
+                    includeSystemConfig: false
                 ),
                 isDirectActiveLoopbackConfig(effective, expectedUser: currentUser) else {
                     continue
@@ -1004,9 +1129,9 @@ enum CodexDesktopLink {
                 var proxyMatchesLoopback = true
                 for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
                     guard let proxyEffective = try? await configurator.resolveEffectiveSSHConfig(
-                        configPath: configurator.sshConfigURL.path,
+                        configPath: frozen.configFileURL.path,
                         alias: candidate.invocation.destinationHost,
-                        includeSystemConfig: true,
+                        includeSystemConfig: false,
                         extraOptions: ["-T"],
                         remoteCommand: proxyCmd
                     ),

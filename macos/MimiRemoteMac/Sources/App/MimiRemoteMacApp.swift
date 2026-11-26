@@ -53,26 +53,17 @@ enum MimiRemoteMacMain {
     }
 
 #if DEBUG
-    /// 仅 Debug 单测使用：在独立子进程中执行真实密钥暂存后立即 `SIGKILL` 自杀，验证跳过 Swift `defer` 时的磁盘残留可被 `remove()` 完整清理。
+    /// 仅 Debug 单测使用：在独立子进程中执行真实独占密钥暂存并落盘 inode 后立即 `SIGKILL` 自杀，验证跳过 Swift `defer` 时的磁盘残留可被 `remove()` 按 inode 完整清理。
     private static func runDebugSSHStagingCrashHelper(homePath: String) -> Never {
         let homeURL = URL(fileURLWithPath: homePath, isDirectory: true)
         Task.detached {
             let configurator = CodexLocalSSHConfigurator(
                 homeDirectory: homeURL,
                 username: "alice",
-                runCommand: { executable, arguments, timeout, standardInput in
-                    let result = try await CodexLocalSSHConfigurator.defaultCommandRunner(
-                        executable: executable,
-                        arguments: arguments,
-                        timeout: timeout,
-                        standardInput: standardInput
-                    )
-                    if executable.lastPathComponent == "ssh-keygen",
-                       arguments.contains("-t"),
-                       result.status == 0 {
+                beforeAtomicCommit: { targetURL in
+                    if targetURL.lastPathComponent == CodexLocalSSHConfigurator.keyFileName {
                         Darwin.kill(Darwin.getpid(), SIGKILL)
                     }
-                    return result
                 }
             )
             _ = try? await configurator.configure(verifyConnection: false)
