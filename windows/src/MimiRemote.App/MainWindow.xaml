@@ -19,9 +19,18 @@
             </NavigationView.MenuItems>
             <Grid x:Name="ContentHost" SizeChanged="ContentHostResized">
                 <Grid x:Name="ContentColumn" MaxWidth="1120" HorizontalAlignment="Center" Padding="28,20,28,24">
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,20"/>
-                    <Frame x:Name="ContentFrame" Grid.Row="1" Navigated="FrameNavigated" CacheSize="8"/>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}" Margin="0,0,0,12"/>
+                    <InfoBar x:Name="GateBanner" Grid.Row="1" IsOpen="False" IsClosable="False" Margin="0,0,0,12">
+                        <InfoBar.ActionButton>
+                            <Button x:Name="GateActionButton" Content="查看诊断与恢复" Click="GateActionClicked"/>
+                        </InfoBar.ActionButton>
+                    </InfoBar>
+                    <Frame x:Name="ContentFrame" Grid.Row="2" Navigated="FrameNavigated" CacheSize="8"/>
                 </Grid>
             </Grid>
         </NavigationView>

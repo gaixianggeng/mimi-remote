@@ -22,16 +22,25 @@ type WorkspaceConfigurationResult struct {
 	Applied         WorkspaceState `json:"applied"`
 }
 
+type WorkspaceSelection struct {
+	ScanRoot, BrowseRoot string
+	// PrimaryOnly edits the first entry of each supplied list, preserving its other grants.
+	PrimaryOnly bool
+}
+
 func ConfigureWorkspace(path, root string) (WorkspaceConfigurationResult, error) {
 	return ConfigureWorkspaceRoots(path, root, root)
 }
 func ConfigureWorkspaceRoots(path, scan, browse string) (WorkspaceConfigurationResult, error) {
-	return EditWorkspace(path, "", scan, browse, nil)
+	if scan == "" {
+		return WorkspaceConfigurationResult{}, saveFailure("invalid_request", errors.New("请选择代码目录"))
+	}
+	return EditWorkspace(path, "", WorkspaceSelection{ScanRoot: scan, BrowseRoot: browse}, nil)
 }
 func RestoreWorkspace(path string, prior WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
-	return EditWorkspace(path, "", "", "", &prior)
+	return EditWorkspace(path, "", WorkspaceSelection{}, &prior)
 }
-func EditWorkspace(path, legacy, scan, browse string, restore *WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
+func EditWorkspace(path, legacy string, selection WorkspaceSelection, restore *WorkspaceConfigurationResult) (WorkspaceConfigurationResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	path, err := resolveConfigPath(path)
@@ -78,28 +87,18 @@ func EditWorkspace(path, legacy, scan, browse string, restore *WorkspaceConfigur
 			p.set(prev.Confirmed, "onboarding", "workspace_confirmed")
 		}
 	} else {
-		if scan == "" {
+		if selection.ScanRoot == "" && selection.BrowseRoot == "" {
 			return WorkspaceConfigurationResult{}, saveFailure("invalid_request", errors.New("请选择代码目录"))
 		}
-		for _, c := range []struct{ key, root string }{{"scan_roots", scan}, {"browse_roots", browse}} {
-			if c.root == "" {
-				for _, prior := range p.cfg.BrowseRoots {
-					d, err := inspectSelection(prior)
-					if err != nil {
-						return WorkspaceConfigurationResult{}, err
-					}
-					p.roots = append(p.roots, d)
-				}
-				continue
-			}
-			d, err := inspectSelection(c.root)
-			if err != nil {
-				return WorkspaceConfigurationResult{}, err
-			}
-			p.roots = append(p.roots, d)
-			p.set([]string{d.resolved}, c.key)
+		if err := p.editRootList("scan_roots", p.cfg.ScanRoots, selection.ScanRoot, selection.PrimaryOnly); err != nil {
+			return WorkspaceConfigurationResult{}, err
 		}
-		p.set(true, "onboarding", "workspace_confirmed")
+		if err := p.editRootList("browse_roots", p.cfg.BrowseRoots, selection.BrowseRoot, selection.PrimaryOnly); err != nil {
+			return WorkspaceConfigurationResult{}, err
+		}
+		if selection.ScanRoot != "" {
+			p.set(true, "onboarding", "workspace_confirmed")
+		}
 	}
 	raw, err := p.bytes()
 	if err != nil {
@@ -110,6 +109,31 @@ func EditWorkspace(path, legacy, scan, browse string, restore *WorkspaceConfigur
 	}
 	return WorkspaceConfigurationResult{p.changed, p.changed, before, workspaceState(p.doc)}, nil
 }
+
+func (p *proposal) editRootList(key string, prior []string, selected string, primaryOnly bool) error {
+	roots := prior
+	if selected != "" {
+		roots = []string{selected}
+		if primaryOnly && len(prior) > 1 {
+			roots = append(roots, prior[1:]...)
+		}
+	}
+	for i, root := range roots {
+		d, err := inspectSelection(root)
+		if err != nil {
+			return err
+		}
+		p.roots = append(p.roots, d)
+		if i == 0 && selected != "" {
+			roots[0] = d.resolved
+		}
+	}
+	if selected != "" {
+		p.set(roots, key)
+	}
+	return nil
+}
+
 func workspaceState(doc setupDocument) WorkspaceState {
 	var section setupDocument
 	_ = json.Unmarshal(doc[doc.spelling("onboarding")], &section)

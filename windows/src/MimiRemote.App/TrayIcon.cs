@@ -13,7 +13,7 @@ internal sealed class TrayIcon : IDisposable
     {
         var menu = new MenuFlyout();
         menu.Items.Add(new MenuFlyoutItem { Text = "打开 Mimi Remote", Command = new RelayCommand(show) });
-        menu.Items.Add(new MenuFlyoutItem { Text = "连接手机", Command = new RelayCommand(pair) });
+        menu.Items.Add(new MenuFlyoutItem { Text = "配对设备…", Command = new RelayCommand(pair) });
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(new MenuFlyoutItem { Text = "退出客户端（服务继续运行）", Command = new RelayCommand(quit) });
         icon = new TaskbarIcon
