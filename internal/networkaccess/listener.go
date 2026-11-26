@@ -3,8 +3,10 @@
 package networkaccess
 
 import (
+	"context"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/tailscaleinfo"
@@ -45,11 +47,49 @@ func (p Policy) Allows(local, remote net.IP) bool {
 
 type policyListener struct {
 	net.Listener
-	policy Policy
+	policy        Policy
+	lanGate       *LANGate
+	tunnelAddress func(net.IP) bool
 }
 
 func Wrap(listener net.Listener, policy Policy) net.Listener {
-	return &policyListener{Listener: listener, policy: policy}
+	return WrapWithLANGate(listener, policy, nil)
+}
+
+func WrapWithLANGate(listener net.Listener, policy Policy, gate *LANGate) net.Listener {
+	l := &policyListener{Listener: listener, policy: policy, lanGate: gate}
+	if runtime.GOOS == "windows" || gate != nil {
+		l.tunnelAddress = func(ip net.IP) bool {
+			ifaces, err := net.Interfaces()
+			return err == nil && assignedToTunnel(ip, ifaces, (*net.Interface).Addrs)
+		}
+	}
+	return l
+}
+
+// A physical network may use the same address range as Tailscale. Require
+// the destination to be assigned exclusively to a live tunnel interface.
+func assignedToTunnel(ip net.IP, interfaces []net.Interface, addrs func(*net.Interface) ([]net.Addr, error)) bool {
+	found := false
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addresses, err := addrs(&iface)
+		if err != nil {
+			return false
+		}
+		for _, address := range addresses {
+			local, _, err := net.ParseCIDR(address.String())
+			if err == nil && ip.Equal(local) {
+				if !tailscaleinfo.IsTunnelInterface(iface.Name) {
+					return false
+				}
+				found = true
+			}
+		}
+	}
+	return found
 }
 
 func (l *policyListener) Accept() (net.Conn, error) {
@@ -61,7 +101,16 @@ func (l *policyListener) Accept() (net.Conn, error) {
 		local, localOK := conn.LocalAddr().(*net.TCPAddr)
 		remote, remoteOK := conn.RemoteAddr().(*net.TCPAddr)
 		if localOK && remoteOK && l.policy.Allows(local.IP, remote.IP) {
-			return conn, nil
+			if isTailscaleAddress(local.IP) && l.tunnelAddress != nil && !l.tunnelAddress(local.IP) {
+				_ = conn.Close()
+				continue
+			}
+			if l.lanGate == nil || local.IP.IsLoopback() || isTailscaleAddress(local.IP) {
+				return conn, nil
+			}
+			if tracked := l.lanGate.admit(conn); tracked != nil {
+				return tracked, nil
+			}
 		}
 		_ = conn.Close()
 	}
@@ -70,7 +119,16 @@ func (l *policyListener) Accept() (net.Conn, error) {
 // Availability means an address is present, not that a mobile device is online.
 // Virtual/container LANs are not advertised as phone pairing opportunities.
 func Availability() (tailscale, lan bool) {
-	interfaces, err := net.Interfaces()
+	return AvailabilityContext(context.Background())
+}
+
+// AvailabilityContext lets a cancelled status request stop the optional CLI check.
+func AvailabilityContext(ctx context.Context) (tailscale, lan bool) {
+	return availability(ctx, net.Interfaces, (*net.Interface).Addrs, tailscaleinfo.TunnelAvailable)
+}
+
+func availability(ctx context.Context, list func() ([]net.Interface, error), addrs func(*net.Interface) ([]net.Addr, error), confirmTunnel func(context.Context) bool) (tailscale, lan bool) {
+	interfaces, err := list()
 	if err != nil {
 		return false, false
 	}
@@ -78,7 +136,7 @@ func Availability() (tailscale, lan bool) {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		addresses, err := iface.Addrs()
+		addresses, err := addrs(&iface)
 		if err != nil {
 			continue
 		}
@@ -87,7 +145,7 @@ func Availability() (tailscale, lan bool) {
 			if err != nil {
 				continue
 			}
-			if IsTailscaleIPv4(ip) {
+			if IsTailscaleIPv4(ip) && tailscaleinfo.IsTunnelInterface(iface.Name) {
 				tailscale = true
 			}
 			if ip.To4() != nil && ip.IsPrivate() && !virtualInterface(iface.Name) {
@@ -95,10 +153,13 @@ func Availability() (tailscale, lan bool) {
 			}
 		}
 	}
-	return tailscale, lan
+	return tailscale && confirmTunnel(ctx), lan
 }
 
 func virtualInterface(name string) bool {
+	if tailscaleinfo.IsTunnelInterface(name) {
+		return true
+	}
 	name = strings.ToLower(name)
 	for _, prefix := range []string{"utun", "tun", "tap", "bridge", "veth", "docker", "vmnet", "vmenet", "awdl", "llw", "ipsec", "ppp"} {
 		if strings.HasPrefix(name, prefix) {

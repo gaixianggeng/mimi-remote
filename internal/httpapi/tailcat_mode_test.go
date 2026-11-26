@@ -18,6 +18,7 @@ import (
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -51,9 +52,7 @@ func newModeTestHost(t *testing.T, binary, previous string, enabled bool) (*tail
 	}}
 	cfg.Auth.Token = testToken
 	data, _ := json.Marshal(cfg)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, data)
 	s := newTailcatSidecarSupervisor(cfg, path)
 	t.Cleanup(s.Close)
 	if enabled {
@@ -108,9 +107,7 @@ func TestTailcatManagedModeTransitionsAndRestart(t *testing.T) {
 			t.Run(original+"/enabled="+map[bool]string{false: "false", true: "true"}[enabled], func(t *testing.T) {
 				s, c := newModeTestHost(t, binary, original, enabled)
 				old := s.Status(context.Background())
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 				status, err := c.ConfigureMode(context.Background(), true)
 				if err != nil {
 					t.Fatal(err)
@@ -230,7 +227,7 @@ func assertManagedModePairQR(t *testing.T, s *tailcatSidecarSupervisor) {
 			t.Fatalf("地址未使用托管中继：%q %v", address, err)
 		}
 	}
-	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress)
+	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,9 +272,7 @@ func TestTailcatManagedModeFailureRestoresIdentityAndPolicy(t *testing.T) {
 					}
 					seedModeTestPolicy(t, c, s)
 				}
-				if err := os.WriteFile(filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`), 0o600); err != nil {
-					t.Fatal(err)
-				}
+				configtest.WritePrivateFile(t, filepath.Join(s.stateDir, "clients.json"), []byte(`["free-client"]`))
 				before := s.Status(context.Background())
 				identity, err := snapshotTailcatIdentityState(s.stateDir)
 				if err != nil {
@@ -386,7 +381,7 @@ func TestTailcatManagedModeRejectsManualRelayConfiguration(t *testing.T) {
 }
 
 func TestManagedTailcatClaimRequiresManagedMode(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted}}
 	managed := &fakeManagedPairingService{}
 	server.router.tailcat = fake
@@ -526,7 +521,7 @@ func TestManagedModeRejectsClaimWithoutGrantUntilFreeNodeIsReady(t *testing.T) {
 }
 
 func TestManagedModeClaimWithoutGrantUsesFreeNode(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true, Running: true, Mode: config.TailcatModeManaged,
 		Address: "tailcat:managed", FreeAddress: "tailcat:free",
@@ -550,9 +545,7 @@ func TestSelfHostedOnOfficialRelayReturnsToDefaultRelayAtStart(t *testing.T) {
 	binary := buildModeTestSidecar(t)
 	s, _ := newModeTestHost(t, binary, config.DefaultManagedTailcatDERPMapURL, false)
 	for _, name := range []string{"host.private.json", "clients.json"} {
-		if err := os.WriteFile(filepath.Join(s.stateDir, name), []byte(`["stale"]`), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, filepath.Join(s.stateDir, name), []byte(`["stale"]`))
 	}
 	if _, err := agentsetup.ConfigureTailcat(s.configPath, true); err != nil {
 		t.Fatal(err)

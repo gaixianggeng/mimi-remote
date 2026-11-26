@@ -62,8 +62,8 @@ extension UnifiedWorkbenchShell {
                 .offset(y: WorkbenchChromeIconMetrics.compactHostSwitcherCenterOffset)
             }
         }
-        // 原生 Tab 保留系统交互；材质按系统版本交给 Chrome 层，页面只负责保持背景连续。
-        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
+        // 原生 Tab 保留系统交互；iOS 18–25 的 Tab 栏材质必须挂在 TabView 内部的根视图上才生效
+        // （见 compactTabRoot / settingsPage），避免工作区嵌套横向分页时系统把 Tab 栏保持透明（#1108）。
         .environment(\.workbenchBottomChromeClearance, bottomChromeClearance)
         .environment(\.workbenchHasCompactTabBar, true)
         // 页面按系统 Tab 栏的实际位置决定右下角能不能放浮起按钮。
@@ -144,18 +144,20 @@ extension UnifiedWorkbenchShell {
                 layout: layout,
                 tokens: tokens
             ) {
-                workspaces(layout: layout)
+                workspaces(layout: layout, bottomContentMargin: bottomContentMargin)
             }
             .tabItem { compactTabItem(.workspaces) }
             .tag(CompactWorkbenchTab.workspaces)
 
             settingsPage(tab: .devices, layout: layout)
-            .tabItem { compactTabItem(.devices) }
-            .tag(CompactWorkbenchTab.devices)
+                .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
+                .tabItem { compactTabItem(.devices) }
+                .tag(CompactWorkbenchTab.devices)
 
             settingsPage(tab: .me, layout: layout)
-            .tabItem { compactTabItem(.me) }
-            .tag(CompactWorkbenchTab.me)
+                .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
+                .tabItem { compactTabItem(.me) }
+                .tag(CompactWorkbenchTab.me)
         }
         .phoneTabBarMinimization(
             enabled: layout.usesPhoneIntegratedBottomChrome,
@@ -189,6 +191,7 @@ extension UnifiedWorkbenchShell {
             if usesIndependentStack {
                 NavigationStack(path: compactPathBinding(for: tab, layout: layout)) {
                     content()
+                        .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
                         .navigationDestination(for: AppDestination.self) { destination in
                             compactDestination(
                                 destination,
@@ -200,6 +203,7 @@ extension UnifiedWorkbenchShell {
                 }
             } else {
                 content()
+                    .compactTabBarChrome(tokens: tokens, reduceTransparency: reduceTransparency)
             }
         }
         // 没选中的 Tab 仍然留在内存里继续汇报。浮层只跟着当前这一页走，

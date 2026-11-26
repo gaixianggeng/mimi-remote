@@ -23,6 +23,7 @@ AppPublisher=Mimi Remote
 DefaultDirName={localappdata}\Programs\Mimi Remote
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+UsePreviousTasks=no
 PrivilegesRequired=lowest
 OutputDir={#OutputDir}
 OutputBaseFilename={#MyOutputBaseFilename}
@@ -43,6 +44,10 @@ SignedUninstaller=no
 #endif
 
 [Files]
+#ifdef MySignTool
+Source: "{#SourceDir}\maintenance-identity.p7m"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+Source: "{#SourceDir}\Mimi-Remote-Maintenance.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\agentd.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-agent-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\mimi-claude-adapter.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -59,32 +64,30 @@ Name: "{userstartup}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Worki
 Name: "{group}\Mimi Remote"; Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; WorkingDir: "{app}"; IconFilename: "{app}\mimi-remote.ico"
 
 [Tasks]
+Name: "confirmworkspace"; Description: "Confirm a code folder for a new or pending workspace"; Flags: unchecked
 Name: "lanfirewall"; Description: "Allow private LAN access (Private networks / LocalSubnet only)"; Flags: unchecked
 
 [Run]
-Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--pair"; Description: "Launch Mimi Remote in the notification area"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\mimi-remote-tray.exe"; Parameters: "--show"; Description: "Launch Mimi Remote in the notification area"; Flags: postinstall nowait skipifsilent
 
 [Code]
-const
-  TaskName = 'Mimi Remote agentd';
-  FirewallRuleName = 'Mimi Remote agentd (Private LAN)';
-  ProductRegistryKey = 'Software\Mimi Remote';
-  FirewallMarkerName = 'PrivateLanFirewallRule';
-
-var
-  PostInstallFailed: Boolean;
-
-function Quote(const Value: String): String;
+function InstallDirectory: String;
 begin
-  Result := '"' + Value + '"';
+  Result := ExpandConstant('{app}');
 end;
 
-function ExecConsoleHidden(const Filename, Parameters: String; var ResultCode: Integer): Boolean;
-var
-  Output: TExecOutput;
+#include "installer-common.iss"
+
+function InitializeSetup: Boolean;
 begin
-  // Inno Setup 6.4+ runs captured console commands without allocating a console.
-  Result := ExecAndCaptureOutput(Filename, Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
+  Result := not IsAdmin;
+  if not Result then
+    SuppressibleMsgBox('Run Mimi Remote Setup as the current desktop user.', mbError, MB_OK, IDOK);
+end;
+
+procedure InitializeWizard;
+begin
+  AddWorkspacePage;
 end;
 
 procedure RemoveScheduledTask;
@@ -92,27 +95,6 @@ var
   ResultCode: Integer;
 begin
   ExecConsoleHidden(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ' + Quote(TaskName) + ' /f', ResultCode);
-end;
-
-procedure RegisterScheduledTask;
-var
-  ResultCode: Integer;
-  Parameters: String;
-begin
-  ExtractTemporaryFile('register-service.ps1');
-  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-    Quote(ExpandConstant('{tmp}\register-service.ps1')) + ' -HostPath ' +
-    Quote(ExpandConstant('{app}\mimi-agent-host.exe')) + ' -LogPath ' +
-    Quote(ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log')) +
-    ' -TaskName ' + Quote(TaskName);
-  if not ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to register the current-user login task (PowerShell could not be started).');
-  end;
-  if ResultCode <> 0 then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to register the current-user login task. PowerShell returned ' + IntToStr(ResultCode) + '.');
-  end;
 end;
 
 function ExecutableIsReleased(const Path: String): Boolean;
@@ -233,125 +215,24 @@ begin
   RaiseException('The Mimi Remote Tailcat helper did not stop within 10 seconds.');
 end;
 
-procedure InitializeAndVerifyManagedService;
-var
-  ResultCode: Integer;
-begin
-  // 失败时在安装器对话框里给出服务日志位置。
-  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'), 'up --no-pair --wait 60s', ResultCode) then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to initialize Mimi Remote after installation. See ' + ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log') + ' for details.');
-  end;
-  if ResultCode <> 0 then begin
-    PostInstallFailed := True;
-    RaiseException('Mimi Remote did not become ready after installation. Logs: ' + ExpandConstant('{localappdata}\Mimi Remote\logs\agentd.log') + '. Re-run the previous signed installer to roll back.');
-  end;
-end;
-
-procedure SetLANAccessPolicy(Enabled: Boolean);
-var
-  ResultCode: Integer;
-  EnabledValue: String;
-begin
-  if Enabled then
-    EnabledValue := 'true'
-  else
-    EnabledValue := 'false';
-  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'),
-    'network --lan-enabled=' + EnabledValue, ResultCode) then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to apply the selected Windows LAN access policy.');
-  end;
-  if ResultCode <> 0 then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to apply the selected Windows LAN access policy. agentd returned ' + IntToStr(ResultCode) + '.');
-  end;
-end;
-
-procedure ConfigureLANAccess(Enabled: Boolean);
-var
-  ResultCode: Integer;
-begin
-  SetLANAccessPolicy(Enabled);
-  if not ExecConsoleHidden(ExpandConstant('{app}\agentd.exe'),
-    'restart --no-pair --wait 60s', ResultCode) then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to restart Mimi Remote after applying the Windows LAN access policy.');
-  end;
-  if ResultCode <> 0 then begin
-    PostInstallFailed := True;
-    RaiseException('Mimi Remote did not become ready after applying the Windows LAN access policy.');
-  end;
-end;
-
-procedure ConfigurePrivateLanFirewallRule(Enabled: Boolean);
-var
-  ResultCode: Integer;
-  Parameters: String;
-  Mode: String;
-begin
-  if Enabled then
-    Mode := 'Enable'
-  else
-    Mode := 'Disable';
-  ExtractTemporaryFile('configure-firewall.ps1');
-  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-    Quote(ExpandConstant('{tmp}\configure-firewall.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -RuleName ' +
-    Quote(FirewallRuleName) + ' -Mode ' + Mode;
-  if not ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    Parameters, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to configure the optional private-LAN firewall rule.');
-  end;
-  if ResultCode <> 0 then begin
-    PostInstallFailed := True;
-    RaiseException('Unable to configure the optional private-LAN firewall rule. PowerShell returned ' + IntToStr(ResultCode) + '.');
-  end;
-  if Enabled then
-    RegWriteDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, 1);
-end;
-
-function PrivateLanFirewallRuleIsValid: Boolean;
-var
-  ResultCode: Integer;
-  Parameters: String;
-begin
-  ExtractTemporaryFile('configure-firewall.ps1');
-  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-    Quote(ExpandConstant('{tmp}\configure-firewall.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -RuleName ' +
-    Quote(FirewallRuleName) + ' -Mode Validate';
-  Result := ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) and
-    (ResultCode = 0);
-end;
-
-function PrivateLanNetworkProfileIsReady: Boolean;
-var
-  ResultCode: Integer;
-  Parameters: String;
-begin
-  ExtractTemporaryFile('configure-firewall.ps1');
-  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
-    Quote(ExpandConstant('{tmp}\configure-firewall.ps1')) + ' -AgentPath ' +
-    Quote(ExpandConstant('{app}\agentd.exe')) + ' -RuleName ' +
-    Quote(FirewallRuleName) + ' -Mode ValidateNetwork';
-  Result := ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters, ResultCode) and
-    (ResultCode = 0);
-end;
-
-function GetCustomSetupExitCode: Integer;
-begin
-  if PostInstallFailed then
-    Result := 1
-  else
-    Result := 0;
-end;
-
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  PendingDirectory: String;
 begin
   // Stop agentd gracefully before replacing files. The managed agent owns a
   // kill-on-close Job Object, so an unexpected exit also removes descendants.
+  RequireExistingConfig := FileExists(ExpandConstant('{app}\agentd.exe'));
+  if RequireExistingConfig then begin
+    if RegQueryStringValue(HKCU, ProductRegistryKey, PendingBootstrapName, PendingDirectory) and
+       (CompareText(PendingDirectory, InstallDirectory) = 0) then RequireExistingConfig := False;
+  end else if not FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) and
+              not FileExists(ExpandConstant('{userappdata}\codex-ipad-agent\config.json')) then begin
+    // If task registration fails after files are copied, retry the same first bootstrap.
+    if not RegWriteStringValue(HKCU, ProductRegistryKey, PendingBootstrapName, InstallDirectory) then begin
+      Result := 'Could not record the first-install state for the current user.';
+      Exit;
+    end;
+  end;
   StopManagedService;
   StopAgentHost;
   StopTailcatHelper;
@@ -364,47 +245,16 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  FirewallMarker: Cardinal;
 begin
   if CurStep = ssPostInstall then begin
     DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'));
-    // Validate the active network before registering or starting the new
-    // service. An upgrade may carry an old allow_lan=true configuration, so
-    // starting first would fail with a generic readiness error on Public Wi-Fi.
-    if WizardIsTaskSelected('lanfirewall') and
-       (not PrivateLanNetworkProfileIsReady) then begin
-      PostInstallFailed := True;
-      RaiseException('Private LAN access requires the current default Windows network profile to be Private. Only change a trusted Wi-Fi or Ethernet network to Private, then run Setup again.');
-    end;
-    // An upgrade can inherit prompt-created Public/Any rules. Repair the
-    // firewall boundary before the first new service start, because the new
-    // agent intentionally refuses to start with any unmanaged inbound Allow
-    // rule targeting agentd.exe.
-    if WizardIsTaskSelected('lanfirewall') then begin
-      if not PrivateLanFirewallRuleIsValid then
-        ConfigurePrivateLanFirewallRule(True);
-      RegWriteDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, 1);
-    end;
-    // Existing installations may have an old wildcard configuration. Lock it
-    // down before the first new service start when LAN access is not selected.
-    if (not WizardIsTaskSelected('lanfirewall')) and
-       FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) then
-      SetLANAccessPolicy(False);
-    RegisterScheduledTask;
-    InitializeAndVerifyManagedService;
-    if WizardIsTaskSelected('lanfirewall') then begin
-      ConfigureLANAccess(True);
-    end else begin
-      ConfigureLANAccess(False);
-      if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and
-         (FirewallMarker = 1) then begin
-        ConfigurePrivateLanFirewallRule(False);
-        RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
-        RegDeleteKeyIfEmpty(HKCU, ProductRegistryKey);
-      end;
-    end;
+    ApplyInstallerChoices;
   end;
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  Result := not IsAdmin;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -419,9 +269,10 @@ begin
     RemoveScheduledTask;
     if RegQueryDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, FirewallMarker) and
        (FirewallMarker = 1) then begin
-      ConfigurePrivateLanFirewallRule(False);
-      RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
-      RegDeleteKeyIfEmpty(HKCU, ProductRegistryKey);
+      if (not UninstallSilent) and RunMaintenance('disable-lan') then begin
+        RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
+        RegDeleteKeyIfEmpty(HKCU, ProductRegistryKey);
+      end;
     end;
   end;
 end;

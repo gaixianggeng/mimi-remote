@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 // startFakeTailcatControl 在临时 unix socket 上起一个假辅助程序控制接口。
@@ -227,5 +229,54 @@ func TestTailcatSidecarLogWriterForwardsCompleteLines(t *testing.T) {
 	}
 	if got := strings.Count(output, "tailcat sidecar:"); got != 2 {
 		t.Fatalf("空行不应产生日志，且半行要等到换行再写；实际 %d 行：%q", got, output)
+	}
+}
+
+func TestInsecureLoopbackCannotEnableTailcatAfterStartup(t *testing.T) {
+	s := newTailcatSidecarSupervisor(config.Config{DevInsecure: true}, "")
+	if err := s.Start(t.Context()); err == nil || s.config.Enabled {
+		t.Fatal("insecure listener enabled a remote transport")
+	}
+}
+
+func TestSidecarIngressPreservesBearerAndLocalOnlyBoundaries(t *testing.T) {
+	host := newTestServerWithConfig(t, func(cfg *config.Config) {
+		off := false
+		cfg.Codex.Enabled = &off
+	})
+	defer host.router.Shutdown()
+	s := host.router.tailcat.(*tailcatSidecarSupervisor)
+	addr, err := s.forwardAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path   string
+		bearer bool
+		want   int
+	}{
+		{"/api/projects", false, http.StatusUnauthorized},
+		{"/api/projects", true, http.StatusOK},
+		{"/api/local/preflight", true, http.StatusForbidden},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.bearer {
+			req.Header.Set("Authorization", "Bearer "+testToken)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s: HTTP %d, want %d", tc.path, resp.StatusCode, tc.want)
+		}
+	}
+	host.router.Shutdown()
+	if _, err := s.forwardAddress(); !errors.Is(err, http.ErrServerClosed) {
+		t.Fatal("forwarding reopened during shutdown", err)
 	}
 }

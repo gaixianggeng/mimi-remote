@@ -95,6 +95,10 @@ enum AgentAPIError: LocalizedError, CredentialInvalidatingError {
         guard status == 403 else {
             return false
         }
+        return hasCredentialRejectionEvidence(message: message, authenticationChallenge: authenticationChallenge)
+    }
+
+    static func hasCredentialRejectionEvidence(message: String, authenticationChallenge: String?) -> Bool {
         if authenticationChallenge?.lowercased().contains("bearer") == true {
             return true
         }
@@ -150,6 +154,34 @@ struct ManagedPairingOperationResponse: Decodable {
     let message: String?
 }
 
+/// 5 个首次配对 / 中继协商端点的结构化 HTTP 错误（`application/vnd.mimi.onboarding.v1+json` 与旧宿主回退）。
+/// 票据 401/403/409/503 绝不触发已保存主机的凭据失效或档案删除。
+struct PairingOnboardingAPIError: LocalizedError, Equatable, CredentialInvalidatingError {
+    let status: Int
+    let mapped: MappedPairingError
+    let contentType: String?
+    let varyHeader: String?
+
+    var invalidatesCredentials: Bool { false }
+    var rejectedCredentialFingerprint: String? { nil }
+
+    var hasExpectedVaryAccept: Bool {
+        PairingErrorMapper.hasVaryAccept(varyHeader)
+    }
+
+    var code: String? { mapped.isTrusted ? mapped.code : nil }
+    var step: PairingOnboardingStep? { mapped.step }
+    var action: PairingErrorAction { mapped.action }
+    var isTrusted: Bool { mapped.isTrusted }
+    var preservesSavedProfiles: Bool { mapped.preservesSavedProfiles }
+    var isLegacyFallback: Bool { mapped.isLegacyFallback }
+    var userFacingMessage: String { mapped.userFacingMessage }
+
+    var errorDescription: String? {
+        userFacingMessage
+    }
+}
+
 /// 已连接电脑一键接入托管连接的稳定错误（#897）。只解析带 code 的业务错误，
 /// 鉴权失败仍走 AgentAPIError，保证凭据失效的处理不变。
 enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
@@ -167,11 +199,19 @@ enum ManagedPairingLinkAPIError: LocalizedError, Equatable {
             return L10n.text("ui.managed_devices_upgrade_busy")
         case .hostTooOld:
             return L10n.text("ui.managed_devices_host_too_old")
-        case .failed(let code, let message):
-            // 全部助手都关着时用户能自己处理；其余是电脑端内部原因，只给下一步和错误代码。
-            return code == "tailcat_agents_disabled"
-                ? message
-                : L10n.format("ui.managed_devices_upgrade_failed", code)
+        case .failed(let code, _):
+            // 旧版异步操作的成功 HTTP 回执也可能带失败原因，只呈现已知业务码。
+            switch code {
+            case "tailcat_agents_disabled":
+                return PairingErrorMapper.localizedMessage(code: "no_enabled_assistant")
+            case "tailcat_activation_rollback_failed", "tailcat_activation_rolled_back",
+                 "tailcat_enable_failed", "tailcat_enable_rollback_failed", "tailcat_managed_mode_failed",
+                 "tailcat_managed_pairing_unavailable", "tailcat_operation_expired", "tailcat_pair_failed",
+                 "tailcat_pair_link_failed", "tailcat_status_unavailable", "tailcat_activation_failed":
+                return L10n.format("ui.managed_devices_upgrade_failed", code)
+            default:
+                return PairingErrorMapper.safeFallbackCopy
+            }
         }
     }
 
@@ -500,12 +540,21 @@ struct AgentAPIClient {
         )
     }
 
-    func claimPairing(_ claim: PairingClaimRequest) async throws -> PairingClaimResponse {
+    func claimPairing(
+        _ claim: PairingClaimRequest,
+        timeout: TimeInterval = PairingErrorMapper.explicitClaimTimeoutSeconds
+    ) async throws -> PairingClaimResponse {
         let body = try JSONEncoder().encode(claim)
-        return try await request(path: "/api/pair/claim", method: "POST", requiresAuth: false, body: body)
+        return try await request(
+            path: "/api/pair/claim",
+            method: "POST",
+            requiresAuth: false,
+            body: body,
+            timeout: timeout
+        )
     }
 
-    func claimLocalPairing(timeout: TimeInterval = 2) async throws -> PairingClaimResponse {
+    func claimLocalPairing(timeout: TimeInterval = PairingErrorMapper.localDiscoveryTimeoutSeconds) async throws -> PairingClaimResponse {
         try await request(
             path: "/api/pair/local",
             method: "POST",
@@ -614,10 +663,18 @@ struct AgentAPIClient {
         return ComputerRelayChoice(relay: relay, free: RelayServiceChoice(rawValue: result.free_relay_service))
     }
 
-    func freeTailcatRoute(clientKey: String) async throws -> String {
+    func freeTailcatRoute(
+        clientKey: String,
+        timeout: TimeInterval = PairingErrorMapper.explicitClaimTimeoutSeconds
+    ) async throws -> String {
         struct Response: Decodable { let tailcat_address: String }
         let body = try JSONSerialization.data(withJSONObject: ["client_key": clientKey])
-        let result: Response = try await request(path: "/api/tailcat/free-route", method: "POST", body: body)
+        let result: Response = try await request(
+            path: "/api/tailcat/free-route",
+            method: "POST",
+            body: body,
+            timeout: timeout
+        )
         guard !result.tailcat_address.isEmpty else { throw PairingLinkError.missingTailcatAddress }
         return result.tailcat_address
     }
@@ -954,6 +1011,9 @@ struct AgentAPIClient {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             MimiProtocolContract.applyClientHeaders(to: &request)
         }
+        if PairingErrorMapper.isNegotiatedPath(path) {
+            request.setValue(PairingErrorMapper.acceptMediaType, forHTTPHeaderField: "Accept")
+        }
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
@@ -967,6 +1027,18 @@ struct AgentAPIClient {
             throw AgentAPIError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
+            if PairingErrorMapper.isNegotiatedPath(path),
+               let onboardingError = decodeNegotiatedOnboardingError(
+                   path: path,
+                   requiresAuth: requiresAuth,
+                   status: http.statusCode,
+                   contentType: http.value(forHTTPHeaderField: "Content-Type"),
+                   varyHeader: http.value(forHTTPHeaderField: "Vary"),
+                   authenticationChallenge: http.value(forHTTPHeaderField: "WWW-Authenticate"),
+                   data: data
+               ) {
+                throw onboardingError
+            }
             let message = decodeError(data)
             // 新版 agentd 会给文件读取失败附带稳定 code；先保留结构化信息，避免 403 被鉴权逻辑吞掉。
             if path == "/api/files/read",
@@ -977,7 +1049,8 @@ struct AgentAPIClient {
                let linkError = ManagedPairingLinkAPIError.decode(status: http.statusCode, data: data) {
                 throw linkError
             }
-            if AgentAPIError.isCredentialRejection(
+            if requiresAuth,
+               AgentAPIError.isCredentialRejection(
                 status: http.statusCode,
                 message: message,
                 authenticationChallenge: http.value(forHTTPHeaderField: "WWW-Authenticate")
@@ -1002,6 +1075,49 @@ struct AgentAPIClient {
         } catch {
             throw AgentAPIError.decoding(error)
         }
+    }
+
+    private func decodeNegotiatedOnboardingError(
+        path: String,
+        requiresAuth: Bool,
+        status: Int,
+        contentType: String?,
+        varyHeader: String?,
+        authenticationChallenge: String?,
+        data: Data
+    ) -> Error? {
+        let mapped = PairingErrorMapper.mapHTTPResponse(
+            data: data,
+            statusCode: status,
+            contentType: contentType,
+            varyHeader: varyHeader,
+            configured: requiresAuth ? true : nil
+        )
+        // Legacy managed responses include bearer challenges, missing endpoints and device-count conflicts.
+        // Preserve those handlers after trying the onboarding contract and its recognized legacy codes.
+        if requiresAuth, !mapped.isTrusted,
+           !PairingErrorMapper.isOnboardingMediaType(contentType),
+           !PairingErrorMapper.isOnboardingErrorEnvelope(data) {
+            if status == 401 || status == 403 {
+                let legacy = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let code = legacy?["code"] as? String
+                if code == nil || code == "unauthorized" || code == "forbidden",
+                   AgentAPIError.hasCredentialRejectionEvidence(
+                       message: legacy?["error"] as? String ?? "",
+                       authenticationChallenge: authenticationChallenge
+                   ) { return nil }
+            }
+            if path.hasPrefix("/api/tailcat/managed-pairing-"),
+               let legacyError = ManagedPairingLinkAPIError.decode(status: status, data: data) {
+                return legacyError
+            }
+        }
+        return PairingOnboardingAPIError(
+            status: status,
+            mapped: mapped,
+            contentType: contentType,
+            varyHeader: varyHeader
+        )
     }
 
     private func decodeError(_ data: Data) -> String {

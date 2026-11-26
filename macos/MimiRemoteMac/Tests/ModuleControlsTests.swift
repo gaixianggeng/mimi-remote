@@ -171,22 +171,76 @@ final class ModuleControlsTests: XCTestCase {
         XCTAssertEqual(fixture.registrationCalls, registrationsBeforeToggle + 1)
     }
 
-    func testSelectingLANInPairingPickerEnablesLANAndGeneratesQRCode() async {
+    func testSelectingDisabledLANInPairingPickerDoesNotAutoEnableAndExplicitEnableWorks() async {
         let fixture = ModuleFixture(codex: true, claude: false, ts: true, lan: false)
         fixture.succeedOnPair = true
         let store = fixture.store()
         await store.bootstrap()
         XCTAssertFalse(store.lanEnabled)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale])
+        let registrationsBeforePick = fixture.registrationCalls
 
-        await store.refreshPairingFromPicker(.localNetwork)
+        // 选中未启用的局域网通道严格不自动开启、不重启服务。
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .lan)
+
+        XCTAssertFalse(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick)
+        XCTAssertNil(store.pairing)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        // 显式点击开启后执行单次重载并签发二维码。
+        await pairingWindow.enableSelectedTransport(.lan)
 
         XCTAssertTrue(store.lanEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBeforePick + 1)
         XCTAssertEqual(store.availablePairingNetworks, [.tailscale, .localNetwork])
-        XCTAssertEqual(store.pairing?.network, .localNetwork)
-        XCTAssertEqual(store.pairingNetwork, .localNetwork)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .localNetwork)
         XCTAssertNil(store.lastError)
+        XCTAssertNil(pairingWindow.pairingError)
         XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testExplicitTailscaleEnableReloadsOnceAndIssuesQR() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertFalse(store.tailscaleEnabled)
+        let registrationsBefore = fixture.registrationCalls
+
+        let pairingWindow = PairingWindowStore(dependencies: .live(hostStore: store) { _ in })
+        await pairingWindow.handleAppear(preferredTransport: .tailscale)
+        XCTAssertFalse(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore)
+        XCTAssertEqual(fixture.pairCalls, 0)
+
+        await pairingWindow.enableSelectedTransport(.tailscale)
+        XCTAssertTrue(store.tailscaleEnabled)
+        XCTAssertEqual(fixture.registrationCalls, registrationsBefore + 1)
+        XCTAssertEqual(pairingWindow.activePairing?.network, .tailscale)
+        XCTAssertEqual(fixture.pairCalls, 1)
+    }
+
+    func testPairingWindowRejectsUnreachableLANEndpoint() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: true)
+        fixture.succeedOnPair = true
+        let host = fixture.store(lanReachable: false)
+        let window = PairingWindowStore(dependencies: .live(hostStore: host) { _ in })
+        await window.handleAppear(preferredTransport: .lan)
+        await window.issuePairingQR(for: .lan)
+        XCTAssertGreaterThan(fixture.pairCalls, 0)
+        XCTAssertNil(window.issuedPairing)
+        XCTAssertFalse(window.canCopyPairingLink)
+        XCTAssertNotNil(window.pairingError)
+    }
+
+    func testCanPairIsFalseWhenNoNetworkIsEnabledEvenIfSwitchable() async {
+        let fixture = ModuleFixture(codex: true, claude: false, ts: false, lan: false)
+        let store = fixture.store()
+        await store.bootstrap()
+        XCTAssertTrue(store.availablePairingNetworks.isEmpty)
+        XCTAssertFalse(store.canPair)
     }
 
     func testUnavailableLANReportsSpecificReasonInsteadOfGenericNoConnectionError() async {
@@ -233,6 +287,85 @@ final class ModuleControlsTests: XCTestCase {
             TailcatRelayPresentation.pairingCaption(mode: .mimi, derpMapURL: ""),
             TailcatRelayPresentation.mimiPairingNote
         )
+    }
+
+    func testAgyRuntimeControlErrorUsesDistinctAntigravityCopyInsteadOfClaude() {
+        let agyErrors: [ManagedRuntimeControlError] = [
+            .signedOut(runtimeID: "agy"),
+            .unavailable(runtimeID: "agy"),
+            .disabled(runtimeID: "agy"),
+            .timedOut(runtimeID: "agy", enabled: true),
+            .timedOut(runtimeID: "agy", enabled: false),
+        ]
+        for error in agyErrors {
+            let description = error.localizedDescription
+            XCTAssertTrue(description.contains("Antigravity"), "agy error must mention Antigravity: \(description)")
+            XCTAssertFalse(description.contains("Claude"), "agy error must never mention Claude: \(description)")
+        }
+        XCTAssertEqual(ManagedRuntimeControlError.signedOut(runtimeID: "claude").localizedDescription, "Claude Code 尚未登录。")
+        XCTAssertEqual(ManagedRuntimeControlError.signedOut(runtimeID: "agy").localizedDescription, "Antigravity 尚未登录。")
+        XCTAssertEqual(ManagedRuntimeControlError.unavailable(runtimeID: "agy").localizedDescription, "Antigravity Runtime 未能连接。")
+        XCTAssertEqual(ManagedRuntimeControlError.disabled(runtimeID: "agy").localizedDescription, "服务重载后 Antigravity 仍处于关闭状态。")
+    }
+
+    func testAgyToggleFailureReportsAntigravityErrorInsteadOfClaude() async {
+        let readyStatus = AgentStatus(
+            processOK: true, serviceOK: true, processError: nil, serviceError: nil,
+            version: "1.0.0", endpoint: "http://127.0.0.1:8787",
+            configPath: "/fixture/config/config.json", projects: 1, doctorOK: true,
+            doctor: AgentDoctorResults(ok: true, version: "1.0.0", listen: "127.0.0.1:8787", checks: []),
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2030-01-01T00:00:00Z",
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "agy", title: "Antigravity", enabled: true, state: .signedOut,
+                        authMode: nil, planType: nil, reason: "signed_out", rateLimits: nil
+                    ),
+                ]
+            ),
+            moduleStatus: AgentModuleStatus(
+                codexEnabled: true, claudeEnabled: false, agyEnabled: true,
+                tailscaleEnabled: true, lanEnabled: false, tailscaleAvailable: true, lanAvailable: false
+            )
+        )
+        let agyResult = AgyConfigurationResult(
+            enabled: true, available: true, preference: .enabled,
+            previousEnabled: false, previousPreference: .disabled,
+            changed: false, restartRequired: false, reason: "ready", message: "ok",
+            previous: nil, applied: nil
+        )
+        let agent = AgentCommandClient(
+            configExists: { true },
+            setup: { _ in throw ModuleTestError.unexpected },
+            status: { readyStatus },
+            readiness: { readyStatus },
+            statusAt: { _ in readyStatus },
+            doctor: { _ in DoctorFixResults(fixes: [], results: readyStatus.doctor) },
+            configureClaude: { _, _ in throw ModuleTestError.unexpected },
+            configureAgy: { _, _ in agyResult },
+            setLANAccess: { _ in throw ModuleTestError.unexpected },
+            pair: { _ in throw ModuleTestError.unexpected },
+            version: { "1.0.0" }
+        )
+        let services = ServiceManagementClient(
+            agentStatus: { .enabled }, agentConfigurationError: { nil },
+            isAgentRegistrationCurrent: { true }, markAgentRegistrationCurrent: {},
+            registerAgent: {}, unregisterAgent: {}, agentLaunchFailure: { nil },
+            mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
+            openLoginItemsSettings: {}
+        )
+        let store = HostStore(
+            agent: agent, services: services,
+            homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
+            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
+            logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] })
+        )
+        await store.bootstrap()
+        await store.setAgyEnabled(true)
+        let agyError = store.agyError ?? ""
+        XCTAssertTrue(agyError.contains("Antigravity 尚未登录"), "Actual agyError: \(agyError)")
+        XCTAssertFalse(agyError.contains("Claude"), "agyError must not contain Claude: \(agyError)")
     }
 }
 
@@ -328,9 +461,14 @@ private final class ModuleFixture: @unchecked Sendable {
             }
         }
     }
-    @MainActor func store() -> HostStore {
+    @MainActor func store(lanReachable: Bool = true) -> HostStore {
         let agent = AgentCommandClient(
             configExists: { true }, setup: { _ in throw ModuleTestError.unexpected },
+            preflight: { _, _ in
+                self.lock.withLock {
+                    PairingWindowStoreTests.makePairReport(tailscaleEnabled: self.ts, lanEnabled: self.lan)
+                }
+            },
             status: {
                 if self.failStatusReads { throw ModuleTestError.unexpected }
                 return self.status()
@@ -366,7 +504,7 @@ private final class ModuleFixture: @unchecked Sendable {
                     endpoint: network == .localNetwork ? "http://192.168.31.10:8787" : "http://100.64.0.1:8787",
                     network: network,
                     pairURL: "mimiremote://pair?network=\(network.rawValue)",
-                    expiresAt: "2026-11-17T14:00:00Z",
+                    expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(120)),
                     warnings: []
                 )
             },
@@ -424,7 +562,7 @@ private final class ModuleFixture: @unchecked Sendable {
         )
         return HostStore(agent: agent, services: services,
                          homebrew: HomebrewServiceClient(isLoaded: { false }, installedAgentBinary: { nil }, start: {}, stop: {}),
-                         health: HealthClient(check: { _ in false }, checkDirect: { _ in true }),
+                         health: HealthClient(check: { _ in false }, checkDirect: { _ in lanReachable }),
                          logs: AgentLogClient(recentLines: { _ in [] }, exportLines: { [] }))
     }
 }

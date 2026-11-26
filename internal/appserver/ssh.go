@@ -170,7 +170,9 @@ func (t *SSHTransport) CheckRemoteCodex(ctx context.Context) (string, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, sshCodexVersionRemoteCommand)...)
-	cmd.Env = buildManagedEnv(nil)
+	// A surviving ProxyCommand can keep the output pipe open after ssh exits.
+	cmd.WaitDelay = time.Second
+	cmd.Env = ManagedEnvironment(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("SSH host/auth 或远端 Codex 不可用；请执行：%s：%w", t.SSHCheckCommand(), err)
@@ -301,7 +303,7 @@ func (t *SSHTransport) defaultSocketMissing(ctx context.Context) (bool, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, t.sshBin, sshCommandArgs(t.target, sshSocketStateCommand)...)
-	cmd.Env = buildManagedEnv(nil)
+	cmd.Env = ManagedEnvironment(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("SSH Socket 探测失败：%w", err)
@@ -320,7 +322,7 @@ func (t *SSHTransport) bootstrap(ctx context.Context) error {
 	bootstrapCtx, cancel := context.WithTimeout(ctx, t.bootstrapTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(bootstrapCtx, t.sshBin, sshCommandArgs(t.target, sshBootstrapRemoteCommand)...)
-	cmd.Env = buildManagedEnv(nil)
+	cmd.Env = ManagedEnvironment(nil)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if detail := strings.TrimSpace(string(output)); detail != "" {
@@ -731,7 +733,7 @@ func (t *SSHTransport) openProxy(_ context.Context) (net.Conn, error) {
 	}
 	cmd := exec.Command(t.sshBin, sshCommandArgs(t.target, sshProxyRemoteCommand)...)
 	configureManagedCommand(cmd)
-	cmd.Env = buildManagedEnv(nil)
+	cmd.Env = ManagedEnvironment(nil)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, &SSHProxyError{StartError: err, ExitCode: -1}

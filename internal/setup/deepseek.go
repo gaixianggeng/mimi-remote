@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
@@ -328,7 +326,7 @@ func configuredDeepSeekCandidate(document deepSeekConfigDocument) (deepSeekConne
 	if strings.TrimSpace(document.baseURL) == "" || strings.TrimSpace(document.tokenFile) == "" {
 		return deepSeekConnectionCandidate{}, errors.New("DeepSeek 连接配置不完整")
 	}
-	token, err := readDeepSeekTokenFile(document.tokenFile, false)
+	token, err := readDeepSeekTokenFile(document.tokenFile)
 	if err != nil {
 		return deepSeekConnectionCandidate{}, errors.New("无法读取 DeepSeek 凭据")
 	}
@@ -347,16 +345,19 @@ func storeDeepSeekConnection(
 	if err != nil {
 		return false, err
 	}
+	if _, err := regularFileOrMissing(tokenPath, "DeepSeek token file"); err != nil {
+		return false, err
+	}
 	tokenRaw := []byte(candidate.Token + "\n")
 	if bytes.Equal(updated, document.original) {
-		current, readErr := readDeepSeekTokenFile(tokenPath, true)
+		current, readErr := readDeepSeekTokenFile(tokenPath)
 		if readErr == nil && current == candidate.Token {
 			return false, nil
 		}
 	}
 
 	err = withConfigCommitLock(ctx, document.configPath, func() error {
-		current, readErr := os.ReadFile(document.configPath)
+		current, readErr := readPrivateConfig(document.configPath)
 		if readErr != nil {
 			return fmt.Errorf("重新读取配置失败：%w", readErr)
 		}
@@ -364,7 +365,7 @@ func storeDeepSeekConnection(
 			return errors.New("配置已被其他进程修改，请重新执行")
 		}
 		return writeSetupFilesAtomically(
-			document.configPath,
+			configImage{path: document.configPath, raw: document.original, exists: true},
 			tokenPath,
 			updated,
 			tokenRaw,
@@ -377,15 +378,16 @@ func storeDeepSeekConnection(
 	return true, nil
 }
 
-func readDeepSeekTokenFile(path string, requireManagedMode bool) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("DeepSeek token 文件必须是 regular file")
+func readDeepSeekTokenFile(path string) (string, error) {
+	raw, err := config.ReadPrivatePreflightFile(config.ExpandPath(path), 4096)
+	if err != nil {
+		return "", err
 	}
-	if requireManagedMode && runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		return "", errors.New("受管 DeepSeek token 文件必须是 0600")
+	token := strings.TrimSpace(string(raw))
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return "", errors.New("DeepSeek 凭据格式无效")
 	}
-	return harnessclient.ReadTokenFile(path)
+	return token, nil
 }
 
 func managedDeepSeekTokenPath(configPath string) string {
@@ -397,14 +399,7 @@ func loadDeepSeekConfigDocument(path string) (deepSeekConfigDocument, error) {
 	if err != nil {
 		return deepSeekConfigDocument{}, err
 	}
-	info, err := os.Lstat(configPath)
-	if err != nil {
-		return deepSeekConfigDocument{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return deepSeekConfigDocument{}, errors.New("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-	original, err := os.ReadFile(configPath)
+	original, err := readPrivateConfig(configPath)
 	if err != nil {
 		return deepSeekConfigDocument{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}

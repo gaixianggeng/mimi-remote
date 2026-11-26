@@ -25,23 +25,19 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 func TestMain(m *testing.M) {
-	var cleanup func()
+	for _, e := range os.Environ() {
+		key, _, _ := strings.Cut(e, "=")
+		if strings.HasPrefix(strings.ToUpper(key), "AGENTD_") || key == "CLAUDE_BRIDGE_CLAUDE_BIN" || key == "AGY_ADAPTER_AGY_BIN" {
+			os.Unsetenv(key)
+		}
+	}
 	if config.SupportsSharedLocalAppServer() {
-		dir, err := os.MkdirTemp("", "agentd-main-codex-")
-		if err != nil {
-			panic(err)
-		}
-		codexBin := filepath.Join(dir, "codex")
-		body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' 'codex-cli 0.149.1'; fi\nexit 0\n"
-		if err := os.WriteFile(codexBin, []byte(body), 0o700); err != nil {
-			panic(err)
-		}
-		cleanup = func() { _ = os.RemoveAll(dir) }
 		migrateAppServerToSharedLocal = func(ctx context.Context, path string) error {
 			return agentsetup.MigrateAppServerToSharedLocalWithPreflight(
 				ctx,
@@ -49,16 +45,15 @@ func TestMain(m *testing.M) {
 				func(context.Context, string, map[string]string) error { return nil },
 			)
 		}
-		runAgentSetup = func(ctx context.Context, options agentsetup.Options) (agentsetup.Result, error) {
-			options.CodexBin = codexBin
-			options.LocalAppServerPreflight = func(context.Context, string, map[string]string) error { return nil }
-			return agentsetup.Run(ctx, options)
+	}
+	runAgentSetup = func(ctx context.Context, options agentsetup.Options) (agentsetup.Result, error) {
+		options.ObserveAssistant = func(_ context.Context, id string, _ config.Config, _ string, _ agentsetup.PreflightHost) agentsetup.PreflightObservation {
+			available := id == "codex"
+			return agentsetup.PreflightObservation{Available: &available}
 		}
+		return agentsetup.Run(ctx, options)
 	}
 	code := m.Run()
-	if cleanup != nil {
-		cleanup()
-	}
 	os.Exit(code)
 }
 
@@ -208,7 +203,7 @@ func TestUpNoPairJSONOmitsSetupResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		t.Fatalf("安全启动 JSON 无法解析：%v output=%q", err, stdout)
 	}
-	if output["service_ok"] != true || output["version"] != version {
+	if output["start_submitted"] != true || output["ok"] != true || output["service_ok"] != nil || output["version"] != version {
 		t.Fatalf("安全启动 JSON 缺少非敏感状态：%+v", output)
 	}
 	for _, forbiddenKey := range []string{"result", "token", "endpoint", "connect_url", "pair_url", "config_path"} {
@@ -287,19 +282,11 @@ func TestAgentDListenAddressesAddsLoopbackForSpecificRemoteBind(t *testing.T) {
 
 func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
-	const longLivedToken = "0123456789abcdef0123456789abcdef"
-	configPath := filepath.Join(t.TempDir(), "config.json")
-	cfg := config.Config{
-		Listen: "127.0.0.1:8787",
-		Auth:   config.AuthConfig{Token: longLivedToken},
-	}
-	rawConfig, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, rawConfig, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeIssuedFixture(t, w, r, "192.168.50.2", false, false)
+	}))
+	defer server.Close()
+	configPath := issueClientConfig(t, server)
 
 	for _, testCase := range []struct {
 		name string
@@ -314,12 +301,12 @@ func TestRunPairQROnlyNeverPrintsLongLivedCredentials(t *testing.T) {
 				t.Fatalf("pair --qr-only 失败：%v stderr=%s", err, stderr.String())
 			}
 			output := stdout.String()
-			for _, want := range []string{"127.0.0.1:8787", "mimiremote://pair", "pair_sig"} {
+			for _, want := range []string{"192.168.50.2:", "mimiremote://pair", "pair_sig"} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("安全配对输出缺少 %q：%s", want, output)
 				}
 			}
-			for _, forbidden := range []string{longLivedToken, "Token：", "connect_url", "mimiremote://connect"} {
+			for _, forbidden := range []string{issueTestToken, "Token：", "connect_url", "mimiremote://connect"} {
 				if strings.Contains(output, forbidden) {
 					t.Fatalf("安全配对输出泄漏长期凭据 %q：%s", forbidden, output)
 				}
@@ -356,12 +343,15 @@ func TestRunSetupQROnlyNeverReturnsLongLivedCredentials(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout.String()), &payload); err != nil {
 		t.Fatalf("setup 安全 JSON 无法解析：%v output=%s", err, stdout.String())
 	}
-	for _, key := range []string{"endpoint", "pair_url", "pair_expires_at"} {
+	if payload["ok"] != true || payload["configured"] != true || payload["pairing_deferred"] != true {
+		t.Fatalf("expected a deferred setup receipt, got %v", payload)
+	}
+	for _, key := range []string{"config_path", "created", "scan_root", "browse_root"} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("setup 安全 JSON 缺少 %s：%v", key, payload)
 		}
 	}
-	for _, forbiddenKey := range []string{"token", "connect_url", "app_server_token_file"} {
+	for _, forbiddenKey := range []string{"token", "connect_url", "app_server_token_file", "pair_url", "pair_expires_at"} {
 		if _, ok := payload[forbiddenKey]; ok {
 			t.Fatalf("setup 安全 JSON 不应包含 %s：%v", forbiddenKey, payload)
 		}
@@ -795,8 +785,16 @@ func TestDefaultPathCommandsReuseLegacyConfigWithoutRotatingToken(t *testing.T) 
 			stdout, stderr, err := captureMainCommandOutput(t, func() error {
 				return testCase.run(t, fixture)
 			})
-			if err != nil {
-				t.Fatalf("默认路径命令应直接复用迁移配置：%v stdout=%s stderr=%s", err, stdout, stderr)
+			switch testCase.name {
+			case "pair", "up", "start", "restart":
+				var issue *onboardingCommandError
+				if !errors.As(err, &issue) || issue.code != "service_not_running" {
+					t.Fatalf("expected pairing to require a live daemon after migration: %v", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("默认路径命令应直接复用迁移配置：%v stdout=%s stderr=%s", err, stdout, stderr)
+				}
 			}
 			if count := strings.Count(stderr, "已复用旧版配置并迁移到新目录"); count != 1 {
 				t.Fatalf("成功迁移只应提示一次：count=%d stderr=%q", count, stderr)
@@ -1079,7 +1077,7 @@ func TestAgentStatusTextSeparatesProcessAndCodexAndRedactsToken(t *testing.T) {
 	printServiceStatus(&output, status, token)
 
 	text := output.String()
-	for _, want := range []string{"进程存活：是", "Codex 服务可用：否", "<redacted>"} {
+	for _, want := range []string{"进程存活：是", "后台服务就绪：否", "<redacted>"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("status 文本缺少 %q：%q", want, text)
 		}
@@ -1197,9 +1195,7 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if err := os.Mkdir(projectPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(upstreamTokenPath, []byte("upstream-token"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, upstreamTokenPath, []byte("upstream-token"))
 	cfg := config.Config{
 		Listen: strings.TrimPrefix(server.URL, "http://"),
 		Auth:   config.AuthConfig{Token: token},
@@ -1220,9 +1216,7 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, raw)
 
 	statusOutput, _, err := captureMainCommandOutput(t, func() error {
 		return runStatus([]string{"status", "--config", configPath, "--json"})
@@ -1272,6 +1266,12 @@ func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
 			t.Fatalf("forced runtime failure mode %d = %v, want substring %q", mode, err, want)
 		}
 	}
+	server.Close()
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json", "--runtime", "--runtime-refresh"})
+	}); err == nil {
+		t.Fatal("forced refresh reported success for an offline service")
+	}
 }
 
 func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
@@ -1294,7 +1294,7 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false)
+	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1304,14 +1304,14 @@ func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatalf("runtime status 应只请求一次：requests=%d", requests.Load())
 	}
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true); err != nil {
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second, true, ""); err != nil {
 		t.Fatal(err)
 	}
 	if refreshRequests.Load() != 1 {
 		t.Fatalf("强制刷新必须请求 refresh=wait：requests=%d", refreshRequests.Load())
 	}
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
 	}
@@ -1341,7 +1341,7 @@ func TestFetchServiceRuntimeStatusReportsRefreshFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(test.handler)
 			defer server.Close()
-			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true)
+			_, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", test.timeout, true, "")
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("refresh failure = %v, want substring %q", err, test.want)
 			}
@@ -1355,7 +1355,7 @@ func TestFetchServiceRuntimeStatusRejectsTrailingJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "多个 JSON 值") {
 		t.Fatalf("runtime status 必须拒绝尾随 JSON：%v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestFetchServiceRuntimeStatusRejectsMissingRequiredShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false); err == nil ||
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second, false, ""); err == nil ||
 		!strings.Contains(err.Error(), "缺少 runtimes") {
 		t.Fatalf("runtime status 必须拒绝缺少最小结构的 200 响应：%v", err)
 	}
@@ -1513,7 +1513,7 @@ func TestAgentVersionsKeepMacBuildStrictButAllowReleaseCLI(t *testing.T) {
 		{expected: "0.1.6", running: "0.1.5+mac.240", want: false},
 	}
 	for _, testCase := range tests {
-		if got := agentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
+		if got := agentsetup.AgentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
 			t.Fatalf(
 				"agentd 版本兼容判断错误：expected=%q running=%q got=%v want=%v",
 				testCase.expected,
@@ -1598,9 +1598,7 @@ func TestRunDoctorFixOnlyTightensSensitiveFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, rawConfig, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, rawConfig)
 	if err := os.Chmod(configPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1646,9 +1644,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	codexPath = writeMainTestCodex(t, codexPath)
 	const authToken = "0123456789abcdef0123456789abcdef"
 	legacyUpstreamToken := filepath.Join(dir, "legacy-upstream-token")
-	if err := os.WriteFile(legacyUpstreamToken, []byte("legacy-capability-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, legacyUpstreamToken, []byte("legacy-capability-token\n"))
 
 	// 只有旧版受管 WS 配置可以无损自动迁移；stdio 等用户配置必须拒绝自动改写。
 	legacy := map[string]any{
@@ -1697,9 +1693,7 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, append(original, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, append(original, '\n'))
 
 	if err := run([]string{"agentd", "doctor", "--config", configPath, "--fix", "--json"}); err != nil {
 		t.Fatalf("legacy 配置应能由 doctor --fix 原地修复：%v", err)
@@ -1765,49 +1759,46 @@ func TestDoctorFixMigratesLegacyManagedWSWithoutReplacingUserConfig(t *testing.T
 	}
 }
 
-func TestRunDoctorFixMissingConfigStillUsesFullSetup(t *testing.T) {
+func TestDoctorFixPreservesMissingOrDamagedIdentity(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
-	installMainTestSSH(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.Mkdir(filepath.Join(home, "code"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, key := range []string{"HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME"} {
+		t.Setenv(key, home)
 	}
-	configPath := filepath.Join(home, "config.json")
-	current := doctor.Results{Checks: []doctor.Check{
-		{Name: "token", OK: false},
-		{Name: "projects", OK: false},
-		{Name: "config-file", OK: false},
-		{Name: "app-server-token-file", OK: false},
-	}}
-
-	fixes, restartRequired, _, _, err := runDoctorFix(context.Background(), configPath, false, current)
-	if err != nil {
-		t.Fatalf("配置完全缺失时仍应走完整 setup，而不是尝试局部迁移：%v", err)
+	checks := doctor.Results{Checks: []doctor.Check{{Name: "token", OK: false}, {Name: "projects", OK: false}}}
+	missing := filepath.Join(t.TempDir(), "config.json")
+	_, _, _, _, err := runDoctorFix(t.Context(), missing, false, checks)
+	if err == nil {
+		t.Fatal("doctor silently created a missing identity")
 	}
-	if len(fixes) == 0 {
-		t.Fatal("完整 setup 应返回修复记录")
-	}
-	if !restartRequired {
-		t.Fatal("完整 setup 重建配置后必须要求重启 agentd")
-	}
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Auth.Token == "" {
-		t.Fatalf("完整 setup 应生成外侧 token：%+v", cfg)
-	}
-	if config.SupportsManagedAppServer() {
-		if cfg.AppServer.Transport != "ws" || !cfg.AppServer.Managed || cfg.AppServer.Listen == "" {
-			t.Fatalf("Windows 完整 setup 应生成受管 WS 配置：%+v", cfg.AppServer)
+	assertPathDoesNotExist(t, missing, "doctor must leave fresh setup to its owner")
+	for _, tc := range []struct{ name, raw string }{
+		{"unloadable document", `{"auth":{"token":"fixture-bearer-for-existing-client"}, "future":`},
+		{"unusable persisted identity", `{"auth":{"token":"short"}, "future":"preserved"}`},
+	} {
+		for _, jsonMode := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%v", tc.name, jsonMode), func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.json")
+				original := []byte(tc.raw)
+				configtest.CreatePrivateFile(t, path, original)
+				args := []string{"doctor", "--fix", "--config", path}
+				if jsonMode {
+					args = append(args, "--json")
+				}
+				if err := runDoctorWithWriters(args, io.Discard, io.Discard); err == nil {
+					t.Fatal("unusable identity was accepted")
+				}
+				after, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(after, original) {
+					t.Fatalf("doctor replaced recovery bytes: %v", err)
+				}
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("destructive repair artifacts: %v %v", entries, err)
+				}
+			})
 		}
-	} else if config.SupportsSharedLocalAppServer() {
-		if cfg.AppServer != config.DefaultSharedLocalAppServerConfig() {
-			t.Fatalf("macOS 与 Linux 完整 setup 应生成共享本机配置：%+v", cfg.AppServer)
-		}
-	} else if cfg.AppServer.SSHTarget == "" {
-		t.Fatalf("完整 setup 应生成 SSH target：%+v", cfg)
 	}
 }
 
@@ -1844,9 +1835,7 @@ func TestRunDoctorFixDoesNotRebuildLegacySharingConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	original := []byte(`{"app_server":{"transport":"ws","shared_fallback":{"transport":"ws"}}}`)
-	if err := os.WriteFile(configPath, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, original)
 
 	err := runDoctor([]string{"doctor", "--config", configPath, "--fix"})
 	if !errors.Is(err, config.ErrLegacyAppServerConfiguration) {
@@ -1899,7 +1888,15 @@ func TestRunSetupForceRejectsLegacyResidueBeforeMigrationOrPreflight(t *testing.
 	assertPathDoesNotExist(t, sshCalled, "residue rejection must run before setup SSH preflight")
 }
 
-func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T) {
+func inspectTestLaunchCodex(path string) error {
+	cfg, err := config.LoadForDoctor(path)
+	if err != nil {
+		return err
+	}
+	return resolveLaunchCodex(context.Background(), &cfg)
+}
+
+func TestEnsureCodexCLIAvailablePreservesPinAndDiscoversWithoutWriting(t *testing.T) {
 	clearAgentdEnvForMainTest(t)
 	dir := t.TempDir()
 	binDir := t.TempDir()
@@ -1909,9 +1906,10 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 	configPath := filepath.Join(dir, "config.json")
 	const authToken = "0123456789abcdef0123456789abcdef"
 	document := map[string]any{
-		"auth": map[string]any{"token": authToken},
+		"auth":       map[string]any{"token": authToken},
+		"app_server": map[string]any{"transport": "local"},
 		"codex": map[string]any{
-			"bin":           "/opt/homebrew/bin/codex",
+			"bin":           filepath.Join(dir, "missing-codex"),
 			"future_option": "keep-codex-option",
 		},
 		"future_root": "keep-root-option",
@@ -1920,27 +1918,22 @@ func TestEnsureCodexCLIAvailableRepairsStalePathBeforeServiceStart(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, append(raw, '\n'))
 
-	if err := ensureCodexCLIAvailable(configPath); err != nil {
-		t.Fatalf("启动前应自动恢复 Codex 路径：%v", err)
+	if err := inspectTestLaunchCodex(configPath); err == nil {
+		t.Fatal("a missing pin must be reported even when PATH has a compatible CLI")
 	}
-	updated, err := os.ReadFile(configPath)
-	if err != nil {
+	stored, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(stored, append(raw, '\n')) {
+		t.Fatal("startup inspection changed the pin, credentials or unknown fields")
+	}
+	t.Setenv("AGENTD_CODEX_BIN", codexPath)
+	if err := inspectTestLaunchCodex(configPath); err != nil {
 		t.Fatal(err)
 	}
-	var after map[string]any
-	if err := json.Unmarshal(updated, &after); err != nil {
-		t.Fatal(err)
-	}
-	afterCodex := after["codex"].(map[string]any)
-	if afterCodex["bin"] != codexPath || afterCodex["future_option"] != "keep-codex-option" {
-		t.Fatalf("只应修复路径并保留 Codex 扩展配置：%+v", afterCodex)
-	}
-	if after["future_root"] != "keep-root-option" || after["auth"].(map[string]any)["token"] != authToken {
-		t.Fatalf("启动前修复不能改写 Token 或未知字段：%+v", after)
+	stored, err = os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(stored, append(raw, '\n')) {
+		t.Fatal("an environment override was persisted")
 	}
 }
 
@@ -2122,8 +2115,7 @@ func mainTestFileExists(path string) bool {
 func prepareBrewSideEffectProbe(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		installFakeWindowsCommands(t)
-		return filepath.Join(t.TempDir(), "windows-task-called")
+		return installFakeWindowsCommands(t)
 	}
 	useManagedServicePlatform(t, "darwin")
 	binDir := t.TempDir()
@@ -2134,7 +2126,10 @@ func prepareBrewSideEffectProbe(t *testing.T) string {
 		t.Fatal(err)
 	}
 	launchctlPath := filepath.Join(binDir, "launchctl")
-	launchctlBody := "#!/bin/sh\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
+	oldLaunchctl := coreLaunchctl
+	coreLaunchctl = launchctlPath
+	t.Cleanup(func() { coreLaunchctl = oldLaunchctl })
+	launchctlBody := "#!/bin/sh\nif [ \"$1\" = print ]; then echo 'Could not find service' >&2; exit 113; fi\nprintf '%s\\n' called > \"$BREW_MARKER\"\nexit 0\n"
 	if err := os.WriteFile(launchctlPath, []byte(launchctlBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2150,6 +2145,10 @@ func prepareManagedCommandProbe(t *testing.T, commandName string) string {
 	marker := filepath.Join(t.TempDir(), commandName+"-called")
 	commandPath := filepath.Join(binDir, commandName)
 	body := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$MANAGED_COMMAND_MARKER\"\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		commandPath += ".cmd"
+		body = "@echo off\r\n>\"%MANAGED_COMMAND_MARKER%\" echo %*\r\n"
+	}
 	if err := os.WriteFile(commandPath, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2252,7 +2251,7 @@ func prepareMainLegacyConfigFixture(t *testing.T) mainLegacyConfigFixture {
 	worktreesRoot := filepath.Join(filepath.Dir(source), "worktrees")
 	token := "legacy-command-token-never-rotate-0123456789"
 	document := map[string]any{
-		"listen": "127.0.0.1:8787",
+		"listen": unusedCoreTestAddress(t),
 		"auth":   map[string]any{"token": token},
 		"runtime": map[string]any{
 			"type": "codex_app_server",
@@ -2276,15 +2275,11 @@ func prepareMainLegacyConfigFixture(t *testing.T) mainLegacyConfigFixture {
 	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(source, raw, 0o644); err != nil {
+	configtest.CreatePrivateFile(t, source, raw)
+	if err := os.Chmod(source, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(source, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(upstream, []byte("legacy-upstream-secret\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, upstream, []byte("legacy-upstream-secret\n"))
 	return mainLegacyConfigFixture{destination: destination, source: source, upstream: upstream, token: token, raw: raw}
 }
 
@@ -2332,7 +2327,7 @@ func assertMainLegacyConfigPreserved(t *testing.T, fixture mainLegacyConfigFixtu
 	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("新版配置必须是 0600 普通文件：%v", info.Mode())
 	}
-	result, err := agentsetup.Pair(context.Background(), fixture.destination)
+	result, err := agentsetup.LocalServiceAccess(fixture.destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2382,4 +2377,42 @@ func captureMainCommandOutput(t *testing.T, action func() error) (string, string
 		t.Fatal(err)
 	}
 	return string(stdout), string(stderr), actionErr
+}
+
+func TestSetupKeepsUnsafeLegacySourceReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission mode fixture; Windows uses native DACL coverage")
+	}
+	fixture := prepareMainLegacyConfigFixture(t)
+	if err := os.Chmod(fixture.source, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range [][]string{{"setup", "--no-pair"}, {"runtime", "--runtime-path", "codex=auto"}, {"workspace", "--scan-root", t.TempDir()}} {
+		var out, stderr bytes.Buffer
+		args := append(append([]string{"agentd"}, command...), "--json")
+		if commandExit(args, &out, &stderr) != 1 {
+			t.Fatal("command imported an unsafe legacy identity")
+		}
+		assertOnboardingError(t, out.Bytes(), stderr.String(), "config_permissions_unsafe", "config_store")
+		if !bytes.Contains(out.Bytes(), []byte(`"action":"doctor_fix"`)) {
+			t.Fatal("expected explicit permission repair")
+		}
+	}
+	raw, readErr := os.ReadFile(fixture.source)
+	if readErr != nil || !bytes.Equal(raw, fixture.raw) {
+		t.Fatalf("unsafe source was changed: %v", readErr)
+	}
+	info, err := os.Stat(fixture.source)
+	if err != nil || info.Mode().Perm() != 0644 {
+		t.Fatalf("unsafe source permissions changed: %v", err)
+	}
+	assertPathDoesNotExist(t, fixture.destination, "unsafe legacy configuration must remain read-only")
+	var out, diagnostic bytes.Buffer
+	if err := runDoctorWithWriters([]string{"doctor", "--fix", "--json"}, &out, &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := config.ReadPrivatePreflightFile(fixture.source, 4<<20); err != nil || !bytes.Equal(data, fixture.raw) {
+		t.Fatal("doctor did not restore canonical permissions on the original identity")
+	}
+	assertPathDoesNotExist(t, fixture.destination, "permission repair must leave migration to a subsequent save")
 }

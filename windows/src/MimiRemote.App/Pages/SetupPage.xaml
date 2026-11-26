@@ -1,17 +1,148 @@
 <local:ClientPage x:Class="MimiRemote.App.Pages.SetupPage"
-    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:local="using:MimiRemote.App" xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MimiRemote.App"
+    xmlns:core="using:MimiRemote.Core"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Spacing="14" Padding="0,0,0,20">
-            <Button Content="刷新" Command="{x:Bind ViewModel.RefreshCommand}"/>
+        <StackPanel Spacing="14" Padding="0,0,0,24">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind ViewModel.Wizard.StepTitle, Mode=OneWay}" Style="{StaticResource SubtitleTextBlockStyle}"/>
+                    <TextBlock Text="{x:Bind ViewModel.Wizard.GateStateDescription, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <Button Content="返回上一步" Command="{x:Bind ViewModel.BackCommand}"
+                        Visibility="{x:Bind ViewModel.Wizard.CanGoBack, Mode=OneWay}"/>
+                    <Button Content="重新检查" Command="{x:Bind ViewModel.RefreshCommand}"/>
+                </StackPanel>
+            </Grid>
+
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.Wizard.IsCheckingPreflight, Mode=OneWay}"/>
             <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}"/>
-            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}" Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
-            <toolkit:SettingsCard Header="代码目录" Description="Mimi 在这里发现项目，并允许已配对的手机浏览。"/>
-            <TextBlock Text="使用 Codex 或 Claude 前，请先在电脑上安装并登录；也可以连接运行中的 DeepSeek Harness。" TextWrapping="Wrap"/>
-            <TextBox Header="代码目录" Text="{x:Bind ViewModel.Root, Mode=TwoWay}"/>
-            <Button Content="选择文件夹…" Command="{x:Bind ViewModel.PickCommand}"/>
-            <TextBlock Text="已有配置时只更新目录，保留配对和内置连接身份。目录变更需要短暂重启服务。" TextWrapping="Wrap"/>
-            <Button Content="完成设置并连接手机" Command="{x:Bind ViewModel.FinishCommand}" IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}"/>
+            <InfoBar IsOpen="{x:Bind ViewModel.NoticeOpen, Mode=TwoWay}" Message="{x:Bind ViewModel.Notice, Mode=OneWay}"
+                Severity="{x:Bind local:ClientPage.NoticeSeverity(ViewModel.Failed), Mode=OneWay}"/>
+
+            <Border Style="{StaticResource NativeCardStyle}" Visibility="{x:Bind ViewModel.Wizard.IsRecoveryVisible, Mode=OneWay}">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="配置恢复说明（只读）" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                    <TextBlock Text="客户端已保留原始配置文件与配对身份，不会自动重建或轮换配对凭据。" TextWrapping="Wrap"/>
+                    <Button Content="前往诊断与日志查看保留路径" Command="{x:Bind ViewModel.OpenDiagnosticsCommand}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Step 1: 检查环境 -->
+            <StackPanel Spacing="12" Visibility="{x:Bind ViewModel.Wizard.IsStep1, Mode=OneWay}">
+                <TextBlock Text="实时检查本机 AI 助手、网络连接与配置状态。即使暂未安装助手或未连外网，也可先保存代码目录。" TextWrapping="Wrap"/>
+                <ItemsControl ItemsSource="{x:Bind ViewModel.Wizard.Rows, Mode=OneWay}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="core:OnboardingWizardRow">
+                            <Border Margin="0,0,0,8" Padding="12" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                <StackPanel Spacing="6">
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                                        <TextBlock Grid.Column="1" Text="{x:Bind StateBadge}" Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </Grid>
+                                    <TextBlock Text="{x:Bind Message}" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{x:Bind CandidateSummary}" Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="{x:Bind PrimaryLabel}" Tag="{x:Bind Check.Id}" Click="RowPrimaryClicked"
+                                            Visibility="{x:Bind HasPrimaryAction}"/>
+                                        <Button Content="{x:Bind SecondaryLabel}" Tag="{x:Bind Check.Id}" Click="RowSecondaryClicked"
+                                            Visibility="{x:Bind HasSecondaryAction}"/>
+                                        <Button Content="恢复自动检测" Tag="{x:Bind Check.Id}" Click="ResetPinClicked"
+                                            Visibility="{x:Bind CanResetPin}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <Button Content="下一步：选择代码目录" Command="{x:Bind ViewModel.NextFromStep1Command}"
+                    IsEnabled="{x:Bind ViewModel.Wizard.CanProceedFromEnvironmentCheck, Mode=OneWay}"/>
+            </StackPanel>
+
+            <!-- Step 2: 选择代码目录 -->
+            <StackPanel Spacing="12" Visibility="{x:Bind ViewModel.Wizard.IsStep2, Mode=OneWay}">
+                <toolkit:SettingsCard Header="代码目录" Description="默认仅授权手机浏览你所选的代码目录（最小权限），不会自动开放整个用户目录。"/>
+                <TextBox Header="代码目录（--scan-root）" Text="{x:Bind ViewModel.Root, Mode=TwoWay}"/>
+                <TextBlock Text="已有配置若设置了独立浏览目录，本次更新会保留原范围；新安装默认将浏览目录设为同一路径。" Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Button Content="选择文件夹…" Command="{x:Bind ViewModel.PickCommand}"/>
+                    <Button Content="保存配置并启动服务" Command="{x:Bind ViewModel.FinishCommand}"
+                        IsEnabled="{x:Bind ViewModel.IsIdle, Mode=OneWay}"/>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Step 3: 后台服务与权限 -->
+            <StackPanel Spacing="12" Visibility="{x:Bind ViewModel.Wizard.IsStep3, Mode=OneWay}">
+                <Border Style="{StaticResource NativeCardStyle}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="后台服务状态" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                        <TextBlock Text="{x:Bind ViewModel.Wizard.ServicePhaseText, Mode=OneWay}" TextWrapping="Wrap"/>
+                        <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.Wizard.IsStartingService, Mode=OneWay}"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button Content="重试启动服务" Command="{x:Bind ViewModel.RetryServiceCommand}"
+                                Visibility="{x:Bind ViewModel.Wizard.CanRetryServiceStart, Mode=OneWay}"/>
+                            <Button Content="下一步：连接手机" Command="{x:Bind ViewModel.NextFromStep3Command}"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!-- Step 4: 连接手机 -->
+            <StackPanel Spacing="12" Visibility="{x:Bind ViewModel.Wizard.IsStep4, Mode=OneWay}">
+                <TextBlock Text="按推荐顺序选择连接方式：Tailscale ＞ 内置连接（Tailcat）＞ 同一局域网。选中通道不会自动开启网络。" TextWrapping="Wrap"/>
+                <ItemsControl ItemsSource="{x:Bind ViewModel.Wizard.Transports, Mode=OneWay}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="core:OnboardingTransportItem">
+                            <Border Margin="0,0,0,8" Padding="12" CornerRadius="8"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                                        <TextBlock Text="{x:Bind Badge}" Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                        <TextBlock Text="{x:Bind Detail}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="选择" Tag="{x:Bind Id}" Click="SelectTransportClicked" VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Button Content="启用所选连接方式" Command="{x:Bind ViewModel.EnableTransportCommand}"
+                        Visibility="{x:Bind ViewModel.Wizard.CanEnableSelectedTransport, Mode=OneWay}"/>
+                    <Button Content="生成 / 刷新二维码" Command="{x:Bind ViewModel.GenerateQrCommand}"
+                        IsEnabled="{x:Bind ViewModel.Wizard.CanIssuePairingQr, Mode=OneWay}"/>
+                    <Button Content="复制配对链接" Command="{x:Bind ViewModel.CopyLinkCommand}"
+                        IsEnabled="{x:Bind ViewModel.Wizard.CanCopyPairingLink, Mode=OneWay}"/>
+                </StackPanel>
+                <Image x:Name="Step4QrImage" Width="260" Height="260" HorizontalAlignment="Center"
+                    Visibility="{x:Bind ViewModel.Wizard.HasIssuedTicket, Mode=OneWay}" AutomationProperties.Name="短期配对二维码"/>
+                <TextBlock Text="{x:Bind ViewModel.Wizard.CountdownText, Mode=OneWay}" TextWrapping="Wrap"/>
+                <Button Content="完成首次设置" Command="{x:Bind ViewModel.CompleteWizardCommand}"/>
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </local:ClientPage>

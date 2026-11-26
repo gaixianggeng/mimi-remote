@@ -136,12 +136,7 @@ func loadCodexFrontDoor(configPath string, listener net.Listener, logf func(stri
 	if err != nil {
 		return nil, fmt.Errorf("读取前门配置失败，拒绝回退其他 CODEX_HOME：%w", err)
 	}
-	options := codexFrontOptions(cfg)
-	if err := cfg.ValidateSharedCodexHome(); err != nil {
-		return nil, err
-	}
-	options.CodexBin = appserver.FrontDoorCodexBin(options.CodexBin, options.Env)
-	door, err := appserver.NewFrontDoor(options, logf)
+	door, err := configuredCodexFrontDoor(cfg, logf)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +222,7 @@ func resolveCodexFrontInstallation(configPath, label, plistPath string) (codexFr
 	if err != nil {
 		return codexFrontInstallation{}, err
 	}
-	door, err := configuredCodexFrontDoor(cfg)
+	door, err := configuredCodexFrontDoor(cfg, nil)
 	if err != nil {
 		return codexFrontInstallation{}, err
 	}

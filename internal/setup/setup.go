@@ -1,18 +1,14 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -26,23 +22,29 @@ const defaultAgentDPort = "8787"
 const defaultPairingURLTTL = 10 * time.Minute
 
 type Options struct {
-	ConfigPath         string
-	ScanRoot           string
-	BrowseRoot         string
-	Listen             string
-	AppServerSSHTarget string
-	Force              bool
+	ConfigPath                             string
+	ScanRoot                               string
+	BrowseRoot                             string
+	Listen                                 string
+	AppServerSSHTarget                     string
+	Force                                  bool
+	SaveOnly, CreateRoot, PendingWorkspace bool
+	// InstallerLAN applies verified ingress intent in the same publication as the workspace.
+	InstallerLAN             *bool
+	RequireExisting          bool
+	RuntimePaths, Assistants map[string]string
+	LegacyPath               string
 	// LocalServiceOnly 用于 up --no-pair：新建或沿用配置后都只返回本机就绪检查需要的
 	// Token 与 loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
 	LocalServiceOnly bool
 	// CodexBin overrides CLI discovery for embedding integrations and tests.
 	CodexBin string
-	// LocalAppServerPreflight is an integration seam for command-level tests.
-	// Production callers leave it nil and use the real control-socket handshake.
-	LocalAppServerPreflight func(context.Context, string, map[string]string) error
+	// ObserveAssistant supplies verified, read-only runtime observations for embedded callers.
+	ObserveAssistant func(context.Context, string, config.Config, string, PreflightHost) PreflightObservation
 }
 
 type Result struct {
+	Migrated            bool           `json:"-"`
 	Created             bool           `json:"created"`
 	ConfigPath          string         `json:"config_path"`
 	Endpoint            string         `json:"endpoint"`
@@ -64,231 +66,6 @@ func Run(ctx context.Context, options Options) (Result, error) {
 	return runWithFileOps(ctx, options, defaultSetupFileTransactionOps())
 }
 
-func runWithFileOps(ctx context.Context, options Options, fileOps setupFileTransactionOps) (Result, error) {
-	sharedLocalPreflight := localAppServerPreflight
-	if options.LocalAppServerPreflight != nil {
-		sharedLocalPreflight = options.LocalAppServerPreflight
-	}
-	cfgPath, err := resolveConfigPath(options.ConfigPath)
-	if err != nil {
-		return Result{}, err
-	}
-	configExisted, err := regularFileOrMissing(cfgPath, "配置文件")
-	if err != nil {
-		return Result{}, err
-	}
-	requestedSSHTarget := strings.TrimSpace(options.AppServerSSHTarget)
-	if requestedSSHTarget == "" {
-		requestedSSHTarget = strings.TrimSpace(os.Getenv("AGENTD_APP_SERVER_SSH_TARGET"))
-	}
-	if configExisted && !options.Force {
-		// 已有配置时默认只读取配对信息，避免误覆盖用户已经绑定到 iPad 的 token。
-		// 旧版 managed WS 配置必须先完成预检和原子迁移，不能让 Pair 继续把失效
-		// transport 当成当前配置。macOS 显式给出 SSH target 时保持 SSH；否则和
-		// Linux 一样迁移到共享本机 control socket。
-		if runtime.GOOS == "darwin" && requestedSSHTarget != "" {
-			if err := MigrateAppServerToSSH(ctx, cfgPath, requestedSSHTarget); err != nil {
-				return Result{}, err
-			}
-		} else if config.SupportsSharedLocalAppServer() {
-			if err := MigrateAppServerToSharedLocalWithPreflight(ctx, cfgPath, sharedLocalPreflight); err != nil {
-				return Result{}, err
-			}
-		}
-		result, err := setupResult(ctx, cfgPath, options.LocalServiceOnly)
-		if err != nil {
-			return Result{}, err
-		}
-		result.Created = false
-		return result, nil
-	}
-	var originalConfig []byte
-	if configExisted {
-		originalConfig, err = os.ReadFile(cfgPath)
-		if err != nil {
-			return Result{}, fmt.Errorf("读取原配置快照失败：%w", err)
-		}
-	}
-	useManagedLocalAppServer := setupUsesManagedLocalAppServer(requestedSSHTarget)
-	useSharedLocalAppServer := setupUsesSharedLocalAppServer(requestedSSHTarget)
-	codexBin := strings.TrimSpace(options.CodexBin)
-	if codexBin == "" {
-		codexBin = defaultCodexBin()
-	}
-	appServerConfig := config.DefaultManagedAppServerConfig()
-	if useSharedLocalAppServer {
-		appServerConfig = config.DefaultSharedLocalAppServerConfig()
-	}
-	appServerSSHTarget := ""
-	if runtime.GOOS == "windows" && strings.TrimSpace(options.AppServerSSHTarget) != "" {
-		if err := appserver.ValidateSSHTarget(options.AppServerSSHTarget); err != nil {
-			return Result{}, fmt.Errorf("app_server.ssh_target 无效：%w", err)
-		}
-	}
-	if !useManagedLocalAppServer && !useSharedLocalAppServer {
-		appServerSSHTarget, err = normalizeSetupAppServerSSHTarget(options.AppServerSSHTarget)
-		if err != nil {
-			return Result{}, err
-		}
-		sshTransport, transportErr := appserver.NewSSHTransport(appserver.SSHTransportOptions{Target: appServerSSHTarget})
-		if transportErr != nil {
-			return Result{}, fmt.Errorf("准备 SSH App Server 失败：%w", transportErr)
-		}
-		// macOS 与 Linux 显式远端模式必须先验证真实 SSH + initialize。
-		if err := sshPreflight(ctx, sshTransport); err != nil {
-			return Result{}, fmt.Errorf("SSH 预检失败，配置未修改：%w", err)
-		}
-		appServerConfig = config.AppServerConfig{
-			Transport: config.DefaultAppServerTransport(),
-			SSHTarget: appServerSSHTarget,
-			AutoTitle: true,
-			// 显式给出的 target（即使是 127.0.0.1）是用户选择，后台启动的自动迁移不得改回 local。
-			PinTransport: requestedSSHTarget != "",
-		}
-	} else if useSharedLocalAppServer {
-		codexEnv := map[string]string{"TERM": "xterm-256color"}
-		if err := sharedLocalPreflight(ctx, codexBin, codexEnv); err != nil {
-			return Result{}, fmt.Errorf("本机 App Server 预检失败，配置未修改：%w", err)
-		}
-	}
-
-	cfgDir := filepath.Dir(cfgPath)
-	cfgDirExisted := true
-	if info, statErr := os.Stat(cfgDir); statErr != nil {
-		if !os.IsNotExist(statErr) {
-			return Result{}, fmt.Errorf("读取配置目录状态失败：%w", statErr)
-		}
-		cfgDirExisted = false
-	} else if !info.IsDir() {
-		return Result{}, fmt.Errorf("配置目录路径不是目录：%s", cfgDir)
-	}
-	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
-		return Result{}, fmt.Errorf("创建配置目录失败：%w", err)
-	}
-	filesCommitted := false
-	defer func() {
-		if !cfgDirExisted && !filesCommitted {
-			// 首次安装失败时只删除本次新建且仍为空的末级目录；并发写入或残留文件会让 Remove 安全失败。
-			_ = os.Remove(cfgDir)
-		}
-	}()
-	token, err := randomHex(32)
-	if err != nil {
-		return Result{}, err
-	}
-	appServerToken := ""
-	appServerTokenFile := ""
-	if useManagedLocalAppServer {
-		appServerToken, err = randomHex(32)
-		if err != nil {
-			return Result{}, err
-		}
-		appServerTokenFile = filepath.Join(cfgDir, "app-server-ws-token")
-		appServerConfig.WSTokenFile = appServerTokenFile
-	}
-	scanRoot, err := defaultScanRoot(options.ScanRoot)
-	if err != nil {
-		return Result{}, err
-	}
-	browseRoot, err := defaultBrowseRoot(options.BrowseRoot)
-	if err != nil {
-		return Result{}, err
-	}
-	// 默认优先使用 Tailscale。Windows 需要安装器先建立受限防火墙规则才开放 LAN；
-	// 其他平台在缺少 Tailscale 时仍自动回退到局域网。
-	// 显式 --listen 仍完全尊重调用方，保留 loopback 模拟器/开发场景。
-	listen := strings.TrimSpace(options.Listen)
-	allowLAN := false
-	if listen == "" {
-		listen, allowLAN, err = defaultAgentDNetwork(ctx, defaultPairingNetworkLookups())
-		if err != nil {
-			return Result{}, err
-		}
-	} else {
-		host, _ := splitListen(listen)
-		ip := net.ParseIP(strings.Trim(host, "[]"))
-		allowLAN = ip != nil && (ip.IsUnspecified() || isPrivateLANIPv4(ip))
-	}
-	cfg := config.Config{
-		Listen:  listen,
-		Network: config.NetworkConfig{AllowLAN: allowLAN},
-		Auth: config.AuthConfig{
-			Token: token,
-		},
-		Runtime: config.RuntimeConfig{
-			Type: "codex_app_server",
-		},
-		AppServer: appServerConfig,
-		Codex: config.CodexConfig{
-			Bin:         codexBin,
-			DefaultArgs: []string{"--no-alt-screen"},
-			Env: map[string]string{
-				"TERM": "xterm-256color",
-			},
-		},
-		Claude:      config.DefaultClaudeConfig(),
-		Push:        pushConfigForSetup(originalConfig),
-		ScanRoots:   []string{scanRoot},
-		BrowseRoots: []string{browseRoot},
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return Result{}, fmt.Errorf("编码配置失败：%w", err)
-	}
-	validateOriginal := func() error {
-		return validateSetupConfigSnapshot(cfgPath, configExisted, originalConfig)
-	}
-	commitFiles := func() error {
-		// 配置备份、rename 与目录同步都在配置提交锁内完成。Claude、network
-		// 和 setup --force 因而不会在各自 CAS 与 rename 之间互相覆盖。
-		return withConfigCommitLock(ctx, cfgPath, func() error {
-			if err := validateOriginal(); err != nil {
-				return err
-			}
-			if useManagedLocalAppServer {
-				return writeSetupFilesAtomically(
-					cfgPath,
-					appServerTokenFile,
-					append(raw, '\n'),
-					[]byte(appServerToken+"\n"),
-					fileOps,
-				)
-			}
-			return writeConfigAtomically(cfgPath, append(raw, '\n'), fileOps)
-		})
-	}
-	if err := commitFiles(); err != nil {
-		return Result{}, fmt.Errorf("原子写入 setup 配置失败：%w", err)
-	}
-	filesCommitted = true
-
-	result, err := setupResult(ctx, cfgPath, options.LocalServiceOnly)
-	if err != nil {
-		return Result{}, err
-	}
-	result.Created = true
-	result.ScanRoot = scanRoot
-	result.BrowseRoot = browseRoot
-	result.AppServerSSHTarget = appServerSSHTarget
-	return result, nil
-}
-
-func pushConfigForSetup(original []byte) config.PushConfig {
-	defaults := config.DefaultPushConfig()
-	if len(original) == 0 {
-		return defaults
-	}
-	// --force 可以修复其他配置，但不能因此撤销用户已关闭通知或选择自建服务的意愿。
-	// 原文件无法解析时仍允许重建配置，保持 --force 的恢复用途。
-	document := struct {
-		Push config.PushConfig `json:"push"`
-	}{Push: defaults}
-	if json.Unmarshal(original, &document) != nil {
-		return defaults
-	}
-	return document.Push
-}
-
 func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
 	value := raw
 	if strings.TrimSpace(value) == "" {
@@ -303,50 +80,23 @@ func normalizeSetupAppServerSSHTarget(raw string) (string, error) {
 	return value, nil
 }
 
-func validateSetupConfigSnapshot(path string, expectedExists bool, expected []byte) error {
-	exists, err := regularFileOrMissing(path, "配置文件")
-	if err != nil {
-		return err
-	}
-	if exists != expectedExists {
-		return fmt.Errorf("配置已被其他进程修改，请重新执行")
-	}
-	if !exists {
-		return nil
-	}
-	current, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("重新读取配置失败：%w", err)
-	}
-	if !bytes.Equal(current, expected) {
-		return fmt.Errorf("配置已被其他进程修改，请重新执行")
-	}
-	return nil
-}
-
-func Pair(ctx context.Context, configPath string) (Result, error) {
-	return PairForNetwork(ctx, configPath, PairingNetworkAuto)
-}
-
-func PairForNetwork(ctx context.Context, configPath string, network PairingNetwork) (Result, error) {
-	cfgPath, err := resolveConfigPath(configPath)
-	if err != nil {
-		return Result{}, err
-	}
-	cfg, err := config.LoadForDoctor(cfgPath)
-	if err != nil {
-		return Result{}, err
-	}
-	return ResultFromConfigForNetwork(ctx, cfgPath, cfg, network)
-}
-
-func ResultFromConfig(ctx context.Context, configPath string, cfg config.Config) Result {
-	result, err := ResultFromConfigForNetwork(ctx, configPath, cfg, PairingNetworkAuto)
+// ResultFromConfig returns display metadata. Only the running daemon issues links.
+func ResultFromConfig(ctx context.Context, path string, cfg config.Config) Result {
+	candidate, err := DirectPairCandidate(ctx, path, cfg, PairingNetworkAuto)
 	if err == nil {
-		return result
+		return candidate
 	}
-	result = localServiceResult(configPath, cfg)
+	result := localServiceResult(path, cfg)
 	result.Warnings = []string{err.Error()}
+	return result
+}
+
+// StatusFromConfig selects the display endpoint without issuing a ticket.
+func StatusFromConfig(ctx context.Context, path string, cfg config.Config) Result {
+	result := localServiceResult(path, cfg)
+	if endpoint, warnings, err := pairingEndpoint(ctx, cfg, PairingNetworkAuto, defaultPairingNetworkLookups()); err == nil {
+		result.Endpoint, result.Warnings = endpoint, warnings
+	}
 	return result
 }
 
@@ -365,15 +115,6 @@ func LocalServiceAccess(configPath string) (Result, error) {
 	return localServiceResult(cfgPath, cfg), nil
 }
 
-// setupResult 是 setup 写完或沿用配置后的返回值。新建与已有配置都要遵守
-// LocalServiceOnly，否则首次安装时第二次网络探测失败仍会阻断本机可用的服务。
-func setupResult(ctx context.Context, configPath string, localServiceOnly bool) (Result, error) {
-	if localServiceOnly {
-		return LocalServiceAccess(configPath)
-	}
-	return Pair(ctx, configPath)
-}
-
 func localServiceResult(configPath string, cfg config.Config) Result {
 	_, port := splitListen(cfg.Listen)
 	if port == "" {
@@ -382,13 +123,10 @@ func localServiceResult(configPath string, cfg config.Config) Result {
 	return Result{ConfigPath: configPath, Endpoint: httpEndpoint("127.0.0.1", port), Token: cfg.Auth.Token}
 }
 
-func ResultFromConfigForNetwork(
-	ctx context.Context,
-	configPath string,
-	cfg config.Config,
-	network PairingNetwork,
-) (Result, error) {
-	return resultFromConfigForNetwork(ctx, configPath, cfg, network, defaultPairingNetworkLookups())
+// DirectPairCandidate resolves an address but does not issue credentials. The
+// daemon validates the selected address against its listeners and live policy.
+func DirectPairCandidate(ctx context.Context, path string, cfg config.Config, network PairingNetwork) (Result, error) {
+	return resultFromConfigForNetwork(ctx, path, cfg, network, defaultPairingNetworkLookups())
 }
 
 func resultFromConfigForNetwork(
@@ -399,7 +137,7 @@ func resultFromConfigForNetwork(
 	lookups pairingNetworkLookups,
 ) (Result, error) {
 	if !cfg.HasEnabledAgent() {
-		return Result{}, fmt.Errorf("全部 AI 编程助手已关闭，请先启用至少一个助手")
+		return Result{}, &PairingDiagnostic{"no_enabled_assistant", "assistant_any", "全部 AI 编程助手已关闭，请先启用至少一个助手"}
 	}
 	endpoint, warnings, err := pairingEndpoint(ctx, cfg, network, lookups)
 	if err != nil {
@@ -411,7 +149,7 @@ func resultFromConfigForNetwork(
 	}
 	token := strings.TrimSpace(cfg.Auth.Token)
 	if token == "" {
-		warnings = append(warnings, "配置中没有 auth.token，移动设备无法完成鉴权；请重新执行 agentd setup --force")
+		warnings = append(warnings, "配置中没有 auth.token，移动设备无法完成鉴权；请在本机检查保留的配置")
 	}
 	scanRoot := ""
 	if len(cfg.ScanRoots) > 0 {
@@ -421,8 +159,6 @@ func resultFromConfigForNetwork(
 	if len(cfg.BrowseRoots) > 0 {
 		browseRoot = cfg.BrowseRoots[0]
 	}
-	now := time.Now().UTC()
-	expiresAt := now.Add(defaultPairingURLTTL)
 	return Result{
 		ConfigPath:          configPath,
 		Endpoint:            endpoint,
@@ -430,15 +166,22 @@ func resultFromConfigForNetwork(
 		TailscaleDNSName:    host.DNSName,
 		TailscaleDeviceName: host.DeviceName,
 		Token:               token,
-		ConnectURL:          connectionURL("connect", endpoint, token, now, expiresAt),
-		PairURL:             pairingURL(endpoint, token, now, expiresAt),
-		PairIssuedAt:        now.Format(time.RFC3339),
-		PairExpiresAt:       expiresAt.Format(time.RFC3339),
 		ScanRoot:            scanRoot,
 		BrowseRoot:          browseRoot,
 		AppServerSSHTarget:  cfg.AppServer.SSHTarget,
 		Warnings:            warnings,
 	}, nil
+}
+
+// SignDirectPair is called after the listener owner verifies the route and gate.
+func (r Result) SignDirectPair() Result {
+	now := time.Now().UTC()
+	expiry := now.Add(defaultPairingURLTTL)
+	r.ConnectURL = connectionURL("connect", r.Endpoint, r.Token, now, expiry)
+	r.PairURL = pairingURL(r.Endpoint, r.Token, now, expiry)
+	r.PairIssuedAt = now.Format(time.RFC3339Nano)
+	r.PairExpiresAt = expiry.Format(time.RFC3339Nano)
+	return r
 }
 
 func connectionURL(route, endpoint, token string, issuedAt, expiresAt time.Time) string {
@@ -481,75 +224,6 @@ func resolveConfigPath(path string) (string, error) {
 		return "", fmt.Errorf("解析配置路径失败：%w", err)
 	}
 	return abs, nil
-}
-
-func defaultScanRoot(raw string) (string, error) {
-	if strings.TrimSpace(raw) != "" {
-		return filepath.Abs(raw)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	codeDir := filepath.Join(home, "code")
-	if stat, err := os.Stat(codeDir); err == nil && stat.IsDir() {
-		return codeDir, nil
-	}
-	cwd, err := os.Getwd()
-	if err == nil && strings.HasPrefix(cwd, home) {
-		// 没有 ~/code 时优先使用用户当前运行 setup 的目录，避免默认扫描整个 Home。
-		return cwd, nil
-	}
-	return home, nil
-}
-
-// defaultBrowseRoot 决定 iPad 目录浏览/打开 workspace 的授权根。和 scan root 分开：
-// scan root 控制项目发现 + gateway 项目 allowlist，browse root 只扩大“可打开的目录”，
-// 默认给整个用户 Home，这样 ~/finance 这类不在扫描根里的目录也能打开。
-func defaultBrowseRoot(raw string) (string, error) {
-	if strings.TrimSpace(raw) != "" {
-		return filepath.Abs(raw)
-	}
-	return os.UserHomeDir()
-}
-
-func defaultAgentDNetwork(
-	ctx context.Context,
-	lookups pairingNetworkLookups,
-) (listen string, allowLAN bool, err error) {
-	return defaultAgentDNetworkWithLANFallback(
-		ctx,
-		lookups,
-		automaticLANFallbackEnabled,
-	)
-}
-
-func defaultAgentDNetworkWithLANFallback(
-	ctx context.Context,
-	lookups pairingNetworkLookups,
-	allowAutomaticLAN bool,
-) (listen string, allowLAN bool, err error) {
-	if ip := strings.TrimSpace(lookups.tailscaleIP(ctx)); ip != "" {
-		return net.JoinHostPort(ip, defaultAgentDPort), false, nil
-	}
-	if !allowAutomaticLAN {
-		return net.JoinHostPort("127.0.0.1", defaultAgentDPort), false, nil
-	}
-	if ip := net.ParseIP(strings.TrimSpace(lookups.lanIP())); isPrivateLANIPv4(ip) {
-		// LAN IP 会随 DHCP/Wi-Fi 切换变化，因此监听通配地址并在生成配对码时动态选当前 LAN IP。
-		return net.JoinHostPort("0.0.0.0", defaultAgentDPort), true, nil
-	}
-	return "", false, fmt.Errorf(
-		"未检测到 Tailscale 或可用的局域网 IPv4；请先连接 Wi-Fi/以太网，或为本机开发显式传入 --listen 127.0.0.1:%s",
-		defaultAgentDPort,
-	)
-}
-
-func defaultCodexBin() string {
-	if path, err := ResolveCodexBin("codex"); err == nil {
-		return path
-	}
-	return "codex"
 }
 
 func endpointForListen(ctx context.Context, listen string) (string, []string) {
@@ -604,23 +278,7 @@ func isLoopbackHost(host string) bool {
 }
 
 func firstTailscaleIP(ctx context.Context) string {
-	bin, err := tailscaleinfo.FindCLI()
-	if err != nil {
-		return ""
-	}
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(runCtx, bin, "ip", "-4").Output()
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		ip := net.ParseIP(strings.TrimSpace(line))
-		if isTailscaleIPv4(ip) {
-			return ip.String()
-		}
-	}
-	return ""
+	return tailscaleinfo.FirstIPv4(ctx)
 }
 
 func randomHex(bytes int) (string, error) {

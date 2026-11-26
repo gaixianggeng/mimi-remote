@@ -163,15 +163,27 @@ struct ConnectionSettingsView: View {
         return model.current != nil || !model.others.isEmpty
     }
 
-    /// 首次连接根页在已开通 Mimi 中转或配对失败后提供回到工作台的出口，
-    /// 避免用户困在无 Tab 栏的引导页；真正全新首次启动仍保持无冗余返回键。
+    /// 无条件在首次连接导航栏暴露「稍后连接」的功能门控。
+    /// UI-7 无主机真实空态已就绪，允许未配对用户在首次连接页随时选择「稍后连接」进入工作台。
+    static let allowsUnconditionalInitialSetupConnectLater = true
+
+    /// 首次连接根页提供「稍后连接」回到工作台的出口；
+    /// 当调用方显式关闭 `allowsUnconditionalConnectLater` 时仅在已开通 Mimi 中转或配对失败后暴露。
     static func showsInitialSetupWorkbenchExit(
         isDevicesTab: Bool,
         hasSheetDismiss: Bool,
         hasActiveMimiEntitlement: Bool,
-        hasPairingError: Bool
+        hasPairingError: Bool,
+        hasEnterWorkbenchAction: Bool = true,
+        allowsUnconditionalConnectLater: Bool = allowsUnconditionalInitialSetupConnectLater
     ) -> Bool {
-        !isDevicesTab && !hasSheetDismiss && (hasActiveMimiEntitlement || hasPairingError)
+        guard !isDevicesTab, !hasSheetDismiss, hasEnterWorkbenchAction else {
+            return false
+        }
+        if allowsUnconditionalConnectLater {
+            return true
+        }
+        return hasActiveMimiEntitlement || hasPairingError
     }
 
     /// 一台电脑都没有时这一页是首次连接引导，Windows 用户也会看到，标题不写「Mac」（#554）。
@@ -221,18 +233,22 @@ private struct ConnectionSettingsExitToolbarModifier: ViewModifier {
                     .accessibilityLabel(L10n.text("ui.close_settings"))
                     .accessibilityIdentifier("settings.connection.close")
                 }
-            } else if !isDevicesTab,
-                      settingsSheetDismiss == nil,
-                      let enterWorkbenchFromInitialSetup,
+            } else if let enterWorkbenchFromInitialSetup,
                       ConnectionSettingsView.showsInitialSetupWorkbenchExit(
                           isDevicesTab: isDevicesTab,
-                          hasSheetDismiss: false,
+                          hasSheetDismiss: settingsSheetDismiss != nil,
                           hasActiveMimiEntitlement: managedConnectionEntitlementStore.hasActiveEntitlement,
-                          hasPairingError: draft.addComputerError != nil
+                          hasPairingError: draft.addComputerError != nil,
+                          hasEnterWorkbenchAction: true
                       ) {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(L10n.text("ui.connect_later")) {
+                    Button {
                         enterWorkbenchFromInitialSetup()
+                    } label: {
+                        Text(L10n.text("ui.connect_later"))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("settings.firstConnection.enterWorkbench")
                 }

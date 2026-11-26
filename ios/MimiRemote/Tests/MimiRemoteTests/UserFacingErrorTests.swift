@@ -379,6 +379,76 @@ final class UserFacingErrorTests: XCTestCase {
         XCTAssertEqual(presented.message, L10n.text("ui.error_run_failed"))
         XCTAssertEqual(presented.technicalDetail, noisy)
     }
+
+    func testPairingOnboarding401TicketsNeverBecomeSavedHostAuthenticationExpired() {
+        let expiredMapped = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"raw","fix":{"kind":"retry"}}}"#.utf8)
+        )
+        let expiredError = PairingOnboardingAPIError(
+            status: 401,
+            mapped: expiredMapped,
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: "Accept"
+        )
+        XCTAssertFalse(isCredentialInvalidatingError(expiredError))
+        let expiredPresented = UserFacingError(expiredError)
+        XCTAssertNotEqual(expiredPresented.category, .authenticationExpired)
+        XCTAssertEqual(expiredPresented.category, .rejected)
+        XCTAssertEqual(expiredPresented.message, expiredMapped.userFacingMessage)
+        XCTAssertNil(expiredPresented.technicalDetail)
+        XCTAssertFalse(expiredPresented.message.contains("{"))
+        XCTAssertFalse(expiredPresented.message.contains("10 分钟"))
+
+        // Clock skew surfaces localized Date & Time guidance text, NEVER App-Prefs:.
+        let clockMapped = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_clock_skew","step":"network_any","message":"raw","fix":{"kind":"open_settings","target":"date_time"}}}"#.utf8)
+        )
+        let clockError = PairingOnboardingAPIError(
+            status: 401,
+            mapped: clockMapped,
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: "Accept"
+        )
+        let clockPresented = UserFacingError(clockError)
+        XCTAssertEqual(clockPresented.category, .rejected)
+        XCTAssertEqual(clockPresented.message, PairingErrorMapper.dateTimeInstructions)
+        XCTAssertFalse(clockPresented.message.contains("App-Prefs:"))
+        XCTAssertNil(clockPresented.technicalDetail)
+
+        // 403 / 409 / 503 onboarding errors keep exact typed copy and never leak raw JSON.
+        let localForbidden = PairingOnboardingAPIError(
+            status: 403,
+            mapped: PairingErrorMapper.mapHTTPErrorEnvelope(
+                data: Data(#"{"ok":false,"error":{"code":"pair_local_forbidden","step":"service_daemon","message":"raw","fix":{"kind":"retry"}}}"#.utf8)
+            ),
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: "Accept"
+        )
+        XCTAssertEqual(UserFacingError(localForbidden).category, .permissionDenied)
+
+        let workspacePending = PairingOnboardingAPIError(
+            status: 409,
+            mapped: PairingErrorMapper.mapHTTPErrorEnvelope(
+                data: Data(#"{"ok":false,"error":{"code":"workspace_confirmation_required","step":"workspace_root","message":"raw","fix":{"kind":"choose_path","target":"workspace_root"}}}"#.utf8)
+            ),
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: "Accept"
+        )
+        let workspacePresented = UserFacingError(workspacePending)
+        XCTAssertEqual(workspacePresented.category, .rejected)
+        XCTAssertEqual(workspacePresented.message, L10n.text("ui.pairing_onboarding_desktop_workspace_guidance"))
+
+        let noAssistant = PairingOnboardingAPIError(
+            status: 503,
+            mapped: PairingErrorMapper.mapHTTPErrorEnvelope(
+                data: Data(#"{"ok":false,"error":{"code":"no_enabled_assistant","step":"assistant_any","message":"raw","fix":{"kind":"open_url","url":"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/quickstart.md"}}}"#.utf8)
+            ),
+            contentType: PairingErrorMapper.acceptMediaType,
+            varyHeader: "Accept"
+        )
+        XCTAssertEqual(UserFacingError(noAssistant).category, .described)
+        XCTAssertEqual(UserFacingError(noAssistant).message, L10n.text("ui.pairing_onboarding_no_enabled_assistant"))
+    }
 }
 
 /// `DecodingError` 需要一个 CodingKey 实例来构造。

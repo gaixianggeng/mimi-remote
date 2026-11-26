@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
@@ -63,6 +64,10 @@ func (r *Router) tailcatLocalAction(w http.ResponseWriter, req *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, r.decorateTailcatStatus(r.tailcat.Status(req.Context())))
 	case "pair":
+		if !auth.NewWithOptions(r.cfg.Auth.Token, false, auth.Options{}).ValidRequest(req) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		status, failure := r.pairTailcat(req.Context())
 		if failure != nil {
 			writeError(w, failure.status, failure.err.Error())

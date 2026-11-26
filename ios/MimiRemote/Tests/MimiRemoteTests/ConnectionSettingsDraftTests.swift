@@ -261,13 +261,26 @@ final class ConnectionSettingsDraftTests: XCTestCase {
     }
 
     func testInitialSetupWorkbenchExitVisibilityRules() {
-        // 真正全新首次启动（无中转权益、未配对失败）保持干净，不额外增加退出按钮。
-        XCTAssertFalse(
+        // UI-7 无主机空态已就绪，首次连接页工具栏无条件提供「稍后连接」。
+        XCTAssertTrue(ConnectionSettingsView.allowsUnconditionalInitialSetupConnectLater)
+
+        // 全新首次启动（无中转权益、未配对失败）即可通过导航栏「稍后连接」进入工作台空态。
+        XCTAssertTrue(
             ConnectionSettingsView.showsInitialSetupWorkbenchExit(
                 isDevicesTab: false,
                 hasSheetDismiss: false,
                 hasActiveMimiEntitlement: false,
                 hasPairingError: false
+            )
+        )
+        // 若显式关闭无条件门控，全新首次启动保持干净，仅在有中转权益或配对失败后显示。
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false,
+                allowsUnconditionalConnectLater: false
             )
         )
         // 已开通 Mimi 中转时，即使无电脑也提供回到工作台的出口。
@@ -288,6 +301,44 @@ final class ConnectionSettingsDraftTests: XCTestCase {
                 hasPairingError: true
             )
         )
+        // 没有进入工作台动作回调时，不显示退出按钮。
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: true,
+                hasPairingError: true,
+                hasEnterWorkbenchAction: false
+            )
+        )
+        // 开启 UI-7 门控后，全新首次启动即可显示「稍后连接」，但设备 Tab / 独立设置 Sheet 仍不重复显示。
+        XCTAssertTrue(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false,
+                allowsUnconditionalConnectLater: true
+            )
+        )
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: true,
+                hasSheetDismiss: false,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false,
+                allowsUnconditionalConnectLater: true
+            )
+        )
+        XCTAssertFalse(
+            ConnectionSettingsView.showsInitialSetupWorkbenchExit(
+                isDevicesTab: false,
+                hasSheetDismiss: true,
+                hasActiveMimiEntitlement: false,
+                hasPairingError: false,
+                allowsUnconditionalConnectLater: true
+            )
+        )
         // 设备 Tab 与独立设置 Sheet 已有 Tab 栏或「完成」按钮，不重复显示。
         XCTAssertFalse(
             ConnectionSettingsView.showsInitialSetupWorkbenchExit(
@@ -305,6 +356,24 @@ final class ConnectionSettingsDraftTests: XCTestCase {
                 hasPairingError: true
             )
         )
+    }
+
+    func testDraftClearsOnboardingErrorsWhenBeginningAddComputerOrReloadingConnection() {
+        let draft = ConnectionSettingsDraft()
+        let mapped = PairingErrorMapper.mapHTTPErrorEnvelope(
+            data: Data(#"{"ok":false,"error":{"code":"pair_ticket_expired","step":"network_any","message":"expired","fix":{"kind":"retry"}}}"#.utf8)
+        )
+        draft.addComputerOnboardingError = mapped
+        draft.localOnboardingError = mapped
+
+        draft.beginAddingComputer()
+        XCTAssertNil(draft.addComputerOnboardingError)
+        XCTAssertEqual(draft.localOnboardingError, mapped)
+
+        draft.addComputerOnboardingError = mapped
+        _ = draft.reloadIfConnectionChanged(profileID: "p1", endpoint: "http://100.64.0.10:8787", token: "tok")
+        XCTAssertNil(draft.addComputerOnboardingError)
+        XCTAssertNil(draft.localOnboardingError)
     }
 
     func testScannerPresentationKeepsCoverPresentedUntilDidDismiss() {

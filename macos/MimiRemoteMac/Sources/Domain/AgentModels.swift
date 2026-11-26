@@ -34,9 +34,16 @@ struct PairingInfo: Codable, Equatable, Sendable {
     let network: PairingNetwork
     let tailscaleDNSName: String?
     let tailscaleDeviceName: String?
-    let pairURL: String
+    let pairURL: String?
     let expiresAt: String
     let warnings: [String]
+
+    var hasTicket: Bool {
+        guard let pairURL = pairURL?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !pairURL.isEmpty
+    }
 
     enum CodingKeys: String, CodingKey {
         case endpoint
@@ -53,7 +60,7 @@ struct PairingInfo: Codable, Equatable, Sendable {
         network: PairingNetwork? = nil,
         tailscaleDNSName: String? = nil,
         tailscaleDeviceName: String? = nil,
-        pairURL: String,
+        pairURL: String?,
         expiresAt: String,
         warnings: [String]
     ) {
@@ -68,15 +75,18 @@ struct PairingInfo: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        endpoint = try container.decode(String.self, forKey: .endpoint)
+        let decodedEndpoint = try container.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+        endpoint = decodedEndpoint
         network = try container.decodeIfPresent(PairingNetwork.self, forKey: .network)
-            ?? PairingNetwork.inferred(from: endpoint)
+            ?? (decodedEndpoint.isEmpty ? .automatic : PairingNetwork.inferred(from: decodedEndpoint))
         tailscaleDNSName = try container.decodeIfPresent(String.self, forKey: .tailscaleDNSName)
         tailscaleDeviceName = try container.decodeIfPresent(String.self, forKey: .tailscaleDeviceName)
-        pairURL = try container.decode(String.self, forKey: .pairURL)
-        expiresAt = try container.decode(String.self, forKey: .expiresAt)
+        pairURL = try container.decodeIfPresent(String.self, forKey: .pairURL)
+        expiresAt = try container.decodeIfPresent(String.self, forKey: .expiresAt) ?? ""
         // agentd 会在没有警告时省略 warnings；客户端统一成空数组，简化视图状态。
-        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        warnings = OnboardingCopyCatalog.displayWarnings(
+            try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        )
     }
 }
 
@@ -90,6 +100,8 @@ struct TailcatStatus: Codable, Equatable, Sendable {
     /// 旧版 agentd 不返回 mode，按自建模式处理（#885、#896）。
     var mode: String? = nil
 
+    var restartRequired: Bool? = nil
+
     var isManagedMode: Bool { mode == "managed" }
 
     enum CodingKeys: String, CodingKey {
@@ -97,6 +109,7 @@ struct TailcatStatus: Codable, Equatable, Sendable {
         case running
         case version
         case derpMapURL = "derp_map_url"
+        case restartRequired = "restart_required"
         case pairedDeviceCount = "paired_device_count"
         case error
         case mode
@@ -594,6 +607,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let networkStatus: AgentNetworkStatus?
     let moduleStatus: AgentModuleStatus?
     let moduleStatusState: AgentModuleStatusState?
+    let workspaceConfirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case processOK = "process_ok"
@@ -612,6 +626,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case networkStatus = "network_status"
         case moduleStatus = "module_status"
         case moduleStatusState = "module_status_state"
+        case workspaceConfirmed = "workspace_confirmed"
     }
 
     init(
@@ -630,7 +645,8 @@ struct AgentStatus: Codable, Equatable, Sendable {
         runtimeStatus: AgentRuntimeStatusSnapshot? = nil,
         networkStatus: AgentNetworkStatus? = nil,
         moduleStatus: AgentModuleStatus? = nil,
-        moduleStatusState: AgentModuleStatusState? = nil
+        moduleStatusState: AgentModuleStatusState? = nil,
+        workspaceConfirmed: Bool? = nil
     ) {
         self.processOK = processOK
         self.serviceOK = serviceOK
@@ -648,6 +664,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.networkStatus = networkStatus
         self.moduleStatus = moduleStatus
         self.moduleStatusState = moduleStatusState
+        self.workspaceConfirmed = workspaceConfirmed
     }
 
     init(from decoder: Decoder) throws {
@@ -677,6 +694,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         networkStatus = try? container.decodeIfPresent(AgentNetworkStatus.self, forKey: .networkStatus)
         moduleStatus = try? container.decodeIfPresent(AgentModuleStatus.self, forKey: .moduleStatus)
         moduleStatusState = try? container.decodeIfPresent(AgentModuleStatusState.self, forKey: .moduleStatusState)
+        workspaceConfirmed = try? container.decodeIfPresent(Bool.self, forKey: .workspaceConfirmed)
     }
 
     var hasAgentVersionMismatch: Bool {

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
-	"github.com/gaixianggeng/mimi-remote/internal/doctor"
 )
 
 func TestAppServerReadinessProbeCachesFailureAndRecovers(t *testing.T) {
@@ -103,7 +101,7 @@ func TestAppServerReadinessProbeSingleFlight(t *testing.T) {
 	}
 }
 
-func TestReadyzReturns503WhenUpstreamPortIsNotListening(t *testing.T) {
+func TestReadyzStaysReadyWhenUpstreamPortIsNotListening(t *testing.T) {
 	var logs bytes.Buffer
 	previousLog := log.Writer()
 	log.SetOutput(&logs)
@@ -118,10 +116,12 @@ func TestReadyzReturns503WhenUpstreamPortIsNotListening(t *testing.T) {
 	server := newReadyzTestServer(t, upstreamURL, tokenFile)
 
 	ready := requestReadyz(t, server.handler)
-	if ready.Code != http.StatusServiceUnavailable {
-		t.Fatalf("upstream 未监听时 readyz 必须返回 503：code=%d body=%s", ready.Code, ready.Body.String())
+	if ready.Code != http.StatusOK {
+		t.Fatalf("upstream 未监听时核心服务仍应就绪：code=%d body=%s", ready.Code, ready.Body.String())
 	}
-	assertReadyzUpstreamCheck(t, ready, false)
+	if check := server.router.appServerUpstreamReadinessCheck(context.Background()); check.OK {
+		t.Fatal("offline upstream reported ready")
+	}
 	for _, secret := range []string{tokenMarker, tokenFile, upstreamURL, "sensitive-upstream-path"} {
 		if strings.Contains(ready.Body.String(), secret) || strings.Contains(logs.String(), secret) {
 			t.Fatalf("readyz 响应和日志不得泄露 upstream 敏感信息 %q：body=%s logs=%s", secret, ready.Body.String(), logs.String())
@@ -144,7 +144,12 @@ func TestReadyzSharedSSHDoesNotRequireIndependentWSToken(t *testing.T) {
 	if ready.Code != http.StatusOK {
 		t.Fatalf("共享 SSH 不应要求旧 WebSocket token：code=%d body=%s", ready.Code, ready.Body.String())
 	}
-	assertReadyzUpstreamCheck(t, ready, true)
+	if connections.Load() != 0 {
+		t.Fatal("passive readyz opened an SSH connection")
+	}
+	if check := server.router.appServerUpstreamReadinessCheck(context.Background()); !check.OK {
+		t.Fatal(check)
+	}
 	if connections.Load() != 1 {
 		t.Fatalf("readyz 应发起一次 proxy 握手：connections=%d", connections.Load())
 	}
@@ -166,10 +171,15 @@ func TestReadyzAuthenticationFailureCacheAndRecovery(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(previousLog) })
 
 	failed := requestReadyz(t, server.handler)
-	if failed.Code != http.StatusServiceUnavailable {
-		t.Fatalf("upstream token 错误时 readyz 必须返回 503：code=%d body=%s", failed.Code, failed.Body.String())
+	if failed.Code != http.StatusOK {
+		t.Fatalf("upstream token 错误时核心服务仍应就绪：code=%d body=%s", failed.Code, failed.Body.String())
 	}
-	assertReadyzUpstreamCheck(t, failed, false)
+	if connections.Load() != 0 {
+		t.Fatal("passive readyz dialed upstream")
+	}
+	if check := server.router.appServerUpstreamReadinessCheck(context.Background()); check.OK {
+		t.Fatal("authentication failure hidden")
+	}
 	if connections.Load() != 1 {
 		t.Fatalf("鉴权失败应发生一次真实握手：connections=%d", connections.Load())
 	}
@@ -180,7 +190,8 @@ func TestReadyzAuthenticationFailureCacheAndRecovery(t *testing.T) {
 	}
 
 	cached := requestReadyz(t, server.handler)
-	if cached.Code != http.StatusServiceUnavailable || connections.Load() != 1 {
+	check := server.router.appServerUpstreamReadinessCheck(context.Background())
+	if cached.Code != http.StatusOK || check.OK || connections.Load() != 1 {
 		t.Fatalf("失败结果 TTL 内不得重复昂贵握手：code=%d connections=%d", cached.Code, connections.Load())
 	}
 }
@@ -221,19 +232,28 @@ func requestReadyz(t *testing.T, handler http.Handler) *httptest.ResponseRecorde
 	return recorder
 }
 
-func assertReadyzUpstreamCheck(t *testing.T, recorder *httptest.ResponseRecorder, wantOK bool) {
-	t.Helper()
-	var results doctor.Results
-	if err := json.Unmarshal(recorder.Body.Bytes(), &results); err != nil {
-		t.Fatalf("readyz 响应不是 doctor.Results：%v body=%s", err, recorder.Body.String())
-	}
-	for _, check := range results.Checks {
-		if check.Name == "app-server-upstream" {
-			if check.OK != wantOK {
-				t.Fatalf("upstream readiness 状态异常：got=%+v want_ok=%v", check, wantOK)
-			}
-			return
+func TestReadyzNeedsBearerEvenWithDevelopmentAuthOverrides(t *testing.T) {
+	server := newTestServerWithConfig(t, func(cfg *config.Config) {
+		cfg.DevInsecure, cfg.Auth.AllowQueryToken = true, true
+		cfg.AppServer = config.AppServerConfig{Transport: "ssh", SSHTarget: "fixture.invalid"}
+	})
+	for _, tc := range []struct {
+		url, token string
+		code       int
+	}{
+		{"/api/readyz", "", http.StatusUnauthorized},
+		{"/api/readyz?token=" + testToken, "", http.StatusUnauthorized},
+		{"/api/readyz", "wrong", http.StatusUnauthorized},
+		{"/api/readyz", testToken, http.StatusOK},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		if tc.token != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+		}
+		rec := httptest.NewRecorder()
+		server.handler.ServeHTTP(rec, req)
+		if rec.Code != tc.code {
+			t.Fatalf("status %d, want %d", rec.Code, tc.code)
 		}
 	}
-	t.Fatalf("readyz 缺少 app-server-upstream 动态检查：%+v", results.Checks)
 }

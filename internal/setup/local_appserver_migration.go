@@ -1,9 +1,9 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -14,7 +14,7 @@ import (
 )
 
 // resolveMigrationCodexBin 是迁移使用的 Codex 路径解析器，与 doctor 修复相同；测试可替换。
-var resolveMigrationCodexBin = ResolveCodexBin
+var resolveMigrationCodexBin codexBinResolver
 
 // MigrateAppServerToSharedLocal replaces the former managed WebSocket upstream
 // with Codex's standard control socket. On macOS it also rewrites the loopback
@@ -35,17 +35,10 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	if err != nil {
 		return err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("读取配置文件状态失败：%w", err)
+	original, err := readPrivateConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-	original, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -91,7 +84,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 		return fmt.Errorf("旧 app_server.transport=%q 不能自动迁移：%w", transportName, config.AppServerTransportError(transportName))
 	}
 	if managed, ok := rawBool(appServer["managed"]); ok && !managed {
-		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请执行 agentd setup --force")
+		return fmt.Errorf("旧 app_server.managed=false 不能自动迁移；请保留原配置并检查连接设置")
 	}
 
 	var runtimeConfig struct {
@@ -103,7 +96,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	// 老安装的 codex.bin 可能已失效（桌面 App 移动或卸载），而 start/serve 的路径修复排在
 	// 迁移之后。这里复用 doctor 修复同一个解析与写回逻辑：用回退解析出的路径做预检，
 	// 修好的 codex.bin 和新 transport 进入同一次原子提交，不留"transport 已改、路径还坏"的中间态。
-	codexBin, _, err := applyResolvedCodexBin(document, resolveMigrationCodexBin)
+	codexBin, _, err := applyResolvedCodexBin(ctx, document, CodexRuntime(runtimeConfig.Codex, "local"), resolveMigrationCodexBin)
 	if err != nil {
 		return fmt.Errorf("共享本机 App Server 预检失败，原配置未修改：%w", err)
 	}
@@ -133,14 +126,7 @@ func MigrateAppServerToSharedLocalWithPreflight(
 	updated = append(updated, '\n')
 
 	return withConfigCommitLock(ctx, path, func() error {
-		current, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("重新读取配置失败：%w", err)
-		}
-		if !bytes.Equal(current, original) {
-			return fmt.Errorf("配置已被其他进程修改，请重新执行")
-		}
-		if err := writePrivateFileAtomically(path, updated); err != nil {
+		if err := writePrivateFileAtomically(path, original, updated); err != nil {
 			return fmt.Errorf("原子迁移 app-server 配置失败：%w", err)
 		}
 		return nil

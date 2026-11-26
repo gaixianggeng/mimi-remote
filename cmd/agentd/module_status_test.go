@@ -33,7 +33,7 @@ func TestFetchModuleStatusDistinguishesAvailableUnsupportedAndUnavailable(t *tes
 			}))
 			defer server.Close()
 
-			status, state := fetchModuleStatusForCommand(server.URL, "test-token")
+			status, state := fetchModuleStatusForCommand(server.URL, "test-token", "")
 			if state != testCase.wantState || (status != nil) != testCase.wantStatus {
 				t.Fatalf("status=%+v state=%q", status, state)
 			}

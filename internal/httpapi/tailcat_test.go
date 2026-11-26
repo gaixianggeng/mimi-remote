@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 type fakeTailcatSidecar struct {
@@ -53,6 +54,7 @@ type fakeManagedPairingService struct {
 	onConfigureMode  func(managed bool)
 	relayCalls       int
 	onConfigureRelay func(context.Context, string) (tailcatStatus, error)
+	afterComplete    func()
 }
 
 func (f *fakeManagedPairingService) Start() {}
@@ -76,6 +78,9 @@ func (f *fakeManagedPairingService) Complete(
 	f.sessionID = sessionID
 	f.grant = grant
 	f.mobileKey = mobileKey
+	if f.afterComplete != nil {
+		f.afterComplete()
+	}
 	return f.status, f.operationErr
 }
 
@@ -171,7 +176,7 @@ func TestTailcatLocalStatusRequiresLoopbackAndLocalToken(t *testing.T) {
 }
 
 func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true,
 		Running: true,
@@ -185,7 +190,7 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 		IssuedAt:         ticket.IssuedAt,
 		ExpiresAt:        ticket.ExpiresAt,
 		Signature:        ticket.Signature,
-		TailcatClientKey: "nodekey:client-public-key",
+		TailcatClientKey: testManagedMobileKey,
 	}
 	response := performPairingClaim(t, server.handler, payload)
 	if response.Code != http.StatusOK {
@@ -214,8 +219,8 @@ func TestTailcatPairingClaimAuthorizesClientAndReturnsStableAddress(t *testing.T
 }
 
 func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *testing.T) {
-	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
+	server := newPairingTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Enabled: true, Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{status: tailcatStatus{
 		Enabled: true, Running: true, Address: "tailcat-managed-address",
 	}}
@@ -244,11 +249,23 @@ func TestManagedTailcatClaimCompletesCloudPairingWithoutFreeAllowlistWrite(t *te
 	if fakeTailcat.allowCalls != 0 {
 		t.Fatal("托管配对不能写入永久免费的 clients.json 白名单")
 	}
+
+	fakeManaged.afterComplete = func() {
+		expirePairingAssistantEvidence(server.router)
+		server.router.pairingStatus.probe = func(context.Context) runtimeStatusResponse {
+			now := time.Now()
+			return runtimeStatusResponse{CheckedAt: &now}
+		}
+	}
+	response = performPairingClaim(t, server.handler, payload)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), testToken) || fakeManaged.completeCall != 2 {
+		t.Fatal("released a credential after assistant eligibility expired during authorization")
+	}
 }
 
 func TestManagedTailcatClaimRejectsPartialGrantBeforeAnyAllowlistWrite(t *testing.T) {
-	server := newTestServer(t)
-	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: "managed"}}
+	server := newPairingTestServer(t)
+	fakeTailcat := &fakeTailcatSidecar{status: tailcatStatus{Enabled: true, Running: true, Mode: "managed"}}
 	fakeManaged := &fakeManagedPairingService{}
 	server.router.tailcat = fakeTailcat
 	server.router.managedPairing = fakeManaged
@@ -381,9 +398,7 @@ func TestTailcatLocalConfigureFailureImmediatelyReappliesManagedPolicy(t *testin
 func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 	stateDir := t.TempDir()
 	for _, name := range []string{"host.private.json", "host.address", "clients.json"} {
-		if err := os.WriteFile(filepath.Join(stateDir, name), []byte("original-"+name), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		configtest.WritePrivateFile(t, filepath.Join(stateDir, name), []byte("original-"+name))
 	}
 	snapshot, err := snapshotTailcatIdentityState(stateDir)
 	if err != nil {
@@ -392,9 +407,7 @@ func TestTailcatIdentitySnapshotRestoresPrivateState(t *testing.T) {
 	if err := clearTailcatIdentityState(stateDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(stateDir, "host.address"), []byte("replacement"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, filepath.Join(stateDir, "host.address"), []byte("replacement"))
 	if err := restoreTailcatIdentityState(stateDir, snapshot); err != nil {
 		t.Fatal(err)
 	}

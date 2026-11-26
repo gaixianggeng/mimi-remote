@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func main() {
@@ -31,7 +33,7 @@ func main() {
 	identity, err := os.ReadFile(identityPath)
 	if os.IsNotExist(err) {
 		identity = []byte(newKey())
-		must(os.WriteFile(identityPath, identity, 0o600))
+		must(config.WritePrivateFile(identityPath, identity))
 	} else {
 		must(err)
 	}
@@ -45,7 +47,7 @@ func main() {
 		select {}
 	}
 	address := "tailcat:test?relay=" + url.QueryEscape(*relay)
-	must(os.WriteFile(filepath.Join(*stateDir, "host.address"), []byte(address), 0o600))
+	must(config.WritePrivateFile(filepath.Join(*stateDir, "host.address"), []byte(address)))
 	var clients []string
 	if raw, err := os.ReadFile(filepath.Join(*stateDir, "clients.json")); err == nil {
 		must(json.Unmarshal(raw, &clients))
@@ -64,7 +66,7 @@ func main() {
 		freeIdentity, err := os.ReadFile(freeIdentityPath)
 		if os.IsNotExist(err) {
 			freeIdentity = []byte(newKey())
-			must(os.WriteFile(freeIdentityPath, freeIdentity, 0o600))
+			must(config.WritePrivateFile(freeIdentityPath, freeIdentity))
 		} else {
 			must(err)
 		}
@@ -96,7 +98,7 @@ func main() {
 			clients = append(clients, body.PublicKey)
 			encoded, err := json.Marshal(clients)
 			must(err)
-			must(os.WriteFile(filepath.Join(*stateDir, "clients.json"), encoded, 0o600))
+			must(config.WritePrivateFile(filepath.Join(*stateDir, "clients.json"), encoded))
 			status["paired_device_count"] = len(clients)
 		case "/shutdown":
 			time.AfterFunc(10*time.Millisecond, func() { os.Exit(0) })

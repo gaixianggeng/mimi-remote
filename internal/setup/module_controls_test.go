@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func moduleTestConfig(t *testing.T) string {
@@ -19,19 +21,29 @@ func moduleTestConfig(t *testing.T) string {
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatal(err)
 	}
+	document["codex"].(map[string]any)["bin"] = filepath.Join(t.TempDir(), "missing-codex")
 	document["projects"] = []config.ProjectConfig{{ID: "module-test", Name: "Module test", Path: t.TempDir()}}
 	if runtime.GOOS == "windows" {
 		appServer := config.DefaultManagedAppServerConfig()
-		appServer.WSTokenFile = filepath.Join(t.TempDir(), "app-server-token")
+
+		token, err := config.CreatePrivateTemp(t.TempDir(), "app-server-token")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := token.WriteString("synthetic-test-companion"); err != nil {
+			t.Fatal(err)
+		}
+		if err := token.Close(); err != nil {
+			t.Fatal(err)
+		}
+		appServer.WSTokenFile = token.Name()
 		document["app_server"] = appServer
 	}
 	raw, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, raw)
 	return path
 }
 func moduleConfig(t *testing.T, path string) config.Config {
@@ -196,5 +208,28 @@ func TestModulePairingHonorsDisabledRoutesAndAllDisabledAgents(t *testing.T) {
 	status := ResultFromConfig(context.Background(), "config.json", cfg)
 	if status.Token != cfg.Auth.Token || status.PairURL != "" || status.Endpoint != "http://127.0.0.1:8787" {
 		t.Fatalf("status metadata lost with all off: %+v", status)
+	}
+}
+
+func TestModuleFixtureIgnoresInheritedRuntimeBinaries(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\nprintf 'called' > \"$0.called\"\ncase \"$1\" in\n--version) echo 'codex-cli 0.155.0';;\n*) echo '--listen --ws-auth --ws-token-file';;\nesac\n"
+	if runtime.GOOS == "windows" {
+		bin += ".cmd"
+		script = "@echo off\r\necho called > \"%~f0.called\"\r\nif \"%~1\"==\"--version\" (echo codex-cli 0.155.0) else (echo --listen --ws-auth --ws-token-file)\r\n"
+	}
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Run the existing missing-binary case in a fresh test process so its
+	// TestMain receives a valid, executable inherited override.
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCodexDisableWithoutBinaryPreservesOtherModulesAndAutoDoesNotReenable$")
+	cmd.Env = append(os.Environ(), "AGENTD_CODEX_BIN="+bin, "CLAUDE_BRIDGE_CLAUDE_BIN="+bin, "AGY_ADAPTER_AGY_BIN="+bin)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("inherited overrides changed module fixture: %s (%v)", out, err)
+	}
+	if _, err := os.Stat(bin + ".called"); !os.IsNotExist(err) {
+		t.Fatalf("module fixture reached inherited executable: %v", err)
 	}
 }

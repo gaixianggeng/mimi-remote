@@ -3,48 +3,70 @@ package setup
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 type configWriter func(path string, raw []byte) error
-type renameFile func(oldPath string, newPath string) error
 
 type privateFileStageOps struct {
 	write func(file *os.File, raw []byte) (int, error)
 	sync  func(file *os.File) error
 }
 
-func writePrivateFileAtomically(path string, raw []byte) error {
-	return writePrivateFileAtomicallyWithRename(path, raw, os.Rename)
+// Read the owned config and check any existing referenced credentials before
+// initiating a write, including a no-op save or a legacy transport migration.
+func readPrivateConfig(path string) ([]byte, error) {
+	if _, err := config.CheckCompanionPermissions(path); err != nil {
+		return nil, saveFailure(config.PrivateFileDiagnostic(err), err)
+	}
+	raw, err := config.ReadPrivatePreflightFile(path, 4<<20)
+	if err == nil {
+		_, err = config.CheckCredentialPermissions(raw)
+	}
+	if err != nil && config.PrivateFileDiagnostic(err) == "config_permissions_unsafe" {
+		return nil, saveFailure("config_permissions_unsafe", err)
+	}
+	return raw, err
 }
 
 func writePrivateFileAtomicallyCAS(path string, expected []byte, raw []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return withConfigCommitLock(ctx, path, func() error {
-		current, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("重新读取配置失败：%w", err)
-		}
-		if !bytes.Equal(current, expected) {
-			return fmt.Errorf("配置已被其他进程修改，请重新执行")
-		}
-		return writePrivateFileAtomically(path, raw)
+		return writePrivateFileAtomically(path, expected, raw)
 	})
 }
 
-func writePrivateFileAtomicallyWithRename(path string, raw []byte, rename renameFile) error {
+func writePrivateFileAtomically(path string, expected, raw []byte) error {
+	checkOriginal := func() error {
+		current, err := readPrivateConfig(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, expected) {
+			return saveFailure("config_concurrent_change", errors.New("配置已被其他进程修改，请重新执行"))
+		}
+		return nil
+	}
+	if err := checkOriginal(); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	tempPath, err := stagePrivateFile(dir, ".config.json.tmp-", raw)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tempPath)
-	if err := rename(tempPath, path); err != nil {
+	if err := checkOriginal(); err != nil {
+		return err
+	}
+	if err := renamePrivateFile(tempPath, path, renameSetupFile); err != nil {
 		return err
 	}
 
@@ -68,7 +90,7 @@ func stagePrivateFile(dir string, pattern string, raw []byte) (string, error) {
 }
 
 func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops privateFileStageOps) (string, error) {
-	file, err := os.CreateTemp(dir, pattern)
+	file, err := config.CreatePrivateTemp(dir, pattern)
 	if err != nil {
 		return "", err
 	}
@@ -81,9 +103,6 @@ func stagePrivateFileWithOps(dir string, pattern string, raw []byte, ops private
 		}
 	}()
 
-	if err := makePrivateFile(file); err != nil {
-		return "", err
-	}
 	written, err := ops.write(file, raw)
 	if err != nil {
 		return "", err

@@ -1,0 +1,143 @@
+{
+  "schema": "mimi.onboarding.preflight/v1",
+  "ok": true,
+  "stage": "pair",
+  "configured": true,
+  "workspace_confirmed": true,
+  "config_path": "/fixture/config/config.json",
+  "scan_root": "/fixture/workspace",
+  "browse_root": "/fixture/workspace",
+  "scan_root_exists": true,
+  "recommended_next": "network_any",
+  "recommended_transport": "tailscale",
+  "checks": [
+    {
+      "id": "config_store",
+      "group": "workspace",
+      "state": "ok",
+      "title": "配置文件",
+      "detail": "配置文件可安全读写。",
+      "blocking": false
+    },
+    {
+      "id": "workspace_root",
+      "group": "workspace",
+      "state": "ok",
+      "title": "代码目录",
+      "detail": "所选目录可读取。",
+      "blocking": false
+    },
+    {
+      "id": "service_daemon",
+      "group": "service",
+      "state": "ok",
+      "title": "后台服务",
+      "detail": "后台服务已通过就绪检查。",
+      "blocking": false
+    },
+    {
+      "id": "assistant_codex",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Codex 助手",
+      "detail": "未找到 Codex。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/codex", "outcome": "missing"}
+      ],
+      "code": "codex_not_found",
+      "fix": {"kind": "open_url", "url": "https://learn.chatgpt.com/docs/codex/cli"}
+    },
+    {
+      "id": "assistant_claude",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Claude Code 助手",
+      "detail": "未找到 Claude Code。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/claude", "outcome": "missing"}
+      ],
+      "code": "claude_not_found",
+      "fix": {"kind": "open_url", "url": "https://code.claude.com/docs/en/quickstart"}
+    },
+    {
+      "id": "assistant_agy",
+      "group": "assistant",
+      "state": "optional",
+      "title": "Antigravity 助手",
+      "detail": "未找到 Antigravity。请打开安装说明，安装完成后重新检查。",
+      "blocking": false,
+      "enabled": false,
+      "available": false,
+      "source": "auto",
+      "candidates": [
+        {"path": "/fixture/bin/agy", "outcome": "missing"}
+      ],
+      "code": "agy_not_found",
+      "fix": {"kind": "open_url", "url": "https://antigravity.google/"}
+    },
+    {
+      "id": "assistant_deepseek",
+      "group": "assistant",
+      "state": "ok",
+      "title": "DeepSeek 助手",
+      "detail": "DeepSeek 已连接且存在可用模型。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "assistant_any",
+      "group": "assistant",
+      "state": "ok",
+      "title": "可用助手",
+      "detail": "至少有一个已启用的助手可用。",
+      "blocking": false
+    },
+    {
+      "id": "network_tailscale",
+      "group": "network",
+      "state": "ok",
+      "title": "Tailscale 连接",
+      "detail": "Tailscale 已连接。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_tailcat",
+      "group": "network",
+      "state": "ok",
+      "title": "内置连接",
+      "detail": "内置连接可用。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_lan",
+      "group": "network",
+      "state": "ok",
+      "title": "同一局域网",
+      "detail": "已连接可信的专用局域网。",
+      "blocking": false,
+      "enabled": true,
+      "available": true
+    },
+    {
+      "id": "network_any",
+      "group": "network",
+      "state": "ok",
+      "title": "手机连接方式",
+      "detail": "至少有一种已启用的连接方式可用。",
+      "blocking": false
+    }
+  ]
+}

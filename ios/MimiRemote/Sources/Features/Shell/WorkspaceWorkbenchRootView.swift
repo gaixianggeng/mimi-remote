@@ -77,6 +77,7 @@ struct WorkspaceWorkbenchRootView: View {
 
     let usesCompactNavigation: Bool
     let isPhone: Bool
+    var bottomContentMargin: CGFloat? = nil
     let onManageConnections: () -> Void
     let onOpenSession: (AgentSession) -> Void
     @Binding var selectedRuntime: WorkspaceSessionRuntimeChoice
@@ -88,11 +89,13 @@ struct WorkspaceWorkbenchRootView: View {
             onStartSession: startSession,
             onOpenSession: onOpenSession,
             manageConnections: manageConnections,
+            onConnectComputer: onManageConnections,
             embedsNavigationStack: WorkspaceRootView.shouldEmbedNavigationStack(
                 usesCompactNavigation: usesCompactNavigation
             ),
             appearanceStore: workspaceAppearanceStore,
             initialWorkspaceID: browseSelection.workspaceID,
+            bottomContentMargin: bottomContentMargin,
             onWorkspaceSelectionChange: {
                 browseSelection.record($0)
                 prioritizeSessionLibrary(workspaceID: $0)

@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "network": "tailscale",
+  "endpoint": "https://host.example.invalid:8787",
+  "pair_url": "mimiremote://pair?endpoint=https%3A%2F%2Fhost.example.invalid%3A8787&issued_at=2030-01-01T00%3A00%3A00Z&expires_at=2030-01-01T00%3A05%3A00Z&pair_sig=fixture-signature",
+  "pair_expires_at": "2030-01-01T00:05:00Z"
+}

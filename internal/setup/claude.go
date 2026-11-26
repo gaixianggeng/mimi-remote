@@ -7,16 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 	"github.com/gaixianggeng/mimi-remote/internal/claudeenv"
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
@@ -109,15 +107,7 @@ func ConfigureClaude(
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -214,15 +204,11 @@ func ConfigureClaude(
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
-	targetClaudeBin := currentClaudeBin
-	if targetEnabled && preflight.ClaudeBin != "" {
-		targetClaudeBin = preflight.ClaudeBin
-	}
 	if err := encodeClaudeDocument(
 		claudeDocument,
 		targetEnabled,
 		targetPreference,
-		targetClaudeBin,
+		currentClaudeBin,
 	); err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
@@ -252,7 +238,7 @@ func ConfigureClaude(
 	result.Preference = targetPreference
 	result.Applied = appliedState
 	result.Changed = changed
-	result.RestartRequired = currentEnabled != targetEnabled || currentClaudeBin != targetClaudeBin
+	result.RestartRequired = currentEnabled != targetEnabled
 	result.ClaudeBin = preflight.ClaudeBin
 	result.ClaudeVersion = preflight.ClaudeVersion
 	result.LoggedIn = preflight.LoggedIn
@@ -277,14 +263,7 @@ func RestoreClaude(configPath string, previous ClaudeConfigurationResult) (Claud
 	if err != nil {
 		return ClaudeConfigurationResult{}, err
 	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return ClaudeConfigurationResult{}, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return ClaudeConfigurationResult{}, fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -549,13 +528,8 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		return baseResult
 	}
 	bridgeCtx, cancelBridge := context.WithTimeout(ctx, 2*time.Second)
-	bridgeCommand := exec.CommandContext(
-		bridgeCtx,
-		bridge,
-		append(append([]string{}, cfg.Claude.Args...), "--version")...,
-	)
-	bridgeCommand.Env = commandEnvironment
-	bridgeVersionOutput, bridgeErr := bridgeCommand.Output()
+	bridgeVersionOutput, bridgeErr := cliinspect.Stdout(bridgeCtx, bridge, commandEnvironment,
+		append(append([]string{}, cfg.Claude.Args...), "--version")...)
 	cancelBridge()
 	bridgeVersion, parsed := claudebridge.ParseVersion(string(bridgeVersionOutput))
 	if bridgeErr != nil || !parsed {
@@ -580,27 +554,27 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		adapter = &capabilities
 	}
 
-	configuredClaudeBin := strings.TrimSpace(cfg.Claude.Env[claudeBinaryEnvKey])
-	claude, err := resolveClaudeBin(ctx, configuredClaudeBin, commandEnvironment)
+	minimum := ""
+	if adapter != nil {
+		minimum = adapter.ClaudeCode.MinimumVersion
+	}
+	claude, err := ResolveRuntime(ctx, ClaudeRuntime(cfg.Claude, minimum, commandEnvironment))
+	baseResult.ClaudeBin, baseResult.ClaudeVersion = claude.Path, claude.Version
 	if err != nil {
-		baseResult.Reason = "claude_missing"
-		baseResult.Message = "未检测到 Claude Code。安装并登录后，重新打开 Mimi Remote 即可自动启用。"
+		switch {
+		case errors.Is(err, ErrRuntimeIncompatible):
+			baseResult.Reason = "claude_unsupported"
+			baseResult.Message = claudebridge.ClaudeCodeUpgradeMessage(claude.Version, minimum)
+		case errors.Is(err, ErrRuntimeVersion):
+			baseResult.Reason = "claude_version_unknown"
+			baseResult.Message = "检测到 Claude Code，但无法确认版本。请重新安装或升级 Claude Code。"
+		default:
+			baseResult.Reason = "claude_missing"
+			baseResult.Message = "未检测到 Claude Code。请检查配置的路径或安装 Claude Code。"
+		}
 		return baseResult
 	}
-	claudeBin := claude.path
-	baseResult.ClaudeBin = claudeBin
-	if claude.version == "" {
-		baseResult.Reason = "claude_version_unknown"
-		baseResult.Message = "检测到 Claude Code，但无法确认版本。请重新安装或升级 Claude Code。"
-		return baseResult
-	}
-	claudeVersion := claude.version
-	baseResult.ClaudeVersion = claudeVersion
-	if adapter != nil && !adapter.ClaudeCodeSupported(claudeVersion) {
-		baseResult.Reason = "claude_unsupported"
-		baseResult.Message = claudebridge.ClaudeCodeUpgradeMessage(claudeVersion, adapter.ClaudeCode.MinimumVersion)
-		return baseResult
-	}
+	claudeBin, claudeVersion := claude.Path, claude.Version
 	loggedIn, authErr := probeClaudeAuthStatus(ctx, claudeBin, commandEnvironment, 5*time.Second)
 	baseResult.LoggedIn = loggedIn
 	if authErr != nil {
@@ -620,116 +594,6 @@ func preflightClaude(ctx context.Context, cfg config.Config) claudePreflightResu
 		baseResult.Message += " Windows 用户代理已启用，但 Claude 进程未配置受支持的 HTTP(S) 代理；请设置 HTTPS_PROXY/HTTP_PROXY 或 claude.env 后完全重启 Mimi Remote。"
 	}
 	return baseResult
-}
-
-type claudeBinCandidate struct {
-	path string
-	// version 为空表示 --version 失败或输出无法解析。
-	version string
-}
-
-// resolveClaudeBin 在所有能启动的候选里选 --version 最高的 Claude CLI，同版本按候选顺序。
-// 已配置路径不再天然优先：LaunchAgent 的 PATH 以 /opt/homebrew/bin 开头，首次启动会把
-// 不再更新的 Homebrew/npm 旧安装写进配置，若只认已配置值就永远切不到官方安装器自动
-// 升级的 ~/.local/bin/claude。版本无法解析的候选不参与择优；只有全部候选都无法解析时
-// 才退回第一个能启动的候选，让上层继续报告 claude_version_unknown 而不是 claude_missing。
-// 启动失败或超时的候选一律排除，避免把不能用的路径写进配置。
-func resolveClaudeBin(
-	ctx context.Context,
-	configured string,
-	environment []string,
-) (claudeBinCandidate, error) {
-	paths := claudeCandidatePaths(configured)
-	if len(paths) == 0 {
-		return claudeBinCandidate{}, exec.ErrNotFound
-	}
-	// 并行探测：npm 安装的 CLI 每次 --version 要拉起 node，串行会把 App 启动检测拖慢数秒。
-	// 这一步同时充当可启动性检查，收集阶段不再逐个执行候选。
-	launched := make([]bool, len(paths))
-	versions := make([]string, len(paths))
-	var wait sync.WaitGroup
-	for index, path := range paths {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			if version, err := probeClaudeVersion(ctx, path, environment); err == nil {
-				launched[index] = true
-				versions[index] = version
-			}
-		}()
-	}
-	wait.Wait()
-
-	best := -1
-	for index, version := range versions {
-		if !launched[index] || !claudebridge.IsComparable(version) {
-			continue
-		}
-		if best < 0 || claudebridge.Compare(version, versions[best]) > 0 {
-			best = index
-		}
-	}
-	if best < 0 {
-		for index := range paths {
-			if launched[index] {
-				best = index
-				break
-			}
-		}
-	}
-	if best < 0 {
-		return claudeBinCandidate{}, exec.ErrNotFound
-	}
-	return claudeBinCandidate{path: paths[best], version: versions[best]}, nil
-}
-
-// claudeCandidatePaths 按候选顺序返回存在的绝对路径，同一个真实文件只保留首个写法，
-// 这样已配置路径与 PATH 命中同一安装时不会重复探测，也不会把配置改写成另一种拼法。
-// 这里只查路径不执行程序；能否启动交给 resolveClaudeBin 的并行探测统一判断。
-func claudeCandidatePaths(configured string) []string {
-	seen := map[string]struct{}{}
-	usable := []string{}
-	for _, candidate := range claudeExecutableCandidates(configured) {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		resolved, err := exec.LookPath(candidate)
-		if err != nil {
-			continue
-		}
-		absolute, err := filepath.Abs(resolved)
-		if err != nil {
-			continue
-		}
-		absolute = filepath.Clean(absolute)
-		identity := absolute
-		if real, err := filepath.EvalSymlinks(absolute); err == nil {
-			identity = real
-		}
-		if _, exists := seen[identity]; exists {
-			continue
-		}
-		seen[identity] = struct{}{}
-		usable = append(usable, absolute)
-	}
-	return usable
-}
-
-// probeClaudeVersion 只在候选无法启动、超时或非零退出时返回错误；进程正常退出但输出
-// 无法解析时返回空版本和 nil，让择优逻辑把"不能用"和"版本未知"分开处理。
-func probeClaudeVersion(ctx context.Context, claudeBin string, environment []string) (string, error) {
-	versionCtx, cancelVersion := context.WithTimeout(ctx, 3*time.Second)
-	defer cancelVersion()
-	command := exec.CommandContext(versionCtx, claudeBin, "--version")
-	command.Env = environment
-	command.Stderr = io.Discard
-	output, err := command.Output()
-	if err != nil {
-		return "", err
-	}
-	version, _ := claudebridge.ParseVersion(string(output))
-	return version, nil
 }
 
 func parseClaudeAuthStatus(output []byte) (bool, bool) {

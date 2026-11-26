@@ -294,9 +294,10 @@ struct TailcatRelaySettings: View {
     }
 
     private func showPairing() async {
-        await store.refreshPairing(network: .tailcat)
-        if store.pairingNetwork == .tailcat, store.pairing != nil {
-            openWindow(id: AppWindow.pairing.rawValue)
+        store.preferredPairingTransport = .tailcat
+        openWindow(id: AppWindow.pairing.rawValue)
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
         }
     }
 }

@@ -3,10 +3,12 @@ package setup
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 // writeNoNetworkConfig 复现 Windows 安装器不勾选局域网后的配置：loopback listen，
@@ -30,9 +32,7 @@ func writeNoNetworkConfig(t *testing.T, listen, token string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, raw)
 	return path
 }
 
@@ -40,7 +40,11 @@ func TestLocalServiceAccessDoesNotRequirePairingNetwork(t *testing.T) {
 	token := "local-service-test-token"
 	path := writeNoNetworkConfig(t, "127.0.0.1:9123", token)
 
-	if _, err := Pair(context.Background(), path); err == nil || !strings.Contains(err.Error(), "没有可用的 Tailscale 或局域网连接") {
+	cfg, err := config.LoadForDoctor(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DirectPairCandidate(context.Background(), path, cfg, PairingNetworkAuto); err == nil || !strings.Contains(err.Error(), "没有可用的 Tailscale 或局域网连接") {
 		t.Fatalf("两种连接都关闭时配对必须失败并说明原因：%v", err)
 	}
 	result, err := LocalServiceAccess(path)
@@ -85,23 +89,21 @@ func TestRunLocalServiceOnlyAppliesToNewAndExistingConfig(t *testing.T) {
 
 func TestLocalServiceAccessRejectsUnreadableConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, []byte("{not json"))
 	if _, err := LocalServiceAccess(path); err == nil {
 		t.Fatal("损坏的配置不能被当作可启动的服务")
 	}
 }
 
 func TestNoPairingNetworkErrorGivesPlatformNextSteps(t *testing.T) {
-	windows := noPairingNetworkError("windows").Error()
+	windows := NoPairingNetworkError("windows").Error()
 	// Windows 安装包内置 Tailcat（#875），不装 Tailscale、不开局域网时它是唯一不需改网络的路径。
 	for _, expected := range []string{"托盘控制面板开启 Tailcat", "agentd tailcat enable", "agentd network --tailscale-enabled=true", "agentd restart", "安装器"} {
 		if !strings.Contains(windows, expected) {
 			t.Fatalf("Windows 提示缺少可执行步骤 %q：%s", expected, windows)
 		}
 	}
-	if other := noPairingNetworkError("darwin").Error(); !strings.Contains(other, "Tailcat") {
+	if other := NoPairingNetworkError("darwin").Error(); !strings.Contains(other, "Tailcat") {
 		t.Fatalf("Mac 与 Linux 仍应提示 Tailcat：%s", other)
 	}
 }

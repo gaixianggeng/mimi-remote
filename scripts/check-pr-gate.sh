@@ -83,7 +83,7 @@ assert_scope macos_installer_signing_test true false false true false scripts/te
 assert_scope release true false false false false scripts/check-release-artifacts.sh
 assert_scope release_source true false false false false scripts/check-release-source.sh
 assert_scope windows_release true false false false false scripts/build-windows-installer.ps1
-assert_scope host_cli_contract true false false true false contracts/host-cli/relay-cases.json
+assert_scope host_cli_contract true true false true false contracts/host-cli/relay-cases.json
 assert_scope ios_release false true false false false scripts/ios_testflight_ci.sh
 assert_scope ios_asc_pin false true false false false config/release/ios-asc-cli.env
 assert_scope ios_asc_test false true false false false scripts/test-ios-asc-cli.sh

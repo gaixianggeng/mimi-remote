@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestRunRuntimeDeepSeekConnectReadsSecretOnlyFromStdin(t *testing.T) {
@@ -157,8 +159,6 @@ func writeRuntimeDeepSeekConfig(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
 	raw := []byte("{\n  \"future_root\": true,\n  \"deepseek\": {\"enabled\": false}\n}\n")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, raw)
 	return path
 }

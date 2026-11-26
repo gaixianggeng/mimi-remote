@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"reflect"
 	"syscall"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing.T) {
@@ -24,7 +24,7 @@ func TestModuleListenersAllOffRemainLocalAndDisabledCodexDoesNotStart(t *testing
 		t.Fatalf("gated listeners %v", got)
 	}
 	resident, err := prepareAgentAppServerRuntime(cfg)
-	if err != nil || resident.routerOptions.AppServerSSH != nil || resident.managedWS != nil {
+	if err != nil || resident.transport != nil || resident.managedWS != nil {
 		t.Fatalf("disabled Codex started: %+v %v", resident, err)
 	}
 }
@@ -88,10 +88,8 @@ func TestModuleCLIRejectsAmbiguousMutations(t *testing.T) {
 
 func TestDisabledCodexStartupSkipsMigrationAndBinaryRepair(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"listen":"127.0.0.1:8787","auth":{"token":"module-test-only"},"codex":{"enabled":false,"bin":"/missing/module-test-codex"}}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureCodexCLIAvailable(path); err != nil {
+	configtest.CreatePrivateFile(t, path, []byte(`{"listen":"127.0.0.1:8787","auth":{"token":"module-test-only"},"codex":{"enabled":false,"bin":"/missing/module-test-codex"}}`))
+	if err := inspectTestLaunchCodex(path); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureAppServerTransportMigration(context.Background(), path, ""); err != nil {

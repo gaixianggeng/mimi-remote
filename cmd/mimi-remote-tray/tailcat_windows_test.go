@@ -93,10 +93,16 @@ func TestTailcatPairingRequiresTailcatTransport(t *testing.T) {
 		t.Fatal("a pairing link without the Tailcat transport must be rejected")
 	}
 	controller = fakeTailcatController(map[string]string{
-		"tailcat pair --qr-only --json": `{"pair_url":"mimiremote://pair?pair_sig=x&transport=tailcat&tailcat_pair_address=temporary","pair_expires_at":"2026-10-21T00:10:00Z"}`,
+		"tailcat pair --qr-only --json": `{"ok":true,"endpoint":"http://127.0.0.1:8787","pair_url":"mimiremote://pair?pair_sig=x&transport=tailcat&tailcat_pair_address=temporary","pair_expires_at":"2026-10-21T00:10:00Z","network":"tailcat"}`,
 	}, &calls)
 	if result, err := controller.tailcatPairing(context.Background()); err != nil || result.PairURL == "" {
 		t.Fatalf("Tailcat pairing = %+v, %v", result, err)
+	}
+	controller = fakeTailcatController(map[string]string{
+		"tailcat pair --qr-only --json": `{"pair_url":"mimiremote://pair?pair_sig=x&transport=tailcat&tailcat_pair_address=temporary"}`,
+	}, &calls)
+	if _, err := controller.tailcatPairing(context.Background()); err == nil {
+		t.Fatal("Tailcat pairing missing endpoint and expiry must be rejected")
 	}
 }
 

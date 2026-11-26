@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/cliinspect"
 )
 
 // AdapterName 是基于 Claude Agent SDK 的适配器（bridges/claude-sdk）在 `--version`
@@ -30,9 +31,7 @@ type AdapterCapabilities struct {
 func ReadAdapterCapabilities(ctx context.Context, path string, args []string, env []string) (AdapterCapabilities, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path, append(append([]string{}, args...), "--capabilities")...)
-	cmd.Env = env
-	output, err := cmd.Output()
+	output, err := cliinspect.Stdout(ctx, path, env, append(append([]string{}, args...), "--capabilities")...)
 	if err != nil {
 		return AdapterCapabilities{}, err
 	}
@@ -50,9 +49,7 @@ func (c AdapterCapabilities) ClaudeCodeSupported(version string) bool {
 func ClaudeCodeVersion(ctx context.Context, bin string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = env
-	output, err := cmd.Output()
+	output, err := cliinspect.Stdout(ctx, bin, env, "--version")
 	if err != nil {
 		return "", err
 	}

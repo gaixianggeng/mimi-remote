@@ -21,7 +21,7 @@ func runNetworkWithWriters(args []string, stdout, stderr io.Writer) error {
 	tailscale := fs.Bool("tailscale-enabled", false, "是否允许 Mimi Tailscale 访问")
 	restore := fs.String("restore-state", "", "恢复先前连接设置的事务结果 JSON")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	module, count := "", 0
@@ -37,8 +37,8 @@ func runNetworkWithWriters(args []string, stdout, stderr io.Writer) error {
 			count++
 		}
 	})
-	if count != 1 {
-		return fmt.Errorf("必须且只能传入 --lan-enabled、--tailscale-enabled 或 --restore-state 之一")
+	if count != 1 || *asJSON && module == "" && *restore == "" {
+		return invalidOnboardingRequest(fmt.Errorf("必须且只能传入 --lan-enabled、--tailscale-enabled 或 --restore-state 之一"))
 	}
 	if err := prepareDefaultConfigMigration(fs, *path, stderr); err != nil {
 		return err
@@ -48,7 +48,7 @@ func runNetworkWithWriters(args []string, stdout, stderr io.Writer) error {
 	if *restore != "" {
 		var previous agentsetup.NetworkConfigurationResult
 		if err = json.Unmarshal([]byte(*restore), &previous); err != nil {
-			return err
+			return invalidOnboardingRequest(err)
 		}
 		if previous.Previous.AllowLAN {
 			if err := ensurePlatformLANAccessAllowed(); err != nil {
@@ -69,7 +69,7 @@ func runNetworkWithWriters(args []string, stdout, stderr io.Writer) error {
 		result, err = agentsetup.ConfigureNetworkAccess(*path, module, enabled)
 	}
 	if err != nil {
-		return err
+		return moduleConfigFailure(*path, err)
 	}
 	if *asJSON {
 		return printJSONTo(stdout, result)

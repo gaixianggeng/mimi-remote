@@ -2,19 +2,17 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 func TestRunRuntimeClaudeTurnHintsUsesIndependentTransactionalCommand(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(configPath, []byte(`{"claude":{"enabled":true},"future":{"preserve":true}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, configPath, []byte(`{"claude":{"enabled":true},"future":{"preserve":true}}`))
 	var stdout, stderr strings.Builder
 	if err := runRuntimeWithIO([]string{
 		"runtime", "--config", configPath, "--claude-turn-hints=disabled", "--json",
