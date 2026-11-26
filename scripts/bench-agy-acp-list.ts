@@ -17,7 +17,7 @@ import { performance } from "node:perf_hooks";
 import type { AcpTransport } from "../bridges/agy-acp/src/acp/client.ts";
 import { SharedReadonlyAcp, type SpawnAgyTransport } from "../bridges/agy-acp/src/agy/binary.ts";
 import { AgyCatalog, AgyHistoryStore, createAcpSessionBackend } from "../bridges/agy-acp/src/agy/catalog.ts";
-import type { AgySessionOrigin } from "../bridges/agy-acp/src/agy/env.ts";
+import { resolveAgyDataPaths, type AgySessionOrigin } from "../bridges/agy-acp/src/agy/env.ts";
 import { GitRepoIndex } from "../bridges/agy-acp/src/agy/git.ts";
 import { AgyOverlay } from "../bridges/agy-acp/src/agy/overlay.ts";
 import { createThreadHandlers } from "../bridges/agy-acp/src/handlers/threads.ts";
@@ -85,6 +85,30 @@ function percentile(values: number[], p: number): number {
 function mean(values: number[]): number {
   if (values.length === 0) return 0;
   return Number((values.reduce((acc, v) => acc + v, 0) / values.length).toFixed(3));
+}
+
+const BENCHMARK_AGY_GEMINI_DIR = ".gemini";
+const BENCHMARK_AGY_APP_DATA_DIR = "antigravity-cli";
+const BENCHMARK_AGY_OTHER_APP_DATA_DIR = "antigravity";
+const BENCHMARK_AGY_OTHER_LIST_TIMEOUT_MS = "2500";
+const BENCHMARK_AGY_OTHER_LIST_HARD_TIMEOUT_MS = "12000";
+
+function buildBenchmarkAgyEnv(homeDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (key.startsWith("AGY_ADAPTER_") || key.startsWith("ANTIGRAVITY_") || key === "__CFBundleIdentifier") {
+      continue;
+    }
+    env[key] = value;
+  }
+  env.HOME = homeDir;
+  env.AGY_ADAPTER_GEMINI_DIR = BENCHMARK_AGY_GEMINI_DIR;
+  env.AGY_ADAPTER_APP_DATA_DIR = BENCHMARK_AGY_APP_DATA_DIR;
+  env.AGY_ADAPTER_OTHER_APP_DATA_DIR = BENCHMARK_AGY_OTHER_APP_DATA_DIR;
+  env.AGY_ADAPTER_OTHER_LIST_TIMEOUT_MS = BENCHMARK_AGY_OTHER_LIST_TIMEOUT_MS;
+  env.AGY_ADAPTER_OTHER_LIST_HARD_TIMEOUT_MS = BENCHMARK_AGY_OTHER_LIST_HARD_TIMEOUT_MS;
+  return env;
 }
 
 function isolateGitProcessEnv(): () => void {
@@ -254,8 +278,8 @@ try {
   ];
 
   const homeDir = path.join(sandbox, "home");
-  const cliConvDir = path.join(homeDir, ".gemini", "antigravity-cli", "conversations");
-  const otherConvDir = path.join(homeDir, ".gemini", "antigravity", "conversations");
+  const cliConvDir = path.join(homeDir, BENCHMARK_AGY_GEMINI_DIR, BENCHMARK_AGY_APP_DATA_DIR, "conversations");
+  const otherConvDir = path.join(homeDir, BENCHMARK_AGY_GEMINI_DIR, BENCHMARK_AGY_OTHER_APP_DATA_DIR, "conversations");
   mkdirSync(cliConvDir, { recursive: true });
   mkdirSync(otherConvDir, { recursive: true });
 
@@ -324,7 +348,18 @@ try {
     [fakeSessions[i], fakeSessions[j]] = [fakeSessions[j]!, fakeSessions[i]!];
   }
 
-  const agyEnv: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir };
+  const agyEnv = buildBenchmarkAgyEnv(homeDir);
+  const resolvedAgyPaths = resolveAgyDataPaths(agyEnv);
+  const expectedCliRoot = path.join(homeDir, BENCHMARK_AGY_GEMINI_DIR, BENCHMARK_AGY_APP_DATA_DIR);
+  const expectedOtherRoot = path.join(homeDir, BENCHMARK_AGY_GEMINI_DIR, BENCHMARK_AGY_OTHER_APP_DATA_DIR);
+  if (
+    resolvedAgyPaths.appDataRoot !== expectedCliRoot ||
+    resolvedAgyPaths.otherAppDataRoot !== expectedOtherRoot
+  ) {
+    throw new Error(
+      `Agy 基准环境路径未隔离到合成 HOME：appDataRoot=${resolvedAgyPaths.appDataRoot}, otherAppDataRoot=${resolvedAgyPaths.otherAppDataRoot}`,
+    );
+  }
   const stateDir = path.join(sandbox, "state");
   mkdirSync(stateDir, { recursive: true });
 
@@ -334,7 +369,7 @@ try {
     const world = new FakeAgyWorld({ sessions: fakeSessions });
     const countingSpawnTransport: SpawnAgyTransport = (spawnOptions): AcpTransport => {
       const transport = world.spawnTransport(spawnOptions);
-      const isOther = spawnOptions.appDataDirName === "antigravity";
+      const isOther = spawnOptions.appDataDirName === BENCHMARK_AGY_OTHER_APP_DATA_DIR;
       let buf = "";
       transport.stdin.on("data", (chunk: Buffer | string) => {
         buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -358,8 +393,18 @@ try {
       return transport;
     };
 
-    const cliSharedAcp = new SharedReadonlyAcp(() => "fake-agy", countingSpawnTransport, () => agyEnv, "antigravity-cli");
-    const otherSharedAcp = new SharedReadonlyAcp(() => "fake-agy", countingSpawnTransport, () => agyEnv, "antigravity");
+    const cliSharedAcp = new SharedReadonlyAcp(
+      () => "fake-agy",
+      countingSpawnTransport,
+      () => agyEnv,
+      BENCHMARK_AGY_APP_DATA_DIR,
+    );
+    const otherSharedAcp = new SharedReadonlyAcp(
+      () => "fake-agy",
+      countingSpawnTransport,
+      () => agyEnv,
+      BENCHMARK_AGY_OTHER_APP_DATA_DIR,
+    );
     const backend = createAcpSessionBackend(cliSharedAcp, otherSharedAcp, () => agyEnv);
     const git = new GitRepoIndex(30_000);
     const overlay = new AgyOverlay(path.join(stateDir, "overlay.json"));

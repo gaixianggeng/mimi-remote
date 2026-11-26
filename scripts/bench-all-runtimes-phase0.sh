@@ -52,12 +52,176 @@ for cmd in bun git python3; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "缺少命令：${cmd}" >&2; exit 127; }
 done
 
+verify_claude_sdk_version() {
+  BENCH_ROOT_DIR="$ROOT_DIR" bun -e '
+import fs from "node:fs";
+import path from "node:path";
+
+const PKG_NAME = "@anthropic-ai/claude-agent-sdk";
+
+function stripJsonc(raw: string): string {
+  let noComments = "";
+  let inStr = false;
+  let escaped = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]!;
+    const next = raw[i + 1];
+    if (inLineComment) {
+      if (ch === "\n") {
+        inLineComment = false;
+        noComments += ch;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (inStr) {
+      noComments += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inStr = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inStr = true;
+      noComments += ch;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      inLineComment = true;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      i += 1;
+      continue;
+    }
+    noComments += ch;
+  }
+
+  let cleaned = "";
+  inStr = false;
+  escaped = false;
+  for (let i = 0; i < noComments.length; i += 1) {
+    const ch = noComments[i]!;
+    if (inStr) {
+      cleaned += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inStr = false;
+      continue;
+    }
+    if (ch === "\"") {
+      inStr = true;
+      cleaned += ch;
+      continue;
+    }
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < noComments.length && /\s/.test(noComments[j]!)) j += 1;
+      if (noComments[j] === "}" || noComments[j] === "]") continue;
+    }
+    cleaned += ch;
+  }
+  return cleaned;
+}
+
+const rootDir = process.env.BENCH_ROOT_DIR;
+if (!rootDir) {
+  console.error("缺少 BENCH_ROOT_DIR");
+  process.exit(1);
+}
+const bridgeDir = path.join(rootDir, "bridges", "claude-sdk");
+const lockPath = path.join(bridgeDir, "bun.lock");
+const lock = JSON.parse(stripJsonc(fs.readFileSync(lockPath, "utf8"))) as {
+  packages?: Record<string, unknown[]>;
+};
+const lockEntry = lock.packages?.[PKG_NAME]?.[0];
+const prefix = `${PKG_NAME}@`;
+if (typeof lockEntry !== "string" || !lockEntry.startsWith(prefix) || lockEntry.length <= prefix.length) {
+  console.error(`无法从 bridges/claude-sdk/bun.lock 解析 ${PKG_NAME} 锁定版本`);
+  process.exit(1);
+}
+const lockVersion = lockEntry.slice(prefix.length);
+
+const localNodeModules = path.join(bridgeDir, "node_modules");
+if (!fs.existsSync(localNodeModules)) {
+  console.error(`缺少 bridges/claude-sdk/node_modules（lockfile 期望 ${PKG_NAME}@${lockVersion}）`);
+  process.exit(1);
+}
+const localNodeModulesReal = fs.realpathSync(localNodeModules);
+
+let resolvedEntry: string;
+try {
+  resolvedEntry = Bun.resolveSync(PKG_NAME, path.join(bridgeDir, "src", "claude"));
+} catch (error) {
+  console.error(`无法解析 ${PKG_NAME}（lockfile 期望 ${lockVersion}）：${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
+let dir = path.dirname(resolvedEntry);
+let pkgDir = "";
+let resolvedVersion = "";
+while (true) {
+  const candidate = path.join(dir, "package.json");
+  if (fs.existsSync(candidate)) {
+    const pkg = JSON.parse(fs.readFileSync(candidate, "utf8")) as { name?: unknown; version?: unknown };
+    if (pkg.name === PKG_NAME && typeof pkg.version === "string" && pkg.version.length > 0) {
+      pkgDir = dir;
+      resolvedVersion = pkg.version;
+      break;
+    }
+  }
+  const parent = path.dirname(dir);
+  if (parent === dir) break;
+  dir = parent;
+}
+
+if (!pkgDir || !resolvedVersion) {
+  console.error(`无法定位解析出的 ${PKG_NAME} package.json（lockfile 期望 ${lockVersion}）`);
+  process.exit(1);
+}
+
+const pkgDirReal = fs.realpathSync(pkgDir);
+if (pkgDirReal !== localNodeModulesReal && !pkgDirReal.startsWith(`${localNodeModulesReal}${path.sep}`)) {
+  console.error(`解析出的 ${PKG_NAME}@${resolvedVersion} 不位于 bridges/claude-sdk/node_modules 内`);
+  process.exit(1);
+}
+
+if (resolvedVersion !== lockVersion) {
+  console.error(`解析出的 ${PKG_NAME} 版本与 bun.lock 不一致：resolved=${resolvedVersion}, lockfile=${lockVersion}`);
+  process.exit(1);
+}
+
+console.log(`${resolvedVersion} ${lockVersion}`);
+'
+}
+
 # 仅在缺少依赖时按锁文件安装，不改动锁文件且不下载可选原生二进制。
 if [[ ! -d "$ROOT_DIR/bridges/agy-acp/node_modules" ]]; then
   (cd "$ROOT_DIR/bridges/agy-acp" && bun install --frozen-lockfile --omit optional >/dev/null)
 fi
-if [[ ! -d "$ROOT_DIR/bridges/claude-sdk/node_modules" ]]; then
+
+CLAUDE_SDK_CHECK_OUT=""
+if [[ ! -d "$ROOT_DIR/bridges/claude-sdk/node_modules" ]] || ! CLAUDE_SDK_CHECK_OUT="$(verify_claude_sdk_version 2>&1)"; then
+  if [[ -d "$ROOT_DIR/bridges/claude-sdk/node_modules" && -n "$CLAUDE_SDK_CHECK_OUT" ]]; then
+    echo "检测到 bridges/claude-sdk 依赖与 bun.lock 不一致，重新执行 frozen install：${CLAUDE_SDK_CHECK_OUT}" >&2
+  fi
   (cd "$ROOT_DIR/bridges/claude-sdk" && bun install --frozen-lockfile --omit optional >/dev/null)
+  CLAUDE_SDK_CHECK_OUT="$(verify_claude_sdk_version)"
+fi
+read -r CLAUDE_SDK_VERSION CLAUDE_SDK_LOCK_VERSION <<<"$CLAUDE_SDK_CHECK_OUT"
+if [[ -z "$CLAUDE_SDK_VERSION" || "$CLAUDE_SDK_VERSION" != "$CLAUDE_SDK_LOCK_VERSION" ]]; then
+  echo "Claude Agent SDK 版本校验失败：resolved=${CLAUDE_SDK_VERSION:-missing}, lockfile=${CLAUDE_SDK_LOCK_VERSION:-missing}" >&2
+  exit 1
 fi
 
 TMP_OUT="$(mktemp -d "${TMPDIR:-/tmp}/mimi-phase0-bench-out.XXXXXX")"
@@ -80,7 +244,7 @@ bun "$ROOT_DIR/scripts/bench-agy-acp-list.ts" \
   --concurrency "$CONCURRENCY" \
   --json-out "$AGY_JSON" >/dev/null
 
-echo "==> [2/2] 运行 Claude SDK (bridges/claude-sdk) 基准（seed=${SEED}, batches=${BATCHES}, cold=${COLD}, warm=${WARM}, target=${TARGET_SESSIONS}, other=${OTHER_SESSIONS}）"
+echo "==> [2/2] 运行 Claude SDK (bridges/claude-sdk) 基准（sdk=@anthropic-ai/claude-agent-sdk@${CLAUDE_SDK_VERSION}, seed=${SEED}, batches=${BATCHES}, cold=${COLD}, warm=${WARM}, target=${TARGET_SESSIONS}, other=${OTHER_SESSIONS}）"
 bun "$ROOT_DIR/scripts/bench-claude-sdk-list.ts" \
   --seed "$SEED" \
   --batches "$BATCHES" \
@@ -90,13 +254,23 @@ bun "$ROOT_DIR/scripts/bench-claude-sdk-list.ts" \
   --other-sessions "$OTHER_SESSIONS" \
   --json-out "$CLAUDE_JSON" >/dev/null
 
-python3 - "$AGY_JSON" "$CLAUDE_JSON" <<'PY'
+python3 - "$AGY_JSON" "$CLAUDE_JSON" "$CLAUDE_SDK_VERSION" "$CLAUDE_SDK_LOCK_VERSION" <<'PY'
 import json
 import pathlib
 import sys
 
 agy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-claude = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+claude_path = pathlib.Path(sys.argv[2])
+claude = json.loads(claude_path.read_text(encoding="utf-8"))
+sdk_version = sys.argv[3]
+sdk_lock_version = sys.argv[4]
+
+claude["sdk"] = {
+    "package": "@anthropic-ai/claude-agent-sdk",
+    "version": sdk_version,
+    "lockfileVersion": sdk_lock_version,
+}
+claude_path.write_text(json.dumps(claude, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 print("\n=== Phase 0 性能基线摘要 ===")
 print(f"固定种子：{agy['seed']} | 批次：{agy['config']['batches']} × (冷 {agy['config']['cold']} / 热 {agy['config']['warm']})")
@@ -122,6 +296,9 @@ print(
 )
 
 print("\n[Claude SDK bridges/claude-sdk]")
+print(
+    f"- SDK：@anthropic-ai/claude-agent-sdk@{claude['sdk']['version']} (lockfile={claude['sdk']['lockfileVersion']})"
+)
 print(
     f"- 数据集：{claude['dataset']['verifiedTargetRepoSessions']}/{claude['dataset']['targetRepoSessions']} 目标仓（含 worktree） / "
     f"{claude['dataset']['totalTranscriptFiles']} 总 transcript，页长 {claude['dataset']['pageSize']}"
