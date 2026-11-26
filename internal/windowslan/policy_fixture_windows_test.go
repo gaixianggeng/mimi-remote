@@ -17,13 +17,21 @@ func TestWindowsLANPolicyEvaluatesMixedProfilesAndRuleScope(t *testing.T) {
 	const mocks = `
 function Get-NetFirewallRule {
     param($DisplayName,$AssociatedNetFirewallApplicationFilter)
-    $rule=[pscustomobject]@{DisplayName=$env:MIMI_FIREWALL_RULE_NAME;Enabled='True';Profile='Private';Direction='Inbound';Action='Allow'}
+    $rule=[pscustomobject]@{DisplayName=$env:MIMI_FIREWALL_RULE_NAME;Enabled='True';Profile='Private';Direction='Inbound';Action='Allow';Program=$env:MIMI_FIREWALL_AGENT_PATH}
     $rule
+    if ($DisplayName -and $case -eq 'other-install') {
+        [pscustomobject]@{DisplayName=$rule.DisplayName;Enabled='True';Profile='Private';Direction='Inbound';Action='Allow';Program='other-install.exe'}
+    }
+    if ($DisplayName -and $case -eq 'same-program') { $rule }
     if ($AssociatedNetFirewallApplicationFilter -and $case -eq 'unsafe') {
         [pscustomobject]@{DisplayName='extra';Enabled='True';Profile='Any';Direction='Inbound';Action='Allow'}
     }
 }
-function Get-NetFirewallApplicationFilter { [pscustomobject]@{Program=$env:MIMI_FIREWALL_AGENT_PATH} }
+function Get-NetFirewallApplicationFilter {
+    $rules = @($input)
+    if ($rules.Count) { $rules | Select-Object Program }
+    else { [pscustomobject]@{Program=$env:MIMI_FIREWALL_AGENT_PATH} }
+}
 function Get-NetFirewallAddressFilter {
     $scope=@('LocalSubnet')
     if ($case -eq 'wide') { $scope += 'Any' }
@@ -51,7 +59,7 @@ function Get-NetConnectionProfile {
         [pscustomobject]@{InterfaceIndex=2;InterfaceAlias='fixture-2';NetworkCategory=$category}
     }
 }
-foreach ($case in @('private','public','mixed','unknown','wide','unsafe','private')) {
+foreach ($case in @('private','public','mixed','unknown','wide','unsafe','other-install','same-program')) {
  & {
 `
 	shell, err := systemPowerShell()
@@ -67,7 +75,7 @@ foreach ($case in @('private','public','mixed','unknown','wide','unsafe','privat
 		t.Fatalf("fixture evaluation: %v: %s", err, raw)
 	}
 	rows := strings.Split(strings.TrimSpace(string(raw)), "\n")
-	expected := []bool{true, false, false, false, false, false, true}
+	expected := []bool{true, false, false, false, false, false, true, false}
 	if len(rows) != len(expected) {
 		t.Fatalf("wrong result count: %d", len(rows))
 	}

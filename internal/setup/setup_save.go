@@ -162,7 +162,6 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 	selectWorkspace := !p.source.exists || o.SaveOnly
 	if o.InstallerLAN != nil {
 		p.set(p.cfg.TailscaleAccessEnabled(), "network", "allow_tailscale")
-		p.set(*o.InstallerLAN, "network", "allow_lan")
 		// An upgrade can change LAN policy without replacing any existing grants.
 		selectWorkspace = !p.source.exists || (!p.cfg.WorkspaceConfirmed() && o.ScanRoot != "")
 		if selectWorkspace {
@@ -186,6 +185,10 @@ func runWithFileOps(ctx context.Context, o Options, ops setupFileTransactionOps)
 		if err = p.applyAssistants(ctx, o, verifiedHost); err != nil {
 			return Result{}, err
 		}
+	}
+	if o.InstallerLAN != nil {
+		confirmed := p.source.exists && p.cfg.WorkspaceConfirmed() || selectWorkspace && !o.PendingWorkspace
+		p.set(*o.InstallerLAN && confirmed, "network", "allow_lan")
 	}
 	raw, err := p.bytes()
 	if err != nil {

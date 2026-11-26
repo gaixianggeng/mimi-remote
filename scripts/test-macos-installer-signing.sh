@@ -385,10 +385,11 @@ int main(int argc, char **argv) {
     snprintf(home, sizeof(home), "%s/home", cwd);
     snprintf(config, sizeof(config), "%s/home/config.json", cwd);
     snprintf(workspace, sizeof(workspace), "%s/work", cwd);
-    if (argc < 11 || !getenv("HOME") || strcmp(getenv("HOME"), home) || getenv("TEST_REPO_ROOT") ||
+    if (argc != 12 || !getenv("HOME") || strcmp(getenv("HOME"), home) || getenv("TEST_REPO_ROOT") ||
         strcmp(argv[2], "--json") || strcmp(argv[3], "--stage") || strcmp(argv[4], "setup") ||
         strcmp(argv[5], "--config") || strcmp(argv[6], config) || strcmp(argv[7], "--scan-root") ||
-        strcmp(argv[8], workspace) || strcmp(argv[9], "--browse-root") || strcmp(argv[10], workspace)) return 2;
+        strcmp(argv[8], workspace) || strcmp(argv[9], "--browse-root") || strcmp(argv[10], workspace) ||
+        strcmp(argv[11], "--installer-smoke")) return 2;
     puts("{\"schema\":\"mimi.onboarding.preflight/v1\",\"stage\":\"setup\",\"ok\":true,"
          "\"configured\":false,\"workspace_confirmed\":false,\"scan_root_exists\":true,\"checks\":["
          "{\"id\":\"config_store\",\"state\":\"ok\"},{\"id\":\"workspace_root\",\"state\":\"ok\"},"

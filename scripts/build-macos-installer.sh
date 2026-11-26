@@ -520,9 +520,7 @@ mkdir -p "$WORK_DIR/preflight/home" "$WORK_DIR/preflight/work" "$WORK_DIR/prefli
   /usr/bin/env -i HOME="$PWD/home" TMPDIR="$PWD/tmp" PATH=/usr/bin:/bin \
     /usr/bin/sandbox-exec -D "ROOT=$PWD" -D "AGENT=$agent" -p "$profile" \
     "$agent" preflight --json --stage setup --config "$PWD/home/config.json" \
-      --scan-root "$PWD/work" --browse-root "$PWD/work" \
-      --runtime-path "codex=$PWD/missing" --runtime-path "claude=$PWD/missing" \
-      --runtime-path "agy=$PWD/missing" >report.json </dev/null
+      --scan-root "$PWD/work" --browse-root "$PWD/work" --installer-smoke >report.json </dev/null
   python3 -I - <<'PY'
 import json
 from pathlib import Path

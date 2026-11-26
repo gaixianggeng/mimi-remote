@@ -31,7 +31,7 @@ $setup = Get-Item .\Mimi-Remote-Setup-*.exe
 
 安装器按用户安装到 `%LOCALAPPDATA%\Programs\Mimi Remote`。它回读当前用户计划任务的 SID、Limited 权限及唯一的无窗口宿主动作，然后在一次启动操作中等待经鉴权的核心服务就绪。首次安装时可选择一个现有目录，同时授予扫描和浏览权限。跳过确认或静默新装会保存待确认状态并阻止配对。覆盖安装沿用原 Token、目录授权和确认状态。配置位于 `%APPDATA%\mimi-remote`，日志位于 `%LOCALAPPDATA%\Mimi Remote\logs`。
 
-Windows 防火墙规则和 LAN 监听默认不启用。只有用户明确选择 LAN 访问时，安装器才要求默认网络为“专用网络”，并创建限制为 Private profile 和 `LocalSubnet` 的规则。不得把规则放宽到 Public profile 或任意公网来源。
+Windows 防火墙规则和 LAN 监听默认不启用。用户确认工作区并明确选择 LAN 访问后，签名安装器会检查网络是否为“专用网络”。获准后，它创建限于 Private profile 和 `LocalSubnet` 的规则。
 
 公共网络、规则过宽或未获管理员授权时，安装器关闭应用的 LAN 入口，保留环回和其他已配置的通道。它只清理当前用户由本版安装器创建的规则。旧规则或其他软件创建的规则请在 Windows 防火墙中核对归属。静默安装不会请求 UAC。也可在 Tailscale 已就绪后启用它，再重启一次：
 
@@ -61,7 +61,7 @@ $agentd = "$env:LOCALAPPDATA\Programs\Mimi Remote\agentd.exe"
 & $agentd tailcat disable
 ```
 
-升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件和由安装器创建的可选防火墙规则，但保留配置、Token 与日志。
+升级时直接覆盖安装新版本。回滚时重新运行上一版来自正式 Release 且摘要匹配的安装器。不要先删除 `%APPDATA%\mimi-remote`。卸载会停止并删除计划任务、移除程序文件，并保留配置、Token 与日志。交互式卸载获管理员授权后才移除可选防火墙规则。静默卸载或拒绝授权后可在 Windows 防火墙中核对残留规则的程序路径和归属。
 
 #### Windows 托盘与 App 的维护调用约定
 

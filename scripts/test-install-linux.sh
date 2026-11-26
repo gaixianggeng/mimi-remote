@@ -96,7 +96,7 @@ make_release() {
   cat >>"$destination/agentd" <<'SH'
 if [[ "$1" == preflight ]]; then
   [[ "${0##*/}" != agentd.previous && -z "${FAKE_AGENTD_LOG:-}" ]]
-  [[ "$*" == "preflight --stage setup --json --installer-smoke --config $HOME/config.json --scan-root $HOME --browse-root $HOME --runtime-path codex=$HOME/missing --runtime-path claude=$HOME/missing --runtime-path agy=$HOME/missing" ]]
+  [[ "$*" == "preflight --stage setup --json --installer-smoke --config $HOME/config.json --scan-root $HOME --browse-root $HOME" ]]
   [[ "$HOME" == "$TMPDIR" && "$HOME" == "$XDG_CONFIG_HOME" && ! -e "$HOME/config.json" ]]
   if [[ -f "${0%/*}/fail-preflight" ]]; then
     cat "${0%/*}/fail-preflight" >&2
@@ -379,6 +379,9 @@ cat >"$TEST_DIR/bin/mv" <<'SH'
 if [[ "${FAKE_FAIL_TAILCAT_RENAME:-0}" == 1 && "${2:-}" == *'/mimi-tailcat-experiment.new.'* ]]; then
   exit 43
 fi
+if [[ "${FAKE_FAIL_RESTORE_RENAME:-0}" == 1 && "${2:-}" == *'/agentd.restore.'* ]]; then
+  exit 44
+fi
 exec "$REAL_MV" "$@"
 SH
 chmod +x "$TEST_DIR/bin/mv"
@@ -390,6 +393,24 @@ assert_version "$HOME/.local/bin/agentd" "1.2.3"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment" "1.2.3"
 assert_version "$HOME/.local/bin/agentd.previous" "1.2.4"
 assert_version "$HOME/.local/bin/mimi-tailcat-experiment.previous" "1.2.4"
+
+# A failed restore leaves the original payloads for recovery and must not
+# restart the mixed installation.
+: >"$FAKE_AGENTD_LOG"
+if FAKE_FAIL_RESTORE_RENAME=1 bash "$release_125_bad/scripts/install-linux.sh" upgrade >"$TEST_DIR/restore.log" 2>&1; then
+  exit 1
+fi
+grep -Fq '自动恢复未完成' "$TEST_DIR/restore.log"
+recovery_dir="$(sed -n 's/^自动恢复未完成.*：//p' "$TEST_DIR/restore.log")"
+cmp "$release_123/agentd" "$recovery_dir/before-0"
+cmp "$release_123/mimi-tailcat-experiment" "$recovery_dir/before-1"
+[[ ! -e "$FAKE_SYSTEMCTL_ACTIVE" && ! -e "$FAKE_SYSTEMCTL_ENABLED" ]]
+[[ "$(grep -c ' restart ' "$FAKE_AGENTD_LOG")" == 1 ]]
+cmp "$TEST_DIR/committed-config" "$HOME/.config/mimi-remote/config.json"
+bash "$release_123/scripts/install-linux.sh" upgrade >/dev/null
+# Restore the earlier rollback target for the subsequent scenarios.
+cp "$recovery_dir/before-3" "$HOME/.local/bin/agentd.previous"
+cp "$recovery_dir/before-4" "$HOME/.local/bin/mimi-tailcat-experiment.previous"
 
 # 从旧的无 sidecar 安装升级，失败时仍无 sidecar，成功后可回到确切的旧状态。
 rm "$HOME/.local/bin/mimi-tailcat-experiment"

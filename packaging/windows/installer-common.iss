@@ -2,6 +2,7 @@ const
   TaskName = 'Mimi Remote agentd';
   ProductRegistryKey = 'Software\Mimi Remote';
   FirewallMarkerName = 'PrivateLanFirewallRule';
+  PendingBootstrapName = 'InitialBootstrapPending';
 
 var
   PostInstallFailed, RequireExistingConfig, DirectoryConfirmed: Boolean;
@@ -116,19 +117,26 @@ end;
 
 procedure ApplyInstallerChoices;
 var
-  Requested, Enabled, CleanupFailed: Boolean;
+  Requested, Enabled, CleanupFailed, NewRule: Boolean;
   Marker: Cardinal;
   Code: Integer;
-  Parameters, Failure: String;
+  Parameters, Failure, SelectedRoot: String;
   Output: TExecOutput;
 begin
   Requested := WizardIsTaskSelected('lanfirewall');
   Enabled := False;
   CleanupFailed := False;
-  if Requested and FirewallCheck('ValidateNetwork') then begin
+  NewRule := False;
+  SelectedRoot := '';
+  if not WizardSilent then
+    if DirectoryConfirmed and WizardIsTaskSelected('confirmworkspace') and DirExists(WorkspacePage.Values[0]) then
+      SelectedRoot := WorkspacePage.Values[0];
+  RegisterScheduledTask;
+  if Requested and ((SelectedRoot <> '') or RunMaintenance('workspace-confirmed')) and FirewallCheck('ValidateNetwork') then begin
     Enabled := FirewallCheck('Validate');
     if (not Enabled) and (not WizardSilent) then begin
       if RunMaintenance('enable-lan') then begin
+        NewRule := True;
         RegWriteDWordValue(HKCU, ProductRegistryKey, FirewallMarkerName, 1);
         Enabled := FirewallCheck('Validate');
       end;
@@ -140,17 +148,19 @@ begin
     else
       CleanupFailed := True;
   end;
-  RegisterScheduledTask;
   Parameters := 'up --installer-bootstrap --lan-enabled=';
   if Enabled then Parameters := Parameters + 'true' else Parameters := Parameters + 'false';
   Parameters := Parameters + ' --no-pair --json --wait 60s';
   if RequireExistingConfig then Parameters := Parameters + ' --require-existing';
-  if not WizardSilent then begin
-    if DirectoryConfirmed and WizardIsTaskSelected('confirmworkspace') then
-      Parameters := Parameters + ' --scan-root ' + Quote(AddBackslash(WorkspacePage.Values[0]) + '.');
-  end;
+  if SelectedRoot <> '' then
+    Parameters := Parameters + ' --scan-root ' + Quote(AddBackslash(SelectedRoot) + '.');
   if not ExecAndCaptureOutput(InstallDirectory + '\agentd.exe', Parameters, ExpandConstant('{sys}'), SW_HIDE,
-    ewWaitUntilTerminated, Code, Output) or (Code <> 0) then begin
+    ewWaitUntilTerminated, Code, Output) then Code := -1;
+  if (Code = 0) or FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) then
+    RegDeleteValue(HKCU, ProductRegistryKey, PendingBootstrapName);
+  if Code <> 0 then begin
+    if NewRule and RunMaintenance('disable-lan') then
+      RegDeleteValue(HKCU, ProductRegistryKey, FirewallMarkerName);
     PostInstallFailed := True;
     Failure := BootstrapFailure(Output);
     Log('Installer bootstrap: ' + Failure);
@@ -162,6 +172,6 @@ begin
     PostInstallFailed := True;
     Log('lan_firewall_blocked: LAN disabled; review the Private network and installer-owned rule.');
     if not WizardSilent then
-      MsgBox('The core service is ready. LAN is off. Check the trusted Private network and firewall rules, then retry from signed Setup.', mbInformation, MB_OK);
+      MsgBox('The core service is ready. LAN is off. Confirm the workspace and check the Private network and firewall, then retry from signed Setup.', mbInformation, MB_OK);
   end;
 end;

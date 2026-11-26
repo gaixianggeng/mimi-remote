@@ -340,7 +340,7 @@ main() {
   fi
 
   local work_dir
-  work_dir="$(mktemp -d)"
+  work_dir="$(mktemp -d "$HOME/.local/share/mimi-remote/.installer.XXXXXXXX")"
   local transaction_started="0"
   local completed="0"
   local had_binary="0"
@@ -388,23 +388,33 @@ main() {
     trap '' INT TERM
     if [[ "$transaction_started" == "1" && "$completed" != "1" ]]; then
       echo "安装未通过就绪检查，正在恢复安装前版本..." >&2
-      if [[ "$had_service" == 0 || "$was_enabled" == 0 ]]; then
+      local restore_failed=0
+      if path_exists "$destination_service"; then
         # Disable while systemd can still resolve the newly installed unit.
-        systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-      fi
-      systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-      local index path
-      for index in "${!transaction_paths[@]}"; do
-        path="${transaction_paths[$index]}"
-        if [[ -f "$work_dir/before-$index" ]]; then
-          install -m "${transaction_modes[$index]}" "$work_dir/before-$index" "${path}.restore.$$" \
-            && mv -f "${path}.restore.$$" "$path" \
-            || echo "警告：恢复 $path 失败，请保留日志并重新安装完整 Release 包。" >&2
-        else
-          rm -f "$path"
+        if [[ "$had_service" == 0 || "$was_enabled" == 0 ]]; then
+          systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || restore_failed=1
         fi
-      done
-      systemctl --user daemon-reload >/dev/null 2>&1 || true
+        systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || restore_failed=1
+      fi
+      local index path
+      if [[ "$restore_failed" == 0 ]]; then
+        for index in "${!transaction_paths[@]}"; do
+          path="${transaction_paths[$index]}"
+          if [[ -f "$work_dir/before-$index" ]]; then
+            install -m "${transaction_modes[$index]}" "$work_dir/before-$index" "${path}.restore.$$" \
+              && mv -f "${path}.restore.$$" "$path" || restore_failed=1
+          else
+            rm -f -- "$path" || restore_failed=1
+          fi
+        done
+        systemctl --user daemon-reload >/dev/null 2>&1 || restore_failed=1
+      fi
+      if [[ "$restore_failed" == 1 ]]; then
+        systemctl --user disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+        trap - EXIT
+        echo "自动恢复未完成。已保留配置、Token 和安装前文件：$work_dir" >&2
+        exit "$status"
+      fi
       if [[ "$had_service" == 1 ]]; then
         if ! check_saved_config "$destination_binary"; then
           systemctl --user disable "$SERVICE_NAME" || echo '禁用服务失败，请检查 systemd 状态。' >&2
@@ -441,7 +451,6 @@ main() {
       XDG_DATA_HOME="$smoke" XDG_CACHE_HOME="$smoke" XDG_STATE_HOME="$smoke" \
       "$source_binary" preflight --stage setup --json --installer-smoke \
       --config "$smoke/config.json" --scan-root "$smoke" --browse-root "$smoke" \
-      --runtime-path "codex=$smoke/missing" --runtime-path "claude=$smoke/missing" --runtime-path "agy=$smoke/missing" \
       >"$work_dir/preflight.json" 2>"$work_dir/preflight.stderr" || [[ ! -s "$work_dir/preflight.json" ]]; then
       print_bounded_redacted_lines "$(<"$work_dir/preflight.stderr")" 12 '（无预检诊断）' >&2
       fail '安装包隔离预检失败；请检查归档与暂存目录。'

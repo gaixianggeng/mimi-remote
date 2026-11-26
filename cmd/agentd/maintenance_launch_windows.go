@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"golang.org/x/sys/windows"
 )
 
@@ -33,6 +34,12 @@ func maintenanceRequest(args []string) (maintenanceAction, error) {
 }
 
 func runInstallerMaintenance(args []string) error {
+	if len(args) == 1 && args[0] == "workspace-confirmed" {
+		if installerWorkspaceConfirmed(config.PlatformDefaultPath(), config.LegacyDefaultPath()) {
+			return nil
+		}
+		return errors.New("请先确认要共享的代码目录")
+	}
 	action, err := maintenanceRequest(args)
 	if err != nil {
 		return err

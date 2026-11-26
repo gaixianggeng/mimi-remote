@@ -216,10 +216,23 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  PendingDirectory: String;
 begin
   // Stop agentd gracefully before replacing files. The managed agent owns a
   // kill-on-close Job Object, so an unexpected exit also removes descendants.
   RequireExistingConfig := FileExists(ExpandConstant('{app}\agentd.exe'));
+  if RequireExistingConfig then begin
+    if RegQueryStringValue(HKCU, ProductRegistryKey, PendingBootstrapName, PendingDirectory) and
+       (CompareText(PendingDirectory, InstallDirectory) = 0) then RequireExistingConfig := False;
+  end else if not FileExists(ExpandConstant('{userappdata}\mimi-remote\config.json')) and
+              not FileExists(ExpandConstant('{userappdata}\codex-ipad-agent\config.json')) then begin
+    // If task registration fails after files are copied, retry the same first bootstrap.
+    if not RegWriteStringValue(HKCU, ProductRegistryKey, PendingBootstrapName, InstallDirectory) then begin
+      Result := 'Could not record the first-install state for the current user.';
+      Exit;
+    end;
+  end;
   StopManagedService;
   StopAgentHost;
   StopTailcatHelper;

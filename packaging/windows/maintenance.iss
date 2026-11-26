@@ -132,7 +132,9 @@ begin
   else
     RaiseException('Unknown maintenance operation.');
   if not ExecConsoleHidden(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Command, Code) or (Code <> 0) then
-    RaiseException('lan_firewall_blocked');
+    '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Command, Code) or (Code <> 0) then begin
+    PostInstallFailed := True;
+    Log('lan_firewall_blocked');
+  end;
 #endif
 end;

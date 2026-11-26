@@ -65,15 +65,22 @@ foreach ($expected in @("FirewallCheck('ValidateNetwork')", "FirewallCheck('Vali
     "' --require-existing'", 'not WizardSilent', 'DirectoryConfirmed', "WizardIsTaskSelected('confirmworkspace')")) {
     if (-not $choices.Contains($expected)) { throw "Installer choice is missing: $expected" }
 }
-if ($choices.IndexOf("RunMaintenance('enable-lan')") -gt $choices.IndexOf('RegisterScheduledTask;') -or
-    $choices.IndexOf('RegisterScheduledTask;') -gt $choices.IndexOf('up --installer-bootstrap') -or
+$workspaceGate = "if Requested and ((SelectedRoot <> '') or RunMaintenance('workspace-confirmed')) and FirewallCheck('ValidateNetwork') then begin"
+if (-not $choices.Contains($workspaceGate) -or $choices.IndexOf('RegisterScheduledTask;') -gt $choices.IndexOf($workspaceGate) -or
+    $choices.IndexOf($workspaceGate) -gt $choices.IndexOf("RunMaintenance('enable-lan')") -or
+    $choices.IndexOf("RunMaintenance('enable-lan')") -gt $choices.IndexOf('up --installer-bootstrap') -or
     ([regex]::Matches($choices, 'up --installer-bootstrap')).Count -ne 1 -or
-    $source -match "'(restart|network) --") { throw 'Verify LAN and task registration before the single bootstrap.' }
+    $source -match "'(restart|network) --") { throw 'Verify the task and workspace before optional LAN authorization and the single bootstrap.' }
+if (-not $prepareSource.Contains('CompareText(PendingDirectory, InstallDirectory) = 0') -or
+    -not $prepareSource.Contains('RegWriteStringValue(HKCU, ProductRegistryKey, PendingBootstrapName, InstallDirectory)') -or
+    -not $choices.Contains('RegDeleteValue(HKCU, ProductRegistryKey, PendingBootstrapName)')) {
+    throw 'A failed fresh task registration must leave the same installation eligible for first bootstrap.'
+}
 foreach ($forbidden in @('ShellExec(', 'UninstallString', 'ModifyPath')) {
     if (($source + $maintenance).Contains($forbidden)) { throw "Unsafe maintenance path: $forbidden" }
 }
 foreach ($expected in @('Uninstallable=no', 'PrivilegesRequired=lowest', '#ifdef SignedMaintenance', 'not IsAdmin',
-    'IsAdmin and WizardSilent', 'SetEnvironmentVariableW', 'MaintenanceDirectory', '-EncodedCommand')) {
+    'IsAdmin and WizardSilent', 'SetEnvironmentVariableW', 'MaintenanceDirectory', '-EncodedCommand', 'PostInstallFailed := True')) {
     if (-not $maintenance.Contains($expected)) { throw "Maintenance boundary missing: $expected" }
 }
 $registerSource = Get-Content -LiteralPath $register -Raw
@@ -88,7 +95,9 @@ if (-not $registerHasUtf8Bom -and $registerBytes.Where({ $_ -gt 0x7F }, 'First')
 if ($env:OS -eq 'Windows_NT') {
     $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $previousRegisterScript = $env:MIMI_REGISTER_SCRIPT
+    $previousFirewallScript = $env:MIMI_FIREWALL_SCRIPT
     $env:MIMI_REGISTER_SCRIPT = $register
+    $env:MIMI_FIREWALL_SCRIPT = $firewall
     $parserProbe = @'
 $tokens = $null
 $errors = $null
@@ -108,12 +117,18 @@ if (-not $assignment -or
     [Console]::Error.WriteLine('Windows PowerShell 5.1 did not parse the no-window host action.')
     exit 1
 }
+[void][System.Management.Automation.Language.Parser]::ParseFile($env:MIMI_FIREWALL_SCRIPT, [ref]$tokens, [ref]$errors)
+if ($errors.Count) {
+    $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }
+    exit 1
+}
 '@
     $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($parserProbe))
     try {
         & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -EncodedCommand $encodedProbe
         if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 compatibility probe failed.' }
     } finally {
+        $env:MIMI_FIREWALL_SCRIPT = $previousFirewallScript
         if ($null -eq $previousRegisterScript) {
             Remove-Item Env:MIMI_REGISTER_SCRIPT -ErrorAction SilentlyContinue
         } else {
@@ -128,6 +143,9 @@ foreach ($expected in @("ValidateSet('Enable', 'Disable', 'Validate', 'ValidateN
 if ($firewallSource.Contains('Remove-Unmanaged') -or $firewallSource -match 'Set-Net(Firewall|Connection)Profile' -or
     ([regex]::Matches($firewallSource, 'Remove-NetFirewallRule')).Count -ne 1 -or
     -not $firewallSource.Contains('$rule | Remove-NetFirewallRule')) { throw 'Only remove the exact owned firewall rule.' }
+if (-not $firewallSource.Contains('if ($created) { Remove-OwnedFirewallRule $created }')) {
+    throw 'A new installer-owned rule must be rolled back if its effective policy cannot be verified.'
+}
 if ($source.Contains('[InstallDelete]')) { throw 'Installer must preserve the blanket InstallDelete prohibition.' }
 if (-not $source.Contains("DeleteFile(ExpandConstant('{group}\Mimi Remote Logs.lnk'))")) { throw 'Upgrade must remove the legacy log shortcut explicitly.' }
 foreach ($script in @($register, $firewall, $signing, $build, $check)) { [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw)) }

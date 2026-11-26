@@ -25,7 +25,8 @@ $result = [ordered]@{
     unsafe_rules = @()
 }
 
-$rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName $env:MIMI_FIREWALL_RULE_NAME -ErrorAction SilentlyContinue)
+$rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName $env:MIMI_FIREWALL_RULE_NAME -ErrorAction SilentlyContinue |
+    Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -eq $env:MIMI_FIREWALL_AGENT_PATH })
 if ($rules.Count -eq 1) {
     $rule = $rules[0]
     $application = $rule | Get-NetFirewallApplicationFilter

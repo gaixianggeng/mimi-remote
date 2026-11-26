@@ -127,12 +127,15 @@ if ($Mode -eq 'Validate') {
 # Only the fixed per-user ID and exact program identify our removable rule.
 # Leave old display-name-only rules and other administrators' rules intact.
 $owned = @(Get-NetFirewallRule -PolicyStore PersistentStore | Where-Object Name -eq $ownedName)
+function Remove-OwnedFirewallRule($rule) {
+    if ($rule.Name -ne $ownedName -or $rule.DisplayName -ne $label -or ($rule | Get-NetFirewallApplicationFilter).Program -ne $AgentPath) {
+        throw 'Firewall rule ownership mismatch.'
+    }
+    $rule | Remove-NetFirewallRule
+}
 if ($Mode -eq 'Disable') {
     foreach ($rule in $owned) {
-        if ($rule.DisplayName -ne $label -or ($rule | Get-NetFirewallApplicationFilter).Program -ne $AgentPath) {
-            throw 'Firewall rule ownership mismatch.'
-        }
-        $rule | Remove-NetFirewallRule
+        Remove-OwnedFirewallRule $rule
     }
     if (@(Get-ProgramAllows | Where-Object DisplayName -eq $label).Count) {
         throw 'A legacy rule remains. Review it in Windows Firewall.'
@@ -140,8 +143,14 @@ if ($Mode -eq 'Disable') {
     exit 0
 }
 if (-not (Test-PrivateNetwork)) { throw 'A trusted Private network is required.' }
-if (-not (Test-ValidPolicy)) {
-    if ($owned.Count -or @(Get-ProgramAllows).Count) { throw 'Review existing inbound rules for agentd.exe.' }
-    New-NetFirewallRule -Name $ownedName -DisplayName $label -Program $AgentPath -Direction Inbound -Action Allow -Enabled True -Profile Private -RemoteAddress LocalSubnet | Out-Null
+$created = $null
+try {
+    if (-not (Test-ValidPolicy)) {
+        if ($owned.Count -or @(Get-ProgramAllows).Count) { throw 'Review existing inbound rules for agentd.exe.' }
+        $created = New-NetFirewallRule -Name $ownedName -DisplayName $label -Program $AgentPath -Direction Inbound -Action Allow -Enabled True -Profile Private -RemoteAddress LocalSubnet
+    }
+    if (-not (Test-PrivateNetwork) -or -not (Test-ValidPolicy)) { throw 'Unable to verify Private LAN policy.' }
+} catch {
+    if ($created) { Remove-OwnedFirewallRule $created }
+    throw
 }
-if (-not (Test-PrivateNetwork) -or -not (Test-ValidPolicy)) { throw 'Unable to verify Private LAN policy.' }

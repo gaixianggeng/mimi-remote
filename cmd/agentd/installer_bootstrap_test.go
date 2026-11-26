@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,13 +10,14 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	"github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
 func TestInstallerBootstrapPreservesIdentityAndConfirmsOnlySelectedFolder(t *testing.T) {
 	path := isolatedSaveCommand(t)
-	lan := false
+	lan := true
 	o := setup.Options{
 		ConfigPath: path, SaveOnly: true, LocalServiceOnly: true,
 		PendingWorkspace: true, InstallerLAN: &lan, ObserveAssistant: noFixtureAssistant,
@@ -28,6 +30,9 @@ func TestInstallerBootstrapPreservesIdentityAndConfirmsOnlySelectedFolder(t *tes
 	if !created.Created || pending.WorkspaceConfirmed() || pending.LANAccessEnabled() || len(pending.ScanRoots) != 1 ||
 		!reflect.DeepEqual(pending.ScanRoots, pending.BrowseRoots) {
 		t.Fatal("unexpected silent bootstrap state")
+	}
+	if installerWorkspaceConfirmed(path, path+".legacy") {
+		t.Fatal("pending workspace is eligible for rule creation")
 	}
 	if _, err := setup.Run(t.Context(), o); err != nil {
 		t.Fatal(err)
@@ -48,6 +53,9 @@ func TestInstallerBootstrapPreservesIdentityAndConfirmsOnlySelectedFolder(t *tes
 		confirmed.Auth != pending.Auth || !reflect.DeepEqual(confirmed.ScanRoots, []string{root}) ||
 		!reflect.DeepEqual(confirmed.ScanRoots, confirmed.BrowseRoots) {
 		t.Fatal("explicit choice did not produce the expected grant")
+	}
+	if !installerWorkspaceConfirmed(path, path+".legacy") || !installerWorkspaceConfirmed(path+".missing", path) {
+		t.Fatal("confirmed config and valid legacy fallback must be eligible")
 	}
 
 	// Simulate a valid older host with multiple grants, unknown fields, a
@@ -118,6 +126,25 @@ func TestInstallerPreflightRequiresOfflineReport(t *testing.T) {
 		if validInstallerPreflight(bad, o) {
 			t.Fatal("unexpected installer report accepted")
 		}
+	}
+}
+
+func TestInstallerPreflightNeverCallsHostProbes(t *testing.T) {
+	root := t.TempDir()
+	o := setup.PreflightOptions{ConfigPath: filepath.Join(root, "config.json"), ScanRoot: root, BrowseRoot: root, InstallerSmoke: true}
+	r := setup.InspectPreflight(t.Context(), o, setup.PreflightProbes{
+		Platform: "darwin",
+		HomebrewOwner: func(context.Context) bool {
+			t.Error("installer smoke inspected Homebrew")
+			return false
+		},
+		Member: func(context.Context, string, config.Config, string, setup.PreflightHost) setup.PreflightObservation {
+			t.Error("installer smoke inspected host assistants or network")
+			return setup.PreflightObservation{}
+		},
+	}, nil)
+	if !validInstallerPreflight(r, o) {
+		t.Fatal("installer smoke did not produce a valid structural report")
 	}
 }
 

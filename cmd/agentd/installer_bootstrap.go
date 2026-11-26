@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"path/filepath"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
 )
 
 func validateBootstrapFlags(fs *flag.FlagSet, platform string, bootstrap, noPair, asJSON bool, root string) error {
@@ -20,4 +22,12 @@ func validateBootstrapFlags(fs *flag.FlagSet, platform string, bootstrap, noPair
 		return invalidOnboardingRequest(errors.New("安装器只能确认一个明确选择的绝对目录"))
 	}
 	return nil
+}
+
+func installerWorkspaceConfirmed(path, legacy string) bool {
+	snapshot := config.ReadPreflightSnapshot(path)
+	if !snapshot.Configured && snapshot.Code == "" {
+		snapshot = config.ReadPreflightSnapshot(legacy)
+	}
+	return snapshot.Configured && snapshot.Confirmed && snapshot.Code == ""
 }
