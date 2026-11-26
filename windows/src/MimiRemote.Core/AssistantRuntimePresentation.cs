@@ -106,26 +106,26 @@ public static class AssistantRuntimePresentation
                     DiagnosticCode: null);
 
             case "signed_out":
-            {
-                var signedOutCode = id switch
                 {
-                    "codex" => "codex_signed_out",
-                    "claude" => "claude_signed_out",
-                    "agy" => "agy_signed_out",
-                    "deepseek" => "deepseek_auth_failed",
-                    _ => "runtime_probe_failed",
-                };
-                return new AssistantPresentation(
-                    id,
-                    title,
-                    Enabled: true,
-                    Supported: true,
-                    Available: true,
-                    BadgeText: string.Equals(id, "deepseek", StringComparison.Ordinal) ? "需要更新启动链接" : "需要登录",
-                    DetailText: OnboardingCopyCatalog.LocalizedMessage(signedOutCode, checkId, title, entry.Version),
-                    QuotaText: FormatQuota(entry.RateLimits, entry.Reason),
-                    DiagnosticCode: signedOutCode);
-            }
+                    var signedOutCode = id switch
+                    {
+                        "codex" => "codex_signed_out",
+                        "claude" => "claude_signed_out",
+                        "agy" => "agy_signed_out",
+                        "deepseek" => "deepseek_auth_failed",
+                        _ => "runtime_probe_failed",
+                    };
+                    return new AssistantPresentation(
+                        id,
+                        title,
+                        Enabled: true,
+                        Supported: true,
+                        Available: true,
+                        BadgeText: string.Equals(id, "deepseek", StringComparison.Ordinal) ? "需要更新启动链接" : "需要登录",
+                        DetailText: OnboardingCopyCatalog.LocalizedMessage(signedOutCode, checkId, title, entry.Version),
+                        QuotaText: FormatQuota(entry.RateLimits, entry.Reason),
+                        DiagnosticCode: signedOutCode);
+                }
 
             case "disabled":
                 return new AssistantPresentation(
@@ -140,19 +140,19 @@ public static class AssistantRuntimePresentation
                     DiagnosticCode: null);
 
             case "unavailable":
-            {
-                var (code, detail) = TranslateUnavailableReason(id, checkId, title, entry.Reason, preflightCheck);
-                return new AssistantPresentation(
-                    id,
-                    title,
-                    Enabled: true,
-                    Supported: true,
-                    Available: true,
-                    BadgeText: "暂不可用",
-                    DetailText: detail,
-                    QuotaText: FormatQuota(entry.RateLimits, entry.Reason),
-                    DiagnosticCode: code);
-            }
+                {
+                    var (code, detail) = TranslateUnavailableReason(id, checkId, title, entry.Reason, preflightCheck);
+                    return new AssistantPresentation(
+                        id,
+                        title,
+                        Enabled: true,
+                        Supported: true,
+                        Available: true,
+                        BadgeText: "暂不可用",
+                        DetailText: detail,
+                        QuotaText: FormatQuota(entry.RateLimits, entry.Reason),
+                        DiagnosticCode: code);
+                }
 
             default:
                 return new AssistantPresentation(

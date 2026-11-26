@@ -38,10 +38,12 @@ public sealed class SetupViewModel : ClientPageViewModel
 
     public SetupViewModel(ClientContext context) : base(context)
     {
-        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context), context.VerifiedCapability);
+        wizard = new OnboardingWizardStateMachine(new ClientContextWizardBackend(context), context.VerifiedCapability)
+        {
+            RequestPathAsync = HandlePathPickerAsync,
+        };
         wizard.PropertyChanged += OnWizardPropertyChanged;
-        wizard.GateStateChanged += (_, _) => Context.UpdateGateFromPreflight(wizard.Report, wizard.PreflightError);
-        wizard.PathPickerRequested += (_, target) => _ = RunAsync(() => HandlePathPickerAsync(target));
+        wizard.GateEvaluated += (_, _) => Context.UpdateGateFromPreflight(wizard.Report, wizard.PreflightError);
         wizard.DeepSeekConnectRequested += (_, _) =>
         {
             if (Context.GateState == OnboardingGateState.Confirmed)
@@ -127,6 +129,7 @@ public sealed class SetupViewModel : ClientPageViewModel
     {
         if (Active)
         {
+            wizard.ReopenIfCompleted();
             timer.Start();
         }
         else
@@ -170,7 +173,7 @@ public sealed class SetupViewModel : ClientPageViewModel
         }
         if (!string.Equals(wizard.SelectedScanRoot, selected, StringComparison.OrdinalIgnoreCase))
         {
-            wizard.SetDraftScanRoot(selected);
+            await wizard.SelectWorkspaceRootAsync(selected, Lifetime.Token);
         }
         var confirmCreate = false;
         if (!Directory.Exists(selected))
@@ -269,7 +272,7 @@ public sealed class SetupViewModel : ClientPageViewModel
                         onProgress(check);
                     }
                 };
-            return context.Agent.PreflightAsync(options, marshaled, "windows", cancellationToken);
+            return context.ReadPreflightAsync(options, marshaled, cancellationToken);
         }
 
         public Task<SetupReceipt> SetupNoPairAsync(string scanRoot, OnboardingSetupOptions options, CancellationToken cancellationToken) =>
@@ -282,9 +285,9 @@ public sealed class SetupViewModel : ClientPageViewModel
             context.Agent.PairAsync(network, cancellationToken);
 
         public Task SetRuntimePathAsync(string runtimeId, string value, CancellationToken cancellationToken) =>
-            new ModuleCommands(context.Agent).SetRuntimePathAsync(runtimeId, value, restartIfRequired: false, cancellationToken);
+            new ModuleCommands(context.Agent).SetRuntimePathAsync(runtimeId, value, restartIfRequired: true, cancellationToken);
 
-        public Task UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken) =>
+        public Task<bool> UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken) =>
             new ModuleCommands(context.Agent).UpdateWorkspaceConfigAsync(scanRoot, browseRoot, cancellationToken);
 
         public Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken) =>
@@ -302,11 +305,13 @@ public sealed class SetupViewModel : ClientPageViewModel
             }
         }
 
-        public async Task RestartServiceAsync(CancellationToken cancellationToken) =>
-            await context.Agent.RunAsync(["restart", "--wait", "60s", "--no-pair", "--json"], cancellationToken);
-
-        public async Task RunSafeDoctorFixAsync(CancellationToken cancellationToken) =>
-            await context.Agent.RunAsync(["doctor", "--fix", "--json"], cancellationToken);
+        public async Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken)
+        {
+            var json = await context.Agent.RunAsync(["restart", "--wait", "60s", "--no-pair", "--json"], cancellationToken);
+            return OnboardingCopyCatalog.TryDecodeUpReadinessReceipt(json, out var receipt, out _)
+                ? receipt
+                : throw new InvalidDataException("后台服务尚未确认就绪。");
+        }
 
         public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken) =>
             context.RunLanFirewallMaintenance(cancellationToken);

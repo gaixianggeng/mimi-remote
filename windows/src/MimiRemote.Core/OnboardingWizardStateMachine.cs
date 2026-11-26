@@ -170,7 +170,10 @@ public sealed record OnboardingWizardRow(
     bool HasSecondaryAction,
     bool CanResetPin,
     bool Skipped,
-    string CandidateSummary);
+    string CandidateSummary)
+{
+    public string Title => OnboardingCopyCatalog.Checks.FirstOrDefault(spec => spec.Id == Check.Id)?.TitleZh ?? "环境检查";
+}
 
 public interface IOnboardingWizardBackend
 {
@@ -182,11 +185,10 @@ public interface IOnboardingWizardBackend
     Task<UpReadinessReceipt> UpAsync(int waitSeconds, CancellationToken cancellationToken);
     Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken);
     Task SetRuntimePathAsync(string runtimeId, string value, CancellationToken cancellationToken);
-    Task UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken);
+    Task<bool> UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken);
     Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken);
     Task EnableTransportAsync(string transport, CancellationToken cancellationToken);
-    Task RestartServiceAsync(CancellationToken cancellationToken);
-    Task RunSafeDoctorFixAsync(CancellationToken cancellationToken);
+    Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken);
     Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken);
     bool DirectoryExists(string path);
     void CreateDirectory(string path);
@@ -232,6 +234,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     private string? committedScanRoot;
     private bool hasCommittedCurrentDraft;
     private bool pendingSaveReadback;
+    private bool pendingRestart;
     private string? uncertainSaveScanRoot;
     private string? uncertainSaveBrowseRoot;
 
@@ -259,8 +262,8 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     private ulong pairingGeneration;
     private CancellationTokenSource? pairingCts;
 
-    public event EventHandler<OnboardingGateState>? GateStateChanged;
-    public event EventHandler<string>? PathPickerRequested;
+    public event EventHandler<OnboardingGateState>? GateEvaluated;
+    public Func<string, Task>? RequestPathAsync { get; init; }
     public event EventHandler? DeepSeekConnectRequested;
     public event EventHandler? WizardCompleted;
     public event EventHandler<string?>? IssuedTicketChanged;
@@ -318,8 +321,8 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             if (SetProperty(ref gateState, value))
             {
                 OnPropertyChanged(nameof(GateStateDescription));
-                GateStateChanged?.Invoke(this, value);
             }
+            GateEvaluated?.Invoke(this, value);
         }
     }
 
@@ -461,7 +464,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
     }
 
-    public bool CanRetryServiceStart => IsConfigured && !IsStartingService && !IsSavingSetup && ServicePhase != OnboardingServicePhase.Ready;
+    public bool CanRetryServiceStart => IsConfigured && WorkspaceConfirmed && PreflightError is null && GateState != OnboardingGateState.RecoveryLocked && !IsStartingService && !IsSavingSetup && ServicePhase != OnboardingServicePhase.Ready;
 
     public string SelectedTransport
     {
@@ -586,7 +589,9 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     public bool CanIssuePairingQr =>
         !IsCheckingPreflight
         && !IsEnablingTransport
+        && !pendingRestart
         && PreflightError is null
+        && GateState == OnboardingGateState.Confirmed
         && Report is { Stage: "pair", Ok: true }
         && IsTransportReady(SelectedTransport);
 
@@ -594,6 +599,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         CurrentStep == OnboardingWizardStep.ConnectPhone
         && !IsCheckingPreflight
         && !IsEnablingTransport
+        && GateState == OnboardingGateState.Confirmed
         && Report is { Stage: "pair", Configured: true }
         && SelectedTransportItem is { CanEnableInPlace: true };
 
@@ -607,6 +613,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         && !IsMutating
         && !IsCheckingPreflight
         && PreflightError is null
+        && !pendingRestart
         && Report is { Configured: true, WorkspaceConfirmed: true }
         && string.Equals(GetCheck("service_daemon")?.State, "ok", StringComparison.Ordinal)
         && GateState == OnboardingGateState.Confirmed;
@@ -654,7 +661,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         StepError = null;
         NeedsCreateDirectoryConfirmation = false;
         CurrentStep = step;
-        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
+        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
     }
 
     public Task GoBackAsync(CancellationToken cancellationToken = default)
@@ -706,9 +713,9 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             var finalReport = await backend.PreflightAsync(
                 options,
                 streamed => ApplyStreamedCheck(streamed, targetStage, generation),
-                cts.Token).ConfigureAwait(false);
+                cts.Token);
 
-            if (cts.Token.IsCancellationRequested || generation != preflightGeneration || disposed)
+            if (cts.IsCancellationRequested || generation != preflightGeneration || disposed)
             {
                 return;
             }
@@ -725,6 +732,14 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 committedScanRoot = null;
             }
 
+            if (options.ScanRoot is null)
+            {
+                committedScanRoot = finalReport.Configured ? finalReport.ScanRoot : null;
+                PersistedBrowseRoot = finalReport.Configured
+                    && !string.Equals(finalReport.BrowseRoot, finalReport.ScanRoot, StringComparison.OrdinalIgnoreCase)
+                    ? finalReport.BrowseRoot
+                    : null;
+            }
             ApplyFinalReport(finalReport);
         }
         catch (OperationCanceledException)
@@ -737,13 +752,17 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         catch (Exception error) when (error is InvalidOperationException or InvalidDataException
             or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            if (cts.Token.IsCancellationRequested || generation != preflightGeneration || disposed)
+            if (cts.IsCancellationRequested || generation != preflightGeneration || disposed)
             {
                 return;
             }
             IsCheckingPreflight = false;
             InvalidateIssuedPairing();
             var diag = DiagnosticFromException(error, "service_daemon");
+            Report = null;
+            Checks = [];
+            resolvedDiagnostics.Clear();
+            RebuildRowsAndTransports();
             PreflightError = diag;
             GateState = OnboardingNavigationGate.Evaluate(null, diag);
             if (diag.AllowedFix is { Kind: "open_settings", Target: "host_recovery" })
@@ -770,7 +789,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     {
         SetDraftScanRoot(path);
         StepError = null;
-        await RunPreflightAsync("setup", cancellationToken).ConfigureAwait(false);
+        await RunPreflightAsync("setup", cancellationToken);
     }
 
     public void CancelCreateDirectoryConfirmation() => NeedsCreateDirectoryConfirmation = false;
@@ -783,7 +802,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
         if (pendingSaveReadback)
         {
-            await RunPreflightAsync("setup", cancellationToken).ConfigureAwait(false);
+            await RunPreflightAsync("setup", cancellationToken);
             return;
         }
         var scanRoot = SelectedScanRoot.Trim();
@@ -799,7 +818,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             };
             return;
         }
-        if (Report is not null && !CanProceedFromWorkspaceSelection)
+        if (!CanProceedFromWorkspaceSelection || GateState == OnboardingGateState.RecoveryLocked)
         {
             return;
         }
@@ -853,14 +872,14 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 // Existing or pending-confirmation config: update via `workspace --scan-root [--browse-root]`, never replay `setup --no-pair`.
                 var preserveDistinctBrowse = !string.IsNullOrWhiteSpace(PersistedBrowseRoot);
                 var needsWorkspaceUpdate = !WorkspaceConfirmed
-                    || !string.Equals(Report?.ScanRoot, scanRoot, StringComparison.OrdinalIgnoreCase)
-                    || (!preserveDistinctBrowse && !string.Equals(Report?.BrowseRoot, scanRoot, StringComparison.OrdinalIgnoreCase));
+                    || !string.Equals(committedScanRoot, scanRoot, StringComparison.OrdinalIgnoreCase);
                 if (needsWorkspaceUpdate)
                 {
-                    await backend.UpdateWorkspaceAsync(
+                    var changed = await backend.UpdateWorkspaceAsync(
                         scanRoot,
                         preserveDistinctBrowse ? null : scanRoot,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken);
+                    pendingRestart |= changed && GetCheck("service_daemon")?.State == "ok";
                 }
                 HasCommittedConfig = true;
                 committedScanRoot = scanRoot;
@@ -880,7 +899,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                     Assistants = DraftAssistantsSnapshot,
                     VerifiedConfigured = false,
                 };
-                var receipt = await backend.SetupNoPairAsync(scanRoot, setupOptions, cancellationToken).ConfigureAwait(false);
+                var receipt = await backend.SetupNoPairAsync(scanRoot, setupOptions, cancellationToken);
                 HasCommittedConfig = true;
                 committedScanRoot = string.IsNullOrWhiteSpace(receipt.ScanRoot) ? scanRoot : receipt.ScanRoot;
                 hasCommittedCurrentDraft = true;
@@ -910,6 +929,8 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             StepError = diag;
             if (diag.AllowedFix is { Kind: "open_settings", Target: "host_recovery" })
             {
+                Report = null;
+                PreflightError = diag;
                 RecoveryDiagnostic = diag;
                 GateState = OnboardingGateState.RecoveryLocked;
             }
@@ -929,20 +950,20 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
 
         if (pendingSaveReadback)
         {
-            await RunPreflightAsync("setup", cancellationToken).ConfigureAwait(false);
+            await RunPreflightAsync("setup", cancellationToken);
             return;
         }
 
         if (saved)
         {
             CurrentStep = OnboardingWizardStep.ServiceAndPermissions;
-            await EnsureServiceReadyAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureServiceReadyAsync(cancellationToken);
         }
     }
 
     public async Task EnsureServiceReadyAsync(CancellationToken cancellationToken = default)
     {
-        if (disposed || IsStartingService)
+        if (disposed || IsStartingService || !WorkspaceConfirmed || PreflightError is not null || GateState == OnboardingGateState.RecoveryLocked)
         {
             return;
         }
@@ -965,11 +986,14 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         ServicePhase = OnboardingServicePhase.StartingService;
         try
         {
-            var receipt = await backend.UpAsync(60, cancellationToken).ConfigureAwait(false);
+            var receipt = pendingRestart
+                ? await backend.RestartServiceAsync(cancellationToken)
+                : await backend.UpAsync(60, cancellationToken);
             if (!receipt.ServiceOk)
             {
                 throw new InvalidOperationException("后台服务尚未确认就绪。请重试。");
             }
+            pendingRestart = false;
             ServicePhase = OnboardingServicePhase.Ready;
         }
         catch (OperationCanceledException)
@@ -989,12 +1013,13 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             IsStartingService = false;
         }
 
-        await RunPreflightAsync("pair", cancellationToken).ConfigureAwait(false);
+        await RunPreflightAsync("pair", cancellationToken);
     }
 
     public async Task SelectRuntimePathAsync(string runtimeId, string path, CancellationToken cancellationToken = default)
     {
-        if (disposed || IsCompleted || IsApplyingFix)
+        if (disposed || IsCompleted || IsApplyingFix || Report is null
+            || GateState is OnboardingGateState.PendingConfirmation or OnboardingGateState.RecoveryLocked)
         {
             return;
         }
@@ -1015,13 +1040,13 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         if (!IsConfigured)
         {
             draftRuntimePaths[runtimeId] = trimmed;
-            await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
+            await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
             return;
         }
         IsApplyingFix = true;
         try
         {
-            await backend.SetRuntimePathAsync(runtimeId, trimmed, cancellationToken).ConfigureAwait(false);
+            await backend.SetRuntimePathAsync(runtimeId, trimmed, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1037,7 +1062,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         {
             IsApplyingFix = false;
         }
-        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
+        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
     }
 
     public Task ResetRuntimePathToAutoAsync(string runtimeId, CancellationToken cancellationToken = default) =>
@@ -1050,7 +1075,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         {
             return;
         }
-        await DispatchTrustedFixAsync(resolved.AllowedFix, checkId, resolved.Code, resolved, cancellationToken).ConfigureAwait(false);
+        await DispatchTrustedFixAsync(resolved.AllowedFix, checkId, resolved.Code, resolved, cancellationToken);
     }
 
     public async Task PerformCheckSecondaryActionAsync(string checkId, CancellationToken cancellationToken = default)
@@ -1060,7 +1085,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         {
             return;
         }
-        await DispatchTrustedFixAsync(resolved.SecondaryFix, checkId, resolved.Code, resolved, cancellationToken).ConfigureAwait(false);
+        await DispatchTrustedFixAsync(resolved.SecondaryFix, checkId, resolved.Code, resolved, cancellationToken);
     }
 
     public async Task PerformDiagnosticActionAsync(OnboardingResolvedDiagnostic diagnostic, CancellationToken cancellationToken = default)
@@ -1074,7 +1099,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             diagnostic.Step ?? "service_daemon",
             diagnostic.Code,
             diagnostic,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
     }
 
     /// <summary>Selecting a transport only updates selection and clears previous ticket; zero writes.</summary>
@@ -1096,7 +1121,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     public async Task EnableSelectedTransportAsync(string? transport = null, CancellationToken cancellationToken = default)
     {
         var target = transport ?? SelectedTransport;
-        if (disposed || CurrentStep != OnboardingWizardStep.ConnectPhone || IsEnablingTransport
+        if (disposed || GateState != OnboardingGateState.Confirmed || CurrentStep != OnboardingWizardStep.ConnectPhone || IsEnablingTransport
             || Report is not { Stage: "pair", Configured: true }
             || !OrderedTransportIds.Contains(target, StringComparer.Ordinal))
         {
@@ -1111,6 +1136,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         hasUserSelectedTransport = true;
         PairingError = null;
         InvalidateIssuedPairing();
+        var selection = pairingGeneration;
 
         if (string.Equals(target, "lan", StringComparison.Ordinal))
         {
@@ -1125,7 +1151,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 IsEnablingTransport = true;
                 try
                 {
-                    var configured = await backend.RunLanFirewallMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                    var configured = await backend.RunLanFirewallMaintenanceAsync(cancellationToken);
                     if (!configured)
                     {
                         PairingError = GetDiagnostic("network_lan") ?? new OnboardingResolvedDiagnostic
@@ -1153,10 +1179,10 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 {
                     IsEnablingTransport = false;
                 }
-                await RunPreflightAsync("pair", cancellationToken).ConfigureAwait(false);
-                if (IsTransportReady("lan"))
+                await RunPreflightAsync("pair", cancellationToken);
+                if (selection == pairingGeneration && IsTransportReady("lan"))
                 {
-                    await IssuePairingAsync("lan", cancellationToken).ConfigureAwait(false);
+                    await IssuePairingAsync("lan", cancellationToken);
                 }
                 return;
             }
@@ -1170,7 +1196,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         IsEnablingTransport = true;
         try
         {
-            await backend.EnableTransportAsync(target, cancellationToken).ConfigureAwait(false);
+            await backend.EnableTransportAsync(target, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1187,10 +1213,10 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             IsEnablingTransport = false;
         }
 
-        await RunPreflightAsync("pair", cancellationToken).ConfigureAwait(false);
-        if (CanIssuePairingQr && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
+        await RunPreflightAsync("pair", cancellationToken);
+        if (selection == pairingGeneration && CanIssuePairingQr && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
         {
-            await IssuePairingAsync(target, cancellationToken).ConfigureAwait(false);
+            await IssuePairingAsync(target, cancellationToken);
         }
     }
 
@@ -1212,15 +1238,16 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         PairingError = null;
         try
         {
-            var receipt = await backend.PairAsync(target, cts.Token).ConfigureAwait(false);
-            if (cts.Token.IsCancellationRequested || generation != pairingGeneration || disposed
+            var receipt = await backend.PairAsync(target, cts.Token);
+            if (cts.IsCancellationRequested || generation != pairingGeneration || disposed
                 || CurrentStep != OnboardingWizardStep.ConnectPhone
                 || !string.Equals(SelectedTransport, target, StringComparison.Ordinal)
                 || !CanIssuePairingQr)
             {
                 return;
             }
-            if (!OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
+                || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
                 || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
                 || expiry <= backend.Now())
             {
@@ -1248,7 +1275,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         catch (Exception error) when (error is InvalidOperationException or InvalidDataException
             or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            if (cts.Token.IsCancellationRequested || generation != pairingGeneration || disposed)
+            if (cts.IsCancellationRequested || generation != pairingGeneration || disposed)
             {
                 return;
             }
@@ -1317,6 +1344,21 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         }
     }
 
+    public void ReopenIfCompleted()
+    {
+        if (IsCompleted)
+        {
+            IsCompleted = false;
+            hasUserEditedScanRoot = false;
+            hasCommittedCurrentDraft = false;
+            HasCommittedConfig = false;
+            SelectedScanRoot = "";
+            IsRecoveryVisible = false;
+            hasUserSelectedTransport = false;
+            CurrentStep = OnboardingWizardStep.EnvironmentCheck;
+        }
+    }
+
     public bool CompleteWizard()
     {
         if (!CanCompleteWizard)
@@ -1342,7 +1384,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
 
     private OnboardingPreflightOptions BuildPreflightOptions(string stage)
     {
-        var scanRoot = string.Equals(stage, "setup", StringComparison.Ordinal) && !pendingSaveReadback && !string.IsNullOrWhiteSpace(SelectedScanRoot)
+        var scanRoot = string.Equals(stage, "setup", StringComparison.Ordinal) && hasUserEditedScanRoot && !pendingSaveReadback && !string.IsNullOrWhiteSpace(SelectedScanRoot)
             ? SelectedScanRoot
             : null;
         var browseRoot = scanRoot is not null ? EffectiveBrowseRoot : null;
@@ -1365,7 +1407,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
 
     private void ApplyStreamedCheck(OnboardingCheck check, string stage, ulong generation)
     {
-        if (disposed || generation != preflightGeneration)
+        if (disposed || generation != preflightGeneration || !IsCheckingPreflight)
         {
             return;
         }
@@ -1442,10 +1484,6 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         {
             SelectedScanRoot = finalReport.ScanRoot;
         }
-        PersistedBrowseRoot = finalReport.Configured
-            && !string.Equals(finalReport.BrowseRoot, finalReport.ScanRoot, StringComparison.OrdinalIgnoreCase)
-            ? finalReport.BrowseRoot
-            : null;
         ScanRootExists = string.Equals(SelectedScanRoot, finalReport.ScanRoot, StringComparison.OrdinalIgnoreCase)
             ? finalReport.ScanRootExists
             : Path.IsPathFullyQualified(SelectedScanRoot) && backend.DirectoryExists(SelectedScanRoot);
@@ -1458,7 +1496,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         var serviceCheck = GetCheck("service_daemon");
         if (serviceCheck is not null)
         {
-            if (string.Equals(serviceCheck.State, "ok", StringComparison.Ordinal))
+            if (!pendingRestart && string.Equals(serviceCheck.State, "ok", StringComparison.Ordinal))
             {
                 ServicePhase = OnboardingServicePhase.Ready;
                 ServiceError = null;
@@ -1513,10 +1551,10 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 switch (fix.Target)
                 {
                     case "connections":
-                        await GoToStepAsync(OnboardingWizardStep.ConnectPhone, cancellationToken).ConfigureAwait(false);
+                        await GoToStepAsync(OnboardingWizardStep.ConnectPhone, cancellationToken);
                         break;
                     case "assistants":
-                        await GoToStepAsync(OnboardingWizardStep.EnvironmentCheck, cancellationToken).ConfigureAwait(false);
+                        await GoToStepAsync(OnboardingWizardStep.EnvironmentCheck, cancellationToken);
                         break;
                     case "host_recovery":
                         RecoveryDiagnostic = diagnostic;
@@ -1539,21 +1577,24 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 if (string.Equals(fix.Target, "workspace_root", StringComparison.Ordinal)
                     && CurrentStep != OnboardingWizardStep.WorkspaceSelection)
                 {
-                    await GoToStepAsync(OnboardingWizardStep.WorkspaceSelection, cancellationToken).ConfigureAwait(false);
+                    await GoToStepAsync(OnboardingWizardStep.WorkspaceSelection, cancellationToken);
                 }
-                PathPickerRequested?.Invoke(this, fix.Target);
+                if (RequestPathAsync is { } requestPath)
+                {
+                    await requestPath(fix.Target);
+                }
                 break;
 
             case "run_fix":
                 if (fix.Action is not null)
                 {
-                    await DispatchRunFixActionAsync(fix.Action, checkId, code, cancellationToken).ConfigureAwait(false);
+                    await DispatchRunFixActionAsync(fix.Action, checkId, code, cancellationToken);
                 }
                 break;
 
             case "retry":
                 StepError = null;
-                await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
+                await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
                 break;
 
             case "skip":
@@ -1567,6 +1608,14 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
     {
         if (IsApplyingFix || IsCompleted || Report is null
             || !OnboardingCopyCatalog.RunFixSpecs.TryGetValue(action, out var spec))
+        {
+            return;
+        }
+        if (action != "doctor_fix" && GateState == OnboardingGateState.RecoveryLocked)
+        {
+            return;
+        }
+        if (action != "save_setup" && Report.Configured && GateState == OnboardingGateState.PendingConfirmation)
         {
             return;
         }
@@ -1591,37 +1640,37 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         switch (action)
         {
             case "save_setup":
-                await GoToStepAsync(OnboardingWizardStep.WorkspaceSelection, cancellationToken).ConfigureAwait(false);
+                await GoToStepAsync(OnboardingWizardStep.WorkspaceSelection, cancellationToken);
                 break;
 
             case "enable_codex":
             case "enable_claude":
             case "enable_agy":
-            {
-                var runtimeId = action["enable_".Length..];
-                if (!IsConfigured)
                 {
-                    draftAssistants[runtimeId] = "enabled";
-                    await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
-                    return;
+                    var runtimeId = action["enable_".Length..];
+                    if (!IsConfigured)
+                    {
+                        draftAssistants[runtimeId] = "enabled";
+                        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
+                        return;
+                    }
+                    await RunGuardedFixAsync(
+                        () => backend.EnableAssistantAsync(runtimeId, cancellationToken),
+                        checkId,
+                        cancellationToken);
+                    break;
                 }
-                await RunGuardedFixAsync(
-                    () => backend.EnableAssistantAsync(runtimeId, cancellationToken),
-                    checkId,
-                    cancellationToken).ConfigureAwait(false);
-                break;
-            }
 
             case "enable_tailscale":
-                await EnableSelectedTransportAsync("tailscale", cancellationToken).ConfigureAwait(false);
+                await EnableSelectedTransportAsync("tailscale", cancellationToken);
                 break;
 
             case "enable_tailcat":
-                await EnableSelectedTransportAsync("tailcat", cancellationToken).ConfigureAwait(false);
+                await EnableSelectedTransportAsync("tailcat", cancellationToken);
                 break;
 
             case "enable_lan":
-                await EnableSelectedTransportAsync("lan", cancellationToken).ConfigureAwait(false);
+                await EnableSelectedTransportAsync("lan", cancellationToken);
                 break;
 
             case "connect_deepseek":
@@ -1633,21 +1682,18 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 {
                     CurrentStep = OnboardingWizardStep.ServiceAndPermissions;
                 }
-                await EnsureServiceReadyAsync(cancellationToken).ConfigureAwait(false);
+                await EnsureServiceReadyAsync(cancellationToken);
                 break;
 
             case "restart_service":
                 await RunGuardedFixAsync(
                     () => backend.RestartServiceAsync(cancellationToken),
                     "service_daemon",
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken);
                 break;
 
             case "doctor_fix":
-                await RunGuardedFixAsync(
-                    () => backend.RunSafeDoctorFixAsync(cancellationToken),
-                    "config_store",
-                    cancellationToken).ConfigureAwait(false);
+                backend.OpenSettings("host_recovery");
                 break;
         }
     }
@@ -1658,7 +1704,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         StepError = null;
         try
         {
-            await action().ConfigureAwait(false);
+            await action();
         }
         catch (OperationCanceledException)
         {
@@ -1674,7 +1720,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         {
             IsApplyingFix = false;
         }
-        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken).ConfigureAwait(false);
+        await RunPreflightAsync(PreflightStageForCurrentStep, cancellationToken);
     }
 
     private void RebuildRowsAndTransports()
@@ -1683,7 +1729,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
         foreach (var check in Checks)
         {
             var diag = GetDiagnostic(check.Id);
-            var message = diag is { Trusted: true } ? diag.Message : check.Detail;
+            var message = diag is { Trusted: true } ? diag.Message : OnboardingCopyCatalog.SafeFallbackCopy;
             var primary = diag is { Trusted: true } ? diag.AllowedFix : null;
             var secondary = diag is { Trusted: true } ? diag.SecondaryFix : null;
             var runtimeId = RuntimeIdForCheck(check.Id);
@@ -1730,7 +1776,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
-            var canEnable = !ready && ((enabled == false && available) || firewallBlocked);
+            var canEnable = !ready && diag is { Trusted: true } && (firewallBlocked || (!enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}")));
             var badge = ready
                 ? "已就绪"
                 : check is null
@@ -1744,7 +1790,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                                 : "暂不可用";
             var detail = diag is { Trusted: true }
                 ? diag.Message
-                : check?.Detail ?? "等待检查连接状态。";
+                : OnboardingCopyCatalog.SafeFallbackCopy;
             list.Add(new OnboardingTransportItem(
                 id,
                 title,
@@ -1889,7 +1935,7 @@ public sealed class OnboardingWizardStateMachine : ObservableObject, IDisposable
                 _ => c.Outcome,
             };
             var ver = string.IsNullOrWhiteSpace(c.Version) ? "" : $" ({c.Version})";
-            lines.Add($"{outcomeText}{ver}：{c.Path}");
+            lines.Add(string.Create(CultureInfo.InvariantCulture, $"候选 {lines.Count + 1}：{outcomeText}{ver}"));
         }
         return string.Join("\n", lines);
     }

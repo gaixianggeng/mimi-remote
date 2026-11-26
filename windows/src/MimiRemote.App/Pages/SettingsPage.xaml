@@ -35,7 +35,7 @@
             </toolkit:SettingsCard>
             <StackPanel Orientation="Horizontal" Spacing="10">
                 <Button Content="保存设置" Command="{x:Bind ViewModel.SaveCommand}"/>
-                <Button Content="发送测试通知" Command="{x:Bind ViewModel.NotifyCommand}"/>
+                <Button Content="发送测试通知" IsEnabled="{x:Bind ViewModel.IsGateConfirmed, Mode=OneWay}" Command="{x:Bind ViewModel.NotifyCommand}"/>
             </StackPanel>
 
             <toolkit:SettingsExpander Header="代码目录与浏览范围（可选）"

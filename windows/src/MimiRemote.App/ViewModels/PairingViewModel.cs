@@ -84,11 +84,6 @@ public sealed class PairingViewModel : ClientPageViewModel
             return;
         }
         await session.RefreshAsync(Lifetime.Token);
-        if (Context.PairAfterSetup && Active && session.CanGenerate)
-        {
-            Context.PairAfterSetup = false;
-            await session.GenerateAsync(Lifetime.Token);
-        }
     }
 
     private async void OnTicketChanged(object? sender, string? pairUrl)
@@ -129,7 +124,7 @@ public sealed class PairingViewModel : ClientPageViewModel
     private sealed class ClientContextPairingBackend(ClientContext context) : IPairingSessionBackend
     {
         public Task<OnboardingPreflightReport> PreflightPairAsync(CancellationToken cancellationToken) =>
-            context.Agent.PreflightAsync(
+            context.ReadPreflightAsync(
                 new OnboardingPreflightOptions
                 {
                     Stage = "pair",
@@ -138,7 +133,6 @@ public sealed class PairingViewModel : ClientPageViewModel
                     VerifiedCapability = context.VerifiedCapability,
                 },
                 onProgress: null,
-                platform: "windows",
                 cancellationToken: cancellationToken);
 
         public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>

@@ -36,7 +36,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Spacing="4">
-                                    <TextBlock Text="{x:Bind Check.Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+                                    <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
                                     <TextBlock Text="{x:Bind StateBadge}" Style="{StaticResource CaptionTextBlockStyle}"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                                     <TextBlock Text="{x:Bind Message}" TextWrapping="Wrap"/>
@@ -60,10 +60,7 @@
                                         <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}"/>
                                         <TextBlock Text="{x:Bind StatusBadge}" Style="{StaticResource CaptionTextBlockStyle}"
                                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                        <TextBlock Text="{x:Bind Message}" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{x:Bind FixHint}" Visibility="{x:Bind HasFixHint}"
-                                            Style="{StaticResource CaptionTextBlockStyle}"
-                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
+                                        <TextBlock Text="{x:Bind Detail}" TextWrapping="Wrap"/>
                                     </StackPanel>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

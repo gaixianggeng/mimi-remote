@@ -183,7 +183,7 @@ public sealed class OnboardingViewModelTests
                 });
                 await slowGate.Task.WaitAsync(ct);
             }
-            return BuildWindowsReport(stage: "setup", configured: false, workspaceConfirmed: false, scanRoot: scanDir, browseRoot: scanDir, codexDisabledAvailable: true);
+            return BuildWindowsReport(stage: "setup", configured: false, workspaceConfirmed: false, scanRoot: scanDir, browseRoot: scanDir, codexReady: false, codexDisabledAvailable: true);
         };
 
         using var sm = new OnboardingWizardStateMachine(backend);
@@ -258,6 +258,9 @@ public sealed class OnboardingViewModelTests
         Assert.True(controller.CanCopyLink);
         Assert.Contains("03:00", controller.CountdownText, StringComparison.Ordinal);
 
+        await controller.RefreshAsync();
+        Assert.True(controller.HasActiveTicket);
+
         // Copy copies the REAL pair_url, never Endpoint.
         Assert.True(controller.CopyPairingLink());
         Assert.Equal(realPairUrl, backend.LastCopiedText);
@@ -295,6 +298,7 @@ public sealed class OnboardingViewModelTests
                 tailcatReady: true);
             return Task.CompletedTask;
         };
+        backend.NextTicket = null;
         await controller.EnableSelectedTransportAsync();
         Assert.Equal(["tailscale"], backend.EnabledTransports);
         Assert.True(controller.HasActiveTicket);
@@ -463,11 +467,171 @@ public sealed class OnboardingViewModelTests
         await vm.FixCheckCommand.ExecuteAsync("config_store");
         Assert.Contains(context.Agent.Calls, c => c.Length == 3 && c[0] == "doctor" && c[1] == "--fix" && c[2] == "--json");
 
+        context.Agent.RunHandler = (_, _) => Task.FromResult(
+            """{"ok":false,"checks":[{"name":"private-doctor-name","message":"private-doctor-message","fix":"private-harness-link"}]}""");
+        await vm.DoctorCommand.ExecuteAsync(null);
+        Assert.DoesNotContain("private-", vm.Output, StringComparison.Ordinal);
+        Assert.Equal("其他诊断项", Assert.Single(vm.DoctorItems).Title);
+
         // Recovery paths are shown read-only and log scrubber strips secrets.
         var scrubbed = DiagnosticSanitizer.ScrubLogText("Authorization: Bearer topsecret123 mimiremote://pair?pair_sig=abc eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig1234567890");
         Assert.DoesNotContain("topsecret123", scrubbed, StringComparison.Ordinal);
         Assert.DoesNotContain("pair_sig=abc", scrubbed, StringComparison.Ordinal);
         Assert.DoesNotContain("eyJhbGci", scrubbed, StringComparison.Ordinal);
+        var structured = DiagnosticSanitizer.ScrubLogText("""{"grant":"private-grant","path":"private-path","socket":"wss://example.invalid/private"}""");
+        Assert.DoesNotContain("private", structured, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ConfirmedFolderSelectionCommitsTheDraftAndReloadsTheRunningServiceOnce()
+    {
+        var oldRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "previous-workspace"));
+        var nextRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "selected-workspace"));
+        var backend = new FakeWizardBackend { ExistingDirs = { oldRoot, nextRoot } };
+        backend.OnPreflight = (options, _, _) =>
+        {
+            var root = options.ScanRoot ?? backend.WorkspaceCalls.LastOrDefault().ScanRoot ?? oldRoot;
+            return Task.FromResult(BuildWindowsReport(options.Stage, true, true, scanRoot: root, serviceOk: true));
+        };
+        using var wizard = new OnboardingWizardStateMachine(backend);
+        await wizard.StartAsync();
+        await wizard.ProceedToWorkspaceStepAsync();
+        await wizard.SelectWorkspaceRootAsync(nextRoot);
+        Assert.Equal(nextRoot, wizard.Report!.ScanRoot);
+        Assert.Empty(backend.WorkspaceCalls);
+        await wizard.SaveWorkspaceAndContinueAsync();
+
+        var call = Assert.Single(backend.WorkspaceCalls);
+        Assert.Equal(nextRoot, call.ScanRoot);
+        Assert.Equal(nextRoot, call.BrowseRoot);
+        Assert.Equal(1, backend.RestartCalls);
+        Assert.Equal(0, backend.UpCallCount);
+        Assert.Empty(backend.SetupCalls);
+    }
+
+    [Fact]
+    public async Task FailedPreflightRevokesConfirmedNavigationAndCannotWriteOrStart()
+    {
+        var context = new ClientContext();
+        var root = Path.GetFullPath(Path.GetTempPath());
+        context.Agent.PreflightHandler = (_, _, _) => Task.FromResult(BuildWindowsReport("setup", true, true, root));
+        using var vm = new SetupViewModel(context);
+        await vm.RefreshCommand.ExecuteAsync(null);
+        Assert.Equal(OnboardingGateState.Confirmed, context.GateState);
+
+        context.Agent.PreflightHandler = (_, _, _) => throw new OnboardingCliException(new OnboardingResolvedDiagnostic
+        {
+            Step = "config_store",
+            Code = "config_invalid",
+            Message = "需要恢复配置。",
+        });
+        await vm.RefreshCommand.ExecuteAsync(null);
+        Assert.Equal(OnboardingGateState.RecoveryLocked, context.GateState);
+        Assert.Null(vm.Wizard.Report);
+        await vm.FinishCommand.ExecuteAsync(null);
+        await vm.RetryServiceCommand.ExecuteAsync(null);
+        Assert.All(context.Agent.Calls, call => Assert.Equal("preflight", call[0]));
+    }
+
+    [Fact]
+    public async Task RowActionAwaitsTheNativeRuntimePicker()
+    {
+        var root = Path.GetFullPath(Path.GetTempPath());
+        var binary = Path.Combine(root, "fixture.exe");
+        var context = new ClientContext { PickFile = () => Task.FromResult<string?>(binary) };
+        var report = BuildWindowsReport("setup", false, false, root, codexReady: false);
+        var checks = report.Checks.Select(row => row.Id != "assistant_codex" ? row : row with
+        {
+            State = "error",
+            Code = "runtime_path_invalid",
+            Fix = OnboardingFix.ChoosePath("codex_bin"),
+        }).ToArray();
+        context.Agent.PreflightHandler = (_, _, _) => Task.FromResult(report with { Checks = checks });
+        using var vm = new SetupViewModel(context);
+        await vm.RefreshCommand.ExecuteAsync(null);
+        await vm.RowPrimaryActionCommand.ExecuteAsync("assistant_codex");
+        Assert.Contains(("codex", binary), vm.Wizard.DraftRuntimePathsSnapshot);
+    }
+
+    [Fact]
+    public async Task PairingDiscardsMismatchedAndLateReceipts()
+    {
+        var backend = new FakePairingBackend(() => DateTimeOffset.UnixEpoch)
+        {
+            Report = BuildWindowsReport("pair", true, true, serviceOk: true, tailscaleReady: true),
+        };
+        using var session = new PairingSessionController(backend);
+        session.SetActive(true);
+        await session.RefreshAsync();
+        var receipt = new PairingTicketReceipt
+        {
+            PairUrl = "mimiremote://pair?pair_sig=fixture",
+            PairExpiresAt = "2030-01-01T00:00:00Z",
+            Endpoint = "http://localhost",
+            Network = "lan",
+        };
+        backend.NextTicket = receipt;
+        await session.GenerateAsync();
+        Assert.False(session.CopyPairingLink());
+
+        var pending = new TaskCompletionSource<PairingTicketReceipt>(TaskCreationOptions.RunContinuationsAsynchronously);
+        backend.PendingTicket = pending.Task;
+        var issue = session.GenerateAsync();
+        session.SetActive(false);
+        pending.SetResult(receipt with { Network = "tailscale" });
+        await issue;
+        Assert.False(session.HasActiveTicket);
+        Assert.Null(backend.LastCopiedText);
+    }
+
+    [Fact]
+    public async Task AsynchronousBackendResultsNotifyOnTheCallingScheduler()
+    {
+        var schedulers = new ConcurrentExclusiveSchedulerPair();
+        var scheduler = schedulers.ExclusiveScheduler;
+        await Task.Factory.StartNew(async () =>
+        {
+            var observed = new List<TaskScheduler>();
+            var backend = new FakeWizardBackend();
+            backend.OnPreflight = async (options, _, _) =>
+            {
+                await Task.Yield();
+                return BuildWindowsReport(options.Stage, true, true);
+            };
+            using var wizard = new OnboardingWizardStateMachine(backend);
+            wizard.GateEvaluated += (_, _) => observed.Add(TaskScheduler.Current);
+            await wizard.StartAsync();
+
+            var pending = new TaskCompletionSource<PairingTicketReceipt>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pairing = new FakePairingBackend(() => DateTimeOffset.UnixEpoch)
+            {
+                Report = BuildWindowsReport("pair", true, true, serviceOk: true, tailscaleReady: true),
+                PendingTicket = pending.Task,
+            };
+            using var session = new PairingSessionController(pairing);
+            session.SetActive(true);
+            await session.RefreshAsync();
+            session.TicketChanged += (_, url) =>
+            {
+                if (url is not null)
+                {
+                    observed.Add(TaskScheduler.Current);
+                }
+            };
+            var issuance = session.GenerateAsync();
+            pending.SetResult(new PairingTicketReceipt
+            {
+                Endpoint = "http://localhost",
+                PairExpiresAt = "2030-01-01T00:00:00Z",
+                PairUrl = "mimiremote://pair?pair_sig=fixture",
+                Network = "tailscale",
+            });
+            await issuance;
+            Assert.Equal(2, observed.Count);
+            Assert.All(observed, actual => Assert.Same(scheduler, actual));
+        }, CancellationToken.None, TaskCreationOptions.None, scheduler).Unwrap();
+        schedulers.Complete();
+        await schedulers.Completion;
     }
 
     private static OnboardingPreflightReport BuildWindowsReport(
@@ -1025,10 +1189,10 @@ public sealed class OnboardingViewModelTests
             return Task.CompletedTask;
         }
 
-        public Task UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken)
+        public Task<bool> UpdateWorkspaceAsync(string scanRoot, string? browseRoot, CancellationToken cancellationToken)
         {
             WorkspaceCalls.Add((scanRoot, browseRoot));
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
         public Task EnableAssistantAsync(string runtimeId, CancellationToken cancellationToken)
@@ -1038,8 +1202,12 @@ public sealed class OnboardingViewModelTests
         }
 
         public Task EnableTransportAsync(string transport, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task RestartServiceAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task RunSafeDoctorFixAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public int RestartCalls { get; private set; }
+        public Task<UpReadinessReceipt> RestartServiceAsync(CancellationToken cancellationToken)
+        {
+            RestartCalls++;
+            return Task.FromResult(new UpReadinessReceipt { Ok = true, ServiceOk = true, Version = "1.0.0" });
+        }
         public Task<bool> RunLanFirewallMaintenanceAsync(CancellationToken cancellationToken) => Task.FromResult(false);
         public bool DirectoryExists(string path) => ExistingDirs.Contains(path);
         public void CreateDirectory(string path) => ExistingDirs.Add(path);
@@ -1053,6 +1221,7 @@ public sealed class OnboardingViewModelTests
     {
         public OnboardingPreflightReport Report { get; set; } = null!;
         public PairingTicketReceipt? NextTicket { get; set; }
+        public Task<PairingTicketReceipt>? PendingTicket { get; set; }
         public List<string> EnabledTransports { get; } = [];
         public List<string> OpenedSettings { get; } = [];
         public string? LastCopiedText { get; private set; }
@@ -1064,7 +1233,7 @@ public sealed class OnboardingViewModelTests
             Task.FromResult(Report);
 
         public Task<PairingTicketReceipt> PairAsync(string network, CancellationToken cancellationToken) =>
-            Task.FromResult(NextTicket ?? new PairingTicketReceipt
+            PendingTicket ?? Task.FromResult(NextTicket ?? new PairingTicketReceipt
             {
                 Ok = true,
                 Endpoint = "http://127.0.0.1:8787",

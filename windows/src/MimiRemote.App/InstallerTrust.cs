@@ -1,16 +1,11 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using Microsoft.Win32;
 
 namespace MimiRemote.App;
 
 internal static class InstallerTrust
 {
-    private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{7D413E71-19C5-4F02-8AFC-437E1B8019FD}_is1";
-
     // Both files must have trusted Authenticode signatures by the same certificate.
     // Unsigned previews fail closed. Certificate rotation requires a manual verified install.
     internal static void Verify(string installer, string currentExecutable)
@@ -25,79 +20,6 @@ internal static class InstallerTrust
         {
             throw new InvalidDataException("更新发布者证书与当前客户端不一致，未运行更新。请从正式发布页面手动核实。");
         }
-    }
-
-    internal static async Task<bool> TryLaunchVerifiedLanFirewallModifyAsync(CancellationToken cancellationToken)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return false;
-        }
-        var currentExecutable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(currentExecutable) || !File.Exists(currentExecutable))
-        {
-            return false;
-        }
-        var modifyExecutable = FindVerifiedModifyExecutable();
-        if (modifyExecutable is null)
-        {
-            return false;
-        }
-        try
-        {
-            Verify(modifyExecutable, currentExecutable);
-        }
-        catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException)
-        {
-            return false;
-        }
-
-        var start = new ProcessStartInfo(modifyExecutable)
-        {
-            UseShellExecute = true,
-            Verb = "runas",
-            Arguments = "/TASKS=lanfirewall",
-        };
-        try
-        {
-            using var process = Process.Start(start);
-            if (process is null)
-            {
-                return false;
-            }
-            await process.WaitForExitAsync(cancellationToken);
-            return process.ExitCode == 0;
-        }
-        catch (Win32Exception error) when (error.NativeErrorCode == 1223)
-        {
-            // User cancelled UAC elevation: keep LAN disabled without erroring out other transports.
-            return false;
-        }
-    }
-
-    private static string? FindVerifiedModifyExecutable()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return null;
-        }
-        using var key = Registry.CurrentUser.OpenSubKey(UninstallKey);
-        var raw = key?.GetValue("ModifyPath") as string;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-        var trimmed = raw.Trim();
-        var executable = trimmed.StartsWith('"') && trimmed.IndexOf('"', 1) is > 1 and var closing
-            ? trimmed[1..closing]
-            : trimmed.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries)[0];
-        if (!Path.IsPathFullyQualified(executable)
-            || !executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
-            || !File.Exists(executable))
-        {
-            return null;
-        }
-        return executable;
     }
 
     private static void VerifyFile(string path)

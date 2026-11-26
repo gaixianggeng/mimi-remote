@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using System.Globalization;
 
 namespace MimiRemote.Core;
 
@@ -98,7 +98,7 @@ public sealed record DoctorCheck
     public string Reason { get; init; } = "";
 }
 
-public static partial class DiagnosticSanitizer
+public static class DiagnosticSanitizer
 {
     private static readonly Dictionary<string, string> DoctorCheckTitles = new(StringComparer.Ordinal)
     {
@@ -116,6 +116,14 @@ public static partial class DiagnosticSanitizer
         ["lan"] = "同一局域网",
         ["port"] = "服务监听端口",
         ["service"] = "后台服务",
+        ["file-access-preflight"] = "目录访问权限",
+        ["deepseek-harness"] = "DeepSeek Harness",
+        ["claude-bridge"] = "Claude Code 适配器",
+        ["agy-adapter"] = "Antigravity 适配器",
+        ["app-server"] = "Codex 服务",
+        ["codex-app-server"] = "Codex 服务连接",
+        ["app-server-token-file"] = "服务凭据文件",
+        ["runtime"] = "运行时配置",
         ["file_access"] = "目录访问权限",
     };
 
@@ -126,7 +134,7 @@ public static partial class DiagnosticSanitizer
             return "环境检查";
         }
         var trimmed = name.Trim();
-        return DoctorCheckTitles.TryGetValue(trimmed, out var title) ? title : $"诊断项（{trimmed}）";
+        return DoctorCheckTitles.TryGetValue(trimmed, out var title) ? title : "其他诊断项";
     }
 
     public static string ScrubLogText(string? raw)
@@ -135,22 +143,19 @@ public static partial class DiagnosticSanitizer
         {
             return "";
         }
-        var scrubbed = PairUrlRegex().Replace(raw, "mimiremote://pair?<已隐藏>");
-        scrubbed = BearerRegex().Replace(scrubbed, "Bearer <已隐藏>");
-        scrubbed = JwtRegex().Replace(scrubbed, "<已隐藏凭据>");
-        scrubbed = PairSigRegex().Replace(scrubbed, "$1=<已隐藏>");
-        return scrubbed;
+        // Only reconstruct known log metadata. Arbitrary subprocess prose can contain unmarked credentials.
+        var lines = raw.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var times = new List<DateTime>();
+        foreach (var line in lines)
+        {
+            if (line.Length >= 19 && DateTime.TryParseExact(line.AsSpan(0, 19), "yyyy/MM/dd HH:mm:ss",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var timestamp))
+            {
+                times.Add(timestamp);
+            }
+        }
+        return times.Count == 0
+            ? string.Create(CultureInfo.InvariantCulture, $"读取到 {lines.Length} 行，本机日志正文已隐藏。")
+            : string.Create(CultureInfo.InvariantCulture, $"读取到 {lines.Length} 行，记录时间 {times[0]:yyyy-MM-dd HH:mm:ss} 至 {times[^1]:yyyy-MM-dd HH:mm:ss}。本机日志正文已隐藏。");
     }
-
-    [GeneratedRegex(@"mimiremote://pair\?[^\s""'<>]+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex PairUrlRegex();
-
-    [GeneratedRegex(@"Bearer\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex BearerRegex();
-
-    [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", RegexOptions.CultureInvariant)]
-    private static partial Regex JwtRegex();
-
-    [GeneratedRegex(@"(pair_sig|token|authorization|grant|signature)=[^\s&""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex PairSigRegex();
 }

@@ -4,7 +4,7 @@ using MimiRemote.Core;
 
 namespace MimiRemote.App.ViewModels;
 
-public sealed record ReadOnlyDoctorItem(string Title, string StatusBadge, string Message, string FixHint, bool HasFixHint);
+public sealed record ReadOnlyDoctorItem(string Title, string StatusBadge, string Detail);
 
 public sealed class DiagnosticsViewModel : ClientPageViewModel
 {
@@ -76,7 +76,7 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
         var stage = Context.GateState == OnboardingGateState.Confirmed ? "pair" : "setup";
         try
         {
-            var report = await Context.Agent.PreflightAsync(
+            var report = await Context.ReadPreflightAsync(
                 new OnboardingPreflightOptions
                 {
                     Stage = stage,
@@ -85,19 +85,17 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
                     VerifiedCapability = Context.VerifiedCapability,
                 },
                 onProgress: null,
-                platform: "windows",
                 cancellationToken: Lifetime.Token);
             ApplyPreflightReport(report);
-            Context.UpdateGateFromPreflight(report, null);
         }
-        catch (OnboardingCliException error)
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException
+            or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
             lastReport = null;
             preflightDiagnostics.Clear();
             PreflightRows = [];
-            var diag = error.Diagnostic;
+            var diag = (error as OnboardingCliException)?.Diagnostic;
             RecoveryDiagnostic = diag is { AllowedFix: { Kind: "open_settings", Target: "host_recovery" } } ? diag : null;
-            Context.UpdateGateFromPreflight(null, diag);
             Report(diag?.Message ?? OnboardingCopyCatalog.SafeFallbackCopy, error: true);
         }
     }
@@ -108,6 +106,7 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
         {
             throw new InvalidOperationException("界面预览不会运行电脑诊断。");
         }
+        Context.SetVerifiedCapability(null);
         // Always read-only: doctor --json NEVER executes repairs or rotates tokens.
         var raw = await Context.Agent.RunAsync(["doctor", "--json"], allowFailure: true, cancellationToken: Lifetime.Token);
         try
@@ -118,22 +117,25 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
                 var items = new List<ReadOnlyDoctorItem>(report.Checks.Length);
                 foreach (var check in report.Checks)
                 {
-                    if (string.Equals(check.Capability, OnboardingSchema.DoctorFixCapability, StringComparison.Ordinal))
+                    if (check.Name == "config_permissions" && check.Capability == OnboardingSchema.DoctorFixCapability)
                     {
                         Context.SetVerifiedCapability(OnboardingSchema.DoctorFixCapability);
                     }
                     var badge = check.Ok ? "正常" : string.Equals(check.Level, "warn", StringComparison.OrdinalIgnoreCase) ? "提示" : "异常";
-                    var fixHint = DiagnosticSanitizer.ScrubLogText(check.Fix);
                     items.Add(new ReadOnlyDoctorItem(
                         DiagnosticSanitizer.LocalizeDoctorCheckName(check.Name),
                         badge,
-                        DiagnosticSanitizer.ScrubLogText(check.Message),
-                        fixHint,
-                        !string.IsNullOrWhiteSpace(fixHint)));
+                        check.Message switch
+                        {
+                            "Codex 在 Mimi 中已关闭" or "当前运行时：codex_app_server"
+                                or "DeepSeek Harness 通道未启用" or "Harness 服务可达，认证与模型目录查询正常"
+                                or "未找到 mimi-agy-adapter" or "未找到 Claude bridge" or "检测到 Tailscale 命令" => check.Message,
+                            _ => "",
+                        }));
                 }
                 DoctorItems = items;
                 OnPropertyChanged(nameof(HasDoctorItems));
-                Output = string.Join("\n", items.Select(i => $"[{i.StatusBadge}] {i.Title}：{i.Message}"));
+                Output = string.Join("\n", items.Select(i => $"[{i.StatusBadge}] {i.Title}"));
                 Report(report.Ok ? "只读诊断已完成，未发现异常。" : "只读诊断已完成，可按上方预检建议处理。");
                 return;
             }
@@ -143,17 +145,24 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
         }
         DoctorItems = [];
         OnPropertyChanged(nameof(HasDoctorItems));
-        Output = DiagnosticSanitizer.ScrubLogText(raw);
+        Output = OnboardingCopyCatalog.SanitizeDiagnostic(raw);
     }
 
     private async Task ReadSanitizedLogsAsync()
     {
-        var log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mimi Remote", "logs", "agentd.log");
-        using var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        stream.Seek(Math.Max(0, stream.Length - 65536), SeekOrigin.Begin);
-        using var reader = new StreamReader(stream);
-        var raw = await reader.ReadToEndAsync(Lifetime.Token);
-        Output = DiagnosticSanitizer.ScrubLogText(raw);
+        try
+        {
+            var log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mimi Remote", "logs", "agentd.log");
+            using var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            stream.Seek(Math.Max(0, stream.Length - 65536), SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            var raw = await reader.ReadToEndAsync(Lifetime.Token);
+            Output = DiagnosticSanitizer.ScrubLogText(raw);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Output = "暂时无法读取本机日志。";
+        }
     }
 
     private void ApplyPreflightReport(OnboardingPreflightReport report)
@@ -191,7 +200,7 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
                     "error" => "异常",
                     _ => "检查中",
                 },
-                diag is { Trusted: true } ? diag.Message : check.Detail,
+                diag is { Trusted: true } ? diag.Message : OnboardingCopyCatalog.SafeFallbackCopy,
                 allowedFix is not null ? OnboardingWizardStateMachine.FormatFixLabel(allowedFix) : null,
                 allowedFix is not null,
                 SecondaryLabel: null,
@@ -209,7 +218,7 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
 
     private OnboardingFix? FilterClickableFix(OnboardingCheck check, OnboardingResolvedDiagnostic? diag)
     {
-        if (diag is not { Trusted: true, AllowedFix: { } fix })
+        if (diag is not { Trusted: true, AllowedFix: { } fix } || fix.Kind == "skip")
         {
             return null;
         }
@@ -223,12 +232,21 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
                 && string.Equals(Context.VerifiedCapability, OnboardingSchema.DoctorFixCapability, StringComparison.Ordinal);
             return allowed ? fix : null;
         }
+        if (fix.Kind == "run_fix" && fix.Action is not ("save_setup" or "register_service" or "restart_service"))
+        {
+            return null;
+        }
+        if (fix is { Kind: "run_fix", Action: "register_service" or "restart_service" }
+            && (Context.GateState != OnboardingGateState.Confirmed || OnboardingNavigationGate.Evaluate(lastReport) != OnboardingGateState.Confirmed))
+        {
+            return null;
+        }
         return fix;
     }
 
     private async Task DispatchPreflightFixAsync(string? checkId)
     {
-        if (string.IsNullOrWhiteSpace(checkId) || lastReport is null
+        if (string.IsNullOrWhiteSpace(checkId) || lastReport is null || !ReferenceEquals(lastReport, Context.LastPreflight)
             || !preflightDiagnostics.TryGetValue(checkId, out var diag))
         {
             return;
@@ -303,6 +321,12 @@ public sealed class DiagnosticsViewModel : ClientPageViewModel
                 if (!string.Equals(code, "config_permissions_unsafe", StringComparison.Ordinal)
                     || !string.Equals(Context.VerifiedCapability, OnboardingSchema.DoctorFixCapability, StringComparison.Ordinal))
                 {
+                    return;
+                }
+                await RunReadOnlyDoctorAsync();
+                if (Context.VerifiedCapability != OnboardingSchema.DoctorFixCapability)
+                {
+                    await RefreshAsync(force: true);
                     return;
                 }
                 await Context.ChangeAsync(() => Context.Agent.RunAsync(["doctor", "--fix", "--json"], Lifetime.Token));

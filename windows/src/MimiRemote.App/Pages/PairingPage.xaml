@@ -46,7 +46,7 @@
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="core:OnboardingWizardRow">
                         <InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
-                            Title="{x:Bind Check.Title}" Message="{x:Bind Message}" Margin="0,0,0,8"/>
+                            Title="{x:Bind Title}" Message="{x:Bind Message}" Margin="0,0,0,8"/>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>

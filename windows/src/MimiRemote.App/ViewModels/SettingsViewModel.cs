@@ -100,7 +100,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
         {
             try
             {
-                var report = await Context.Agent.PreflightAsync(
+                var report = await Context.ReadPreflightAsync(
                     new OnboardingPreflightOptions
                     {
                         Stage = IsGateConfirmed ? "pair" : "setup",
@@ -109,11 +109,9 @@ public sealed class SettingsViewModel : ClientPageViewModel
                         VerifiedCapability = Context.VerifiedCapability,
                     },
                     onProgress: null,
-                    platform: "windows",
                     cancellationToken: Lifetime.Token);
                 ScanRoot = report.ScanRoot;
                 BrowseRoot = report.BrowseRoot;
-                Context.UpdateGateFromPreflight(report, null);
             }
             catch (OperationCanceledException)
             {
@@ -122,6 +120,8 @@ public sealed class SettingsViewModel : ClientPageViewModel
             catch (Exception error) when (error is InvalidOperationException or InvalidDataException
                 or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {
+                ScanRoot = "";
+                BrowseRoot = "";
             }
         }
         if (IsGateConfirmed && Context.HasAgent)
@@ -153,7 +153,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
         var confirmed = await Context.Confirm(
             "扩大手机代码浏览范围？",
             $"当前代码目录：{ScanRoot}\n拟授权手机浏览目录：{fullCandidate}\n\n确认后，已配对的手机将能浏览该目录及其子目录中的文件。取消不会影响已有配对和配置。");
-        if (!confirmed)
+        if (!confirmed || !IsGateConfirmed)
         {
             return;
         }
@@ -171,7 +171,7 @@ public sealed class SettingsViewModel : ClientPageViewModel
         var confirmed = await Context.Confirm(
             "恢复最小浏览范围？",
             $"将把手机浏览范围收紧为仅限代码目录：{ScanRoot}。已有配对保持有效。");
-        if (!confirmed)
+        if (!confirmed || !IsGateConfirmed)
         {
             return;
         }

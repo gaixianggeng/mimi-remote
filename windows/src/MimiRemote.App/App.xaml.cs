@@ -57,11 +57,7 @@ public sealed partial class App : Application, IDisposable
         {
             window.InitializeTray();
         }
-        if (pairRequested)
-        {
-            window.HandleActivation(pairRequested: true);
-        }
-        else if (background)
+        if (background && !pairRequested)
         {
             window.HideToTray();
         }

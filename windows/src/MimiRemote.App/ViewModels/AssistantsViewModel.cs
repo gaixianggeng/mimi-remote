@@ -66,7 +66,7 @@ public sealed class AssistantsViewModel : ClientPageViewModel
         {
             try
             {
-                preflight = await Context.Agent.PreflightAsync(
+                preflight = await Context.ReadPreflightAsync(
                     new OnboardingPreflightOptions
                     {
                         Stage = "pair",
@@ -75,7 +75,6 @@ public sealed class AssistantsViewModel : ClientPageViewModel
                         VerifiedCapability = Context.VerifiedCapability,
                     },
                     onProgress: null,
-                    platform: "windows",
                     cancellationToken: Lifetime.Token);
             }
             catch (OperationCanceledException)
@@ -85,6 +84,11 @@ public sealed class AssistantsViewModel : ClientPageViewModel
             catch (Exception error) when (error is InvalidOperationException or InvalidDataException
                 or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {
+                return;
+            }
+            if (Context.GateState != OnboardingGateState.Confirmed)
+            {
+                return;
             }
         }
 

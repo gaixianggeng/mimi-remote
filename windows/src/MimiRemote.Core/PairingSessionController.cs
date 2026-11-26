@@ -131,24 +131,28 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     public bool HasActiveTicket => !string.IsNullOrWhiteSpace(issuedPairUrl) && !IsExpired;
     public bool IsExpired => issuedExpiresAt is DateTimeOffset expiry && backend.Now() >= expiry;
 
+    private bool Confirmed => Report is { Stage: "pair" } && OnboardingNavigationGate.Evaluate(Report) == OnboardingGateState.Confirmed;
+
+    private bool RouteReady => Confirmed && Report?.Ok == true && SelectedTransportItem is { Ready: true };
+
     public bool CanGenerate =>
-        !IsBusy
+        active
+        && !IsBusy
         && !IsEnablingTransport
         && !IsIssuing
-        && Report is { Stage: "pair", Ok: true }
-        && SelectedTransportItem is { Ready: true };
+        && RouteReady;
 
     public bool CanEnableSelectedTransport =>
         !IsBusy
         && !IsEnablingTransport
-        && Report is { Stage: "pair", Configured: true }
+        && active && Confirmed
         && SelectedTransportItem is { CanEnableInPlace: true };
 
     public bool CanCopyLink =>
         HasActiveTicket
         && active
         && string.Equals(issuedNetwork, SelectedTransport, StringComparison.Ordinal)
-        && SelectedTransportItem is { Ready: true };
+        && RouteReady;
 
     public int RelayChoice
     {
@@ -224,7 +228,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
-            var latest = await backend.PreflightPairAsync(cancellationToken).ConfigureAwait(false);
+            var latest = await backend.PreflightPairAsync(cancellationToken);
             if (disposed || cancellationToken.IsCancellationRequested)
             {
                 return;
@@ -232,9 +236,9 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             ApplyReport(latest);
             if (latest.Configured)
             {
-                await RefreshTailcatRelayAsync(cancellationToken).ConfigureAwait(false);
+                await RefreshTailcatRelayAsync(cancellationToken);
             }
-            if (!CanGenerate)
+            if (!RouteReady || IsExpired)
             {
                 Clear();
             }
@@ -246,6 +250,10 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         catch (Exception error) when (error is InvalidOperationException or InvalidDataException
             or IOException or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
+            Report = null;
+            Transports = [];
+            BlockingRows = [];
+            OnPropertyChanged(nameof(HasBlockingRows));
             Clear();
             Note = error is OnboardingCliException { Diagnostic: { } diag }
                 ? diag.Message
@@ -259,7 +267,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
 
     public async Task EnableSelectedTransportAsync(CancellationToken cancellationToken = default)
     {
-        if (disposed || IsEnablingTransport || Report is not { Stage: "pair", Configured: true })
+        if (disposed || !active || !Confirmed || IsBusy || IsEnablingTransport)
         {
             return;
         }
@@ -270,6 +278,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             return;
         }
         Clear();
+        var selection = generation;
         if (string.Equals(target, "lan", StringComparison.Ordinal))
         {
             if (item.BlockedByPublicNetwork)
@@ -283,7 +292,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 IsEnablingTransport = true;
                 try
                 {
-                    var ok = await backend.RunLanFirewallMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                    var ok = await backend.RunLanFirewallMaintenanceAsync(cancellationToken);
                     if (!ok)
                     {
                         Note = "未完成专用网络防火墙规则配置，同一局域网保持关闭。你仍可使用其他连接方式。";
@@ -306,10 +315,10 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                 {
                     IsEnablingTransport = false;
                 }
-                await RefreshAsync(cancellationToken).ConfigureAwait(false);
-                if (CanGenerate)
+                await RefreshAsync(cancellationToken);
+                if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
                 {
-                    await GenerateAsync(cancellationToken).ConfigureAwait(false);
+                    await GenerateAsync(cancellationToken);
                 }
                 return;
             }
@@ -323,7 +332,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         IsEnablingTransport = true;
         try
         {
-            await backend.EnableTransportAsync(target, cancellationToken).ConfigureAwait(false);
+            await backend.EnableTransportAsync(target, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -342,10 +351,10 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             IsEnablingTransport = false;
         }
 
-        await RefreshAsync(cancellationToken).ConfigureAwait(false);
-        if (CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
+        await RefreshAsync(cancellationToken);
+        if (selection == generation && CanGenerate && string.Equals(SelectedTransport, target, StringComparison.Ordinal))
         {
-            await GenerateAsync(cancellationToken).ConfigureAwait(false);
+            await GenerateAsync(cancellationToken);
         }
     }
 
@@ -363,13 +372,14 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         IsIssuing = true;
         try
         {
-            var receipt = await backend.PairAsync(target, cts.Token).ConfigureAwait(false);
-            if (cts.Token.IsCancellationRequested || request != generation || !active || disposed
+            var receipt = await backend.PairAsync(target, cts.Token);
+            if (cts.IsCancellationRequested || request != generation || !active || !RouteReady || disposed
                 || !string.Equals(SelectedTransport, target, StringComparison.Ordinal))
             {
                 return;
             }
-            if (!OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
+            if ((receipt.Network is not null && !string.Equals(receipt.Network, target, StringComparison.Ordinal))
+                || !OnboardingCopyCatalog.IsValidPairUrl(receipt.PairUrl)
                 || !OnboardingCopyCatalog.TryParseRfc3339Timestamp(receipt.PairExpiresAt, requireUtc: false, out var expiry)
                 || expiry <= backend.Now())
             {
@@ -440,7 +450,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
 
     public async Task ApplyRelayAsync(CancellationToken cancellationToken = default)
     {
-        if (disposed || IsBusy)
+        if (disposed || !active || !Confirmed || IsBusy)
         {
             return;
         }
@@ -465,16 +475,16 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
         IsBusy = true;
         try
         {
-            var before = await backend.ReadTailcatStatusAsync(cancellationToken).ConfigureAwait(false);
+            var before = await backend.ReadTailcatStatusAsync(cancellationToken);
             if (RelayPolicy.NeedsConfirmation(choiceName, url, before)
-                && !await backend.ConfirmAsync("更换中转服务？", "内置连接会短暂重连，使用该线路的手机可能需要重新扫码。").ConfigureAwait(false))
+                && !await backend.ConfirmAsync("更换中转服务？", "内置连接会短暂重连，使用该线路的手机可能需要重新扫码。"))
             {
                 return;
             }
-            await backend.SetTailcatRelayAsync(arguments, cancellationToken).ConfigureAwait(false);
+            await backend.SetTailcatRelayAsync(arguments, cancellationToken);
             relayEdited = false;
             Clear();
-            await RefreshTailcatRelayAsync(cancellationToken).ConfigureAwait(false);
+            await RefreshTailcatRelayAsync(cancellationToken);
             ReportRelay(
                 tailcatStatus?.Enabled != true
                     ? "中转配置已保存，开启内置连接后生效。"
@@ -569,7 +579,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                     row,
                     diag,
                     "需处理",
-                    diag is { Trusted: true } ? diag.Message : row.Detail,
+                    diag is { Trusted: true } ? diag.Message : OnboardingCopyCatalog.SafeFallbackCopy,
                     diag?.AllowedFix is not null ? OnboardingWizardStateMachine.FormatFixLabel(diag.AllowedFix) : null,
                     diag?.AllowedFix is not null,
                     diag?.SecondaryLabel,
@@ -598,7 +608,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
     {
         try
         {
-            tailcatStatus = await backend.ReadTailcatStatusAsync(cancellationToken).ConfigureAwait(false);
+            tailcatStatus = await backend.ReadTailcatStatusAsync(cancellationToken);
             if (!relayEdited)
             {
                 syncingRelay = true;
@@ -642,7 +652,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
             var ready = check is { State: "ok", Enabled: true, Available: true };
             var firewallBlocked = string.Equals(check?.Code, "lan_firewall_blocked", StringComparison.Ordinal);
             var publicBlocked = string.Equals(check?.Code, "lan_public_network_blocked", StringComparison.Ordinal);
-            var canEnable = !ready && ((!enabled && available) || firewallBlocked);
+            var canEnable = !ready && diag is { Trusted: true } && (firewallBlocked || (!enabled && available && diag.AllowedFix == OnboardingFix.RunFix($"enable_{id}")));
             var badge = ready
                 ? "已就绪"
                 : check is null
@@ -656,7 +666,7 @@ public sealed class PairingSessionController : ObservableObject, IDisposable
                                 : "暂不可用";
             var detail = diag is { Trusted: true }
                 ? diag.Message
-                : check?.Detail ?? "等待检查连接状态。";
+                : OnboardingCopyCatalog.SafeFallbackCopy;
             list.Add(new OnboardingTransportItem(
                 id,
                 title,

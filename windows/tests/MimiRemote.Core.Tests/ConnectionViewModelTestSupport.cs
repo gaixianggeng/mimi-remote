@@ -36,7 +36,6 @@ namespace MimiRemote.App
 
         public bool Preview { get; set; }
         public bool HasAgent { get; set; } = true;
-        internal bool PairAfterSetup { get; set; }
         public PollingTestAgent Agent { get; } = new();
         public HostStatus Status { get; set; } = new() { ServiceOk = false };
         public OnboardingPreflightReport? LastPreflight { get; private set; }
@@ -59,10 +58,7 @@ namespace MimiRemote.App
 
         public void SetVerifiedCapability(string? capability)
         {
-            if (string.Equals(capability, OnboardingSchema.DoctorFixCapability, StringComparison.Ordinal))
-            {
-                VerifiedCapability = OnboardingSchema.DoctorFixCapability;
-            }
+            VerifiedCapability = capability == OnboardingSchema.DoctorFixCapability ? capability : null;
         }
 
         public void UpdateGateFromPreflight(OnboardingPreflightReport? report, OnboardingResolvedDiagnostic? error = null)
@@ -74,6 +70,22 @@ namespace MimiRemote.App
             {
                 gateState = next;
                 GateStateChanged?.Invoke(this, gateState);
+            }
+        }
+
+        public async Task<OnboardingPreflightReport> ReadPreflightAsync(OnboardingPreflightOptions options,
+            Action<OnboardingCheck>? onProgress, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var report = await Agent.PreflightAsync(options, onProgress, "windows", cancellationToken);
+                UpdateGateFromPreflight(report);
+                return report;
+            }
+            catch (InvalidOperationException error)
+            {
+                UpdateGateFromPreflight(null, (error as OnboardingCliException)?.Diagnostic);
+                throw;
             }
         }
 

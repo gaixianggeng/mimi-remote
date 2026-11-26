@@ -18,7 +18,7 @@ public sealed class ClientContext : IDisposable
     private bool gateInitialized;
 
     public bool Preview { get; }
-    internal bool PairAfterSetup { get; set; }
+    private long gateRequest;
     internal DesktopPreferences Preferences { get; } = DesktopPreferences.Load();
     public Action Quit { get; set; } = () => { };
     public ClientBuild Build { get; } = ClientBuild.Parse(typeof(App).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
@@ -30,7 +30,8 @@ public sealed class ClientContext : IDisposable
     public Action<string> OpenUrl { get; set; } = _ => { };
     public Action<string> OpenSettings { get; set; } = _ => { };
     public Func<string, bool> CopyToClipboard { get; set; } = _ => false;
-    public Func<CancellationToken, Task<bool>> RunLanFirewallMaintenance { get; set; } = InstallerTrust.TryLaunchVerifiedLanFirewallModifyAsync;
+    // A verified, restricted installer maintenance entry point is required before LAN elevation is available.
+    public Func<CancellationToken, Task<bool>> RunLanFirewallMaintenance { get; } = _ => Task.FromResult(false);
     public Action<string, string> Notify { get; set; } = (_, _) => { };
     public HostStatus? LastStatus => cached;
     public OnboardingPreflightReport? LastPreflight { get; private set; }
@@ -79,9 +80,34 @@ public sealed class ClientContext : IDisposable
 
     public void SetVerifiedCapability(string? capability)
     {
-        if (string.Equals(capability, OnboardingSchema.DoctorFixCapability, StringComparison.Ordinal))
+        VerifiedCapability = capability == OnboardingSchema.DoctorFixCapability ? capability : null;
+    }
+
+    public async Task<OnboardingPreflightReport> ReadPreflightAsync(OnboardingPreflightOptions options,
+        Action<OnboardingCheck>? onProgress, CancellationToken cancellationToken)
+    {
+        var request = ++gateRequest;
+        try
         {
-            VerifiedCapability = OnboardingSchema.DoctorFixCapability;
+            var report = await Agent.PreflightAsync(options, onProgress, "windows", cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request != gateRequest)
+            {
+                throw new OperationCanceledException("已有更新的预检结果。", cancellationToken);
+            }
+            UpdateGateFromPreflight(report);
+            return report;
+        }
+        catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException
+            or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request != gateRequest)
+            {
+                throw new OperationCanceledException("已有更新的预检结果。", error, cancellationToken);
+            }
+            UpdateGateFromPreflight(null, (error as OnboardingCliException)?.Diagnostic);
+            throw;
         }
     }
 
@@ -99,35 +125,19 @@ public sealed class ClientContext : IDisposable
         }
         try
         {
-            var report = await agent.PreflightAsync(
-                new OnboardingPreflightOptions
-                {
-                    Stage = "setup",
-                    ProgressJson = false,
-                    VerifiedCapability = VerifiedCapability,
-                },
-                onProgress: null,
-                platform: "windows",
-                cancellationToken: token);
-            UpdateGateFromPreflight(report, null);
-            return gateState;
-        }
-        catch (OnboardingCliException error)
-        {
-            UpdateGateFromPreflight(null, error.Diagnostic);
-            return gateState;
+            await ReadPreflightAsync(new OnboardingPreflightOptions
+            {
+                Stage = "setup",
+                ProgressJson = false,
+                VerifiedCapability = VerifiedCapability,
+            }, null, token);
         }
         catch (Exception error) when (error is InvalidOperationException or InvalidDataException or IOException
-            or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            or TimeoutException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or OperationCanceledException)
         {
-            UpdateGateFromPreflight(null, new OnboardingResolvedDiagnostic
-            {
-                Step = "service_daemon",
-                Message = OnboardingCopyCatalog.SafeFallbackCopy,
-                Trusted = false,
-            });
-            return gateState;
+            // ReadPreflightAsync publishes the current failure and ignores superseded reads.
         }
+        return gateState;
     }
 
     public async Task<HostStatus> ReadStatusAsync(bool runtime = false, bool force = false, CancellationToken token = default)

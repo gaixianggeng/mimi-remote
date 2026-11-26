@@ -30,6 +30,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private readonly HashSet<ClientPage> pages = [];
     private readonly CancellationTokenSource gateRefreshCts = new();
     private bool pendingPairActivation;
+    private long activationRequest;
     private bool active;
     private bool quitting;
     private bool disposed;
@@ -105,8 +106,11 @@ public sealed partial class MainWindow : Window, IDisposable
             InitializeNotifications();
         }
         ApplyGateToNavigation(context.GateState);
-        ShowPage(OnboardingNavigationGate.ResolveActivationRoute(context.GateState, pendingPairActivation), show: false);
-        if (!context.Preview)
+        if (context.GateInitialized)
+        {
+            ShowPage(OnboardingNavigationGate.ResolveActivationRoute(context.GateState, pendingPairActivation), show: false);
+        }
+        else
         {
             _ = InitializeGateAsync();
         }
@@ -114,28 +118,15 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private async Task InitializeGateAsync()
     {
-        var resolved = await context.RefreshGateAsync(gateRefreshCts.Token);
-        if (disposed)
+        await context.RefreshGateAsync(gateRefreshCts.Token);
+        if (disposed || ContentFrame.Content is not null)
         {
             return;
         }
-        DispatcherQueue.TryEnqueue(() =>
-        {
-            if (disposed)
-            {
-                return;
-            }
-            ApplyGateToNavigation(resolved);
-            if (resolved == OnboardingGateState.Confirmed)
-            {
-                var target = OnboardingNavigationGate.ResolveActivationRoute(resolved, pendingPairActivation);
-                pendingPairActivation = false;
-                if (ContentFrame.CurrentSourcePageType == typeof(SetupPage))
-                {
-                    ShowPage(target, show: false);
-                }
-            }
-        });
+        var state = context.GateState;
+        ApplyGateToNavigation(state);
+        ShowPage(OnboardingNavigationGate.ResolveActivationRoute(state, pendingPairActivation), show: false);
+        pendingPairActivation = false;
     }
 
     private void OnGateStateChanged(object? sender, OnboardingGateState state)
@@ -144,21 +135,14 @@ public sealed partial class MainWindow : Window, IDisposable
         {
             return;
         }
-        DispatcherQueue.TryEnqueue(() =>
+        ApplyGateToNavigation(state);
+        if (ContentFrame.CurrentSourcePageType is { } currentType
+            && RouteByPageType.TryGetValue(currentType, out var currentRoute)
+            && !OnboardingNavigationGate.IsRouteAllowed(state, currentRoute))
         {
-            if (disposed)
-            {
-                return;
-            }
-            ApplyGateToNavigation(state);
-            if (ContentFrame.CurrentSourcePageType is { } currentType
-                && RouteByPageType.TryGetValue(currentType, out var currentRoute)
-                && !OnboardingNavigationGate.IsRouteAllowed(state, currentRoute))
-            {
-                ContentFrame.BackStack.Clear();
-                ShowPage(OnboardingNavigationGate.HomeRoute(state), show: false);
-            }
-        });
+            ContentFrame.BackStack.Clear();
+            ShowPage(OnboardingNavigationGate.HomeRoute(state), show: false);
+        }
     }
 
     private void ApplyGateToNavigation(OnboardingGateState state)
@@ -216,14 +200,24 @@ public sealed partial class MainWindow : Window, IDisposable
         }
     }
 
-    public void HandleActivation(bool pairRequested)
+    public async void HandleActivation(bool pairRequested)
     {
         if (pairRequested && context.GateState != OnboardingGateState.Confirmed)
         {
             pendingPairActivation = true;
         }
-        var route = OnboardingNavigationGate.ResolveActivationRoute(context.GateState, pairRequested);
-        ShowPage(route, show: true);
+        if (!context.GateInitialized)
+        {
+            AppWindow.Show();
+            Activate();
+            return;
+        }
+        var request = ++activationRequest;
+        var state = await context.RefreshGateAsync(gateRefreshCts.Token);
+        if (!disposed && request == activationRequest)
+        {
+            ShowPage(OnboardingNavigationGate.ResolveActivationRoute(state, pairRequested), show: true);
+        }
     }
 
     public void ShowHome() => HandleActivation(pairRequested: false);
@@ -428,9 +422,11 @@ public sealed partial class MainWindow : Window, IDisposable
         {
             var package = new DataPackage();
             package.SetText(text);
-            Clipboard.SetContent(package);
-            Clipboard.Flush();
-            return true;
+            return Clipboard.SetContentWithOptions(package, new ClipboardContentOptions
+            {
+                IsAllowedInHistory = false,
+                IsRoamable = false,
+            });
         }
         catch (Exception error) when (error is InvalidOperationException or System.Runtime.InteropServices.COMException)
         {
