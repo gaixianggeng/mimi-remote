@@ -27,7 +27,7 @@ func TestPairingClaimRejectsInvalidSignatureAndAllowsRepeatedValidClaims(t *test
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			server := newTestServer(t)
+			server := newPairingTestServer(t)
 			httpServer := httptest.NewServer(server.handler)
 			t.Cleanup(httpServer.Close)
 			now := time.Now().UTC()
@@ -79,7 +79,7 @@ func TestPairingClaimRejectsInvalidSignatureAndAllowsRepeatedValidClaims(t *test
 }
 
 func TestPairingClaimAddsCurrentMagicDNSMetadataOnlyForTailscaleTicket(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	server.router.tailscaleHostLookup = func(context.Context) tailscaleinfo.Host {
 		return tailscaleinfo.Host{
 			DNSName:    "studio-mac.tailnet.ts.net",
@@ -122,7 +122,11 @@ func TestPairingClaimAddsCurrentMagicDNSMetadataOnlyForTailscaleTicket(t *testin
 }
 
 func TestLocalPairingClaimOnlyReturnsTokenToNativeLoopbackRequest(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
+	server.router.pairingStatus.probe = func(context.Context) runtimeStatusResponse {
+		t.Error("automatic discovery requested an active assistant probe")
+		return runtimeStatusResponse{}
+	}
 
 	validRequest := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/pair/local", nil)
 	validRequest.RemoteAddr = "127.0.0.1:54321"
@@ -177,7 +181,7 @@ func TestLocalPairingClaimOnlyReturnsTokenToNativeLoopbackRequest(t *testing.T) 
 }
 
 func TestPairingClaimAllowsConcurrentRetriesWhileTicketIsValid(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	now := time.Now().UTC()
 	ticket := auth.NewPairingTicket(
 		"http://100.64.0.1:8787",
@@ -219,7 +223,7 @@ func TestPairingClaimAllowsConcurrentRetriesWhileTicketIsValid(t *testing.T) {
 }
 
 func TestPairingClaimRejectsExpiredTicketUnderConcurrentRetries(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	now := time.Now().UTC()
 	ticket := auth.NewPairingTicket(
 		"http://100.64.0.1:8787",

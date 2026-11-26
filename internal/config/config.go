@@ -101,6 +101,7 @@ type Config struct {
 	DevInsecure   bool             `json:"dev_insecure"`
 
 	sourceGeneration string
+	pairingSettings  string
 }
 
 type NetworkConfig struct {
@@ -450,6 +451,17 @@ func LoadSnapshot(raw []byte) (Config, error) {
 	return cfg, nil
 }
 
+// LoadForLocalControl reads the committed private document and process overrides
+// without scanning projects. Control commands must still reach the daemon when
+// a workspace volume is disconnected or slow.
+func LoadForLocalControl(path string) (Config, error) {
+	raw, err := ReadPrivatePreflightFile(ExpandPath(path), 4<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	return loadRawWithoutProjectDiscovery(raw)
+}
+
 func LoadForDoctor(path string) (Config, error) {
 	return load(path)
 }
@@ -504,6 +516,7 @@ func parseConfigDocument(raw []byte, environment bool) (Config, error) {
 	if raw != nil {
 		sum := sha256.Sum256(raw)
 		cfg.sourceGeneration = hex.EncodeToString(sum[:])
+		cfg.pairingSettings = pairingSettingsDigest(raw)
 		if err := RejectLegacyAppServerConfiguration(raw); err != nil {
 			return Config{}, err
 		}

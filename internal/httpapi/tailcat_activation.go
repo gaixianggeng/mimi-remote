@@ -86,6 +86,10 @@ func (r *Router) tailcatActivationHandler(w http.ResponseWriter, req *http.Reque
 		writeError(w, http.StatusBadRequest, "request_id 必须是 UUID")
 		return
 	}
+	if failure := r.pairingGate(req.Context(), nil); failure != nil {
+		writePairingFailure(w, failure)
+		return
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -241,9 +245,14 @@ func (r *Router) tailcatFreeRouteHandler(w http.ResponseWriter, req *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "内置连接未启用")
 		return
 	}
-	status := r.tailcat.Status(req.Context())
-	if !status.Enabled || !status.Running || (status.Mode == config.TailcatModeManaged && status.FreeAddress == "") {
-		writeError(w, http.StatusServiceUnavailable, "免费连接尚未就绪")
+	if failure := r.pairingGate(req.Context(), func(ctx context.Context) *tailcatActionFailure {
+		status := r.tailcat.Status(ctx)
+		if !status.Enabled || !status.Running || status.Error != "" || status.Address == "" || (status.Mode == config.TailcatModeManaged && status.FreeAddress == "") {
+			return &tailcatActionFailure{http.StatusServiceUnavailable, "tailcat_relay_unreachable", errors.New("免费连接尚未就绪")}
+		}
+		return nil
+	}); failure != nil {
+		writePairingFailure(w, failure)
 		return
 	}
 	status, err := r.tailcat.AllowClient(req.Context(), payload.ClientKey)

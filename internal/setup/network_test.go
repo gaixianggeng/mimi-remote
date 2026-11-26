@@ -73,6 +73,7 @@ func TestPairingResultAdvertisesMagicDNSWithoutChangingSignedQRCode(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	result = result.SignDirectPair()
 	if result.TailscaleDNSName != "studio-mac.tailnet.ts.net" ||
 		result.TailscaleDeviceName != "studio-mac" {
 		t.Fatalf("配对输出缺少 Tailscale 名称：%+v", result)

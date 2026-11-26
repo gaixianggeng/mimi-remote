@@ -59,6 +59,10 @@ func (d *deepSeekCredentialRenewal) release() { <-d.gate }
 // Harness 拒绝 token 时（通常是它重启过），先为受管连接换上同一地址上的新凭据，再试一次。
 // 返回的错误可用 errors.Is 区分：地址不可用、凭据读不到、凭据被拒，其余按服务不可达处理。
 func (r *Router) authenticatedDeepSeekClient(ctx context.Context) (*harnessclient.Client, error) {
+	return r.openDeepSeekClient(ctx, true)
+}
+
+func (r *Router) openDeepSeekClient(ctx context.Context, allowRenewal bool) (*harnessclient.Client, error) {
 	for renewed := false; ; renewed = true {
 		token, err := readDeepSeekTokenFile(r.cfg.DeepSeek.TokenFile)
 		if err != nil {
@@ -76,7 +80,7 @@ func (r *Router) authenticatedDeepSeekClient(ctx context.Context) (*harnessclien
 		if err == nil {
 			return client, nil
 		}
-		if renewed || !errors.Is(err, harnessclient.ErrCredentialsRejected) ||
+		if !allowRenewal || renewed || !errors.Is(err, harnessclient.ErrCredentialsRejected) ||
 			!r.renewRejectedDeepSeekCredential(ctx, token) {
 			return nil, err
 		}

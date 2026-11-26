@@ -227,7 +227,7 @@ func assertManagedModePairQR(t *testing.T, s *tailcatSidecarSupervisor) {
 			t.Fatalf("地址未使用托管中继：%q %v", address, err)
 		}
 	}
-	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress)
+	result, err := agentsetup.TailcatPairWithManagedHost(s.configPath, status.PairAddress, testManagedInstallationID, status.PublicKey, status.PairPublicKey, status.FreePairAddress, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestTailcatManagedModeRejectsManualRelayConfiguration(t *testing.T) {
 }
 
 func TestManagedTailcatClaimRequiresManagedMode(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{Running: true, Mode: config.TailcatModeSelfHosted}}
 	managed := &fakeManagedPairingService{}
 	server.router.tailcat = fake
@@ -521,7 +521,7 @@ func TestManagedModeRejectsClaimWithoutGrantUntilFreeNodeIsReady(t *testing.T) {
 }
 
 func TestManagedModeClaimWithoutGrantUsesFreeNode(t *testing.T) {
-	server := newTestServer(t)
+	server := newPairingTestServer(t)
 	fake := &fakeTailcatSidecar{status: tailcatStatus{
 		Enabled: true, Running: true, Mode: config.TailcatModeManaged,
 		Address: "tailcat:managed", FreeAddress: "tailcat:free",

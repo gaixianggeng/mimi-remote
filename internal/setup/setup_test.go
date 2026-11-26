@@ -56,8 +56,7 @@ func TestFreshExplicitSSHUsesOnlySuccessfulPreflight(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantPair := !tc.saveOnly && !tc.localServiceOnly
-			if calls != tc.wantCalls || (result.PairURL != "") != wantPair {
+			if calls != tc.wantCalls || result.PairURL != "" {
 				t.Fatalf("SSH preflight calls = %d, pairing available = %t", calls, result.PairURL != "")
 			}
 			cfg := config.ParseSetupDocument(readPublicationBytes(t, path)).Config
@@ -122,7 +121,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestRunCreatesConfigAndPairURL(t *testing.T) {
+func TestRunCreatesConfigWithoutIssuingOffline(t *testing.T) {
 	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
@@ -149,31 +148,8 @@ func TestRunCreatesConfigAndPairURL(t *testing.T) {
 		t.Fatalf("外侧 token 应为 32 bytes hex，got len=%d", len(result.Token))
 	}
 	assertDefaultSetupResultAppServer(t, result)
-	connect, err := url.Parse(result.ConnectURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if connect.Scheme != "mimiremote" || connect.Host != "connect" {
-		t.Fatalf("连接链接 scheme/host 异常：%s", result.ConnectURL)
-	}
-	if connect.Query().Get("endpoint") != result.Endpoint || connect.Query().Get("token") != result.Token {
-		t.Fatalf("连接链接未包含 endpoint/token：%s", result.ConnectURL)
-	}
-	parsed, err := url.Parse(result.PairURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsed.Scheme != "mimiremote" || parsed.Host != "pair" {
-		t.Fatalf("配对链接 scheme/host 异常：%s", result.PairURL)
-	}
-	if parsed.Query().Get("endpoint") != result.Endpoint || parsed.Query().Get("pair_sig") == "" {
-		t.Fatalf("配对链接未包含 endpoint/pair_sig：%s", result.PairURL)
-	}
-	if parsed.Query().Get("token") != "" {
-		t.Fatalf("配对二维码不应携带长期 token：%s", result.PairURL)
-	}
-	if parsed.Query().Get("expires_at") == "" {
-		t.Fatalf("配对链接应包含 expires_at：%s", result.PairURL)
+	if result.ConnectURL != "" || result.PairURL != "" || result.PairExpiresAt != "" {
+		t.Fatal("offline setup issued credentials")
 	}
 
 	cfg, err := config.Load(cfgPath)
@@ -541,7 +517,7 @@ func TestRunRejectsUnsafeSSHTargetBeforeWriting(t *testing.T) {
 	assertMissingPath(t, path)
 }
 
-func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
+func TestStatusWarnsWhenEndpointIsLoopback(t *testing.T) {
 	clearSetupEnv(t)
 	scanRoot := t.TempDir()
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
@@ -552,6 +528,14 @@ func TestPairWarnsWhenEndpointIsLoopback(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	cfg, err := config.LoadForDoctor(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = ResultFromConfig(t.Context(), cfgPath, cfg)
+	if result.PairURL != "" {
+		t.Fatal("status minted a ticket")
 	}
 	if !hasWarning(result.Warnings, "本机地址") || !hasWarning(result.Warnings, "移动设备") {
 		t.Fatalf("loopback endpoint 应提示移动设备连接风险：%+v", result.Warnings)

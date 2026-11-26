@@ -74,18 +74,42 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	setupMigrationNotice(stderr, result)
-	if options.SaveOnly {
+	receipt := setupReceipt{Configured: true, Created: result.Created, ConfigPath: result.ConfigPath, ScanRoot: result.ScanRoot, BrowseRoot: result.BrowseRoot}
+	if !options.SaveOnly {
+		pair, issueErr := requestPairIssue(ctx, result.ConfigPath, agentsetup.PairingNetworkAuto)
+		if issueErr != nil {
+			receipt.PairingDeferred = true
+		} else {
+			pair.Created, pair.ConfigPath = result.Created, result.ConfigPath
+			pair.ScanRoot, pair.BrowseRoot = result.ScanRoot, result.BrowseRoot
+			result = pair
+		}
+	}
+	if options.SaveOnly || receipt.PairingDeferred {
 		if *asJSON {
-			return printJSONTo(stdout, map[string]any{"ok": true, "configured": true, "created": result.Created, "config_path": result.ConfigPath, "scan_root": result.ScanRoot, "browse_root": result.BrowseRoot})
+			return printJSONTo(stdout, struct {
+				OK bool `json:"ok"`
+				setupReceipt
+			}{true, receipt})
 		}
 		fmt.Fprintln(stdout, "代码目录已保存。", result.ScanRoot)
+		if receipt.PairingDeferred {
+			fmt.Fprintln(stdout, "待服务、助手和网络就绪后，运行 agentd pair 获取二维码。")
+		}
 		return nil
 	}
 	if *asJSON {
 		if *qrOnly {
-			return printJSONTo(stdout, qrOnlyPairResult(result))
+			return printJSONTo(stdout, struct {
+				qrOnlyPairOutput
+				setupReceipt
+			}{qrOnlyPairResult(result), receipt})
 		}
-		return printJSONTo(stdout, result)
+		return printJSONTo(stdout, struct {
+			OK         bool `json:"ok"`
+			Configured bool `json:"configured"`
+			agentsetup.Result
+		}{true, true, result})
 	}
 	if *qrOnly {
 		printQROnlyPairResult(stdout, result)
@@ -93,4 +117,13 @@ func runSetupWithWriters(args []string, stdout, stderr io.Writer) error {
 		printSetupResult(stdout, result)
 	}
 	return nil
+}
+
+type setupReceipt struct {
+	Configured      bool   `json:"configured"`
+	Created         bool   `json:"created"`
+	ConfigPath      string `json:"config_path"`
+	ScanRoot        string `json:"scan_root"`
+	BrowseRoot      string `json:"browse_root"`
+	PairingDeferred bool   `json:"pairing_deferred,omitempty"`
 }
