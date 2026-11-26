@@ -25,12 +25,12 @@
 
 ## 3. 选一种手机能到达的连接方式
 
-- **同一局域网**。手机和电脑连接同一个受信任的网络，在电脑上开启局域网访问。Windows 安装器默认关闭此项。需要时用已签名的安装器维护入口开启，核对专用网络和防火墙授权。公共 Wi-Fi 上可选其他通道。
-- **Tailscale**。两端登录同一个能互访的 Tailscale 网络，在 Mimi Remote 开启 Tailscale 连接。
-- **内置连接（Tailcat）**。在支持的桌面端开启内置连接并等待就绪，然后选择用 Tailcat 配对。此方式需要电脑能连接相应的服务。
+- **同一局域网**。手机和电脑连接同一个受信任的网络，在电脑上开启局域网访问（Linux / macOS 命令行可运行 `agentd network --lan-enabled=true` 后执行 `agentd restart --no-pair`）。Windows 安装器默认关闭此项。需要时用已签名的安装器维护入口开启，核对专用网络和防火墙授权。公共 Wi-Fi 上可选其他通道。
+- **Tailscale**。两端登录同一个能互访的 Tailscale 网络，在 Mimi Remote 开启 Tailscale 连接（命令行可运行 `agentd network --tailscale-enabled=true` 后执行 `agentd restart --no-pair`）。
+- **内置连接（Tailcat）**。仅适用于可联网环境：在支持的桌面端开启内置连接并等待就绪，或运行 `agentd tailcat enable` 后使用 `agentd tailcat pair` 配对。
 
 ## 4. 在手机上配对
 
-在电脑菜单栏或托盘打开「配对设备…」，选择已就绪的通道。在手机或 iPad 的 Mimi Remote 中添加电脑，扫描本次二维码，也可以粘贴电脑刚复制的短期配对链接。二维码过期后在电脑上刷新即可。链接可以用于认领设备，请勿放进日志或公开消息。
+在电脑菜单栏或托盘打开「配对设备…」，选择已就绪的通道；命令行可先运行 `agentd status --pairing` 检查当前配对前提与修复命令，条件满足后再按提示运行 `agentd pair --qr-only`（或 `agentd tailcat pair --qr-only`）。在手机或 iPad 的 Mimi Remote 中添加电脑，扫描本次二维码，也可以粘贴电脑刚复制的短期配对链接。二维码过期后在电脑上刷新即可。链接可以用于认领设备，请勿放进日志或公开消息。
 
 如果没有出现二维码，按顺序检查代码目录是否已确认、后台服务是否就绪、一个助手是否可用，以及手机能否通过选定通道到达电脑。解决提示后重新配对。如果已有设备连过这台电脑，请保留原配置和凭据。安装包校验、升级和恢复步骤见[安装、升级与回滚](install-upgrade-rollback.md)。

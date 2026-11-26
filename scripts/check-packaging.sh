@@ -142,6 +142,20 @@ grep -Fqx 'UMask=0077' "$service_file" \
   || fail "systemd service 没有使用私有文件 umask。"
 grep -Fqx 'NoNewPrivileges=true' "$service_file" \
   || fail "systemd service 缺少 NoNewPrivileges。"
+grep -Fqx 'PrivateTmp=true' "$service_file" \
+  || fail "systemd service 缺少 PrivateTmp=true 加固。"
+codex_bind_path="$(awk -F= '$1 == "BindPaths" { print $2; exit }' "$service_file")"
+[[ "$codex_bind_path" == "/tmp/codex-daemon-%U" ]] \
+  || fail "systemd service 缺少指向共享 Codex 临时目录的 BindPaths=/tmp/codex-daemon-%U。"
+exec_start_pre="$(awk '/^ExecStartPre=/{ sub(/^ExecStartPre=/, ""); print; exit }' "$service_file")"
+[[ "$exec_start_pre" == +/bin/sh\ -c\ * ]] \
+  || fail "systemd service 缺少在沙箱外执行的 ExecStartPre=+/bin/sh -c 校验。"
+[[ "$exec_start_pre" == *"d=${codex_bind_path};"* ]] \
+  || fail "systemd service 的 ExecStartPre 与 BindPaths 未指向同一目录（${codex_bind_path}）。"
+for required_fragment in '/bin/mkdir -m 0700' '[ -L "$$d" ]' '[ ! -d "$$d" ]' '/usr/bin/stat' '/bin/stat' '%%F:%%u' 'directory:%U' '/bin/chmod 0700'; do
+  [[ "$exec_start_pre" == *"$required_fragment"* ]] \
+    || fail "systemd service 的 ExecStartPre 缺少安全校验片段：${required_fragment}。"
+done
 grep -Fqx 'WantedBy=default.target' "$service_file" \
   || fail "systemd user service 没有挂到 default.target。"
 if grep -Eq '^(User=root|Group=root)|/root/' "$service_file"; then

@@ -31,6 +31,8 @@ macOS 的 `~/Library/Application Support/mimi-remote/config.json` 与 Linux 的�
 
 agentd 直接连接标准 control socket。Mac App 安装版启动服务前自动登记登录用户的 launchd 前门；由它持有标准 socket，并在 Aqua 环境启动独立的 Codex backend。前门未就绪时 agentd 只报告 Codex 不可用，不自行争夺标准 socket。Linux 的 socket 缺失时仍由 agentd 优先通过独立 user-systemd scope 启动 resident；macOS Homebrew 版沿用已登录用户的 Aqua 启动方式。三种方式都把 open-file soft limit 提到至少 8192；agentd 重启不终止 resident。本机终端通过 `codex --remote unix://` 接入同一个后端；普通 `codex` 仍会启动自己的本地运行时。
 
+Linux 上新版 Codex `app-server --listen unix://` 会把 `$CODEX_HOME/app-server-control/app-server-control.sock` 创建为指向真实 `/tmp/codex-daemon-<uid>/<hash>` 的符号链接（不受 `TMPDIR` 影响）。由于 resident 与本机终端都运行在真实 `/tmp` 命名空间内，为避免 `mimi-remote.service` 的 `PrivateTmp=true` 让该符号链接在 agentd 沙箱中悬空，unit 模板在保留 `PrivateTmp=true` 的同时加入了 `ExecStartPre=+`（在沙箱外校验 `/tmp/codex-daemon-%U` 不是符号链接、确为当前用户所有的 `0700` 目录，缺失时创建）与 `BindPaths=/tmp/codex-daemon-%U`。已安装用户执行 `bash ./scripts/install-linux.sh upgrade` 即可自动替换 unit 并生效。
+
 ### macOS Mac App 前门
 
 Mac App 自动创建 `~/Library/LaunchAgents/com.gaixianggeng.mimi.mac.codex-front.plist`。launchd 在 Aqua 会话持续持有 `~/.codex/app-server-control/app-server-control.sock`，权限为 `0600`。首次连接时，它以 **Mimi Remote Mac** 为授权主体启动前门；前门再启动监听 `app-server-backend.sock` 的官方 Codex CLI，并转发 Unix 字节流。前门、agentd 或单条 SSH 连接重启时，独立 backend 保留正在运行的模型回合。

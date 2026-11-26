@@ -103,7 +103,20 @@ func TestNoPairingNetworkErrorGivesPlatformNextSteps(t *testing.T) {
 			t.Fatalf("Windows 提示缺少可执行步骤 %q：%s", expected, windows)
 		}
 	}
-	if other := NoPairingNetworkError("darwin").Error(); !strings.Contains(other, "Tailcat") {
-		t.Fatalf("Mac 与 Linux 仍应提示 Tailcat：%s", other)
+	for _, goos := range []string{"linux", "darwin"} {
+		other := NoPairingNetworkError(goos).Error()
+		for _, expected := range []string{
+			"没有可用的 Tailscale 或局域网连接",
+			"agentd network --lan-enabled=true",
+			"agentd network --tailscale-enabled=true",
+			"agentd restart --no-pair",
+			"联网",
+			"agentd tailcat enable",
+			"agentd tailcat pair",
+		} {
+			if !strings.Contains(other, expected) {
+				t.Fatalf("%s 提示缺少可执行步骤 %q：%s", goos, expected, other)
+			}
+		}
 	}
 }

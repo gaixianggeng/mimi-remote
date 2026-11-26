@@ -583,7 +583,12 @@ main() {
   echo "状态：\"$destination_binary\" status"
   echo "日志：\"$destination_binary\" logs -n 200"
   echo "重启：\"$destination_binary\" restart"
-  echo "配对：\"$destination_binary\" pair --qr-only"
+  local pairing_hint=""
+  if pairing_hint="$("$destination_binary" status --pairing 2>/dev/null)" && [[ -n "$pairing_hint" ]]; then
+    printf '%s\n' "$pairing_hint"
+  else
+    echo "配对需要：至少一个可用助手（Codex 已安装并登录）+ 同一局域网或 Tailscale（联网时也可用 Tailcat）。检查：agentd status"
+  fi
 
   if [[ "$request_pair" == 1 ]]; then
     echo

@@ -336,7 +336,9 @@ bash ./scripts/install-linux.sh install
 - 首次安装时静默保存一次配置，扫描和浏览均限定为 `~/code`。升级保留配置、Token 和可回滚的上一版文件。
 - 对已运行的服务执行一次重启，首次启动等待本机鉴权和版本核验。可选助手的诊断不会阻塞核心服务。
 - 启动失败时输出有界去敏诊断并恢复安装前文件、备份及服务状态。首次保存的身份可用于重试。如果旧版本无法读取配置，停止服务并提示使用兼容版本修复。
-- 默认只提示用户如何配对。可在需要配对时执行 `agentd pair --qr-only`，或在安装命令后加 `--pair`。出码失败可以单独重试。
+- 结束时调用已安装 `agentd status --pairing` 输出当前配对前提与下一步（回滚到不支持该参数的旧版本时自动回退到静态前提说明，不回滚事务、不发起联网）。满足前提后再执行 `agentd pair --qr-only`（或联网启用 Tailcat 后执行 `agentd tailcat pair --qr-only`），或在安装命令后加 `--pair`。出码失败可以单独重试。
+
+`mimi-remote.service` 保留 `PrivateTmp=true` 沙箱加固，同时配置 `ExecStartPre=+`（在沙箱外校验 `/tmp/codex-daemon-%U` 不是符号链接、确为当前用户拥有的目录并确保权限 `0700`，缺失时自动创建）与 `BindPaths=/tmp/codex-daemon-%U`。这是因为 Codex `app-server --listen unix://` 会把 `$CODEX_HOME/app-server-control/app-server-control.sock` 建成指向真实 `/tmp/codex-daemon-<uid>/<hash>` 的符号链接，而独立运行的 resident 与本机终端 `codex --remote unix://` 都工作在真实 `/tmp` 下；通过绑定该目录，agentd 在保留私有 `/tmp` 的同时即可直连共享 control socket。已安装的 Linux 用户只需执行 `bash ./scripts/install-linux.sh upgrade`，安装器会自动替换 `~/.config/systemd/user/mimi-remote.service` 并重新加载生效。
 
 安装器不会修改 `.bashrc`、`.zshrc` 等 shell 配置。若成功输出提示当前 `PATH` 没有 `~/.local/bin`，可在当前 shell 执行：
 
@@ -347,13 +349,16 @@ export PATH="$HOME/.local/bin:$PATH"
 安装后的日常配对、状态、日志和重启统一使用 agentd CLI。下面刻意使用绝对路径，当前 shell 尚未刷新 PATH 时也能直接执行：
 
 ```bash
-"$HOME/.local/bin/agentd" pair --qr-only
 "$HOME/.local/bin/agentd" status
+"$HOME/.local/bin/agentd" status --pairing
+"$HOME/.local/bin/agentd" pair --qr-only
 "$HOME/.local/bin/agentd" logs -n 200
 "$HOME/.local/bin/agentd" logs -n 200 -f
 "$HOME/.local/bin/agentd" restart
 "$HOME/.local/bin/agentd" stop
 ```
+
+全新离线安装默认不开启外部连接且不含已登录助手。配对前先用 `agentd status --pairing` 查看当前缺少的助手或连接方式：同一局域网可运行 `agentd network --lan-enabled=true` 后执行 `agentd restart --no-pair`；Tailscale 可运行 `agentd network --tailscale-enabled=true` 后执行 `agentd restart --no-pair`；联网环境也可运行 `agentd tailcat enable` 后用 `agentd tailcat pair` 配对。`agentd start` 与 `agentd restart` 在服务已就绪但可选配对失败时仅输出警告，不会把已成功启停的服务判为失败。
 
 `pair --qr-only` 只输出 Endpoint、短期 Pair 链接、过期时间和二维码，请只在可信的本机终端显示；普通 `pair` 继续保留长期 Token/connect link，作为扫码不可用时的手动 fallback。其余命令在 Linux 只做一层薄映射，实际仍由 `systemctl --user` 和 `journalctl --user` 管理；不会额外创建 PID 文件或自建守护进程。`logs -n` 的正数范围固定为 1 到 5000，`0` 或负数使用默认 120 行，超限直接报错；`-f` 仍可与合法行数组合。unit 缺失时 CLI 会明确提示先从正式 Release 解压目录运行 `bash ./scripts/install-linux.sh install`。需要绕过 CLI 排查 systemd 本身时，仍可直接运行 `systemctl --user status mimi-remote.service`。
 

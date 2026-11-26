@@ -34,6 +34,8 @@ var version = "devel"
 
 var runAgentSetup = agentsetup.Run
 
+var issuePairingForCommand = requestPairIssue
+
 // managedServicePlatform 默认等于编译目标，只作为平台命令选择的窄测试缝隙；
 // 生产代码不修改它，也不根据配置或环境变量伪装操作系统。
 var managedServicePlatform = runtime.GOOS
@@ -87,7 +89,7 @@ func runCommand(args []string, stdout, stderr, notice io.Writer) error {
 	case "stop":
 		return runStop(args)
 	case "status":
-		return runStatus(args)
+		return runStatusWithWriters(args, stdout, notice)
 	case "logs":
 		return runLogs(args)
 	case "pair":
@@ -397,23 +399,37 @@ func runManagedServiceCommand(args []string, stdout, stderr io.Writer, copy mana
 	if err := manageCoreService(context.Background(), managedServicePlatform, copy.serviceAction, result.Endpoint, result.Token, version, *waitTimeout, serviceOutput, serviceErrors); err != nil {
 		return err
 	}
+	var pairErr error
 	if !*noPair {
-		result, err = requestPairIssue(context.Background(), *configPath, agentsetup.PairingNetworkAuto)
+		pairResult, err := issuePairingForCommand(context.Background(), *configPath, agentsetup.PairingNetworkAuto)
 		if err != nil {
-			return err
+			// 服务已经启动或重启成功；配对属于可选交接步骤，失败时降级为警告而不是让启停命令返回非零。
+			pairErr = err
+		} else {
+			result = pairResult
 		}
 	}
 	if *asJSON {
+		payload := map[string]any{"ok": true, "service_ok": true, "version": version}
 		if *waitTimeout <= 0 {
-			return printJSONTo(stdout, map[string]any{"ok": true, "start_submitted": true})
+			payload = map[string]any{"ok": true, "start_submitted": true}
 		}
-		return printJSONTo(stdout, map[string]any{"ok": true, "service_ok": true, "version": version})
+		if pairErr != nil {
+			payload["pair_ok"] = false
+			payload["pair_error"] = publicStatusError(pairErr, result.ConnectURL, result.PairURL, result.Token, result.Endpoint)
+		}
+		return printJSONTo(stdout, payload)
 	}
 	if *waitTimeout > 0 {
 		fmt.Fprintln(stdout, copy.readyMessage)
 	}
 	if !*noPair {
-		printServeConnection(stdout, result)
+		if pairErr != nil {
+			safePairError := publicStatusError(pairErr, result.ConnectURL, result.PairURL, result.Token, result.Endpoint)
+			printManagedServicePairingFailure(stderr, *configPath, setupLegacyPath(fs), managedServicePlatform, safePairError)
+		} else {
+			printServeConnection(stdout, result)
+		}
 	}
 	return nil
 }
@@ -442,14 +458,30 @@ func runStop(args []string) error {
 }
 
 func runStatus(args []string) error {
+	return runStatusWithWriters(args, os.Stdout, os.Stderr)
+}
+
+func runStatusWithWriters(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	pairingOnly := fs.Bool("pairing", false, "只输出配对前提检查结果")
 	includeRuntime := fs.Bool("runtime", false, "附加本机 Codex / Claude 运行时状态")
 	refreshRuntime := fs.Bool("runtime-refresh", false, "强制刷新并等待本机运行时状态")
 	inspectNetworkPolicy := fs.Bool("network-policy", false, "附加 Windows 防火墙和默认网络类别检查")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	if *pairingOnly {
+		if *asJSON || *includeRuntime || *refreshRuntime || *inspectNetworkPolicy {
+			return errors.New("status --pairing 仅支持人类可读输出，不能与 --json、--runtime 或 --network-policy 同时使用")
+		}
+		if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
+			return err
+		}
+		readiness := inspectPairingReadiness(context.Background(), *configPath, setupLegacyPath(fs), managedServicePlatform)
+		printPairingReadiness(stdout, readiness)
+		return nil
 	}
 	if *includeRuntime && !*asJSON {
 		return errors.New("status --runtime 只能与 --json 一起使用")
@@ -467,7 +499,7 @@ func runStatus(args []string) error {
 			return err
 		}
 	}
-	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
+	if err := prepareDefaultConfigMigration(fs, *configPath, stderr); err != nil {
 		return err
 	}
 
@@ -583,25 +615,36 @@ func runStatus(args []string) error {
 		}
 	}
 	if *asJSON {
-		return printJSON(status)
+		return printJSONTo(stdout, status)
 	}
 
-	fmt.Fprintln(os.Stdout, "Mimi Remote 助手状态")
-	fmt.Fprintf(os.Stdout, "\n版本：%s\n", version)
-	fmt.Fprintf(os.Stdout, "配置：%s\n", result.ConfigPath)
-	fmt.Fprintf(os.Stdout, "Endpoint：%s\n", result.Endpoint)
-	fmt.Fprintf(os.Stdout, "项目数：%d\n", len(registry.List()))
-	printServiceStatus(os.Stdout, serviceStatus, result.Token)
+	fmt.Fprintln(stdout, "Mimi Remote 助手状态")
+	fmt.Fprintf(stdout, "\n版本：%s\n", version)
+	fmt.Fprintf(stdout, "配置：%s\n", result.ConfigPath)
+	fmt.Fprintf(stdout, "Endpoint：%s\n", result.Endpoint)
+	fmt.Fprintf(stdout, "项目数：%d\n", len(registry.List()))
+	printServiceStatus(stdout, serviceStatus, result.Token)
 	if doctorResults.OK {
-		fmt.Fprintln(os.Stdout, "环境：检查通过")
+		fmt.Fprintln(stdout, "环境：检查通过")
 	} else {
-		fmt.Fprintln(os.Stdout, "环境：需要处理")
-		printDoctorActions(os.Stdout, doctorResults)
+		fmt.Fprintln(stdout, "环境：需要处理")
+		printDoctorActions(stdout, doctorResults)
 	}
-	fmt.Fprintln(os.Stdout, "\n下一步：")
-	fmt.Fprintln(os.Stdout, "  agentd pair         刷新配对二维码")
-	fmt.Fprintln(os.Stdout, "  agentd doctor --fix 自动检查并修复常见问题")
-	fmt.Fprintln(os.Stdout, "  agentd logs         查看最近日志")
+	readiness := inspectPairingReadiness(context.Background(), *configPath, setupLegacyPath(fs), managedServicePlatform)
+	fmt.Fprintln(stdout, "\n配对前提：")
+	printPairingReadiness(stdout, readiness)
+	fmt.Fprintln(stdout, "\n下一步：")
+	if readiness.Ready {
+		pairCmd := readiness.PairCommand
+		if pairCmd == "" {
+			pairCmd = "agentd pair --qr-only"
+		}
+		fmt.Fprintf(stdout, "  %-23s 显示短期配对二维码\n", pairCmd)
+	} else {
+		fmt.Fprintln(stdout, "  agentd status --pairing 查看配对前提与修复命令")
+	}
+	fmt.Fprintln(stdout, "  agentd doctor --fix     自动检查并修复常见问题")
+	fmt.Fprintln(stdout, "  agentd logs             查看最近日志")
 	return nil
 }
 

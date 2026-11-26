@@ -786,10 +786,17 @@ func TestDefaultPathCommandsReuseLegacyConfigWithoutRotatingToken(t *testing.T) 
 				return testCase.run(t, fixture)
 			})
 			switch testCase.name {
-			case "pair", "up", "start", "restart":
+			case "pair", "up":
 				var issue *onboardingCommandError
 				if !errors.As(err, &issue) || issue.code != "service_not_running" {
 					t.Fatalf("expected pairing to require a live daemon after migration: %v", err)
+				}
+			case "start", "restart":
+				if err != nil {
+					t.Fatalf("%s 在配对失败时应降级为警告而不是返回错误：%v stderr=%q", testCase.name, err, stderr)
+				}
+				if !strings.Contains(stderr, "警告：服务已启动，但暂时无法生成配对信息：") {
+					t.Fatalf("%s 缺少配对失败警告：%q", testCase.name, stderr)
 				}
 			default:
 				if err != nil {
