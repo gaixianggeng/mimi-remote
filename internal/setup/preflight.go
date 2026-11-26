@@ -48,6 +48,14 @@ func RunPreflight(ctx context.Context, o PreflightOptions, progress func(Preflig
 }
 
 func InspectPreflight(parent context.Context, o PreflightOptions, p PreflightProbes, progress func(PreflightCheck)) PreflightReport {
+	if o.InstallerSmoke {
+		// Verify the package's config and workspace handling without touching
+		// any host service, helper process, or installed assistant.
+		p.Host, p.HomebrewOwner = nil, nil
+		p.Member = func(context.Context, string, config.Config, string, PreflightHost) PreflightObservation {
+			return PreflightObservation{Code: "probe_timeout"}
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
 	if o.Stage == "" {

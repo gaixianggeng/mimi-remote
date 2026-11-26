@@ -29,9 +29,11 @@ type Options struct {
 	AppServerSSHTarget                     string
 	Force                                  bool
 	SaveOnly, CreateRoot, PendingWorkspace bool
-	RequireExisting                        bool
-	RuntimePaths, Assistants               map[string]string
-	LegacyPath                             string
+	// InstallerLAN applies verified ingress intent in the same publication as the workspace.
+	InstallerLAN             *bool
+	RequireExisting          bool
+	RuntimePaths, Assistants map[string]string
+	LegacyPath               string
 	// LocalServiceOnly 用于 up --no-pair：新建或沿用配置后都只返回本机就绪检查需要的
 	// Token 与 loopback Endpoint，不要求存在可配对的 Tailscale 或局域网地址（#874）。
 	LocalServiceOnly bool
