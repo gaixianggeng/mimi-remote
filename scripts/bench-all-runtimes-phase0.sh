@@ -276,42 +276,29 @@ print("\n=== Phase 0 性能基线摘要 ===")
 print(f"固定种子：{agy['seed']} | 批次：{agy['config']['batches']} × (冷 {agy['config']['cold']} / 热 {agy['config']['warm']})")
 print("\n[Antigravity bridges/agy-acp]")
 ps_info = agy["processScan"]
-ps_totals = ps_info["totals"]
 p1 = agy["summary"]["phase1Comparison"]
 print(
     f"- 数据集：{agy['dataset']['totalSummaries']} 全局 / {agy['dataset']['targetRepoSessions']} 目标仓 "
     f"(非孤儿唯一 raw cwd={agy['dataset']['uniqueNonOrphanRawCwds']}, 可查 Git 目录={agy['dataset']['existingUniqueCwdsEligibleForGitInspect']})"
 )
 print(
-    f"- 进程扫描(ps)：status={ps_info['status']} "
-    f"(attempts={ps_totals['attempts']}, succeeded={ps_totals['succeeded']}, failed={ps_totals['failed']}, incomplete={ps_totals['incomplete']}), "
-    f"phase1_comparison={p1['status']}"
-    + (f", reason={p1['excludedReason']}" if p1["excludedReason"] else "")
+    f"- 进程扫描(ps)：{ps_info['note']}（status={ps_info['status']}，Phase 1 对比不依赖进程扫描）"
 )
 for b in agy["batches"]:
     cc = b["concurrentCold"]
     sw = b["sequentialWarm"]
     print(
-        f"  Batch {b['batch']} [ps={b['processScanStatus']}]: 并发冷查(x{cc['concurrency']}) git_spawns={cc['gitSpawnsPerRun']} (mean={cc['gitSpawnsMean']}), "
+        f"  Batch {b['batch']}: 并发冷查(x{cc['concurrency']}) git_spawns={cc['gitSpawnsPerRun']} (mean={cc['gitSpawnsMean']}), "
         f"acp_rpcs={cc['acpSessionListRpcsPerRun']}, p50={cc['latencyMs']['p50']}ms, p95={cc['latencyMs']['p95']}ms | "
         f"顺序热态 git_spawns={sw['gitSpawnsAbsoluteTotal']}, acp_rpc_delta={sw['acpSessionListRpcsDelta']}, "
         f"p50={sw['latencyMs']['p50']}ms, p95={sw['latencyMs']['p95']}ms"
     )
-if p1["eligible"]:
-    print(
-        f"- 汇总（Phase 1 可比）：并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
-        f"顺序热态总 git spawn={agy['summary']['sequentialWarmGitSpawnsAbsoluteAcrossAllBatches']}，"
-        f"顺序热态总 ACP RPC 增量={agy['summary']['sequentialWarmAcpRpcsDeltaAcrossAllBatches']}，"
-        f"热态 p95 均值={p1['sequentialWarmP95MsMean']}ms（批间极差波动 {p1['sequentialWarmP95SpreadPct']}%）"
-    )
-else:
-    print(
-        f"- 汇总（已排除出 Phase 1 性能对比）：ps 进程扫描降级（reason={p1['excludedReason']}），"
-        f"并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
-        f"顺序热态总 git spawn={agy['summary']['sequentialWarmGitSpawnsAbsoluteAcrossAllBatches']}，"
-        f"顺序热态总 ACP RPC 增量={agy['summary']['sequentialWarmAcpRpcsDeltaAcrossAllBatches']}，"
-        f"excluded_batches={p1['excludedBatches']}"
-    )
+print(
+    f"- 汇总（Phase 1 可比，不依赖进程扫描）：并发冷查单轮平均 git spawn={agy['summary']['concurrentColdGitSpawnsMeanPerRun']}，"
+    f"顺序热态总 git spawn={agy['summary']['sequentialWarmGitSpawnsAbsoluteAcrossAllBatches']}，"
+    f"顺序热态总 ACP RPC 增量={agy['summary']['sequentialWarmAcpRpcsDeltaAcrossAllBatches']}，"
+    f"热态 p95 均值={p1['sequentialWarmP95MsMean']}ms（批间极差波动 {p1['sequentialWarmP95SpreadPct']}%）"
+)
 
 print("\n[Claude SDK bridges/claude-sdk]")
 print(
