@@ -2,6 +2,22 @@
   "schemaVersion": 1,
   "items": [
     {
+      "value": "配对二维码已过期",
+      "reason": "Matches a legacy agentd pairing error on the wire."
+    },
+    {
+      "value": "配对票据 issued_at 超出允许范围",
+      "reason": "Matches a legacy agentd pairing error on the wire."
+    },
+    {
+      "value": "本机自动配对仅允许 Mimi Mac 客户端通过 loopback 发起",
+      "reason": "Matches a legacy agentd pairing error on the wire."
+    },
+    {
+      "value": "全部 AI 编程助手已关闭，请先启用助手",
+      "reason": "Matches a legacy agentd pairing error on the wire."
+    },
+    {
       "value": "## my request：",
       "reason": "Matches an injected browser-context protocol marker and is not displayed as product UI."
     },

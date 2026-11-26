@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -716,20 +715,10 @@ func (c *managedPairingController) doJSON(
 }
 
 func loadManagedPairingState(path string) (managedPairingState, error) {
-	info, err := os.Lstat(path)
+	data, err := config.ReadPrivatePreflightFile(path, 64<<10)
 	if errors.Is(err, os.ErrNotExist) {
 		return managedPairingState{Version: 1}, nil
 	}
-	if err != nil {
-		return managedPairingState{}, fmt.Errorf("读取Mimi 中转策略：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return managedPairingState{}, errors.New("Mimi 中转策略必须是普通文件")
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		return managedPairingState{}, errors.New("Mimi 中转策略权限必须为 0600")
-	}
-	data, err := os.ReadFile(path)
 	if err != nil {
 		return managedPairingState{}, fmt.Errorf("读取Mimi 中转策略：%w", err)
 	}
@@ -759,48 +748,11 @@ func loadManagedPairingState(path string) (managedPairingState, error) {
 }
 
 func writeManagedPairingState(path string, state managedPairingState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".managed-policy-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	// 文件 fsync 只保证临时文件内容；目录 fsync 才保证替换后的文件名
-	// 在突然断电后仍指向最新的撤销状态。
-	return directory.Sync()
+	return config.WritePrivateFile(path, data)
 }
 
 func decodeManagedDeviceToken(value string) ([]byte, error) {

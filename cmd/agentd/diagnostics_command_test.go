@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestDiagnosticsCLIFollowsLoopbackListener(t *testing.T) {
@@ -46,12 +47,8 @@ func TestDiagnosticsCLIFollowsLoopbackListener(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path+".diagnostics.token", []byte(strings.Repeat("a", 64)), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.CreatePrivateFile(t, path, data)
+			configtest.CreatePrivateFile(t, path+".diagnostics.token", []byte(strings.Repeat("a", 64)))
 			var output bytes.Buffer
 			if err := runDiagnosticsWithWriter([]string{"agentd", "status", "--config", path, "--json"}, &output); err != nil {
 				t.Fatal(err)
@@ -85,12 +82,8 @@ func TestDiagnosticsCLIUsesLocalBearerAndDoesNotFollowRedirect(t *testing.T) {
 			// 配置中的主机名必须被丢弃，控制命令始终只连接本机同端口。
 			cfg := map[string]any{"listen": "example.invalid:" + u.Port(), "auth": map[string]any{"token": "test-diagnostic-secret"}, "codex": map[string]any{"enabled": false}}
 			data, _ := json.Marshal(cfg)
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path+".diagnostics.token", []byte(strings.Repeat("a", 64)), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			configtest.CreatePrivateFile(t, path, data)
+			configtest.CreatePrivateFile(t, path+".diagnostics.token", []byte(strings.Repeat("a", 64)))
 			var output bytes.Buffer
 			err := runDiagnosticsWithWriter([]string{"agentd", "start", "--config", path, "--json"}, &output)
 			if !called {

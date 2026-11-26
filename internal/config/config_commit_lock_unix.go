@@ -1,6 +1,6 @@
 //go:build !windows
 
-package setup
+package config
 
 import (
 	"context"

@@ -7295,6 +7295,23 @@
         }
       }
     },
+    "ui.command_line_installation_windows_advanced": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PowerShell launch (Advanced)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令行启动（PowerShell，高级）"
+          }
+        }
+      }
+    },
     "ui.command_summary": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -15037,19 +15054,104 @@
         }
       }
     },
+    "ui.first_connection_assistant_agy_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antigravity 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_claude_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_codex_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex 安装与登录说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_deepseek_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek Harness setup guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DeepSeek Harness 启动说明"
+          }
+        }
+      }
+    },
+    "ui.first_connection_assistant_guide_summary": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install and sign in to any 1 of the following coding agents on your computer:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只需在电脑上安装并登录以下任意 1 个助手即可使用："
+          }
+        }
+      }
+    },
     "ui.first_connection_codex_note": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi Remote works through Codex on your computer. Install the Codex CLI and sign in once; on a Mac, the ChatGPT desktop app also works."
+            "value": "Set up any one of Codex, Claude Code, Antigravity, or DeepSeek Harness on your computer to get started; on a Mac, Codex also works with the ChatGPT desktop app."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mimi Remote 通过电脑上的 Codex 工作。装好 Codex 命令行版并登录一次；Mac 上用 ChatGPT 桌面版也可以。"
+            "value": "只需在电脑上准备好 Codex、Claude Code、Antigravity 或 DeepSeek Harness 中的任意一个即可开始；Mac 上也可以通过 ChatGPT 桌面版使用 Codex。"
           }
         }
       }
@@ -15118,6 +15220,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "扫不了码？在电脑的配对窗口点「复制配对链接」，再回到这里点「粘贴配对链接」。"
+          }
+        }
+      }
+    },
+    "ui.first_connection_prepare_assistant": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set up any coding agent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "准备任意一个 AI 助手"
           }
         }
       }
@@ -16713,13 +16832,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "After installing, open Mimi Remote and finish setup; the pairing QR code appears next."
+            "value": "After installing, open the Mimi Remote icon in the taskbar notification area, finish setup, and choose “Pair Device…” to show the pairing QR code."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "装好后打开 Mimi Remote，按提示完成设置，就会显示配对二维码。"
+            "value": "装好后可在任务栏右下角通知区域打开 Mimi Remote 图标，按提示完成设置并选择「配对设备…」显示配对二维码。"
           }
         }
       }
@@ -23864,6 +23983,23 @@
         }
       }
     },
+    "ui.new_session_runtime_signed_out_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ is not signed in on this computer. Sign in on your computer, then try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这台电脑上的 %@ 尚未登录。请在电脑上完成登录后再回来重试。"
+          }
+        }
+      }
+    },
     "ui.new_sessions_created_from_a_workspace_appear_here": {
       "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations": {
@@ -24185,6 +24321,91 @@
           "stringUnit": {
             "state": "translated",
             "value": "暂无历史"
+          }
+        }
+      }
+    },
+    "ui.no_host_connect_hint": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pair from the Devices tab anytime using a QR code or pairing link."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "随时可在「设备」中扫码或粘贴配对链接完成连接。"
+          }
+        }
+      }
+    },
+    "ui.no_host_connected_title": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No computer connected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未连接电脑"
+          }
+        }
+      }
+    },
+    "ui.no_host_sessions_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to view sessions and start new tasks here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可在这里查看会话并发起新任务。"
+          }
+        }
+      }
+    },
+    "ui.no_host_sidebar_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to browse workspaces and active sessions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可在这里浏览工作区与进行中的会话。"
+          }
+        }
+      }
+    },
+    "ui.no_host_workspaces_description": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect a computer to open authorized directories and browse workspaces."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接电脑后，可打开电脑上的授权目录并浏览工作区。"
           }
         }
       }
@@ -26400,6 +26621,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "请启用至少一个可用助手，然后重新配对。"
+          }
+        }
+      }
+    },
+    "ui.pairing_onboarding_open_guide": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Guide"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开说明"
           }
         }
       }
@@ -34535,13 +34773,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex isn't available on this computer yet. Install and sign in to Codex on the computer (on a Mac, the ChatGPT desktop app also works), then try again."
+            "value": "No coding agent is currently available on this computer. Make sure at least one working agent is enabled in Mimi Remote on your computer, then try again."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "这台电脑上还没有可用的 Codex。请在电脑上安装并登录 Codex（Mac 上也可以用 ChatGPT 桌面版），再回来重试。"
+            "value": "这台电脑上当前没有可用的 AI 助手。请在电脑上的 Mimi Remote 中确认至少已启用一个可用助手，再回来重试。"
           }
         }
       }
@@ -47953,6 +48191,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "窗口"
+          }
+        }
+      }
+    },
+    "ui.windows_cli_custom_install_dir_note": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If you chose a custom install folder, replace the path above with your install location. When the QR code expires, replace up with pair to generate a new one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果安装时选择了自定义目录，请将上述路径替换为实际安装位置。二维码过期时可将末尾的 up 改为 pair 重新生成。"
+          }
+        }
+      }
+    },
+    "ui.windows_cli_tray_first_note": {
+      "comment": "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After installing, using the Mimi Remote icon in the taskbar notification area (“Pair Device…”) is recommended. To start manually in PowerShell, run:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安装后推荐直接点任务栏右下角的 Mimi Remote 图标并选择「配对设备…」。如需在 PowerShell 中手动启动，可运行："
           }
         }
       }

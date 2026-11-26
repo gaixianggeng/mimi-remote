@@ -44,6 +44,8 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	deepSeekAction := fs.String("deepseek", "", "DeepSeek 操作：inspect、connect、disabled 或 refresh")
 	deepSeekURLStdin := fs.Bool("deepseek-url-stdin", false, "从标准输入读取 Harness 启动链接")
 	restoreEnabled := fs.Bool("restore-enabled", false, "服务重载失败时恢复先前 enabled 状态")
+	pins := map[string]string{}
+	fs.Func("runtime-path", "程序选择 ID=绝对路径或 auto", func(v string) error { return preflightChoice(pins, v, true) })
 	asJSON := fs.Bool("json", false, "输出 JSON")
 	if err := parseOnboardingFlags(fs, args[1:]); err != nil {
 		return err
@@ -53,6 +55,28 @@ func runRuntimeWithIO(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 	if *asJSON {
 		defer func() { commandErr = moduleConfigFailure(*configPath, commandErr) }()
+	}
+	if len(pins) > 0 {
+		invalidCombination := false
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "config", "runtime-path", "json":
+			default:
+				invalidCombination = true
+			}
+		})
+		if invalidCombination {
+			return invalidOnboardingRequest(fmt.Errorf("--runtime-path 不能与其他助手操作同时使用"))
+		}
+		result, err := agentsetup.ConfigureRuntimePaths(*configPath, setupLegacyPath(fs), pins)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSONTo(stdout, result)
+		}
+		fmt.Fprintln(stdout, "程序路径选择已保存。")
+		return nil
 	}
 	hasClaude := strings.TrimSpace(*claudePreference) != ""
 	hasRestoreClaude := strings.TrimSpace(*restoreClaude) != ""

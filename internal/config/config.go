@@ -35,13 +35,13 @@ var ErrLegacyAppServerConfiguration = errors.New("legacy Codex Desktop sharing c
 // 但可能由更新版本写入的取值。真正的原因是版本偏旧（配置被新版本写过，之后又运行了
 // 旧的安装包），所以这里把「升级安装包」放在最前面。
 var ErrAppServerTransportUnsupported = errors.New(
-	"需要更新版本的 Mimi Remote；请升级到最新发布包后重试，或执行 agentd setup --force 重置配置",
+	"需要更新版本的 Mimi Remote；请升级到最新发布包后重试，并保留原配置",
 )
 
 // ErrAppServerTransportRemoved 表示配置里是本产品曾经支持、之后被移除的 transport。
 // 这类配置安装最新发布包同样跑不起来，引导升级只会让用户白装一次；正确动作是重置配置。
 var ErrAppServerTransportRemoved = errors.New(
-	"需要执行 agentd setup --force 重置配置；安装最新发布包也不会恢复",
+	"请保留原配置并检查已移除的连接设置",
 )
 
 // removedAppServerTransports 记录已经移除的历史 transport。它们必须与「未来版本写入的
@@ -64,7 +64,17 @@ func AppServerTransportError(name string) error {
 	return ErrAppServerTransportUnsupported
 }
 
+type OnboardingConfig struct {
+	Confirmed *bool `json:"workspace_confirmed,omitempty"`
+}
+
+// Valid configurations written before onboarding have already granted their roots.
+func (c Config) WorkspaceConfirmed() bool {
+	return c.Onboarding.Confirmed == nil || *c.Onboarding.Confirmed
+}
+
 type Config struct {
+	Onboarding    OnboardingConfig `json:"onboarding"`
 	Listen        string           `json:"listen"`
 	Network       NetworkConfig    `json:"network"`
 	Auth          AuthConfig       `json:"auth"`
@@ -357,10 +367,21 @@ func ConfigPathIdentity(path string) (string, error) {
 	}
 	// 配置文件本身可能尚未创建；目录存在时仍解析目录 symlink，避免同一个
 	// 配置文件经不同路径写法仍必须取得同一把提交锁。
-	if canonicalDir, evalErr := filepath.EvalSymlinks(filepath.Dir(absolute)); evalErr == nil {
-		absolute = filepath.Join(canonicalDir, filepath.Base(absolute))
+	parent := filepath.Dir(absolute)
+	for {
+		if _, e := os.Stat(parent); !errors.Is(e, os.ErrNotExist) || filepath.Dir(parent) == parent {
+			break
+		}
+		parent = filepath.Dir(parent)
 	}
-	caseSensitive, err := configPathCaseSensitive(filepath.Dir(absolute))
+	if resolved, e := filepath.EvalSymlinks(parent); e == nil {
+		relative, e := filepath.Rel(parent, absolute)
+		if e != nil {
+			return "", e
+		}
+		absolute = filepath.Join(resolved, relative)
+	}
+	caseSensitive, err := configPathCaseSensitive(parent)
 	if err == nil && !caseSensitive {
 		absolute = strings.ToLower(absolute)
 	}
@@ -1036,6 +1057,8 @@ func (c Config) validate(requireProjects bool) error {
 	}
 	return nil
 }
+
+func IsManagedLoopbackWS(listen string) bool { return validateLoopbackWebSocketListen(listen) == nil }
 
 func validateLoopbackWebSocketListen(raw string) error {
 	value := strings.TrimSpace(raw)

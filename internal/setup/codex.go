@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -134,15 +133,7 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 	if err != nil {
 		return "", false, err
 	}
-	info, err := os.Lstat(cfgPath)
-	if err != nil {
-		return "", false, fmt.Errorf("读取配置文件状态失败：%w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return "", false, fmt.Errorf("配置文件必须是 regular file，不能是目录或符号链接")
-	}
-
-	original, err := os.ReadFile(cfgPath)
+	original, err := readPrivateConfig(cfgPath)
 	if err != nil {
 		return "", false, fmt.Errorf("读取配置文件失败：%w", err)
 	}
@@ -179,25 +170,7 @@ func repairCodexBin(configPath string, resolve codexBinResolver, writeConfig con
 	updated = append(updated, '\n')
 	var writeErr error
 	if writeConfig == nil {
-		validateOriginal := func() error {
-			current, readErr := os.ReadFile(cfgPath)
-			if readErr != nil {
-				return fmt.Errorf("重新读取配置失败：%w", readErr)
-			}
-			if !bytes.Equal(current, original) {
-				return fmt.Errorf("配置已被其他进程修改，请重新执行")
-			}
-			return nil
-		}
-		commitCtx, cancelCommit := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancelCommit()
-		writeErr = withConfigCommitLock(commitCtx, cfgPath, func() error {
-			if err := validateOriginal(); err != nil {
-				return err
-			}
-			// 已在统一配置锁内完成原始字节复核，不能再调用会重复获取同一把锁的 CAS 写入。
-			return writePrivateFileAtomically(cfgPath, updated)
-		})
+		writeErr = writePrivateFileAtomicallyCAS(cfgPath, original, updated)
 	} else {
 		writeErr = writeConfig(cfgPath, updated)
 	}

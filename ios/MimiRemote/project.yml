@@ -205,6 +205,7 @@ targets:
           - MimiRemoteTests/SettingsChoiceRowSnapshotTests.swift
           - MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift
           - MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
+          - MimiRemoteTests/OnboardingEmptyStatesSnapshotTests.swift
           - MimiRemoteTests/SkillModelPickerSnapshotTests.swift
           - MimiRemoteTests/TokenUsageCardSnapshotTests.swift
           - MimiRemoteTests/WorkspaceVisualSnapshotTests.swift
@@ -222,6 +223,9 @@ targets:
         destinationFilters:
           - iOS
       - path: Tests/MimiRemoteTests/ConnectionSettingsSnapshotTests.swift
+        destinationFilters:
+          - iOS
+      - path: Tests/MimiRemoteTests/OnboardingEmptyStatesSnapshotTests.swift
         destinationFilters:
           - iOS
       - path: Tests/MimiRemoteTests/SettingsConnectionCardSnapshotTests.swift

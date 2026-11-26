@@ -90,6 +90,14 @@ struct UserFacingError: Equatable, Sendable {
 extension UserFacingError {
     init(_ error: Error, context: UserFacingErrorContext = .general) {
         let rawDescription = error.localizedDescription
+        if let pairingError = error as? PairingOnboardingAPIError {
+            self.init(
+                category: Self.category(for: pairingError),
+                message: pairingError.userFacingMessage,
+                technicalDetail: nil
+            )
+            return
+        }
         if case AgentAPIError.server(404, _) = error, context != .general {
             let key = context == .historyMedia
                 ? "ui.the_historical_image_cache_has_expired_please_refresh"
@@ -253,6 +261,9 @@ extension UserFacingError {
 
     /// nil 表示该错误自带的描述已经是用户文案（配置错误、业务说明等），交给字符串兜底判断。
     static func category(for error: Error) -> UserFacingErrorCategory? {
+        if let pairingError = error as? PairingOnboardingAPIError {
+            return category(for: pairingError)
+        }
         if let urlError = error as? URLError {
             return category(forURLErrorCode: urlError.code)
         }
@@ -311,6 +322,28 @@ extension UserFacingError {
             return category(forURLErrorCode: URLError.Code(rawValue: nsError.code))
         }
         return nil
+    }
+
+    private static func category(for pairingError: PairingOnboardingAPIError) -> UserFacingErrorCategory {
+        // 401 短票失败与配对协商错误绝不归类为已保存主机凭据失效（.authenticationExpired）。
+        switch pairingError.code {
+        case "pair_ticket_expired", "pair_ticket_invalid", "pair_clock_skew",
+             "workspace_confirmation_required", "pair_managed_grant_conflict",
+             "pair_managed_entitlement_required", "invalid_request":
+            return .rejected
+        case "pair_local_forbidden":
+            return .permissionDenied
+        case "pair_host_unreachable", "tailcat_relay_unreachable":
+            return .hostUnreachable
+        case "probe_timeout", "command_timeout":
+            return .timedOut
+        case "tailcat_busy":
+            return .hostError
+        case "no_enabled_assistant", "pair_token_mismatch", "internal_error", "embedded_binary_missing":
+            return .described
+        default:
+            return .described
+        }
     }
 
     static func category(forHTTPStatus status: Int) -> UserFacingErrorCategory {

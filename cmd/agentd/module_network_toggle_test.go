@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 	agentsetup "github.com/gaixianggeng/mimi-remote/internal/setup"
 )
 
@@ -49,9 +50,7 @@ func writeNetworkToggleConfig(t *testing.T, listen, network string) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, raw)
 	return path
 }
 

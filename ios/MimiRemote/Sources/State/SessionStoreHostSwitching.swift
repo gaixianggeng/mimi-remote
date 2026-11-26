@@ -91,6 +91,7 @@ extension SessionStore {
     func resetConnectionForSettingsChange(clearData: Bool = false) {
         invalidatePreparedConnectionChange()
         lastPairingLinkRoute = nil
+        lastPairingOnboardingError = nil
         connectionTermination = nil
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
@@ -98,6 +99,9 @@ extension SessionStore {
         activeWriterConflictLeases.removeAll()
         clearAllWriterConflictForkState()
         if clearData {
+            stopNativeHarnessHostEvents()
+            stopNativeHarnessDirectory()
+            cancelMimiRelay()
             if !appStore.isConfigured, let profileID = currentQueuedTurnProfileID {
                 do {
                     try queuedTurnStore.remove(profileID: profileID)
@@ -317,6 +321,7 @@ extension SessionStore {
     ) async {
         let reportsToFirstConnectionPage = appStore.activeConnectionProfile == nil
         lastPairingLinkRoute = ConnectionProfileRoute.fromPairingURL(url)
+        lastPairingOnboardingError = nil
         if reportsToFirstConnectionPage {
             pairingLinkAttempt = .connecting
         }
@@ -325,6 +330,7 @@ extension SessionStore {
         do {
             _ = try await applyPairingURL(url)
             lastPairingLinkRoute = nil
+            lastPairingOnboardingError = nil
             if RelayServiceChoice.fromPairingURL(url) == .mimi {
                 mimiRelaySetupProfileID = appStore.activeConnectionProfileID
             }
@@ -333,8 +339,22 @@ extension SessionStore {
             }
             // 首次 URL 配对要覆盖 Tailscale / gateway 冷启动窗口；已有档案修复只做短等待。
             _ = await refreshAfterConnectionCommit(maxWait: wasConfigured ? 10 : 45)
+        } catch let pairingError as PairingOnboardingAPIError {
+            lastPairingOnboardingError = pairingError.mapped
+            let message = pairingError.userFacingMessage
+            // 401 短票等配对失败绝不破坏已连接的既有档案或触发凭据失效。
+            if appStore.activeConnectionProfile == nil || !appStore.connectionStatus.isConnected {
+                appStore.connectionStatus = .failed(message)
+            }
+            appStore.lastError = message
+            if reportsToFirstConnectionPage {
+                pairingLinkAttempt = .failed(message)
+            }
         } catch {
-            appStore.connectionStatus = .failed(error.localizedDescription)
+            lastPairingOnboardingError = nil
+            if appStore.activeConnectionProfile == nil || !appStore.connectionStatus.isConnected {
+                appStore.connectionStatus = .failed(error.localizedDescription)
+            }
             appStore.lastError = error.localizedDescription
             if reportsToFirstConnectionPage {
                 pairingLinkAttempt = .failed(error.localizedDescription)
@@ -560,6 +580,7 @@ extension SessionStore {
         }
         connectionTermination = nil
         lastPairingLinkRoute = nil
+        lastPairingOnboardingError = nil
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
         // 必须在三个 Store 仍指向旧 Profile 时退役旧 socket；disconnect 会把旧主机中

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func writeClaudeTurnHintsFixture(t *testing.T, claude map[string]any) string {
@@ -18,9 +20,7 @@ func writeClaudeTurnHintsFixture(t *testing.T, claude map[string]any) string {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, append(raw, '\n'))
 	return path
 }
 

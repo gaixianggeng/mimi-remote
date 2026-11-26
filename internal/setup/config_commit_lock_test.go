@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigCommitLockMakesCASAndRenameAtomicAcrossMimiWriters(t *testing.T) {
@@ -14,9 +17,7 @@ func TestConfigCommitLockMakesCASAndRenameAtomicAcrossMimiWriters(t *testing.T) 
 	original := []byte("{\"generation\":1}\n")
 	newer := []byte("{\"generation\":2}\n")
 	stale := []byte("{\"generation\":3}\n")
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, path, original)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -27,7 +28,7 @@ func TestConfigCommitLockMakesCASAndRenameAtomicAcrossMimiWriters(t *testing.T) 
 		firstDone <- withConfigCommitLock(ctx, path, func() error {
 			close(entered)
 			<-release
-			return writePrivateFileAtomically(path, newer)
+			return writePrivateFileAtomically(path, original, newer)
 		})
 	}()
 	<-entered
@@ -64,11 +65,11 @@ func TestConfigCommitLockPathMatchesFilesystemCaseSemantics(t *testing.T) {
 	if err := os.WriteFile(lower, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lowerLock, err := configCommitLockPath(lower)
+	lowerLock, err := config.ConfigCommitLockPath(lower)
 	if err != nil {
 		t.Fatal(err)
 	}
-	upperLock, err := configCommitLockPath(upper)
+	upperLock, err := config.ConfigCommitLockPath(upper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,5 +79,21 @@ func TestConfigCommitLockPathMatchesFilesystemCaseSemantics(t *testing.T) {
 	}
 	if os.IsNotExist(upperStatErr) && lowerLock == upperLock {
 		t.Fatalf("大小写敏感卷的不同文件不能误用同一把锁：%q", lowerLock)
+	}
+}
+
+func TestConfigCommitLockPathStableAcrossDirectoryCreation(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "New Config", "Subdir")
+	path := filepath.Join(parent, "Config.json")
+	before, err := config.ConfigCommitLockPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	after, err := config.ConfigCommitLockPath(path)
+	if err != nil || before != after {
+		t.Fatalf("lock identity changed: %v", err)
 	}
 }

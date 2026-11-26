@@ -85,6 +85,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
             tokenStore: TokenStore(keychain: TestKeychainOperations())
         )
         appStore.endpoint = "http://demo-mac.local:8787"
+        appStore.token = "snapshot-token"
 
         let projects = [
             AgentProject(

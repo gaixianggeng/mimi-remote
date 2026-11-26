@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/gaixianggeng/mimi-remote/internal/auth"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
@@ -24,20 +28,21 @@ func TestSetupWriteFailuresRestoreExistingFilesExactly(t *testing.T) {
 			clearSetupEnv(t)
 			dir := t.TempDir()
 			configPath := filepath.Join(dir, "config.json")
-			tokenPath := filepath.Join(dir, "app-server-ws-token")
-			oldConfig := []byte("old-config-must-stay-byte-identical\n")
-			oldToken := []byte("old-upstream-token-must-stay-byte-identical\n")
-			writeFileWithMode(t, configPath, oldConfig, 0o640)
-			writeFileWithMode(t, tokenPath, oldToken, 0o644)
-			sentinel := errors.New("injected " + failure)
-
-			_, err := runWithFileOps(context.Background(), atomicSetupOptions(t, configPath, true), failingSetupFileOps(configPath, failure, sentinel))
-			if !errors.Is(err, sentinel) {
-				t.Fatalf("应返回注入错误 %q，实际 %v", failure, err)
+			options := atomicSetupOptions(t, configPath, false)
+			if _, err := Run(t.Context(), options); err != nil {
+				t.Fatal(err)
 			}
-			assertFileBytesAndMode(t, configPath, oldConfig, 0o640)
-			assertFileBytesAndMode(t, tokenPath, oldToken, 0o644)
-			assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
+			writeFileWithMode(t, filepath.Join(dir, "user-token"), []byte("user-owned file"), 0600)
+			before := setupFilesSnapshot(t, dir)
+			options.ScanRoot = t.TempDir()
+			sentinel := errors.New("injected " + failure)
+			_, err := runWithFileOps(t.Context(), options, failingSetupFileOps(configPath, failure, sentinel))
+			if !errors.Is(err, sentinel) {
+				t.Fatalf("did not reach %s: %v", failure, err)
+			}
+			if after := setupFilesSnapshot(t, dir); !reflect.DeepEqual(before, after) {
+				t.Fatal("failed change did not restore all bytes and permissions")
+			}
 		})
 	}
 }
@@ -81,64 +86,124 @@ func TestFreshSetupFailureRemovesNewEmptyConfigDirectory(t *testing.T) {
 	assertMissingPath(t, dir)
 }
 
-func TestSetupSuccessUsesPrivateConfigAndPreservesLegacyTokenFile(t *testing.T) {
-	for _, testCase := range []struct {
-		name     string
-		force    bool
-		existing bool
-	}{
-		{name: "fresh", force: false, existing: false},
-		{name: "force preserves legacy token", force: true, existing: true},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			clearSetupEnv(t)
-			dir := t.TempDir()
-			configPath := filepath.Join(dir, "config.json")
-			tokenPath := filepath.Join(dir, "app-server-ws-token")
-			oldToken := []byte("old-token-before-force\n")
-			if testCase.existing {
-				writeFileWithMode(t, configPath, []byte("old-config-before-force\n"), 0o644)
-				writeFileWithMode(t, tokenPath, oldToken, 0o644)
-			}
+func TestFreshSetupSyncsNewDirectoryAncestors(t *testing.T) {
+	clearSetupEnv(t)
+	parent := t.TempDir()
+	child := filepath.Join(parent, "new")
+	path := filepath.Join(child, "config", "config.json")
+	opts := atomicSetupOptions(t, path, false)
+	ops := defaultSetupFileTransactionOps()
+	syncDir := ops.syncDir
+	var synced []string
+	injected := errors.New("parent sync failed")
+	ops.syncDir = func(dir string) error {
+		synced = append(synced, dir)
+		if dir == child {
+			return injected
+		}
+		return syncDir(dir)
+	}
+	if _, err := runWithFileOps(t.Context(), opts, ops); !errors.Is(err, injected) {
+		t.Fatalf("parent sync failure was lost: %v", err)
+	}
+	if !reflect.DeepEqual(synced, []string{parent, child}) {
+		t.Fatal("did not sync the new directory entries in order")
+	}
+	assertMissingPath(t, path)
+	if _, err := Run(t.Context(), opts); err != nil {
+		t.Fatal(err)
+	}
+}
 
-			result, err := Run(context.Background(), atomicSetupOptions(t, configPath, testCase.force))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !result.Created {
-				t.Fatalf("setup 成功结果异常：%+v", result)
-			}
-			assertDefaultSetupResultAppServer(t, result)
-			assertPrivateRegularFile(t, configPath)
-			if config.SupportsManagedAppServer() {
-				newToken, err := os.ReadFile(tokenPath)
-				if err != nil || len(strings.TrimSpace(string(newToken))) != 64 {
-					t.Fatalf("本机 setup 必须生成独立的 32-byte hex upstream token：err=%v raw=%q", err, newToken)
-				}
-				if testCase.existing && bytes.Equal(newToken, oldToken) {
-					t.Fatal("本机 setup --force 必须轮换 upstream token")
-				}
-				assertPrivateRegularFile(t, tokenPath)
-			} else if testCase.existing {
-				newToken, err := os.ReadFile(tokenPath)
-				if err != nil || !bytes.Equal(newToken, oldToken) {
-					t.Fatalf("SSH setup 不得修改旧 token file：err=%v raw=%q", err, newToken)
-				}
-			}
-			cfg, err := config.Load(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertDefaultSetupConfigAppServer(t, cfg)
-			if len(cfg.Auth.Token) != 64 {
-				t.Fatalf("提交后的配置缺少外侧 token：%+v", cfg)
-			}
-			if testCase.existing || config.SupportsManagedAppServer() {
-				assertSetupDirectoryEntries(t, dir, "config.json", "app-server-ws-token")
-			} else {
-				assertSetupDirectoryEntries(t, dir, "config.json")
-			}
-		})
+type savedFile struct {
+	Body string
+	Mode os.FileMode
+}
+
+func setupFilesSnapshot(t *testing.T, dir string) map[string]savedFile {
+	t.Helper()
+	files := map[string]savedFile{}
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[path] = savedFile{string(data), info.Mode()}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+func TestSetupUsesPrivateCompanionAndForcePreservesIdentity(t *testing.T) {
+	clearSetupEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	unmanaged := filepath.Join(dir, "app-server-ws-token")
+	old := []byte("preexisting unreferenced user token")
+	writeFileWithMode(t, unmanaged, old, 0600)
+	options := atomicSetupOptions(t, path, false)
+	r, err := Run(t.Context(), options)
+	if err != nil || !r.Created {
+		t.Fatalf("fresh save: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Auth.Token) != 64 {
+		t.Fatal("fresh bearer not generated")
+	}
+	assertPrivateRegularFile(t, path)
+	assertDefaultSetupConfigAppServer(t, cfg)
+	if config.SupportsManagedAppServer() {
+		if cfg.AppServer.WSTokenFile == unmanaged {
+			t.Fatal("new config reused unrelated token path")
+		}
+		token, err := os.ReadFile(cfg.AppServer.WSTokenFile)
+		if err != nil || len(strings.TrimSpace(string(token))) != 64 {
+			t.Fatalf("private WS token missing: %v", err)
+		}
+	}
+	request := httptest.NewRequest("GET", "/api/projects", nil)
+	request.Header.Set("Authorization", "Bearer "+cfg.Auth.Token)
+	before := setupFilesSnapshot(t, dir)
+	options.Force = true
+	if _, err := Run(t.Context(), options); err == nil {
+		t.Fatal("force accepted an existing identity")
+	}
+	if !reflect.DeepEqual(before, setupFilesSnapshot(t, dir)) {
+		t.Fatal("blocked force changed user's files")
+	}
+	options.Force = false
+	options.ScanRoot = t.TempDir()
+	if _, err := Run(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	after := setupFilesSnapshot(t, dir)
+	delete(before, path)
+	delete(after, path)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("edit changed a token or left staging debris")
+	}
+	assertFileBytesAndMode(t, unmanaged, old, 0600)
+	updated, err := config.Load(path)
+	if err != nil || updated.AppServer.WSTokenFile != cfg.AppServer.WSTokenFile {
+		t.Fatalf("new WS token reference: %v", err)
+	}
+	if !auth.NewWithOptions(updated.Auth.Token, false, auth.Options{}).ValidRequest(request) {
+		t.Fatal("previously paired client no longer authenticated")
 	}
 }
 
@@ -158,7 +223,7 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 		}
 
 		_, err := Run(context.Background(), atomicSetupOptions(t, configPath, true))
-		if err == nil || !strings.Contains(err.Error(), "regular file") {
+		if err == nil {
 			t.Fatalf("配置 symlink 必须 fail-closed：%v", err)
 		}
 		assertFileBytesAndMode(t, target, original, 0o600)
@@ -173,7 +238,7 @@ func TestSetupRejectsSymlinkAndDirectoryTargets(t *testing.T) {
 		}
 
 		_, err := Run(context.Background(), atomicSetupOptions(t, configPath, true))
-		if err == nil || !strings.Contains(err.Error(), "regular file") {
+		if err == nil {
 			t.Fatalf("配置目录必须 fail-closed：%v", err)
 		}
 		info, statErr := os.Lstat(configPath)
@@ -210,19 +275,31 @@ func failingSetupFileOps(configPath string, failure string, sentinel error) setu
 	defaultRename := ops.rename
 	if failure == "config-rename" {
 		ops.rename = func(oldPath string, newPath string) error {
-			isConfigCommit := newPath == configPath && strings.Contains(filepath.Base(oldPath), ".config.json.tmp-")
+			isConfigCommit := newPath == configPath
 			if isConfigCommit {
 				return sentinel
 			}
 			return defaultRename(oldPath, newPath)
 		}
 	}
+	if failure == "config-rename" {
+		ops.renameNew = ops.rename
+	}
 	if failure == "directory-fsync" {
 		defaultSyncDir := ops.syncDir
-		calls := 0
+		committed := false
+		ops.rename = func(src, dst string) error {
+			err := defaultRename(src, dst)
+			if err == nil && dst == configPath {
+				committed = true
+			}
+			return err
+		}
+		ops.renameNew = ops.rename
+		failed := false
 		ops.syncDir = func(dir string) error {
-			calls++
-			if calls == 1 {
+			if committed && !failed {
+				failed = true
 				return sentinel
 			}
 			return defaultSyncDir(dir)
@@ -234,6 +311,7 @@ func failingSetupFileOps(configPath string, failure string, sentinel error) setu
 func atomicSetupOptions(t *testing.T, configPath string, force bool) Options {
 	t.Helper()
 	return Options{
+		SaveOnly:   true,
 		ConfigPath: configPath,
 		ScanRoot:   t.TempDir(),
 		BrowseRoot: t.TempDir(),
@@ -244,9 +322,7 @@ func atomicSetupOptions(t *testing.T, configPath string, force bool) Options {
 
 func writeFileWithMode(t *testing.T, path string, raw []byte, mode os.FileMode) {
 	t.Helper()
-	if err := os.WriteFile(path, raw, mode); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, raw)
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}

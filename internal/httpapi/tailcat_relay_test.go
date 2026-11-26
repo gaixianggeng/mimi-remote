@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gaixianggeng/mimi-remote/internal/config"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 // relay-set 是 Mac 和 Windows 客户端共用的中转切换事务，顺序和回读校验都在这里定死。
@@ -23,9 +23,7 @@ func newRelayTestServer(t *testing.T) testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(server.router.configPath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.CreatePrivateFile(t, server.router.configPath, raw)
 	return server
 }
 

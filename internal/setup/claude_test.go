@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
+	"github.com/gaixianggeng/mimi-remote/internal/config/configtest"
 )
 
 func TestConfigureClaudeAutoEnablesReadyRuntimeAndPreservesConfig(t *testing.T) {
@@ -616,9 +617,7 @@ func writeClaudeDocument(t *testing.T, path string, document map[string]any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	configtest.WritePrivateFile(t, path, append(raw, '\n'))
 }
 
 func readClaudeConfigurationFixture(t *testing.T, path string) map[string]any {

@@ -1,6 +1,8 @@
 import Foundation
+import Security
 import SnapshotTesting
 import SwiftUI
+import UIKit
 import XCTest
 @testable import MimiRemote
 
@@ -1357,6 +1359,434 @@ final class SessionListPresentationTests: XCTestCase {
         XCTAssertEqual(session.displayStatus(foregroundActivity: nil).title, L10n.text("ui.running"))
     }
 
+    func testNoHostConfiguredTakesPriorityOverLoadingConnectingAndFailureStates() {
+        let states: [SessionListPresentationState] = [
+            SessionListPresentationState.resolve(
+                hasNoConfiguredHost: true,
+                hasVisibleSessions: true,
+                hasOpenedWorkspace: true,
+                isLoading: true,
+                isSearching: true,
+                isFiltering: true,
+                isNetworkUnavailable: true,
+                errorMessage: "boom",
+                connectionStatus: .failed("offline"),
+                hasLoadedWorkspaceCatalog: false,
+                isEstablishingConnection: true,
+                awaitsInitialSessionLibrary: true
+            ),
+            SessionListPresentationState.resolve(
+                hasNoConfiguredHost: true,
+                hasVisibleSessions: false,
+                hasOpenedWorkspace: false,
+                isLoading: false,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: false,
+                errorMessage: nil,
+                connectionStatus: .idle
+            ),
+        ]
+
+        for state in states {
+            XCTAssertEqual(state, .noHostConfigured)
+            XCTAssertFalse(state.showsInPlaceConnectionProgress)
+            XCTAssertFalse(state.showsCenteredLoading)
+        }
+
+        // 已配对（hasNoConfiguredHost == false）仍按原优先级呈现加载与错误态。
+        XCTAssertEqual(
+            SessionListPresentationState.resolve(
+                hasNoConfiguredHost: false,
+                hasVisibleSessions: false,
+                hasOpenedWorkspace: false,
+                isLoading: false,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: false,
+                errorMessage: nil,
+                connectionStatus: .idle,
+                hasLoadedWorkspaceCatalog: false
+            ),
+            .loading
+        )
+        XCTAssertEqual(
+            SessionListPresentationState.resolve(
+                hasNoConfiguredHost: false,
+                hasVisibleSessions: false,
+                hasOpenedWorkspace: false,
+                isLoading: false,
+                isSearching: false,
+                isFiltering: false,
+                isNetworkUnavailable: false,
+                errorMessage: nil,
+                connectionStatus: .failed("offline")
+            ),
+            .runtimeUnavailable("offline")
+        )
+    }
+
+    @MainActor
+    func testHasNoConfiguredHostPredicateDistinguishesEmptyFromKeychainRecoveryAndLegacyStates() async throws {
+        // 1. 全新启动（0 档案、无 Keychain 项、无旧凭据）→ hasNoConfiguredHost == true。
+        let freshStore = makeIsolatedAppStore()
+        XCTAssertTrue(freshStore.hasLoadedLocalHostState)
+        XCTAssertTrue(freshStore.hasNoConfiguredHost)
+        XCTAssertFalse(freshStore.hasKeychainRecoveryPath)
+        XCTAssertFalse(freshStore.hasValidLegacySingleHostCredential)
+
+        freshStore.suspendCredentialsForBackground()
+        XCTAssertFalse(freshStore.isCredentialMemorySuspended)
+        try await freshStore.restoreCredentialsForForeground()
+        _ = try await freshStore.commitConnectionSettings(
+            PreparedConnectionSettings(endpoint: "http://paired.local:8787", token: "paired-token")
+        )
+        XCTAssertNotNil(freshStore.authenticatedCredentialFingerprint)
+
+        // 2. 无 Keychain entitlement 且 0 档案 → 视为无主机，不误判为锁屏待恢复。
+        let missingEntitlementSuite = "SessionListPresentationTests.MissingEntitlement.\(UUID().uuidString)"
+        let missingEntitlementDefaults = try XCTUnwrap(UserDefaults(suiteName: missingEntitlementSuite))
+        missingEntitlementDefaults.removePersistentDomain(forName: missingEntitlementSuite)
+        addTeardownBlock { missingEntitlementDefaults.removePersistentDomain(forName: missingEntitlementSuite) }
+        let missingEntitlementStore = AppStore(
+            defaults: missingEntitlementDefaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations(forcedCopyStatus: errSecMissingEntitlement)),
+            prefersLocalConnection: false
+        )
+        XCTAssertTrue(missingEntitlementStore.hasNoConfiguredHost)
+        XCTAssertFalse(missingEntitlementStore.hasPendingKeychainRecovery)
+
+        // 3. 冷启动 Keychain 锁屏（errSecInteractionNotAllowed）且 0 档案 → 存在恢复路径，不得判定为无主机空态。
+        let lockedLegacySuite = "SessionListPresentationTests.LockedLegacy.\(UUID().uuidString)"
+        let lockedLegacyDefaults = try XCTUnwrap(UserDefaults(suiteName: lockedLegacySuite))
+        lockedLegacyDefaults.removePersistentDomain(forName: lockedLegacySuite)
+        addTeardownBlock { lockedLegacyDefaults.removePersistentDomain(forName: lockedLegacySuite) }
+        let lockedLegacyKeychain = TestKeychainOperations(forcedCopyStatus: errSecInteractionNotAllowed)
+        let lockedLegacyStore = AppStore(
+            defaults: lockedLegacyDefaults,
+            tokenStore: TokenStore(keychain: lockedLegacyKeychain),
+            prefersLocalConnection: false
+        )
+        XCTAssertTrue(lockedLegacyStore.hasPendingKeychainRecovery)
+        XCTAssertTrue(lockedLegacyStore.hasKeychainRecoveryPath)
+        XCTAssertFalse(lockedLegacyStore.hasNoConfiguredHost)
+        // 解锁后确认 Keychain 为空，恢复完成后才转为无主机空态。
+        lockedLegacyKeychain.forcedCopyStatus = nil
+        try await lockedLegacyStore.restoreCredentialsForForeground()
+        XCTAssertFalse(lockedLegacyStore.hasPendingKeychainRecovery)
+        XCTAssertTrue(lockedLegacyStore.hasNoConfiguredHost)
+
+        // 4. 旧版单主机迁移失败（0 档案但内存有有效 endpoint + token）→ 不是无主机；切前后台仍保留恢复路径。
+        let legacySuite = "SessionListPresentationTests.Legacy.\(UUID().uuidString)"
+        let legacyDefaults = try XCTUnwrap(UserDefaults(suiteName: legacySuite))
+        legacyDefaults.removePersistentDomain(forName: legacySuite)
+        addTeardownBlock { legacyDefaults.removePersistentDomain(forName: legacySuite) }
+        let legacyKeychain = TestKeychainOperations(
+            itemData: Data("legacy-token".utf8),
+            forcedAddStatus: errSecAuthFailed
+        )
+        let legacyStore = AppStore(
+            defaults: legacyDefaults,
+            tokenStore: TokenStore(keychain: legacyKeychain),
+            prefersLocalConnection: false
+        )
+        XCTAssertTrue(legacyStore.connectionProfiles.isEmpty)
+        XCTAssertTrue(legacyStore.hasValidLegacySingleHostCredential)
+        XCTAssertFalse(legacyStore.hasNoConfiguredHost)
+        legacyStore.suspendCredentialsForBackground()
+        XCTAssertTrue(legacyStore.isCredentialMemorySuspended)
+        XCTAssertTrue(legacyStore.hasPendingKeychainRecovery)
+        XCTAssertFalse(legacyStore.hasNoConfiguredHost)
+        XCTAssertTrue(legacyStore.canEnterWorkbench)
+        try await legacyStore.restoreCredentialsForForeground()
+        XCTAssertEqual(legacyStore.token, "legacy-token")
+        XCTAssertFalse(legacyStore.hasNoConfiguredHost)
+
+        // 5. 已保存单台电脑：前后台清空内存凭据、前台恢复遇锁屏失败、重连/凭据失效均不得进入无主机空态；
+        //    唯有清空最后一台电脑后才进入无主机空态。
+        let pairedSuite = "SessionListPresentationTests.Paired.\(UUID().uuidString)"
+        let pairedDefaults = try XCTUnwrap(UserDefaults(suiteName: pairedSuite))
+        pairedDefaults.removePersistentDomain(forName: pairedSuite)
+        addTeardownBlock { pairedDefaults.removePersistentDomain(forName: pairedSuite) }
+        let pairedKeychain = TestKeychainOperations()
+        let pairedStore = AppStore(
+            defaults: pairedDefaults,
+            tokenStore: TokenStore(keychain: pairedKeychain),
+            prefersLocalConnection: false
+        )
+        _ = try await pairedStore.commitConnectionSettings(
+            PreparedConnectionSettings(endpoint: "http://host-one.local:8787", token: "token-1")
+        )
+        XCTAssertFalse(pairedStore.hasNoConfiguredHost)
+
+        pairedStore.suspendCredentialsForBackground()
+        XCTAssertFalse(pairedStore.isConfigured)
+        XCTAssertFalse(pairedStore.hasNoConfiguredHost, "切后台临时清空内存 token 不得误判为无主机空态")
+
+        pairedKeychain.forcedCopyStatus = errSecInteractionNotAllowed
+        do {
+            try await pairedStore.restoreCredentialsForForeground()
+            XCTFail("锁屏状态下前台恢复应抛出 Keychain 错误")
+        } catch {}
+        XCTAssertTrue(pairedStore.hasPendingKeychainRecovery)
+        XCTAssertFalse(pairedStore.hasNoConfiguredHost, "Keychain 锁屏恢复失败不得误判为无主机空态")
+
+        pairedKeychain.forcedCopyStatus = nil
+        try await pairedStore.restoreCredentialsForForeground()
+        pairedStore.markCredentialsInvalid()
+        XCTAssertTrue(pairedStore.requiresRePairing)
+        XCTAssertFalse(pairedStore.hasNoConfiguredHost, "凭据失效重连态不得误判为无主机空态")
+
+        // 6. 冷启动存在已保存档案但 Keychain 锁屏 → 保留已保存档案恢复路径，hasNoConfiguredHost == false。
+        pairedKeychain.forcedCopyStatus = errSecInteractionNotAllowed
+        let relaunchedLockedStore = AppStore(
+            defaults: pairedDefaults,
+            tokenStore: TokenStore(keychain: pairedKeychain),
+            prefersLocalConnection: false
+        )
+        XCTAssertEqual(relaunchedLockedStore.connectionProfiles.count, 1)
+        XCTAssertNil(relaunchedLockedStore.activeConnectionProfileID)
+        XCTAssertTrue(relaunchedLockedStore.hasPendingKeychainRecovery)
+        XCTAssertFalse(relaunchedLockedStore.hasNoConfiguredHost)
+        pairedKeychain.forcedCopyStatus = nil
+
+        // 7. 两台电脑删除当前电脑 → 仍剩 1 台已保存电脑，hasNoConfiguredHost == false；删空最后一台 → true。
+        _ = try await pairedStore.commitConnectionSettings(
+            PreparedConnectionSettings(
+                endpoint: "http://host-two.local:8787",
+                token: "token-2",
+                profileTarget: .newProfile(id: "host-two", displayName: "Host Two")
+            )
+        )
+        XCTAssertEqual(pairedStore.connectionProfiles.count, 2)
+        try await pairedStore.clearPairing()
+        XCTAssertEqual(pairedStore.connectionProfiles.count, 1)
+        XCTAssertFalse(pairedStore.hasNoConfiguredHost)
+
+        if let remainingID = pairedStore.connectionProfiles.first?.id {
+            try await pairedStore.deleteConnectionProfile(id: remainingID)
+        }
+        XCTAssertTrue(pairedStore.connectionProfiles.isEmpty)
+        XCTAssertTrue(pairedStore.hasNoConfiguredHost)
+
+        let inactiveID = try XCTUnwrap(relaunchedLockedStore.connectionProfiles.first?.id)
+        try await relaunchedLockedStore.deleteConnectionProfile(id: inactiveID)
+        XCTAssertTrue(relaunchedLockedStore.hasNoConfiguredHost)
+    }
+
+    @MainActor
+    func testNoHostEmptyStatesIssueZeroBackgroundRequestsAndStopAfterClearingLastHost() async throws {
+        let suiteName = "SessionListPresentationTests.ZeroRequests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false
+        )
+        XCTAssertTrue(appStore.hasNoConfiguredHost)
+
+        let probeGate = PreparedConnectionGate()
+        let client = NoHostCountingSessionClient(firstProbeGate: probeGate)
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: RecentWorkspaceStore(defaults: defaults),
+            clientFactory: { client }
+        )
+        let themeStore = ThemeStore(defaults: defaults)
+
+        try await hostViewBriefly(
+            NavigationStack {
+                SessionListView(onConnectComputer: {})
+            }
+            .environmentObject(appStore)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+        )
+        XCTAssertEqual(client.requestCount, 0, "SessionListView 在无主机空态不应发起任何后台请求")
+
+        try await hostViewBriefly(
+            WorkspaceRootView(
+                selectedSessionRuntime: .constant(.codex),
+                onStartSession: { _, _ in },
+                onConnectComputer: {},
+                embedsNavigationStack: false
+            )
+            .environmentObject(appStore)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+        )
+        XCTAssertEqual(client.requestCount, 0, "WorkspaceRootView 在无主机空态不应发起任何后台请求")
+
+        try await hostViewBriefly(
+            ProjectSidebarView(showsSessions: true, onConnectComputer: {})
+                .environmentObject(sessionStore)
+                .environmentObject(themeStore)
+        )
+        XCTAssertEqual(client.requestCount, 0, "ProjectSidebarView 在无主机空态不应发起任何后台请求")
+
+        let hostStatusStore = HostStatusStore()
+        hostStatusStore.refreshIfNeeded(appStore: appStore, sessionStore: sessionStore)
+        await hostStatusStore.waitForRefreshForTesting()
+        XCTAssertTrue(hostStatusStore.statusesByProfileID.isEmpty)
+
+        // 先配对一台电脑再删空最后一台：切回无主机空态后三处入口仍必须保持零请求。
+        _ = try await appStore.commitConnectionSettings(
+            PreparedConnectionSettings(endpoint: "http://paired.local:8787", token: "paired-token")
+        )
+        XCTAssertFalse(appStore.hasNoConfiguredHost)
+        let probing = Task { await sessionStore.refreshAppServerModelOptions() }
+        await probeGate.waitUntilStarted()
+        try await sessionStore.clearCurrentConnectionProfile()
+        XCTAssertTrue(appStore.hasNoConfiguredHost)
+        client.resetCount()
+        await probeGate.release()
+        await probing.value
+        XCTAssertEqual(client.requestCount, 0, "已退役的客户端不可继续探测其他运行时")
+
+        sessionStore.sidebarProjects = [
+            AgentProject(id: "cached", name: "Cached", path: "/workspace/cached")
+        ]
+
+        try await hostViewBriefly(
+            VStack(spacing: 0) {
+                SessionListView(onConnectComputer: {})
+                WorkspaceRootView(
+                    selectedSessionRuntime: .constant(.codex),
+                    onStartSession: { _, _ in },
+                    onConnectComputer: {},
+                    embedsNavigationStack: false
+                )
+                ProjectSidebarView(showsSessions: false, onConnectComputer: {})
+            }
+            .environmentObject(appStore)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+        )
+        XCTAssertEqual(client.requestCount, 0, "删空最后一台电脑进入无主机空态后不得再发后台请求")
+    }
+
+    @MainActor
+    func testRetiringHostCancelsItsInFlightConfigurationRequest() async {
+        let started = expectation(description: "configuration request started")
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://paired.local:8787", token: "fixture",
+            configProvider: {
+                started.fulfill()
+                try await Task.sleep(for: .seconds(3))
+                throw MockError.unimplemented
+            }
+        )
+        let bundle = AppServerRuntimeBundle(codexRuntime: runtime, claudeRuntime: runtime)
+        let request = Task { try await bundle.readConfiguration() }
+        await fulfillment(of: [started], timeout: 2)
+        await bundle.shutdownForHostSwitch()
+        do {
+            _ = try await request.value
+            XCTFail("退役主机的配置请求应被取消")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    @MainActor
+    func testPairedNeedsWorkspacePreservesSuggestionsAndAllowsOpeningEmptyAuthorizedRoot() async throws {
+        let suiteName = "SessionListPresentationTests.PairedEmptyRoot.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: TestKeychainOperations()),
+            prefersLocalConnection: false
+        )
+        _ = try await appStore.commitConnectionSettings(
+            PreparedConnectionSettings(endpoint: "http://paired-root.local:8787", token: "paired-root-token")
+        )
+        appStore.connectionStatus = .connected("ok")
+        XCTAssertFalse(appStore.hasNoConfiguredHost)
+
+        let emptyRootPath = "/Users/me/empty-authorized-root"
+        let resolvedEmptyRoot = AgentWorkspace(
+            id: "ws-empty-root",
+            name: "empty-authorized-root",
+            path: emptyRootPath,
+            rootProjectID: "ws-empty-root",
+            rootProjectName: "empty-authorized-root",
+            rootProjectPath: emptyRootPath,
+            lastOpenedAt: Date()
+        )
+        let client = NoHostCountingSessionClient(
+            directoryListResponse: DirectoryListResponse(
+                path: emptyRootPath,
+                parentPath: nil,
+                entries: [],
+                truncated: false
+            ),
+            resolvedWorkspace: resolvedEmptyRoot
+        )
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: RecentWorkspaceStore(defaults: defaults),
+            clientFactory: { client }
+        )
+
+        // 已配对但未打开工作区时保持 .needsWorkspace（不会落入 .noHostConfigured）。
+        let presentationState = SessionListPresentationState.resolve(
+            hasNoConfiguredHost: appStore.hasNoConfiguredHost,
+            hasVisibleSessions: false,
+            hasOpenedWorkspace: !sessionStore.sidebarProjects.isEmpty,
+            isLoading: false,
+            isSearching: false,
+            isFiltering: false,
+            isNetworkUnavailable: false,
+            errorMessage: nil,
+            connectionStatus: appStore.connectionStatus,
+            hasLoadedWorkspaceCatalog: true
+        )
+        XCTAssertEqual(presentationState, .needsWorkspace)
+
+        // 即使授权根目录没有任何子目录（entries == []），仍允许通过 OpenWorkspaceSheetModel 直接打开根目录本身。
+        let model = OpenWorkspaceSheetModel()
+        model.attach(sessionStore: sessionStore)
+        await model.startInitialBrowseIfNeeded()
+        XCTAssertEqual(model.browsePath, emptyRootPath)
+        XCTAssertTrue(model.browseEntries.isEmpty)
+
+        let openedID = await model.openCurrentBrowsePath()
+        XCTAssertEqual(openedID, resolvedEmptyRoot.id)
+        XCTAssertEqual(sessionStore.sidebarProjects.map(\.path), [emptyRootPath])
+    }
+
+    @MainActor
+    private func hostViewBriefly<V: View>(_ view: V) async throws {
+        let scene = try XCTUnwrap(
+            UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        )
+        let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+        let host = UIHostingController(rootView: view)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previousKeyWindow?.makeKey()
+        }
+        host.view.frame = window.bounds
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 250_000_000)
+    }
+
     private func makeSession(
         id: SessionID,
         projectID: String = "project-id",
@@ -1595,5 +2025,174 @@ final class SessionStatusIndicatorSnapshotTests: SimplifiedChineseSnapshotTestCa
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return ThemeStore(defaults: defaults)
+    }
+}
+
+private final class NoHostCountingSessionClient: SessionStoreAPIClient {
+    private let lock = NSLock()
+    private var requestCountStorage = 0
+    private var didStartProbe = false
+    private let firstProbeGate: PreparedConnectionGate?
+    private let directoryListResponse: DirectoryListResponse?
+    private let resolvedWorkspace: AgentWorkspace?
+
+    init(
+        firstProbeGate: PreparedConnectionGate? = nil,
+        directoryListResponse: DirectoryListResponse? = nil,
+        resolvedWorkspace: AgentWorkspace? = nil
+    ) {
+        self.firstProbeGate = firstProbeGate
+        self.directoryListResponse = directoryListResponse
+        self.resolvedWorkspace = resolvedWorkspace
+    }
+
+    var requestCount: Int {
+        lock.withLock { requestCountStorage }
+    }
+
+    func resetCount() {
+        lock.withLock { requestCountStorage = 0 }
+    }
+
+    private func record() {
+        lock.withLock { requestCountStorage += 1 }
+    }
+
+    func projects() async throws -> [AgentProject] {
+        record()
+        return []
+    }
+
+    func modelOptions() async throws -> [CodexAppServerModelOption] {
+        record()
+        return []
+    }
+
+    func modelOptions(runtimeProvider: String) async throws -> [CodexAppServerModelOption] {
+        record()
+        return []
+    }
+
+    func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
+        record()
+        let isFirstProbe = lock.withLock {
+            defer { didStartProbe = true }
+            return !didStartProbe
+        }
+        if isFirstProbe, let firstProbeGate {
+            await firstProbeGate.wait()
+            return true
+        }
+        return false
+    }
+
+    func listDirectories(path: String) async throws -> DirectoryListResponse {
+        record()
+        if let directoryListResponse {
+            return directoryListResponse
+        }
+        return DirectoryListResponse(path: path, parentPath: nil, entries: [], truncated: false)
+    }
+
+    func resolveWorkspace(path: String) async throws -> AgentWorkspace {
+        record()
+        if let resolvedWorkspace {
+            return resolvedWorkspace
+        }
+        throw MockError.unimplemented
+    }
+
+    func gitStatus(path: String) async throws -> GitStatusResponse {
+        record()
+        throw MockError.unimplemented
+    }
+
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse {
+        record()
+        throw MockError.unimplemented
+    }
+
+    func sessions(projectID: String?, cursor: String?, limit: Int?) async throws -> [AgentSession] {
+        record()
+        return []
+    }
+
+    func sessionsPage(projectID: String?, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func sessionsPage(workspace: AgentWorkspace, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func sessionsPage(
+        projectID: String?,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func sessionsPage(
+        workspace: AgentWorkspace,
+        cursor: String?,
+        limit: Int?,
+        consistency: SessionListConsistency
+    ) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func controlledGlobalSessionsPage(cursor: String?, limit: Int?) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func controlledGlobalSessionsPage(runtimeProvider: String, cursor: String?, limit: Int?) async throws -> SessionsPage {
+        record()
+        return SessionsPage(sessions: [])
+    }
+
+    func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
+        record()
+        throw MockError.unimplemented
+    }
+
+    func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
+        record()
+        throw MockError.unimplemented
+    }
+
+    func stopSession(id: String) async throws {
+        record()
+    }
+
+    func messages(sessionID: String, before: String?, limit: Int?) async throws -> [CodexHistoryMessage] {
+        record()
+        return []
+    }
+
+    func refreshRateLimit(sessionID: String?) async throws -> RateLimitSummary? {
+        record()
+        return nil
+    }
+
+    func refreshRateLimit(runtimeProvider: String) async throws -> RateLimitSummary? {
+        record()
+        return nil
+    }
+
+    func refreshAccountTokenUsage() async throws -> AccountTokenUsageFetch {
+        record()
+        throw MockError.unimplemented
+    }
+
+    func refreshAccountTokenUsage(forceRefresh: Bool) async throws -> AccountTokenUsageFetch {
+        record()
+        throw MockError.unimplemented
     }
 }
