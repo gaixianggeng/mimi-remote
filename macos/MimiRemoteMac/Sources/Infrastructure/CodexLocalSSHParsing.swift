@@ -5,6 +5,11 @@ import Foundation
 extension CodexLocalSSHConfigurator {
     // MARK: - Pure Parsing, Formatting & Conflict Detection
 
+    static func computeSHA256Hex(of data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     static func computeOpenSSHSHA256Fingerprint(fromKeyBody keyBody: String) -> String? {
         let tokens = keyBody.split(whereSeparator: \.isWhitespace).map(String.init)
         guard tokens.count == 2, let keyBlob = Data(base64Encoded: tokens[1]) else {
@@ -15,31 +20,36 @@ extension CodexLocalSSHConfigurator {
         return "SHA256:\(base64)"
     }
 
-    static func renderManagedBlock(
+    /// 渲染写入 `~/.ssh/mimi/config` 的完整独立配置（固定 HostKeyAlias、AddressFamily、IdentityFile、IdentitiesOnly、UserKnownHostsFile 与 NoHostAuthenticationForLocalhost no）。
+    static func renderMimiConfig(
         alias: String,
         username: String,
-        identityFile: String,
-        knownHostsFile: String,
-        appendGlobalHostReset: Bool = false
+        identityFilePath: String,
+        knownHostsFilePath: String
     ) -> String {
-        var lines = [
-            managedBlockStart,
+        let lines = [
+            "# Managed by Mimi Remote Mac — isolated local loopback SSH config",
             "Host \(alias)",
             "    HostName 127.0.0.1",
             "    AddressFamily inet",
             "    Port 22",
             "    User \(username)",
-            "    IdentityFile \(identityFile)",
+            "    HostKeyAlias \(alias)",
+            "    IdentityFile \"\(identityFilePath)\"",
             "    IdentitiesOnly yes",
             "    IdentityAgent none",
             "    PubkeyAuthentication yes",
             "    PreferredAuthentications publickey",
             "    PasswordAuthentication no",
             "    KbdInteractiveAuthentication no",
-            "    UserKnownHostsFile \"\(knownHostsFile)\"",
+            "    UserKnownHostsFile \"\(knownHostsFilePath)\"",
             "    GlobalKnownHostsFile none",
             "    KnownHostsCommand none",
             "    VerifyHostKeyDNS no",
+            "    NoHostAuthenticationForLocalhost no",
+            "    HashKnownHosts no",
+            "    StrictHostKeyChecking accept-new",
+            "    UpdateHostKeys no",
             "    ClearAllForwardings yes",
             "    ProxyJump none",
             "    ProxyCommand none",
@@ -57,14 +67,12 @@ extension CodexLocalSSHConfigurator {
             "    ForkAfterAuthentication no",
             "    EscapeChar none",
             "    EnableEscapeCommandline no",
-            "    UpdateHostKeys no",
-            "    StrictHostKeyChecking accept-new",
         ]
-        if appendGlobalHostReset {
-            lines.append("Host *")
-        }
-        lines.append(managedBlockEnd)
-        return lines.joined(separator: "\n")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    static func formatManagedAuthorizedKeyEntry(publicKeyBody: String) -> String {
+        "\(Self.loopbackAuthorizedKeyOption) \(publicKeyBody) \(Self.keyComment)"
     }
 
     static func extractPublicKeyBody(from line: String) -> String? {
@@ -88,6 +96,35 @@ extension CodexLocalSSHConfigurator {
             token.hasPrefix("ecdsa-sha2-") ||
             token.hasPrefix("sk-ssh-") ||
             token.hasPrefix("sk-ecdsa-")
+    }
+
+    /// 校验独立 `known_hosts` 数据是否非空且至少包含一条匹配预期 `HostKeyAlias` 的有效主机公钥记录。
+    static func containsValidKnownHostEntry(in data: Data, expectedHostAlias: String) -> Bool {
+        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let targetLower = expectedHostAlias.lowercased()
+        let bracketedTarget = "[\(targetLower)]:22"
+        for slice in rawLineSlices(in: text) {
+            let trimmed = utf8Substring(text, range: slice.contentRange)
+                .trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            let tokens = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard tokens.count >= 3 else { continue }
+            if tokens[0].hasPrefix("@") {
+                // 拒绝 @revoked，亦不接受仅靠 @cert-authority 替代明确主机公钥记录。
+                continue
+            }
+            let hostPatterns = tokens[0].split(separator: ",").map { $0.lowercased() }
+            let matchesHost = hostPatterns.contains(targetLower) || hostPatterns.contains(bracketedTarget)
+            guard matchesHost,
+                  isKnownSSHKeyType(tokens[1]),
+                  Data(base64Encoded: tokens[2]) != nil else {
+                continue
+            }
+            return true
+        }
+        return false
     }
 
     /// 按 OpenSSH `authorized_keys` 语法结构化解析单行；空行、注释行或非法行返回 nil。
@@ -228,9 +265,14 @@ extension CodexLocalSSHConfigurator {
     }
 
     struct AuthorizedKeysEvaluation: Equatable {
-        let hasValidLoopbackEntry: Bool
+        /// 是否存在精确匹配的 Mimi 标记行（`restrict,from="127.0.0.1,::1" <keyBody> mimi-codex-local`）。
+        let hasExactMimiEntry: Bool
+        /// 是否存在同一公钥的其他授权行（如用户修改了注释、缺少 restrict 或同公钥多行）。
+        let hasOtherSameKeyEntry: Bool
         let hasConflict: Bool
         let conflictReason: String?
+
+        var hasValidLoopbackEntry: Bool { hasExactMimiEntry && !hasConflict }
     }
 
     static func evaluateAuthorizedKeys(
@@ -238,7 +280,9 @@ extension CodexLocalSSHConfigurator {
         keyBody: String,
         recordedEntry: String?
     ) -> AuthorizedKeysEvaluation {
-        var hasValidLoopback = false
+        let expectedEntry = recordedEntry ?? formatManagedAuthorizedKeyEntry(publicKeyBody: keyBody)
+        var hasExactMimiEntry = false
+        var hasOtherSameKeyEntry = false
         for slice in rawLineSlices(in: content) {
             let lineText = utf8Substring(content, range: slice.contentRange)
             guard let parsed = parseAuthorizedKeyLine(lineText), parsed.keyBody == keyBody else {
@@ -246,23 +290,45 @@ extension CodexLocalSSHConfigurator {
             }
             if !parsed.isStrictlyLoopbackFrom {
                 return AuthorizedKeysEvaluation(
-                    hasValidLoopbackEntry: false,
+                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasOtherSameKeyEntry: true,
                     hasConflict: true,
                     conflictReason: "发现同一公钥缺少仅限 127.0.0.1/::1 的 from= 限制。"
                 )
             }
+            if !parsed.hasRestrictOption {
+                return AuthorizedKeysEvaluation(
+                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasOtherSameKeyEntry: true,
+                    hasConflict: true,
+                    conflictReason: "发现同一公钥缺少 restrict 限制选项。"
+                )
+            }
             if parsed.hasCommandOption {
                 return AuthorizedKeysEvaluation(
-                    hasValidLoopbackEntry: false,
+                    hasExactMimiEntry: hasExactMimiEntry,
+                    hasOtherSameKeyEntry: true,
                     hasConflict: true,
                     conflictReason: "发现同一公钥带有 command= 限制选项。"
                 )
             }
-            hasValidLoopback = true
+            if lineText == expectedEntry && parsed.isValidMimiManagedEntry(expectedKeyBody: keyBody) {
+                hasExactMimiEntry = true
+            } else {
+                hasOtherSameKeyEntry = true
+            }
         }
-        _ = recordedEntry
+        if hasOtherSameKeyEntry && !hasExactMimiEntry {
+            return AuthorizedKeysEvaluation(
+                hasExactMimiEntry: false,
+                hasOtherSameKeyEntry: true,
+                hasConflict: true,
+                conflictReason: "发现同一公钥的外部或已修改授权行（非 Mimi 标记行），已保留记录未覆盖或丢弃。"
+            )
+        }
         return AuthorizedKeysEvaluation(
-            hasValidLoopbackEntry: hasValidLoopback,
+            hasExactMimiEntry: hasExactMimiEntry,
+            hasOtherSameKeyEntry: hasOtherSameKeyEntry,
             hasConflict: false,
             conflictReason: nil
         )
@@ -291,7 +357,20 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    /// 仅移除与记录完全匹配且结构校验通过的托管授权行，保留其余所有原始字节（包括 CRLF、空行与用户同公钥条目）。
+    /// 跨回滚、重配、撤销三个入口共用的按公钥残留授权检查：返回仍在 `authorized_keys` 中生效的公钥主体列表（去重保序）。
+    static func findResidualAuthorizedKeyBodies(_ keyBodies: [String], in content: String) -> [String] {
+        var seen: Set<String> = []
+        var residuals: [String] = []
+        for body in keyBodies where !body.isEmpty {
+            guard seen.insert(body).inserted else { continue }
+            if containsAuthorizedKeyBody(body, in: content) {
+                residuals.append(body)
+            }
+        }
+        return residuals
+    }
+
+    /// 仅移除与记录完全匹配且带有 Mimi 标记与 `restrict,from="127.0.0.1,::1"` 的托管授权行，绝不动其他任何行（含用户同公钥行、CRLF、空行）。
     static func removeExactAuthorizedKeyEntry(
         _ recordedEntry: String,
         expectedKeyBody: String,
@@ -306,8 +385,7 @@ extension CodexLocalSSHConfigurator {
             let lineText = utf8Substring(content, range: slice.contentRange)
             guard lineText == recordedEntry,
                   let parsed = parseAuthorizedKeyLine(lineText),
-                  parsed.keyBody == expectedKeyBody,
-                  parsed.isStrictlyLoopbackFrom else {
+                  parsed.isValidMimiManagedEntry(expectedKeyBody: expectedKeyBody) else {
                 continue
             }
             targetRanges.append(slice.fullRange)
@@ -335,7 +413,7 @@ extension CodexLocalSSHConfigurator {
         return (result, true)
     }
 
-    // MARK: - Byte-Preserving Line Scanning & Config Block Composition
+    // MARK: - Byte-Preserving Line Scanning & Single-Line Managed Include Composition
 
     struct RawLineSlice {
         /// 含行尾换行符（`\n` 或 `\r\n`）的完整区间。
@@ -373,142 +451,84 @@ extension CodexLocalSSHConfigurator {
         return slices
     }
 
-    struct StrippedConfig: Equatable {
+    struct StrippedIncludeConfig: Equatable {
         let remaining: String
-        let hadManagedBlock: Bool
-        /// 原始托管块精确字节片段（不含额外分隔空行），用于更新失败回滚时恢复旧托管块。
-        let originalManagedBlock: String?
+        let hadManagedInclude: Bool
+        let wasAtTop: Bool
+        let originalManagedLine: String?
     }
 
-    /// 仅移除托管标记区间及其自带的一条分隔空行，逐字节保留其余所有内容（CRLF、空行、有无尾换行）。
-    static func stripManagedBlock(from text: String) throws -> StrippedConfig {
+    /// 仅移除 `~/.ssh/config` 中由 Mimi 写入的单行带标记 `Include` 指令，逐字节保留其余所有内容（CRLF、空行、有无尾换行）。
+    /// 若出现多条标记行、标记行语法被破坏或残缺的旧标记，显式抛出 `invalidManagedBlock`。
+    static func stripManagedIncludeLine(from text: String) throws -> StrippedIncludeConfig {
         let slices = rawLineSlices(in: text)
-        var startIndex: Int?
-        var blockRanges: [(startSlice: Int, endSlice: Int)] = []
+        var matchedSliceIndices: [Int] = []
 
         for (i, slice) in slices.enumerated() {
-            let trimmed = utf8Substring(text, range: slice.contentRange).trimmingCharacters(in: .whitespaces)
-            if trimmed == managedBlockStart {
-                if startIndex != nil { throw ConfigError.invalidManagedBlock }
-                startIndex = i
-            } else if trimmed == managedBlockEnd {
-                guard let open = startIndex else { throw ConfigError.invalidManagedBlock }
-                blockRanges.append((open, i))
-                startIndex = nil
-            }
-        }
-        if startIndex != nil { throw ConfigError.invalidManagedBlock }
-        if blockRanges.count > 1 { throw ConfigError.invalidManagedBlock }
-        guard let block = blockRanges.first else {
-            return StrippedConfig(remaining: text, hadManagedBlock: false, originalManagedBlock: nil)
-        }
-
-        let exactBlockRange = slices[block.startSlice].fullRange.lowerBound..<slices[block.endSlice].fullRange.upperBound
-        let originalManagedBlock = utf8Substring(text, range: exactBlockRange)
-
-        var removeStart = exactBlockRange.lowerBound
-        var removeEnd = exactBlockRange.upperBound
-
-        if block.startSlice == 0 {
-            // 托管块在开头：仅吞掉紧随其后的最多一个分隔空行。
-            let nextSliceIndex = block.endSlice + 1
-            if nextSliceIndex < slices.count,
-               slices[nextSliceIndex].contentRange.isEmpty {
-                removeEnd = slices[nextSliceIndex].fullRange.upperBound
-            }
-        } else if block.endSlice == slices.count - 1 {
-            // 兼容旧版本追加到末尾的托管块：若前面有分隔空行，去掉这一个空行，保留原内容字节。
-            let prevSliceIndex = block.startSlice - 1
-            if prevSliceIndex >= 0, slices[prevSliceIndex].contentRange.isEmpty {
-                removeStart = slices[prevSliceIndex].fullRange.lowerBound
-            }
-        } else {
-            let nextSliceIndex = block.endSlice + 1
-            if nextSliceIndex < slices.count,
-               slices[nextSliceIndex].contentRange.isEmpty {
-                removeEnd = slices[nextSliceIndex].fullRange.upperBound
+            let rawLine = utf8Substring(text, range: slice.contentRange)
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+            if trimmed == managedIncludeLine {
+                matchedSliceIndices.append(i)
+            } else if trimmed.contains(managedIncludeMarker) {
+                // 含有 Mimi 标记但内容不完整或被破坏 -> 明确报错，绝不静默删错行或重复追加。
+                throw ConfigError.invalidManagedBlock
             }
         }
 
+        if matchedSliceIndices.count > 1 {
+            throw ConfigError.invalidManagedBlock
+        }
+        guard let matchIdx = matchedSliceIndices.first else {
+            return StrippedIncludeConfig(
+                remaining: text,
+                hadManagedInclude: false,
+                wasAtTop: false,
+                originalManagedLine: nil
+            )
+        }
+
+        let slice = slices[matchIdx]
+        let originalLine = utf8Substring(text, range: slice.contentRange)
         var remaining = text
-        remaining.removeSubrange(removeStart..<removeEnd)
-        return StrippedConfig(remaining: remaining, hadManagedBlock: true, originalManagedBlock: originalManagedBlock)
+        remaining.removeSubrange(slice.fullRange)
+        return StrippedIncludeConfig(
+            remaining: remaining,
+            hadManagedInclude: true,
+            wasAtTop: matchIdx == 0,
+            originalManagedLine: originalLine
+        )
     }
 
-    /// 仅替换现有托管块精确区间（保留托管块外部所有外部编辑与原始字节格式）。
-    static func replaceManagedBlock(in text: String, with replacementBlock: String) throws -> String? {
-        let slices = rawLineSlices(in: text)
-        var startIndex: Int?
-        var blockRanges: [(startSlice: Int, endSlice: Int)] = []
-
-        for (i, slice) in slices.enumerated() {
-            let trimmed = utf8Substring(text, range: slice.contentRange).trimmingCharacters(in: .whitespaces)
-            if trimmed == managedBlockStart {
-                if startIndex != nil { throw ConfigError.invalidManagedBlock }
-                startIndex = i
-            } else if trimmed == managedBlockEnd {
-                guard let open = startIndex else { throw ConfigError.invalidManagedBlock }
-                blockRanges.append((open, i))
-                startIndex = nil
-            }
-        }
-        if startIndex != nil { throw ConfigError.invalidManagedBlock }
-        if blockRanges.count > 1 { throw ConfigError.invalidManagedBlock }
-        guard let block = blockRanges.first else { return nil }
-
-        let exactRange = slices[block.startSlice].fullRange.lowerBound..<slices[block.endSlice].fullRange.upperBound
-        let existingEndsWithLF = text.utf8[exactRange].last == 0x0A
-        var normalizedReplacement = replacementBlock
-        if existingEndsWithLF && normalizedReplacement.utf8.last != 0x0A {
-            normalizedReplacement.append("\n")
-        }
-        var updated = text
-        updated.replaceSubrange(exactRange, with: normalizedReplacement)
-        return updated
-    }
-
-    /// 精确比对两个托管块内容是否一致（仅忽略末尾单次换行符差异），用于回滚替换前确认托管块未被外部改写。
-    static func managedBlocksMatch(_ currentBlock: String?, expected writtenBlock: String?) -> Bool {
-        guard let currentBlock, let writtenBlock else { return false }
-        func stripSingleTrailingLineEnding(_ text: String) -> [UInt8] {
-            var bytes = Array(text.utf8)
-            if bytes.last == 0x0A {
-                bytes.removeLast()
-                if bytes.last == 0x0D {
-                    bytes.removeLast()
-                }
-            }
-            return bytes
-        }
-        return stripSingleTrailingLineEnding(currentBlock) == stripSingleTrailingLineEnding(writtenBlock)
-    }
-
-    /// 将托管块置于文件顶部（优先于后续 `Host *`），并逐字节保留原配置其余内容。
-    static func composeSSHConfig(remaining: String, managedBlock: String) -> String {
+    /// 仅在 `~/.ssh/config` 最顶部加入单行带标记的 `Include`，逐字节保留原配置其余所有内容。
+    static func composeSSHConfigWithTopInclude(
+        remaining: String,
+        includeLine: String = managedIncludeLine
+    ) -> String {
         if remaining.isEmpty {
-            return managedBlock + "\n"
+            return includeLine + "\n"
         }
-        return managedBlock + "\n\n" + remaining
+        return includeLine + "\n" + remaining
     }
 
-    static func hasTopLevelDirectivesBeforeFirstHostOrMatch(_ configText: String) -> Bool {
-        for slice in rawLineSlices(in: configText) {
-            let tokens = tokenizeSSHConfigLine(utf8Substring(configText, range: slice.contentRange))
-            guard let keyword = tokens.first?.lowercased() else { continue }
-            if keyword == "host" || keyword == "match" {
-                return false
-            }
-            return true
-        }
-        return false
+    // MARK: - OpenSSH-Compatible Line Tokenizer (Supports Mid-Token Quotes & Escapes)
+
+    struct ParsedSSHConfigLine: Equatable {
+        let tokens: [String]
+        let hasSyntaxError: Bool
     }
 
-    static func tokenizeSSHConfigLine(_ rawLine: String) -> [String] {
+    /// 严格按 OpenSSH `argv_split` 语义切分配置行：
+    /// - 支持关键字与参数间用空白或 `=` 分隔；
+    /// - 支持参数任意位置出现 `"..."`、`'...'`（含路径中段引号，如 `Include /tmp/"a b"/inc.conf`）与反斜杠转义（如 `a\ b`）；
+    /// - 未闭合引号或末尾悬空反斜杠标为 `hasSyntaxError = true`，供冻结器显式报错而绝不静默丢弃。
+    static func parseSSHConfigLineStrict(_ rawLine: String) -> ParsedSSHConfigLine {
         var idx = rawLine.startIndex
         while idx < rawLine.endIndex, rawLine[idx] == " " || rawLine[idx] == "\t" {
             idx = rawLine.index(after: idx)
         }
-        guard idx < rawLine.endIndex, rawLine[idx] != "#" else { return [] }
+        guard idx < rawLine.endIndex, rawLine[idx] != "#" else {
+            return ParsedSSHConfigLine(tokens: [], hasSyntaxError: false)
+        }
 
         var tokens: [String] = []
         // 第一个词为关键字，可用空白或 '=' 分隔
@@ -532,55 +552,78 @@ extension CodexLocalSSHConfigurator {
             guard idx < rawLine.endIndex else { break }
             if rawLine[idx] == "#" { break }
 
-            let quoteChar: Character? = (rawLine[idx] == "\"" || rawLine[idx] == "'") ? rawLine[idx] : nil
-            if let q = quoteChar {
-                idx = rawLine.index(after: idx)
-                var value = ""
-                while idx < rawLine.endIndex && rawLine[idx] != q {
-                    value.append(rawLine[idx])
-                    idx = rawLine.index(after: idx)
+            var current = ""
+            var openQuote: Character?
+            var sawAnySegment = false
+
+            while idx < rawLine.endIndex {
+                let ch = rawLine[idx]
+                if let q = openQuote {
+                    if ch == q {
+                        openQuote = nil
+                        idx = rawLine.index(after: idx)
+                    } else if q == "\"" && ch == "\\" {
+                        let nextIdx = rawLine.index(after: idx)
+                        guard nextIdx < rawLine.endIndex else {
+                            return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+                        }
+                        let nextCh = rawLine[nextIdx]
+                        if nextCh == "\"" || nextCh == "\\" {
+                            current.append(nextCh)
+                        } else {
+                            current.append(ch)
+                            current.append(nextCh)
+                        }
+                        idx = rawLine.index(after: nextIdx)
+                    } else {
+                        current.append(ch)
+                        idx = rawLine.index(after: idx)
+                    }
+                } else {
+                    if ch == " " || ch == "\t" {
+                        break
+                    } else if ch == "\"" || ch == "'" {
+                        openQuote = ch
+                        sawAnySegment = true
+                        idx = rawLine.index(after: idx)
+                    } else if ch == "\\" {
+                        let nextIdx = rawLine.index(after: idx)
+                        guard nextIdx < rawLine.endIndex else {
+                            return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+                        }
+                        current.append(rawLine[nextIdx])
+                        sawAnySegment = true
+                        idx = rawLine.index(after: nextIdx)
+                    } else {
+                        current.append(ch)
+                        sawAnySegment = true
+                        idx = rawLine.index(after: idx)
+                    }
                 }
-                if idx < rawLine.endIndex && rawLine[idx] == q {
-                    idx = rawLine.index(after: idx)
-                }
-                tokens.append(value)
-            } else {
-                let start = idx
-                while idx < rawLine.endIndex, rawLine[idx] != " " && rawLine[idx] != "\t" {
-                    idx = rawLine.index(after: idx)
-                }
-                tokens.append(String(rawLine[start..<idx]))
+            }
+
+            if openQuote != nil {
+                return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: true)
+            }
+            if sawAnySegment {
+                tokens.append(current)
             }
         }
-        return tokens
+        return ParsedSSHConfigLine(tokens: tokens, hasSyntaxError: false)
+    }
+
+    static func tokenizeSSHConfigLine(_ rawLine: String) -> [String] {
+        parseSSHConfigLineStrict(rawLine).tokens
     }
 
     static func hasUnclosedQuote(inSSHConfigLine rawLine: String) -> Bool {
-        var idx = rawLine.startIndex
-        while idx < rawLine.endIndex, rawLine[idx] == " " || rawLine[idx] == "\t" {
-            idx = rawLine.index(after: idx)
-        }
-        guard idx < rawLine.endIndex, rawLine[idx] != "#" else { return false }
-        var openQuote: Character?
-        while idx < rawLine.endIndex {
-            let ch = rawLine[idx]
-            if let q = openQuote {
-                if ch == q {
-                    openQuote = nil
-                }
-            } else {
-                if ch == "#" { break }
-                if ch == "\"" || ch == "'" {
-                    openQuote = ch
-                }
-            }
-            idx = rawLine.index(after: idx)
-        }
-        return openQuote != nil
+        parseSSHConfigLineStrict(rawLine).hasSyntaxError
     }
 
     func containsConflictingHostAlias(_ alias: String, in configText: String) -> Bool {
         var visited: Set<String> = []
+        let mimiConfigCanonical = mimiConfigURL.resolvingSymlinksInPath().standardizedFileURL.path
+        visited.insert(mimiConfigCanonical)
         return scanConfigForConflictingHostAlias(
             alias: alias,
             configText: configText,
@@ -642,7 +685,12 @@ extension CodexLocalSSHConfigurator {
     }
 
     /// 严格按 OpenSSH 规则展开 `Include` 模式；对包含动态占位符（`%`）、环境变量（`${...}`）、他人主目录（`~user`）或 glob 异常的模式明确报错，绝不静默丢弃。
-    static func resolveGlobPathsStrict(pattern: String, baseDirectory: URL, homeDirectory: URL) throws -> [String] {
+    static func resolveGlobPathsStrict(
+        pattern: String,
+        baseDirectory: URL,
+        homeDirectory: URL,
+        virtualFilePaths: Set<String> = []
+    ) throws -> [String] {
         guard !pattern.isEmpty else {
             throw ConfigError.effectiveConfigConflict("SSH Include 包含空路径模式，无法忠实冻结。")
         }
@@ -665,21 +713,32 @@ extension CodexLocalSSHConfigurator {
             expanded = baseDirectory.appendingPathComponent(pattern).path
         }
 
+        let standardizedExpanded = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        var results: [String] = []
         var globResult = glob_t()
         let status = Darwin.glob(expanded, 0, nil, &globResult)
         defer { Darwin.globfree(&globResult) }
-        if status == GLOB_NOMATCH {
-            return []
-        }
-        guard status == 0, let pathv = globResult.gl_pathv else {
+        if status == 0, let pathv = globResult.gl_pathv {
+            for i in 0..<Int(globResult.gl_matchc) {
+                if let cStr = pathv[i] {
+                    results.append(String(cString: cStr))
+                }
+            }
+        } else if status != GLOB_NOMATCH {
             throw ConfigError.effectiveConfigConflict("展开 SSH Include 模式 \(pattern) 失败（glob 状态码 \(status)），无法忠实冻结。")
         }
-        var results: [String] = []
-        for i in 0..<Int(globResult.gl_matchc) {
-            if let cStr = pathv[i] {
-                results.append(String(cString: cStr))
+
+        // Preflight 阶段允许针对尚未落盘的候选 `~/.ssh/mimi/config` 虚拟覆盖匹配。
+        if !virtualFilePaths.isEmpty {
+            for virtualPath in virtualFilePaths.sorted() {
+                if virtualPath == standardizedExpanded || Darwin.fnmatch(standardizedExpanded, virtualPath, 0) == 0 {
+                    if !results.contains(where: { URL(fileURLWithPath: $0).standardizedFileURL.path == virtualPath }) {
+                        results.append(virtualPath)
+                    }
+                }
             }
         }
+
         return results
     }
 
@@ -743,10 +802,14 @@ extension CodexLocalSSHConfigurator {
             switch key {
             case "hostname":
                 parsed.hostname = value
+            case "addressfamily":
+                parsed.addressFamily = value
             case "port":
                 parsed.port = value
             case "user":
                 parsed.user = value
+            case "hostkeyalias":
+                parsed.hostKeyAlias = value
             case "identitiesonly":
                 parsed.identitiesOnly = value
             case "identityagent":
@@ -771,6 +834,8 @@ extension CodexLocalSSHConfigurator {
                 parsed.knownHostsCommand = value
             case "verifyhostkeydns":
                 parsed.verifyHostKeyDNS = value
+            case "nohostauthenticationforlocalhost":
+                parsed.noHostAuthenticationForLocalhost = value
             case "stricthostkeychecking":
                 parsed.strictHostKeyChecking = value
             case "clearallforwardings":
@@ -825,16 +890,23 @@ extension CodexLocalSSHConfigurator {
         expectedUser: String,
         expectedIdentityFile: String,
         expectedKnownHostsFile: String,
+        expectedHostKeyAlias: String = hostAlias,
         additionalAllowedIdentityFiles: Set<String> = []
     ) -> String? {
         guard config.hostname == "127.0.0.1" else {
             return "HostName 实际解析为 \(config.hostname ?? "<空>")，预期 127.0.0.1。"
+        }
+        guard config.addressFamily?.lowercased() == "inet" else {
+            return "AddressFamily 实际解析为 \(config.addressFamily ?? "<空>")，预期 inet。"
         }
         guard config.port == "22" else {
             return "Port 实际解析为 \(config.port ?? "<空>")，预期 22。"
         }
         guard config.user == expectedUser else {
             return "User 实际解析为 \(config.user ?? "<空>")，预期 \(expectedUser)。"
+        }
+        guard config.hostKeyAlias?.lowercased() == expectedHostKeyAlias.lowercased() else {
+            return "HostKeyAlias 实际解析为 \(config.hostKeyAlias ?? "<空>")，预期 \(expectedHostKeyAlias)。"
         }
         guard config.identitiesOnly?.lowercased() == "yes" else {
             return "IdentitiesOnly 未生效。"
@@ -877,6 +949,10 @@ extension CodexLocalSSHConfigurator {
         }
         if let verifyDNS = config.verifyHostKeyDNS?.lowercased(), !verifyDNS.isEmpty, verifyDNS != "no" && verifyDNS != "false" {
             return "VerifyHostKeyDNS 未禁用（\(verifyDNS)）。"
+        }
+        guard let noHostAuth = config.noHostAuthenticationForLocalhost?.lowercased(),
+              noHostAuth == "no" || noHostAuth == "false" else {
+            return "NoHostAuthenticationForLocalhost 未显式禁用（\(config.noHostAuthenticationForLocalhost ?? "<空>")），可能跳过回环主机密钥验证。"
         }
         if let strict = config.strictHostKeyChecking?.lowercased(), strict != "accept-new" && strict != "yes" && strict != "true" {
             return "StrictHostKeyChecking 不安全（\(strict)）。"
@@ -935,7 +1011,7 @@ extension CodexLocalSSHConfigurator {
         return nil
     }
 
-    /// 校验目标（如裸 127.0.0.1）在用户与系统 SSH 配置下是否直连当前用户的回环 22 端口，无重定向或代理，且认证与双向传输选项对 Codex 桌面版可用。
+    /// 校验目标（如裸 127.0.0.1）在用户与系统 SSH 配置下是否直连当前用户的回环 22 端口，无重定向或代理，且认证、主机信任与双向传输选项对 Codex 桌面版可用。
     static func isDirectLoopbackConfig(
         _ config: EffectiveSSHConfig,
         expectedUser: String,
@@ -945,7 +1021,15 @@ extension CodexLocalSSHConfigurator {
               allowedLoopbackHosts.contains(hostname) else {
             return false
         }
+        if let af = config.addressFamily?.lowercased(), !af.isEmpty, af != "any" {
+            if hostname == "127.0.0.1" && af != "inet" { return false }
+            if hostname == "::1" && af != "inet6" { return false }
+        }
         guard config.port == "22", config.user == expectedUser else {
+            return false
+        }
+        if let noHostAuth = config.noHostAuthenticationForLocalhost?.lowercased(),
+           !noHostAuth.isEmpty, noHostAuth != "no" && noHostAuth != "false" {
             return false
         }
         if let pubkey = config.pubkeyAuthentication?.lowercased(), !pubkey.isEmpty, pubkey != "yes" && pubkey != "true" {
@@ -994,6 +1078,39 @@ extension CodexLocalSSHConfigurator {
             return false
         }
         if let verifyDNS = config.verifyHostKeyDNS?.lowercased(), !verifyDNS.isEmpty, verifyDNS != "no" && verifyDNS != "false" {
+            return false
+        }
+        return true
+    }
+
+    /// 判断两个有效 SSH 配置在端点、地址族、身份认证与主机信任输入上是否完全一致（避免探测与 Codex 桌面代理走不同路径）。
+    static func effectiveEndpointAuthAndTrustMatch(
+        _ lhs: EffectiveSSHConfig,
+        _ rhs: EffectiveSSHConfig,
+        ignoreKnownHostsPath: Bool = false
+    ) -> Bool {
+        func norm(_ value: String?) -> String {
+            (value ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        }
+        guard norm(lhs.hostname) == norm(rhs.hostname),
+              norm(lhs.port) == norm(rhs.port),
+              lhs.user == rhs.user,
+              norm(lhs.addressFamily) == norm(rhs.addressFamily),
+              norm(lhs.hostKeyAlias) == norm(rhs.hostKeyAlias),
+              norm(lhs.identitiesOnly) == norm(rhs.identitiesOnly),
+              norm(lhs.identityAgent) == norm(rhs.identityAgent),
+              lhs.identityFiles == rhs.identityFiles,
+              lhs.certificateFiles == rhs.certificateFiles,
+              norm(lhs.pubkeyAuthentication) == norm(rhs.pubkeyAuthentication),
+              norm(lhs.preferredAuthentications) == norm(rhs.preferredAuthentications),
+              norm(lhs.pubkeyAcceptedAlgorithms) == norm(rhs.pubkeyAcceptedAlgorithms),
+              norm(lhs.globalKnownHostsFile) == norm(rhs.globalKnownHostsFile),
+              norm(lhs.knownHostsCommand) == norm(rhs.knownHostsCommand),
+              norm(lhs.verifyHostKeyDNS) == norm(rhs.verifyHostKeyDNS),
+              norm(lhs.noHostAuthenticationForLocalhost) == norm(rhs.noHostAuthenticationForLocalhost) else {
+            return false
+        }
+        if !ignoreKnownHostsPath && lhs.userKnownHostsFile != rhs.userKnownHostsFile {
             return false
         }
         return true

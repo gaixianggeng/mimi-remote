@@ -163,12 +163,15 @@ enum CodexSharedSetupChecks {
     }
 
     /// 构造直连当前用户本机回环 22 端口的只读探测参数：
-    /// 绑定到刚经 `ssh -G` 核验的冻结配置快照（保留桌面版实际认证与信任输入），禁用主机密钥更新（`UpdateHostKeys=no`）与自动写入（`StrictHostKeyChecking=yes`），并执行双向 stdin/stdout 探测。
+    /// 绑定到刚经 `ssh -G` 核验的冻结配置快照（保持与桌面代理完全一致的端点、地址族、HostKeyAlias、身份与信任输入），
+    /// 显式禁用 `NoHostAuthenticationForLocalhost`、主机密钥更新（`UpdateHostKeys=no`）与自动写入（`StrictHostKeyChecking=yes`），并执行双向 stdin/stdout 探测。
     static func buildDirectLoopbackProbeArguments(
         for target: String,
         username: String,
         configPath: String? = nil,
-        hostName: String = "127.0.0.1"
+        hostName: String = "127.0.0.1",
+        addressFamily: String? = nil,
+        hostKeyAlias: String? = nil
     ) -> [String] {
         var args: [String] = []
         if let configPath, !configPath.isEmpty {
@@ -182,6 +185,14 @@ enum CodexSharedSetupChecks {
             "-o", "HostName=\(hostName)",
             "-o", "Port=22",
             "-o", "User=\(username)",
+        ])
+        if let addressFamily, !addressFamily.isEmpty {
+            args.append(contentsOf: ["-o", "AddressFamily=\(addressFamily)"])
+        }
+        if let hostKeyAlias, !hostKeyAlias.isEmpty {
+            args.append(contentsOf: ["-o", "HostKeyAlias=\(hostKeyAlias)"])
+        }
+        args.append(contentsOf: [
             "-o", "ProxyJump=none",
             "-o", "ProxyCommand=none",
             "-o", "ControlMaster=no",
@@ -195,6 +206,7 @@ enum CodexSharedSetupChecks {
             "-o", "RemoteCommand=none",
             "-o", "KnownHostsCommand=none",
             "-o", "VerifyHostKeyDNS=no",
+            "-o", "NoHostAuthenticationForLocalhost=no",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "UpdateHostKeys=no",
             "-o", "RequestTTY=no",
@@ -215,7 +227,7 @@ enum CodexSharedSetupChecks {
     }
 
     /// 严格冻结桌面版当前真实配置（无法忠实冻结的 Include 直接报错拒绝），并按基准、/bin/cat、实际探测参数与桌面代理命令分别核验 `ssh -G`，
-    /// 全部通过后才使用同一份冻结快照执行只读双向探测。
+    /// 确认所有画像的有效端点、地址族、HostKeyAlias、身份认证与主机信任输入完全一致后，才使用同一份冻结快照执行只读双向探测。
     static func probeTarget(
         _ target: String,
         configurator: CodexLocalSSHConfigurator,
@@ -243,7 +255,7 @@ enum CodexSharedSetupChecks {
             return CodexLocalSSHConfigurator.isDirectLoopbackConfig(effective, expectedUser: currentUser)
         }
 
-        // 1. 冻结快照：无命令基准 + /bin/cat + 桌面版代理命令画像
+        // 1. 冻结快照：无命令基准 + /bin/cat + 桌面版代理命令画像（逐项校验并比对端点/地址族/认证/信任等价性）
         guard let baseEffective = try? await configurator.resolveEffectiveSSHConfig(
             configPath: materialized.configFileURL.path,
             alias: target,
@@ -258,7 +270,8 @@ enum CodexSharedSetupChecks {
             includeSystemConfig: false,
             extraOptions: ["-T"],
             remoteCommand: [CodexLocalSSHConfigurator.probeRemoteCommand]
-        ), validateProfile(catEffective) else {
+        ), validateProfile(catEffective),
+              CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(baseEffective, catEffective) else {
             return false
         }
 
@@ -269,11 +282,8 @@ enum CodexSharedSetupChecks {
                 includeSystemConfig: false,
                 extraOptions: ["-T"],
                 remoteCommand: proxyCmd
-            ), validateProfile(proxyEffective) else {
-                return false
-            }
-            if target != CodexLocalSSHConfigurator.hostAlias &&
-                proxyEffective.identityFiles != baseEffective.identityFiles {
+            ), validateProfile(proxyEffective),
+                  CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, proxyEffective) else {
                 return false
             }
         }
@@ -284,7 +294,8 @@ enum CodexSharedSetupChecks {
                 configPath: configurator.sshConfigURL.path,
                 alias: target,
                 includeSystemConfig: true
-            ), validateProfile(desktopBase) else {
+            ), validateProfile(desktopBase),
+                  CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(baseEffective, desktopBase) else {
                 return false
             }
             for proxyCmd in CodexLocalSSHConfigurator.desktopProxyRemoteCommands {
@@ -294,22 +305,34 @@ enum CodexSharedSetupChecks {
                     includeSystemConfig: true,
                     extraOptions: ["-T"],
                     remoteCommand: proxyCmd
-                ), validateProfile(desktopProxy) else {
+                ), validateProfile(desktopProxy),
+                      CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, desktopProxy) else {
                     return false
                 }
             }
         }
 
-        // 3. 实际探测参数 `ssh -G` 核验（确保实际探测命令行与上述配置一致）
+        // 3. 实际探测参数 `ssh -G` 核验（确保实际探测命令行与上述桌面代理配置使用同一份有效配置）
         let resolvedHostName = baseEffective.hostname?.lowercased() == "::1" ? "::1" : "127.0.0.1"
+        let resolvedAddressFamily: String? = {
+            guard let af = baseEffective.addressFamily?.lowercased(), !af.isEmpty, af != "any" else { return nil }
+            return af
+        }()
+        let resolvedHostKeyAlias: String? = {
+            guard let alias = baseEffective.hostKeyAlias, !alias.isEmpty else { return nil }
+            return alias
+        }()
         let arguments = buildDirectLoopbackProbeArguments(
             for: target,
             username: currentUser,
             configPath: materialized.configFileURL.path,
-            hostName: resolvedHostName
+            hostName: resolvedHostName,
+            addressFamily: resolvedAddressFamily,
+            hostKeyAlias: resolvedHostKeyAlias
         )
         guard let probeEffective = try? await configurator.resolveEffectiveSSHConfig(rawArguments: arguments),
-              validateProfile(probeEffective) else {
+              validateProfile(probeEffective),
+              CodexLocalSSHConfigurator.effectiveEndpointAuthAndTrustMatch(catEffective, probeEffective) else {
             return false
         }
 

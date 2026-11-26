@@ -60,7 +60,7 @@ struct CodexSharedSetupView: View {
             }
 
             step(2, title: "一键配置本机 SSH", state: status.passwordlessLogin) {
-                Text("在 `~/.ssh` 生成一把仅限本机回环（127.0.0.1）使用的专用钥匙，并自动写入 `\(CodexLocalSSHConfigurator.hostAlias)` 主机项。不修改你原有的其他密钥，无需打开终端。")
+                Text("在独立目录 `~/.ssh/mimi/` 生成仅限本机回环（127.0.0.1）使用的专用钥匙、主机配置与独立信任文件，并只在 `~/.ssh/config` 顶部加入一行 Include 与在 `authorized_keys` 追加一行受限公钥。不修改你原有的其他 SSH 配置，无需打开终端。")
                     .foregroundStyle(.secondary)
                     .font(.callout)
 
@@ -186,7 +186,7 @@ struct CodexSharedSetupView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("会删除经指纹核验确属 Mimi 的专用密钥、对应的本机回环授权行，以及 ~/.ssh/config 中的 \(CodexLocalSSHConfigurator.hostAlias) 托管块，不会影响你的其他 SSH 配置。")
+            Text("会删除 `~/.ssh/mimi/` 中经归属核验的专用密钥、独立配置与主机信任文件，撤销对应的本机回环受限授权行，并只删除 `~/.ssh/config` 顶部的 Mimi Include 行，不会影响你的其他 SSH 配置。")
         }
     }
 

@@ -120,13 +120,12 @@ extension CodexLocalSSHConfigurator {
         try validateRegularFileIfPresent(stateFileURL, label: stateFileURL.lastPathComponent)
     }
 
-    func validateKnownHostsFile() throws {
-        try validateRegularFileIfPresent(knownHostsURL, label: knownHostsURL.lastPathComponent)
-    }
-
-    func validateStateDirectoryAndFile() throws {
-        try validateStateDirectoryAndStateFile()
-        try validateKnownHostsFile()
+    func validateMimiDirectoryAndFiles() throws {
+        try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi")
+        try validateRegularFileIfPresent(mimiConfigURL, label: "~/.ssh/mimi/config")
+        try validateRegularFileIfPresent(privateKeyURL, label: "~/.ssh/mimi/\(Self.keyFileName)")
+        try validateRegularFileIfPresent(publicKeyURL, label: "~/.ssh/mimi/\(Self.keyFileName).pub")
+        try validateRegularFileIfPresent(knownHostsURL, label: "~/.ssh/mimi/\(Self.knownHostsFileName)")
     }
 
     func ensureSSHDirectory() throws -> Bool {
@@ -134,14 +133,35 @@ extension CodexLocalSSHConfigurator {
             try tightenExistingDirectoryIfNeeded(sshDirectory, currentMode: info.permissions)
             return false
         }
+        return try createSecureDirectory(at: sshDirectory, withIntermediateDirectories: false)
+    }
+
+    func ensureMimiSSHDirectory() throws -> Bool {
+        if let info = try validateDirectoryIfPresent(mimiSSHDirectory, label: "~/.ssh/mimi") {
+            try tightenExistingDirectoryIfNeeded(mimiSSHDirectory, currentMode: info.permissions)
+            return false
+        }
+        return try createSecureDirectory(at: mimiSSHDirectory, withIntermediateDirectories: false)
+    }
+
+    func ensureStateDirectory() throws {
+        let dir = stateFileURL.deletingLastPathComponent()
+        if let info = try validateDirectoryIfPresent(dir, label: dir.lastPathComponent) {
+            try tightenExistingDirectoryIfNeeded(dir, currentMode: info.permissions)
+            return
+        }
+        _ = try createSecureDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    private func createSecureDirectory(at url: URL, withIntermediateDirectories: Bool) throws -> Bool {
         do {
             try FileManager.default.createDirectory(
-                at: sshDirectory,
-                withIntermediateDirectories: false,
+                at: url,
+                withIntermediateDirectories: withIntermediateDirectories,
                 attributes: [.posixPermissions: 0o700]
             )
             // 确保不受宽 umask 影响，且仅对刚新建的目录设置 0700。
-            let fd = Darwin.open(sshDirectory.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+            let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
             if fd >= 0 {
                 defer { Darwin.close(fd) }
                 _ = Darwin.fchmod(fd, 0o700)
@@ -152,26 +172,10 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    func ensureStateDirectory() throws {
-        let dir = stateFileURL.deletingLastPathComponent()
-        if let info = try validateDirectoryIfPresent(dir, label: dir.lastPathComponent) {
-            try tightenExistingDirectoryIfNeeded(dir, currentMode: info.permissions)
-            return
-        }
-        do {
-            try FileManager.default.createDirectory(
-                at: dir,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            let fd = Darwin.open(dir.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
-            if fd >= 0 {
-                defer { Darwin.close(fd) }
-                _ = Darwin.fchmod(fd, 0o700)
-            }
-        } catch {
-            throw ConfigError.fileOperationFailed(error.localizedDescription)
-        }
+    /// 仅在目录已空且经校验为当前用户普通目录时移除，绝不递归删除任何未知文件。
+    func removeDirectoryIfEmpty(_ url: URL, label: String) {
+        guard (try? validateDirectoryIfPresent(url, label: label)) != nil else { return }
+        _ = Darwin.rmdir(url.path)
     }
 
     /// 绝不放宽目录权限：仅当存在 group/other 权限位时收紧（与 0700 做按位与）。
@@ -286,6 +290,15 @@ extension CodexLocalSSHConfigurator {
             expected.data == current.data
     }
 
+    static func statMatchesSnapshot(_ st: stat, _ snapshot: FileSnapshot) -> Bool {
+        guard snapshot.exists, let info = snapshot.info else { return false }
+        return st.st_dev == info.dev &&
+            st.st_ino == info.ino &&
+            st.st_size == info.size &&
+            st.st_mtimespec.tv_sec == info.mtimeSec &&
+            st.st_mtimespec.tv_nsec == info.mtimeNsec
+    }
+
     func verifySnapshotUnchanged(_ expected: FileSnapshot, current: FileSnapshot, label: String) throws {
         if expected.exists != current.exists {
             throw ConfigError.concurrentModification("\(label) 在操作期间被创建或删除。")
@@ -296,22 +309,7 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
-    @discardableResult
-    func createExclusiveBackup(of originalData: Data) throws -> URL {
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let suffix = UUID().uuidString.prefix(8)
-        let backupURL = sshDirectory.appendingPathComponent("config.before-mimi.\(timestamp)-\(suffix).bak")
-        _ = try publishExclusiveNewFile(
-            originalData,
-            to: backupURL,
-            mode: 0o600,
-            label: backupURL.lastPathComponent,
-            invokeHook: false
-        )
-        return backupURL
-    }
-
-    // MARK: - Stage-Then-Exclusive-Publish & Quarantine-Then-Verify-Then-Delete
+    // MARK: - Stage-Then-Exclusive-Publish, Atomic RENAME_SWAP CAS & Quarantine-Then-Verify-Then-Delete
 
     private func openVerifiedParentDirectoryFD(for url: URL, label: String) throws -> Int32 {
         let parentDir = url.deletingLastPathComponent()
@@ -345,6 +343,9 @@ extension CodexLocalSSHConfigurator {
         if let beforeAtomicCommit {
             try beforeAtomicCommit(targetURL)
         }
+        if let afterVerifyBeforeCommit {
+            try afterVerifyBeforeCommit(targetURL)
+        }
         if Darwin.link(stagedURL.path, targetURL.path) == 0 {
             return stagedSnapshot
         }
@@ -353,19 +354,26 @@ extension CodexLocalSSHConfigurator {
             throw ConfigError.conflictingKeyFiles("发布期间出现同名文件 \(label)，已停止且未覆盖。")
         }
         if err == EXDEV || err == ENOTSUP || err == EPERM {
-            return try publishExclusiveNewFile(stagedSnapshot.data, to: targetURL, mode: mode, label: label, invokeHook: false)
+            return try publishExclusiveNewFile(
+                stagedSnapshot.data,
+                to: targetURL,
+                mode: mode,
+                label: label,
+                invokeHook: false
+            )
         }
         throw ConfigError.fileOperationFailed("发布 \(label) 失败：\(Self.posixErrorMessage(err))")
     }
 
-    /// 先在目标父目录内创建独占 `0700` 暂存目录写盘并从已落盘描述符记录快照，再原子无覆盖发布到目标路径。
+    /// 先在目标父目录内创建独占 `0700` 暂存目录写盘并从已落盘描述符记录快照，再原子无覆盖发布到目标路径（`linkat` / `RENAME_EXCL`）。
     /// 写入/改权/同步失败绝不会在目标路径创建半成品，也绝不会按目标路径执行 `unlink`。
     func publishExclusiveNewFile(
         _ data: Data,
         to targetURL: URL,
         mode: mode_t,
         label: String,
-        invokeHook: Bool = true
+        invokeHook: Bool = true,
+        reportExistAsConcurrentModification: Bool = false
     ) throws -> FileSnapshot {
         let parentFD = try openVerifiedParentDirectoryFD(for: targetURL, label: label)
         defer { Darwin.close(parentFD) }
@@ -390,16 +398,70 @@ extension CodexLocalSSHConfigurator {
             _ = Darwin.unlinkat(parentFD, stageDirName, AT_REMOVEDIR)
         }
 
-        let fd = Darwin.openat(stageDirFD, "item", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        let stagedSnapshot = try writeStagedItem(data, inDirectoryFD: stageDirFD, fileName: "item", mode: mode, label: label)
+        itemRemainingInStage = true
+
+        if invokeHook, let beforeAtomicCommit {
+            try beforeAtomicCommit(targetURL)
+        }
+
+        let targetName = targetURL.lastPathComponent
+        var preSt = stat()
+        if Darwin.fstatat(parentFD, targetName, &preSt, AT_SYMLINK_NOFOLLOW) == 0 {
+            if reportExistAsConcurrentModification {
+                throw ConfigError.concurrentModification("\(label) 在写入前已被其他进程创建，已中止且未覆盖。")
+            }
+            throw ConfigError.conflictingKeyFiles("目标路径已存在同名文件 \(label)，已停止且未覆盖。")
+        } else if errno != ENOENT {
+            throw ConfigError.fileOperationFailed("无法检查 \(label)：\(Self.posixErrorMessage())")
+        }
+
+        if invokeHook, let afterVerifyBeforeCommit {
+            try afterVerifyBeforeCommit(targetURL)
+        }
+
+        if Darwin.linkat(stageDirFD, "item", parentFD, targetName, 0) == 0 {
+            return stagedSnapshot
+        }
+        let linkErr = errno
+        if linkErr == EEXIST {
+            if reportExistAsConcurrentModification {
+                throw ConfigError.concurrentModification("\(label) 在原子发布瞬间被其他进程创建，已中止且未覆盖。")
+            }
+            throw ConfigError.conflictingKeyFiles("目标路径已存在同名文件 \(label)，已停止且未覆盖。")
+        }
+        if linkErr == ENOTSUP || linkErr == EXDEV || linkErr == EPERM {
+            if Darwin.renameatx_np(stageDirFD, "item", parentFD, targetName, UInt32(RENAME_EXCL)) == 0 {
+                itemRemainingInStage = false
+                return stagedSnapshot
+            }
+            let renameErr = errno
+            if renameErr == EEXIST {
+                if reportExistAsConcurrentModification {
+                    throw ConfigError.concurrentModification("\(label) 在原子发布瞬间被其他进程创建，已中止且未覆盖。")
+                }
+                throw ConfigError.conflictingKeyFiles("目标路径已存在同名文件 \(label)，已停止且未覆盖。")
+            }
+            throw ConfigError.fileOperationFailed("原子发布 \(label) 失败：\(Self.posixErrorMessage(renameErr))")
+        }
+        throw ConfigError.fileOperationFailed("原子发布 \(label) 失败：\(Self.posixErrorMessage(linkErr))")
+    }
+
+    private func writeStagedItem(
+        _ data: Data,
+        inDirectoryFD dirFD: Int32,
+        fileName: String,
+        mode: mode_t,
+        label: String
+    ) throws -> FileSnapshot {
+        let fd = Darwin.openat(dirFD, fileName, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else {
             throw ConfigError.fileOperationFailed("无法在独占暂存目录创建 \(label)：\(Self.posixErrorMessage())")
         }
-        itemRemainingInStage = true
         var closed = false
         defer {
             if !closed { Darwin.close(fd) }
         }
-
         guard Darwin.fchmod(fd, 0o600) == 0 else {
             throw ConfigError.fileOperationFailed("设置 \(label) 权限失败：\(Self.posixErrorMessage())")
         }
@@ -417,31 +479,7 @@ extension CodexLocalSSHConfigurator {
         let stagedSnapshot = FileSnapshot(exists: true, info: LStatInfo(stat: st), data: data)
         Darwin.close(fd)
         closed = true
-
-        if invokeHook, let beforeAtomicCommit {
-            try beforeAtomicCommit(targetURL)
-        }
-
-        let targetName = targetURL.lastPathComponent
-        if Darwin.linkat(stageDirFD, "item", parentFD, targetName, 0) == 0 {
-            return stagedSnapshot
-        }
-        let linkErr = errno
-        if linkErr == EEXIST {
-            throw ConfigError.conflictingKeyFiles("目标路径已存在同名文件 \(label)，已停止且未覆盖。")
-        }
-        if linkErr == ENOTSUP || linkErr == EXDEV || linkErr == EPERM {
-            if Darwin.renameatx_np(stageDirFD, "item", parentFD, targetName, UInt32(RENAME_EXCL)) == 0 {
-                itemRemainingInStage = false
-                return stagedSnapshot
-            }
-            let renameErr = errno
-            if renameErr == EEXIST {
-                throw ConfigError.conflictingKeyFiles("目标路径已存在同名文件 \(label)，已停止且未覆盖。")
-            }
-            throw ConfigError.fileOperationFailed("原子发布 \(label) 失败：\(Self.posixErrorMessage(renameErr))")
-        }
-        throw ConfigError.fileOperationFailed("原子发布 \(label) 失败：\(Self.posixErrorMessage(linkErr))")
+        return stagedSnapshot
     }
 
     /// 隔离-核验-删除：先做无破坏预检，再原子移入独占 `0700` 隔离目录，在隔离目录内核验 `(dev, ino, size, mtime, data)` 完全一致后再删除。
@@ -498,7 +536,7 @@ extension CodexLocalSSHConfigurator {
         )
     }
 
-    /// 同样通过「隔离-核验-删除」清理普通自有文件（如状态文件与专用 known_hosts），绝不直接按名称 `unlink`。
+    /// 通过「隔离-核验-删除」清理内部受锁状态文件，绝不直接按名称 `unlink`。
     func removeRegularFileIfPresent(_ url: URL, label: String? = nil) throws {
         let effectiveLabel = label ?? url.lastPathComponent
         guard try validateRegularFileIfPresent(url, label: effectiveLabel) != nil else { return }
@@ -631,6 +669,11 @@ extension CodexLocalSSHConfigurator {
         }
     }
 
+    /// 无覆盖窗口的原子替换：
+    /// - 原本缺失的目标（`expectedSnapshot.exists == false`）：走无覆盖 `publishExclusiveNewFile`（`linkat`/`RENAME_EXCL`），并发创建报 `concurrentModification` 绝不覆盖。
+    /// - 已有文件（`expectedSnapshot.exists == true`）：在独占 `0700` 暂存目录写盘，写前校验快照，随后用 `RENAME_SWAP` 原子交换并保全实际换下的 inode；
+    ///   在暂存目录内核验换下的 inode 与 `expectedSnapshot` 完全一致才删除，若发生比对后并发换档，原子无覆盖恢复外部版本并报 `concurrentModification`。
+    /// - 内部受锁状态文件（`expectedSnapshot == nil`）：独占临时文件后原子 `rename`。
     @discardableResult
     func writeFileAtomically(
         _ data: Data,
@@ -640,6 +683,27 @@ extension CodexLocalSSHConfigurator {
         label: String,
         invokeHook: Bool = true
     ) throws -> FileSnapshot {
+        if let expectedSnapshot {
+            if !expectedSnapshot.exists {
+                return try publishExclusiveNewFile(
+                    data,
+                    to: targetURL,
+                    mode: mode,
+                    label: label,
+                    invokeHook: invokeHook,
+                    reportExistAsConcurrentModification: true
+                )
+            }
+            return try replaceExistingFileWithSwapCAS(
+                data,
+                to: targetURL,
+                mode: mode,
+                expectedSnapshot: expectedSnapshot,
+                label: label,
+                invokeHook: invokeHook
+            )
+        }
+
         let tempURL = targetURL.deletingLastPathComponent()
             .appendingPathComponent(".\(targetURL.lastPathComponent).mimi-\(UUID().uuidString).tmp")
         let writtenSnapshot = try writeExclusiveTempFile(data, to: tempURL, mode: mode)
@@ -653,12 +717,9 @@ extension CodexLocalSSHConfigurator {
         if invokeHook, let beforeAtomicCommit {
             try beforeAtomicCommit(targetURL)
         }
-
-        // 提交前再次检查目标类型及是否被外部修改。
         try validateRegularFileIfPresent(targetURL, label: label)
-        if let expectedSnapshot {
-            let current = try captureSnapshot(of: targetURL, label: label)
-            try verifySnapshotUnchanged(expectedSnapshot, current: current, label: label)
+        if invokeHook, let afterVerifyBeforeCommit {
+            try afterVerifyBeforeCommit(targetURL)
         }
 
         guard Darwin.rename(tempURL.path, targetURL.path) == 0 else {
@@ -666,6 +727,120 @@ extension CodexLocalSSHConfigurator {
         }
         committed = true
         return writtenSnapshot
+    }
+
+    private func replaceExistingFileWithSwapCAS(
+        _ data: Data,
+        to targetURL: URL,
+        mode: mode_t,
+        expectedSnapshot: FileSnapshot,
+        label: String,
+        invokeHook: Bool
+    ) throws -> FileSnapshot {
+        let parentFD = try openVerifiedParentDirectoryFD(for: targetURL, label: label)
+        defer { Darwin.close(parentFD) }
+        let parentDir = targetURL.deletingLastPathComponent()
+        let targetName = targetURL.lastPathComponent
+
+        let stageDirName = ".mimi-cas-\(UUID().uuidString)"
+        guard Darwin.mkdirat(parentFD, stageDirName, 0o700) == 0 else {
+            throw ConfigError.fileOperationFailed("无法创建原子交换暂存目录更新 \(label)：\(Self.posixErrorMessage())")
+        }
+        let stageDirFD = Darwin.openat(parentFD, stageDirName, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        guard stageDirFD >= 0 else {
+            _ = Darwin.unlinkat(parentFD, stageDirName, AT_REMOVEDIR)
+            throw ConfigError.fileOperationFailed("无法打开原子交换暂存目录更新 \(label)：\(Self.posixErrorMessage())")
+        }
+        _ = Darwin.fchmod(stageDirFD, 0o700)
+
+        var keepStageDir = false
+        var itemPresentInStage = false
+        defer {
+            if itemPresentInStage && !keepStageDir {
+                _ = Darwin.unlinkat(stageDirFD, "item", 0)
+            }
+            Darwin.close(stageDirFD)
+            if !keepStageDir {
+                _ = Darwin.unlinkat(parentFD, stageDirName, AT_REMOVEDIR)
+            }
+        }
+
+        let writtenSnapshot = try writeStagedItem(data, inDirectoryFD: stageDirFD, fileName: "item", mode: mode, label: label)
+        itemPresentInStage = true
+
+        if invokeHook, let beforeAtomicCommit {
+            try beforeAtomicCommit(targetURL)
+        }
+
+        // 写前基于父目录描述符重验目标文件类型、属主与完整快照。
+        let preSwapSnapshot = try captureSnapshot(inDirectoryFD: parentFD, fileName: targetName, label: label)
+        try verifySnapshotUnchanged(expectedSnapshot, current: preSwapSnapshot, label: label)
+
+        // 确定性测试钩子：模拟在最终快照核验通过之后、原子交换之前瞬间发生外部换档/写入。
+        if invokeHook, let afterVerifyBeforeCommit {
+            try afterVerifyBeforeCommit(targetURL)
+        }
+
+        // 原子交换：一次系统调用将目标换为新版本，同时把实际被换下的真实目录项保全在独占 0700 stageDirFD/item 中。
+        if Darwin.renameatx_np(stageDirFD, "item", parentFD, targetName, UInt32(RENAME_SWAP)) != 0 {
+            let err = errno
+            if err == ENOENT {
+                throw ConfigError.concurrentModification("\(label) 在原子替换瞬间已被外部删除。")
+            }
+            throw ConfigError.fileOperationFailed("原子交换 \(label) 失败：\(Self.posixErrorMessage(err))")
+        }
+
+        // 在独占暂存目录内核验实际被换下的文件是否与预期快照完全一致。
+        var displacedMatches = false
+        var dispSt = stat()
+        if Darwin.fstatat(stageDirFD, "item", &dispSt, AT_SYMLINK_NOFOLLOW) == 0 {
+            let dispInfo = LStatInfo(stat: dispSt)
+            if !dispInfo.isSymlink, dispInfo.isRegularFile, dispInfo.uid == Darwin.geteuid(),
+               let displacedSnapshot = try? captureSnapshot(inDirectoryFD: stageDirFD, fileName: "item", label: label),
+               Self.snapshotsMatch(expectedSnapshot, displacedSnapshot) {
+                displacedMatches = true
+            }
+        }
+
+        if displacedMatches {
+            // 实际被换下的文件与预期快照完全一致，可以安全销毁旧版本。
+            _ = Darwin.unlinkat(stageDirFD, "item", 0)
+            itemPresentInStage = false
+            return writtenSnapshot
+        }
+
+        // 检测到比对之后发生了外部保存或替换：绝不销毁外部版本，无覆盖恢复回原路径！
+        var curTargetSt = stat()
+        if Darwin.fstatat(parentFD, targetName, &curTargetSt, AT_SYMLINK_NOFOLLOW) != 0 {
+            if errno == ENOENT,
+               Darwin.renameatx_np(stageDirFD, "item", parentFD, targetName, UInt32(RENAME_EXCL)) == 0 {
+                itemPresentInStage = false
+                throw ConfigError.concurrentModification("\(label) 在最终校验后被外部修改，已无损恢复外部版本。")
+            }
+            keepStageDir = true
+            let preservedPath = parentDir.appendingPathComponent(stageDirName).appendingPathComponent("item").path
+            throw ConfigError.concurrentModification("\(label) 在最终校验后被外部修改，已将外部版本完整保留于 \(preservedPath)。")
+        }
+
+        if Self.statMatchesSnapshot(curTargetSt, writtenSnapshot) {
+            if Darwin.renameatx_np(stageDirFD, "item", parentFD, targetName, UInt32(RENAME_SWAP)) == 0 {
+                // 确认换回暂存目录的确实是我们刚写的版本；若期间又被第三者换走则完整保留暂存目录绝不删除。
+                var backSt = stat()
+                if Darwin.fstatat(stageDirFD, "item", &backSt, AT_SYMLINK_NOFOLLOW) == 0,
+                   Self.statMatchesSnapshot(backSt, writtenSnapshot) {
+                    _ = Darwin.unlinkat(stageDirFD, "item", 0)
+                    itemPresentInStage = false
+                    throw ConfigError.concurrentModification("\(label) 在最终校验后被外部修改，已无损恢复外部版本。")
+                }
+                keepStageDir = true
+                let preservedPath = parentDir.appendingPathComponent(stageDirName).appendingPathComponent("item").path
+                throw ConfigError.concurrentModification("\(label) 在最终校验后发生并发写入，已将冲突版本完整保留于 \(preservedPath)。")
+            }
+        }
+
+        keepStageDir = true
+        let preservedPath = parentDir.appendingPathComponent(stageDirName).appendingPathComponent("item").path
+        throw ConfigError.concurrentModification("\(label) 在最终校验后被外部修改且目标已再次更新，已将原外部版本完整保留于 \(preservedPath)。")
     }
 
     func loadManagedState() throws -> ManagedState? {
@@ -780,11 +955,13 @@ extension CodexLocalSSHConfigurator {
     }
 
     /// 在独占 `0700` 临时目录中生成自包含的 SSH 评估快照：
-    /// - 忠实冻结用户与系统配置及其所有 OpenSSH 可读取的 `Include`（含符号链接指向的普通文件与系统目录相对 `Include`）；
-    /// - 对任何无法忠实冻结的 `Include`（含 `%` 动态占位符、`${VAR}` 环境变量、`~otheruser`、不可读、非 UTF-8、循环引用或超深嵌套）明确报错，绝不静默丢弃。
+    /// - 忠实冻结用户与系统配置及其所有 OpenSSH 可读取的 `Include`（含路径中段引号、转义空格、符号链接普通文件与系统目录相对 `Include`）；
+    /// - 支持在 Preflight 阶段通过 `virtualFileOverrides` 注入尚未落盘的候选 `~/.ssh/mimi/config`；
+    /// - 对任何无法忠实冻结的 `Include`（含 `%` 动态占位符、`${VAR}` 环境变量、`~otheruser`、未闭合引号、悬空转义、不可读、非 UTF-8、循环引用或超深嵌套）明确报错，绝不静默丢弃。
     func materializeEvaluationSSHConfig(
         userConfigText: String,
-        includeSystemConfig: Bool
+        includeSystemConfig: Bool,
+        virtualFileOverrides: [String: String] = [:]
     ) throws -> MaterializedSSHConfig {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(".mimi-ssh-eval-\(UUID().uuidString)", isDirectory: true)
@@ -799,6 +976,11 @@ extension CodexLocalSSHConfigurator {
         _ = Darwin.fchmod(dirFD, 0o700)
         Darwin.close(dirFD)
 
+        var normalizedOverrides: [String: String] = [:]
+        for (path, content) in virtualFileOverrides {
+            normalizedOverrides[URL(fileURLWithPath: path).standardizedFileURL.path] = content
+        }
+
         do {
             var counter = 0
             var activeStack: Set<String> = []
@@ -806,6 +988,7 @@ extension CodexLocalSSHConfigurator {
                 text: userConfigText,
                 baseDirectory: sshDirectory,
                 tempDirectory: tempDir,
+                virtualFileOverrides: normalizedOverrides,
                 counter: &counter,
                 depth: 0,
                 activeStack: &activeStack
@@ -826,6 +1009,7 @@ extension CodexLocalSSHConfigurator {
                         text: sysText,
                         baseDirectory: sysBaseDir,
                         tempDirectory: tempDir,
+                        virtualFileOverrides: normalizedOverrides,
                         counter: &counter,
                         depth: 1,
                         activeStack: &sysStack
@@ -853,6 +1037,7 @@ extension CodexLocalSSHConfigurator {
         text: String,
         baseDirectory: URL,
         tempDirectory: URL,
+        virtualFileOverrides: [String: String],
         counter: inout Int,
         depth: Int,
         activeStack: inout Set<String>
@@ -860,44 +1045,58 @@ extension CodexLocalSSHConfigurator {
         guard depth <= 16 else {
             throw ConfigError.effectiveConfigConflict("SSH 配置 Include 嵌套层级超过 16 层，无法忠实冻结。")
         }
+        let virtualPathSet = Set(virtualFileOverrides.keys)
         var output = ""
         for slice in Self.rawLineSlices(in: text) {
             let rawLine = Self.utf8Substring(text, range: slice.contentRange)
-            let tokens = Self.tokenizeSSHConfigLine(rawLine)
+            let parsedLine = Self.parseSSHConfigLineStrict(rawLine)
+            let tokens = parsedLine.tokens
             if let keyword = tokens.first?.lowercased(), keyword == "include" {
+                guard !parsedLine.hasSyntaxError else {
+                    throw ConfigError.effectiveConfigConflict("SSH 配置 Include 指令引号未闭合或存在悬空转义，无法忠实冻结。")
+                }
                 guard tokens.count >= 2 else {
                     throw ConfigError.effectiveConfigConflict("SSH 配置包含缺少路径参数的 Include 指令，无法忠实冻结。")
-                }
-                guard !Self.hasUnclosedQuote(inSSHConfigLine: rawLine) else {
-                    throw ConfigError.effectiveConfigConflict("SSH 配置 Include 指令引号未闭合，无法忠实冻结。")
                 }
                 var rewrittenPaths: [String] = []
                 for pattern in tokens.dropFirst() {
                     let matchedPaths = try Self.resolveGlobPathsStrict(
                         pattern: pattern,
                         baseDirectory: baseDirectory,
-                        homeDirectory: homeDirectory
+                        homeDirectory: homeDirectory,
+                        virtualFilePaths: virtualPathSet
                     )
                     for matchedPath in matchedPaths {
-                        var st = stat()
-                        guard Darwin.fstatat(AT_FDCWD, matchedPath, &st, 0) == 0 else {
-                            throw ConfigError.effectiveConfigConflict("无法读取 SSH Include 目标 \(matchedPath)：\(Self.posixErrorMessage())")
+                        let standardizedMatched = URL(fileURLWithPath: matchedPath).standardizedFileURL.path
+                        let childText: String
+                        let canonical: String
+
+                        if let overrideText = virtualFileOverrides[standardizedMatched] {
+                            childText = overrideText
+                            canonical = standardizedMatched
+                        } else {
+                            var st = stat()
+                            guard Darwin.fstatat(AT_FDCWD, matchedPath, &st, 0) == 0 else {
+                                throw ConfigError.effectiveConfigConflict("无法读取 SSH Include 目标 \(matchedPath)：\(Self.posixErrorMessage())")
+                            }
+                            if (st.st_mode & S_IFMT) == S_IFDIR {
+                                // OpenSSH 在展开通配符 Include（如 Include ssh_config.d/*）时会跳过子目录。
+                                continue
+                            }
+                            guard (st.st_mode & S_IFMT) == S_IFREG else {
+                                throw ConfigError.effectiveConfigConflict("SSH Include 目标 \(matchedPath) 不是普通文件，无法忠实冻结。")
+                            }
+                            let matchedURL = URL(fileURLWithPath: matchedPath)
+                            canonical = matchedURL.resolvingSymlinksInPath().standardizedFileURL.path
+                            let childData = try readEvaluationRegularFileRequired(at: matchedURL)
+                            guard let decoded = String(data: childData, encoding: .utf8) else {
+                                throw ConfigError.effectiveConfigConflict("SSH Include 文件 \(matchedPath) 不是有效的 UTF-8 文本，无法忠实冻结。")
+                            }
+                            childText = decoded
                         }
-                        if (st.st_mode & S_IFMT) == S_IFDIR {
-                            // OpenSSH 在展开通配符 Include（如 Include ssh_config.d/*）时会跳过子目录。
-                            continue
-                        }
-                        guard (st.st_mode & S_IFMT) == S_IFREG else {
-                            throw ConfigError.effectiveConfigConflict("SSH Include 目标 \(matchedPath) 不是普通文件，无法忠实冻结。")
-                        }
-                        let matchedURL = URL(fileURLWithPath: matchedPath)
-                        let canonical = matchedURL.resolvingSymlinksInPath().standardizedFileURL.path
+
                         guard !activeStack.contains(canonical) else {
                             throw ConfigError.effectiveConfigConflict("检测到循环 SSH Include（\(matchedPath)），无法忠实冻结。")
-                        }
-                        let childData = try readEvaluationRegularFileRequired(at: matchedURL)
-                        guard let childText = String(data: childData, encoding: .utf8) else {
-                            throw ConfigError.effectiveConfigConflict("SSH Include 文件 \(matchedPath) 不是有效的 UTF-8 文本，无法忠实冻结。")
                         }
                         activeStack.insert(canonical)
                         defer { activeStack.remove(canonical) }
@@ -905,6 +1104,7 @@ extension CodexLocalSSHConfigurator {
                             text: childText,
                             baseDirectory: baseDirectory,
                             tempDirectory: tempDirectory,
+                            virtualFileOverrides: virtualFileOverrides,
                             counter: &counter,
                             depth: depth + 1,
                             activeStack: &activeStack

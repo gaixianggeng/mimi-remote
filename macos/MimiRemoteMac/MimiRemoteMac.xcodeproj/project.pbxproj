@@ -72,6 +72,7 @@
 		BCE2828F31EE5F3F3F8A1D89 /* OnboardingPermissionsStepView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3BCC40FB582F9A0949273BC /* OnboardingPermissionsStepView.swift */; };
 		C2D5B5B9EC630C7ED336CB91 /* CodexRuntimeUpdateNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26EA59AD362FB829B5B57AFF /* CodexRuntimeUpdateNotice.swift */; };
 		C5FF4FEE13BFCD5C284E0712 /* CodexLocalSSHParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = D95BCE89CDCE43AA153C4074 /* CodexLocalSSHParsing.swift */; };
+		C847ACA3C8F0767AC571E1B7 /* CodexLocalSSHIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F7F26C4459A849D299E8DB /* CodexLocalSSHIsolationTests.swift */; };
 		C8B87ED3A455F4D40A2441AC /* HostStoreCodexSessionRepairTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C1717DA793AF3CE77106578 /* HostStoreCodexSessionRepairTests.swift */; };
 		C8FEA88264E511D28D6D77E6 /* LocalGatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC6D59B31CA95CCB2F1F393 /* LocalGatewayClient.swift */; };
 		C98C3731B1FAA4CB3AB285E4 /* HostStoreClaudeTurnHints.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4BC19DD2B22E380EEDF5D42 /* HostStoreClaudeTurnHints.swift */; };
@@ -87,6 +88,7 @@
 		E315A720A10E9DC2DEC52514 /* AgentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7976BAA1C4222A9CE0CF24 /* AgentModels.swift */; };
 		E69A1AE53A6D6F073F9718B0 /* AppUpdateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD370321E5A2003E97312162 /* AppUpdateStore.swift */; };
 		E9A8B8DA59B78B70513CE94B /* ModuleChangePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 509C3157F7B0D582B0E2633D /* ModuleChangePresentation.swift */; };
+		EA4504D90D7C7CFD68E2A4EE /* CodexLocalSSHTransactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965C47FF03ACCF0B92A0B95A /* CodexLocalSSHTransactions.swift */; };
 		EAF0B28EEE703268BDFCF8F1 /* SessionOpenSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF40145148CD10F034DD74FB /* SessionOpenSupport.swift */; };
 		EB40EB38AC0DD1E7C9C3B21E /* MenuRuntimePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B78765A951C28D21B18CCFAF /* MenuRuntimePresentation.swift */; };
 		EF133E542A756D908D42473C /* CodexLocalSSHFileOps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 461A450D07FAE23EDEF4EE8C /* CodexLocalSSHFileOps.swift */; };
@@ -159,6 +161,7 @@
 		8DA7DA1200E8FF88D5E0DDF2 /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		93545430E8B4FE9B385BB5F4 /* DashboardAndSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardAndSettingsTests.swift; sourceTree = "<group>"; };
 		95CEFC2080963A6433B43217 /* MenuBarWindowPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarWindowPlacementTests.swift; sourceTree = "<group>"; };
+		965C47FF03ACCF0B92A0B95A /* CodexLocalSSHTransactions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocalSSHTransactions.swift; sourceTree = "<group>"; };
 		9AC6D59B31CA95CCB2F1F393 /* LocalGatewayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalGatewayClient.swift; sourceTree = "<group>"; };
 		9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekConfigurationTests.swift; sourceTree = "<group>"; };
 		A14C8D785FAF772A76606A4A /* MenuRuntimePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuRuntimePresentationTests.swift; sourceTree = "<group>"; };
@@ -192,6 +195,7 @@
 		F4BC19DD2B22E380EEDF5D42 /* HostStoreClaudeTurnHints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreClaudeTurnHints.swift; sourceTree = "<group>"; };
 		F551A99ADFB320BDDE43E3A7 /* HostStore+ModuleControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HostStore+ModuleControls.swift"; sourceTree = "<group>"; };
 		F9B97C2451CBB1E2B78D009C /* AgentModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModelsTests.swift; sourceTree = "<group>"; };
+		F9F7F26C4459A849D299E8DB /* CodexLocalSSHIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexLocalSSHIsolationTests.swift; sourceTree = "<group>"; };
 		FBB1013B909A0910724A6C45 /* CodexSharedSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSharedSetupView.swift; sourceTree = "<group>"; };
 		FFDB7D2C419B410DCD4CD90D /* DesktopSessionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopSessionModels.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -290,6 +294,7 @@
 				3C59B0505460DB90B25BDCDE /* AppUpdateTests.swift */,
 				018678E3BFBB71E9F374FF6C /* CodexFrontDoorInvocationTests.swift */,
 				65A1F6C9083100B357785093 /* CodexLocalSSHConfiguratorTests.swift */,
+				F9F7F26C4459A849D299E8DB /* CodexLocalSSHIsolationTests.swift */,
 				A42A71A178E9201DF22627CF /* CodexRuntimeUpdateTests.swift */,
 				93545430E8B4FE9B385BB5F4 /* DashboardAndSettingsTests.swift */,
 				9C35C5D9E56DB2D5E11CC261 /* DeepSeekConfigurationTests.swift */,
@@ -422,6 +427,7 @@
 				C1625E3C9D703C66D27720DE /* CodexLocalSSHConfigurator.swift */,
 				461A450D07FAE23EDEF4EE8C /* CodexLocalSSHFileOps.swift */,
 				D95BCE89CDCE43AA153C4074 /* CodexLocalSSHParsing.swift */,
+				965C47FF03ACCF0B92A0B95A /* CodexLocalSSHTransactions.swift */,
 				25EBCDE4E2ED753E9E5882B5 /* CodexSharedSetupChecks.swift */,
 				6FF645CF76E8BD94261F54A9 /* HealthClient.swift */,
 				6A7026C81DC36F9303474CE6 /* HomebrewServiceClient.swift */,
@@ -563,6 +569,7 @@
 				72A89B1755755BEA24D3E8F6 /* CodexLocalSSHConfigurator.swift in Sources */,
 				EF133E542A756D908D42473C /* CodexLocalSSHFileOps.swift in Sources */,
 				C5FF4FEE13BFCD5C284E0712 /* CodexLocalSSHParsing.swift in Sources */,
+				EA4504D90D7C7CFD68E2A4EE /* CodexLocalSSHTransactions.swift in Sources */,
 				C2D5B5B9EC630C7ED336CB91 /* CodexRuntimeUpdateNotice.swift in Sources */,
 				55890CE55F1490D69AEE1311 /* CodexRuntimeUpdateStore.swift in Sources */,
 				34C115994981B89911E31756 /* CodexSharedSetupChecks.swift in Sources */,
@@ -626,6 +633,7 @@
 				28EBD25B9A113B0FD13FE90E /* AppUpdateTests.swift in Sources */,
 				943444FF2C49492A818BEDE7 /* CodexFrontDoorInvocationTests.swift in Sources */,
 				3B908B741ED40BFCF24ECEC6 /* CodexLocalSSHConfiguratorTests.swift in Sources */,
+				C847ACA3C8F0767AC571E1B7 /* CodexLocalSSHIsolationTests.swift in Sources */,
 				557B0984658C638BB34263B1 /* CodexRuntimeUpdateTests.swift in Sources */,
 				8BFD2B74CC51555B629389F2 /* DashboardAndSettingsTests.swift in Sources */,
 				9819A85F69F0BCD02F07153B /* DeepSeekConfigurationTests.swift in Sources */,

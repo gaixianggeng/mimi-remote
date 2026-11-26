@@ -25,6 +25,9 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    private static let mockVerifiedHostKeyLine =
+        "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockVerifiedHostKey123456789012345678901234\n"
+
     /// 放行真实 `/usr/bin/ssh-keygen` 与只读 `/usr/bin/ssh -G`，仅桩化真正发起 TCP 22 连接的验连命令。
     private func makeConfigurator(
         username: String = "tester",
@@ -32,8 +35,11 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         sshExitStatus: Int32 = 0,
         sshStderr: String = "",
         echoStdinOnVerify: Bool = true,
+        writeKnownHostOnVerify: Bool = true,
         beforeAtomicCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
+        afterVerifyBeforeCommit: CodexLocalSSHConfigurator.CommitHook? = nil,
         afterVerifyBeforeDelete: CodexLocalSSHConfigurator.CommitHook? = nil,
+        simulateHardCrashPoint: CodexLocalSSHConfigurator.HardCrashSimulationPoint? = nil,
         beforeVerifySSH: (@Sendable () throws -> Void)? = nil
     ) -> (CodexLocalSSHConfigurator, CommandRecorder) {
         let recorder = CommandRecorder()
@@ -60,6 +66,15 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                     )
                 }
                 try beforeVerifySSH?()
+                if sshExitStatus == 0 && writeKnownHostOnVerify,
+                   let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    let existing = (try? String(contentsOfFile: rawPath, encoding: .utf8)) ?? ""
+                    if existing.isEmpty {
+                        try Self.mockVerifiedHostKeyLine.write(toFile: rawPath, atomically: true, encoding: .utf8)
+                    }
+                }
                 let stdout = (sshExitStatus == 0 && echoStdinOnVerify) ? (standardInput ?? Data()) : Data()
                 return CommandResult(
                     status: sshExitStatus,
@@ -68,7 +83,9 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                 )
             },
             beforeAtomicCommit: beforeAtomicCommit,
-            afterVerifyBeforeDelete: afterVerifyBeforeDelete
+            afterVerifyBeforeCommit: afterVerifyBeforeCommit,
+            afterVerifyBeforeDelete: afterVerifyBeforeDelete,
+            simulateHardCrashPoint: simulateHardCrashPoint
         )
         return (configurator, recorder)
     }
@@ -89,33 +106,43 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertFalse(status.hasAnyConflict)
 
         XCTAssertEqual(try posixPermissions(of: configurator.sshDirectory), 0o700)
+        XCTAssertEqual(try posixPermissions(of: configurator.mimiSSHDirectory), 0o700)
+        XCTAssertEqual(try posixPermissions(of: configurator.mimiConfigURL), 0o600)
         XCTAssertEqual(try posixPermissions(of: configurator.privateKeyURL), 0o600)
+        XCTAssertEqual(try posixPermissions(of: configurator.publicKeyURL), 0o600)
         XCTAssertEqual(try posixPermissions(of: configurator.authorizedKeysURL), 0o600)
         XCTAssertEqual(try posixPermissions(of: configurator.sshConfigURL), 0o600)
 
         let authorized = try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8)
-        XCTAssertTrue(authorized.hasPrefix(#"from="127.0.0.1,::1" ssh-ed25519 "#))
+        XCTAssertTrue(authorized.hasPrefix(#"restrict,from="127.0.0.1,::1" ssh-ed25519 "#))
         XCTAssertTrue(authorized.hasSuffix("mimi-codex-local\n"))
 
-        let config = try String(contentsOf: configurator.sshConfigURL, encoding: .utf8)
-        XCTAssertTrue(config.contains(CodexLocalSSHConfigurator.managedBlockStart))
-        XCTAssertTrue(config.contains("Host \(CodexLocalSSHConfigurator.hostAlias)"))
-        XCTAssertTrue(config.contains("HostName 127.0.0.1"))
-        XCTAssertTrue(config.contains("Port 22"))
-        XCTAssertTrue(config.contains("User alice"))
-        XCTAssertTrue(config.contains("IdentityFile ~/.ssh/\(CodexLocalSSHConfigurator.keyFileName)"))
-        XCTAssertTrue(config.contains("IdentitiesOnly yes"))
-        XCTAssertTrue(config.contains("IdentityAgent none"))
-        XCTAssertTrue(config.contains("PubkeyAuthentication yes"))
-        XCTAssertTrue(config.contains("PreferredAuthentications publickey"))
-        XCTAssertTrue(config.contains("ClearAllForwardings yes"))
-        XCTAssertTrue(config.contains("UserKnownHostsFile \"\(configurator.expectedKnownHostsPath)\""))
-        XCTAssertTrue(config.contains("GlobalKnownHostsFile none"))
-        XCTAssertTrue(config.contains("ProxyJump none"))
-        XCTAssertTrue(config.contains("ControlMaster no"))
-        XCTAssertTrue(config.contains(CodexLocalSSHConfigurator.managedBlockEnd))
+        // ~/.ssh/config 只写入最顶部单行带标记 Include（路径加引号），不写内联 Host 块。
+        let userConfig = try String(contentsOf: configurator.sshConfigURL, encoding: .utf8)
+        XCTAssertEqual(userConfig, CodexLocalSSHConfigurator.managedIncludeLine + "\n")
 
-        // 应用专用主机信任文件已创建且为 0600，未触碰 ~/.ssh/known_hosts。
+        // 所有 Mimi 自有 Host 项与选项均隔离在 ~/.ssh/mimi/config 中。
+        let mimiConfig = try String(contentsOf: configurator.mimiConfigURL, encoding: .utf8)
+        XCTAssertTrue(mimiConfig.contains("Host \(CodexLocalSSHConfigurator.hostAlias)"))
+        XCTAssertTrue(mimiConfig.contains("HostName 127.0.0.1"))
+        XCTAssertTrue(mimiConfig.contains("AddressFamily inet"))
+        XCTAssertTrue(mimiConfig.contains("Port 22"))
+        XCTAssertTrue(mimiConfig.contains("User alice"))
+        XCTAssertTrue(mimiConfig.contains("HostKeyAlias \(CodexLocalSSHConfigurator.hostAlias)"))
+        XCTAssertTrue(mimiConfig.contains("IdentityFile \"\(configurator.privateKeyURL.path)\""))
+        XCTAssertTrue(mimiConfig.contains("IdentitiesOnly yes"))
+        XCTAssertTrue(mimiConfig.contains("IdentityAgent none"))
+        XCTAssertTrue(mimiConfig.contains("PubkeyAuthentication yes"))
+        XCTAssertTrue(mimiConfig.contains("PreferredAuthentications publickey"))
+        XCTAssertTrue(mimiConfig.contains("ClearAllForwardings yes"))
+        XCTAssertTrue(mimiConfig.contains("UserKnownHostsFile \"\(configurator.expectedKnownHostsPath)\""))
+        XCTAssertTrue(mimiConfig.contains("GlobalKnownHostsFile none"))
+        XCTAssertTrue(mimiConfig.contains("NoHostAuthenticationForLocalhost no"))
+        XCTAssertTrue(mimiConfig.contains("ProxyJump none"))
+        XCTAssertTrue(mimiConfig.contains("ControlMaster no"))
+
+        // Mimi 目录内独立主机信任文件已创建且为 0600，未触碰 ~/.ssh/known_hosts。
+        XCTAssertEqual(configurator.knownHostsURL.deletingLastPathComponent().standardizedFileURL, configurator.mimiSSHDirectory.standardizedFileURL)
         XCTAssertEqual(try posixPermissions(of: configurator.knownHostsURL), 0o600)
         XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.sshDirectory.appendingPathComponent("known_hosts").path))
 
@@ -127,6 +154,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertFalse(verifyArgs.contains("/dev/null"))
         XCTAssertTrue(verifyArgs.contains("BatchMode=yes"))
         XCTAssertTrue(verifyArgs.contains("PasswordAuthentication=no"))
+        XCTAssertTrue(verifyArgs.contains("HostKeyAlias=\(CodexLocalSSHConfigurator.hostAlias)"))
+        XCTAssertTrue(verifyArgs.contains("NoHostAuthenticationForLocalhost=no"))
         XCTAssertTrue(verifyArgs.contains(CodexLocalSSHConfigurator.hostAlias))
         XCTAssertEqual(verifyArgs.last, "/bin/cat")
     }
@@ -142,22 +171,15 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         try await configurator.configure(verifyConnection: true)
 
         let configAfterFirst = try String(contentsOf: configurator.sshConfigURL, encoding: .utf8)
-        XCTAssertTrue(configAfterFirst.hasPrefix(CodexLocalSSHConfigurator.managedBlockStart))
-        XCTAssertTrue(configAfterFirst.hasSuffix("\n\n" + originalConfig))
+        XCTAssertEqual(configAfterFirst, CodexLocalSSHConfigurator.managedIncludeLine + "\n" + originalConfig)
 
         let authAfterFirst = try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8)
         let authLines = authAfterFirst.components(separatedBy: .newlines).filter { !$0.isEmpty }
         XCTAssertEqual(authLines.count, 2)
         XCTAssertEqual(authLines[0], originalAuth)
+        XCTAssertTrue(authLines[1].hasPrefix(#"restrict,from="127.0.0.1,::1" ssh-ed25519 "#))
 
-        let backups = try FileManager.default.contentsOfDirectory(atPath: configurator.sshDirectory.path)
-            .filter { $0.hasPrefix("config.before-mimi.") && $0.hasSuffix(".bak") }
-        XCTAssertEqual(backups.count, 1)
-        let backupURL = configurator.sshDirectory.appendingPathComponent(try XCTUnwrap(backups.first))
-        XCTAssertEqual(try Data(contentsOf: backupURL), Data(originalConfig.utf8))
-        XCTAssertEqual(try posixPermissions(of: backupURL), 0o600)
-
-        // 第二次运行保持幂等，不重复追加公钥或托管块，也不重生成密钥。
+        // 第二次运行保持幂等，不重复追加公钥或 Include 行，也不重生成密钥。
         try await configurator.configure(verifyConnection: true)
         XCTAssertEqual(try String(contentsOf: configurator.sshConfigURL, encoding: .utf8), configAfterFirst)
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), authAfterFirst)
@@ -192,12 +214,12 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
     func testConfigureRefusesCorruptedManagedMarkers() async throws {
         let (configurator, _) = makeConfigurator(username: "dave")
         try FileManager.default.createDirectory(at: configurator.sshDirectory, withIntermediateDirectories: true)
-        let broken = "\(CodexLocalSSHConfigurator.managedBlockStart)\nHost mimi-local\n"
+        let broken = "Include \"~/.ssh/mimi/broken\" \(CodexLocalSSHConfigurator.managedIncludeMarker)\n"
         try broken.write(to: configurator.sshConfigURL, atomically: true, encoding: .utf8)
 
         do {
             try await configurator.configure(verifyConnection: false)
-            XCTFail("标记块不完整时必须拒绝修改")
+            XCTFail("标记行被破坏时必须拒绝修改")
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             XCTAssertEqual(error, .invalidManagedBlock)
         }
@@ -248,7 +270,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
     func testP1_1RefusesUnknownPrivateKeyOnlyWithoutDeletingIt() async throws {
         let (configurator, _) = makeConfigurator(username: "alice")
-        try FileManager.default.createDirectory(at: configurator.sshDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: configurator.mimiSSHDirectory, withIntermediateDirectories: true)
         let sentinelPrivate = Data("USER-PRIVATE-KEY-DO-NOT-DELETE".utf8)
         try sentinelPrivate.write(to: configurator.privateKeyURL)
 
@@ -269,7 +291,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
     func testP1_1RefusesCompleteUserOwnedKeyPairWithSameFilename() async throws {
         let (configurator, _) = makeConfigurator(username: "alice")
-        try FileManager.default.createDirectory(at: configurator.sshDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: configurator.mimiSSHDirectory, withIntermediateDirectories: true)
         try await generateRawEd25519Key(at: configurator.privateKeyURL, comment: "user-personal-key")
         let originalPrivate = try Data(contentsOf: configurator.privateKeyURL)
         let originalPublic = try Data(contentsOf: configurator.publicKeyURL)
@@ -394,10 +416,25 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             }
         }
 
-        // 撤销只删除 Mimi 实际写入的托管行，绝不删除用户自配的同公钥行。
-        try await configurator.remove()
+        // 撤销只删除 Mimi 实际写入的标记行，绝不删除用户自配的同公钥行，并因同公钥仍有残留授权而保留记录并报 conflictingAuthorizedKey。
+        do {
+            try await configurator.remove()
+            XCTFail("同公钥仍有其他有效授权行时，remove 必须保留冲突记录并报错")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .conflictingAuthorizedKey = error else {
+                return XCTFail("期望 conflictingAuthorizedKey，实际：\(error)")
+            }
+        }
         let remaining = try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8)
         XCTAssertEqual(remaining, unrestrictedLine + "\n")
+        let managedAfterConflictRemove = await configurator.inspect().isManaged
+        XCTAssertTrue(managedAfterConflictRemove, "同公钥残留授权存在时必须保留撤销记录")
+
+        // 用户手工移除该行后，重试 remove() 彻底清空状态。
+        try "".write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
+        try await configurator.remove()
+        let managedAfterClear = await configurator.inspect().isManaged
+        XCTAssertFalse(managedAfterClear)
     }
 
     func testP1_2HandlesDifferentOptionsMultipleSameKeyLinesAndSimilarComments() async throws {
@@ -414,9 +451,9 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         // 其他密钥，但在注释与 command= 选项中刻意包含相似文本与 Mimi 公钥文本。
         let otherKeyBody = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyMaterial123456789012345678901234"
         let commentLine = "# \(managedLine)"
-        let similarCommentLine = "\(otherKeyBody) from=\"127.0.0.1,::1\" \(pubBody) mimi-codex-local"
+        let similarCommentLine = "\(otherKeyBody) restrict,from=\"127.0.0.1,::1\" \(pubBody) mimi-codex-local"
         let similarOptionLine = "from=\"10.0.0.1\",command=\"echo \(pubBody) mimi-codex-local\" \(otherKeyBody) ops"
-        let userLoopbackSameKey = "from=\"127.0.0.1\",no-port-forwarding \(pubBody) user-local-copy"
+        let userLoopbackSameKey = "restrict,from=\"127.0.0.1\" \(pubBody) user-local-copy"
 
         let combined = [
             commentLine,
@@ -427,27 +464,41 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         ].joined(separator: "\n") + "\n"
         try combined.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
 
-        // 重复 configure 应幂等且保留所有已有条目及 from= 限制。
+        // 重复 configure 应幂等且保留所有已有条目及 restrict,from= 限制。
         try await configurator.configure(verifyConnection: false)
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), combined)
 
-        // 测试带 command= 或非回环 from= 的同公钥行被识别为冲突。
+        // 测试带 command=、缺少 restrict 或非回环 from= 的同公钥行被识别为冲突。
         let badFromEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
-            content: "from=\"127.0.0.1,10.0.0.9\" \(pubBody) bad\n",
+            content: "restrict,from=\"127.0.0.1,10.0.0.9\" \(pubBody) bad\n",
             keyBody: pubBody,
             recordedEntry: managedLine
         )
         XCTAssertTrue(badFromEval.hasConflict)
 
+        let missingRestrictEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
+            content: "from=\"127.0.0.1,::1\" \(pubBody) mimi-codex-local\n",
+            keyBody: pubBody,
+            recordedEntry: managedLine
+        )
+        XCTAssertTrue(missingRestrictEval.hasConflict)
+
         let badCommandEval = CodexLocalSSHConfigurator.evaluateAuthorizedKeys(
-            content: "from=\"127.0.0.1\",command=\"/bin/false\" \(pubBody) bad\n",
+            content: "restrict,from=\"127.0.0.1\",command=\"/bin/false\" \(pubBody) bad\n",
             keyBody: pubBody,
             recordedEntry: managedLine
         )
         XCTAssertTrue(badCommandEval.hasConflict)
 
-        // remove 只删 Mimi 实际写入的那一行；用户的同公钥行、注释与相似文本行均原样保留。
-        try await configurator.remove()
+        // remove 只删 Mimi 实际写入的标记行；用户的同公钥行、注释与相似文本行均原样保留，且因同公钥仍有残留授权保留记录并报 conflictingAuthorizedKey。
+        do {
+            try await configurator.remove()
+            XCTFail("存在同公钥多行时，删除 Mimi 标记行后仍须报告残留冲突并保留记录")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .conflictingAuthorizedKey = error else {
+                return XCTFail("期望 conflictingAuthorizedKey，实际：\(error)")
+            }
+        }
         let expectedAfterRemove = [
             commentLine,
             similarCommentLine,
@@ -455,8 +506,17 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             userLoopbackSameKey,
         ].joined(separator: "\n") + "\n"
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), expectedAfterRemove)
+        let managedWithExtraSameKey = await configurator.inspect().isManaged
+        XCTAssertTrue(managedWithExtraSameKey)
 
-        // 若仅有用户自建的同公钥回环条目（注释与附加选项不同），再次配置时按公钥内容识别重复，不追加重复行且保留原条目。
+        // 清理残留同公钥行后，再次 remove 彻底清空状态。
+        let withoutUserSameKey = [commentLine, similarCommentLine, similarOptionLine].joined(separator: "\n") + "\n"
+        try withoutUserSameKey.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
+        try await configurator.remove()
+        let managedAfterCleanRemove = await configurator.inspect().isManaged
+        XCTAssertFalse(managedAfterCleanRemove)
+
+        // 若仅有被外部修改的非 Mimi 标记同公钥行，重配不得复用并清空跟踪记录，必须报错并保留原行与状态。
         let (dedupConfigurator, _) = makeConfigurator(username: "alice")
         try await dedupConfigurator.configure(verifyConnection: false)
         let dedupPubBody = try XCTUnwrap(
@@ -464,10 +524,19 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                 from: try String(contentsOf: dedupConfigurator.publicKeyURL, encoding: .utf8)
             )
         )
-        let customSameKeyOnly = "from=\"127.0.0.1\",no-agent-forwarding \(dedupPubBody) custom-comment\n"
+        let customSameKeyOnly = "restrict,from=\"127.0.0.1\" \(dedupPubBody) custom-comment\n"
         try customSameKeyOnly.write(to: dedupConfigurator.authorizedKeysURL, atomically: true, encoding: .utf8)
-        try await dedupConfigurator.configure(verifyConnection: false)
+        do {
+            try await dedupConfigurator.configure(verifyConnection: false)
+            XCTFail("非 Mimi 标记同公钥行不得被静默复用并丢弃跟踪记录")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .conflictingAuthorizedKey = error else {
+                return XCTFail("期望 conflictingAuthorizedKey，实际：\(error)")
+            }
+        }
         XCTAssertEqual(try String(contentsOf: dedupConfigurator.authorizedKeysURL, encoding: .utf8), customSameKeyOnly)
+        let dedupManaged = await dedupConfigurator.inspect().isManaged
+        XCTAssertTrue(dedupManaged)
     }
 
     func testAuthorizedKeysDoesNotRelaxStrictExistingPermissionsAndDeduplicatesByKeyContent() async throws {
@@ -481,19 +550,19 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
         try await configurator.configure(verifyConnection: false)
 
-        // 绝不把 0400 的 authorized_keys 放宽到 0600，也不放宽 ~/.ssh。
+        // 绝不把 0400 的 authorized_keys 放宽到 0600，也不放宽 ~/.ssh；~/.ssh/mimi/ 内所有文件统一 0600。
         XCTAssertEqual(try posixPermissions(of: configurator.authorizedKeysURL), 0o400)
         XCTAssertEqual(try posixPermissions(of: configurator.sshDirectory), 0o700)
+        XCTAssertEqual(try posixPermissions(of: configurator.mimiSSHDirectory), 0o700)
+        XCTAssertEqual(try posixPermissions(of: configurator.publicKeyURL), 0o600)
 
-        // 将公钥文件收紧到 0600 后再次运行 configure，也不得放宽回 0644。
-        _ = Darwin.chmod(configurator.publicKeyURL.path, 0o600)
         try await configurator.configure(verifyConnection: false)
         XCTAssertEqual(try posixPermissions(of: configurator.publicKeyURL), 0o600)
         XCTAssertEqual(try posixPermissions(of: configurator.authorizedKeysURL), 0o400)
 
         // 末尾无换行的已有条目必须被正确分行保留，撤销后逐字节恢复且保持 0400。
         let authAfterConfigure = try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8)
-        XCTAssertTrue(authAfterConfigure.hasPrefix(existingAuth + "\nfrom=\"127.0.0.1,::1\" "))
+        XCTAssertTrue(authAfterConfigure.hasPrefix(existingAuth + "\nrestrict,from=\"127.0.0.1,::1\" "))
 
         try await configurator.remove()
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), existingAuth)
@@ -798,8 +867,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
         try await configurator.configure(verifyConnection: false)
 
-        // 破坏 ~/.ssh/config 的结束标记。
-        let brokenConfig = "\(CodexLocalSSHConfigurator.managedBlockStart)\nHost mimi-local\n    HostName 127.0.0.1\n"
+        // 破坏 ~/.ssh/config 的 Mimi Include 标记行。
+        let brokenConfig = "Include \"~/.ssh/mimi/broken\" \(CodexLocalSSHConfigurator.managedIncludeMarker)\n"
         try brokenConfig.write(to: configurator.sshConfigURL, atomically: true, encoding: .utf8)
 
         do {
@@ -926,14 +995,23 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             }
         }
 
-        // 3. 转成 CRLF 的托管授权行在 remove() 时必须被精准移除，同时保留用户 CRLF 行与原始 CRLF config。
-        try await configurator.remove()
+        // 3. 转成 CRLF 的托管授权行在 remove() 时必须被精准移除，同时保留用户 CRLF 行与原始 CRLF config；因同公钥无限制行仍在，remove 报告残留冲突。
+        do {
+            try await configurator.remove()
+            XCTFail("同公钥仍有无限制授权行时，remove 必须报告残留冲突并保留记录")
+        } catch let error as CodexLocalSSHConfigurator.ConfigError {
+            guard case .conflictingAuthorizedKey = error else {
+                return XCTFail("期望 conflictingAuthorizedKey，实际：\(error)")
+            }
+        }
         XCTAssertEqual(
             try Data(contentsOf: configurator.authorizedKeysURL),
             Data("# comment\r\n\(pubBody) unrestricted-after-comment\r\n".utf8),
             "CRLF 托管授权行必须被撤销，其余 CRLF 行逐字节保留"
         )
         XCTAssertEqual(try Data(contentsOf: configurator.sshConfigURL), Data(crlfGlobalConfig.utf8))
+        try Data("# comment\r\n".utf8).write(to: configurator.authorizedKeysURL)
+        try await configurator.remove()
 
         // 4. CRLF 配置中注释后的同名 Host mimi-local 必须被检出冲突。
         let crlfAliasConflict = "# leading comment\r\nHost mimi-local\r\n    HostName 198.51.100.42\r\n"
@@ -1147,12 +1225,13 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: failingVerify.knownHostsURL.path), "验连失败后不得残留新建 known_hosts")
         XCTAssertFalse(FileManager.default.fileExists(atPath: failingVerify.stateFileURL.path), "验连失败后不得残留 state 文件")
 
-        // 2. 已有托管块（User alice）更新为 User bob，但在更新后验连失败 -> 必须恢复旧托管块（User alice），绝不删掉原托管块。
+        // 2. 已有独立配置（User alice）更新为 User bob，但在更新后验连失败 -> 必须恢复旧独立配置（User alice），绝不删掉原配置。
         let (initialAlice, _) = makeConfigurator(username: "alice")
         try await initialAlice.configure(verifyConnection: false)
-        let aliceConfigBeforeUpdate = try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8)
+        let aliceMimiConfigBeforeUpdate = try String(contentsOf: initialAlice.mimiConfigURL, encoding: .utf8)
+        let aliceUserConfigBeforeUpdate = try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8)
         let aliceAuthBeforeUpdate = try String(contentsOf: initialAlice.authorizedKeysURL, encoding: .utf8)
-        XCTAssertTrue(aliceConfigBeforeUpdate.contains("User alice"))
+        XCTAssertTrue(aliceMimiConfigBeforeUpdate.contains("User alice"))
 
         let (failingBobUpdate, _) = makeConfigurator(
             username: "bob",
@@ -1161,22 +1240,22 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         )
         do {
             try await failingBobUpdate.configure(verifyConnection: true)
-            XCTFail("更新托管块后验连失败必须报错")
+            XCTFail("更新托管配置后验连失败必须报错")
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             guard case .verificationFailed = error else {
                 return XCTFail("期望 verificationFailed，实际：\(error)")
             }
         }
         XCTAssertEqual(
-            try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8),
-            aliceConfigBeforeUpdate,
-            "更新已有托管块失败回滚后必须恢复旧托管块（User alice），不能把旧托管块删掉"
+            try String(contentsOf: initialAlice.mimiConfigURL, encoding: .utf8),
+            aliceMimiConfigBeforeUpdate,
+            "更新已有独立配置失败回滚后必须恢复旧配置（User alice），不能把旧配置删掉"
         )
+        XCTAssertEqual(try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8), aliceUserConfigBeforeUpdate)
         XCTAssertEqual(try String(contentsOf: initialAlice.authorizedKeysURL, encoding: .utf8), aliceAuthBeforeUpdate)
 
-        // 3. 更新已有托管块期间出现外部编辑后授权写入失败 -> 既恢复旧托管块（User alice），又保留外部新增 Host！
+        // 3. 更新期间出现对 ~/.ssh/config 的外部编辑后授权写入失败 -> 既恢复 ~/.ssh/mimi/config（User alice），又完整保留 ~/.ssh/config 的外部新增 Host！
         let externalSuffix = "\nHost added-externally\n    HostName 10.9.9.9\n"
-        // 删除原授权行迫使本次更新需要写 authorized_keys，同时在写入 authorized_keys 前向 config 追加外部编辑并失败。
         try origAuth.write(to: initialAlice.authorizedKeysURL, atomically: true, encoding: .utf8)
         let (failingUpdateWithExternalEdit, _) = makeConfigurator(
             username: "bob",
@@ -1194,23 +1273,24 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             XCTAssertEqual(error, .fileOperationFailed("模拟更新期间授权写入失败"))
         }
-        let configAfterExternalRollback = try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8)
-        XCTAssertTrue(configAfterExternalRollback.contains("User alice"), "旧托管块必须被恢复")
-        XCTAssertFalse(configAfterExternalRollback.contains("User bob"), "失败的新托管块不得残留")
-        XCTAssertTrue(configAfterExternalRollback.contains("Host added-externally"), "回滚必须保留外部编辑")
+        let mimiAfterExternalRollback = try String(contentsOf: initialAlice.mimiConfigURL, encoding: .utf8)
+        let userConfigAfterExternalRollback = try String(contentsOf: initialAlice.sshConfigURL, encoding: .utf8)
+        XCTAssertTrue(mimiAfterExternalRollback.contains("User alice"), "旧独立配置必须被恢复")
+        XCTAssertFalse(mimiAfterExternalRollback.contains("User bob"), "失败的新独立配置不得残留")
+        XCTAssertTrue(userConfigAfterExternalRollback.contains("Host added-externally"), "回滚必须保留 ~/.ssh/config 的外部编辑")
     }
 
     // MARK: - Round 3 P1 & P2 Regressions
 
-    /// R3 P1-1: 专用 known_hosts 变符号链接或 authorized_keys 不可读/不可解码时，inspect 必须保留撤销入口，remove 必须先撤销有效授权再独立报告信任文件错误。
+    /// R3 P1-1: 独立 known_hosts 变符号链接或 authorized_keys 不可读/不可解码时，inspect 必须保留撤销入口，remove 必须先撤销有效授权再独立报告信任文件错误。
     func testR3_P1_1RevokeAndInspectKeepEntryWhenKnownHostsIsSymlinkOrAuthUnreadable() async throws {
         let (configurator, _) = makeConfigurator(username: "alice")
         try FileManager.default.createDirectory(at: configurator.sshDirectory, withIntermediateDirectories: true)
         let keepAuth = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepAlice1234567890123456789012345678 alice@host\n"
         try keepAuth.write(to: configurator.authorizedKeysURL, atomically: true, encoding: .utf8)
-        try await configurator.configure(verifyConnection: false)
+        try await configurator.configure(verifyConnection: true)
 
-        // 1. 专用 known_hosts 变成符号链接：inspect 必须标记不安全但保留 isManaged == true；remove 必须先撤销授权、密钥和 config，再报 known_hosts 错误。
+        // 1. 独立 known_hosts 变成符号链接：inspect 必须标记不安全但保留 isManaged == true；remove 必须先撤销授权、密钥和 config，再报 known_hosts 错误。
         let sentinel = tempHome.appendingPathComponent("sentinel-known-hosts")
         try "KEEP-SENTINEL\n".write(to: sentinel, atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: configurator.knownHostsURL)
@@ -1230,7 +1310,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                 return XCTFail("期望 unsafeFileSystemTarget，实际：\(error)")
             }
         }
-        // 关键：在报告 known_hosts 错误前，authorized_keys 里的托管授权、密钥与 config 托管块必须已全部撤销！
+        // 关键：在报告 known_hosts 错误前，authorized_keys 里的托管授权、密钥与 config Include 行必须已全部撤销！
         XCTAssertEqual(try String(contentsOf: configurator.authorizedKeysURL, encoding: .utf8), keepAuth)
         XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.privateKeyURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: configurator.publicKeyURL.path))
@@ -1239,9 +1319,11 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
         // 2. 清理符号链接后重新配置，然后清理密钥和 config、仅保留 state 与不可解码的 authorized_keys -> inspect 仍须保留撤销入口。
         try FileManager.default.removeItem(at: configurator.knownHostsURL)
-        try await configurator.configure(verifyConnection: false)
+        try await configurator.remove()
+        try await configurator.configure(verifyConnection: true)
         try FileManager.default.removeItem(at: configurator.privateKeyURL)
         try FileManager.default.removeItem(at: configurator.publicKeyURL)
+        try FileManager.default.removeItem(at: configurator.mimiConfigURL)
         try FileManager.default.removeItem(at: configurator.sshConfigURL)
         try FileManager.default.removeItem(at: configurator.knownHostsURL)
         let originalAuthData = try Data(contentsOf: configurator.authorizedKeysURL)
@@ -1447,28 +1529,26 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: authURL, encoding: .utf8), "")
         XCTAssertFalse(FileManager.default.fileExists(atPath: unreadableRollback.stateFileURL.path))
 
-        // 2. 外部编辑修改了托管块自身内容，随后最终验连失败 -> 回滚绝不能盲目覆盖外部改写后的托管块，且必须报告未完全回滚。
+        // 2. 外部编辑修改了 ~/.ssh/mimi/config 内容，随后最终验连失败 -> 回滚绝不能盲目覆盖外部改写，且必须报告未完全回滚。
         let (initial, _) = makeConfigurator(username: "alice")
         try await initial.configure(verifyConnection: false)
-        let configURL = initial.sshConfigURL
-        let externallyEditedBlock = """
-        # >>> mimi-remote local codex ssh >>>
+        let mimiConfigURL = initial.mimiConfigURL
+        let externallyEditedMimiConfig = """
         Host mimi-local
             HostName 127.0.0.1
             User externally-edited-user
-        # <<< mimi-remote local codex ssh <<<
         """
         let (externalEditRollback, _) = makeConfigurator(
             username: "bob",
             sshExitStatus: 255,
             sshStderr: "Connection refused",
             beforeVerifySSH: {
-                try (externallyEditedBlock + "\n").write(to: configURL, atomically: true, encoding: .utf8)
+                try (externallyEditedMimiConfig + "\n").write(to: mimiConfigURL, atomically: true, encoding: .utf8)
             }
         )
         do {
             try await externalEditRollback.configure(verifyConnection: true)
-            XCTFail("托管块被外部改写导致回滚中止时必须报错")
+            XCTFail("独立配置被外部改写导致回滚中止时必须报错")
         } catch let error as CodexLocalSSHConfigurator.ConfigError {
             guard case .fileOperationFailed(let detail) = error else {
                 return XCTFail("期望 fileOperationFailed 报告回滚受阻，实际：\(error)")
@@ -1477,8 +1557,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             XCTAssertTrue(detail.contains("config"))
         }
         XCTAssertTrue(
-            try String(contentsOf: configURL, encoding: .utf8).contains("externally-edited-user"),
-            "回滚前托管块已被外部改写，绝不能覆盖外部改动"
+            try String(contentsOf: mimiConfigURL, encoding: .utf8).contains("externally-edited-user"),
+            "回滚前 ~/.ssh/mimi/config 已被外部改写，绝不能覆盖外部改动"
         )
 
         // 3. Phase 4 写回新建的 known_hosts 后，最终状态持久化前 known_hosts 被替换为符号链接 -> 不得静默忽略 known_hosts 回滚失败，也不得动链接目标。
@@ -1487,7 +1567,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let sentinel = freshHome.appendingPathComponent("sentinel-kh")
         try "KEEP\n".write(to: sentinel, atomically: true, encoding: .utf8)
         let stateURL = freshHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
-        let khURL = stateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
+        let khURL = freshHome.appendingPathComponent(".ssh/mimi/known_hosts")
         let khFailConfigurator = CodexLocalSSHConfigurator(
             homeDirectory: freshHome,
             username: "alice",
@@ -1500,6 +1580,11 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                         timeout: timeout,
                         standardInput: standardInput
                     )
+                }
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try Self.mockVerifiedHostKeyLine.write(toFile: rawPath, atomically: true, encoding: .utf8)
                 }
                 return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
             },
@@ -1519,7 +1604,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             guard case .fileOperationFailed(let detail) = error else {
                 return XCTFail("期望 fileOperationFailed 报告 known_hosts 回滚失败，实际：\(error)")
             }
-            XCTAssertTrue(detail.contains("codex-local-known-hosts"))
+            XCTAssertTrue(detail.contains("known_hosts"))
         }
         XCTAssertEqual(try String(contentsOf: sentinel, encoding: .utf8), "KEEP\n")
     }
@@ -1635,7 +1720,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         """
         try hostileTrustConfig.write(to: sshDir.appendingPathComponent("config"), atomically: true, encoding: .utf8)
 
-        let fakeHostKeyLine = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITxKnownHostsCommitKey1234567890123456\n"
+        let fakeHostKeyLine = "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITxKnownHostsCommitKey1234567890123456789012\n"
         let recorder = CommandRecorder()
         let configurator = CodexLocalSSHConfigurator(
             homeDirectory: tempHome,
@@ -1662,22 +1747,24 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
 
         try await configurator.configure(verifyConnection: true)
 
-        // 1. 托管块必须禁用 KnownHostsCommand，且 ssh -G 确认未继承 Host * 的 KnownHostsCommand。
-        let configText = try String(contentsOf: configurator.sshConfigURL, encoding: .utf8)
-        XCTAssertTrue(configText.contains("KnownHostsCommand none"), "托管块必须显式禁用 KnownHostsCommand")
+        // 1. 独立配置必须禁用 KnownHostsCommand 与 NoHostAuthenticationForLocalhost，且 ssh -G 确认未继承 Host * 选项。
+        let mimiConfigText = try String(contentsOf: configurator.mimiConfigURL, encoding: .utf8)
+        XCTAssertTrue(mimiConfigText.contains("KnownHostsCommand none"), "独立配置必须显式禁用 KnownHostsCommand")
+        XCTAssertTrue(mimiConfigText.contains("NoHostAuthenticationForLocalhost no"), "独立配置必须显式禁用 NoHostAuthenticationForLocalhost")
 
-        // 2. 验连参数必须显式禁用 KnownHostsCommand 且使用事务内副本而非实时 knownHostsURL。
+        // 2. 验连参数必须显式禁用 KnownHostsCommand 与 NoHostAuthenticationForLocalhost，且使用事务内副本而非实时 knownHostsURL。
         let calls = await recorder.calls
         let verifyCall = try XCTUnwrap(calls.last(where: { $0.executable == "/usr/bin/ssh" && $0.arguments.first != "-G" }))
         let args = verifyCall.arguments
         XCTAssertTrue(args.contains("KnownHostsCommand=none"), "验连参数必须显式禁用 KnownHostsCommand")
+        XCTAssertTrue(args.contains("NoHostAuthenticationForLocalhost=no"), "验连参数必须显式禁用 NoHostAuthenticationForLocalhost")
         let ukhArg = try XCTUnwrap(args.first(where: { $0.hasPrefix("UserKnownHostsFile=") }))
         XCTAssertFalse(
             ukhArg.contains(configurator.expectedKnownHostsPath),
             "验连必须使用事务内的专用信任副本，不得直接打开实时 knownHostsURL：\(ukhArg)"
         )
 
-        // 3. 首次验连写入事务副本的主机密钥必须在归属核验后提交回应用专用 knownHostsURL。
+        // 3. 首次验连写入事务副本的主机密钥必须在归属核验后提交回 ~/.ssh/mimi/known_hosts。
         XCTAssertEqual(
             try String(contentsOf: configurator.knownHostsURL, encoding: .utf8),
             fakeHostKeyLine,
@@ -1740,8 +1827,19 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             XCTAssertTrue(detail.contains("IdentityFile"), "应检出符号链接 Include 中的额外 IdentityFile：\(detail)")
         }
 
-        // 4. 旧式 127.0.0.1 探测同样必须拒绝 Match command 导致的桌面代理配置偏移与无法忠实冻结的 Include。
-        try "Match command \"*codex*\"\n    StdinNull yes\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        // 4. 旧式 127.0.0.1 探测：先放同一夹具的正对照（显式 User alice，任何宿主账户均可稳定通过），再验证负例命中预期的代理差异。
+        try "Host 127.0.0.1\n    User alice\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        let probePositiveControl = await CodexSharedSetupChecks.probeTarget(
+            "127.0.0.1",
+            configurator: matchCmdConfig,
+            runProbe: { _, _, _, stdin in
+                CommandResult(status: 0, stdout: stdin ?? Data(), stderr: Data())
+            }
+        )
+        XCTAssertTrue(probePositiveControl, "同一夹具在无代理差异时正对照必须通过")
+
+        try "Host 127.0.0.1\n    User alice\nMatch command \"*codex*\"\n    StdinNull yes\n"
+            .write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
         let probeRejectedMatchCmd = await CodexSharedSetupChecks.probeTarget(
             "127.0.0.1",
             configurator: matchCmdConfig,
@@ -1751,7 +1849,8 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         )
         XCTAssertFalse(probeRejectedMatchCmd, "旧式 127.0.0.1 探测在 Match command 切断桌面代理 Stdin 时绝不能误报免密就绪")
 
-        try "Include ${MIMI_UNFREEZABLE_INCLUDE}\n".write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
+        try "Host 127.0.0.1\n    User alice\nInclude ${MIMI_UNFREEZABLE_INCLUDE}\n"
+            .write(to: matchCmdConfig.sshConfigURL, atomically: true, encoding: .utf8)
         let probeRejectedUnfreezableInc = await CodexSharedSetupChecks.probeTarget(
             "127.0.0.1",
             configurator: matchCmdConfig,
@@ -1794,16 +1893,37 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let khUpdateHome = tempHome.appendingPathComponent("kh-ext-update", isDirectory: true)
         try FileManager.default.createDirectory(at: khUpdateHome, withIntermediateDirectories: true)
         let stateURL = khUpdateHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
-        let khURL = stateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
-        try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let originalKH = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldHostKey12345678901234567890123456\n"
-        let externallyUpdatedKH = originalKH + "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExternalUpdateKey1234567890123456\n"
-        try originalKH.write(to: khURL, atomically: true, encoding: .utf8)
-        _ = Darwin.chmod(khURL.path, 0o600)
+        let khURL = khUpdateHome.appendingPathComponent(".ssh/mimi/known_hosts")
+        let originalKH = "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldHostKey123456789012345678901234567890123\n"
+        let externallyUpdatedKH = originalKH + "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExternalUpdateKey12345678901234567890123456\n"
+
+        // 先正常完成首次配置以建立已证实归属的 known_hosts 版本。
+        let khInitConfig = CodexLocalSSHConfigurator(
+            homeDirectory: khUpdateHome,
+            username: "alice",
+            stateFileURL: stateURL,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try originalKH.write(to: URL(fileURLWithPath: rawPath), atomically: true, encoding: .utf8)
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
+        )
+        try await khInitConfig.configure(verifyConnection: true)
 
         let khExtConfig = CodexLocalSSHConfigurator(
             homeDirectory: khUpdateHome,
-            username: "alice",
+            username: "bob",
             stateFileURL: stateURL,
             runCommand: { executable, arguments, timeout, standardInput in
                 if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
@@ -1835,7 +1955,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         let khReplaceHome = tempHome.appendingPathComponent("kh-ext-replace", isDirectory: true)
         try FileManager.default.createDirectory(at: khReplaceHome, withIntermediateDirectories: true)
         let replaceStateURL = khReplaceHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
-        let replaceKHURL = replaceStateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
+        let replaceKHURL = khReplaceHome.appendingPathComponent(".ssh/mimi/known_hosts")
         let replacementKHContent = "EXTERNAL-REPLACEMENT-KNOWN-HOSTS-DO-NOT-DELETE\n"
 
         let khReplaceConfig = CodexLocalSSHConfigurator(
@@ -1851,7 +1971,6 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
                         standardInput: standardInput
                     )
                 }
-                // 模拟事务写入后/失败前，known_hosts 被替换为外部普通文件。
                 if FileManager.default.fileExists(atPath: replaceKHURL.path) {
                     try FileManager.default.removeItem(at: replaceKHURL)
                 }
@@ -1875,17 +1994,37 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             "同名替换文件的内容必须原样保留"
         )
 
-        // 4. Phase 4 实际写回 known_hosts 后，在状态落盘失败触发回滚前被外部更新/替换 -> 同样绝不覆盖外部更新或删除替换文件！
+        // 4. Phase 4 实际写回 known_hosts 后，在状态落盘失败触发回滚前被外部更新 -> 同样绝不覆盖外部更新！
         let p4UpdateHome = tempHome.appendingPathComponent("kh-p4-update", isDirectory: true)
         try FileManager.default.createDirectory(at: p4UpdateHome, withIntermediateDirectories: true)
         let p4StateURL = p4UpdateHome.appendingPathComponent("Library/Application Support/MimiRemoteMac/codex-local-ssh-state.json")
-        let p4KHURL = p4StateURL.deletingLastPathComponent().appendingPathComponent("codex-local-known-hosts")
-        try FileManager.default.createDirectory(at: p4StateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try originalKH.write(to: p4KHURL, atomically: true, encoding: .utf8)
-        _ = Darwin.chmod(p4KHURL.path, 0o600)
+        let p4KHURL = p4UpdateHome.appendingPathComponent(".ssh/mimi/known_hosts")
 
-        let p4NewKey = "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPhase4TxKey1234567890123456789012345678\n"
-        let p4ExternalAfterCommit = originalKH + p4NewKey + "127.0.0.1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfterCommitExt1234567890123456789012345\n"
+        let p4InitConfig = CodexLocalSSHConfigurator(
+            homeDirectory: p4UpdateHome,
+            username: "alice",
+            stateFileURL: p4StateURL,
+            runCommand: { executable, arguments, timeout, standardInput in
+                if executable.lastPathComponent == "ssh-keygen" || (executable.lastPathComponent == "ssh" && arguments.first == "-G") {
+                    return try await CodexLocalSSHConfigurator.defaultCommandRunner(
+                        executable: executable,
+                        arguments: arguments,
+                        timeout: timeout,
+                        standardInput: standardInput
+                    )
+                }
+                if let opt = arguments.first(where: { $0.hasPrefix("UserKnownHostsFile=") }) {
+                    let rawPath = String(opt.dropFirst("UserKnownHostsFile=".count))
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    try originalKH.write(to: URL(fileURLWithPath: rawPath), atomically: true, encoding: .utf8)
+                }
+                return CommandResult(status: 0, stdout: standardInput ?? Data(), stderr: Data())
+            }
+        )
+        try await p4InitConfig.configure(verifyConnection: true)
+
+        let p4NewKey = "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPhase4TxKey12345678901234567890123456789012\n"
+        let p4ExternalAfterCommit = originalKH + p4NewKey + "mimi-local ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfterCommitExt1234567890123456789012345678\n"
         let p4UpdateConfig = CodexLocalSSHConfigurator(
             homeDirectory: p4UpdateHome,
             username: "alice",
@@ -1921,7 +2060,7 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
             guard case .fileOperationFailed(let detail) = error else {
                 return XCTFail("期望 fileOperationFailed 报告 known_hosts 外部更新冲突，实际：\(error)")
             }
-            XCTAssertTrue(detail.contains("codex-local-known-hosts"))
+            XCTAssertTrue(detail.contains("known_hosts"))
         }
         XCTAssertEqual(
             try String(contentsOf: p4KHURL, encoding: .utf8),
@@ -1930,10 +2069,10 @@ final class CodexLocalSSHConfiguratorTests: XCTestCase {
         )
     }
 
-    /// R4 P2-1: 授权、密钥和配置都已清空，仅应用专用 known_hosts 清理失败时，必须保留状态与重试入口。
+    /// R4 P2-1: 授权、密钥和配置都已清空，仅独立 known_hosts 清理失败时，必须保留状态与重试入口。
     func testR4_P2_1KnownHostsCleanupFailurePreservesRetryEntry() async throws {
         let (configurator, _) = makeConfigurator(username: "alice")
-        try await configurator.configure(verifyConnection: false)
+        try await configurator.configure(verifyConnection: true)
 
         let sentinel = tempHome.appendingPathComponent("p2-sentinel")
         try "KEEP\n".write(to: sentinel, atomically: true, encoding: .utf8)
